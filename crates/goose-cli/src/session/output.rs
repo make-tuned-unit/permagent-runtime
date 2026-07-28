@@ -1313,39 +1313,164 @@ pub fn display_session_info(
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
-    // ASCII art goose with session info on the right
+    // Infinity banner: a comet sweeps the lemniscate twice, leaves the band
+    // glowing in the brand gradient, and the session info settles beneath it.
     println!();
+    play_infinity_intro();
     println!(
-        "  {}  {} {} {} {} {}",
-        style("  __( O)>").white(),
+        "  {} {} {} {} {}",
         style("●").green(),
         style(status).dim(),
         style("·").dim(),
         style(provider).dim(),
         style(&model_display).cyan(),
     );
-
     if let Some(id) = session_id {
         println!(
-            "  {}  {} {} {}",
-            style(r" \____)").white(),
-            style(" ").dim(),
+            "    {} {}",
             style(id).dim(),
             style(format!("· {}", cwd_display)).dim(),
         );
     } else {
-        println!(
-            "  {}  {} {}",
-            style(r" \____)").white(),
-            style(" ").dim(),
-            style(format!("  {}", cwd_display)).dim(),
-        );
+        println!("    {}", style(cwd_display).dim());
     }
-    println!(
-        "  {}  {}",
-        style("   L L").white(),
-        style("   goose is ready").white()
-    );
+    println!("    {}", style("Permagent is ready").white());
+}
+
+// ── Permagent infinity banner ───────────────────────────────────────────────
+// The brand mark drawn for real: a lemniscate of Bernoulli plotted at braille
+// resolution (2×4 dots per cell), colored along its arc with the app's
+// cyan→violet ribbon, with a comet (bright head, fading tail) sweeping the
+// curve on startup. 256-color ANSI — no extra crates, degrades to nothing
+// when stdout is not a TTY.
+
+/// Terminal cells: WIDTH×HEIGHT chars → (2·WIDTH)×(4·HEIGHT) braille dots.
+const INF_W: usize = 26;
+const INF_H: usize = 5;
+/// Samples along the curve — enough that neighboring dots touch.
+const INF_SAMPLES: usize = 360;
+/// The cyan→violet ribbon as xterm-256 colors, indexed by arc position.
+const INF_RIBBON: [u8; 12] = [51, 50, 44, 45, 39, 33, 63, 99, 135, 141, 171, 177];
+
+struct InfinityBand {
+    /// Per-cell braille bitmask + mean arc position of its dots.
+    cells: std::collections::HashMap<(usize, usize), (u8, f32, u32)>,
+    /// Each sample's (row, col, arc t) — the comet rides this.
+    samples: Vec<(usize, usize, f32)>,
+}
+
+fn infinity_band() -> InfinityBand {
+    let (dw, dh) = ((INF_W * 2) as f32, (INF_H * 4) as f32);
+    let mut cells: std::collections::HashMap<(usize, usize), (u8, f32, u32)> =
+        std::collections::HashMap::new();
+    let mut samples = Vec::with_capacity(INF_SAMPLES);
+    for i in 0..INF_SAMPLES {
+        let t = i as f32 / INF_SAMPLES as f32;
+        let th = t * std::f32::consts::TAU;
+        // Lemniscate of Bernoulli, unit-scaled: the ∞ curve itself.
+        let d = 1.0 + th.sin() * th.sin();
+        let x = th.cos() / d;
+        let y = th.sin() * th.cos() / d;
+        // Map x∈[-1,1], y∈[-0.36,0.36] onto the dot grid with a small margin.
+        let px = ((x * 0.48 + 0.5) * (dw - 1.0)).round() as usize;
+        let py = ((y * 1.30 + 0.5) * (dh - 1.0)).round() as usize;
+        let (col, row) = (px / 2, py / 4);
+        // Braille dot bit for (x%2, y%4) — U+2800 layout.
+        const BITS: [[u8; 2]; 4] = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]];
+        let bit = BITS[py % 4][px % 2];
+        let e = cells.entry((row, col)).or_insert((0, 0.0, 0));
+        e.0 |= bit;
+        e.1 += t;
+        e.2 += 1;
+        samples.push((row, col, t));
+    }
+    InfinityBand { cells, samples }
+}
+
+fn ribbon_color(t: f32) -> u8 {
+    // Mirror the palette across the loop so the seam at t=0/1 is invisible.
+    let m = 1.0 - (2.0 * t - 1.0).abs();
+    INF_RIBBON[((m * (INF_RIBBON.len() - 1) as f32).round() as usize).min(INF_RIBBON.len() - 1)]
+}
+
+/// Render one frame. `comet` = the head's sample index (None = settled band).
+fn infinity_frame(band: &InfinityBand, comet: Option<usize>) -> Vec<String> {
+    const TAIL: usize = 34;
+    // Comet overlay: sample index → brightness 0..1 back along the tail.
+    let mut hot: std::collections::HashMap<(usize, usize), f32> = std::collections::HashMap::new();
+    if let Some(head) = comet {
+        for k in 0..TAIL {
+            let idx = (head + INF_SAMPLES - k) % INF_SAMPLES;
+            let (r, c, _) = band.samples[idx];
+            let heat = 1.0 - k as f32 / TAIL as f32;
+            let e = hot.entry((r, c)).or_insert(0.0);
+            if heat > *e {
+                *e = heat;
+            }
+        }
+    }
+    (0..INF_H)
+        .map(|r| {
+            let mut line = String::from("  ");
+            for c in 0..INF_W {
+                match band.cells.get(&(r, c)) {
+                    None => line.push(' '),
+                    Some(&(mask, tsum, n)) => {
+                        let ch = char::from_u32(0x2800 + mask as u32).unwrap_or('⣿');
+                        let t = tsum / n as f32;
+                        let heat = hot.get(&(r, c)).copied().unwrap_or(0.0);
+                        if heat > 0.85 {
+                            // White-hot head.
+                            line.push_str(&format!("\x1b[1;38;5;231m{ch}\x1b[0m"));
+                        } else if heat > 0.0 {
+                            line.push_str(&format!("\x1b[1;38;5;{}m{ch}\x1b[0m", ribbon_color(t)));
+                        } else if comet.is_some() {
+                            // Unswept band waits in the dark.
+                            line.push_str(&format!("\x1b[38;5;238m{ch}\x1b[0m"));
+                        } else {
+                            // Settled: the full ribbon.
+                            line.push_str(&format!("\x1b[38;5;{}m{ch}\x1b[0m", ribbon_color(t)));
+                        }
+                    }
+                }
+            }
+            line
+        })
+        .collect()
+}
+
+/// The startup sweep: two eased laps of the comet over a dark band, then the
+/// band settles lit in the ribbon gradient (the frame the banner sits under).
+/// TTY-only; plain cursor-up redraws, ~1.2s total.
+fn play_infinity_intro() {
+    use std::io::{IsTerminal, Write};
+    if !std::io::stdout().is_terminal() {
+        return;
+    }
+    let band = infinity_band();
+    print!("\x1b[?25l");
+    const FRAMES: usize = 44;
+    for f in 0..=FRAMES {
+        let lines = if f == FRAMES {
+            infinity_frame(&band, None) // settle: full ribbon, no comet
+        } else {
+            // Ease-in-out over two laps — slow ignition, fast middle, glide.
+            let u = f as f32 / FRAMES as f32;
+            let eased = u * u * (3.0 - 2.0 * u);
+            let head = ((eased * 2.0 * INF_SAMPLES as f32) as usize) % INF_SAMPLES;
+            infinity_frame(&band, Some(head))
+        };
+        for line in &lines {
+            println!("{line}\x1b[K");
+        }
+        let _ = std::io::stdout().flush();
+        if f < FRAMES {
+            std::thread::sleep(std::time::Duration::from_millis(26));
+            print!("\x1b[{INF_H}A\r");
+        }
+    }
+    print!("\x1b[?25h");
+    let _ = std::io::stdout().flush();
 }
 
 fn set_terminal_title() {
@@ -1359,7 +1484,7 @@ fn set_terminal_title() {
     // Sanitize: strip control characters (ESC, BEL, etc.) to prevent terminal escape injection
     let sanitized: String = dir_name.chars().filter(|c| !c.is_control()).collect();
     // OSC 0 sets the terminal window/tab title
-    print!("\x1b]0;🪿 {}\x07", sanitized);
+    print!("\x1b]0;∞ {}\x07", sanitized);
     let _ = std::io::stdout().flush();
 }
 

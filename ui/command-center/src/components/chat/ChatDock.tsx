@@ -12,6 +12,7 @@ import { ChatView } from './ChatView';
 import { useCommandCenter } from '../../lib/store';
 import { createChatWindow } from '../../lib/chatWindow';
 import { useTheme } from '../../styles/useTheme';
+import { setSpeakReplies, useSpeakReplies } from '../../lib/speakReplies';
 import { font } from '../../styles/tokens';
 
 export const CHAT_DOCK_WIDTH = 384;
@@ -48,12 +49,12 @@ export function ChatDock() {
   return (
     <div
       style={{
-        position: 'fixed',
-        top: 0,
-        right: 0,
-        bottom: 0,
-        width: narrow ? '100%' : CHAT_DOCK_WIDTH,
-        zIndex: 80,
+        // Wide: a real flex sibling of <main>, so the content beside it shrinks
+        // instead of being covered. Narrow (<640): a full-width overlay sheet,
+        // where there is no room to sit alongside anything.
+        ...(narrow
+          ? { position: 'fixed' as const, top: 0, right: 0, bottom: 0, width: '100%', zIndex: 80 }
+          : { position: 'relative' as const, width: CHAT_DOCK_WIDTH, flexShrink: 0, height: '100%' }),
         display: 'flex',
         flexDirection: 'column',
         background: colors.surface,
@@ -80,6 +81,9 @@ export function ChatDock() {
           Chat
         </span>
         <div style={{ flex: 1 }} />
+        {/* Speak replies (#18) — the agent voices completed replies; this is
+            the mute. Voice-first onboarding flips it on; the pref persists. */}
+        <SpeakToggle />
         {isTauri && (
           <button
             onClick={detach}
@@ -104,6 +108,28 @@ export function ChatDock() {
         <ChatView />
       </div>
     </div>
+  );
+}
+
+function SpeakToggle() {
+  const { colors } = useTheme();
+  const speaking = useSpeakReplies();
+  return (
+    <button
+      onClick={() => setSpeakReplies(!speaking)}
+      title={speaking ? 'Mute — replies go back to text only' : 'Speak replies aloud'}
+      style={{ ...iconBtn(colors), color: speaking ? colors.cyan : colors.textMuted }}
+    >
+      {speaking ? (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+          <path d="M11 5L6 9H2v6h4l5 4V5zM15.5 8.5a5 5 0 010 7M19 5a9 9 0 010 14" />
+        </svg>
+      ) : (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+          <path d="M11 5L6 9H2v6h4l5 4V5zM23 9l-6 6M17 9l6 6" />
+        </svg>
+      )}
+    </button>
   );
 }
 

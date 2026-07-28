@@ -29,7 +29,7 @@ export function AgentPicker({ selectedAgentId, onSelectAgent }: AgentPickerProps
         <span style={{ fontSize: 11, color: COLORS.primaryMarble }}>
           {selected ? displayName(selected.id, selected.name) : 'Select agent'}
         </span>
-        <span style={{ fontSize: 9, color: '#6B7280', marginLeft: 6 }}>
+        <span style={{ fontSize: 10, color: '#6B7280', marginLeft: 6 }}>
           {open ? '▲' : '▼'}
         </span>
       </button>
@@ -58,7 +58,7 @@ export function AgentPicker({ selectedAgentId, onSelectAgent }: AgentPickerProps
                   {displayName(agent.id, agent.name)}
                 </span>
               </span>
-              <span style={{ fontSize: 9, color: '#6B7280', marginLeft: 8 }}>
+              <span style={{ fontSize: 10, color: '#6B7280', marginLeft: 8 }}>
                 {roleLabel(agent.role)}
               </span>
             </button>

@@ -11,6 +11,7 @@ pub mod activity_journal;
 pub mod agents;
 pub mod app_catalog;
 pub mod attachments;
+pub mod brain_enrichment;
 pub mod brain_handle;
 pub mod builtin_extension;
 pub mod cards;

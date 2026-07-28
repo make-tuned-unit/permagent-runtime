@@ -338,6 +338,36 @@ impl ActivityIngester {
                     &event_type_name,
                     wing_override.as_deref(),
                 ));
+                // Real-time graph growth (#24): ambient memories link to the
+                // entities they mention, same as the SafeBrain write path
+                // (this path goes through raw_blocking_handle, so the SafeBrain
+                // choke point never sees it). Already on a blocking thread.
+                if matches!(
+                    result.write_outcome,
+                    spectral::ingest::WriteOutcome::Inserted
+                ) {
+                    let brain_dir = crate::config::paths::Paths::brain_dir();
+                    match crate::brain_enrichment::link_new_memory(
+                        &brain_dir.join("graph.sqlite"),
+                        &brain_dir.join("memory.db"),
+                        &result.memory_id,
+                        &content,
+                    ) {
+                        Ok(linked) => {
+                            for l in &linked {
+                                let event = if l.first_mention {
+                                    crate::events::entity_added(&l.hex, &l.entity_type)
+                                } else {
+                                    crate::events::entity_updated(&l.hex, &l.entity_type)
+                                };
+                                crate::events::emit(event);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::debug!("activity mention linking skipped: {e}")
+                        }
+                    }
+                }
                 // Recognition seam (stream mode): every ambient memory that
                 // actually lands is a cue for the routine tracker. Consent-
                 // gated inside (per-wing opt-in + per-source exclusions);

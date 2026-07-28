@@ -11,6 +11,12 @@ import { nextPaneTabId, usePaneTabCycling } from '../build/paneTabCycling';
 export interface TerminalManagerHandle {
   createProjectTab: (cwd: string, label: string, initialCommand?: string, supervisedSessionId?: string) => void;
   getActiveTab: () => TerminalTab;
+  /** Every tab this manager owns — used by a detached pane window to tear
+   *  down all of its PTYs when the window is genuinely closed (not redocked). */
+  getAllTabs: () => TerminalTab[];
+  /** Kill the PTY behind a tab. Detached windows call this on real close so a
+   *  closed window does not leave an orphaned shell running. */
+  killTab: (sessionId: string) => Promise<void>;
 }
 
 export interface TerminalTab {
@@ -232,6 +238,8 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
   useImperativeHandle(ref, () => ({
     createProjectTab,
     getActiveTab: () => tabsRef.current.find(t => t.id === activeTabIdRef.current) || tabsRef.current[0],
+    getAllTabs: () => tabsRef.current,
+    killTab: async (sessionId: string) => { await killPtyRef.current?.(sessionId); },
   }), [createProjectTab]);
 
   const popOutActive = useCallback(async () => {

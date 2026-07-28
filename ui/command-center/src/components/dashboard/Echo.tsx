@@ -111,6 +111,7 @@ export function Echo() {
   const { colors } = useTheme();
   const sendMessage = useCommandCenter(s => s.sendMessage);
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
+  const openChatDock = useCommandCenter(s => s.openChatDock);
   const reduce = usePrefersReducedMotion();
 
   const [pick, setPick] = useState<EchoPick | null>(null);
@@ -165,6 +166,7 @@ export function Echo() {
   const explore = () => navigateToTool('memory');
   const ask = () => {
     setActivePanel('chat');
+    openChatDock(); // surface the reply — see LearnNext.showMe
     void sendMessage(
       `I left off with "${pick.entity.name}" a while back — you have ${pick.count} memories on it, last touched ${relTime(pick.lastMs)}. Remind me where I was, and what's worth picking back up.`,
     );

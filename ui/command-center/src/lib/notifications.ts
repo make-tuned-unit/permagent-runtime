@@ -23,6 +23,8 @@ export interface AppNotification {
   read: boolean;
   /** Tab to open when clicked. */
   target?: Parameters<typeof navigateToTool>[0];
+  /** Optional deep link — opens in the in-app browser (Build tab). */
+  url?: string;
 }
 
 export type NotificationKind =
@@ -158,6 +160,34 @@ export function useNotifications(): NotificationState {
   );
 }
 
+// ── Tray open state ──────────────────────────────────────────────────────────
+// The bell lives in the Sidebar brand row (next to the logo) while the tray and
+// toasts stay mounted at App root, so the two are in different subtrees and
+// cannot share React state. A tiny external store keeps them in sync.
+
+let trayOpen = false;
+const traySubscribers = new Set<() => void>();
+
+export function setTrayOpen(next: boolean): void {
+  if (trayOpen === next) return;
+  trayOpen = next;
+  traySubscribers.forEach((fn) => fn());
+}
+
+export function toggleTray(): void {
+  setTrayOpen(!trayOpen);
+}
+
+export function useTrayOpen(): boolean {
+  return useSyncExternalStore(
+    (fn) => {
+      traySubscribers.add(fn);
+      return () => traySubscribers.delete(fn);
+    },
+    () => trayOpen,
+  );
+}
+
 // ── Event stream ─────────────────────────────────────────────────────────────
 
 function titleFor(evt: { payload?: Record<string, unknown> }, fallback: string): string {
@@ -249,12 +279,17 @@ async function connect(): Promise<void> {
             // + analytics later). The daemon owns the gentle once-a-day budget,
             // so anything that arrives here is meant to be seen.
             if (prefs.echo) {
-              const p = (evt.payload ?? {}) as { message?: string; subject?: string };
+              const p = (evt.payload ?? {}) as {
+                message?: string; subject?: string; url?: string; link?: string; source_url?: string;
+              };
+              // If the nudge carries a source link (project news), clicking the
+              // notification opens it in the in-app browser on the Build tab.
               push({
                 kind: 'echo',
                 title: '✦ Henry noticed something',
                 body: p.message ?? `A thread worth revisiting${p.subject ? `: ${p.subject}` : ''}.`,
                 target: 'memory',
+                url: p.url ?? p.link ?? p.source_url,
               });
             }
             break;

@@ -6,11 +6,14 @@ import { useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { COLORS } from '../../constants';
+import { makeStoneTexture } from '../../shared/stoneTexture';
 
 // Shared materials
 export function useMarbleMat() {
   return useMemo(
-    () => new THREE.MeshStandardMaterial({ color: COLORS.primaryMarble, roughness: 0.35, metalness: 0.05 }),
+    // #16 realism pass: marble props carry the shared stone canvas texture
+    // (speckle + veining) instead of a flat color — stairs, benches, trim.
+    () => new THREE.MeshStandardMaterial({ map: makeStoneTexture('#aeb4c0'), roughness: 0.35, metalness: 0.05 }),
     []
   );
 }

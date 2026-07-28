@@ -159,7 +159,7 @@ export function BuildView() {
       }}>
         <Mobius size={36} state={mobiusState as any} glow={0.9} />
         <div style={{ minWidth: 0 }}>
-          <div style={{ fontFamily: font.display, fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em' }}>
+          <div style={{ fontFamily: font.display, fontSize: 14, fontWeight: 600, letterSpacing: '-0.01em' }}>
             {activeTask ? activeTask.title : 'Build'}
           </div>
           <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2, display: 'flex', alignItems: 'center', gap: 8 }}>

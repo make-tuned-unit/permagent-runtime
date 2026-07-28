@@ -52,7 +52,7 @@ export class ErrorBoundary extends Component<Props, State> {
         }}
       >
         <div style={{ fontSize: 26 }}>◇</div>
-        <div style={{ fontSize: 15, fontWeight: 600, color: '#E8E4DD' }}>
+        <div style={{ fontSize: 14, fontWeight: 600, color: '#E8E4DD' }}>
           {what} hit a snag
         </div>
         <div style={{ fontSize: 12, maxWidth: 380, lineHeight: 1.5 }}>

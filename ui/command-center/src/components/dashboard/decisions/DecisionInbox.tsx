@@ -322,7 +322,7 @@ function HistoryList({ items }: { items: HistoryItem[] | null }) {
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{
-              fontFamily: font.mono, fontSize: 9, letterSpacing: '0.06em',
+              fontFamily: font.mono, fontSize: 10, letterSpacing: '0.06em',
               textTransform: 'uppercase', borderRadius: 4, padding: '2px 6px',
               flexShrink: 0,
               color: item.tier === 1 ? colors.success : colors.cyan,

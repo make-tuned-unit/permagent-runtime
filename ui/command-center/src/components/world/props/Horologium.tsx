@@ -163,7 +163,7 @@ export function Horologium() {
               boxShadow: model.runningName ? `0 0 12px ${ENV.neonAmber}33` : 'none',
               color: '#E8E4DD',
               fontFamily: 'JetBrains Mono, monospace',
-              fontSize: 9,
+              fontSize: 10,
               letterSpacing: '0.14em',
               whiteSpace: 'nowrap',
               textAlign: 'center',

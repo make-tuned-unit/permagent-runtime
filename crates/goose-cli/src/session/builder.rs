@@ -606,16 +606,52 @@ async fn configure_session_prompts(
             .get_param::<usize>("PERMAGENT_CODING_REPO_MAP_TOKENS")
             .unwrap_or(1024);
         if budget > 0 {
-            if let Ok(root) = std::env::current_dir() {
-                if let Some(block) =
-                    permagent::agents::platform_extensions::analyze::repo_map::coding_context_block(
-                        &root, budget,
-                    )
-                {
-                    session
-                        .agent
-                        .extend_system_prompt("repo_map".to_string(), block)
-                        .await;
+            // Interactive sessions get an explicit offer: mapping is the cost
+            // lever (the agent orients from ranked signatures instead of
+            // reading whole files), and surfacing it makes that legible + lets
+            // the user skip the whole-repo parse on a tree they know is huge.
+            // Non-interactive runs keep the silent auto-map.
+            use std::io::IsTerminal;
+            let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+            let wants_map = if interactive {
+                cliclack::confirm(format!(
+                    "Map this codebase before starting? Permagent extracts symbols with \
+                     tree-sitter and ranks them (PageRank over the reference graph) into a \
+                     ~{budget}-token map, so the agent looks things up from signatures \
+                     instead of reading whole files."
+                ))
+                .initial_value(true)
+                .interact()
+                .unwrap_or(true)
+            } else {
+                true
+            };
+            if wants_map {
+                if let Ok(root) = std::env::current_dir() {
+                    if let Some(block) =
+                        permagent::agents::platform_extensions::analyze::repo_map::coding_context_block(
+                            &root, budget,
+                        )
+                    {
+                        if interactive {
+                            // ~4 chars/token — the same heuristic the budget
+                            // fill uses; this is a report, not an invoice.
+                            let approx_tokens = block.len() / 4;
+                            let _ = cliclack::log::success(format!(
+                                "Codebase mapped: ~{approx_tokens} tokens of ranked symbol \
+                                 signatures pinned into context (cached by file mtime; \
+                                 tune with PERMAGENT_CODING_REPO_MAP_TOKENS)."
+                            ));
+                        }
+                        session
+                            .agent
+                            .extend_system_prompt("repo_map".to_string(), block)
+                            .await;
+                    } else if interactive {
+                        let _ = cliclack::log::info(
+                            "No mappable source found here — skipping the repo map.",
+                        );
+                    }
                 }
             }
         }

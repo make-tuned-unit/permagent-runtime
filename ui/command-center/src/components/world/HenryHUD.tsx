@@ -117,7 +117,7 @@ export function HenryHUD({ visible, onClose }: HenryHUDProps) {
       display: 'inline-block',
       padding: '2px 8px',
       borderRadius: 3,
-      fontSize: 9,
+      fontSize: 10,
       fontWeight: 700,
       letterSpacing: '0.08em',
       background: colors.bg,
@@ -185,7 +185,7 @@ function HenryStatusBody({ status }: { status: HenryStatus | null }) {
                 <span style={{ color: '#D1D5DB', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {truncate(t.description, 30)}
                 </span>
-                <span style={{ color: t.status === 'completed' ? '#4ADE80' : '#EF4444', fontSize: 9 }}>
+                <span style={{ color: t.status === 'completed' ? '#4ADE80' : '#EF4444', fontSize: 10 }}>
                   {t.status === 'completed' ? '✓' : '✗'}
                 </span>
               </div>

@@ -232,7 +232,7 @@ export function LibrarianHUD({ visible, onClose }: LibrarianHUDProps) {
       display: 'inline-block',
       padding: '2px 8px',
       borderRadius: 3,
-      fontSize: 9,
+      fontSize: 10,
       fontWeight: 700,
       letterSpacing: '0.08em',
       background: colors.bg,

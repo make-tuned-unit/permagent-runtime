@@ -51,7 +51,7 @@ export function Splash({ onDone }: Props) {
         *   capitalization without explicit user instruction.
         * ========================= */}
       <p style={{
-        fontFamily: font.display, fontSize: 15, fontWeight: 600,
+        fontFamily: font.display, fontSize: 14, fontWeight: 600,
         color: colors.textMuted, letterSpacing: '0.08em',
         textTransform: 'none',
         marginTop: 28,

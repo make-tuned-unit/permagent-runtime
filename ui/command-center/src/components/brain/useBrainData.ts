@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { apiFetch } from '../../lib/api';
+import { subscribeWorldEvents } from '../world/shared/worldEvents';
 
 export interface GraphSelf { name: string; id: string }
 export interface GraphEntityField {
@@ -57,6 +58,28 @@ export function useBrainData(searchQuery = '') {
     const interval = setInterval(fetchGraph, 60_000);
     return () => clearInterval(interval);
   }, [searchQuery, fetchGraph]);
+
+  // Live growth (#24): a new memory or entity link lands → refetch soon, so
+  // the graph visibly grows while the user works instead of waiting out the
+  // 60s poll. Debounced — a burst of ingestion collapses to one refetch.
+  useEffect(() => {
+    let debounce: ReturnType<typeof setTimeout> | undefined;
+    const unsubscribe = subscribeWorldEvents((evt) => {
+      if (evt.replayed) return;
+      if (
+        evt.type === 'memory_added' ||
+        evt.type === 'entity_added' ||
+        evt.type === 'entity_updated'
+      ) {
+        clearTimeout(debounce);
+        debounce = setTimeout(fetchGraph, 1200);
+      }
+    });
+    return () => {
+      clearTimeout(debounce);
+      unsubscribe();
+    };
+  }, [fetchGraph]);
 
   return { data, loading, error, refresh: fetchGraph };
 }

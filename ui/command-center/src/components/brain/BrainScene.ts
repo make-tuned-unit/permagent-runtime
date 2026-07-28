@@ -18,6 +18,10 @@ interface SimNode {
   data: GraphEntity | GraphMemory | null;
   /** Degree-derived rest scale (Obsidian pass) — hover restores to this. */
   baseScale?: number;
+  /** In-scene name label (Obsidian pass 2) — billboarded, distance-faded. */
+  labelSprite?: THREE.Sprite;
+  /** Filter/search/hover multiplier applied to the label's distance fade. */
+  labelMul?: number;
 }
 
 interface SimEdge {
@@ -100,6 +104,58 @@ void main() {
   vec3 col = vCol + core * vec3(0.6);
   gl_FragColor = vec4(col, a);
 }`;
+
+// ── Node labels (Obsidian pass 2) ──────────────────────────────────────
+// Obsidian's graph wears its names: every node carries a small label that
+// fades in as you approach and dims out of a hovered node's neighborhood.
+// Each label is a canvas-rendered billboard sprite; depthTest is off so a
+// name is never occluded by geometry.
+
+const LABEL_FONT = '500 26px -apple-system, "Segoe UI", system-ui, sans-serif';
+
+function makeLabelSprite(text: string, color: string): THREE.Sprite {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d')!;
+  ctx.font = LABEL_FONT;
+  const metrics = ctx.measureText(text);
+  const padX = 10;
+  const w = Math.ceil(metrics.width) + padX * 2;
+  const h = 40;
+  canvas.width = w;
+  canvas.height = h;
+  // (Re)set state — resizing the canvas clears it.
+  const c2 = canvas.getContext('2d')!;
+  c2.font = LABEL_FONT;
+  c2.textBaseline = 'middle';
+  c2.textAlign = 'center';
+  // Soft dark halo keeps names readable over bright nodes and edges.
+  c2.shadowColor = 'rgba(4, 8, 16, 0.9)';
+  c2.shadowBlur = 8;
+  c2.fillStyle = color;
+  c2.fillText(text, w / 2, h / 2);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const mat = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    opacity: 0,
+    depthTest: false,
+    depthWrite: false,
+  });
+  const sprite = new THREE.Sprite(mat);
+  // World-space size proportional to the canvas aspect, clamped so long
+  // memory snippets don't dominate.
+  const scaleY = 1.05;
+  sprite.scale.set((w / h) * scaleY, scaleY, 1);
+  sprite.renderOrder = 10;
+  return sprite;
+}
+
+/** Trim a label for in-scene display (tooltips keep the full text). */
+function labelText(kind: string, label: string): string {
+  const max = kind === 'memory' ? 26 : 30;
+  return label.length > max ? `${label.slice(0, max - 1)}…` : label;
+}
 
 // ── BrainScene Class ───────────────────────────────────────────────────
 export class BrainScene {
@@ -216,8 +272,15 @@ export class BrainScene {
 
     this.lastDataKey = dataKey;
 
-    // Clear old meshes
-    for (const n of this.nodes) this.scene.remove(n.mesh);
+    // Clear old meshes + labels
+    for (const n of this.nodes) {
+      this.scene.remove(n.mesh);
+      if (n.labelSprite) {
+        this.scene.remove(n.labelSprite);
+        n.labelSprite.material.map?.dispose();
+        n.labelSprite.material.dispose();
+      }
+    }
     if (this.edgeLines) { this.scene.remove(this.edgeLines); this.edgeLines = null; }
     if (this.pulsePoints) { this.scene.remove(this.pulsePoints); this.pulsePoints = null; }
     this.nodes = [];
@@ -239,6 +302,7 @@ export class BrainScene {
       mass: 6, pos: new THREE.Vector3(), vel: new THREE.Vector3(),
       mesh: selfMesh, pinned: true, data: null,
     };
+    this.attachLabel(selfNode);
     this.nodes.push(selfNode);
 
     // Entities
@@ -270,6 +334,7 @@ export class BrainScene {
         mass: 2.0, pos: mesh.position.clone(), vel: new THREE.Vector3(),
         mesh, pinned: false, data: ent,
       };
+      this.attachLabel(node);
       this.nodes.push(node);
       this.edges.push({ a: selfNode, b: node, kind: 'self', k: 0.06, rest: 8.0, weight: 0.5 });
     }
@@ -313,6 +378,7 @@ export class BrainScene {
         mass: 0.45 + mem.weight * 0.4, pos: mesh.position.clone(), vel: new THREE.Vector3(),
         mesh, pinned: false, data: mem,
       };
+      this.attachLabel(node);
       this.nodes.push(node);
 
       // Connect to associated entities or self
@@ -367,6 +433,50 @@ export class BrainScene {
     this.alpha = 1.0;
   }
 
+  /** Create + register the node's in-scene name label. */
+  private attachLabel(node: SimNode) {
+    const color = node.kind === 'self'
+      ? '#eaf6ff'
+      : node.kind === 'memory'
+        ? '#9fb3cc'
+        : `#${new THREE.Color(NODE_COLORS[node.kind] || 0x7bb7ff).lerp(new THREE.Color(0xffffff), 0.55).getHexString()}`;
+    const sprite = makeLabelSprite(labelText(node.kind, node.label), color);
+    sprite.position.copy(node.pos);
+    this.scene.add(sprite);
+    node.labelSprite = sprite;
+    node.labelMul = 1;
+  }
+
+  /** Distance-faded label pass, run every frame: names appear as you approach
+   *  (hubs from further away), track their nodes, and honor filter/search/
+   *  hover multipliers. Self is always named. */
+  private updateLabels() {
+    const cam = this.camera.position;
+    for (const n of this.nodes) {
+      const sprite = n.labelSprite;
+      if (!sprite) continue;
+      if (!n.mesh.visible) { sprite.visible = false; continue; }
+
+      // Sit just below the node, scaled with the node itself.
+      const r = (n.baseScale ?? 1) * (n.kind === 'self' ? 1.5 : n.kind === 'memory' ? 0.55 : 0.9);
+      sprite.position.set(n.pos.x, n.pos.y - r - 0.55, n.pos.z);
+
+      let alpha: number;
+      if (n.kind === 'self') {
+        alpha = 1;
+      } else {
+        const d = cam.distanceTo(n.pos);
+        // Bigger nodes announce themselves from further away.
+        const far = n.kind === 'memory' ? 16 : 30 + (n.baseScale ?? 1) * 8;
+        const near = far - 10;
+        alpha = THREE.MathUtils.clamp(1 - (d - near) / (far - near), 0, 1);
+      }
+      alpha *= n.labelMul ?? 1;
+      sprite.material.opacity = alpha * 0.95;
+      sprite.visible = alpha > 0.02;
+    }
+  }
+
   setSearch(query: string) { this.search = query.toLowerCase(); this.applyFilters(); }
   setTypeFilter(f: TypeFilters) { this.typeFilter = f; this.applyFilters(); }
   setTimeRange(r: [number, number]) { this.timeRange = r; this.applyFilters(); }
@@ -393,17 +503,25 @@ export class BrainScene {
         const matches = n.label.toLowerCase().includes(this.search) || n.note.toLowerCase().includes(this.search);
         mat.opacity = matches ? 0.95 : 0.18;
         mat.emissiveIntensity = matches ? (n.kind === 'memory' ? 0.5 : 0.6) : 0.05;
+        n.labelMul = matches ? 1.4 : 0.06; // search hits keep their names lit
       } else if (visible) {
         mat.opacity = n.kind === 'memory' ? 0.92 : 0.95;
         mat.emissiveIntensity = n.kind === 'memory' ? 0.7 : 0.8;
+        n.labelMul = 1;
       }
     }
+    if (this.edgeLines) {
+      (this.edgeLines.material as THREE.LineBasicMaterial).opacity = 0.55;
+    }
+    this.clearRingHighlight();
     this.rebuildEdges();
     this.alpha = Math.max(this.alpha, 0.6);
   }
 
   /** Obsidian-style focus: hovering a node dims everything outside its 1-ring
-   *  so the neighborhood pops. Null restores the filter/search baseline. */
+   *  so the neighborhood pops — nodes, names, AND edges. The base edge layer
+   *  drops to a whisper while a bright overlay redraws just the ring's edges.
+   *  Null restores the filter/search baseline. */
   private applyHoverHighlight(node: SimNode | null) {
     if (!node) {
       this.applyFilters(); // restores the exact baseline opacities
@@ -416,6 +534,45 @@ export class BrainScene {
       const inRing = n === node || (ring?.has(n.id) ?? false);
       mat.opacity = inRing ? 0.98 : 0.10;
       mat.emissiveIntensity = inRing ? (n === node ? 1.1 : 0.85) : 0.04;
+      n.labelMul = inRing ? 1.6 : 0.04; // the neighborhood wears its names
+    }
+    if (this.edgeLines) {
+      (this.edgeLines.material as THREE.LineBasicMaterial).opacity = 0.10;
+    }
+    this.buildRingHighlight(node);
+  }
+
+  /** Bright overlay for the hovered node's own edges (Obsidian keeps the
+   *  focused connections lit while the rest of the web fades). */
+  private ringLines: THREE.LineSegments | null = null;
+
+  private buildRingHighlight(node: SimNode) {
+    this.clearRingHighlight();
+    const positions: number[] = [];
+    const colors: number[] = [];
+    for (const e of this.edges) {
+      if (e.a !== node && e.b !== node) continue;
+      if (!e.a.mesh.visible || !e.b.mesh.visible) continue;
+      positions.push(e.a.pos.x, e.a.pos.y, e.a.pos.z, e.b.pos.x, e.b.pos.y, e.b.pos.z);
+      const c = PULSE_COLORS[e.kind] || PULSE_COLORS.memory;
+      colors.push(c[0], c[1], c[2], c[0], c[1], c[2]);
+    }
+    if (positions.length === 0) return;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    const mat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.9 });
+    this.ringLines = new THREE.LineSegments(geo, mat);
+    this.ringLines.renderOrder = 5;
+    this.scene.add(this.ringLines);
+  }
+
+  private clearRingHighlight() {
+    if (this.ringLines) {
+      this.scene.remove(this.ringLines);
+      this.ringLines.geometry.dispose();
+      (this.ringLines.material as THREE.Material).dispose();
+      this.ringLines = null;
     }
   }
 
@@ -657,17 +814,36 @@ export class BrainScene {
       selfMat.emissiveIntensity = 1.2 + 0.12 * Math.sin((now / 1000) * (Math.PI * 2 / 2.5));
     }
 
-    // Distance-aware emissive boost — nodes brighten when pulled back
-    const zoomFactor = Math.max(1.0, this.orbitRadius / 32);
-    const distanceBoost = Math.min(1.3, zoomFactor);
-    for (const n of this.nodes) {
-      if (n.kind === 'self' || !n.mesh.visible) continue;
-      const mat = n.mesh.material as THREE.MeshPhysicalMaterial;
-      const base = n.kind === 'memory' ? 0.7 : 0.8;
-      mat.emissiveIntensity = base * (n.kind === 'memory' ? distanceBoost : 1.0 + (distanceBoost - 1) * 0.5);
+    // Distance-aware emissive boost — nodes brighten when pulled back.
+    // Suspended while hovering: the per-frame reset used to overwrite the
+    // hover dim, so out-of-ring nodes never actually faded.
+    if (!this.hoveredNode) {
+      const zoomFactor = Math.max(1.0, this.orbitRadius / 32);
+      const distanceBoost = Math.min(1.3, zoomFactor);
+      for (const n of this.nodes) {
+        if (n.kind === 'self' || !n.mesh.visible) continue;
+        const mat = n.mesh.material as THREE.MeshPhysicalMaterial;
+        const base = n.kind === 'memory' ? 0.7 : 0.8;
+        mat.emissiveIntensity = base * (n.kind === 'memory' ? distanceBoost : 1.0 + (distanceBoost - 1) * 0.5);
+      }
     }
 
     this.step(dt);
+    this.updateLabels();
+    // Keep the hover ring's bright edges glued to their moving endpoints.
+    if (this.hoveredNode && this.ringLines) {
+      const posAttr = this.ringLines.geometry.getAttribute('position') as THREE.BufferAttribute;
+      let idx = 0;
+      const hovered = this.hoveredNode;
+      for (const e of this.edges) {
+        if (e.a !== hovered && e.b !== hovered) continue;
+        if (!e.a.mesh.visible || !e.b.mesh.visible) continue;
+        if (idx + 1 >= posAttr.count) break;
+        posAttr.setXYZ(idx++, e.a.pos.x, e.a.pos.y, e.a.pos.z);
+        posAttr.setXYZ(idx++, e.b.pos.x, e.b.pos.y, e.b.pos.z);
+      }
+      posAttr.needsUpdate = true;
+    }
     this.updatePulses(dt);
     if (this.composer) {
       this.composer.render();
@@ -697,6 +873,11 @@ export class BrainScene {
     canvas.removeEventListener('wheel', this.onWheel);
 
     this.scene.traverse(obj => {
+      if (obj instanceof THREE.Sprite) {
+        obj.material.map?.dispose();
+        obj.material.dispose();
+        return;
+      }
       if (obj instanceof THREE.Mesh) {
         obj.geometry.dispose();
         if (Array.isArray(obj.material)) obj.material.forEach(m => m.dispose());

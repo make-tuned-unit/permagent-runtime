@@ -14,21 +14,63 @@ import { HallInlay } from './HallInlay';
 // working-agent count. The driving signal stays in the atmosphere lane; this is
 // the one cross-lane read W4 flagged in its PR for W1 awareness.
 import { getVeinOpacity } from '../../atmosphere/ambience';
+import { makeStoneTexture } from '../../shared/stoneTexture';
+
+// Procedural stone floor texture (#16 realism pass): speckle noise + faint
+// veining + BAKED radial ambient occlusion (dark rim under the colonnade,
+// soft center shadow) — kills the flat blockout-gray read for one 512px
+// canvas, no asset files, no extra draw calls.
+function makeFloorTexture(): THREE.CanvasTexture {
+  const size = 512;
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d')!;
+  ctx.fillStyle = '#98a0ae';
+  ctx.fillRect(0, 0, size, size);
+  const img = ctx.getImageData(0, 0, size, size);
+  for (let i = 0; i < img.data.length; i += 4) {
+    const n = (Math.random() - 0.5) * 16;
+    img.data[i] += n; img.data[i + 1] += n; img.data[i + 2] += n;
+  }
+  ctx.putImageData(img, 0, 0);
+  // Faint marble veins
+  ctx.globalAlpha = 0.055;
+  ctx.strokeStyle = '#ffffff';
+  for (let i = 0; i < 26; i++) {
+    const x = Math.random() * size, y = Math.random() * size;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.bezierCurveTo(x + 70, y + 24, x + 90, y - 36, x + 180, y + 12);
+    ctx.lineWidth = 1 + Math.random() * 1.6;
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  // Baked AO: soft center shadow (under the shaft) + heavy rim (colonnade)
+  const g = ctx.createRadialGradient(size / 2, size / 2, size * 0.16, size / 2, size / 2, size * 0.5);
+  g.addColorStop(0, 'rgba(0,0,0,0.10)');
+  g.addColorStop(0.55, 'rgba(0,0,0,0)');
+  g.addColorStop(0.86, 'rgba(0,0,0,0.16)');
+  g.addColorStop(1, 'rgba(0,0,0,0.42)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
 
 // Floor with glowing circuit mandala pattern
 function RotundaFloor() {
-  const floorMaterial = useMemo(
-    () =>
-      new THREE.MeshStandardMaterial({
-        color: COLORS.primaryMarble,
-        roughness: 0.3,
-        metalness: 0.1,
-        polygonOffset: true,
-        polygonOffsetFactor: 1,
-        polygonOffsetUnits: 1,
-      }),
-    []
-  );
+  const floorMaterial = useMemo(() => {
+    const map = makeFloorTexture();
+    return new THREE.MeshStandardMaterial({
+      map,
+      roughness: 0.62,
+      metalness: 0.04,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1,
+    });
+  }, []);
 
   return (
     <group position-y={0.05}>
@@ -37,6 +79,10 @@ function RotundaFloor() {
         <circleGeometry args={[ROTUNDA_RADIUS, 64]} />
         <primitive object={floorMaterial} attach="material" />
       </mesh>
+      {/* Warm bounce from the shelf glow above — before this the amber lived
+          only in the library band and the ground floor sat flat and cold. */}
+      <pointLight position={[6, 4.5, 2]} color="#ffc48a" intensity={0.55} distance={22} decay={2} />
+      <pointLight position={[-5, 4.5, -4]} color="#ffb87a" intensity={0.4} distance={20} decay={2} />
       {/* Circuit mandala glow lines */}
       <FloorCircuits />
     </group>
@@ -132,6 +178,18 @@ function Columns() {
     }).filter(({ angle }) => !isPunchedAngle(angle));
   }, []);
 
+  // Shared textured materials (#16): fluted shaft + plain stone trim, one
+  // material each across the whole colonnade.
+  const bodyMat = useMemo(() => {
+    const map = makeStoneTexture('#aeb4c0', 12);
+    map.repeat.set(1, 2.5);
+    return new THREE.MeshStandardMaterial({ map, roughness: 0.55, metalness: 0.05 });
+  }, []);
+  const trimMat = useMemo(
+    () => new THREE.MeshStandardMaterial({ map: makeStoneTexture('#b6bcc8'), roughness: 0.35, metalness: 0.08 }),
+    []
+  );
+
   return (
     <group ref={groupRef}>
       {columns.map(({ x, z }, i) => (
@@ -139,7 +197,7 @@ function Columns() {
           {/* Column body */}
           <mesh castShadow position-y={DOME_HEIGHT / 2}>
             <cylinderGeometry args={[0.6, 0.7, DOME_HEIGHT, 16]} />
-            <meshStandardMaterial color={COLORS.primaryMarble} roughness={0.4} metalness={0.05} />
+            <primitive object={bodyMat} attach="material" />
           </mesh>
           {/* Circuit vein */}
           <mesh position-y={DOME_HEIGHT / 2}>
@@ -149,12 +207,12 @@ function Columns() {
           {/* Capital (top) */}
           <mesh position-y={DOME_HEIGHT + 0.3}>
             <cylinderGeometry args={[0.9, 0.6, 0.6, 16]} />
-            <meshStandardMaterial color={COLORS.primaryMarble} roughness={0.3} />
+            <primitive object={trimMat} attach="material" />
           </mesh>
           {/* Base */}
           <mesh position-y={0.3}>
             <cylinderGeometry args={[0.7, 0.9, 0.6, 16]} />
-            <meshStandardMaterial color={COLORS.primaryMarble} roughness={0.3} />
+            <primitive object={trimMat} attach="material" />
           </mesh>
           {/* Rim glow at the column edge — subtle cyan wash. Light-census reduction
               (integration §1): this was a 0.15-intensity decorative pointLight, one
@@ -180,12 +238,17 @@ function Columns() {
 
 // Dome ceiling with oculus
 function Dome() {
+  const shellMat = useMemo(() => {
+    const map = makeStoneTexture('#a8aebb');
+    map.repeat.set(6, 3);
+    return new THREE.MeshStandardMaterial({ map, roughness: 0.5, side: THREE.BackSide });
+  }, []);
   return (
     <group>
       {/* Dome shell */}
       <mesh position-y={DOME_HEIGHT}>
         <sphereGeometry args={[ROTUNDA_RADIUS + 1, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2]} />
-        <meshStandardMaterial color={COLORS.primaryMarble} roughness={0.5} side={THREE.BackSide} />
+        <primitive object={shellMat} attach="material" />
       </mesh>
       {/* Oculus ring */}
       <mesh position-y={DOME_HEIGHT + ROTUNDA_RADIUS * 0.97} rotation-x={Math.PI / 2}>
@@ -246,6 +309,14 @@ function StationPedestal({
 }) {
   const isPortal = station.iconType === 'portal';
   const pedestalHeight = isPortal ? 2 : 1.5;
+  const stoneMat = useMemo(
+    () => new THREE.MeshStandardMaterial({ map: makeStoneTexture('#aeb4c0', 6), roughness: 0.4, metalness: 0.1 }),
+    []
+  );
+  const plinthMat = useMemo(
+    () => new THREE.MeshStandardMaterial({ map: makeStoneTexture('#8e94a2'), roughness: 0.35, metalness: 0.15 }),
+    []
+  );
 
   return (
     <group
@@ -257,17 +328,17 @@ function StationPedestal({
       {/* Pedestal */}
       <mesh castShadow position-y={pedestalHeight / 2}>
         <cylinderGeometry args={[0.6, 0.8, pedestalHeight, isPortal ? 8 : 6]} />
-        <meshStandardMaterial color={COLORS.primaryMarble} roughness={0.3} metalness={0.1} />
+        <primitive object={stoneMat} attach="material" />
       </mesh>
       {/* Base plinth + torus molding */}
       <mesh position-y={0.1}>
         <cylinderGeometry args={[0.95, 1.05, 0.2, isPortal ? 8 : 6]} />
-        <meshStandardMaterial color={COLORS.marbleVeining} roughness={0.35} metalness={0.15} />
+        <primitive object={plinthMat} attach="material" />
       </mesh>
       {/* Cap molding under the icon */}
       <mesh position-y={pedestalHeight + 0.06}>
         <cylinderGeometry args={[0.78, 0.62, 0.14, isPortal ? 8 : 6]} />
-        <meshStandardMaterial color={COLORS.marbleVeining} roughness={0.35} metalness={0.15} />
+        <primitive object={plinthMat} attach="material" />
       </mesh>
       {/* Floating icon */}
       <Float speed={2} rotationIntensity={0.3} floatIntensity={0.5}>

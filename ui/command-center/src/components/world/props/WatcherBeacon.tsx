@@ -93,7 +93,7 @@ function NudgePlaque() {
           boxShadow: `0 0 14px ${AGENT_TRIM.watcher}44`,
           color: '#E8E4DD',
           fontFamily: 'JetBrains Mono, monospace',
-          fontSize: 9,
+          fontSize: 10,
           letterSpacing: '0.12em',
           textAlign: 'center',
           maxWidth: 220,

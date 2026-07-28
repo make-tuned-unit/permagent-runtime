@@ -3,7 +3,7 @@ import { useCommandCenter } from '../../lib/store';
 import { font, ease } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
-import { MeetingRecorder } from '../voice/MeetingRecorder';
+import { markAllRead, toggleTray, useNotifications, useTrayOpen } from '../../lib/notifications';
 
 /** SVG icon paths from design handoff (view-dashboard.jsx lines 17-20, 107) */
 const ICON_PATHS: Record<string, string> = {
@@ -22,17 +22,40 @@ const SETTINGS_ICON = 'M12 9a3 3 0 100 6 3 3 0 000-6zM19.4 15a1.65 1.65 0 00.33 
 // overlay to return to a past conversation.
 const SESSIONS_ICON = 'M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8M3 3v5h5M12 7v5l4 2';
 
-// "Inbox" tray glyph — opens the Downloads inbox overlay (files that landed in
-// ~/.permagent/inbox via the in-app browser).
-const INBOX_ICON = 'M22 12h-6l-2 3h-4l-2-3H2M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z';
+const BELL_ICON = 'M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 01-3.4 0';
 
-// "Activity" pulse glyph — opens the execution Trace overlay (recent events
-// from the daemon event bus).
-const TRACE_ICON = 'M22 12h-4l-3 9L9 3l-3 9H2';
-
-// "Shield" glyph — opens the Governance overlay (the single sovereign control
-// surface: models, spend, egress audit, approvals).
-const GOVERNANCE_ICON = 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10zM9 12l2 2 4-4';
+/** Notifications row — a standard sidebar row (above Settings) that toggles
+ *  the tray rendered by NotificationHost; open state is shared through the
+ *  notifications store since the two live in different subtrees. The unread
+ *  count rides the label when expanded and a dot marks the icon when collapsed. */
+function NotificationBellRow({ open }: { open: boolean }) {
+  const { colors } = useTheme();
+  const { unread } = useNotifications();
+  const trayOpen = useTrayOpen();
+  return (
+    <div data-notifications-ui style={{ position: 'relative' }}>
+      <SidebarRow
+        icon={BELL_ICON}
+        label={unread > 0 ? `Notifications (${unread > 9 ? '9+' : unread})` : 'Notifications'}
+        active={trayOpen}
+        open={open}
+        onClick={() => {
+          // Mark read on CLOSE so the unread highlight is visible while open.
+          if (trayOpen) markAllRead();
+          toggleTray();
+        }}
+      />
+      {unread > 0 && (
+        <span style={{
+          position: 'absolute', top: 7,
+          left: open ? 24 : 'calc(50% + 5px)',
+          width: 8, height: 8, borderRadius: 4,
+          background: colors.cyan, pointerEvents: 'none',
+        }} />
+      )}
+    </div>
+  );
+}
 
 function SidebarRow({
   icon, label, active, open, onClick, title,
@@ -77,10 +100,7 @@ export function Sidebar() {
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
 
   const isSettingsOpen = activePanel === 'settings';
-  const isSessionsOpen = activePanel === 'sessions';
-  const isInboxOpen = activePanel === 'inbox';
-  const isTraceOpen = activePanel === 'trace';
-  const isGovernanceOpen = activePanel === 'governance';
+  const isConsoleOpen = ['sessions', 'inbox', 'trace', 'governance'].includes(activePanel);
   // Any non-chat panel (settings, inbox, skills, sessions) is a full-screen overlay. It
   // must be dismissed when the user picks a workspace, or the overlay stays
   // stuck over the tab they just selected.
@@ -148,51 +168,19 @@ export function Sidebar() {
 
       <div style={{ flex: 1 }} />
 
-      {/* Meeting dictation (call-notes MVP 1A) — click-to-toggle Record button
-          (NOT push-to-talk: PTT dies when the embedded webview holds focus).
-          Lives here because the Sidebar never unmounts, so a recording
-          survives workspace and overlay switches. */}
-      <MeetingRecorder open={open} />
-
-      {/* Sessions — return to a past conversation (the only entry to the
-          Sessions history overlay). */}
+      {/* Console — Sessions, Inbox, Trace, and Governance as tabs of one
+          overlay (2026-07-27 consolidation). Toggles closed when any console
+          tab is open; opens on Sessions otherwise. */}
       <SidebarRow
         icon={SESSIONS_ICON}
-        label="Sessions"
-        active={isSessionsOpen}
+        label="Console"
+        active={isConsoleOpen}
         open={open}
-        onClick={() => setActivePanel(isSessionsOpen ? 'chat' : 'sessions')}
+        onClick={() => setActivePanel(isConsoleOpen ? 'chat' : 'sessions')}
       />
 
-      {/* Downloads inbox — the human entry point to the inbox overlay (files
-          downloaded in the in-app browser). */}
-      <SidebarRow
-        icon={INBOX_ICON}
-        label="Inbox"
-        active={isInboxOpen}
-        open={open}
-        onClick={() => setActivePanel(isInboxOpen ? 'chat' : 'inbox')}
-      />
-
-      {/* Trace — the human entry point to the execution-trace overlay (recent
-          events from the daemon event bus). */}
-      <SidebarRow
-        icon={TRACE_ICON}
-        label="Trace"
-        active={isTraceOpen}
-        open={open}
-        onClick={() => setActivePanel(isTraceOpen ? 'chat' : 'trace')}
-      />
-
-      {/* Governance — the single sovereign control surface (models, spend,
-          egress audit, approvals). Human entry point to the overlay. */}
-      <SidebarRow
-        icon={GOVERNANCE_ICON}
-        label="Governance"
-        active={isGovernanceOpen}
-        open={open}
-        onClick={() => setActivePanel(isGovernanceOpen ? 'chat' : 'governance')}
-      />
+      {/* Notifications — bell row with unread badge, tray anchors beside it. */}
+      <NotificationBellRow open={open} />
 
       {/* Settings */}
       <SidebarRow

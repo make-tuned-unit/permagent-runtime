@@ -147,6 +147,9 @@ export default function ChatApp() {
       background: gradient.shell,
       display: 'flex', flexDirection: 'column',
       fontFamily: font.body,
+      // The chat window must NEVER side-scroll: wide content (code blocks,
+      // long tokens) scrolls inside its own block, not the window.
+      overflowX: 'hidden',
     }}>
       {/* Toolbar */}
       <div style={{
@@ -155,7 +158,7 @@ export default function ChatApp() {
         padding: '0 12px', gap: 8,
         borderBottom: `1px solid ${colors.border}`,
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0, overflow: 'hidden' }}>
           <Mobius size={16} state="idle" glow={0.6} />
 
           {/* Session selector */}
@@ -224,12 +227,13 @@ export default function ChatApp() {
             onClick={() => setInspectionOpen(!inspectionOpen)}
             title="What your agent sees"
             style={{
-              width: 26, height: 26, borderRadius: 6,
-              background: inspectionOpen ? colors.cyanSoft : colors.border,
-              border: `1px solid ${inspectionOpen ? 'rgba(0,213,255,0.3)' : colors.border}`,
+              // Bare glyph (2026-07-27): the boxed version overflowed the
+              // header bar. Open state reads through the icon color alone.
+              width: 22, height: 22, borderRadius: 6, padding: 0, flexShrink: 0,
+              background: 'transparent', border: 'none',
               color: inspectionOpen ? colors.cyan : colors.textMuted, cursor: 'pointer',
               display: 'grid', placeItems: 'center',
-              transition: `all 150ms ${ease.out}`,
+              transition: `color 150ms ${ease.out}`,
             }}
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">

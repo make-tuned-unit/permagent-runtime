@@ -146,6 +146,26 @@ struct DismissProjectIntelParams {
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct SetProjectStrategyParams {
+    /// Project ID, slug, or exact name.
+    project: String,
+    /// Which GTM strategy pillar to save: audience, value, positioning,
+    /// channels, content, or workback (the launch workback schedule).
+    pillar: String,
+    /// The strategy content for this pillar — a concise summary paragraph,
+    /// user-editable, rendered on the Grow tab's Strategy lens.
+    content: String,
+    /// Labeled bullet points as [{label, detail}] — e.g. each channel with its
+    /// fit reason, each persona with where they gather. Strings only.
+    #[serde(default)]
+    points: Option<serde_json::Value>,
+    /// Small stat chips as [{label, value}] — e.g. {"label": "Alternatives",
+    /// "value": "3"} or {"label": "Price hypothesis", "value": "$9/mo"}.
+    #[serde(default)]
+    metrics: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ProposedIntelItemParams {
     /// One of: competitor, partner, adjacent.
     kind: String,
@@ -805,6 +825,43 @@ impl ProjectManagerClient {
     /// propose_project_intel). Direct delete — removal is user-directed and
     /// reversible by re-researching, so it is not review-gated. Matches the name
     /// case-insensitively; an optional `kind` narrows the match.
+    /// Persist one GTM strategy pillar for a project — lands in
+    /// `metadata_json.strategy` and renders on the Grow tab's Strategy lens
+    /// (#13 follow-up to the Ask-Henry cards). Merge-writes; emits
+    /// `project_changed` so open Grow views refresh live.
+    async fn handle_set_project_strategy(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let params: SetProjectStrategyParams =
+            serde_json::from_value(serde_json::Value::Object(args))
+                .map_err(|e| format!("Invalid arguments: {e}"))?;
+        let content = params.content.trim();
+        if content.is_empty() {
+            return Err("content must not be empty".to_string());
+        }
+        let (project, pool) = self.resolve_intel_project(&params.project).await?;
+        let pillar = params.pillar.trim().to_lowercase();
+        let updated = crate::projects::set_project_strategy(
+            &pool,
+            &project.id,
+            &pillar,
+            content,
+            crate::projects::StrategyExtras {
+                points: params.points,
+                metrics: params.metrics,
+            },
+        )
+        .await?
+        .ok_or_else(|| format!("Project {} disappeared mid-write", project.id))?;
+        crate::events::emit(crate::events::project_changed(&updated.id, "updated"));
+        Ok(vec![Content::text(format!(
+            "Saved the {pillar} strategy for \"{}\" — it now shows on the Grow tab's Strategy lens and the user can edit it there.",
+            updated.name
+        ))])
+    }
+
     async fn handle_dismiss_project_intel(
         &self,
         arguments: Option<JsonObject>,
@@ -1782,6 +1839,36 @@ impl ProjectManagerClient {
                 Some(false),
             )),
             Tool::new(
+                "set_project_strategy".to_string(),
+                indoc! {r#"
+                Save one GTM strategy pillar for a project — audience, value,
+                positioning, channels, content, or workback — onto the Grow tab's Strategy
+                lens, where the user can read and edit it. Use this whenever you
+                define or refine a project's go-to-market strategy (e.g. after an
+                "Ask Henry" strategy card or a run-all strategy request): write
+                each pillar you produced so the work persists instead of living
+                only in chat. Keep content concise and ready to publish; saving a
+                pillar overwrites its previous value. ALWAYS include the
+                structured extras alongside the summary: points as
+                [{label, detail}] (channels with fit reasons, personas with
+                watering holes) and metrics as [{label, value}] stat chips —
+                the Strategy cards render them as rich content.
+            "#}
+                .to_string(),
+                serde_json::to_value(schema_for!(SetProjectStrategyParams))
+                    .unwrap()
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Save Project Strategy".to_string()),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+            )),
+            Tool::new(
                 "project_launch".to_string(),
                 indoc! {r#"
                 Open a project-aware terminal in the Build tab, rooted at the project's
@@ -1853,6 +1940,7 @@ impl McpClientTrait for ProjectManagerClient {
             "research_project_intel" => self.handle_research_project_intel(arguments).await,
             "propose_project_intel" => self.handle_propose_project_intel(arguments).await,
             "dismiss_project_intel" => self.handle_dismiss_project_intel(arguments).await,
+            "set_project_strategy" => self.handle_set_project_strategy(arguments).await,
             "project_launch" => self.handle_launch(arguments).await,
             _ => Err(format!("Unknown tool: {}", name)),
         };

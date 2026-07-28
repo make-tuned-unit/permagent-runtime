@@ -166,7 +166,7 @@ export function PetitionBasin() {
               boxShadow: `0 0 12px ${ENV.neonCyan}33`,
               color: '#E8E4DD',
               fontFamily: 'JetBrains Mono, monospace',
-              fontSize: 9,
+              fontSize: 10,
               letterSpacing: '0.16em',
               whiteSpace: 'nowrap',
             }}

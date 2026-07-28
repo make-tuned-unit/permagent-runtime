@@ -230,6 +230,51 @@ export function advanceMotion(dt: number): void {
     }
 
     const wp = m.queue[0];
+
+    // Ring-locked agents (the Librarian) walk ALONG the mezzanine arc.
+    // The old straight-line step + radial projection deadlocked on far
+    // waypoints: toward a near-antipodal target the step direction is almost
+    // purely inward, the projection cancels it, and the agent grinds against
+    // the inner balustrade forever — the "walking into a wall" bug.
+    if (m.ringLock !== null) {
+      const ringR = m.ringLock;
+      const theta = Math.atan2(m.z, m.x);
+      const thetaT = Math.atan2(wp.z, wp.x);
+      const dTheta = shortestAngle(thetaT - theta);
+      const arcDist = Math.abs(dTheta) * ringR;
+
+      if (arcDist < ARRIVE_DIST) {
+        // Arrive — snap onto the waypoint's ring projection; Y stays pinned
+        // to the mezzanine floor (#105).
+        m.x = Math.cos(thetaT) * ringR;
+        m.z = Math.sin(thetaT) * ringR;
+        if (m.ringLockY !== null) m.y = m.ringLockY;
+        if (wp.facing !== undefined) m.targetHeading = wp.facing;
+        m.queue.shift();
+        if (wp.pauseMs) {
+          m.waitUntil = now + wp.pauseMs;
+          m.walking = false;
+        }
+        if (m.queue.length === 0) {
+          m.walking = false;
+          const cb = m.onArrive;
+          m.onArrive = null;
+          if (cb) cb();
+        }
+        continue;
+      }
+
+      const dir = Math.sign(dTheta) || 1;
+      const stepAngle = Math.min((WALK_SPEED * dt) / ringR, Math.abs(dTheta));
+      const next = theta + dir * stepAngle;
+      m.x = Math.cos(next) * ringR;
+      m.z = Math.sin(next) * ringR;
+      m.walking = true;
+      // Face along the tangent of travel, not the (inward) chord.
+      m.targetHeading = Math.atan2(-Math.sin(next) * dir, Math.cos(next) * dir);
+      continue;
+    }
+
     const dx = wp.x - m.x;
     const dz = wp.z - m.z;
     const dist = Math.sqrt(dx * dx + dz * dz);

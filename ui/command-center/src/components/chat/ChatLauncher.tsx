@@ -14,6 +14,7 @@ export function ChatLauncher() {
   const { colors } = useTheme();
   const [agentName, setAgentName] = useState('Agent');
   const [chatWindowOpen, setChatWindowOpen] = useState(false);
+  const chatDockOpen = useCommandCenter(s => s.chatDockOpen);
   const [hovered, setHovered] = useState(false);
   const [pressed, setPressed] = useState(false);
   const setChatLauncherSize = useCommandCenter(s => s.setChatLauncherSize);
@@ -24,7 +25,7 @@ export function ChatLauncher() {
   // layout changes (e.g. the agent name loading) — no polling.
   useLayoutEffect(() => {
     const el = buttonRef.current;
-    if (chatWindowOpen || !el) {
+    if (chatWindowOpen || chatDockOpen || !el) {
       setChatLauncherSize(null);
       return;
     }
@@ -39,7 +40,7 @@ export function ChatLauncher() {
       observer.disconnect();
       setChatLauncherSize(null);
     };
-  }, [chatWindowOpen, setChatLauncherSize]);
+  }, [chatWindowOpen, chatDockOpen, setChatLauncherSize]);
 
   // #629 multi-client liveness: identityRev bumps when `identity_changed`
   // arrives on /events, so a persona rename on another device relabels the
@@ -137,7 +138,10 @@ export function ChatLauncher() {
     }
   }, [openChatDock]);
 
-  if (chatWindowOpen) return null;
+  // Hide whenever chat is already showing — in the detached window OR in the
+  // dock. Dock-first made the dock the default surface, but the pill still only
+  // checked the window, so it stayed on screen over an open chat.
+  if (chatWindowOpen || chatDockOpen) return null;
 
   return (
     <button

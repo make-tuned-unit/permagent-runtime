@@ -93,7 +93,7 @@ function PlaqueCard({
           boxShadow: `0 0 ${hover ? 16 : 10}px ${accent}${hover ? '55' : '33'}`,
           color: '#E8E4DD',
           fontFamily: 'JetBrains Mono, monospace',
-          fontSize: 9,
+          fontSize: 10,
           maxWidth: 150,
           whiteSpace: 'nowrap',
           overflow: 'hidden',

@@ -96,7 +96,7 @@ export function AddCardPicker({ registry, currentCardTypes, onSelect, onClose }:
                     </span>
                     {entry.source && entry.source !== 'built-in' && (
                       <span style={{
-                        fontFamily: font.body, fontSize: 9, fontWeight: 600, letterSpacing: '0.04em',
+                        fontFamily: font.body, fontSize: 10, fontWeight: 600, letterSpacing: '0.04em',
                         textTransform: 'uppercase', color: colors.cyan, background: colors.cyanSoft,
                         padding: '1px 6px', borderRadius: radius.pill, flexShrink: 0,
                       }}>

@@ -15,6 +15,7 @@ import { WorldHUD } from './WorldHUD';
 import { LibrarianHUD } from './LibrarianHUD';
 import { HenryHUD } from './HenryHUD';
 import { ReaderHUD } from './ReaderHUD';
+import { WatcherHUD } from './WatcherHUD';
 import { AgentPicker } from './AgentPicker';
 import { PerfSampler } from './shared/perf';
 import { useWorldVisibility } from './atmosphere/useWorldVisibility';
@@ -201,7 +202,7 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [hoveredStation, setHoveredStation] = useState<string | null>(null);
   const [showFps, setShowFps] = useState(false);
-  const [activeHud, setActiveHud] = useState<'henry' | 'librarian' | 'reader' | null>(null);
+  const [activeHud, setActiveHud] = useState<'henry' | 'librarian' | 'reader' | 'watcher' | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   // Perf (bible §8 item 2): pause the render loop whenever this view has no
   // layout box — i.e. its workspace tab is hidden (display:none) or the canvas
@@ -216,6 +217,8 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
       setActiveHud('librarian');
     } else if (id === 'reader') {
       setActiveHud('reader');
+    } else if (id === 'watcher') {
+      setActiveHud('watcher');
     } else {
       setActiveHud(null);
     }
@@ -361,7 +364,7 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
           // Bible §8 item 3: explicit PCF — `shadows="soft"` is deprecated in
           // three 0.184 and silently fell back to PCF anyway. Map size stays
           // 2048 (set on the key light in atmosphere/Lighting).
-          shadows={{ type: THREE.PCFShadowMap }}
+          shadows={{ type: THREE.PCFSoftShadowMap }}
           // Bible §8 item 1: the scene is fill-rate bound (~4fps at dpr 2).
           dpr={[1, 1.5]}
           // Bible §8 item 2: stop rendering when the World tab is hidden.
@@ -446,6 +449,10 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
       />
       <ReaderHUD
         visible={activeHud === 'reader'}
+        onClose={() => setActiveHud(null)}
+      />
+      <WatcherHUD
+        visible={activeHud === 'watcher'}
         onClose={() => setActiveHud(null)}
       />
       <AgentPicker

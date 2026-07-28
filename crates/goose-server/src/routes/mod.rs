@@ -19,6 +19,7 @@ pub mod errors;
 pub mod events;
 pub mod features;
 pub mod findings;
+pub mod first_party_analytics;
 pub mod gateway;
 pub mod governance;
 pub mod grow;
@@ -184,6 +185,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(cards::routes(state.clone()))
         .merge(grow::routes(state.clone()))
         .merge(grow_analytics::routes(state.clone()))
+        .merge(first_party_analytics::routes(state.clone()))
         .merge(governance::routes(state.clone()))
         .merge(decisions::routes(state.clone()))
         .merge(devices::routes(state.clone()))
@@ -198,6 +200,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         protected = protected.merge(local_inference::routes(state.clone()));
     }
 
+    let collect_state = state.clone();
     protected = protected.layer(middleware::from_fn_with_state(state, require_bearer_token));
 
     // Origin guard over EVERYTHING (public + protected): a remote web page in
@@ -212,6 +215,12 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .layer(middleware::from_fn(
             crate::middleware::origin_guard::require_allowed_origin,
         ))
+        // First-party analytics beacon (#23): merged AFTER the origin guard
+        // layer because the user's own website posts beacons cross-origin from
+        // visitors' browsers by design. Site-key scoped, rate-limited,
+        // insert-only — see routes/first_party_analytics.rs module docs.
+        // Still inside the access log (outermost layer sees every request).
+        .merge(first_party_analytics::collect_routes(collect_state))
         .layer(middleware::from_fn(
             crate::middleware::access_log::http_access_log,
         ))

@@ -61,7 +61,7 @@ export function CitationMarker({ probed, recalled }: Props) {
           maxHeight: 280, overflow: 'auto',
         }}>
           {probed.length > 0 && (
-            <div style={{ padding: '4px 12px 2px', fontSize: 9, fontWeight: 600, fontFamily: font.display, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+            <div style={{ padding: '4px 12px 2px', fontSize: 10, fontWeight: 600, fontFamily: font.display, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
               Probed memories
             </div>
           )}
@@ -80,7 +80,7 @@ export function CitationMarker({ probed, recalled }: Props) {
                   {m.relevance.toFixed(2)}
                 </span>
                 {m.wing && (
-                  <span style={{ padding: '0 4px', borderRadius: 3, fontSize: 9, background: colors.cyanSoft, color: colors.cyan }}>
+                  <span style={{ padding: '0 4px', borderRadius: 3, fontSize: 10, background: colors.cyanSoft, color: colors.cyan }}>
                     {m.wing}
                   </span>
                 )}
@@ -93,7 +93,7 @@ export function CitationMarker({ probed, recalled }: Props) {
             </button>
           ))}
           {recalled.length > 0 && (
-            <div style={{ padding: '4px 12px 2px', fontSize: 9, fontWeight: 600, fontFamily: font.display, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+            <div style={{ padding: '4px 12px 2px', fontSize: 10, fontWeight: 600, fontFamily: font.display, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5 }}>
               Recalled memories
             </div>
           )}

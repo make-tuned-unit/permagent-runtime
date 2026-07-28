@@ -142,7 +142,7 @@ function AgoraInscription() {
         style={{
           padding: '6px 16px', borderRadius: 4, background: 'rgba(10, 14, 26, 0.8)',
           border: `1px solid ${accent}55`, boxShadow: pop.online ? `0 0 20px ${accent}44` : 'none',
-          color: '#E8E4DD', fontFamily: 'JetBrains Mono, monospace', fontSize: 9,
+          color: '#E8E4DD', fontFamily: 'JetBrains Mono, monospace', fontSize: 10,
           letterSpacing: '0.2em', textAlign: 'center', whiteSpace: 'nowrap',
         }}
       >

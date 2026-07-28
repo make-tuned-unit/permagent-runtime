@@ -987,6 +987,11 @@ impl SessionStorage {
                     if version < 37 {
                         spectral_schema::migrate_v36_to_v37(&self.pool).await?;
                     }
+                    // v38: first-party analytics events (#23). New table +
+                    // index, additive and idempotent.
+                    if version < 38 {
+                        spectral_schema::migrate_v37_to_v38(&self.pool).await?;
+                    }
                     // Version-independent safety net for the cfg-gated v22
                     // recognition columns. The always-on v23 above can stamp
                     // schema_version past the `version < 22` gate on a feature-off

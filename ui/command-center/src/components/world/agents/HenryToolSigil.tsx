@@ -48,7 +48,7 @@ export function HenryToolSigil() {
             boxShadow: `0 0 10px ${ENV.neonAmber}33`,
             color: ENV.neonAmber,
             fontFamily: 'JetBrains Mono, monospace',
-            fontSize: 9,
+            fontSize: 10,
             letterSpacing: '0.1em',
             whiteSpace: 'nowrap',
           }}

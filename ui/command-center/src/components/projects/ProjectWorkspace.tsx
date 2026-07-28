@@ -93,7 +93,7 @@ function ProjectSwitcher({ project, projects, onSwitch }: {
         style={{
           display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
           background: 'none', border: 'none', padding: '2px 4px', color: colors.text,
-          fontFamily: font.display, fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em',
+          fontFamily: font.display, fontSize: 14, fontWeight: 600, letterSpacing: '-0.01em',
         }}
       >
         {project.name}

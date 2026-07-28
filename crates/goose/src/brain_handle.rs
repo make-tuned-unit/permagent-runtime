@@ -396,10 +396,60 @@ impl SafeBrain {
         let brain = self.inner.clone();
         let key = key.to_string();
         let content = content.to_string();
-        tokio::task::spawn_blocking(move || brain.remember_with(&key, &content, opts))
-            .await
-            .map_err(|e| anyhow::anyhow!("brain task panicked: remember_with: {e}"))?
-            .map_err(Into::into)
+        let result = tokio::task::spawn_blocking({
+            let key = key.clone();
+            let content = content.clone();
+            move || brain.remember_with(&key, &content, opts)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("brain task panicked: remember_with: {e}"))?
+        .map_err(anyhow::Error::from)?;
+
+        // Real-time brain growth (#24): every genuinely new memory is the
+        // single choke point for the "feel the brain grow" contract — emit the
+        // growth event and link the memory to the entities it mentions.
+        // Best-effort: a linking failure must never fail the write.
+        if matches!(
+            result.write_outcome,
+            spectral::ingest::WriteOutcome::Inserted
+        ) {
+            crate::events::emit(crate::events::memory_added(
+                &result.memory_id,
+                &key,
+                "core",
+                result.wing.as_deref(),
+            ));
+            let memory_id = result.memory_id.clone();
+            tokio::task::spawn_blocking(move || {
+                let brain_dir = crate::config::paths::Paths::brain_dir();
+                match crate::brain_enrichment::link_new_memory(
+                    &brain_dir.join("graph.sqlite"),
+                    &brain_dir.join("memory.db"),
+                    &memory_id,
+                    &content,
+                ) {
+                    Ok(linked) => {
+                        for l in &linked {
+                            let event = if l.first_mention {
+                                crate::events::entity_added(&l.hex, &l.entity_type)
+                            } else {
+                                crate::events::entity_updated(&l.hex, &l.entity_type)
+                            };
+                            crate::events::emit(event);
+                        }
+                        if !linked.is_empty() {
+                            tracing::debug!(
+                                memory_id,
+                                entities = linked.len(),
+                                "memory linked to graph entities"
+                            );
+                        }
+                    }
+                    Err(e) => tracing::debug!("memory mention linking skipped: {e}"),
+                }
+            });
+        }
+        Ok(result)
     }
 
     pub async fn probe_recent(
@@ -623,6 +673,98 @@ impl SafeBrain {
         })
         .await
         .map_err(|e| anyhow::anyhow!("brain task panicked: resolve_ontology_project_id: {e}"))?
+    }
+
+    /// Materialize EVERY curated ontology entity as a graph node, skipping any
+    /// that already exists. Returns the number of nodes minted.
+    ///
+    /// Why this exists: the ontology has never been eager-seeded (#495 slice 3)
+    /// — nodes were materialized lazily, one at a time, as something referenced
+    /// them. That was survivable while the graph store was long-lived, but when
+    /// the store moved from Kuzu (`brain/graph.kz`) to SQLite
+    /// (`brain/graph.sqlite`) the new store started EMPTY and nothing ever
+    /// backfilled it: the Brain view showed zero entities and zero edges on
+    /// installs with years of curated ontology behind them. Lazy materialization
+    /// alone can never recover that, because nothing re-references an entity
+    /// just because its node went missing.
+    ///
+    /// Idempotent and additive — it only ever inserts absent nodes, never
+    /// updates or deletes — so it is safe to run on every boot; a steady state
+    /// mints nothing. Curated entities stay outside the runtime-create /
+    /// provenance machinery (the reconciler owns their lifecycle via the
+    /// ontology id set), exactly as `materialize_ontology_project` does.
+    pub async fn materialize_ontology_entities(&self) -> anyhow::Result<usize> {
+        let brain = self.inner.clone();
+        tokio::task::spawn_blocking(move || {
+            use spectral::graph::graph_store::Entity;
+
+            let ontology = brain.ontology();
+            let store = brain.store();
+            let now = chrono::Utc::now();
+            let mut minted = 0usize;
+
+            for entity in &ontology.entities {
+                let id = ontology.entity_id_for(entity);
+                // Preserve any existing node (and its created_at / weight).
+                if store
+                    .get_entity(&id)
+                    .map_err(|e| anyhow::anyhow!("get_entity({}): {e}", entity.canonical))?
+                    .is_some()
+                {
+                    continue;
+                }
+                store
+                    .upsert_entity(&Entity {
+                        id,
+                        entity_type: entity.entity_type.clone(),
+                        canonical: entity.canonical.clone(),
+                        visibility: entity.visibility,
+                        created_at: now,
+                        updated_at: now,
+                        weight: 1.0,
+                        description: None,
+                    })
+                    .map_err(|e| {
+                        anyhow::anyhow!("upsert ontology entity {}: {e}", entity.canonical)
+                    })?;
+                minted += 1;
+            }
+            Ok(minted)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("brain task panicked: materialize_ontology_entities: {e}"))?
+    }
+
+    /// List every curated ontology entity that has a materialized graph node,
+    /// as `(id_hex, entity_type, canonical, description)`.
+    ///
+    /// Exists for the Brain view: `neighborhood()` traverses TRIPLES only, so
+    /// after the Kuzu→SQLite move (which lost the extraction-era triples) the
+    /// graph route saw almost nothing even though the nodes were restored.
+    /// The curated set IS real knowledge — the view unions it in.
+    pub async fn list_ontology_graph_entities(
+        &self,
+    ) -> anyhow::Result<Vec<(String, String, String, Option<String>)>> {
+        let brain = self.inner.clone();
+        tokio::task::spawn_blocking(move || {
+            let ontology = brain.ontology();
+            let store = brain.store();
+            let mut out = Vec::new();
+            for entity in &ontology.entities {
+                let id = ontology.entity_id_for(entity);
+                if let Ok(Some(node)) = store.get_entity(&id) {
+                    out.push((
+                        hex::encode(node.id.as_bytes()),
+                        node.entity_type,
+                        node.canonical,
+                        node.description,
+                    ));
+                }
+            }
+            Ok(out)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("brain task panicked: list_ontology_graph_entities: {e}"))?
     }
 
     /// Resolve a project name against the curated ontology and materialize its

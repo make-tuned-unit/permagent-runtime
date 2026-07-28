@@ -638,6 +638,116 @@ export function useVoice(options: UseVoiceOptions = {}) {
   /** Live TTS frequency analyser (present only while the agent is speaking). */
   const getAnalyser = useCallback(() => analyserRef.current, []);
 
+  // ── Hands-free mode (#19) ──────────────────────────────────────────────────
+  // Click the visualizer → the mic is ALWAYS listening and turns are taken by
+  // voice-activity detection instead of push-to-talk:
+  //   ready     + speech onset          → startRecording()
+  //   recording + 900ms trailing silence → stopRecording()  (turn complete)
+  //   playing   + sustained loud speech  → interrupt()      (barge-in)
+  // The monitor is its own tiny audio graph on the persistent mic stream, so
+  // it runs regardless of the recording processor's lifecycle. Thresholds are
+  // RMS over ~128ms buffers; echoCancellation on the mic keeps the agent's own
+  // TTS from tripping onset, and barge-in demands a higher, sustained level so
+  // residual bleed can't cut the agent off.
+  const [handsFree, setHandsFreeState] = useState(false);
+  const handsFreeRef = useRef(false);
+  const vadCtxRef = useRef<AudioContext | null>(null);
+  const vadProcRef = useRef<ScriptProcessorNode | null>(null);
+  const vadLastVoiceRef = useRef(0);
+  const vadHeardSpeechRef = useRef(false);
+  const vadBargeStreakRef = useRef(0);
+  const vadTurnStartRef = useRef(0);
+
+  const VAD_ONSET = 0.015;
+  const VAD_KEEPALIVE = 0.010;
+  const VAD_BARGE = 0.05;
+  const VAD_SILENCE_MS = 900;
+  const VAD_MAX_TURN_MS = 45_000;
+
+  const stopVadMonitor = useCallback(() => {
+    vadProcRef.current?.disconnect();
+    vadProcRef.current = null;
+    vadCtxRef.current?.close().catch(() => {});
+    vadCtxRef.current = null;
+  }, []);
+
+  const startVadMonitor = useCallback(() => {
+    const stream = mediaStreamRef.current;
+    if (!stream || vadCtxRef.current) return;
+    const ctx = new AudioContext({ sampleRate });
+    vadCtxRef.current = ctx;
+    const source = ctx.createMediaStreamSource(stream);
+    const proc = ctx.createScriptProcessor(2048, 1, 1);
+    vadProcRef.current = proc;
+    proc.onaudioprocess = (e) => {
+      if (!handsFreeRef.current) return;
+      const input = e.inputBuffer.getChannelData(0);
+      let sum = 0;
+      for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
+      const rms = Math.sqrt(sum / input.length);
+      const now = Date.now();
+      const s = stateRef.current;
+
+      if (s === 'ready') {
+        vadBargeStreakRef.current = 0;
+        if (rms > VAD_ONSET) {
+          vadHeardSpeechRef.current = true;
+          vadLastVoiceRef.current = now;
+          vadTurnStartRef.current = now;
+          startRecordingRef.current?.();
+        }
+      } else if (s === 'recording') {
+        if (rms > VAD_KEEPALIVE) {
+          vadHeardSpeechRef.current = true;
+          vadLastVoiceRef.current = now;
+        }
+        const spoke = vadHeardSpeechRef.current;
+        const silentFor = now - vadLastVoiceRef.current;
+        const turnFor = now - vadTurnStartRef.current;
+        if ((spoke && silentFor > VAD_SILENCE_MS) || turnFor > VAD_MAX_TURN_MS) {
+          vadHeardSpeechRef.current = false;
+          stopRecordingRef.current?.();
+        }
+      } else if (s === 'playing' || s === 'processing') {
+        // Barge-in: demand a sustained loud signal (2 consecutive ~128ms
+        // buffers over the high bar) so TTS bleed can't self-interrupt.
+        if (rms > VAD_BARGE) {
+          vadBargeStreakRef.current += 1;
+          if (vadBargeStreakRef.current >= 2 && s === 'playing') {
+            vadBargeStreakRef.current = 0;
+            vadHeardSpeechRef.current = false;
+            interruptRef.current?.();
+          }
+        } else {
+          vadBargeStreakRef.current = 0;
+        }
+      }
+    };
+    source.connect(proc);
+    proc.connect(ctx.destination);
+  }, [sampleRate]);
+
+  /** Enter/exit hands-free. Entering activates voice (mic + socket) if needed. */
+  const setHandsFree = useCallback(async (on: boolean) => {
+    handsFreeRef.current = on;
+    setHandsFreeState(on);
+    if (on) {
+      if (!activeRef.current) await activate();
+      startVadMonitor();
+    } else {
+      stopVadMonitor();
+      // A VAD-started recording without its monitor would never end — close
+      // the turn normally so anything already said still gets processed.
+      if (stateRef.current === 'recording') stopRecordingRef.current?.();
+    }
+  }, [activate, startVadMonitor, stopVadMonitor]);
+
+  // Late-bound refs so the monitor callback (created once) always calls the
+  // freshest versions without re-wiring the audio graph.
+  const startRecordingRef = useRef<(() => void) | null>(null);
+  const stopRecordingRef = useRef<(() => void) | null>(null);
+  const interruptRef = useRef<(() => void) | null>(null);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -648,6 +758,12 @@ export function useVoice(options: UseVoiceOptions = {}) {
       wsRef.current?.close();
     };
   }, []);
+
+  // Keep the VAD monitor's late-bound refs fresh + tear it down on unmount.
+  startRecordingRef.current = startRecording;
+  stopRecordingRef.current = stopRecording;
+  interruptRef.current = interrupt;
+  useEffect(() => stopVadMonitor, [stopVadMonitor]);
 
   return {
     state,
@@ -660,5 +776,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     stopRecording,
     interrupt,
     getAnalyser,
+    handsFree,
+    setHandsFree,
   };
 }

@@ -53,7 +53,7 @@ fi{command_not_found_handler}"#,
         r#"
 
 command_not_found_handle() {
-    echo "🪿 Command '$1' not found. Asking goose..."
+    echo "∞ Command '$1' not found. Asking Permagent..."
     '{goose_bin}' term run "$@"
     return 0
 }"#,
@@ -77,7 +77,7 @@ add-zsh-hook preexec goose_preexec{command_not_found_handler}"#,
         r#"
 
 command_not_found_handler() {
-    echo "🪿 Command '$1' not found. Asking goose..."
+    echo "∞ Command '$1' not found. Asking Permagent..."
     '{goose_bin}' term run "$@"
     return 0
 }"#,

@@ -57,12 +57,61 @@ const PILLARS: { key: string; label: string; prompt: (p: string) => string; hint
     prompt: (p) => `Recommend the 2-3 highest-leverage launch channels for "${p}" (e.g. a specific subreddit, X, a newsletter, a directory) and why each fits this audience — not a generic list.`,
   },
   {
+    key: 'workback',
+    label: 'Workback schedule',
+    hint: 'Milestones counting back from launch day.',
+    prompt: (p) => `Build a workback schedule for "${p}" from its launch date: the dated milestones between now and launch, working backwards.`,
+  },
+  {
     key: 'content',
     label: 'Content & launch',
     hint: 'The hub piece and the posts that orbit it.',
     prompt: (p) => `For "${p}", outline the launch content: one substantial hub piece (a guide/thread that establishes authority) and a week of social posts that link back to it. Draft the first post so I can schedule it.${HUMANIZE_VOICE}`,
   },
 ];
+
+// ── Saved strategy (metadata_json.strategy — #13) ────────────────────────────
+export interface SavedPillar {
+  content: string;
+  updated_at?: string;
+  /** Labeled bullets [{label, detail}] — rendered as the card's rich body. */
+  points?: Array<{ label: string; detail: string }>;
+  /** Stat chips [{label, value}] — rendered as a metric row. */
+  metrics?: Array<{ label: string; value: string }>;
+}
+
+/** Tolerant read of a saved pillar from the project's metadata bag. */
+export function readStrategy(project: Project, key: string): SavedPillar | null {
+  const strategy = (project.metadataJson as { strategy?: Record<string, unknown> } | null)?.strategy;
+  const raw = strategy?.[key] as { content?: unknown; updated_at?: unknown } | undefined;
+  if (!raw || typeof raw.content !== 'string' || !raw.content.trim()) return null;
+  const pairs = (v: unknown, a: string, b: string) =>
+    Array.isArray(v)
+      ? (v as Array<Record<string, unknown>>)
+          .filter(item => typeof item?.[a] === 'string' && typeof item?.[b] === 'string')
+          .map(item => ({ [a]: item[a] as string, [b]: item[b] as string }))
+      : undefined;
+  const rawAny = raw as Record<string, unknown>;
+  return {
+    content: raw.content,
+    updated_at: typeof raw.updated_at === 'string' ? raw.updated_at : undefined,
+    points: pairs(rawAny.points, 'label', 'detail') as SavedPillar['points'],
+    metrics: pairs(rawAny.metrics, 'label', 'value') as SavedPillar['metrics'],
+  };
+}
+
+async function saveStrategy(projectId: string, pillar: string, content: string): Promise<void> {
+  await apiFetch(`/api/projects/${encodeURIComponent(projectId)}/strategy/${encodeURIComponent(pillar)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  });
+}
+
+/** Run-all: one turn where Henry produces and SAVES every pillar. */
+function runAllPrompt(projectName: string): string {
+  return `Build the complete go-to-market strategy for "${projectName}" using everything you know about the project (Brain, people, docs, goals). Work through all five pillars — audience, value, positioning, channels, content — and for EACH one, save your result with the set_project_strategy tool (project: "${projectName}", pillar: "<key>"): content = a 2-3 sentence summary, points = [{label, detail}] labeled specifics (personas with watering holes, channels with fit reasons, alternatives with your counter-positioning), metrics = [{label, value}] stat chips (price hypothesis, audience size, post cadence). The Strategy cards render this as rich content, so fill all three fields. Also save the "workback" pillar: the launch workback schedule — points = [{label: "<date or week>", detail: "<milestone>"}] counting back from launch day. THEN turn the workback into real to-dos: create a Kanban card on this project's board for each concrete milestone with the card_create tool (title = the milestone, description = why it matters and its target week). Finish with a one-paragraph summary.${HUMANIZE_VOICE}`;
+}
 
 interface SocialCard {
   id: string;
@@ -126,6 +175,30 @@ interface AnalyticsTestResult {
   error: string | null;
 }
 
+// First-party analytics (#23) — the daemon is the collector; no third party.
+// Backend: routes/first_party_analytics.rs.
+interface FirstPartySetup {
+  enabled: boolean;
+  siteKey: string | null;
+  ingestBase: string | null;
+  ingestUrl: string | null;
+  snippet: string | null;
+  agentPrompt: string | null;
+  receiving: boolean;
+}
+interface FirstPartyStats {
+  enabled: boolean;
+  receiving: boolean;
+  periodDays: number;
+  pageviews: number;
+  visitors: number;
+  eventsLast5m: number;
+  byDay: { day: string; pageviews: number; visitors: number }[];
+  topPages: { name: string; count: number }[];
+  topReferrers: { name: string; count: number }[];
+  topEvents: { name: string; count: number }[];
+}
+
 type GrowLens = 'strategy' | 'calendar' | 'analytics';
 // Async lifecycle for data-backed sections — loading / ready / error are
 // distinct so a fetch failure never masquerades as an empty result.
@@ -146,6 +219,7 @@ export function GrowView() {
   const postsRequestGeneration = useRef(0);
   const setActivePanel = useCommandCenter((st) => st.setActivePanel);
   const sendMessage = useCommandCenter((st) => st.sendMessage);
+  const openChatDock = useCommandCenter((st) => st.openChatDock);
   const openGrowForProject = useCommandCenter((st) => st.openGrowForProject);
   const setOpenGrowForProject = useCommandCenter((st) => st.setOpenGrowForProject);
   const setPendingProjectNavigation = useCommandCenter((st) => st.setPendingProjectNavigation);
@@ -162,7 +236,10 @@ export function GrowView() {
       .catch(() => setProjectsState('error'));
   }, []);
 
-  useEffect(() => { loadProjects(); }, [loadProjects]);
+  // projectsRev bumps on project_changed — a strategy save (from the UI or
+  // Henry's set_project_strategy tool) refreshes the cards live.
+  const projectsRev = useCommandCenter((st) => st.projectsRev);
+  useEffect(() => { loadProjects(); }, [loadProjects, projectsRev]);
 
   // Content calendar = social_post cards on this project (reserved card type
   // already exists; empty until Henry/the user create them).
@@ -238,7 +315,11 @@ export function GrowView() {
   // grounded in the selected project (the Discuss-with-Henry pattern). No
   // clipboard, no tab hunting.
   const send = (prompt: string) => {
+    // Open the chat dock explicitly. setActivePanel('chat') only dismisses any
+    // overlay — since chat went dock-first it does NOT surface Henry, so these
+    // cards looked dead: the prompt was sent to a chat nobody could see.
     setActivePanel('chat');
+    openChatDock();
     void sendMessage(prompt);
   };
 
@@ -341,17 +422,29 @@ export function GrowView() {
           {lens === 'analytics' && <GrowAnalytics project={active} posts={posts} colors={colors} />}
           {lens === 'strategy' && (
           <section>
-            <h3 style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: '0 0 12px' }}>Go-to-market strategy</h3>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '0 0 12px' }}>
+              <h3 style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>Go-to-market strategy</h3>
+              <button
+                onClick={() => send(runAllPrompt(active.name))}
+                title="Henry researches every pillar and fills these cards with the results"
+                style={{
+                  fontSize: 12, fontFamily: font.body, fontWeight: 600,
+                  color: colors.cyan, background: colors.cyanSoft,
+                  border: `1px solid ${colors.borderHi}`, borderRadius: radius.md,
+                  padding: '6px 14px', cursor: 'pointer',
+                }}
+              >✦ Generate</button>
+            </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
               {PILLARS.map((pillar) => (
                 <PillarCard
                   key={pillar.key}
+                  pillarKey={pillar.key}
                   label={pillar.label}
                   hint={pillar.hint}
-                  projectName={active.name}
                   colors={colors}
-                  reduceMotion={reduceMotion}
-                  onSend={() => send(pillar.prompt(active.name))}
+                  saved={readStrategy(active, pillar.key)}
+                  onSave={(content) => saveStrategy(active.id, pillar.key, content)}
                 />
               ))}
             </div>
@@ -420,50 +513,155 @@ export function GrowView() {
 // The whole card is the interactive surface (mirrors DecisionsCard): clickable,
 // keyboard-operable (Enter/Space), with hover + focus affordances. The "Ask
 // Henry" chip is a visual cue, not a nested control.
+// Feather-style icon per pillar — the card's identity at a glance.
+const PILLAR_ICONS: Record<string, string> = {
+  audience: 'M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8zM23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75',
+  value: 'M13 2L3 14h9l-1 8 10-12h-9l1-8z',
+  positioning: 'M12 22a10 10 0 100-20 10 10 0 000 20zM12 18a6 6 0 100-12 6 6 0 000 12zM12 14a2 2 0 100-4 2 2 0 000 4z',
+  channels: 'M18 8a3 3 0 100-6 3 3 0 000 6zM6 15a3 3 0 100-6 3 3 0 000 6zM18 22a3 3 0 100-6 3 3 0 000 6zM8.6 13.5l6.8 3.5M15.4 6.5l-6.8 3.5',
+  content: 'M12 20h9M16.5 3.5a2.12 2.12 0 013 3L7 19l-4 1 1-4L16.5 3.5z',
+  workback: 'M8 2v4M16 2v4M3 10h18M5 4h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V6a2 2 0 012-2z',
+};
+
+/** Strategy pillar card — display + edit only (#22). Generation is the single
+ *  ✦ Generate button on the lens header; per-card Ask-Henry chips are gone.
+ *  A saved pillar renders rich: summary, labeled points, stat chips. */
 function PillarCard({
-  label, hint, projectName, colors, reduceMotion, onSend,
+  pillarKey, label, hint, colors, saved, onSave,
 }: {
+  pillarKey: string;
   label: string;
   hint: string;
-  projectName: string;
   colors: ThemeColors;
-  reduceMotion: boolean;
-  onSend: () => void;
+  /** Persisted strategy for this pillar (metadata_json.strategy), if any. */
+  saved: SavedPillar | null;
+  onSave: (content: string) => Promise<void>;
 }) {
-  const [hover, setHover] = useState(false);
-  const [focus, setFocus] = useState(false);
-  const lit = hover || focus;
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(false);
+
+  const commit = async () => {
+    const content = draft.trim();
+    if (!content) { setEditing(false); return; }
+    setSaving(true);
+    try {
+      await onSave(content); // project_changed → projectsRev → cards refresh
+      setEditing(false);
+    } catch {
+      setSaveError(true);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const shell: CSSProperties = {
+    background: colors.surface, backdropFilter: 'blur(24px) saturate(140%)',
+    border: `1px solid ${saved ? colors.borderHi : colors.border}`,
+    borderRadius: radius.lg, padding: 16,
+    display: 'flex', flexDirection: 'column', gap: 10, minHeight: 120,
+  };
+
+  if (editing) {
+    return (
+      <div style={shell}>
+        <div style={{ fontFamily: font.body, fontSize: 14, fontWeight: 600, color: colors.text }}>{label}</div>
+        <textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          autoFocus
+          rows={6}
+          style={{
+            width: '100%', resize: 'vertical', fontSize: 12, lineHeight: 1.5,
+            fontFamily: font.body, color: colors.text, background: 'transparent',
+            border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: 8,
+            outline: 'none',
+          }}
+        />
+        {saveError && <span style={{ fontSize: 11, color: colors.danger }}>Couldn't save — try again.</span>}
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={() => void commit()} disabled={saving} style={{
+            fontSize: 11, fontFamily: font.body, fontWeight: 600, color: colors.cyan,
+            background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
+            borderRadius: radius.md, padding: '5px 12px', cursor: 'pointer', opacity: saving ? 0.6 : 1,
+          }}>{saving ? 'Saving…' : 'Save'}</button>
+          <button onClick={() => setEditing(false)} style={{
+            fontSize: 11, fontFamily: font.body, color: colors.textMuted,
+            background: 'transparent', border: 'none', cursor: 'pointer',
+          }}>Cancel</button>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      aria-label={`Ask Henry about ${label} for ${projectName}`}
-      onClick={onSend}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSend(); } }}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      onFocus={() => setFocus(true)}
-      onBlur={() => setFocus(false)}
-      style={{
-        background: colors.surface, backdropFilter: 'blur(24px) saturate(140%)',
-        border: `1px solid ${lit ? colors.borderHi : colors.border}`, borderRadius: radius.lg, padding: 16,
-        display: 'flex', flexDirection: 'column', gap: 8, minHeight: 120,
-        cursor: 'pointer', outline: 'none',
-        boxShadow: focus ? `0 0 0 2px ${colors.borderHi}` : 'none',
-        transition: reduceMotion ? 'none' : 'border-color 150ms ease',
-      }}
-    >
-      <div style={{ fontFamily: font.body, fontSize: 14, fontWeight: 600, color: colors.text }}>{label}</div>
-      <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5, flex: 1 }}>{hint}</div>
-      <span
-        aria-hidden
-        style={{
-          alignSelf: 'flex-start', fontSize: 11, fontFamily: font.body,
-          color: colors.cyan, background: colors.cyanSoft,
-          border: `1px solid ${colors.borderHi}`, borderRadius: radius.md,
-          padding: '5px 10px',
-        }}
-      >Ask Henry ↗</span>
+    <div style={shell}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0 }}
+          stroke={saved ? colors.cyan : colors.textMuted} strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
+          <path d={PILLAR_ICONS[pillarKey] ?? PILLAR_ICONS.value} />
+        </svg>
+        <span style={{ fontFamily: font.body, fontSize: 14, fontWeight: 600, color: colors.text, flex: 1 }}>{label}</span>
+        {saved && (
+          <button
+            onClick={() => { setDraft(saved.content); setSaveError(false); setEditing(true); }}
+            title={saved.updated_at ? `Saved ${new Date(saved.updated_at).toLocaleString()}` : 'Edit'}
+            style={{
+              fontSize: 10, fontFamily: font.body, color: colors.textMuted,
+              background: 'transparent', border: 'none', cursor: 'pointer', padding: 0,
+            }}
+          >Edit</button>
+        )}
+      </div>
+
+      {saved ? (
+        <>
+          <div style={{
+            fontSize: 12, color: colors.text, lineHeight: 1.55,
+            whiteSpace: 'pre-wrap', overflowWrap: 'break-word',
+          }}>{saved.content}</div>
+
+          {saved.points && saved.points.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+              {saved.points.map((pt, i) => (
+                <div key={i} style={{ display: 'flex', gap: 7, fontSize: 11.5, lineHeight: 1.45 }}>
+                  <span style={{ color: colors.cyan, flexShrink: 0 }}>▸</span>
+                  <span style={{ color: colors.textMuted, overflowWrap: 'break-word', minWidth: 0 }}>
+                    <span style={{ color: colors.text, fontWeight: 600 }}>{pt.label}</span>
+                    {' — '}{pt.detail}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {saved.metrics && saved.metrics.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 'auto' }}>
+              {saved.metrics.map((m, i) => (
+                <span key={i} title={m.label} style={{
+                  // Chips must never exceed the card: wrap long label·value
+                  // pairs inside the pill instead of bleeding across the grid.
+                  fontSize: 10.5, fontFamily: font.mono, lineHeight: 1.4,
+                  maxWidth: '100%', overflowWrap: 'anywhere',
+                  color: colors.cyan, background: colors.cyanSoft,
+                  border: `1px solid ${colors.borderHi}`, borderRadius: radius.md,
+                  padding: '3px 8px',
+                }}>
+                  <span style={{ color: colors.textMuted }}>{m.label} · </span>{m.value}
+                </span>
+              ))}
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5, flex: 1 }}>{hint}</div>
+          <span style={{ fontSize: 11, color: colors.textDim, fontFamily: font.body }}>
+            ✦ Generate fills this in
+          </span>
+        </>
+      )}
     </div>
   );
 }
@@ -606,10 +804,34 @@ function GrowAnalytics({
     };
   }, [project.id, loadConnection]);
 
+  // First-party (self-hosted) analytics — preferred path; the connector stays
+  // for people who already have a provider account.
+  const [fpStats, setFpStats] = useState<FirstPartyStats | null>(null);
+  const fpRequestGeneration = useRef(0);
+  const loadFpStats = useCallback((id: string) => {
+    const generation = ++fpRequestGeneration.current;
+    apiFetch<FirstPartyStats>(`/api/projects/${encodeURIComponent(id)}/analytics/first_party/stats`)
+      .then((s) => {
+        if (generation !== fpRequestGeneration.current) return;
+        setFpStats(s);
+      })
+      .catch(() => {
+        if (generation !== fpRequestGeneration.current) return;
+        setFpStats(null);
+      });
+  }, []);
+  useEffect(() => {
+    loadFpStats(project.id);
+    return () => { ++fpRequestGeneration.current; };
+  }, [project.id, loadFpStats]);
+
   const connected = conn?.connected ?? false;
   const providerLabel = conn?.provider ? PROVIDER_LABELS[conn.provider] : null;
-  const visitors = connected ? stats?.visitors ?? null : null;
-  const pageviews = connected ? stats?.pageviews ?? null : null;
+  const fpLive = !!fpStats?.receiving;
+  // First-party numbers win when the collector is receiving; the third-party
+  // provider fills in otherwise.
+  const visitors = fpLive ? fpStats!.visitors : connected ? stats?.visitors ?? null : null;
+  const pageviews = fpLive ? fpStats!.pageviews : connected ? stats?.pageviews ?? null : null;
   const fetchFailed = connected && (statsState === 'error' || !!stats?.error);
 
   // Hint for a connected-but-valueless metric slot: fetching, failed, or the
@@ -657,7 +879,7 @@ function GrowAnalytics({
       label: 'REACH (30D)',
       value: pageviews != null ? pageviews.toLocaleString() : '—',
       sub: pageviews != null
-        ? `pageviews · ${providerLabel}`
+        ? `pageviews · ${fpLive ? 'self-hosted' : providerLabel}`
         : liveHint(`not exposed by ${providerLabel}`, 'awaiting analytics'),
     },
     {
@@ -686,6 +908,14 @@ function GrowAnalytics({
         below (read-only) — nothing here is faked.
       </div>
 
+      {/* Self-hosted analytics (#23) — the daemon is the collector. */}
+      <FirstPartyAnalyticsPanel
+        colors={colors}
+        projectId={project.id}
+        stats={fpStats}
+        onRefresh={() => loadFpStats(project.id)}
+      />
+
       {/* Analytics connection — the settings surface for the live metrics */}
       <AnalyticsConnectionPanel
         colors={colors}
@@ -706,7 +936,7 @@ function GrowAnalytics({
             borderRadius: radius.lg, padding: 16,
           }}>
             <div style={{ fontFamily: font.display, fontSize: 26, fontWeight: 700, color: colors.text, fontVariantNumeric: 'tabular-nums' }}>{t.value}</div>
-            <div style={{ fontFamily: font.mono, fontSize: 9, color: colors.textDim, letterSpacing: '0.08em', marginTop: 4 }}>{t.label}</div>
+            <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, letterSpacing: '0.08em', marginTop: 4 }}>{t.label}</div>
             <div style={{ fontSize: 10, color: colors.textDim, marginTop: 2 }}>{t.sub}</div>
           </div>
         ))}
@@ -741,6 +971,224 @@ function GrowAnalytics({
         </div>
       </section>
     </>
+  );
+}
+
+// ── First-party analytics panel (#23) ────────────────────────────────────────
+// The self-hosted path: enable → copy the agent prompt (a coding agent adds
+// the snippet to the site) → come back and the panel flips live on the first
+// beacon. No third-party dependency; the daemon is the collector.
+
+function FirstPartyAnalyticsPanel({
+  colors, projectId, stats, onRefresh,
+}: {
+  colors: ThemeColors;
+  projectId: string;
+  stats: FirstPartyStats | null;
+  onRefresh: () => void;
+}) {
+  const [setup, setSetup] = useState<FirstPartySetup | null>(null);
+  const [setupState, setSetupState] = useState<LoadState>('loading');
+  const [ingestBase, setIngestBase] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [copied, setCopied] = useState<'snippet' | 'prompt' | null>(null);
+  const generation = useRef(0);
+
+  const loadSetup = useCallback(() => {
+    const gen = ++generation.current;
+    setSetupState('loading');
+    apiFetch<FirstPartySetup>(`/api/projects/${encodeURIComponent(projectId)}/analytics/first_party`)
+      .then((s) => {
+        if (gen !== generation.current) return;
+        setSetup(s);
+        setIngestBase(s.ingestBase ?? '');
+        setSetupState('ready');
+      })
+      .catch(() => {
+        if (gen !== generation.current) return;
+        setSetupState('error');
+      });
+  }, [projectId]);
+
+  useEffect(() => {
+    loadSetup();
+    return () => { ++generation.current; };
+  }, [loadSetup]);
+
+  // While enabled but not yet receiving, poll so "come back and it's flowing"
+  // needs no manual refresh. 10s is plenty; stops once live.
+  useEffect(() => {
+    if (!setup?.enabled || stats?.receiving) return;
+    const interval = setInterval(onRefresh, 10_000);
+    return () => clearInterval(interval);
+  }, [setup?.enabled, stats?.receiving, onRefresh]);
+
+  const enable = useCallback((base?: string) => {
+    setSaving(true);
+    apiFetch<FirstPartySetup>(
+      `/api/projects/${encodeURIComponent(projectId)}/analytics/first_party/enable`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(base !== undefined ? { ingestBase: base } : {}),
+      },
+    )
+      .then((s) => {
+        setSetup(s);
+        setIngestBase(s.ingestBase ?? '');
+        setSetupState('ready');
+        onRefresh();
+      })
+      .catch(() => setSetupState('error'))
+      .finally(() => setSaving(false));
+  }, [projectId, onRefresh]);
+
+  const copy = useCallback((kind: 'snippet' | 'prompt', text: string | null | undefined) => {
+    if (!text) return;
+    navigator.clipboard?.writeText(text).then(() => {
+      setCopied(kind);
+      setTimeout(() => setCopied((c) => (c === kind ? null : c)), 1600);
+    });
+  }, []);
+
+  const shell: React.CSSProperties = {
+    background: colors.surface, border: `1px solid ${colors.border}`,
+    borderRadius: radius.lg, padding: 16, display: 'flex', flexDirection: 'column', gap: 10,
+  };
+  const buttonStyle: React.CSSProperties = {
+    background: colors.bgDeeper, color: colors.text, border: `1px solid ${colors.border}`,
+    borderRadius: radius.md, padding: '6px 12px', fontSize: 12, cursor: 'pointer',
+  };
+
+  if (setupState === 'error') {
+    return (
+      <div style={shell}>
+        <ErrorState colors={colors} inline message="Couldn't load self-hosted analytics." onRetry={loadSetup} />
+      </div>
+    );
+  }
+
+  // Not yet enabled: the offer.
+  if (!setup?.enabled) {
+    return (
+      <div style={shell}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>Self-hosted analytics</div>
+            <div style={{ fontSize: 11, color: colors.textDim, marginTop: 2 }}>
+              Your daemon collects pageviews directly — no third-party account, your data stays here.
+            </div>
+          </div>
+          <button
+            style={{ ...buttonStyle, opacity: setupState === 'loading' || saving ? 0.6 : 1 }}
+            disabled={setupState === 'loading' || saving}
+            onClick={() => enable()}
+          >{saving ? 'Enabling…' : 'Enable'}</button>
+        </div>
+      </div>
+    );
+  }
+
+  const receiving = !!stats?.receiving;
+
+  return (
+    <div style={shell}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>
+          Self-hosted analytics
+          {receiving && (
+            <span style={{ marginLeft: 8, fontSize: 10, color: colors.cyan, fontFamily: font.mono }}>
+              ● live{stats && stats.eventsLast5m > 0 ? ` · ${stats.eventsLast5m} events / 5m` : ''}
+            </span>
+          )}
+        </div>
+        <button style={buttonStyle} onClick={onRefresh}>Refresh</button>
+      </div>
+
+      {!receiving && (
+        <>
+          <div style={{ fontSize: 11, color: colors.textDim }}>
+            Send the setup prompt to a coding agent (Claude or Permagent). It adds the tracking
+            snippet to your site; the moment the first visitor beacon arrives, charts appear here.
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input
+              value={ingestBase}
+              onChange={(e) => setIngestBase(e.target.value)}
+              placeholder={setup.ingestUrl ? setup.ingestUrl.replace(/\/collect\/.*$/, '') : 'https://your-tunnel-host'}
+              style={{
+                flex: '1 1 220px', background: colors.bgDeeper, color: colors.text,
+                border: `1px solid ${colors.border}`, borderRadius: radius.md,
+                padding: '6px 10px', fontSize: 12, fontFamily: font.mono,
+              }}
+            />
+            <button
+              style={{ ...buttonStyle, opacity: saving ? 0.6 : 1 }}
+              disabled={saving}
+              onClick={() => enable(ingestBase.trim())}
+            >{saving ? 'Saving…' : 'Save URL'}</button>
+          </div>
+          <div style={{ fontSize: 10, color: colors.textDim }}>
+            Collector URL visitors' browsers will reach. A LAN address works for local dev; a public
+            site needs a tunnel or tailnet hostname pointing at this Mac.
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button style={buttonStyle} onClick={() => copy('prompt', setup.agentPrompt)}>
+              {copied === 'prompt' ? 'Copied ✓' : 'Copy agent prompt'}
+            </button>
+            <button style={buttonStyle} onClick={() => copy('snippet', setup.snippet)}>
+              {copied === 'snippet' ? 'Copied ✓' : 'Copy snippet only'}
+            </button>
+            <span style={{ fontSize: 10, color: colors.textDim, alignSelf: 'center' }}>
+              Waiting for the first event…
+            </span>
+          </div>
+        </>
+      )}
+
+      {receiving && stats && (
+        <>
+          {/* Daily pageview bars — pure divs, no chart dependency. */}
+          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 64 }}>
+            {stats.byDay.map((d) => {
+              const max = Math.max(1, ...stats.byDay.map((x) => x.pageviews));
+              return (
+                <div
+                  key={d.day}
+                  title={`${d.day}: ${d.pageviews} pageviews · ${d.visitors} visitors`}
+                  style={{
+                    flex: 1, minWidth: 3, height: `${Math.max(6, (d.pageviews / max) * 100)}%`,
+                    background: `linear-gradient(180deg, ${colors.cyan}, ${colors.purple})`,
+                    borderRadius: 2, opacity: 0.85,
+                  }}
+                />
+              );
+            })}
+          </div>
+          <div style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono }}>
+            {stats.pageviews.toLocaleString()} pageviews · {stats.visitors.toLocaleString()} visitors · last {stats.periodDays}d
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
+            {([
+              ['Top pages', stats.topPages],
+              ['Referrers', stats.topReferrers],
+              ['Events', stats.topEvents],
+            ] as const).map(([label, rows]) => (
+              <div key={label}>
+                <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 4 }}>{label}</div>
+                {rows.length === 0 && <div style={{ fontSize: 11, color: colors.textDim }}>—</div>}
+                {rows.slice(0, 5).map((r) => (
+                  <div key={r.name} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 11, color: colors.textMuted, padding: '2px 0' }}>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name}</span>
+                    <span style={{ fontFamily: font.mono, color: colors.text }}>{r.count.toLocaleString()}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 

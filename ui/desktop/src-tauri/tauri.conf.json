@@ -45,7 +45,6 @@
     "macOS": {
       "frameworks": [
         "binaries/libsherpa-onnx-c-api.dylib",
-        "binaries/libonnxruntime.1.24.4.dylib",
         "binaries/libonnxruntime.dylib"
       ],
       "minimumSystemVersion": "11.0",

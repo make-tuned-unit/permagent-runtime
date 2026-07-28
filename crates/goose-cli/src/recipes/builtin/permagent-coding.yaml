@@ -2,12 +2,15 @@ version: "1.0.0"
 title: Permagent Coding Harness
 description: >-
   Permagent's own internal agent loop, configured for software engineering.
-  Bundles the reliable edit tool, structured summarized search, the analyze
-  code-structure tool, a repo-map for cheap context, a shell, and a verify tool
-  that runs the project's build/tests before declaring work done — with
-  runaway-loop safety, tiered model routing, and per-turn cost reporting in the
-  terminal. A provider-agnostic, cost-optimized coding agent you launch from the
-  Build tab.
+  Before starting it offers to map the codebase: tree-sitter extracts every
+  symbol, a reference-graph PageRank ranks what matters, and the top signatures
+  are pinned into context as a small token-budgeted map (cached by file mtime)
+  — so the agent looks things up from the map instead of reading whole files,
+  keeping token cost low. Bundles the reliable edit tool, structured summarized
+  search, the analyze code-structure tool, a shell, and a verify tool that runs
+  the project's build/tests before declaring work done — with runaway-loop
+  safety, tiered model routing, and per-turn cost reporting in the terminal. A
+  provider-agnostic, cost-optimized coding agent you launch from the Build tab.
 instructions: |
   You are the Permagent coding harness: Permagent's own internal agent loop,
   running locally and configured for software engineering. You are provider-

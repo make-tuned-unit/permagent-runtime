@@ -6,15 +6,9 @@ import { useGoalEvents } from '../../lib/useGoalEvents';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { Panel } from './Panel';
-import { PeoplePanel } from './PeoplePanel';
-import { DocumentsPanel } from './DocumentsPanel';
-import { NotesPanel } from './NotesPanel';
-import { StackPanel } from './StackPanel';
-import { CodeIndexPanel } from './CodeIndexPanel';
-import { MemoriesPanel } from './MemoriesPanel';
+import { ActivityPanel } from './ActivityPanel';
 import { readBrief, readLinks, normalizeUrl, saveProjectSummary, type WorkspaceLink } from './workspaceMeta';
 import { PublishSequencePanel } from './PublishSequencePanel';
-import { EcosystemPanel } from './EcosystemPanel';
 import type { Project, BoardColumn, Card } from './types';
 
 // ── Project Overview ────────────────────────────────────────────────────────
@@ -66,19 +60,17 @@ export function ProjectOverview({ project, onProjectUpdated }: {
         display: 'grid', gridTemplateColumns: 'minmax(0, 1.3fr) minmax(0, 1fr)',
         gap: 16, padding: '20px 24px', alignItems: 'start',
       }}>
-        {/* LEFT — substance */}
+        {/* LEFT — what this is, and what just happened.
+            The records themselves (stack, documents, notes, memories, people,
+            ecosystem, links, code index) live in the Details lens — see the
+            ProjectDetails header for the ruled division. */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
           <SummaryPanel project={project} onProjectUpdated={onProjectUpdated} />
           <KeyFactsPanel project={project} />
-          {/* Stack organizer (#512): services + login identity, reference-only. */}
-          <StackPanel project={project} />
-          <MemoriesPanel project={project} />
-          <DocumentsPanel project={project} />
-          <NotesPanel project={project} />
-          <CodeIndexPanel project={project} />
+          <ActivityPanel project={project} />
         </div>
 
-        {/* RIGHT — people + action */}
+        {/* RIGHT — where it stands, and what's next */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
           {/* Build → Grow bridge: take the finished work to market. */}
           <button
@@ -96,9 +88,6 @@ export function ProjectOverview({ project, onProjectUpdated }: {
             </svg>
             Grow this project
           </button>
-          <PeoplePanel project={project} />
-          <EcosystemPanel project={project} />
-          <LinksPanel project={project} onProjectUpdated={onProjectUpdated} />
           <TasksPanel
             columns={columns}
             cards={cards}
@@ -252,7 +241,7 @@ function KeyFactsPanel({ project }: { project: Project }) {
             <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
               {project.tags.map((tag, ti) => (
                 <span key={`${tag}-${ti}`} style={{
-                  fontSize: 9, padding: '1px 6px', borderRadius: 4,
+                  fontSize: 10, padding: '1px 6px', borderRadius: 4,
                   background: chipVeil, color: colors.textDim,
                 }}>
                   {tag}
@@ -527,7 +516,7 @@ function TasksPanel({ columns, cards, onOpenGoal }: {
                   <span style={{ fontSize: 10, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                     {col.name}
                   </span>
-                  <span style={{ fontSize: 9, color: colors.textDim, background: chipVeil, padding: '0 5px', borderRadius: 7 }}>
+                  <span style={{ fontSize: 10, color: colors.textDim, background: chipVeil, padding: '0 5px', borderRadius: 7 }}>
                     {colCards.length}
                   </span>
                 </div>

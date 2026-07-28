@@ -1511,6 +1511,56 @@ async fn delete_stack_entry_handler(
     Ok(StatusCode::OK)
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct SetStrategyBody {
+    content: String,
+    #[serde(default)]
+    points: Option<serde_json::Value>,
+    #[serde(default)]
+    metrics: Option<serde_json::Value>,
+}
+
+/// PUT /api/projects/{id}/strategy/{pillar} — save one GTM strategy pillar
+/// (`metadata_json.strategy.<pillar>`), the UI-edit counterpart of the
+/// `set_project_strategy` agent tool. Merge-writes the metadata bag.
+async fn set_project_strategy_handler(
+    State(state): State<Arc<AppState>>,
+    Path((id, pillar)): Path<(String, String)>,
+    Json(body): Json<SetStrategyBody>,
+) -> Result<Json<ProjectResponse>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let project = projects::get_project_by_id_or_slug(&pool, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+    let content = body.content.trim();
+    if content.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "content must not be empty".to_string(),
+        ));
+    }
+    let updated = projects::set_project_strategy(
+        &pool,
+        &project.id,
+        pillar.trim(),
+        content,
+        projects::StrategyExtras {
+            points: body.points,
+            metrics: body.metrics,
+        },
+    )
+    .await
+    .map_err(|e| (StatusCode::BAD_REQUEST, e))?
+    .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+    events::emit(events::project_changed(&updated.id, "updated"));
+    Ok(Json(ProjectResponse::from(updated)))
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/projects", get(list_projects_handler))
@@ -1519,6 +1569,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/api/projects/{id}", patch(update_project_handler))
         .route("/api/projects/{id}", delete(delete_project_handler))
         .route("/api/projects/{id}/touch", post(touch_project_handler))
+        .route(
+            "/api/projects/{id}/strategy/{pillar}",
+            axum::routing::put(set_project_strategy_handler),
+        )
         .route("/api/projects/{id}/intel", get(list_project_intel_handler))
         .route(
             "/api/projects/{id}/intel/{item_id}",

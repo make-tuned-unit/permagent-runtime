@@ -120,7 +120,7 @@ export function HenryIdentityTab() {
             display: 'inline-block',
             padding: '1px 8px',
             borderRadius: 3,
-            fontSize: 9,
+            fontSize: 10,
             fontWeight: 700,
             letterSpacing: '0.08em',
             background: SEALED_PILL.bg,
@@ -220,7 +220,7 @@ export function HenryIdentityTab() {
       {/* Footer: last refreshed */}
       <div style={{
         padding: '4px 14px 8px',
-        fontSize: 9,
+        fontSize: 10,
         color: '#4B5563',
         textAlign: 'right',
       }}>

@@ -344,7 +344,7 @@ export function BrainView() {
               <span style={{ marginRight: 4 }}>◆</span>topics
             </button>
             <button onClick={() => setTopicsExpanded(e => !e)} style={{
-              fontFamily: font.mono, fontSize: 9, color: colors.textDim,
+              fontFamily: font.mono, fontSize: 10, color: colors.textDim,
               background: 'transparent', border: 'none', cursor: 'pointer', padding: '2px 4px',
               transition: `transform 160ms ${ease.out}`,
               transform: topicsExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
@@ -455,7 +455,7 @@ export function BrainView() {
                 <span
                   title="Preview from the surface you came from — not yet enriched into the Brain graph; the text may be truncated."
                   style={{
-                    fontFamily: font.mono, fontSize: 8, padding: '1px 5px', borderRadius: 3,
+                    fontFamily: font.mono, fontSize: 10, padding: '1px 5px', borderRadius: 3,
                     color: colors.warning, border: `1px solid ${colors.warning}`,
                     textTransform: 'uppercase', letterSpacing: '0.08em',
                   }}
@@ -493,7 +493,7 @@ export function BrainView() {
                           ) : f.value}
                         </span>
                         <span style={{
-                          fontFamily: font.mono, fontSize: 8, padding: '1px 5px', borderRadius: 3,
+                          fontFamily: font.mono, fontSize: 10, padding: '1px 5px', borderRadius: 3,
                           color: f.source === 'manual' ? colors.cyan : colors.textMuted,
                           border: `1px solid ${f.source === 'manual' ? colors.cyan : colors.border}`,
                           textTransform: 'uppercase', letterSpacing: '0.08em', flexShrink: 0,
@@ -555,7 +555,7 @@ export function BrainView() {
                         onBlur={e => { (e.currentTarget as HTMLButtonElement).style.outline = 'none'; }}
                       >
                         <div style={{ fontFamily: font.display, fontSize: 18, fontWeight: 700, color: interactive ? colors.cyan : colors.text }}>{stat.value}</div>
-                        <div style={{ fontFamily: font.mono, fontSize: 9, color: colors.textDim, letterSpacing: '0.08em' }}>{stat.label}</div>
+                        <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, letterSpacing: '0.08em' }}>{stat.label}</div>
                       </button>
                     );
                   })}
@@ -647,7 +647,7 @@ export function BrainView() {
           style={{ flex: 1, accentColor: colors.cyan }}
         />
         <span style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim }}>all time</span>
-        <span style={{ fontFamily: font.mono, fontSize: 9, color: colors.textDim, opacity: 0.6 }}
+        <span style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, opacity: 0.6 }}
           title="Imported memories are dated by import time, not original event time">
           *
         </span>

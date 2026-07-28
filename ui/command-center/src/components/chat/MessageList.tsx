@@ -77,7 +77,11 @@ export function MessageList() {
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="h-full overflow-y-auto p-4 space-y-3"
+        // overflow-x-hidden is load-bearing: with only overflow-y-auto set,
+        // CSS promotes overflow-x from visible to auto, so any wide child gave
+        // the whole message list a horizontal scrollbar. Wide content (code,
+        // tables) scrolls inside its own block instead.
+        className="h-full overflow-y-auto overflow-x-hidden p-4 space-y-3"
       >
         {sessionLoadError && chatSessionId && (
           <div
