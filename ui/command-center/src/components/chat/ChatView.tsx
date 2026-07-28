@@ -6,6 +6,7 @@ import { ChatInput } from './ChatInput';
 import type { ChatInputHandle } from './ChatInput';
 import { SkillPromptBanner } from './SkillPromptBanner';
 import { ModelPicker } from './ModelPicker';
+import { VoiceOrb } from '../voice/VoiceOrb';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
@@ -40,8 +41,13 @@ export function ChatView() {
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Conversation mode (hands-free voice): the orb takes over the whole chat
+  // surface. Published by VoiceButton, which keeps running underneath — the
+  // overlay is visual only, turn-taking stays with the VAD.
+  const voiceConversation = useCommandCenter(s => s.voiceConversation);
+
   return (
-    <div className="flex h-full flex-col" style={{ backgroundColor: colors.bg }}>
+    <div className="relative flex h-full flex-col" style={{ backgroundColor: colors.bg }}>
       <div
         className="flex items-center justify-between px-4 py-2.5"
         style={{ borderBottom: `1px solid ${colors.border}` }}
@@ -58,6 +64,15 @@ export function ChatView() {
       <MessageList />
       <SkillPromptBanner />
       <ChatInput ref={chatInputRef} />
+
+      {voiceConversation && (
+        <VoiceOrb
+          state={voiceConversation.state}
+          getPlaybackAnalyser={voiceConversation.getPlaybackAnalyser}
+          getMicAnalyser={voiceConversation.getMicAnalyser}
+          onExit={voiceConversation.exit}
+        />
+      )}
     </div>
   );
 }

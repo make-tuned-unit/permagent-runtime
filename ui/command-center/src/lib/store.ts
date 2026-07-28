@@ -402,6 +402,26 @@ interface CommandCenterStore {
   openChatDock: () => void;
   closeChatDock: () => void;
 
+  // --- Detached chat window liveness ---
+  // True while the standalone `chat` WebviewWindow exists. Set by
+  // createChatWindow (the single creation path — launcher, dock-detach,
+  // App drop handler, navigate) and cleared by the launcher's close listener,
+  // so the "Chat with Henry" pill hides no matter which path opened the window.
+  chatWindowOpen: boolean;
+  setChatWindowOpen: (open: boolean) => void;
+
+  // --- Voice conversation mode (hands-free #19) ---
+  // Published by VoiceButton while hands-free is active so ChatView can render
+  // the full-window orb takeover. Analyser getters are live taps on the TTS
+  // playback / mic audio graphs; `exit` leaves hands-free.
+  voiceConversation: {
+    state: string;
+    getPlaybackAnalyser: () => AnalyserNode | null;
+    getMicAnalyser: () => AnalyserNode | null;
+    exit: () => void;
+  } | null;
+  setVoiceConversation: (conv: CommandCenterStore['voiceConversation']) => void;
+
   // --- Per-session SSE ---
   _eventSource: EventSource | null;
   _reconnectTimer: ReturnType<typeof setTimeout> | null;
@@ -1492,6 +1512,10 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   chatDockOpen: false,
   openChatDock: () => set({ chatDockOpen: true }),
   closeChatDock: () => set({ chatDockOpen: false }),
+  chatWindowOpen: false,
+  setChatWindowOpen: (open) => set({ chatWindowOpen: open }),
+  voiceConversation: null,
+  setVoiceConversation: (conv) => set({ voiceConversation: conv }),
   setChatLauncherSize: (size) => set(s => {
     const prev = s.chatLauncherSize;
     if (prev === size) return s;

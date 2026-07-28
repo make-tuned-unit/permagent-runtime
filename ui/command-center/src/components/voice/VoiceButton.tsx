@@ -57,6 +57,7 @@ export function VoiceButton() {
     stopRecording,
     interrupt,
     getAnalyser,
+    getMicAnalyser,
     handsFree,
     setHandsFree,
   } = useVoice({ sessionId: chatSessionId ?? undefined });
@@ -64,6 +65,31 @@ export function VoiceButton() {
   const isRecordingRef = useRef(false);
   const stateRef = useRef(state);
   stateRef.current = state;
+
+  // Conversation-mode takeover: while hands-free is on, publish the live voice
+  // state + analyser taps so ChatView can render the full-window orb
+  // (VoiceOrb). Cleared on exit/unmount so the overlay never outlives the
+  // conversation.
+  const setVoiceConversation = useCommandCenter(s => s.setVoiceConversation);
+  useEffect(() => {
+    if (!handsFree) {
+      setVoiceConversation(null);
+      return;
+    }
+    setVoiceConversation({
+      state,
+      getPlaybackAnalyser: getAnalyser,
+      getMicAnalyser,
+      // Exiting conversation mode must actually STOP LISTENING: leaving
+      // hands-free alone kept the mic acquired and the socket open (macOS mic
+      // indicator stays lit). Full deactivate releases both.
+      exit: () => {
+        void setHandsFree(false);
+        deactivate();
+      },
+    });
+    return () => setVoiceConversation(null);
+  }, [handsFree, state, getAnalyser, getMicAnalyser, setHandsFree, deactivate, setVoiceConversation]);
 
   // --- Spacebar push-to-talk ---
   useEffect(() => {
@@ -109,7 +135,14 @@ export function VoiceButton() {
 
   // --- Button handlers ---
   const handleClick = useCallback(() => {
-    if (state === 'idle' || state === 'error') {
+    if (handsFree) {
+      // In hands-free the mic button is the OFF switch, whatever the state —
+      // previously a click during 'recording' did nothing and a click during
+      // playing only interrupted, so there was no way to stop it listening.
+      // Leave hands-free AND fully deactivate (release mic + socket).
+      void setHandsFree(false);
+      deactivate();
+    } else if (state === 'idle' || state === 'error') {
       activate();
     } else if (isInterruptibleState(state)) {
       // Barge-in (#398): the mic button doubles as a Stop button while Henry is
@@ -118,7 +151,7 @@ export function VoiceButton() {
     } else if (state === 'ready') {
       deactivate();
     }
-  }, [state, activate, deactivate, interrupt]);
+  }, [handsFree, state, activate, deactivate, interrupt, setHandsFree]);
 
   const handlePointerDown = useCallback(() => {
     if (state === 'ready') {
@@ -191,8 +224,11 @@ export function VoiceButton() {
           in), no spacebar needed. Click again to leave. */}
       {handsFree ? (
         <button
-          onClick={() => void setHandsFree(false)}
-          title="Hands-free conversation is ON — click to exit"
+          onClick={() => {
+            void setHandsFree(false);
+            deactivate();
+          }}
+          title="Hands-free conversation is ON — click to stop listening"
           style={{
             display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer',
             border: `1px solid ${colors.cyan}80`, backgroundColor: colors.cyanSoft,
