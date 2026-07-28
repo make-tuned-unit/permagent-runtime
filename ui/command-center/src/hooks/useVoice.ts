@@ -638,6 +638,9 @@ export function useVoice(options: UseVoiceOptions = {}) {
   /** Live TTS frequency analyser (present only while the agent is speaking). */
   const getAnalyser = useCallback(() => analyserRef.current, []);
 
+  /** Live mic frequency analyser (present only while hands-free VAD runs). */
+  const getMicAnalyser = useCallback(() => micAnalyserRef.current, []);
+
   // ── Hands-free mode (#19) ──────────────────────────────────────────────────
   // Click the visualizer → the mic is ALWAYS listening and turns are taken by
   // voice-activity detection instead of push-to-talk:
@@ -653,6 +656,10 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const handsFreeRef = useRef(false);
   const vadCtxRef = useRef<AudioContext | null>(null);
   const vadProcRef = useRef<ScriptProcessorNode | null>(null);
+  // Mic-side analyser tapped off the VAD graph — lets the conversation orb
+  // visualize the USER's voice while listening (the playback analyser only
+  // covers the agent's TTS). Lives and dies with the VAD monitor.
+  const micAnalyserRef = useRef<AnalyserNode | null>(null);
   const vadLastVoiceRef = useRef(0);
   const vadHeardSpeechRef = useRef(false);
   const vadBargeStreakRef = useRef(0);
@@ -669,6 +676,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     vadProcRef.current = null;
     vadCtxRef.current?.close().catch(() => {});
     vadCtxRef.current = null;
+    micAnalyserRef.current = null;
   }, []);
 
   const startVadMonitor = useCallback(() => {
@@ -677,6 +685,14 @@ export function useVoice(options: UseVoiceOptions = {}) {
     const ctx = new AudioContext({ sampleRate });
     vadCtxRef.current = ctx;
     const source = ctx.createMediaStreamSource(stream);
+    // Tap for the orb visualization — same small-FFT/smoothing profile as the
+    // playback analyser. An analyser is a pass-through observer: it doesn't
+    // alter the VAD's samples.
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 64;
+    analyser.smoothingTimeConstant = 0.75;
+    source.connect(analyser);
+    micAnalyserRef.current = analyser;
     const proc = ctx.createScriptProcessor(2048, 1, 1);
     vadProcRef.current = proc;
     proc.onaudioprocess = (e) => {
@@ -776,6 +792,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     stopRecording,
     interrupt,
     getAnalyser,
+    getMicAnalyser,
     handsFree,
     setHandsFree,
   };

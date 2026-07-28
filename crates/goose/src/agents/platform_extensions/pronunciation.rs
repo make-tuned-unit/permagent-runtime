@@ -17,6 +17,19 @@ use tokio_util::sync::CancellationToken;
 
 pub static EXTENSION_NAME: &str = "pronunciation";
 
+/// The daemon's own bearer token, read from the same file the server loads it
+/// from at startup (secrets/daemon_token.json). This tool runs in-process in
+/// the daemon, so reading it is same-trust — it just lets the loopback HTTP
+/// call pass the auth middleware.
+async fn daemon_token() -> Option<String> {
+    let path = crate::config::paths::Paths::data_dir()
+        .join("secrets")
+        .join("daemon_token.json");
+    let content = tokio::fs::read_to_string(path).await.ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
+    Some(parsed.get("token")?.as_str()?.to_string())
+}
+
 pub struct PronunciationClient {
     info: InitializeResult,
 }
@@ -41,14 +54,20 @@ impl PronunciationClient {
             return Err("word and ipa are both required".to_string());
         }
         let client = reqwest::Client::new();
-        let resp = client
+        let mut req = client
             .put("http://127.0.0.1:3001/voice/pronunciations")
             .timeout(std::time::Duration::from_secs(5))
             .json(&serde_json::json!({
                 "word": word,
                 "ipa": ipa,
                 "sounds_like": sounds_like,
-            }))
+            }));
+        // /voice/pronunciations sits behind the daemon's bearer choke point
+        // (#309); an unauthenticated loopback call is a guaranteed 401.
+        if let Some(token) = daemon_token().await {
+            req = req.bearer_auth(token);
+        }
+        let resp = req
             .send()
             .await
             .map_err(|e| format!("Failed to reach the voice service: {e}"))?;

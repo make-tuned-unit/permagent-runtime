@@ -1016,6 +1016,18 @@ impl SessionStorage {
                     // Additive + idempotent, so SPECTRAL_SCHEMA_VERSION is not
                     // bumped.
                     spectral_schema::apply_project_graph_entity_column(&self.pool).await?;
+
+                    // Version-independent: the decision-inbox schema carries the
+                    // decisions kind/answer CHECK-widening rebuild (#579 —
+                    // project_intel_proposal, tool_approval, session_gate, …),
+                    // but it historically only ran on fresh init and the
+                    // v9->v10 step. Any DB already past v10 when a widening
+                    // shipped never received it, so newer decision kinds failed
+                    // the old CHECK at insert (code 275) and the proposing tool
+                    // errored. The function is fully idempotent (sentinel mode)
+                    // and the rebuild is marker-gated to run at most once per
+                    // widening, so run it on every boot.
+                    spectral_schema::apply_decision_inbox_schema(&self.pool).await?;
                 } else {
                     info!("Initializing Spectral schema at {:?}", self.db_path);
                     spectral_schema::init_spectral_db(&self.pool).await?;

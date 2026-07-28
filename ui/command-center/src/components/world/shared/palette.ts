@@ -41,6 +41,11 @@ export const AGENT_TRIM = {
   // shipped): the Watcher / Echo (#672), the daemon's proactive nudge worker.
   // Pale vigil steel-blue — watchful, quiet, distinct from every STATE color.
   watcher: '#9FB8D8',
+  // The Git Steward (crate::steward + automation/steward.yaml) — repo hygiene
+  // with a hard-coded destructive-op guard. Verdigris patina: aged bronze, the
+  // keeper of the grounds. Identity trim only — muted, distinct from every
+  // STATE color (the no-green HUD law governs state signaling, not identity).
+  steward: '#7FA890',
 } as const;
 
 export type AgentHudState = keyof typeof STATE;

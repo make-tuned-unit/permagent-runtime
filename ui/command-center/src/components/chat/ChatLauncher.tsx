@@ -13,7 +13,12 @@ export const CHAT_LAUNCHER_MARGIN = 20;
 export function ChatLauncher() {
   const { colors } = useTheme();
   const [agentName, setAgentName] = useState('Agent');
-  const [chatWindowOpen, setChatWindowOpen] = useState(false);
+  // Store-tracked (not local): createChatWindow sets it on EVERY open path
+  // (dock-detach, drop handler, navigate) — local state only learned about
+  // opens made through this button, leaving the pill visible over a chat
+  // window detached from the dock.
+  const chatWindowOpen = useCommandCenter(s => s.chatWindowOpen);
+  const setChatWindowOpen = useCommandCenter(s => s.setChatWindowOpen);
   const chatDockOpen = useCommandCenter(s => s.chatDockOpen);
   const [hovered, setHovered] = useState(false);
   const [pressed, setPressed] = useState(false);
@@ -60,7 +65,7 @@ export function ChatLauncher() {
         if (existing) setChatWindowOpen(true);
       } catch { /* ignore */ }
     })();
-  }, []);
+  }, [setChatWindowOpen]);
 
   // React to the chat window closing (e.g. user hits the traffic-light) via its
   // close event instead of polling once a second — no timer, fires immediately.
@@ -86,7 +91,7 @@ export function ChatLauncher() {
       disposed = true;
       unlisten?.();
     };
-  }, [chatWindowOpen]);
+  }, [chatWindowOpen, setChatWindowOpen]);
 
   // While the chat window is open, re-assert its stacking just above the main
   // window whenever the main window gains focus. The chat window is independent
@@ -136,7 +141,7 @@ export function ChatLauncher() {
       console.error('Failed to open chat:', e);
       openChatDock();
     }
-  }, [openChatDock]);
+  }, [openChatDock, setChatWindowOpen]);
 
   // Hide whenever chat is already showing — in the detached window OR in the
   // dock. Dock-first made the dock the default surface, but the pill still only

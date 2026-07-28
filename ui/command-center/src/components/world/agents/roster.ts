@@ -1,5 +1,6 @@
-// Agent roster — identity config for the three real inhabitants: Henry the
-// orchestrator, the Reader (local OCR/ingest), and the Librarian. WORLD_VIEW_BIBLE.md
+// Agent roster — identity config for the real inhabitants: Henry the
+// orchestrator, the Librarian, the Reader (local OCR/ingest), the Watcher
+// (proactive nudges), and the Steward (git hygiene). WORLD_VIEW_BIBLE.md
 // §2, §4. Identity (trim color, crown) is fixed here; state NEVER repaints identity
 // trim. The decorative sim agents (Aria/Felix/Nova) were removed — only agents that
 // map to a real backend worker live here, so the AgentPicker, camera-follow, and HUDs
@@ -76,6 +77,22 @@ export const ROSTER: AgentIdentity[] = [
     mezzanineLocked: false,
     home: { x: 7.9, y: 0, z: -7.2 },
     weathering: 0.25,
+  },
+  {
+    // The Steward — git repo hygiene (crate::steward + the scheduled
+    // steward.yaml recipe). Read/propose work runs autonomously; destructive
+    // git ops are guarded in code and surfaced as approval cards. No live
+    // status endpoint yet, so presence is sim-ambient like the Reader/Watcher
+    // (the §4 clamp holds it honest). Home mirrors the Watcher across the
+    // rotunda on the -x side.
+    id: 'steward',
+    name: 'The Steward',
+    role: 'agent',
+    trimColor: AGENT_TRIM.steward,
+    isHenry: false,
+    mezzanineLocked: false,
+    home: { x: -7.5, y: 0, z: -6.0 },
+    weathering: 0.35,
   },
 ];
 

@@ -11,6 +11,7 @@
  * LOGICAL pixels to match Tauri's WebviewWindow option units.
  */
 import type { WebviewWindow as WebviewWindowType } from '@tauri-apps/api/webviewWindow';
+import { useCommandCenter } from './store';
 
 const CHAT_GEOMETRY_KEY = 'permagent.chatWindow.geometry';
 
@@ -54,6 +55,12 @@ export async function createChatWindow(appTheme: string): Promise<WebviewWindowT
   const placement = saved
     ? { x: saved.x, y: saved.y, width: saved.width, height: saved.height }
     : { ...DEFAULT_SIZE, center: true };
+
+  // Every open path (launcher, dock-detach, drop handler, navigate) funnels
+  // through here — flag the window as open so the launcher pill hides
+  // regardless of which surface created it. The launcher's close listener
+  // clears it when the window goes away.
+  useCommandCenter.getState().setChatWindowOpen(true);
 
   return new WebviewWindow('chat', {
     url: 'index.html?view=chat',
