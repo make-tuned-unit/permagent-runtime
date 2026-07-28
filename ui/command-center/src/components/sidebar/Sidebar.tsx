@@ -20,7 +20,10 @@ const SETTINGS_ICON = 'M12 9a3 3 0 100 6 3 3 0 000-6zM19.4 15a1.65 1.65 0 00.33 
 
 // "History" glyph (clock + counter-clockwise arrow) — opens the Sessions
 // overlay to return to a past conversation.
-const SESSIONS_ICON = 'M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8M3 3v5h5M12 7v5l4 2';
+/** Console — terminal prompt (`>_`): the ops surface for Sessions / Inbox /
+ *  Trace / Governance. The row previously reused the Sessions history-clock
+ *  icon, which stopped being contextually right after the consolidation. */
+const CONSOLE_ICON = 'M4 17l6-5-6-5M12 19h8';
 
 const BELL_ICON = 'M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 01-3.4 0';
 
@@ -172,7 +175,7 @@ export function Sidebar() {
           overlay (2026-07-27 consolidation). Toggles closed when any console
           tab is open; opens on Sessions otherwise. */}
       <SidebarRow
-        icon={SESSIONS_ICON}
+        icon={CONSOLE_ICON}
         label="Console"
         active={isConsoleOpen}
         open={open}
