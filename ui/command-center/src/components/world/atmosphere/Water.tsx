@@ -33,8 +33,6 @@ import { InstancedProp, type InstanceTransform } from '../shared/instancing';
 const WATER = {
   surface: '#1E5A6E',
   glow: ENV.neonCyan,
-  // Growth: cool moss/young-foliage — answered nature.
-  foliage: '#3E6B57',
 } as const;
 
 // Geography at rotunda-floor level.
@@ -179,17 +177,14 @@ const poolMat = new THREE.MeshStandardMaterial({
   transparent: true,
   opacity: 0.8,
 });
-const groveGeo = new THREE.ConeGeometry(0.8, 2.4, 7);
-const groveMat = new THREE.MeshStandardMaterial({
-  color: WATER.foliage,
-  roughness: 0.85,
-  metalness: 0,
-});
-
+// The grove tree-cones were removed 2026-07-28 (Jesse: low-poly green cones
+// read as noise, not growth). The POOLS stay — quiet reflecting circles that
+// still reveal with Brain maturity — and the night fireflies still gather
+// over them (NightAmbience reads GROVE_SLOTS).
 function CrownGroves() {
   const signals = getWorldSignals();
   const fullness = fullnessFromMemories(signals.memoryCount);
-  // Reveal groves progressively with the Brain's maturity. 0 ⇒ none.
+  // Reveal pools progressively with the Brain's maturity. 0 ⇒ none.
   const reveal = Math.round(fullness * GROVE_SLOTS.length);
   const slots = GROVE_SLOTS.slice(0, reveal);
 
@@ -198,18 +193,10 @@ function CrownGroves() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [reveal]
   );
-  const groveTransforms = useMemo<InstanceTransform[]>(
-    () => slots.map((s) => ({ position: [s.x, 1.2, s.z] })),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [reveal]
-  );
 
   if (slots.length === 0) return null;
   return (
-    <>
-      <InstancedProp name="water.pool" geometry={poolGeo} material={poolMat} transforms={poolTransforms} receiveShadow />
-      <InstancedProp name="water.grove" geometry={groveGeo} material={groveMat} transforms={groveTransforms} castShadow />
-    </>
+    <InstancedProp name="water.pool" geometry={poolGeo} material={poolMat} transforms={poolTransforms} receiveShadow />
   );
 }
 
