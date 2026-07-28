@@ -173,7 +173,7 @@ export function AutomateView() {
   const [sessions, setSessions] = useState<Map<string, SessionInfo[]>>(new Map());
   const [extensions, setExtensions] = useState<ExtensionInfo[]>([]);
   const [showModal, setShowModal] = useState(false);
-  const [completionToast, setCompletionToast] = useState<string | null>(null);
+  const [completionToast, setCompletionToast] = useState<{ name: string; jobId: string } | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [jobsLoading, setJobsLoading] = useState(true);
   const [jobsError, setJobsError] = useState<string | null>(null);
@@ -228,8 +228,11 @@ export function AutomateView() {
       for (const id of prev) {
         if (!nowRunning.has(id)) {
           const name = newJobs.find(j => j.id === id)?.display_name || id;
-          setCompletionToast(name);
-          setTimeout(() => setCompletionToast(null), 8000);
+          // The banner is the gateway to the produced result (Review button) —
+          // give it a longer life than a plain "completed" note, and only let
+          // the timer clear ITS OWN toast (not a newer completion's).
+          setCompletionToast({ name, jobId: id });
+          setTimeout(() => setCompletionToast(p => (p?.jobId === id ? null : p)), 30000);
         }
       }
       prevRunningRef.current = nowRunning;
@@ -391,6 +394,21 @@ export function AutomateView() {
   };
 
   // Callback for Btn to signal animation complete — clears mount guard + refreshes data
+  // "Review result" on the completion banner: jump straight to the finished
+  // run's detail (findings / report) without scrolling to Recent Activity.
+  const reviewCompleted = useCallback(async (jobId: string, name: string) => {
+    try {
+      const data = await apiFetch<SessionInfo[]>(`/schedule/${encodeURIComponent(jobId)}/sessions?limit=1`);
+      const run = data[0];
+      if (run) {
+        setDetail({ kind: 'run', run: { ...run, jobId }, displayName: name });
+        setCompletionToast(null);
+      }
+    } catch {
+      // Keep the banner — the Recent Activity row remains the fallback path.
+    }
+  }, []);
+
   const handleActionDone = useCallback((key: string, afterRefresh?: () => void) => {
     setActionState(key, null);
     fetchJobs().then(() => afterRefresh?.());
@@ -443,14 +461,25 @@ export function AutomateView() {
         {/* Live run roster — everything at work right now, at a glance */}
         <RunRoster />
 
-        {/* Run completion banner */}
+        {/* Run completion banner — the no-scroll path to the produced result:
+            "Review result" opens the run detail (findings / report) directly. */}
         {completionToast && (
           <div style={{
             marginBottom: 16, padding: '10px 16px', borderRadius: radius.md,
             background: withAlpha(colors.success, 0.1), border: `1px solid ${withAlpha(colors.success, 0.25)}`,
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
           }}>
-            <span style={{ fontSize: 13, color: colors.success }}>&#10003; "{completionToast}" completed.</span>
+            <span style={{ fontSize: 13, color: colors.success, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              &#10003; "{completionToast.name}" completed.
+            </span>
+            <button
+              onClick={() => reviewCompleted(completionToast.jobId, completionToast.name)}
+              style={{
+                padding: '5px 12px', borderRadius: radius.md, background: colors.success,
+                color: colors.textOnCyan, fontWeight: 600, fontSize: 12, border: 'none',
+                cursor: 'pointer', fontFamily: font.body, flexShrink: 0,
+              }}
+            >Review result</button>
             <button onClick={() => setCompletionToast(null)} style={{ background: 'none', border: 'none', color: colors.textDim, cursor: 'pointer', fontSize: 16 }}>&times;</button>
           </div>
         )}
@@ -503,6 +532,45 @@ export function AutomateView() {
                 onSelect={() => setDetail({ kind: 'recipe', job })}
                 selected={detail?.kind === 'recipe' && detail.job.id === job.id} />
             ))}
+          </Section>
+        )}
+
+        {/* ── RECENT ACTIVITY ── (above Recipes: a finished run's produced
+            result is the thing most likely to need a click — confirm/reject —
+            so it must be reachable without scrolling.) */}
+        {jobs.length > 0 && (
+          <Section title="Recent Activity" count={allRuns.length}>
+            {runsLoading && allRuns.length === 0 ? (
+              <SectionState kind="loading" message="Loading run history…" />
+            ) : runsError && allRuns.length === 0 ? (
+              <SectionState kind="error" message={runsError} onRetry={() => { setRunsLoading(true); fetchAllSessions(jobs.map(j => j.id)); }} />
+            ) : allRuns.length === 0 ? (
+              <div style={{ fontSize: 12, color: colors.textDim, padding: '8px 0' }}>
+                No runs yet. History appears here once an automation runs — use "Run Now" on a recipe to try one.
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                {allRuns.map(run => {
+                  const displayName = jobNameMap.get(run.jobId) || run.jobId;
+                  return (
+                    <button key={run.id} onClick={() => setDetail({ kind: 'run', run, displayName })} style={{
+                      display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
+                      borderRadius: radius.sm, background: 'transparent', border: '1px solid transparent',
+                      cursor: 'pointer', textAlign: 'left', color: colors.text, fontFamily: font.body,
+                      width: '100%', transition: 'background 100ms, border-color 100ms', outline: 'none',
+                    }} onMouseEnter={e => (e.currentTarget.style.background = colors.border)}
+                       onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                       onFocus={e => { e.currentTarget.style.background = colors.border; e.currentTarget.style.borderColor = colors.borderHi; }}
+                       onBlur={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.borderColor = 'transparent'; }}>
+                      <span style={{ fontSize: 11, color: colors.success }}>&#10003;</span>
+                      <span style={{ fontSize: 12, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName}</span>
+                      <span style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono, flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>{run.messageCount} msgs</span>
+                      <span style={{ fontSize: 10, color: colors.textDim, flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>{timeAgo(run.createdAt)}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </Section>
         )}
 
@@ -657,42 +725,6 @@ export function AutomateView() {
           )}
         </Section>
 
-        {/* ── RECENT ACTIVITY ── */}
-        {jobs.length > 0 && (
-          <Section title="Recent Activity" count={allRuns.length}>
-            {runsLoading && allRuns.length === 0 ? (
-              <SectionState kind="loading" message="Loading run history…" />
-            ) : runsError && allRuns.length === 0 ? (
-              <SectionState kind="error" message={runsError} onRetry={() => { setRunsLoading(true); fetchAllSessions(jobs.map(j => j.id)); }} />
-            ) : allRuns.length === 0 ? (
-              <div style={{ fontSize: 12, color: colors.textDim, padding: '8px 0' }}>
-                No runs yet. History appears here once an automation runs — use "Run Now" on a recipe to try one.
-              </div>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                {allRuns.map(run => {
-                  const displayName = jobNameMap.get(run.jobId) || run.jobId;
-                  return (
-                    <button key={run.id} onClick={() => setDetail({ kind: 'run', run, displayName })} style={{
-                      display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
-                      borderRadius: radius.sm, background: 'transparent', border: '1px solid transparent',
-                      cursor: 'pointer', textAlign: 'left', color: colors.text, fontFamily: font.body,
-                      width: '100%', transition: 'background 100ms, border-color 100ms', outline: 'none',
-                    }} onMouseEnter={e => (e.currentTarget.style.background = colors.border)}
-                       onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-                       onFocus={e => { e.currentTarget.style.background = colors.border; e.currentTarget.style.borderColor = colors.borderHi; }}
-                       onBlur={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.borderColor = 'transparent'; }}>
-                      <span style={{ fontSize: 11, color: colors.success }}>&#10003;</span>
-                      <span style={{ fontSize: 12, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName}</span>
-                      <span style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono, flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>{run.messageCount} msgs</span>
-                      <span style={{ fontSize: 10, color: colors.textDim, flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>{timeAgo(run.createdAt)}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </Section>
-        )}
       </div>
 
       {/* ── Detail panel (slides in from right) ── */}

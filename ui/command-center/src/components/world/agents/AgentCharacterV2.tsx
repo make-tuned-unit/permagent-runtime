@@ -340,8 +340,9 @@ export function AgentCharacterV2({
               backdropFilter: 'blur(4px)',
             }}
           >
+            {/* Henry is the AGENT'S NAME (user-chosen persona), not a role —
+                no "(Orchestrator)" title (Jesse, 2026-07-28). */}
             {identity.name}
-            {identity.isHenry && ' (Orchestrator)'}
             {identity.id === 'librarian' && ' (The Brain)'}
           </div>
         </Html>

@@ -127,7 +127,26 @@ impl EnabledExtensionsState {
     ) -> Vec<ExtensionConfig> {
         extension_data
             .and_then(Self::from_extension_data)
-            .map(|state| state.extensions)
+            .map(|state| {
+                let mut extensions = state.extensions;
+                // Additive platform refresh (2026-07-28): the stored set is a
+                // snapshot from session creation, so a session that predates a
+                // platform extension never gained its tools — the agent then
+                // truthfully told the user "I have no create_person tool" in a
+                // months-old chat. Merge in config-enabled PLATFORM extensions
+                // missing from the snapshot; MCP/user-added servers stay
+                // strictly session-controlled (they carry auth/process cost).
+                let known: std::collections::HashSet<String> =
+                    extensions.iter().map(|e| e.name().to_string()).collect();
+                for cfg in crate::config::extensions::get_enabled_extensions_with_config(config) {
+                    if matches!(cfg, ExtensionConfig::Platform { .. })
+                        && !known.contains(&cfg.name().to_string())
+                    {
+                        extensions.push(cfg);
+                    }
+                }
+                extensions
+            })
             .unwrap_or_else(|| {
                 crate::config::extensions::get_enabled_extensions_with_config(config)
             })
@@ -175,11 +194,6 @@ mod tests {
         data
     }
 
-    #[test_case(
-        Some(extension_data_with(vec![test_extension()])),
-        Some(vec![test_extension()])
-        ; "prefers_session_data"
-    )]
     #[test_case(None, None ; "no_session_falls_back_to_config")]
     #[test_case(Some(ExtensionData::default()), None ; "empty_session_data_falls_back_to_config")]
     fn test_extensions_or_default(
@@ -194,6 +208,38 @@ mod tests {
             EnabledExtensionsState::extensions_or_default(extension_data.as_ref(), &config),
             expected,
         );
+    }
+
+    /// The stored session set is preserved (and stays first), and
+    /// config-enabled PLATFORM extensions missing from the snapshot are merged
+    /// in additively — the 2026-07-28 fix for old sessions never gaining
+    /// newly shipped platform tools (create_person et al.). MCP/user servers
+    /// are never resurrected by the merge.
+    #[test]
+    fn session_data_keeps_stored_set_and_merges_missing_platform_extensions() {
+        let config = test_config();
+        let stored = vec![test_extension()];
+        let data = extension_data_with(stored.clone());
+        let result = EnabledExtensionsState::extensions_or_default(Some(&data), &config);
+
+        // Stored entries survive, in order, at the front.
+        assert_eq!(result[0], stored[0]);
+        // Every added entry is a Platform extension enabled in config…
+        let config_platform: std::collections::HashSet<String> =
+            crate::config::extensions::get_enabled_extensions_with_config(&config)
+                .into_iter()
+                .filter(|e| matches!(e, ExtensionConfig::Platform { .. }))
+                .map(|e| e.name().to_string())
+                .collect();
+        for added in &result[1..] {
+            assert!(matches!(added, ExtensionConfig::Platform { .. }));
+            assert!(config_platform.contains(&added.name().to_string()));
+        }
+        // …and no name appears twice (idempotent merge).
+        let mut seen = std::collections::HashSet::new();
+        for e in &result {
+            assert!(seen.insert(e.name().to_string()), "duplicate {}", e.name());
+        }
     }
 
     #[test]

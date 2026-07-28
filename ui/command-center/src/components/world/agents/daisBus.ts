@@ -33,3 +33,19 @@ export function triggerDaisBeam(agentId: string): void {
 export function getDaisBeam(): DaisBeam {
   return beam;
 }
+
+/**
+ * Sustained dais presence — while a chat conversation with Henry is open he
+ * stands on the dais under a continuous soft beam ("beaming up" to the user
+ * for the whole conversation), distinct from the short task-pickup pulse.
+ * Set by behavior (reads the chat dock state), read per-frame by TaskDais.
+ */
+let presence = false;
+
+export function setDaisPresence(on: boolean): void {
+  presence = on;
+}
+
+export function getDaisPresence(): boolean {
+  return presence;
+}

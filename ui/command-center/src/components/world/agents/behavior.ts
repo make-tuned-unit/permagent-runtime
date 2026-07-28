@@ -12,7 +12,8 @@ import { ensureMotion, getAgentPosition, getMotion, setEngaged, setPath, stopAge
 import { ensurePlaceholderAnchors } from './placeholderAnchors';
 import { getNudge } from './watcherNudge';
 import { STAIR, stairPointAt } from '../areas/hall/MezzanineLibrary';
-import { DAIS, BEAM_MS, triggerDaisBeam } from './daisBus';
+import { DAIS, BEAM_MS, setDaisPresence, triggerDaisBeam } from './daisBus';
+import { useCommandCenter } from '../../../lib/store';
 
 const WANDER_MIN_MS = 15000;
 const WANDER_MAX_MS = 30000;
@@ -211,6 +212,30 @@ export function useAgentBehavior(states: AgentRuntimeState[]): void {
         }
       }
 
+      // ── Henry beams up during an open conversation ──
+      // While the chat dock is open Henry stands ON the dais under the
+      // sustained beam — present to the user for the whole conversation.
+      // Wander and the Antechamber stroll are suppressed; when the dock
+      // closes he steps down and normal life resumes.
+      const chatOpen = useCommandCenter.getState().chatDockOpen;
+      const henryM = getMotion('henry');
+      if (chatOpen) {
+        setDaisPresence(true);
+        if (henryM && !henryM.walking && henryM.engaged === 'none' && henryM.queue.length === 0) {
+          const dx = henryM.x - DAIS.x;
+          const dz = henryM.z - DAIS.z;
+          if (dx * dx + dz * dz > 0.35 * 0.35 || henryM.y < DAIS.topY - 0.05) {
+            setPath('henry', [{ x: DAIS.x, y: DAIS.topY, z: DAIS.z, facing: Math.PI }]);
+          }
+        }
+      } else {
+        setDaisPresence(false);
+        if (henryM && !henryM.walking && henryM.engaged === 'none' && henryM.queue.length === 0 && henryM.y > 0.1) {
+          // Step down off the dais.
+          setPath('henry', [{ x: DAIS.radius + 1.6, y: 0, z: 1.5 }]);
+        }
+      }
+
       for (const agent of ROSTER) {
         const m = getMotion(agent.id);
         if (!m) continue;
@@ -218,6 +243,8 @@ export function useAgentBehavior(states: AgentRuntimeState[]): void {
 
         if (m.walking || m.engaged !== 'none' || m.queue.length > 0) continue;
         if (hud === 'working' || hud === 'error') continue;
+        // Conversation presence pins Henry to the dais — no wander, no stroll.
+        if (agent.isHenry && chatOpen) continue;
 
         // Henry's Antechamber stroll — through the threshold and back (§4).
         if (agent.isHenry && now >= henryStrollAtRef.current) {
