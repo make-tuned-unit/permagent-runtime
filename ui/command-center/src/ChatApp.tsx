@@ -18,9 +18,8 @@ import { InspectionPanel } from './components/inspection/InspectionPanel';
 import { AwarenessIndicator } from './components/awareness/AwarenessIndicator';
 import { PreTurnPreview } from './components/awareness/PreTurnPreview';
 import { trackChatGeometry } from './lib/chatWindow';
-import { VoiceHost } from './components/voice/VoiceHost';
 import { VoiceOrb } from './components/voice/VoiceOrb';
-import { VOICE_LIVE_KEY, readLiveConversation, requestVoiceEnd } from './lib/voiceHandoff';
+import { readLiveConversation, requestVoiceEnd } from './lib/voiceHandoff';
 // VoiceButton moved to ChatInput row (beside send button)
 
 function timeAgo(dateStr: string): string {
@@ -265,49 +264,39 @@ export default function ChatApp() {
 
       {inspectionOpen && <InspectionPanel onClose={() => setInspectionOpen(false)} />}
 
-      {/* This window's voice engine + hands-free orb takeover. The engine is
-          window-scoped, so a conversation started here lives here regardless
-          of what the main window's chat surfaces do. */}
-      <VoiceHost />
+      {/* MIRROR ONLY — the engine lives in the main window for the app's
+          lifetime (see VoiceHost), so opening/closing this window can never
+          interrupt the audio. This just renders the live feed. */}
       <ChatWindowVoiceOrb />
     </div>
   );
 }
 
-// Hands-free orb takeover for the popped-out chat window (its layout doesn't
-// use ChatView, which carries the dock's orb).
-//
-// Two sources: this window's OWN conversation (post-handoff, live analysers),
-// or the MIRROR of a conversation still finishing its turn in the main window
-// — so popping out mid-response opens straight into orb view with the speech
-// carrying through, and the real handoff swaps in underneath at turn end.
+// Mirror orb for the popped-out chat window. The conversation runs in the
+// main window's engine; this polls the live feed (state + audio level, ~150ms)
+// so the orb appears the instant the window opens and dances with the real
+// audio. Clicking it asks the owner to end the conversation.
+const noAnalyser = () => null;
+
 function ChatWindowVoiceOrb() {
-  const conv = useCommandCenter(s => s.voiceConversation);
-  const [remote, setRemote] = useState<{ state: string } | null>(null);
+  const [live, setLive] = useState(() => readLiveConversation());
 
   useEffect(() => {
-    const read = () => setRemote(readLiveConversation());
-    read();
-    const id = setInterval(read, 1000);
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === VOICE_LIVE_KEY) read();
-    };
-    window.addEventListener('storage', onStorage);
-    return () => {
-      clearInterval(id);
-      window.removeEventListener('storage', onStorage);
-    };
+    // Poll — WKWebView does not reliably deliver `storage` events between
+    // separate webviews, which is what made the earlier design flaky.
+    const id = setInterval(() => setLive(readLiveConversation()), 200);
+    return () => clearInterval(id);
   }, []);
 
-  if (!conv && !remote) return null;
-  const noAnalyser = () => null;
+  if (!live) return null;
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 90 }}>
       <VoiceOrb
-        state={conv?.state ?? remote?.state ?? 'connecting'}
-        getPlaybackAnalyser={conv?.getPlaybackAnalyser ?? noAnalyser}
-        getMicAnalyser={conv?.getMicAnalyser ?? noAnalyser}
-        onExit={conv?.exit ?? requestVoiceEnd}
+        state={live.state}
+        getPlaybackAnalyser={noAnalyser}
+        getMicAnalyser={noAnalyser}
+        mirrorLevel={live.level}
+        onExit={requestVoiceEnd}
       />
     </div>
   );

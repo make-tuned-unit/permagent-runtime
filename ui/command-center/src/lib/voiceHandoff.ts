@@ -1,67 +1,35 @@
-// Voice conversation handoff between the main window and the popped-out chat
-// window.
+// Cross-window voice conversation signaling.
 //
-// A live conversation's resources (mic stream, audio graph, WS) are bound to
-// ONE window's JS context and cannot migrate. What CAN move is the
-// conversation itself: the leaving window ends its hands-free session and
-// posts a handoff ticket; the receiving window consumes it and starts
-// hands-free bound to the SAME chat session — Henry continues where he was.
+// ARCHITECTURE (2026-07-29, replaces the handoff design): the voice ENGINE —
+// mic, VAD, playback, socket — lives in the MAIN window permanently and never
+// migrates. The main window always exists, so the conversation physically
+// cannot be interrupted by opening/closing the chat window. Every other
+// surface (the popped-out chat window's orb) is a MIRROR: it renders from the
+// live feed below and sends commands back.
 //
-// Transport is localStorage (shared origin across both windows): writable
-// synchronously in beforeunload, readable at mount (so a window created
-// AFTER the ticket was posted still sees it — Tauri events would be lost),
-// and `storage` events push it live to an already-open window.
-
-const KEY = 'permagent-voice-handoff';
-const FRESH_MS = 20_000;
-
-export type VoiceHandoffTarget = 'chat' | 'main';
-
-export const VOICE_HANDOFF_KEY = KEY;
-
-export function requestVoiceHandoff(target: VoiceHandoffTarget): void {
-  try {
-    localStorage.setItem(KEY, JSON.stringify({ target, at: Date.now() }));
-  } catch { /* private mode — conversation simply ends in the old window */ }
-}
-
-/** Consume a pending handoff addressed to `target`. Stale tickets (>20s, e.g.
- *  surviving an app relaunch) are discarded — never resurrect a mic session
- *  the user didn't just ask for. */
-export function consumeVoiceHandoff(target: VoiceHandoffTarget): boolean {
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return false;
-    const t = JSON.parse(raw) as { target?: string; at?: number };
-    if (typeof t.at !== 'number' || Date.now() - t.at > FRESH_MS) {
-      localStorage.removeItem(KEY);
-      return false;
-    }
-    if (t.target !== target) return false;
-    localStorage.removeItem(KEY);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// ── Live-conversation mirror ─────────────────────────────────────────────
-// While a hands-free conversation runs anywhere, its owner heartbeats the
-// current voice state here. Another window (the freshly popped-out chat)
-// renders the orb in MIRROR mode from this — the user sees one continuous
-// conversation while the audio finishes in the owning window and the real
-// handoff happens underneath at turn end.
+// Transport is localStorage polling, NOT `storage` events — WKWebView does
+// not reliably deliver storage events across separate webviews (the original
+// handoff design died on exactly that), and a 150-400ms poll of a single key
+// is free.
 
 const LIVE_KEY = 'permagent-voice-live';
 const END_KEY = 'permagent-voice-end';
-const LIVE_FRESH_MS = 8_000;
+const START_KEY = 'permagent-voice-start';
+const CMD_FRESH_MS = 10_000;
+/** The owner heartbeats every ~150ms; 2s staleness = owner gone. */
+const LIVE_FRESH_MS = 2_000;
 
-export const VOICE_LIVE_KEY = LIVE_KEY;
-export const VOICE_END_KEY = END_KEY;
+// ── Live feed (owner → mirrors) ─────────────────────────────────────────────
 
-export function publishLiveConversation(state: string): void {
+export interface LiveConversation {
+  state: string;
+  /** Smoothed 0..~1 audio level so mirror orbs dance with the real audio. */
+  level: number;
+}
+
+export function publishLiveConversation(state: string, level: number): void {
   try {
-    localStorage.setItem(LIVE_KEY, JSON.stringify({ state, at: Date.now() }));
+    localStorage.setItem(LIVE_KEY, JSON.stringify({ state, level, at: Date.now() }));
   } catch { /* private mode */ }
 }
 
@@ -69,19 +37,41 @@ export function clearLiveConversation(): void {
   try { localStorage.removeItem(LIVE_KEY); } catch { /* ignore */ }
 }
 
-export function readLiveConversation(): { state: string } | null {
+export function readLiveConversation(): LiveConversation | null {
   try {
     const raw = localStorage.getItem(LIVE_KEY);
     if (!raw) return null;
-    const t = JSON.parse(raw) as { state?: string; at?: number };
+    const t = JSON.parse(raw) as { state?: string; level?: number; at?: number };
     if (typeof t.at !== 'number' || Date.now() - t.at > LIVE_FRESH_MS) return null;
-    return typeof t.state === 'string' ? { state: t.state } : null;
+    if (typeof t.state !== 'string') return null;
+    return { state: t.state, level: typeof t.level === 'number' ? t.level : 0 };
   } catch {
     return null;
   }
 }
 
-/** Ask whichever window owns the conversation to end it (mirror-orb click). */
-export function requestVoiceEnd(): void {
-  try { localStorage.setItem(END_KEY, String(Date.now())); } catch { /* ignore */ }
+// ── Commands (mirrors → owner, polled by the owner) ─────────────────────────
+
+function requestCmd(key: string): void {
+  try { localStorage.setItem(key, String(Date.now())); } catch { /* ignore */ }
 }
+
+function consumeCmd(key: string): boolean {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return false;
+    localStorage.removeItem(key);
+    const at = Number(raw);
+    return Number.isFinite(at) && Date.now() - at <= CMD_FRESH_MS;
+  } catch {
+    return false;
+  }
+}
+
+/** Mirror-orb click: ask the owner to end the conversation. */
+export function requestVoiceEnd(): void { requestCmd(END_KEY); }
+export function consumeVoiceEnd(): boolean { return consumeCmd(END_KEY); }
+
+/** Chat-window mic button: ask the owner to start a hands-free conversation. */
+export function requestVoiceStart(): void { requestCmd(START_KEY); }
+export function consumeVoiceStart(): boolean { return consumeCmd(START_KEY); }

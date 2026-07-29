@@ -313,9 +313,9 @@ function VoiceConversationFallback() {
   const conv = useCommandCenter(s => s.voiceConversation);
   const dockOpen = useCommandCenter(s => s.chatDockOpen);
   const chatWindowOpen = useCommandCenter(s => s.chatWindowOpen);
-  // With the chat window open, ITS mirror orb is the conversation surface —
-  // never take over the main app underneath it, even while this window's
-  // engine finishes the current turn's audio before the deferred handoff.
+  // The chat window's mirror orb is the conversation surface while it's open,
+  // so the main app doesn't also take over. When the dock is open, ChatView
+  // carries the orb inside the sidebar. Otherwise this is the surface.
   if (!conv || dockOpen || chatWindowOpen) return null;
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 90 }}>

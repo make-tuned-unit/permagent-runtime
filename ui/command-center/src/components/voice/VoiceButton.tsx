@@ -5,9 +5,15 @@
  * Connection: persistent socket, auto-connects on first use.
  * State: idle → click to activate → ready → hold to talk → recording → processing → playing → ready.
  */
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { VoiceState, isInterruptibleState } from '../../hooks/useVoice';
 import { useCommandCenter } from '../../lib/store';
+import { readLiveConversation, requestVoiceEnd, requestVoiceStart } from '../../lib/voiceHandoff';
+
+/** True inside the popped-out chat WebviewWindow (index.html?view=chat). */
+const isChatWindow =
+  typeof location !== 'undefined' &&
+  new URLSearchParams(location.search).get('view') === 'chat';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/useTheme';
 import { VoiceVisualizer } from './VoiceVisualizer';
@@ -47,21 +53,31 @@ function isTextInputFocused(): boolean {
 
 export function VoiceButton() {
   const { colors } = useTheme();
-  // Pure view over the window's VoiceHost engine (store slice): the mic and
-  // socket live at the window root, so this button unmounting (dock close,
-  // detach, view switch) never interrupts a conversation.
+  // Pure view over the MAIN window's VoiceHost engine (store slice). In the
+  // popped-out chat window there is no local engine — this becomes a remote
+  // control: it reads the polled live feed and sends start/end commands, so
+  // one conversation runs in one place no matter which surface drives it.
   const engine = useCommandCenter(s => s.voiceEngine);
-  const state = (engine?.state ?? 'idle') as VoiceState;
+  const [remote, setRemote] = useState(() => (isChatWindow ? readLiveConversation() : null));
+  useEffect(() => {
+    if (!isChatWindow) return;
+    const id = setInterval(() => setRemote(readLiveConversation()), 300);
+    return () => clearInterval(id);
+  }, []);
+
+  const state = (engine?.state ?? remote?.state ?? 'idle') as VoiceState;
   const error = engine?.error ?? null;
-  const handsFree = engine?.handsFree ?? false;
+  const handsFree = engine?.handsFree ?? (isChatWindow && remote !== null);
   const noop = () => {};
-  const activate = engine?.activate ?? noop;
-  const deactivate = engine?.deactivate ?? noop;
+  const activate = engine?.activate ?? (isChatWindow ? requestVoiceStart : noop);
+  const deactivate = engine?.deactivate ?? (isChatWindow ? requestVoiceEnd : noop);
   const startRecording = engine?.startRecording ?? noop;
   const stopRecording = engine?.stopRecording ?? noop;
   const interrupt = engine?.interrupt ?? noop;
   const getAnalyser = engine?.getAnalyser ?? (() => null);
-  const setHandsFree = engine?.setHandsFree ?? noop;
+  const setHandsFree =
+    engine?.setHandsFree ??
+    (isChatWindow ? ((on: boolean) => (on ? requestVoiceStart() : requestVoiceEnd())) : noop);
 
   const isRecordingRef = useRef(false);
   const stateRef = useRef(state);

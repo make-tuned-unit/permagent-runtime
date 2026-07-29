@@ -72,11 +72,15 @@ export function VoiceOrb({
   state,
   getPlaybackAnalyser,
   getMicAnalyser,
+  mirrorLevel,
   onExit,
 }: {
   state: string;
   getPlaybackAnalyser: () => AnalyserNode | null;
   getMicAnalyser: () => AnalyserNode | null;
+  /** Mirror mode (popped-out window): audio level relayed from the owning
+   *  window, since the analysers live in that window's audio graph. */
+  mirrorLevel?: number;
   onExit: () => void;
 }) {
   const { colors } = useTheme();
@@ -85,6 +89,8 @@ export function VoiceOrb({
   const levelRef = useRef(0);
   const stateRef = useRef(state);
   stateRef.current = state;
+  const mirrorRef = useRef(mirrorLevel);
+  mirrorRef.current = mirrorLevel;
 
   const points = useMemo(makePoints, []);
 
@@ -126,7 +132,14 @@ export function VoiceOrb({
       // ── Audio level, split into bands ──
       let tLow = 0, tMid = 0, tHigh = 0;
       const analyser = s === 'playing' ? getPlaybackAnalyser() : getMicAnalyser();
-      if (s === 'processing' || s === 'connecting' || !analyser) {
+      const mirror = mirrorRef.current;
+      if (typeof mirror === 'number' && !analyser) {
+        // Mirror mode: one relayed level, spread across the bands with
+        // synthetic detail so the orb still shimmers and churns convincingly.
+        tLow = mirror;
+        tMid = mirror * (0.7 + 0.3 * Math.sin(t * 0.011));
+        tHigh = mirror * (0.5 + 0.5 * Math.sin(t * 0.019 + 1.7));
+      } else if (s === 'processing' || s === 'connecting' || !analyser) {
         phase += 0.016;
         tLow = 0.10 + 0.06 * (0.5 + 0.5 * Math.sin(phase));
         tMid = tLow * 0.6;
