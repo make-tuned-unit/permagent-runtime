@@ -38,7 +38,12 @@ export function stopSpeaking(): void {
   playSeq += 1;
   if (currentAudio) {
     currentAudio.pause();
+    // Revoke BEFORE clearing src: blanking src doesn't fire 'ended', so the
+    // onended revoke never runs on this path and every superseded/muted reply
+    // leaked its blob for the life of the window.
+    const url = currentAudio.src;
     currentAudio.src = '';
+    if (url.startsWith('blob:')) URL.revokeObjectURL(url);
     currentAudio = null;
   }
 }
@@ -74,6 +79,24 @@ export function replyDedupeKey(sessionId: string | null, content: string): strin
   let h = 0;
   for (let i = 0; i < content.length; i++) h = (h * 31 + content.charCodeAt(i)) | 0;
   return `${sessionId ?? 'nosession'}:${h}`;
+}
+
+/**
+ * Record a reply as already voiced WITHOUT synthesizing it — for turns spoken
+ * by the /voice pipeline, which bypasses this module entirely.
+ *
+ * Without this, a voice-spoken reply carried no dedupe key, so a later SSE
+ * replay (fresh window, reconnect) would synthesize and speak it again. The
+ * previous defense was a blanket 2.5s mute after every stream connect, which
+ * also silently swallowed genuinely NEW replies that landed inside the window
+ * (session switch, or a reconnect mid-conversation) — audio just vanished with
+ * no indication. Marking is precise where the timer was indiscriminate.
+ */
+export function markReplySpoken(sessionId: string | null, content: string): void {
+  if (!content) return;
+  try {
+    localStorage.setItem(SPOKEN_KEY, replyDedupeKey(sessionId, content));
+  } catch { /* private mode — dedupe degrades, playback still correct */ }
 }
 
 /** Speak a completed reply. No-op when muted; a newer reply supersedes an

@@ -17,6 +17,7 @@ import { useCommandCenter } from '../../lib/store';
 import {
   clearLiveConversation,
   consumeVoiceEnd,
+  consumeVoiceInterrupt,
   consumeVoiceStart,
   publishLiveConversation,
 } from '../../lib/voiceHandoff';
@@ -108,9 +109,10 @@ export function VoiceHost() {
       if (consumeVoiceStart() && !handsFreeRef.current) {
         void setHandsFree(true);
       }
+      if (consumeVoiceInterrupt()) interrupt();
     }, 400);
     return () => clearInterval(id);
-  }, [setHandsFree, deactivate]);
+  }, [setHandsFree, deactivate, interrupt]);
 
   // ── Closing the chat window brings the conversation home to the sidebar ──
   const prevChatWindowOpen = useRef(chatWindowOpen);
