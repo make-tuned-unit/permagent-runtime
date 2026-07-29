@@ -8,7 +8,7 @@
 // are the ones that actually broke.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { markReplySpoken, replyDedupeKey, setSpeakReplies } from './speakReplies';
+import { hasSpokenKey, markReplySpoken, replyDedupeKey, setSpeakReplies } from './speakReplies';
 
 vi.mock('./api', () => ({
   synthesizeVoice: vi.fn(async () => new Blob([''], { type: 'audio/wav' })),
@@ -36,20 +36,39 @@ describe('markReplySpoken', () => {
 
   it('records the key so a voice-pipeline turn dedupes a later SSE replay', () => {
     markReplySpoken('s1', 'Lets begin');
-    expect(localStorage.getItem('permagent-last-spoken-key')).toBe(
-      replyDedupeKey('s1', 'Lets begin'),
-    );
+    expect(hasSpokenKey(replyDedupeKey('s1', 'Lets begin'))).toBe(true);
   });
 
-  it('ignores empty content (a partial stream frame must not claim the slot)', () => {
+  it('ignores empty content (a partial stream frame must not claim a slot)', () => {
     markReplySpoken('s1', '');
     expect(localStorage.getItem('permagent-last-spoken-key')).toBeNull();
   });
 
-  it('advances with each new reply so consecutive distinct turns both speak', () => {
+  it('leaves a distinct reply un-deduped so consecutive turns both speak', () => {
     markReplySpoken('s1', 'first');
-    const a = localStorage.getItem('permagent-last-spoken-key');
-    markReplySpoken('s1', 'second');
-    expect(localStorage.getItem('permagent-last-spoken-key')).not.toBe(a);
+    expect(hasSpokenKey(replyDedupeKey('s1', 'second'))).toBe(false);
+  });
+
+  // THE regression: dedupe was a single localStorage slot, so a later voice
+  // turn evicted the session's opening reply and the next history replay
+  // re-spoke the greeting. Earlier replies must stay remembered.
+  it('keeps earlier replies deduped after newer ones are marked', () => {
+    markReplySpoken('s1', 'Lets begin');
+    for (const later of ['turn one', 'turn two', 'turn three']) {
+      markReplySpoken('s1', later);
+    }
+    expect(hasSpokenKey(replyDedupeKey('s1', 'Lets begin'))).toBe(true);
+  });
+
+  it('upgrades the pre-ring single-key format without re-speaking it', () => {
+    localStorage.setItem('permagent-last-spoken-key', replyDedupeKey('s1', 'Lets begin'));
+    expect(hasSpokenKey(replyDedupeKey('s1', 'Lets begin'))).toBe(true);
+  });
+
+  it('bounds growth, evicting only the oldest', () => {
+    for (let i = 0; i < 20; i++) markReplySpoken('s1', `reply ${i}`);
+    expect(hasSpokenKey(replyDedupeKey('s1', 'reply 19'))).toBe(true);
+    expect(hasSpokenKey(replyDedupeKey('s1', 'reply 0'))).toBe(false);
+    expect(JSON.parse(localStorage.getItem('permagent-last-spoken-key')!)).toHaveLength(8);
   });
 });

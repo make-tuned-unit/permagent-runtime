@@ -84,28 +84,55 @@ export function ChatLauncher() {
     };
   }, [setChatWindowOpen]);
 
-  // React to the chat window closing (e.g. user hits the traffic-light) via its
-  // close event instead of polling once a second — no timer, fires immediately.
+  // React to the chat window going away — by OBSERVING it, never by
+  // intercepting its close.
+  //
+  // This used to call `existing.onCloseRequested(...)`. That is a trap: Tauri
+  // core calls `api.prevent_close()` whenever ANY js listener is registered for
+  // `tauri://close-requested` on that window (manager/window.rs), so merely
+  // watching the close suppressed the native one — the window then survived
+  // unless some JS path called destroy(), and when that didn't land the X
+  // stopped working entirely. `tauri://destroyed` fires AFTER the window is
+  // already gone and carries no such veto, so it is safe to listen for.
+  //
+  // The poll is the backstop: it also covers a crash or force-quit, and it
+  // guarantees the sidebar comes back even if the destroyed event is missed
+  // while the webview is being torn down.
   useEffect(() => {
     if (!isTauri || !chatWindowOpen) return;
     let unlisten: (() => void) | undefined;
     let disposed = false;
+    let poll: ReturnType<typeof setInterval> | undefined;
+
+    const markGone = () => {
+      if (disposed) return;
+      disposed = true; // idempotent: event and poll race, only one may win
+      setChatWindowOpen(false);
+    };
+
     (async () => {
       try {
         const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+        const { TauriEvent } = await import('@tauri-apps/api/event');
         const existing = await WebviewWindow.getByLabel('chat');
         if (!existing) {
-          setChatWindowOpen(false);
+          markGone();
           return;
         }
-        const un = await existing.onCloseRequested(() => setChatWindowOpen(false));
+        const un = await existing.listen(TauriEvent.WINDOW_DESTROYED, markGone);
         if (disposed) un(); else unlisten = un;
+
+        poll = setInterval(() => {
+          void WebviewWindow.getByLabel('chat').then(w => { if (!w) markGone(); }).catch(() => {});
+        }, 500);
       } catch {
-        setChatWindowOpen(false);
+        markGone();
       }
     })();
+
     return () => {
       disposed = true;
+      if (poll) clearInterval(poll);
       unlisten?.();
     };
   }, [chatWindowOpen, setChatWindowOpen]);
