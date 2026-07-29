@@ -10,6 +10,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { getApiBaseUrl } from '../lib/api';
 import { getStreamToken } from '../lib/streamToken';
 import { markReplySpoken } from '../lib/speakReplies';
+import { spectrumLooksLikeVoice } from './vadSpectrum';
 
 export type VoiceState =
   | 'idle'          // Voice off — no socket
@@ -695,19 +696,12 @@ export function useVoice(options: UseVoiceOptions = {}) {
    *  keyboard click is a single-buffer transient; speech sustains — this was
    *  tripping recording on every keystroke (empty-transcript chatter in the
    *  daemon log). */
-  const VAD_ONSET_STREAK = 3;
-  /**
-   * Spectral gate: fraction of energy that must sit in the low/voice bands for
-   * a loud buffer to count as speech.
-   *
-   * Level alone cannot separate a mechanical key click from a word — the click
-   * is often LOUDER. But it is broadband (a wide, bright transient), while
-   * voiced speech concentrates energy in its low harmonics. With fftSize 64 at
-   * 16kHz each bin spans 250Hz, so bins 0-4 cover roughly 0-1.2kHz (voice) and
-   * the rest carry the click's brightness. This costs no latency, unlike
-   * simply demanding a longer onset streak, which eats the first word.
-   */
-  const VAD_VOICE_BAND_RATIO = 0.55;
+  // Two buffers (~256ms), not three. Every buffer in the streak must ALSO pass
+  // the spectral gate, and natural speech is full of fricatives and plosives
+  // whose buffers are legitimately bright — a long all-must-pass run is easy to
+  // stall on. See the decay below: a single failing buffer no longer wipes the
+  // streak, so onset survives a consonant without dropping the word.
+  const VAD_ONSET_STREAK = 2;
 
   const stopVadMonitor = useCallback(() => {
     vadProcRef.current?.disconnect();
@@ -723,8 +717,10 @@ export function useVoice(options: UseVoiceOptions = {}) {
   }, []);
 
   /** True when the current mic spectrum looks like voice rather than a
-   *  broadband transient (see VAD_VOICE_BAND_RATIO). Fails OPEN when no
-   *  analyser exists, so voice never becomes undetectable. */
+   *  broadband transient. Fails OPEN when no analyser exists, so voice never
+   *  becomes undetectable. The judgement itself is pure and unit-tested in
+   *  vadSpectrum.ts — it was previously inline, and wrong in a way that
+   *  rejected all speech. */
   const vadSpectrumRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
   const looksLikeVoice = useCallback(() => {
     const analyser = micAnalyserRef.current;
@@ -734,14 +730,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     }
     const data = vadSpectrumRef.current;
     analyser.getByteFrequencyData(data);
-    let low = 0;
-    let total = 0;
-    for (let i = 0; i < data.length; i++) {
-      total += data[i];
-      if (i <= 4) low += data[i];
-    }
-    if (total <= 0) return true;
-    return low / total >= VAD_VOICE_BAND_RATIO;
+    return spectrumLooksLikeVoice(data);
   }, []);
 
   const startVadMonitor = useCallback(() => {
@@ -784,7 +773,12 @@ export function useVoice(options: UseVoiceOptions = {}) {
             startRecordingRef.current?.();
           }
         } else {
-          vadOnsetStreakRef.current = 0;
+          // DECAY, don't reset. A hard reset meant one legitimately bright
+          // buffer mid-onset (a fricative or plosive opening a word) threw away
+          // the whole streak, so speech starting on "s", "t" or "wh" could
+          // stall indefinitely. Decay still starves an isolated key click,
+          // which produces a single loud buffer surrounded by quiet ones.
+          vadOnsetStreakRef.current = Math.max(0, vadOnsetStreakRef.current - 1);
         }
       } else if (s === 'recording') {
         if (rms > VAD_KEEPALIVE) {

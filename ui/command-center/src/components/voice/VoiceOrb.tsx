@@ -265,7 +265,20 @@ export function VoiceOrb({
         ? colors.danger
         : colors.cyan;
 
-  const label = speaking ? 'Speaking' : thinking ? 'Thinking…' : 'Listening';
+  // Be honest about the states that are NOT listening. This defaulted every
+  // unrecognised state to "Listening", so a dropped socket ('idle') or a failed
+  // one ('error') looked exactly like a live, armed mic — the agent appeared to
+  // be listening and simply never answering, with nothing on screen to say
+  // otherwise. A stalled conversation must be visibly stalled.
+  const label = speaking
+    ? 'Speaking'
+    : thinking
+      ? 'Thinking…'
+      : state === 'error'
+        ? 'Voice error — click to exit'
+        : state === 'idle'
+          ? 'Reconnecting…'
+          : 'Listening';
 
   return (
     <div
