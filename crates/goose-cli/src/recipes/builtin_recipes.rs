@@ -57,9 +57,39 @@ pub fn builtin_recipe_file(recipe_name: &str) -> Option<RecipeFile> {
     })
 }
 
+/// Every built-in recipe, as `RecipeInfo` rows for `recipe list`. Without
+/// these, `permagent recipe list` printed "No recipes found" on a clean
+/// install even though `--recipe permagent-coding` works — the one command
+/// someone runs to discover the harness name hid it.
+pub fn builtin_recipe_infos() -> Vec<crate::recipes::github_recipe::RecipeInfo> {
+    use crate::recipes::github_recipe::{RecipeInfo, RecipeSource};
+    vec![RecipeInfo {
+        name: PERMAGENT_CODING_RECIPE_NAME.to_string(),
+        source: RecipeSource::Builtin,
+        path: format!("<builtin>/{PERMAGENT_CODING_RECIPE_NAME}.yaml"),
+        title: Some(PERMAGENT_CODING_RECIPE_TITLE.to_string()),
+        description: Some(
+            "The Permagent coding harness — a fully configured coding session.".to_string(),
+        ),
+    }]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builtin_infos_are_listed_and_resolvable() {
+        let infos = builtin_recipe_infos();
+        assert!(!infos.is_empty(), "built-ins must be discoverable via list");
+        for info in infos {
+            assert!(
+                builtin_recipe_file(&info.name).is_some(),
+                "listed built-in {} must resolve",
+                info.name
+            );
+        }
+    }
 
     #[test]
     fn builtin_recipe_resolves_by_bare_and_yaml_name() {

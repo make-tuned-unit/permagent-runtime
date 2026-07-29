@@ -28,6 +28,9 @@ pub struct RecipeInfo {
 pub enum RecipeSource {
     Local,
     GitHub,
+    /// Shipped inside the binary (see `recipes::builtin_recipes`) — resolvable
+    /// by name with no filesystem or GitHub setup.
+    Builtin,
 }
 
 pub const GOOSE_RECIPE_GITHUB_REPO_CONFIG_KEY: &str = "GOOSE_RECIPE_GITHUB_REPO";
