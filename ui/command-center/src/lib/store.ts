@@ -468,6 +468,9 @@ const RECONNECT_MAX_MS = 30000;
  *  constructing the EventSource): a newer connect/disconnect bumps the epoch,
  *  and a stale in-flight connect aborts instead of opening a duplicate SSE. */
 let _sseConnectEpoch = 0;
+/** Speak-replies stays silent until this instant — set past each SSE connect
+ *  so the replay burst never re-voices history. */
+let _speakSuppressUntil = 0;
 
 /** Pull a toolRequest's name/args, tolerating the daemon's tool_result_serde
  *  wrapper `{ status, value:{ name, arguments } }` as well as a flat shape.
@@ -1437,8 +1440,9 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
           const lastAssistant = [...get().chatMessages].reverse().find(m => m.role === 'assistant');
           // Content-based dedupe: a replayed Finish (fresh window / redock
           // reconnect) reproduces the same reply text and stays silent; a
-          // genuinely new reply has new text and speaks.
-          if (lastAssistant?.content) {
+          // genuinely new reply has new text and speaks. The connect-burst
+          // mute covers voice-pipeline turns the dedupe key never saw.
+          if (lastAssistant?.content && Date.now() >= _speakSuppressUntil) {
             void maybeSpeakReply(
               lastAssistant.content,
               undefined,
@@ -1594,6 +1598,12 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
     es.onopen = () => {
       set({ connectionStatus: 'connected', _reconnectAttempts: 0 });
+      // The daemon replays its buffered frames immediately after connect —
+      // including old Finish frames. Mute speak-replies through that burst so
+      // a freshly opened window never re-voices history (voice-pipeline turns
+      // never touch the speak dedupe key, so content dedupe alone can't
+      // catch them).
+      _speakSuppressUntil = Date.now() + 2500;
       get().loadSkills();
       get().loadProposals();
       get().loadWorkspaces();
