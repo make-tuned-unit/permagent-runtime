@@ -20,6 +20,7 @@ import { PreTurnPreview } from './components/awareness/PreTurnPreview';
 import { trackChatGeometry } from './lib/chatWindow';
 import { VoiceHost } from './components/voice/VoiceHost';
 import { VoiceOrb } from './components/voice/VoiceOrb';
+import { VOICE_LIVE_KEY, readLiveConversation, requestVoiceEnd } from './lib/voiceHandoff';
 // VoiceButton moved to ChatInput row (beside send button)
 
 function timeAgo(dateStr: string): string {
@@ -275,16 +276,38 @@ export default function ChatApp() {
 
 // Hands-free orb takeover for the popped-out chat window (its layout doesn't
 // use ChatView, which carries the dock's orb).
+//
+// Two sources: this window's OWN conversation (post-handoff, live analysers),
+// or the MIRROR of a conversation still finishing its turn in the main window
+// — so popping out mid-response opens straight into orb view with the speech
+// carrying through, and the real handoff swaps in underneath at turn end.
 function ChatWindowVoiceOrb() {
   const conv = useCommandCenter(s => s.voiceConversation);
-  if (!conv) return null;
+  const [remote, setRemote] = useState<{ state: string } | null>(null);
+
+  useEffect(() => {
+    const read = () => setRemote(readLiveConversation());
+    read();
+    const id = setInterval(read, 1000);
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === VOICE_LIVE_KEY) read();
+    };
+    window.addEventListener('storage', onStorage);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, []);
+
+  if (!conv && !remote) return null;
+  const noAnalyser = () => null;
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 90 }}>
       <VoiceOrb
-        state={conv.state}
-        getPlaybackAnalyser={conv.getPlaybackAnalyser}
-        getMicAnalyser={conv.getMicAnalyser}
-        onExit={conv.exit}
+        state={conv?.state ?? remote?.state ?? 'connecting'}
+        getPlaybackAnalyser={conv?.getPlaybackAnalyser ?? noAnalyser}
+        getMicAnalyser={conv?.getMicAnalyser ?? noAnalyser}
+        onExit={conv?.exit ?? requestVoiceEnd}
       />
     </div>
   );

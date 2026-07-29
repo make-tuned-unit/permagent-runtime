@@ -14,7 +14,10 @@ import { useVoice } from '../../hooks/useVoice';
 import { useCommandCenter } from '../../lib/store';
 import {
   VOICE_HANDOFF_KEY,
+  VOICE_END_KEY,
+  clearLiveConversation,
   consumeVoiceHandoff,
+  publishLiveConversation,
   requestVoiceHandoff,
 } from '../../lib/voiceHandoff';
 
@@ -107,6 +110,31 @@ export function VoiceHost() {
     window.addEventListener('beforeunload', onUnload);
     return () => window.removeEventListener('beforeunload', onUnload);
   }, []);
+
+  // Live-conversation mirror: while this window OWNS a conversation,
+  // heartbeat its state so another window can render the orb in mirror mode
+  // (the pop-out opens straight into orb view while audio finishes here).
+  useEffect(() => {
+    if (!handsFree) {
+      clearLiveConversation();
+      return;
+    }
+    publishLiveConversation(state);
+    const id = setInterval(() => publishLiveConversation(state), 3000);
+    return () => clearInterval(id);
+  }, [handsFree, state]);
+
+  // A mirror-orb click in the other window asks the owner to end it.
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === VOICE_END_KEY && handsFreeRef.current) {
+        void setHandsFree(false);
+        deactivate();
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, [setHandsFree, deactivate]);
 
   // Conversation-mode takeover: while hands-free is on, publish the live voice
   // state + analyser taps for the orb. Exiting must actually STOP LISTENING:
