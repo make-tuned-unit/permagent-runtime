@@ -171,6 +171,9 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
     // Watcher project insights (2026-07-28): 1-2 grounded observations a day
     // per project, silently placed on the project Overview card.
     crate::watcher_insights::spawn(app_state.clone());
+    // Pull web analytics from each project's own site relay (outbound only —
+    // the daemon is never reachable from the internet).
+    crate::analytics_drain::spawn(app_state.clone());
 
     // The Concierge (#640): flag-gated (default OFF), draft-only, local-tier
     // inbox triage. Spawns a loop only when PERMAGENT_CONCIERGE_ENABLED is on.
