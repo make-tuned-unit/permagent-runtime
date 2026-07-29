@@ -411,9 +411,10 @@ interface CommandCenterStore {
   setChatWindowOpen: (open: boolean) => void;
 
   // --- Voice conversation mode (hands-free #19) ---
-  // Published by VoiceButton while hands-free is active so ChatView can render
-  // the full-window orb takeover. Analyser getters are live taps on the TTS
-  // playback / mic audio graphs; `exit` leaves hands-free.
+  // Published by VoiceHost while hands-free is active so ChatView (or the
+  // App-level fallback) can render the full-window orb takeover. Analyser
+  // getters are live taps on the TTS playback / mic audio graphs; `exit`
+  // leaves hands-free.
   voiceConversation: {
     state: string;
     getPlaybackAnalyser: () => AnalyserNode | null;
@@ -421,6 +422,26 @@ interface CommandCenterStore {
     exit: () => void;
   } | null;
   setVoiceConversation: (conv: CommandCenterStore['voiceConversation']) => void;
+
+  // --- Voice engine (per-window singleton) ---
+  // Hosted by VoiceHost at the WINDOW root, not inside ChatView: closing the
+  // dock, detaching to a window, or switching views must never tear down the
+  // mic/socket mid-conversation. VoiceButton and the orb are pure views over
+  // this. Null until the host mounts.
+  voiceEngine: {
+    state: string;
+    error: string | null;
+    handsFree: boolean;
+    activate: () => void | Promise<void>;
+    deactivate: () => void;
+    startRecording: () => void;
+    stopRecording: () => void;
+    interrupt: () => void;
+    getAnalyser: () => AnalyserNode | null;
+    getMicAnalyser: () => AnalyserNode | null;
+    setHandsFree: (on: boolean) => void | Promise<void>;
+  } | null;
+  setVoiceEngine: (engine: CommandCenterStore['voiceEngine']) => void;
 
   // --- Per-session SSE ---
   _eventSource: EventSource | null;
@@ -1414,7 +1435,16 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         // the state settles, never blocking the text path.
         {
           const lastAssistant = [...get().chatMessages].reverse().find(m => m.role === 'assistant');
-          if (lastAssistant?.content) void maybeSpeakReply(lastAssistant.content);
+          // Dedupe key = session + turn position: a replayed Finish (fresh
+          // window / redock reconnect) reproduces the same key and stays
+          // silent; a genuinely new reply advances the count and speaks.
+          if (lastAssistant?.content) {
+            void maybeSpeakReply(
+              lastAssistant.content,
+              undefined,
+              `${get().chatSessionId}:${get().chatMessages.length}`,
+            );
+          }
         }
         set({ isStreaming: false, _streamingMessageId: null, _activeRequestId: null });
         // Reload proposals + skills after each reply completes — the agent may
@@ -1516,6 +1546,8 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   setChatWindowOpen: (open) => set({ chatWindowOpen: open }),
   voiceConversation: null,
   setVoiceConversation: (conv) => set({ voiceConversation: conv }),
+  voiceEngine: null,
+  setVoiceEngine: (engine) => set({ voiceEngine: engine }),
   setChatLauncherSize: (size) => set(s => {
     const prev = s.chatLauncherSize;
     if (prev === size) return s;

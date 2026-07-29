@@ -28,6 +28,7 @@ export function VoiceOrb({
   const { colors } = useTheme();
   const orbRef = useRef<HTMLDivElement>(null);
   const haloRef = useRef<HTMLDivElement>(null);
+  const sparkRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef<number | null>(null);
   // Smoothed level so the orb glides between frames instead of jittering.
   const levelRef = useRef(0);
@@ -76,12 +77,29 @@ export function VoiceOrb({
       // drift so the asymmetric blob silhouette never reads as a stamped
       // circle. The glow (halo + box-shadow via opacity) carries the audio.
       drift += 0.03;
+      // Electric static: a high-frequency sub-pixel vibration that intensifies
+      // with the audio level — the orb hums with charge instead of floating.
+      const jx = (Math.random() - 0.5) * (0.8 + level * 3.5);
+      const jy = (Math.random() - 0.5) * (0.8 + level * 3.5);
       if (orbRef.current) {
-        orbRef.current.style.transform = `rotate(${drift}deg) scale(${1 + level * 0.1})`;
+        orbRef.current.style.transform =
+          `translate(${jx}px, ${jy}px) rotate(${drift}deg) scale(${1 + level * 0.1})`;
       }
       if (haloRef.current) {
         haloRef.current.style.transform = `rotate(${-drift * 0.6}deg) scale(${1 + level * 0.22})`;
         haloRef.current.style.opacity = `${0.3 + level * 0.5}`;
+      }
+      // Spark ring: random discharge flashes — brief bright arcs that decay
+      // fast. Charge chance rises with the level, so speech crackles.
+      const spark = sparkRef.current;
+      if (spark) {
+        const prevO = parseFloat(spark.style.opacity || '0');
+        if (Math.random() < 0.04 + level * 0.25) {
+          spark.style.opacity = `${0.5 + Math.random() * 0.45}`;
+          spark.style.transform = `rotate(${Math.random() * 360}deg) scale(${1.01 + Math.random() * 0.06})`;
+        } else {
+          spark.style.opacity = `${prevO * 0.72}`; // fast decay between arcs
+        }
       }
       rafRef.current = requestAnimationFrame(tick);
     };
@@ -141,6 +159,28 @@ export function VoiceOrb({
             opacity: 0.3,
             willChange: 'transform, opacity',
             transition: `background 400ms ${ease.out}`,
+          }}
+        />
+        {/* Spark ring — electric discharge arcs, driven from the rAF loop.
+            Broken conic segments so each flash reads as arcs, not a halo. */}
+        <div
+          ref={sparkRef}
+          aria-hidden
+          style={{
+            position: 'absolute',
+            inset: 14,
+            borderRadius: '52% 48% 50% 50% / 49% 51% 47% 53%',
+            background: `conic-gradient(from 0deg,
+              transparent 0deg 40deg, ${stateColor} 43deg 47deg,
+              transparent 50deg 130deg, ${colors.cyan} 133deg 136deg,
+              transparent 139deg 210deg, ${stateColor} 214deg 217deg,
+              transparent 220deg 305deg, ${colors.purple} 308deg 312deg,
+              transparent 315deg 360deg)`,
+            WebkitMaskImage: 'radial-gradient(circle, transparent 58%, black 63%, black 72%, transparent 78%)',
+            maskImage: 'radial-gradient(circle, transparent 58%, black 63%, black 72%, transparent 78%)',
+            filter: 'blur(0.6px)',
+            opacity: 0,
+            willChange: 'transform, opacity',
           }}
         />
         <div

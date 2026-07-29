@@ -18,6 +18,8 @@ import { InspectionPanel } from './components/inspection/InspectionPanel';
 import { AwarenessIndicator } from './components/awareness/AwarenessIndicator';
 import { PreTurnPreview } from './components/awareness/PreTurnPreview';
 import { trackChatGeometry } from './lib/chatWindow';
+import { VoiceHost } from './components/voice/VoiceHost';
+import { VoiceOrb } from './components/voice/VoiceOrb';
 // VoiceButton moved to ChatInput row (beside send button)
 
 function timeAgo(dateStr: string): string {
@@ -261,6 +263,29 @@ export default function ChatApp() {
       </div>
 
       {inspectionOpen && <InspectionPanel onClose={() => setInspectionOpen(false)} />}
+
+      {/* This window's voice engine + hands-free orb takeover. The engine is
+          window-scoped, so a conversation started here lives here regardless
+          of what the main window's chat surfaces do. */}
+      <VoiceHost />
+      <ChatWindowVoiceOrb />
+    </div>
+  );
+}
+
+// Hands-free orb takeover for the popped-out chat window (its layout doesn't
+// use ChatView, which carries the dock's orb).
+function ChatWindowVoiceOrb() {
+  const conv = useCommandCenter(s => s.voiceConversation);
+  if (!conv) return null;
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 90 }}>
+      <VoiceOrb
+        state={conv.state}
+        getPlaybackAnalyser={conv.getPlaybackAnalyser}
+        getMicAnalyser={conv.getMicAnalyser}
+        onExit={conv.exit}
+      />
     </div>
   );
 }

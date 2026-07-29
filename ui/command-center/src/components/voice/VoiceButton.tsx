@@ -6,7 +6,7 @@
  * State: idle → click to activate → ready → hold to talk → recording → processing → playing → ready.
  */
 import { useEffect, useRef, useCallback } from 'react';
-import { useVoice, VoiceState, isInterruptibleState } from '../../hooks/useVoice';
+import { VoiceState, isInterruptibleState } from '../../hooks/useVoice';
 import { useCommandCenter } from '../../lib/store';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/useTheme';
@@ -47,49 +47,25 @@ function isTextInputFocused(): boolean {
 
 export function VoiceButton() {
   const { colors } = useTheme();
-  const chatSessionId = useCommandCenter(s => s.chatSessionId);
-  const {
-    state,
-    error,
-    activate,
-    deactivate,
-    startRecording,
-    stopRecording,
-    interrupt,
-    getAnalyser,
-    getMicAnalyser,
-    handsFree,
-    setHandsFree,
-  } = useVoice({ sessionId: chatSessionId ?? undefined });
+  // Pure view over the window's VoiceHost engine (store slice): the mic and
+  // socket live at the window root, so this button unmounting (dock close,
+  // detach, view switch) never interrupts a conversation.
+  const engine = useCommandCenter(s => s.voiceEngine);
+  const state = (engine?.state ?? 'idle') as VoiceState;
+  const error = engine?.error ?? null;
+  const handsFree = engine?.handsFree ?? false;
+  const noop = () => {};
+  const activate = engine?.activate ?? noop;
+  const deactivate = engine?.deactivate ?? noop;
+  const startRecording = engine?.startRecording ?? noop;
+  const stopRecording = engine?.stopRecording ?? noop;
+  const interrupt = engine?.interrupt ?? noop;
+  const getAnalyser = engine?.getAnalyser ?? (() => null);
+  const setHandsFree = engine?.setHandsFree ?? noop;
 
   const isRecordingRef = useRef(false);
   const stateRef = useRef(state);
   stateRef.current = state;
-
-  // Conversation-mode takeover: while hands-free is on, publish the live voice
-  // state + analyser taps so ChatView can render the full-window orb
-  // (VoiceOrb). Cleared on exit/unmount so the overlay never outlives the
-  // conversation.
-  const setVoiceConversation = useCommandCenter(s => s.setVoiceConversation);
-  useEffect(() => {
-    if (!handsFree) {
-      setVoiceConversation(null);
-      return;
-    }
-    setVoiceConversation({
-      state,
-      getPlaybackAnalyser: getAnalyser,
-      getMicAnalyser,
-      // Exiting conversation mode must actually STOP LISTENING: leaving
-      // hands-free alone kept the mic acquired and the socket open (macOS mic
-      // indicator stays lit). Full deactivate releases both.
-      exit: () => {
-        void setHandsFree(false);
-        deactivate();
-      },
-    });
-    return () => setVoiceConversation(null);
-  }, [handsFree, state, getAnalyser, getMicAnalyser, setHandsFree, deactivate, setVoiceConversation]);
 
   // --- Spacebar push-to-talk ---
   useEffect(() => {

@@ -65,10 +65,27 @@ export function speakableText(markdown: string, cap = 700): string {
   return t;
 }
 
+const SPOKEN_KEY = 'permagent-last-spoken-key';
+
 /** Speak a completed reply. No-op when muted; a newer reply supersedes an
- *  in-flight one. Failures degrade silently to text-only. */
-export async function maybeSpeakReply(markdown: string, voiceId?: string | null): Promise<void> {
+ *  in-flight one. Failures degrade silently to text-only.
+ *
+ *  `dedupeKey` (session + turn identity) is remembered in localStorage —
+ *  SHARED across the main window and the popped-out chat window — so a
+ *  replayed `Finish` frame (fresh window connecting with no SSE cursor, or a
+ *  redock) never re-speaks a reply the user already heard. */
+export async function maybeSpeakReply(
+  markdown: string,
+  voiceId?: string | null,
+  dedupeKey?: string,
+): Promise<void> {
   if (!enabled) return;
+  if (dedupeKey) {
+    try {
+      if (localStorage.getItem(SPOKEN_KEY) === dedupeKey) return;
+      localStorage.setItem(SPOKEN_KEY, dedupeKey);
+    } catch { /* private mode — speak anyway */ }
+  }
   const text = speakableText(markdown);
   if (!text) return;
   const seq = ++playSeq;
