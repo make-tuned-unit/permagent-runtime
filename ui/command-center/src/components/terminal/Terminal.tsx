@@ -98,7 +98,14 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         theme: getXtermTheme(theme, colors),
         fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", Menlo, "DejaVu Sans Mono", monospace',
         fontSize: 13,
-        lineHeight: 1.15,
+        // MUST stay 1.0. Extra leading inserts a gap between rows that the
+        // glyph cannot bridge, so every vertical box-drawing rule (│ ┃ ║) is
+        // sliced into dashes and long horizontal rules (─ ━) drift off the
+        // text baseline — which is what made a coding harness's boxed output
+        // look broken and struck through. The DOM renderer cannot compensate:
+        // `customGlyphs` (which stretches box glyphs to fill the cell) only
+        // applies to the canvas/WebGL renderers.
+        lineHeight: 1,
         cursorBlink: true,
         cursorStyle: 'bar',
         allowProposedApi: true,
@@ -117,6 +124,27 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
       // Use default DOM renderer — WebGL addon causes banding and Unicode
       // rendering issues (box-drawing chars show as ??). DOM renderer
       // handles Unicode, 256-color, and true-color correctly.
+
+      // Suppress macOS AutoFill on xterm's hidden input.
+      //
+      // xterm sets autocorrect/autocapitalize/spellcheck on its helper
+      // textarea but NOT `autocomplete`, which is the attribute WebKit's
+      // AutoFill actually consults. Without it, focusing the terminal could pop
+      // the native "code from Messages" suggestion — and while that popup is up
+      // it owns the arrow keys, so Up/Down never reach the PTY and TUI prompts
+      // (a coding harness's approval gate) become unanswerable. Killing the
+      // popup is what restores arrow-key navigation.
+      const helper = containerRef.current!.querySelector<HTMLTextAreaElement>(
+        'textarea.xterm-helper-textarea',
+      );
+      if (helper) {
+        helper.setAttribute('autocomplete', 'off');
+        helper.setAttribute('aria-autocomplete', 'none');
+        // A neutral name/id keeps field-name heuristics from reading this as a
+        // verification-code input.
+        helper.setAttribute('name', 'permagent-terminal-input');
+        helper.setAttribute('id', 'permagent-terminal-input');
+      }
 
       fitAddon.fit();
 

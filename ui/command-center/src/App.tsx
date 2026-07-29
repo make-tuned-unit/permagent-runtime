@@ -117,18 +117,20 @@ function App() {
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
   const activePanel = useCommandCenter(s => s.activePanel);
   const activeWorkspace = useCommandCenter(s => s.workspaces.find(w => w.id === s.activeWorkspaceId));
-  const { gradient, density, theme } = useTheme();
+  const { gradient, density, theme, themePref } = useTheme();
 
-  // Sync native window titlebar appearance with theme
+  // One-time native window setup. Deliberately NOT in the theme effect below:
+  // both of these are heavyweight and unrelated to colour, and re-running them
+  // on every appearance change tore the window down and rebuilt it hard enough
+  // to look like the app had restarted. setTitleBarStyle mutates the NSWindow's
+  // style mask (a frame-view rebuild), and enable_media_capture_cmd reaches
+  // into the live WKWebView's configuration through a private API.
   useEffect(() => {
     if (!('__TAURI_INTERNALS__' in window)) return;
     (async () => {
       try {
         const { getCurrentWindow } = await import('@tauri-apps/api/window');
-        const win = getCurrentWindow();
-        await win.setTheme(theme === 'silver' ? 'light' : 'dark');
-        await win.setTitleBarStyle('overlay');
-        await win.setBackgroundColor(gradient.shell);
+        await getCurrentWindow().setTitleBarStyle('overlay');
       } catch { /* older Tauri or permission not available */ }
       // Enable media capture (getUserMedia) on this window's WKWebView.
       try {
@@ -136,7 +138,24 @@ function App() {
         await invoke('enable_media_capture_cmd');
       } catch { /* voice mic capture unavailable — graceful */ }
     })();
-  }, [theme]);
+  }, []);
+
+  // Colour only — the part that genuinely tracks the theme.
+  useEffect(() => {
+    if (!('__TAURI_INTERNALS__' in window)) return;
+    (async () => {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        const win = getCurrentWindow();
+        // `null` hands the decision back to macOS. tao's set_theme sets the
+        // APPLICATION-wide NSAppearance, so pinning it to a concrete value
+        // under a "System" preference would fight the OS on every light/dark
+        // flip instead of following it.
+        await win.setTheme(themePref === 'system' ? null : theme === 'silver' ? 'light' : 'dark');
+        await win.setBackgroundColor(gradient.shell);
+      } catch { /* older Tauri or permission not available */ }
+    })();
+  }, [theme, themePref, gradient.shell]);
 
   const [phase, setPhase] = useState<'splash' | 'loading' | 'wizard' | 'app'>('splash');
 
