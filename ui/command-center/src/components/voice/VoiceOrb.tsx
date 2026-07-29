@@ -109,36 +109,55 @@ export function VoiceOrb({
     const data = new Uint8Array(32); // frequencyBinCount for fftSize 64
     let phase = 0;
     let rotY = 0;
+    let noiseT = 0; // accumulated surface-churn time — speeds up with speech
+    let lastT = 0;
+    // Per-band smoothed levels: lows drive the swell, mids the churn/spin,
+    // highs the shimmer — so the orb dances WITH the speech, not just louder.
+    let low = 0, mid = 0, high = 0;
     const cx = SIZE / 2;
     const cy = SIZE / 2;
     const R = SIZE * 0.30;
 
     const frame = (t: number) => {
       const s = stateRef.current;
+      const dt = lastT ? Math.min(0.1, (t - lastT) / 1000) : 0.016;
+      lastT = t;
 
-      // ── Audio level ──
-      let target = 0;
+      // ── Audio level, split into bands ──
+      let tLow = 0, tMid = 0, tHigh = 0;
       const analyser = s === 'playing' ? getPlaybackAnalyser() : getMicAnalyser();
       if (s === 'processing' || s === 'connecting' || !analyser) {
         phase += 0.016;
-        target = 0.10 + 0.06 * (0.5 + 0.5 * Math.sin(phase));
+        tLow = 0.10 + 0.06 * (0.5 + 0.5 * Math.sin(phase));
+        tMid = tLow * 0.6;
+        tHigh = tLow * 0.3;
       } else {
         analyser.getByteFrequencyData(data);
-        let sum = 0;
-        const n = Math.max(1, Math.floor(data.length * 0.6));
-        for (let i = 0; i < n; i++) sum += data[i];
-        target = (sum / n / 255) * 1.2;
+        const band = (a: number, b: number) => {
+          let sum = 0;
+          for (let i = a; i < b; i++) sum += data[i];
+          return sum / (b - a) / 255;
+        };
+        tLow = band(0, 7) * 1.25;
+        tMid = band(7, 15) * 1.5;
+        tHigh = band(15, 26) * 1.9;
       }
-      const prev = levelRef.current;
-      const level = prev + (target - prev) * (target > prev ? 0.3 : 0.06);
+      // Fast attack, slow release — syllables land visibly, decay is graceful.
+      const smooth = (cur: number, target: number) =>
+        cur + (target - cur) * (target > cur ? 0.5 : 0.08);
+      low = smooth(low, tLow);
+      mid = smooth(mid, tMid);
+      high = smooth(high, tHigh);
+      const level = Math.min(1.2, low * 0.5 + mid * 0.35 + high * 0.15);
       levelRef.current = level;
 
-      rotY += 0.0032 + level * 0.006;
+      rotY += dt * (0.2 + mid * 0.9); // mids spin it up
+      noiseT += dt * (0.9 + mid * 4.5 + high * 2.0); // speech churns the surface
       const rotX = 0.42 + 0.06 * Math.sin(t * 0.00013);
       const cosY = Math.cos(rotY), sinY = Math.sin(rotY);
       const cosX = Math.cos(rotX), sinX = Math.sin(rotX);
-      const amp = 0.045 + level * 0.24; // noise deformation amplitude
-      const tt = t * 0.001;
+      const amp = 0.045 + low * 0.34; // lows swell the whole body
+      const tt = noiseT;
 
       // ── Backdrop glow ──
       ctx.clearRect(0, 0, SIZE, SIZE);
@@ -189,9 +208,12 @@ export function VoiceOrb({
         const depth = (z + 1) / 2; // 0 back … 1 front
         const g = (px / SIZE) * 0.62 + (py / SIZE) * 0.38;
         const [r, gg, b] = palette(g);
-        const alpha = 0.14 + depth * (0.6 + level * 0.35);
+        // Highs shimmer: per-point brightness ripples race across the surface
+        // while consonants land; silence leaves a calm, even glow.
+        const shimmer = high * 0.5 * (0.5 + 0.5 * Math.sin(tt * 6 + p.seed * 40));
+        const alpha = Math.min(1, 0.14 + depth * (0.6 + level * 0.35) + shimmer);
         ctx.fillStyle = `rgba(${r | 0}, ${gg | 0}, ${b | 0}, ${alpha})`;
-        const sz = 0.9 + depth * (1.3 + level * 1.2);
+        const sz = 0.9 + depth * (1.3 + level * 1.2) + shimmer * 1.1;
         ctx.fillRect(px - sz / 2, py - sz / 2, sz, sz);
       }
 
