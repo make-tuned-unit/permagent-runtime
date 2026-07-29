@@ -67,6 +67,15 @@ export function speakableText(markdown: string, cap = 700): string {
 
 const SPOKEN_KEY = 'permagent-last-spoken-key';
 
+/** Content-identity dedupe key. Turn position proved unreliable (a fresh
+ *  window's rebuilt message list can count differently than the window that
+ *  spoke first) — the reply's own text is the stable identity. */
+export function replyDedupeKey(sessionId: string | null, content: string): string {
+  let h = 0;
+  for (let i = 0; i < content.length; i++) h = (h * 31 + content.charCodeAt(i)) | 0;
+  return `${sessionId ?? 'nosession'}:${h}`;
+}
+
 /** Speak a completed reply. No-op when muted; a newer reply supersedes an
  *  in-flight one. Failures degrade silently to text-only.
  *

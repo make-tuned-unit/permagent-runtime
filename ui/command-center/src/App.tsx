@@ -312,7 +312,10 @@ function App() {
 function VoiceConversationFallback() {
   const conv = useCommandCenter(s => s.voiceConversation);
   const dockOpen = useCommandCenter(s => s.chatDockOpen);
-  if (!conv || dockOpen) return null;
+  const chatWindowOpen = useCommandCenter(s => s.chatWindowOpen);
+  // With the chat window open the conversation is handed off to (and rendered
+  // by) that window — never take over the main app underneath it.
+  if (!conv || dockOpen || chatWindowOpen) return null;
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 90 }}>
       <VoiceOrb

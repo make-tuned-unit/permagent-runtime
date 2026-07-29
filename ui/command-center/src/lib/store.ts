@@ -3,7 +3,7 @@ import { api, apiFetch, extractText, extractThinking, fileToBase64, readerIngest
 import { emitActivity, type ActivityEventName, type ActivitySourceSurface } from './emitActivity';
 import type { SessionSummary, DaemonMessage, SSEEvent, AppContextPayload, TokenState } from './api';
 import { costFromFrame } from './costMeter';
-import { maybeSpeakReply } from './speakReplies';
+import { maybeSpeakReply, replyDedupeKey } from './speakReplies';
 import { appendTraceRecord, sessionFrameToRecord } from './traceEvents';
 import { startEventPruning } from './eventBus';
 import type { ProjectPerson } from '../components/projects/types';
@@ -1435,14 +1435,14 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         // the state settles, never blocking the text path.
         {
           const lastAssistant = [...get().chatMessages].reverse().find(m => m.role === 'assistant');
-          // Dedupe key = session + turn position: a replayed Finish (fresh
-          // window / redock reconnect) reproduces the same key and stays
-          // silent; a genuinely new reply advances the count and speaks.
+          // Content-based dedupe: a replayed Finish (fresh window / redock
+          // reconnect) reproduces the same reply text and stays silent; a
+          // genuinely new reply has new text and speaks.
           if (lastAssistant?.content) {
             void maybeSpeakReply(
               lastAssistant.content,
               undefined,
-              `${get().chatSessionId}:${get().chatMessages.length}`,
+              replyDedupeKey(get().chatSessionId, lastAssistant.content),
             );
           }
         }
