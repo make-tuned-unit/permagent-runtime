@@ -1,0 +1,341 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		336AFAC211E2D1C99E32CB2A /* DictateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99F34E2381968F13A858F14A /* DictateView.swift */; };
+		389CCEEEE3C95E4B8E3A0D3F /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E26A800CF1D4790CE5DA10 /* Theme.swift */; };
+		5B30E073BB2ECAB6E33164B1 /* AgentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0EDD200AC9AB1D53EB3754 /* AgentsView.swift */; };
+		831E82FFAA0BC3E001164146 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8694CAB5B48EE233EE1B6617 /* APIClient.swift */; };
+		8F94851B95D12EF04506A591 /* PermagentApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C775F55DDB9DE14F8D4323E6 /* PermagentApp.swift */; };
+		9535CCB0091E9B276307213D /* SchedulesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F04A0A4A5E3D5490ADCF447 /* SchedulesView.swift */; };
+		969E272CC336191295B24887 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F08F07F303B94889E794863 /* HomeView.swift */; };
+		9B082791DC9A6835AEF5B8CB /* NotesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F97923677E193EC119FAB68 /* NotesView.swift */; };
+		B579F2361368D7C62FF7B48F /* VoiceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4BD3E1B6A179219E2AC1FDD /* VoiceView.swift */; };
+		E7443621280D39788C3B75AA /* ControlHub.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4002AFFA392F4F378F587763 /* ControlHub.swift */; };
+		EFB9D44B159846261786C6DF /* Views.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC49B12939BF081C69BFE0E1 /* Views.swift */; };
+		F388A89F2C4238B747CCD5BF /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 87D915FC199267FC631F862F /* Assets.xcassets */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		004E18064E0FDB2E41E29212 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		04E26A800CF1D4790CE5DA10 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		4002AFFA392F4F378F587763 /* ControlHub.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ControlHub.swift; sourceTree = "<group>"; };
+		5F08F07F303B94889E794863 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+		6F04A0A4A5E3D5490ADCF447 /* SchedulesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SchedulesView.swift; sourceTree = "<group>"; };
+		8694CAB5B48EE233EE1B6617 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
+		87D915FC199267FC631F862F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		8F97923677E193EC119FAB68 /* NotesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesView.swift; sourceTree = "<group>"; };
+		99F34E2381968F13A858F14A /* DictateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictateView.swift; sourceTree = "<group>"; };
+		AA0EDD200AC9AB1D53EB3754 /* AgentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentsView.swift; sourceTree = "<group>"; };
+		C4BD3E1B6A179219E2AC1FDD /* VoiceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceView.swift; sourceTree = "<group>"; };
+		C775F55DDB9DE14F8D4323E6 /* PermagentApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermagentApp.swift; sourceTree = "<group>"; };
+		E8D531DED49DC50B4B71FE69 /* Permagent.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Permagent.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FC49B12939BF081C69BFE0E1 /* Views.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		0BB819F64F12E043A9FF5E6E /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				E8D531DED49DC50B4B71FE69 /* Permagent.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		4A4F8C5EB1DA6638A3805CC0 /* PermagentMobile */ = {
+			isa = PBXGroup;
+			children = (
+				AA0EDD200AC9AB1D53EB3754 /* AgentsView.swift */,
+				8694CAB5B48EE233EE1B6617 /* APIClient.swift */,
+				87D915FC199267FC631F862F /* Assets.xcassets */,
+				4002AFFA392F4F378F587763 /* ControlHub.swift */,
+				99F34E2381968F13A858F14A /* DictateView.swift */,
+				5F08F07F303B94889E794863 /* HomeView.swift */,
+				004E18064E0FDB2E41E29212 /* Info.plist */,
+				8F97923677E193EC119FAB68 /* NotesView.swift */,
+				C775F55DDB9DE14F8D4323E6 /* PermagentApp.swift */,
+				6F04A0A4A5E3D5490ADCF447 /* SchedulesView.swift */,
+				04E26A800CF1D4790CE5DA10 /* Theme.swift */,
+				FC49B12939BF081C69BFE0E1 /* Views.swift */,
+				C4BD3E1B6A179219E2AC1FDD /* VoiceView.swift */,
+			);
+			path = PermagentMobile;
+			sourceTree = "<group>";
+		};
+		E6B2462D39D1E1E555A169B8 = {
+			isa = PBXGroup;
+			children = (
+				4A4F8C5EB1DA6638A3805CC0 /* PermagentMobile */,
+				0BB819F64F12E043A9FF5E6E /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		6DBCCCC19FD9F29A2366588C /* Permagent */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D036B1A81CF3CB2FD1FF6A1A /* Build configuration list for PBXNativeTarget "Permagent" */;
+			buildPhases = (
+				934A0CB58E80CFA6653579A0 /* Sources */,
+				4410EA84985E92E247B5AE3E /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Permagent;
+			packageProductDependencies = (
+			);
+			productName = Permagent;
+			productReference = E8D531DED49DC50B4B71FE69 /* Permagent.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		667F7CA3E3A6C98545E038C5 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+				};
+			};
+			buildConfigurationList = 2C52E59FB12CF0D71319F5D9 /* Build configuration list for PBXProject "PermagentMobile" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = E6B2462D39D1E1E555A169B8;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 0BB819F64F12E043A9FF5E6E /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				6DBCCCC19FD9F29A2366588C /* Permagent */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		4410EA84985E92E247B5AE3E /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F388A89F2C4238B747CCD5BF /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		934A0CB58E80CFA6653579A0 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				831E82FFAA0BC3E001164146 /* APIClient.swift in Sources */,
+				5B30E073BB2ECAB6E33164B1 /* AgentsView.swift in Sources */,
+				E7443621280D39788C3B75AA /* ControlHub.swift in Sources */,
+				336AFAC211E2D1C99E32CB2A /* DictateView.swift in Sources */,
+				969E272CC336191295B24887 /* HomeView.swift in Sources */,
+				9B082791DC9A6835AEF5B8CB /* NotesView.swift in Sources */,
+				8F94851B95D12EF04506A591 /* PermagentApp.swift in Sources */,
+				9535CCB0091E9B276307213D /* SchedulesView.swift in Sources */,
+				389CCEEEE3C95E4B8E3A0D3F /* Theme.swift in Sources */,
+				EFB9D44B159846261786C6DF /* Views.swift in Sources */,
+				B579F2361368D7C62FF7B48F /* VoiceView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		32CDB3BE128956E270A17410 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		4BE27E854DEF33944A5A9F8B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = PermagentMobile/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = ai.permagent.mobile;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		7C7D8DE3A30DE0A4C53B4927 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		D05DEECA3C9948BFA425B87A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = PermagentMobile/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = ai.permagent.mobile;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		2C52E59FB12CF0D71319F5D9 /* Build configuration list for PBXProject "PermagentMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7C7D8DE3A30DE0A4C53B4927 /* Debug */,
+				32CDB3BE128956E270A17410 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		D036B1A81CF3CB2FD1FF6A1A /* Build configuration list for PBXNativeTarget "Permagent" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4BE27E854DEF33944A5A9F8B /* Debug */,
+				D05DEECA3C9948BFA425B87A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 667F7CA3E3A6C98545E038C5 /* Project object */;
+}

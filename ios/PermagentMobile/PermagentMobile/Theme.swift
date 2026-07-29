@@ -89,37 +89,76 @@ struct PrimaryCTA: View {
     var enabled: Bool = true
     let action: () -> Void
 
+    private var label: some View {
+        HStack(spacing: 7) {
+            if let systemImage { Image(systemName: systemImage).font(.subheadline.weight(.semibold)) }
+            Text(title).font(.body.weight(.semibold))
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 14)
+        .foregroundStyle(Brand.deepVoid.opacity(enabled ? 1 : 0.7))
+    }
+
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 7) {
-                if let systemImage { Image(systemName: systemImage).font(.subheadline.weight(.semibold)) }
-                Text(title).font(.body.weight(.semibold))
+        Group {
+            if #available(iOS 26.0, *) {
+                // Real Liquid Glass CTA: prominent glass carries the brand tint;
+                // the ribbon lives on as a subtle gradient wash over the glass.
+                Button(action: action) {
+                    label.background(Brand.ribbon.opacity(enabled ? 0.55 : 0.2))
+                }
+                .buttonStyle(.glassProminent)
+                .buttonBorderShape(.roundedRectangle(radius: 12))
+                .tint(Brand.cyan.opacity(enabled ? 1 : 0.35))
+            } else {
+                Button(action: action) {
+                    label
+                        .background(Brand.ribbon.opacity(enabled ? 1 : 0.35))
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 14)
-            .background(Brand.ribbon.opacity(enabled ? 1 : 0.35))
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .foregroundStyle(Brand.deepVoid.opacity(enabled ? 1 : 0.7))
         }
         .disabled(!enabled)
         .animation(Motion.ease, value: enabled)
     }
 }
 
-/// The house glass card (Glass atom): blur + hairline + soft glow.
+/// The house glass card (Glass atom): blur + hairline + soft glow. On iOS 26+
+/// the blur is the real Liquid Glass material (tinted to the brand surface);
+/// earlier systems keep the ultraThinMaterial look unchanged.
 struct GlassCard<Content: View>: View {
     var content: () -> Content
+    private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: 16, style: .continuous) }
     var body: some View {
-        content()
-            .padding(16)
-            .background(.ultraThinMaterial.opacity(0.6))
-            .background(Brand.surface)
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(Brand.borderHi, lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.45), radius: 24, y: 12)
+        Group {
+            if #available(iOS 26.0, *) {
+                content()
+                    .padding(16)
+                    .glassEffect(.regular.tint(Brand.surface), in: shape)
+            } else {
+                content()
+                    .padding(16)
+                    .background(.ultraThinMaterial.opacity(0.6))
+                    .background(Brand.surface)
+                    .clipShape(shape)
+            }
+        }
+        .overlay(shape.strokeBorder(Brand.borderHi, lineWidth: 1))
+        .shadow(color: .black.opacity(0.45), radius: 24, y: 12)
+    }
+}
+
+extension View {
+    /// Brand chrome material for floating controls (VoiceView close button,
+    /// hands-free pill): real Liquid Glass on iOS 26+ — interactive glass
+    /// responds to touch with the native morph — ultraThinMaterial before.
+    @ViewBuilder
+    func glassChrome<S: Shape>(in shape: S, interactive: Bool = false) -> some View {
+        if #available(iOS 26.0, *) {
+            self.glassEffect(interactive ? Glass.regular.interactive() : .regular, in: shape)
+        } else {
+            self.background(.ultraThinMaterial, in: shape)
+        }
     }
 }
 
