@@ -1,19 +1,73 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useTheme } from '../../styles/useTheme';
 import { font, ease } from '../../styles/tokens';
 
 /**
  * VoiceOrb — the full-window conversation-mode takeover.
  *
- * While hands-free (#19) is active, this overlay covers the entire chat
- * surface and renders one breathing orb driven by live audio:
- *   listening (ready/recording) → mic analyser, cyan
- *   thinking  (processing)      → autonomous slow pulse, violet
- *   speaking  (playing)         → TTS playback analyser, cyan→violet
+ * A pseudo-3D particle sphere (after the "abstract sphere with flowing
+ * particles" reference): ~700 glowing dots on a noise-deformed rotating
+ * sphere, wrapped in a scattered twinkling halo shell, lit blue→cyan on one
+ * side flowing to violet→magenta on the other. Audio drives it live:
+ *   listening (ready/recording) → mic analyser ripples the surface
+ *   thinking  (processing)      → calm autonomous swell
+ *   speaking  (playing)         → TTS analyser surges deformation + brightness
+ * Electric static: per-point jitter scaled by level + random halo sparks.
  *
  * Purely visual — turn-taking stays with the VAD in useVoice; clicking
  * anywhere exits hands-free and returns to the normal chat.
  */
+
+const N_SPHERE = 700;
+const N_HALO = 240;
+const SIZE = 360; // css px, square canvas
+
+interface Pt {
+  x: number; y: number; z: number; // unit sphere dir
+  seed: number;
+}
+
+function makePoints(): { sphere: Pt[]; halo: Array<Pt & { r: number; tw: number }> } {
+  // Fibonacci sphere — even coverage, no pole clustering.
+  const sphere: Pt[] = [];
+  const golden = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 0; i < N_SPHERE; i++) {
+    const y = 1 - (i / (N_SPHERE - 1)) * 2;
+    const rad = Math.sqrt(Math.max(0, 1 - y * y));
+    const th = golden * i;
+    sphere.push({ x: Math.cos(th) * rad, y, z: Math.sin(th) * rad, seed: (i * 2654435761) % 1000 / 1000 });
+  }
+  // Halo: a loose shell of drifting dust around the body.
+  const halo: Array<Pt & { r: number; tw: number }> = [];
+  let s = 42;
+  const rnd = () => { s = (s * 16807) % 2147483647; return s / 2147483647; };
+  for (let i = 0; i < N_HALO; i++) {
+    const u = rnd() * 2 - 1;
+    const th = rnd() * Math.PI * 2;
+    const rad = Math.sqrt(Math.max(0, 1 - u * u));
+    halo.push({
+      x: Math.cos(th) * rad, y: u, z: Math.sin(th) * rad,
+      seed: rnd(), r: 1.14 + rnd() * 0.42, tw: 1.5 + rnd() * 3.5,
+    });
+  }
+  return { sphere, halo };
+}
+
+/** Lerp through the reference palette: cyan → electric blue → violet → magenta. */
+function palette(g: number): [number, number, number] {
+  const stops: Array<[number, number, number]> = [
+    [0, 213, 255],   // cyan
+    [64, 120, 255],  // electric blue
+    [141, 68, 174],  // violet (brand)
+    [255, 79, 216],  // magenta
+  ];
+  const t = Math.min(0.9999, Math.max(0, g)) * (stops.length - 1);
+  const i = Math.floor(t);
+  const f = t - i;
+  const a = stops[i], b = stops[i + 1];
+  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+}
+
 export function VoiceOrb({
   state,
   getPlaybackAnalyser,
@@ -26,90 +80,134 @@ export function VoiceOrb({
   onExit: () => void;
 }) {
   const { colors } = useTheme();
-  const orbRef = useRef<HTMLDivElement>(null);
-  const haloRef = useRef<HTMLDivElement>(null);
-  const sparkRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef<number | null>(null);
-  // Smoothed level so the orb glides between frames instead of jittering.
   const levelRef = useRef(0);
   const stateRef = useRef(state);
   stateRef.current = state;
+
+  const points = useMemo(makePoints, []);
 
   const speaking = state === 'playing';
   const thinking = state === 'processing' || state === 'connecting';
   const listening = state === 'recording';
 
   useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    canvas.width = SIZE * dpr;
+    canvas.height = SIZE * dpr;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.scale(dpr, dpr);
+
     const reduce =
       typeof window !== 'undefined' &&
       window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-    if (reduce) return; // static orb — the state label still communicates
 
     const data = new Uint8Array(32); // frequencyBinCount for fftSize 64
     let phase = 0;
-    let drift = 0;
+    let rotY = 0;
+    const cx = SIZE / 2;
+    const cy = SIZE / 2;
+    const R = SIZE * 0.30;
 
-    const tick = () => {
+    const frame = (t: number) => {
       const s = stateRef.current;
-      let target = 0;
 
-      const analyser =
-        s === 'playing' ? getPlaybackAnalyser() : getMicAnalyser();
+      // ── Audio level ──
+      let target = 0;
+      const analyser = s === 'playing' ? getPlaybackAnalyser() : getMicAnalyser();
       if (s === 'processing' || s === 'connecting' || !analyser) {
-        // No live signal — a slow autonomous breath (~6s cycle), barely there.
         phase += 0.016;
-        target = 0.12 + 0.06 * (0.5 + 0.5 * Math.sin(phase));
+        target = 0.10 + 0.06 * (0.5 + 0.5 * Math.sin(phase));
       } else {
         analyser.getByteFrequencyData(data);
-        // Voice energy sits in the low bins; average the lower ~60%.
         let sum = 0;
         const n = Math.max(1, Math.floor(data.length * 0.6));
         for (let i = 0; i < n; i++) sum += data[i];
         target = (sum / n / 255) * 1.2;
       }
-
-      // Asymmetric smoothing: rise fast (feels responsive), fall slow (no flicker).
       const prev = levelRef.current;
       const level = prev + (target - prev) * (target > prev ? 0.3 : 0.06);
       levelRef.current = level;
 
-      // Mostly-static presence: small scale swing, and a very slow rotation
-      // drift so the asymmetric blob silhouette never reads as a stamped
-      // circle. The glow (halo + box-shadow via opacity) carries the audio.
-      drift += 0.03;
-      // Electric static: a high-frequency sub-pixel vibration that intensifies
-      // with the audio level — the orb hums with charge instead of floating.
-      const jx = (Math.random() - 0.5) * (0.8 + level * 3.5);
-      const jy = (Math.random() - 0.5) * (0.8 + level * 3.5);
-      if (orbRef.current) {
-        orbRef.current.style.transform =
-          `translate(${jx}px, ${jy}px) rotate(${drift}deg) scale(${1 + level * 0.1})`;
-      }
-      if (haloRef.current) {
-        haloRef.current.style.transform = `rotate(${-drift * 0.6}deg) scale(${1 + level * 0.22})`;
-        haloRef.current.style.opacity = `${0.3 + level * 0.5}`;
-      }
-      // Spark ring: random discharge flashes — brief bright arcs that decay
-      // fast. Charge chance rises with the level, so speech crackles.
-      const spark = sparkRef.current;
-      if (spark) {
-        const prevO = parseFloat(spark.style.opacity || '0');
-        if (Math.random() < 0.04 + level * 0.25) {
-          spark.style.opacity = `${0.5 + Math.random() * 0.45}`;
-          spark.style.transform = `rotate(${Math.random() * 360}deg) scale(${1.01 + Math.random() * 0.06})`;
-        } else {
-          spark.style.opacity = `${prevO * 0.72}`; // fast decay between arcs
-        }
-      }
-      rafRef.current = requestAnimationFrame(tick);
-    };
-    rafRef.current = requestAnimationFrame(tick);
+      rotY += 0.0032 + level * 0.006;
+      const rotX = 0.42 + 0.06 * Math.sin(t * 0.00013);
+      const cosY = Math.cos(rotY), sinY = Math.sin(rotY);
+      const cosX = Math.cos(rotX), sinX = Math.sin(rotX);
+      const amp = 0.045 + level * 0.24; // noise deformation amplitude
+      const tt = t * 0.001;
 
+      // ── Backdrop glow ──
+      ctx.clearRect(0, 0, SIZE, SIZE);
+      const glow = ctx.createRadialGradient(cx, cy, R * 0.2, cx, cy, R * 1.9);
+      glow.addColorStop(0, `rgba(64, 120, 255, ${0.10 + level * 0.14})`);
+      glow.addColorStop(0.6, `rgba(141, 68, 174, ${0.05 + level * 0.08})`);
+      glow.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = glow;
+      ctx.fillRect(0, 0, SIZE, SIZE);
+
+      // ── Halo dust (behind) then sphere points ──
+      for (const p of points.halo) {
+        // Slow orbital drift + twinkle; occasional electric spark pops bright.
+        const a = tt * 0.12 * (0.5 + p.seed);
+        const ca = Math.cos(a), sa = Math.sin(a);
+        let x = p.x * ca - p.z * sa;
+        let z = p.x * sa + p.z * ca;
+        const y2 = p.y * cosX - z * sinX;
+        z = p.y * sinX + z * cosX;
+        const px = cx + x * R * p.r;
+        const py = cy + y2 * R * p.r;
+        const twinkle = 0.25 + 0.5 * (0.5 + 0.5 * Math.sin(tt * p.tw + p.seed * 40));
+        const spark = Math.random() < 0.003 + level * 0.01 ? 0.9 : 0;
+        const g = (px / SIZE) * 0.6 + (py / SIZE) * 0.4;
+        const [r, gg, b] = palette(g);
+        ctx.fillStyle = `rgba(${r | 0}, ${gg | 0}, ${b | 0}, ${Math.min(1, twinkle + spark)})`;
+        const sz = spark ? 2.4 : 1.3;
+        ctx.fillRect(px, py, sz, sz);
+      }
+
+      for (const p of points.sphere) {
+        // Organic noise: three drifting harmonics along the unit dirs.
+        const d =
+          Math.sin(4.1 * p.x + tt * 0.9 + p.seed) * 0.5 +
+          Math.sin(3.4 * p.y - tt * 0.7) * 0.3 +
+          Math.sin(5.2 * p.z + tt * 1.2) * 0.2;
+        // Electric static: per-point charge jitter scaled by the live level.
+        const jitter = (Math.random() - 0.5) * level * 0.05;
+        const rr = 1 + d * amp + jitter;
+
+        let x = p.x * cosY - p.z * sinY;
+        let z = p.x * sinY + p.z * cosY;
+        const y2 = p.y * cosX - z * sinX;
+        z = p.y * sinX + z * cosX;
+
+        const px = cx + x * rr * R;
+        const py = cy + y2 * rr * R;
+        const depth = (z + 1) / 2; // 0 back … 1 front
+        const g = (px / SIZE) * 0.62 + (py / SIZE) * 0.38;
+        const [r, gg, b] = palette(g);
+        const alpha = 0.14 + depth * (0.6 + level * 0.35);
+        ctx.fillStyle = `rgba(${r | 0}, ${gg | 0}, ${b | 0}, ${alpha})`;
+        const sz = 0.9 + depth * (1.3 + level * 1.2);
+        ctx.fillRect(px - sz / 2, py - sz / 2, sz, sz);
+      }
+
+      if (!reduce) rafRef.current = requestAnimationFrame(frame);
+    };
+
+    if (reduce) {
+      frame(0); // one static render — the label still communicates state
+      return;
+    }
+    rafRef.current = requestAnimationFrame(frame);
     return () => {
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
     };
-  }, [getPlaybackAnalyser, getMicAnalyser]);
+  }, [getPlaybackAnalyser, getMicAnalyser, points]);
 
   const stateColor = speaking
     ? colors.cyan
@@ -119,13 +217,7 @@ export function VoiceOrb({
         ? colors.danger
         : colors.cyan;
 
-  const label = speaking
-    ? 'Speaking'
-    : thinking
-      ? 'Thinking…'
-      : listening
-        ? 'Listening'
-        : 'Listening';
+  const label = speaking ? 'Speaking' : thinking ? 'Thinking…' : 'Listening';
 
   return (
     <div
@@ -139,66 +231,16 @@ export function VoiceOrb({
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
-        gap: 28,
+        gap: 12,
         cursor: 'pointer',
         background: `radial-gradient(ellipse at center, ${colors.surfaceHi} 0%, ${colors.bg} 75%)`,
       }}
     >
-      {/* Orb stack — halo behind, core in front, both audio-driven */}
-      <div style={{ position: 'relative', width: 180, height: 180, display: 'grid', placeItems: 'center' }}>
-        <div
-          ref={haloRef}
-          aria-hidden
-          style={{
-            position: 'absolute',
-            inset: 0,
-            // Squashed, off-round halo — the imperfection reads organic.
-            borderRadius: '58% 42% 55% 45% / 45% 57% 43% 55%',
-            background: `radial-gradient(ellipse at 45% 40%, ${stateColor}55 0%, transparent 70%)`,
-            filter: 'blur(18px)',
-            opacity: 0.3,
-            willChange: 'transform, opacity',
-            transition: `background 400ms ${ease.out}`,
-          }}
-        />
-        {/* Spark ring — electric discharge arcs, driven from the rAF loop.
-            Broken conic segments so each flash reads as arcs, not a halo. */}
-        <div
-          ref={sparkRef}
-          aria-hidden
-          style={{
-            position: 'absolute',
-            inset: 14,
-            borderRadius: '52% 48% 50% 50% / 49% 51% 47% 53%',
-            background: `conic-gradient(from 0deg,
-              transparent 0deg 40deg, ${stateColor} 43deg 47deg,
-              transparent 50deg 130deg, ${colors.cyan} 133deg 136deg,
-              transparent 139deg 210deg, ${stateColor} 214deg 217deg,
-              transparent 220deg 305deg, ${colors.purple} 308deg 312deg,
-              transparent 315deg 360deg)`,
-            WebkitMaskImage: 'radial-gradient(circle, transparent 58%, black 63%, black 72%, transparent 78%)',
-            maskImage: 'radial-gradient(circle, transparent 58%, black 63%, black 72%, transparent 78%)',
-            filter: 'blur(0.6px)',
-            opacity: 0,
-            willChange: 'transform, opacity',
-          }}
-        />
-        <div
-          ref={orbRef}
-          aria-hidden
-          style={{
-            width: 124,
-            height: 116,
-            // Not a perfect orb: an asymmetric blob silhouette, with the slow
-            // rAF rotation drift keeping the irregularity alive.
-            borderRadius: '54% 46% 49% 51% / 47% 52% 48% 53%',
-            background: `radial-gradient(circle at 38% 32%, ${colors.cyan}, ${colors.purple} 82%)`,
-            boxShadow: `0 0 55px ${stateColor}55, inset 0 0 28px rgba(255,255,255,0.10)`,
-            willChange: 'transform',
-            transition: `box-shadow 400ms ${ease.out}`,
-          }}
-        />
-      </div>
+      <canvas
+        ref={canvasRef}
+        aria-hidden
+        style={{ width: SIZE, height: SIZE, maxWidth: '90%', maxHeight: '60%' }}
+      />
 
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
         <span

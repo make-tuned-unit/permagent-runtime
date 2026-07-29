@@ -9,14 +9,25 @@
 // Publishes two store slices: `voiceEngine` (state + controls for VoiceButton)
 // and `voiceConversation` (the hands-free orb takeover contract).
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useVoice } from '../../hooks/useVoice';
 import { useCommandCenter } from '../../lib/store';
+import {
+  VOICE_HANDOFF_KEY,
+  consumeVoiceHandoff,
+  requestVoiceHandoff,
+} from '../../lib/voiceHandoff';
+
+/** True inside the popped-out chat WebviewWindow (index.html?view=chat). */
+const isChatWindow =
+  typeof location !== 'undefined' &&
+  new URLSearchParams(location.search).get('view') === 'chat';
 
 export function VoiceHost() {
   const chatSessionId = useCommandCenter(s => s.chatSessionId);
   const setVoiceEngine = useCommandCenter(s => s.setVoiceEngine);
   const setVoiceConversation = useCommandCenter(s => s.setVoiceConversation);
+  const chatWindowOpen = useCommandCenter(s => s.chatWindowOpen);
 
   const {
     state,
@@ -52,6 +63,45 @@ export function VoiceHost() {
     activate, deactivate, startRecording, stopRecording, interrupt,
     getAnalyser, getMicAnalyser, setHandsFree, setVoiceEngine,
   ]);
+
+  // ── Cross-window handoff ─────────────────────────────────────────────
+  // The conversation follows the chat surface. When the chat window opens
+  // while a conversation runs HERE (main window), hand it off: end locally,
+  // post the ticket; the chat window consumes it and resumes hands-free on
+  // the same session. Mirrored on chat-window close via beforeunload.
+  const handsFreeRef = useRef(handsFree);
+  handsFreeRef.current = handsFree;
+
+  useEffect(() => {
+    if (isChatWindow) return;
+    if (handsFree && chatWindowOpen) {
+      requestVoiceHandoff('chat');
+      void setHandsFree(false);
+      deactivate();
+    }
+  }, [handsFree, chatWindowOpen, setHandsFree, deactivate]);
+
+  useEffect(() => {
+    const target = isChatWindow ? 'chat' : 'main';
+    const tryTake = () => {
+      if (consumeVoiceHandoff(target)) void setHandsFree(true);
+    };
+    tryTake(); // covers a window created AFTER the ticket was posted
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === VOICE_HANDOFF_KEY) tryTake();
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, [setHandsFree]);
+
+  useEffect(() => {
+    if (!isChatWindow) return;
+    const onUnload = () => {
+      if (handsFreeRef.current) requestVoiceHandoff('main');
+    };
+    window.addEventListener('beforeunload', onUnload);
+    return () => window.removeEventListener('beforeunload', onUnload);
+  }, []);
 
   // Conversation-mode takeover: while hands-free is on, publish the live voice
   // state + analyser taps for the orb. Exiting must actually STOP LISTENING:
