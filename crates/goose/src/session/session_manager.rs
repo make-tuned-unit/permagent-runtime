@@ -992,6 +992,11 @@ impl SessionStorage {
                     if version < 38 {
                         spectral_schema::migrate_v37_to_v38(&self.pool).await?;
                     }
+                    // v39: drain-ingest idempotency key on analytics_events.
+                    // Additive + base-independent.
+                    if version < 39 {
+                        spectral_schema::migrate_v38_to_v39(&self.pool).await?;
+                    }
                     // Version-independent safety net for the cfg-gated v22
                     // recognition columns. The always-on v23 above can stamp
                     // schema_version past the `version < 22` gate on a feature-off

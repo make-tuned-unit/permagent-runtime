@@ -2517,6 +2517,40 @@ pub async fn apply_analytics_events_schema(pool: &Pool<Sqlite>) -> Result<()> {
     )
     .execute(pool)
     .await?;
+
+    // Drain ingest (v39): events pulled from a site's own relay carry the
+    // relay's row id. Without it a retried or overlapping drain re-inserts the
+    // same traffic and inflates every count — the UNIQUE index makes
+    // `INSERT OR IGNORE` exactly-once. NULL for locally-beaconed rows, and
+    // SQLite treats NULLs as distinct, so direct collection is unaffected.
+    let has_source: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('analytics_events') WHERE name = 'source_event_id'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if has_source == 0 {
+        sqlx::query("ALTER TABLE analytics_events ADD COLUMN source_event_id TEXT")
+            .execute(pool)
+            .await?;
+    }
+    sqlx::query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_analytics_events_source
+         ON analytics_events(project_id, source_event_id)",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// v39: drain-ingest idempotency key on `analytics_events`. Additive
+/// (PRAGMA-guarded ADD COLUMN + unique index); safe on every database.
+pub async fn migrate_v38_to_v39(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v38 -> v39 (analytics drain idempotency)");
+    apply_analytics_events_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (39)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v39 (analytics drain idempotency)");
     Ok(())
 }
 

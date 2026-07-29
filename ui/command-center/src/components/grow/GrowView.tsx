@@ -184,6 +184,12 @@ interface FirstPartySetup {
   ingestUrl: string | null;
   snippet: string | null;
   agentPrompt: string | null;
+  /** Drain mode: the site relays, this daemon pulls. */
+  drainUrl: string | null;
+  drainSecret: string | null;
+  cursor: string | null;
+  lastDrainAt: string | null;
+  lastError: string | null;
   receiving: boolean;
 }
 interface FirstPartyStats {
@@ -1043,6 +1049,27 @@ function FirstPartyAnalyticsPanel({
       .finally(() => setSaving(false));
   }, [projectId, onRefresh]);
 
+  // Point the daemon at the site's drain endpoint — the URL the coding agent
+  // reports back after installing the relay.
+  const setDrain = useCallback((url: string) => {
+    setSaving(true);
+    apiFetch<FirstPartySetup>(
+      `/api/projects/${encodeURIComponent(projectId)}/analytics/first_party/drain`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ drainUrl: url }),
+      },
+    )
+      .then((s) => {
+        setSetup(s);
+        setSetupState('ready');
+        onRefresh();
+      })
+      .catch(() => setSetupState('error'))
+      .finally(() => setSaving(false));
+  }, [projectId, onRefresh]);
+
   const copy = useCallback((kind: 'snippet' | 'prompt', text: string | null | undefined) => {
     if (!text) return;
     navigator.clipboard?.writeText(text).then(() => {
@@ -1107,17 +1134,30 @@ function FirstPartyAnalyticsPanel({
 
       {!receiving && (
         <>
-          <div style={{ fontSize: 11, color: colors.textDim }}>
-            Send the setup prompt to a coding agent (Claude or Permagent). It adds the tracking
-            snippet to your site; the moment the first visitor beacon arrives, charts appear here.
+          <div style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>
+            <b style={{ color: colors.text }}>Step 1.</b> Copy the install brief below and give it to
+            a coding agent inside this project's repo. It builds the relay: visitors beacon
+            same-origin to your own app, which buffers events in your own database.
+            <br />
+            <b style={{ color: colors.text }}>Step 2.</b> Paste the drain URL it reports back. This
+            Mac then pulls events outbound every couple of minutes — nothing here is ever exposed to
+            the internet, and events survive while it sleeps.
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button style={buttonStyle} onClick={() => copy('prompt', setup.agentPrompt)}>
+              {copied === 'prompt' ? 'Copied ✓' : 'Copy install brief'}
+            </button>
+            <button style={buttonStyle} onClick={() => copy('snippet', setup.snippet)}>
+              {copied === 'snippet' ? 'Copied ✓' : 'Copy snippet only'}
+            </button>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <input
               value={ingestBase}
               onChange={(e) => setIngestBase(e.target.value)}
-              placeholder={setup.ingestUrl ? setup.ingestUrl.replace(/\/collect\/.*$/, '') : 'https://your-tunnel-host'}
+              placeholder="https://yoursite.com/api/permagent-analytics/drain"
               style={{
-                flex: '1 1 220px', background: colors.bgDeeper, color: colors.text,
+                flex: '1 1 260px', background: colors.bgDeeper, color: colors.text,
                 border: `1px solid ${colors.border}`, borderRadius: radius.md,
                 padding: '6px 10px', fontSize: 12, fontFamily: font.mono,
               }}
@@ -1125,25 +1165,27 @@ function FirstPartyAnalyticsPanel({
             <button
               style={{ ...buttonStyle, opacity: saving ? 0.6 : 1 }}
               disabled={saving}
-              onClick={() => enable(ingestBase.trim())}
-            >{saving ? 'Saving…' : 'Save URL'}</button>
+              onClick={() => setDrain(ingestBase.trim())}
+            >{saving ? 'Saving…' : 'Start ingesting'}</button>
           </div>
+          {setup.lastError && (
+            <div style={{ fontSize: 10, color: colors.danger, fontFamily: font.mono }}>
+              Last drain failed: {setup.lastError}
+            </div>
+          )}
           <div style={{ fontSize: 10, color: colors.textDim }}>
-            Collector URL visitors' browsers will reach. A LAN address works for local dev; a public
-            site needs a tunnel or tailnet hostname pointing at this Mac.
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button style={buttonStyle} onClick={() => copy('prompt', setup.agentPrompt)}>
-              {copied === 'prompt' ? 'Copied ✓' : 'Copy agent prompt'}
-            </button>
-            <button style={buttonStyle} onClick={() => copy('snippet', setup.snippet)}>
-              {copied === 'snippet' ? 'Copied ✓' : 'Copy snippet only'}
-            </button>
-            <span style={{ fontSize: 10, color: colors.textDim, alignSelf: 'center' }}>
-              Waiting for the first event…
-            </span>
+            {setup.drainUrl
+              ? `Draining from ${setup.drainUrl}${setup.lastDrainAt ? ` · last checked ${new Date(setup.lastDrainAt).toLocaleTimeString()}` : ' · waiting for the first pass…'}`
+              : 'Waiting for a drain URL.'}
           </div>
         </>
+      )}
+      {receiving && (setup.lastError || setup.lastDrainAt) && (
+        <div style={{ fontSize: 10, color: setup.lastError ? colors.danger : colors.textDim, fontFamily: font.mono }}>
+          {setup.lastError
+            ? `Drain failing: ${setup.lastError}`
+            : `Last drained ${new Date(setup.lastDrainAt!).toLocaleTimeString()}`}
+        </div>
       )}
 
       {receiving && stats && (
