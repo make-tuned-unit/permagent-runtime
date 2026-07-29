@@ -44,3 +44,44 @@ export function consumeVoiceHandoff(target: VoiceHandoffTarget): boolean {
     return false;
   }
 }
+
+// ── Live-conversation mirror ─────────────────────────────────────────────
+// While a hands-free conversation runs anywhere, its owner heartbeats the
+// current voice state here. Another window (the freshly popped-out chat)
+// renders the orb in MIRROR mode from this — the user sees one continuous
+// conversation while the audio finishes in the owning window and the real
+// handoff happens underneath at turn end.
+
+const LIVE_KEY = 'permagent-voice-live';
+const END_KEY = 'permagent-voice-end';
+const LIVE_FRESH_MS = 8_000;
+
+export const VOICE_LIVE_KEY = LIVE_KEY;
+export const VOICE_END_KEY = END_KEY;
+
+export function publishLiveConversation(state: string): void {
+  try {
+    localStorage.setItem(LIVE_KEY, JSON.stringify({ state, at: Date.now() }));
+  } catch { /* private mode */ }
+}
+
+export function clearLiveConversation(): void {
+  try { localStorage.removeItem(LIVE_KEY); } catch { /* ignore */ }
+}
+
+export function readLiveConversation(): { state: string } | null {
+  try {
+    const raw = localStorage.getItem(LIVE_KEY);
+    if (!raw) return null;
+    const t = JSON.parse(raw) as { state?: string; at?: number };
+    if (typeof t.at !== 'number' || Date.now() - t.at > LIVE_FRESH_MS) return null;
+    return typeof t.state === 'string' ? { state: t.state } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Ask whichever window owns the conversation to end it (mirror-orb click). */
+export function requestVoiceEnd(): void {
+  try { localStorage.setItem(END_KEY, String(Date.now())); } catch { /* ignore */ }
+}
