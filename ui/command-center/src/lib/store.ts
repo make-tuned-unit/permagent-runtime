@@ -1436,18 +1436,29 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         // the state settles, never blocking the text path.
         {
           const lastAssistant = [...get().chatMessages].reverse().find(m => m.role === 'assistant');
+          // Speak ONLY a turn this client actually watched stream in.
+          //
+          // `connectSession` replays the WHOLE session on a null cursor (fresh
+          // window, dock remount, session switch), so every historical Finish
+          // arrives again — and each one used to re-synthesize the session's
+          // opening reply ("Lets begin"). The content dedupe could not stop it:
+          // it remembers keys, and once a later voice turn had been marked, the
+          // greeting's key no longer matched. Nor could the live-conversation
+          // check: the replay lands ~1.3s BEFORE the /voice socket opens, so
+          // hands-free is still false (visible in daemon.err as SSE connect →
+          // POST /voice/synthesize → GET /voice 101, in that order, every time).
+          //
+          // `isStreaming` is the honest discriminator: a live turn sets it (from
+          // sendMessage, or adopted from ActiveRequests when attaching mid-turn)
+          // and this handler clears it just below, while replayed history never
+          // sets it. Replays are therefore silent by construction.
+          const isLiveTurn = get().isStreaming;
           // Never during a live voice conversation (local OR mirrored from the
-          // other window): voice turns are already spoken by the /voice
-          // pipeline — a Finish-driven synthesis here double-speaks, and a
-          // replayed Finish in a fresh window can voice a PARTIAL streaming
-          // reply ("Lets begin"). Otherwise content-based dedupe keeps replays
-          // silent — voice turns mark themselves spoken via
-          // speakReplies.markReplySpoken, so no blanket connect-timer is
-          // needed (that one also swallowed real replies landing just after a
-          // reconnect or session switch).
+          // other window) either: voice turns are already spoken by the /voice
+          // pipeline, so synthesizing here would double-speak.
           const voiceConversationLive =
             get().voiceEngine?.handsFree || readLiveConversation() !== null;
-          if (lastAssistant?.content && !voiceConversationLive) {
+          if (lastAssistant?.content && isLiveTurn && !voiceConversationLive) {
             void maybeSpeakReply(
               lastAssistant.content,
               undefined,

@@ -53,28 +53,18 @@ export default function ChatApp() {
     })();
   }, [theme]);
 
-  // Own this window's close. Relying on the MAIN window's onCloseRequested
-  // proxy left the window alive on the first X (its handler cleared the
-  // open-flag, which reopened the sidebar, while the window itself stayed) —
-  // hence closing twice, and a dock + window both showing. A window destroying
-  // itself is unambiguous.
-  useEffect(() => {
-    if (!('__TAURI_INTERNALS__' in window)) return;
-    let unlisten: (() => void) | undefined;
-    let disposed = false;
-    (async () => {
-      try {
-        const { getCurrentWindow } = await import('@tauri-apps/api/window');
-        const win = getCurrentWindow();
-        const un = await win.onCloseRequested(async (e) => {
-          e.preventDefault(); // we destroy explicitly below
-          try { await win.destroy(); } catch { /* already gone */ }
-        });
-        if (disposed) un(); else unlisten = un;
-      } catch { /* non-Tauri — nothing to own */ }
-    })();
-    return () => { disposed = true; unlisten?.(); };
-  }, []);
+  // NOTE: nothing here (or anywhere) may register `onCloseRequested` on this
+  // window. Tauri core does:
+  //
+  //   WindowEvent::CloseRequested { api } =>
+  //     if window.has_js_listener(CLOSE_REQUESTED) { api.prevent_close() }
+  //
+  // — the mere EXISTENCE of a JS listener suppresses the native close, so the
+  // window then closes only if some JS path calls destroy(). Two windows used
+  // to register one (this one, and ChatLauncher in main), and when the destroy
+  // failed to land the window became unclosable no matter how many times the X
+  // was pressed. With zero listeners the first press closes it natively, always.
+  // Main learns it is gone from `tauri://destroyed` + an existence poll.
 
   // Persist this window's position/size so it reopens where the user left it.
   useEffect(() => {

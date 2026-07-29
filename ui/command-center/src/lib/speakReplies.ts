@@ -71,6 +71,39 @@ export function speakableText(markdown: string, cap = 700): string {
 }
 
 const SPOKEN_KEY = 'permagent-last-spoken-key';
+/** How many recent replies stay deduped. A SINGLE slot was the bug: once a
+ *  voice turn marked itself spoken it evicted the session's opening reply, so
+ *  the next history replay happily re-spoke the greeting. A short ring covers
+ *  a realistic replay window without unbounded growth. */
+const SPOKEN_MAX = 8;
+
+function readSpokenKeys(): string[] {
+  try {
+    const raw = localStorage.getItem(SPOKEN_KEY);
+    if (!raw) return [];
+    // Tolerate the pre-ring format (a single bare key) so an upgrade in place
+    // doesn't re-speak whatever was last marked.
+    const parsed = raw.startsWith('[') ? JSON.parse(raw) : [raw];
+    return Array.isArray(parsed) ? parsed.filter((k): k is string => typeof k === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function rememberSpokenKey(key: string): void {
+  try {
+    const keys = readSpokenKeys().filter(k => k !== key);
+    keys.push(key);
+    localStorage.setItem(SPOKEN_KEY, JSON.stringify(keys.slice(-SPOKEN_MAX)));
+  } catch { /* private mode — dedupe degrades, playback still correct */ }
+}
+
+/** Has this reply already been voiced? Exported for the dedupe regression
+ *  tests — the storage layout is an implementation detail, this predicate is
+ *  the actual contract. */
+export function hasSpokenKey(key: string): boolean {
+  return readSpokenKeys().includes(key);
+}
 
 /** Content-identity dedupe key. Turn position proved unreliable (a fresh
  *  window's rebuilt message list can count differently than the window that
@@ -94,9 +127,7 @@ export function replyDedupeKey(sessionId: string | null, content: string): strin
  */
 export function markReplySpoken(sessionId: string | null, content: string): void {
   if (!content) return;
-  try {
-    localStorage.setItem(SPOKEN_KEY, replyDedupeKey(sessionId, content));
-  } catch { /* private mode — dedupe degrades, playback still correct */ }
+  rememberSpokenKey(replyDedupeKey(sessionId, content));
 }
 
 /** Speak a completed reply. No-op when muted; a newer reply supersedes an
@@ -113,10 +144,8 @@ export async function maybeSpeakReply(
 ): Promise<void> {
   if (!enabled) return;
   if (dedupeKey) {
-    try {
-      if (localStorage.getItem(SPOKEN_KEY) === dedupeKey) return;
-      localStorage.setItem(SPOKEN_KEY, dedupeKey);
-    } catch { /* private mode — speak anyway */ }
+    if (hasSpokenKey(dedupeKey)) return;
+    rememberSpokenKey(dedupeKey);
   }
   const text = speakableText(markdown);
   if (!text) return;
