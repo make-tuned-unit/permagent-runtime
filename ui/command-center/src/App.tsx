@@ -17,7 +17,6 @@ import { Splash } from './components/splash/Splash';
 import { ChatLauncher } from './components/chat/ChatLauncher';
 import { ChatDock } from './components/chat/ChatDock';
 import { VoiceHost } from './components/voice/VoiceHost';
-import { VoiceOrb } from './components/voice/VoiceOrb';
 import { GoalDetailModalHost } from './components/goals/GoalDetailModal';
 import { PersonDetailModalHost } from './components/projects/PersonDetailModal';
 import { DropZone } from './components/chat/DropZone';
@@ -305,28 +304,16 @@ function App() {
   );
 }
 
-// The hands-free orb must never vanish mid-conversation: ChatView renders it
-// while a chat surface is open; when the dock is closed (e.g. chat was popped
-// out while the conversation lives in THIS window), this fallback keeps the
-// takeover on screen until the user ends it.
+// The orb lives INSIDE a chat surface — the dock (ChatView) or the detached
+// window's mirror — never as a standalone takeover of the whole app.
+//
+// There used to be a full-window fallback here for "conversation live but no
+// chat surface open". It made closing the sidebar explode the orb across the
+// entire app, which reads as a bug rather than a feature. Closing the last
+// chat surface now ends the conversation (see ChatDock), so this state cannot
+// arise and the takeover has nowhere to leak to.
 function VoiceConversationFallback() {
-  const conv = useCommandCenter(s => s.voiceConversation);
-  const dockOpen = useCommandCenter(s => s.chatDockOpen);
-  const chatWindowOpen = useCommandCenter(s => s.chatWindowOpen);
-  // The chat window's mirror orb is the conversation surface while it's open,
-  // so the main app doesn't also take over. When the dock is open, ChatView
-  // carries the orb inside the sidebar. Otherwise this is the surface.
-  if (!conv || dockOpen || chatWindowOpen) return null;
-  return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 90 }}>
-      <VoiceOrb
-        state={conv.state}
-        getPlaybackAnalyser={conv.getPlaybackAnalyser}
-        getMicAnalyser={conv.getMicAnalyser}
-        onExit={conv.exit}
-      />
-    </div>
-  );
+  return null;
 }
 
 function hasToolType(node: LayoutNode, tool: string): boolean {

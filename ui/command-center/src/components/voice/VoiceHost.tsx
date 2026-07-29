@@ -27,7 +27,6 @@ export function VoiceHost() {
   const setVoiceEngine = useCommandCenter(s => s.setVoiceEngine);
   const setVoiceConversation = useCommandCenter(s => s.setVoiceConversation);
   const chatWindowOpen = useCommandCenter(s => s.chatWindowOpen);
-  const openChatDock = useCommandCenter(s => s.openChatDock);
 
   const {
     state,
@@ -120,9 +119,13 @@ export function VoiceHost() {
     const was = prevChatWindowOpen.current;
     prevChatWindowOpen.current = chatWindowOpen;
     if (was && !chatWindowOpen && handsFreeRef.current) {
-      openChatDock();
+      // setState directly, NOT openChatDock(): that helper focuses an existing
+      // chat window when `chatWindowOpen` is still true, and racing this very
+      // transition it would re-show the window the user just closed — which is
+      // why closing took two clicks.
+      useCommandCenter.setState({ chatDockOpen: true });
     }
-  }, [chatWindowOpen, openChatDock]);
+  }, [chatWindowOpen]);
 
   // Conversation-mode takeover: while hands-free is on, publish the live voice
   // state + analyser taps for the orb. Exiting must actually STOP LISTENING:

@@ -45,6 +45,9 @@ export function ChatView() {
   // surface. Published by VoiceButton, which keeps running underneath — the
   // overlay is visual only, turn-taking stays with the VAD.
   const voiceConversation = useCommandCenter(s => s.voiceConversation);
+  // With chat detached, THAT window's mirror orb is the conversation surface.
+  // Without this guard the dock rendered a second orb simultaneously.
+  const chatWindowOpen = useCommandCenter(s => s.chatWindowOpen);
 
   return (
     <div className="relative flex h-full flex-col" style={{ backgroundColor: colors.bg }}>
@@ -65,7 +68,7 @@ export function ChatView() {
       <SkillPromptBanner />
       <ChatInput ref={chatInputRef} />
 
-      {voiceConversation && (
+      {voiceConversation && !chatWindowOpen && (
         <VoiceOrb
           state={voiceConversation.state}
           getPlaybackAnalyser={voiceConversation.getPlaybackAnalyser}
