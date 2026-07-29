@@ -55,16 +55,33 @@ export function ChatLauncher() {
     api.getIdentity().then(id => setAgentName(id.first_name)).catch(() => {});
   }, [identityRev]);
 
-  // Check if chat window is already open on mount (handles main window reload)
+  // Track the chat window's existence directly, not just via the flag-setting
+  // code paths: check on mount (main-window reload), and re-check whenever ANY
+  // window is created (`tauri://window-created` fires app-wide) — so the pill
+  // hides even for creation paths the store flag misses.
   useEffect(() => {
     if (!isTauri) return;
-    (async () => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    const check = async () => {
       try {
         const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
         const existing = await WebviewWindow.getByLabel('chat');
-        if (existing) setChatWindowOpen(true);
+        if (!disposed && existing) setChatWindowOpen(true);
+      } catch { /* ignore */ }
+    };
+    void check();
+    (async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        const un = await listen('tauri://window-created', () => void check());
+        if (disposed) un(); else unlisten = un;
       } catch { /* ignore */ }
     })();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, [setChatWindowOpen]);
 
   // React to the chat window closing (e.g. user hits the traffic-light) via its

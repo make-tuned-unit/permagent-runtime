@@ -13,8 +13,14 @@ export function ModelPicker() {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
+  // Keep retrying while empty: opening chat during daemon boot left the
+  // picker permanently on "no model" (the single fetch failed and nothing
+  // re-triggered it). The interval dissolves as soon as providers land.
   useEffect(() => {
-    if (providers.length === 0) loadProviders();
+    if (providers.length > 0) return;
+    loadProviders();
+    const id = setInterval(loadProviders, 5000);
+    return () => clearInterval(id);
   }, [providers.length, loadProviders]);
 
   useEffect(() => {

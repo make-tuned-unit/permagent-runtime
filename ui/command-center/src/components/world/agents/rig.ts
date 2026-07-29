@@ -270,7 +270,117 @@ function torsoLathe(): THREE.BufferGeometry {
   );
 }
 
-function metalChunks(weathering: number): ChunkSpec[] {
+/** Rig body variant — each real agent gets a signature silhouette. */
+export type RigVariant = 'henry' | 'librarian' | 'reader' | 'watcher' | 'steward' | null;
+
+/**
+ * Signature gear per agent (visual overhaul 2026-07-28): every agent shared an
+ * identical body, so the roster read as clones. Each variant now carries
+ * recognizable equipment merged into the SAME channel draw calls (zero extra
+ * cost): Henry a presiding collar + chest core, the Librarian a satchel and
+ * spine-rack of books, the Reader a scanning arc + cyclops lens, the Watcher a
+ * vigil antenna + extra eyes, the Steward a groundskeeper yoke + key ring.
+ */
+function gearChunks(
+  variant: RigVariant,
+  GUN: THREE.Color,
+  DARK: THREE.Color,
+  BRONZE: THREE.Color,
+): { metal: ChunkSpec[]; trim: ChunkSpec[]; state: ChunkSpec[]; visor: ChunkSpec[] } {
+  const metal: ChunkSpec[] = [];
+  const trim: ChunkSpec[] = [];
+  const state: ChunkSpec[] = [];
+  const visor: ChunkSpec[] = [];
+
+  switch (variant) {
+    case 'henry':
+      // Presiding high-collar fins behind the neck + gold epaulette bars.
+      metal.push(
+        { geo: box(0.05, 0.2, 0.04), p: [0.15, 1.7, -0.13], r: [0.15, 0, -0.3], bone: 'spine', color: DARK },
+        { geo: box(0.05, 0.2, 0.04), p: [-0.15, 1.7, -0.13], r: [0.15, 0, 0.3], bone: 'spine', color: DARK },
+        { geo: box(0.16, 0.025, 0.09), p: [0.32, 1.62, 0], r: [0, 0, -0.12], bone: 'armL', color: BRONZE },
+        { geo: box(0.16, 0.025, 0.09), p: [-0.32, 1.62, 0], r: [0, 0, 0.12], bone: 'armR', color: BRONZE },
+      );
+      // Chest core — reads his state across the room (crown-gem crossover family).
+      state.push({ geo: sphere(0.045, 12, 10), p: [0, 1.36, 0.235], bone: 'spine' });
+      trim.push({ geo: torus(0.065, 0.01, 4, 16), p: [0, 1.36, 0.235], bone: 'spine' });
+      break;
+
+    case 'librarian': {
+      // Hip satchel + chest strap, and a spine-rack of three book slabs.
+      metal.push(
+        { geo: box(0.17, 0.13, 0.07), p: [0.24, 0.8, -0.08], r: [0, 0.25, -0.08], bone: 'spine', color: DARK },
+        { geo: box(0.18, 0.035, 0.075), p: [0.24, 0.875, -0.08], r: [0, 0.25, -0.08], bone: 'spine', color: BRONZE },
+      );
+      trim.push({ geo: cyl(0.012, 0.012, 0.78, 5), p: [-0.02, 1.2, 0.21], r: [0, 0, 0.5], bone: 'spine' });
+      const bookCols = [BRONZE, GUN, DARK];
+      for (let i = 0; i < 3; i++) {
+        metal.push({
+          geo: box(0.07, 0.24 - i * 0.03, 0.05),
+          p: [(i - 1) * 0.085, 1.02, -0.24],
+          r: [0, 0, (i - 1) * 0.08],
+          bone: 'spine',
+          color: bookCols[i],
+        });
+      }
+      // Reading-lamp antenna, tip on the state channel (glows while mining).
+      metal.push({ geo: cyl(0.008, 0.008, 0.16, 5), p: [0.14, 2.16, 0.02], r: [0, 0, -0.25], bone: 'head', color: DARK });
+      state.push({ geo: sphere(0.02, 8, 8), p: [0.16, 2.24, 0.02], bone: 'head' });
+      break;
+    }
+
+    case 'reader': {
+      // Scanning arc over the skull + a cyclops lens centered on the visor.
+      trim.push({
+        geo: new THREE.TorusGeometry(0.3, 0.012, 5, 20, Math.PI),
+        p: [0, 1.92, 0.02],
+        r: [0, Math.PI / 2, 0],
+        bone: 'head',
+      });
+      visor.push({ geo: cyl(0.062, 0.062, 0.025, 16), p: [0, 1.9, 0.24], r: [Math.PI / 2, 0, 0], bone: 'head' });
+      metal.push({ geo: torus(0.075, 0.012, 5, 16), p: [0, 1.9, 0.245], bone: 'head', color: DARK });
+      // Document clip at the hip — the ingest tray.
+      metal.push({ geo: box(0.14, 0.18, 0.02), p: [-0.23, 0.82, 0.02], r: [0, 0.3, 0.1], bone: 'spine', color: GUN });
+      trim.push({ geo: box(0.15, 0.012, 0.024), p: [-0.23, 0.9, 0.02], r: [0, 0.3, 0.1], bone: 'spine' });
+      break;
+    }
+
+    case 'watcher': {
+      // Tall vigil antenna off the back with a beacon tip (state channel) +
+      // two extra watchful eye-dots above the visor.
+      metal.push({ geo: cyl(0.01, 0.006, 0.55, 5), p: [-0.1, 2.1, -0.14], r: [0.22, 0, 0.12], bone: 'head', color: DARK });
+      state.push({ geo: sphere(0.026, 8, 8), p: [-0.165, 2.36, -0.2], bone: 'head' });
+      visor.push(
+        { geo: box(0.05, 0.03, 0.04), p: [0.08, 1.99, 0.2], bone: 'head' },
+        { geo: box(0.05, 0.03, 0.04), p: [-0.08, 1.99, 0.2], bone: 'head' },
+      );
+      // Layered shoulder cowl slabs — the sentinel hunch.
+      metal.push(
+        { geo: box(0.46, 0.035, 0.2), p: [0, 1.6, -0.06], r: [0.12, 0, 0], bone: 'spine', color: DARK },
+        { geo: box(0.38, 0.03, 0.16), p: [0, 1.66, -0.08], r: [0.16, 0, 0], bone: 'spine', color: GUN },
+      );
+      break;
+    }
+
+    case 'steward': {
+      // Groundskeeper yoke across the shoulders + belt key-ring with keys.
+      metal.push(
+        { geo: box(0.52, 0.04, 0.13), p: [0, 1.6, -0.1], r: [0.1, 0, 0], bone: 'spine', color: DARK },
+        { geo: torus(0.05, 0.009, 5, 14), p: [0.21, 0.7, 0.12], r: [0, 0.4, 0], bone: 'spine', color: BRONZE },
+        { geo: box(0.015, 0.06, 0.008), p: [0.21, 0.64, 0.13], bone: 'spine', color: BRONZE },
+        { geo: box(0.015, 0.05, 0.008), p: [0.235, 0.645, 0.115], r: [0, 0, 0.2], bone: 'spine', color: GUN },
+        // Crossed shears on the left hip.
+        { geo: box(0.02, 0.2, 0.015), p: [-0.22, 0.72, -0.05], r: [0, 0, 0.5], bone: 'spine', color: DARK },
+        { geo: box(0.02, 0.2, 0.015), p: [-0.22, 0.72, -0.05], r: [0, 0, -0.5], bone: 'spine', color: DARK },
+      );
+      trim.push({ geo: torus(0.03, 0.007, 4, 10), p: [0.21, 0.7, 0.12], r: [0, 0.4, 0], bone: 'spine' });
+      break;
+    }
+  }
+  return { metal, trim, state, visor };
+}
+
+function metalChunks(weathering: number, extra: ChunkSpec[] = []): ChunkSpec[] {
   const tint = 1 - weathering * 0.25;
   const GUN = new THREE.Color(ENV.gunmetal).multiplyScalar(tint);
   const DARK = new THREE.Color(ENV.gunmetal).multiplyScalar(0.55 * tint);
@@ -299,6 +409,13 @@ function metalChunks(weathering: number): ChunkSpec[] {
     { geo: box(0.08, 0.07, 0.04), p: [0, 0.76, 0.2], bone: 'spine', color: BRONZE },
     // Dorsal spine ridge
     { geo: box(0.05, 0.55, 0.04), p: [0, 1.18, -0.23], bone: 'spine', color: DARK },
+    // Universal detail (overhaul 2026-07-28): angled side intake vents + hip guards.
+    { geo: box(0.02, 0.1, 0.06), p: [0.235, 1.22, 0.04], r: [0, 0, -0.25], bone: 'spine', color: DARK },
+    { geo: box(0.02, 0.1, 0.06), p: [-0.235, 1.22, 0.04], r: [0, 0, 0.25], bone: 'spine', color: DARK },
+    { geo: box(0.02, 0.08, 0.05), p: [0.245, 1.08, 0.02], r: [0, 0, -0.25], bone: 'spine', color: DARK },
+    { geo: box(0.02, 0.08, 0.05), p: [-0.245, 1.08, 0.02], r: [0, 0, 0.25], bone: 'spine', color: DARK },
+    { geo: box(0.055, 0.15, 0.11), p: [0.19, 0.72, 0], bone: 'spine', color: GUN },
+    { geo: box(0.055, 0.15, 0.11), p: [-0.19, 0.72, 0], bone: 'spine', color: GUN },
   ];
 
   for (const side of [1, -1] as const) {
@@ -329,11 +446,12 @@ function metalChunks(weathering: number): ChunkSpec[] {
       { geo: box(0.06, 0.02, 0.06), p: [side * 0.12, -0.07, -0.02], bone: calf, color: DARK },
     );
   }
+  chunks.push(...extra);
   return chunks;
 }
 
 /** IDENTITY trim channels — toga-trim family. Never state-colored (bible §4). */
-function trimChunks(): ChunkSpec[] {
+function trimChunks(extra: ChunkSpec[] = []): ChunkSpec[] {
   const chunks: ChunkSpec[] = [
     // Head channels
     { geo: cyl(0.02, 0.02, 0.4, 4), p: [0, 2.06, 0], r: [Math.PI / 2, 0, 0], bone: 'head' },
@@ -383,11 +501,12 @@ function trimChunks(): ChunkSpec[] {
       { geo: torus(0.04, 0.008, 4, 8), p: [side * 0.12, -0.08, 0.02], r: [Math.PI / 2, 0, 0], bone: calf },
     );
   }
+  chunks.push(...extra);
   return chunks;
 }
 
 /** STATE channels: joint glow rings + cape circuit lines + feet aura (+ crown gems). */
-function stateChunks(withGems: boolean): ChunkSpec[] {
+function stateChunks(withGems: boolean, extra: ChunkSpec[] = []): ChunkSpec[] {
   const chunks: ChunkSpec[] = [
     // Feet aura ring (breathes when available)
     { geo: new THREE.RingGeometry(0.4, 0.55, 24), p: [0, 0, 0], r: [-Math.PI / 2, 0, 0], bone: 'aura' },
@@ -417,11 +536,17 @@ function stateChunks(withGems: boolean): ChunkSpec[] {
       { geo: sphere(0.03, 10, 10), p: [-0.085, 2.02, 0.215], bone: 'head' },
     );
   }
+  // Back power core — every agent's reactor, glowing with the live state color.
+  chunks.push(
+    { geo: cyl(0.05, 0.05, 0.015, 14), p: [0, 1.22, -0.255], r: [Math.PI / 2, 0, 0], bone: 'spine' },
+    { geo: torus(0.075, 0.008, 4, 16), p: [0, 1.22, -0.255], bone: 'spine' },
+  );
+  chunks.push(...extra);
   return chunks;
 }
 
 /** Visor — its own draw call so flicker/intensity is independent of other channels. */
-function visorChunks(): ChunkSpec[] {
+function visorChunks(extra: ChunkSpec[] = []): ChunkSpec[] {
   const chunks: ChunkSpec[] = [
     { geo: box(0.22, 0.045, 0.06), p: [0, 1.9, 0.22], bone: 'head' },
   ];
@@ -431,6 +556,7 @@ function visorChunks(): ChunkSpec[] {
       { geo: cyl(0.04, 0.04, 0.01, 8), p: [side * 0.24, 1.86, 0], r: [0, side * (Math.PI / 2), 0], bone: 'head' },
     );
   }
+  chunks.push(...extra);
   return chunks;
 }
 
@@ -470,15 +596,28 @@ export interface RigGeometries {
 
 const geoCache = new Map<string, RigGeometries>();
 
-export function getRigGeometries(opts: { weathering: number; crown: boolean }): RigGeometries {
-  const key = `${opts.weathering}|${opts.crown}`;
+export function getRigGeometries(opts: {
+  weathering: number;
+  crown: boolean;
+  variant?: RigVariant;
+}): RigGeometries {
+  const variant = opts.variant ?? null;
+  const key = `${opts.weathering}|${opts.crown}|${variant}`;
   let g = geoCache.get(key);
   if (!g) {
+    // Signature gear rides the same four channel draw calls — no extra cost.
+    const tint = 1 - opts.weathering * 0.25;
+    const gear = gearChunks(
+      variant,
+      new THREE.Color(ENV.gunmetal).multiplyScalar(tint),
+      new THREE.Color(ENV.gunmetal).multiplyScalar(0.55 * tint),
+      new THREE.Color(ENV.bronze).multiplyScalar(tint),
+    );
     g = {
-      metal: mergeChunks(metalChunks(opts.weathering), true),
-      trim: mergeChunks(trimChunks(), false),
-      state: mergeChunks(stateChunks(opts.crown), false),
-      visor: mergeChunks(visorChunks(), false),
+      metal: mergeChunks(metalChunks(opts.weathering, gear.metal), true),
+      trim: mergeChunks(trimChunks(gear.trim), false),
+      state: mergeChunks(stateChunks(opts.crown, gear.state), false),
+      visor: mergeChunks(visorChunks(gear.visor), false),
       cape: (() => {
         const cape = buildCapeGeometry();
         return prepChunk({ geo: cape, bone: 'spine' }, false);
@@ -499,10 +638,12 @@ let sharedGoldMat: THREE.MeshStandardMaterial | null = null;
 
 function getSharedMats() {
   if (!sharedMetalMat) {
+    // Punchier metal (overhaul 2026-07-28): lower roughness + higher metalness
+    // gives the plates a specular read instead of matte gray.
     sharedMetalMat = new THREE.MeshStandardMaterial({
       vertexColors: true,
-      roughness: 0.45,
-      metalness: 0.45,
+      roughness: 0.38,
+      metalness: 0.55,
     });
     sharedCapeMat = new THREE.MeshStandardMaterial({
       color: new THREE.Color(ENV.deepVoid).multiplyScalar(2.2),
@@ -558,10 +699,15 @@ export function createAgentRig(opts: {
   trimColor: string;
   weathering: number;
   crown: boolean;
-  /** Librarian gets the describe tablet; Henry gets the presence light. */
-  variant?: 'librarian' | 'henry' | null;
+  /** Signature-gear variant; 'librarian' also gets the describe tablet and
+   *  'henry' the presence light. */
+  variant?: RigVariant;
 }): AgentRig {
-  const geos = getRigGeometries({ weathering: opts.weathering, crown: opts.crown });
+  const geos = getRigGeometries({
+    weathering: opts.weathering,
+    crown: opts.crown,
+    variant: opts.variant ?? null,
+  });
   const shared = getSharedMats();
   const bones = buildBones();
   const skeleton = new THREE.Skeleton(bones.list);
