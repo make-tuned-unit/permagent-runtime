@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getApiBaseUrl } from '../lib/api';
 import { getStreamToken } from '../lib/streamToken';
+import { markReplySpoken } from '../lib/speakReplies';
 
 export type VoiceState =
   | 'idle'          // Voice off — no socket
@@ -242,6 +243,10 @@ export function useVoice(options: UseVoiceOptions = {}) {
             break;
           case 'reply_text':
             setLastReply(msg.text ?? '');
+            // This turn is being spoken by the voice pipeline — record it so a
+            // later SSE replay (fresh window, reconnect) doesn't synthesize
+            // and speak it a second time via speak-replies.
+            markReplySpoken(sessionId ?? null, msg.text ?? '');
             emit({ type: 'reply_text', text: msg.text ?? '' });
             break;
           case 'reply_start':
@@ -297,7 +302,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
         emit({ type: 'reply_audio', audio: { samples, sampleRate: 24000 } });
       }
     }
-  }, [setStateAndEmit, emit, playNextChunk, flushNavIfIdle]);
+  }, [setStateAndEmit, emit, playNextChunk, flushNavIfIdle, sessionId]);
 
   // Monotonic connect epoch. Each connectSocket call claims a new epoch; a
   // call that gets superseded while awaiting the daemon token (e.g. the
@@ -691,6 +696,11 @@ export function useVoice(options: UseVoiceOptions = {}) {
     vadCtxRef.current?.close().catch(() => {});
     vadCtxRef.current = null;
     micAnalyserRef.current = null;
+    // The onset streak is hook-lifetime state, so a half-formed streak (one
+    // loud buffer) would survive a monitor teardown and let the NEXT single
+    // keyboard click complete it — defeating the debounce entirely.
+    vadOnsetStreakRef.current = 0;
+    vadBargeStreakRef.current = 0;
   }, []);
 
   const startVadMonitor = useCallback(() => {

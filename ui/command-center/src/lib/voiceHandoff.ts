@@ -15,6 +15,7 @@
 const LIVE_KEY = 'permagent-voice-live';
 const END_KEY = 'permagent-voice-end';
 const START_KEY = 'permagent-voice-start';
+const INTERRUPT_KEY = 'permagent-voice-interrupt';
 const CMD_FRESH_MS = 10_000;
 /** The owner heartbeats every ~150ms; 2s staleness = owner gone. */
 const LIVE_FRESH_MS = 2_000;
@@ -75,3 +76,9 @@ export function consumeVoiceEnd(): boolean { return consumeCmd(END_KEY); }
 /** Chat-window mic button: ask the owner to start a hands-free conversation. */
 export function requestVoiceStart(): void { requestCmd(START_KEY); }
 export function consumeVoiceStart(): boolean { return consumeCmd(START_KEY); }
+
+/** Barge-in from a mirror surface: stop Henry mid-reply without ending the
+ *  conversation. Without this, spacebar in the popped-out window swallowed the
+ *  keystroke and did nothing while the tooltip promised an interrupt. */
+export function requestVoiceInterrupt(): void { requestCmd(INTERRUPT_KEY); }
+export function consumeVoiceInterrupt(): boolean { return consumeCmd(INTERRUPT_KEY); }

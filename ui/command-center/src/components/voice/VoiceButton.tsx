@@ -8,7 +8,12 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { VoiceState, isInterruptibleState } from '../../hooks/useVoice';
 import { useCommandCenter } from '../../lib/store';
-import { readLiveConversation, requestVoiceEnd, requestVoiceStart } from '../../lib/voiceHandoff';
+import {
+  readLiveConversation,
+  requestVoiceEnd,
+  requestVoiceInterrupt,
+  requestVoiceStart,
+} from '../../lib/voiceHandoff';
 
 /** True inside the popped-out chat WebviewWindow (index.html?view=chat). */
 const isChatWindow =
@@ -73,7 +78,7 @@ export function VoiceButton() {
   const deactivate = engine?.deactivate ?? (isChatWindow ? requestVoiceEnd : noop);
   const startRecording = engine?.startRecording ?? noop;
   const stopRecording = engine?.stopRecording ?? noop;
-  const interrupt = engine?.interrupt ?? noop;
+  const interrupt = engine?.interrupt ?? (isChatWindow ? requestVoiceInterrupt : noop);
   const getAnalyser = engine?.getAnalyser ?? (() => null);
   const setHandsFree =
     engine?.setHandsFree ??

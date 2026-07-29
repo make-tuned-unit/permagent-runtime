@@ -469,9 +469,6 @@ const RECONNECT_MAX_MS = 30000;
  *  constructing the EventSource): a newer connect/disconnect bumps the epoch,
  *  and a stale in-flight connect aborts instead of opening a duplicate SSE. */
 let _sseConnectEpoch = 0;
-/** Speak-replies stays silent until this instant — set past each SSE connect
- *  so the replay burst never re-voices history. */
-let _speakSuppressUntil = 0;
 
 /** Pull a toolRequest's name/args, tolerating the daemon's tool_result_serde
  *  wrapper `{ status, value:{ name, arguments } }` as well as a flat shape.
@@ -1443,11 +1440,14 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
           // other window): voice turns are already spoken by the /voice
           // pipeline — a Finish-driven synthesis here double-speaks, and a
           // replayed Finish in a fresh window can voice a PARTIAL streaming
-          // reply ("Lets begin"). Otherwise: content-based dedupe + the
-          // connect-burst mute keep replays silent.
+          // reply ("Lets begin"). Otherwise content-based dedupe keeps replays
+          // silent — voice turns mark themselves spoken via
+          // speakReplies.markReplySpoken, so no blanket connect-timer is
+          // needed (that one also swallowed real replies landing just after a
+          // reconnect or session switch).
           const voiceConversationLive =
             get().voiceEngine?.handsFree || readLiveConversation() !== null;
-          if (lastAssistant?.content && !voiceConversationLive && Date.now() >= _speakSuppressUntil) {
+          if (lastAssistant?.content && !voiceConversationLive) {
             void maybeSpeakReply(
               lastAssistant.content,
               undefined,
@@ -1549,7 +1549,25 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   // Collapsed chat launcher corner reservation (#553)
   chatLauncherSize: null,
   chatDockOpen: false,
-  openChatDock: () => set({ chatDockOpen: true }),
+  // Never open the dock while chat is DETACHED: the two are meant to be
+  // mutually exclusive, but ~10 call sites (activity cards, session switch,
+  // navigate_app, LearnNext…) called this blindly, producing two live chat
+  // surfaces — and, mid-conversation, two orbs in two windows. Focus the
+  // detached window instead, which is what the user actually wants.
+  openChatDock: () => {
+    if (get().chatWindowOpen) {
+      void (async () => {
+        try {
+          const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+          const existing = await WebviewWindow.getByLabel('chat');
+          if (existing) { await existing.show(); await existing.setFocus(); return; }
+        } catch { /* not Tauri or window gone — fall through to the dock */ }
+        set({ chatWindowOpen: false, chatDockOpen: true });
+      })();
+      return;
+    }
+    set({ chatDockOpen: true });
+  },
   closeChatDock: () => set({ chatDockOpen: false }),
   chatWindowOpen: false,
   setChatWindowOpen: (open) => set({ chatWindowOpen: open }),
@@ -1603,12 +1621,6 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
     es.onopen = () => {
       set({ connectionStatus: 'connected', _reconnectAttempts: 0 });
-      // The daemon replays its buffered frames immediately after connect —
-      // including old Finish frames. Mute speak-replies through that burst so
-      // a freshly opened window never re-voices history (voice-pipeline turns
-      // never touch the speak dedupe key, so content dedupe alone can't
-      // catch them).
-      _speakSuppressUntil = Date.now() + 2500;
       get().loadSkills();
       get().loadProposals();
       get().loadWorkspaces();
