@@ -74,12 +74,17 @@ export function VoiceHost() {
 
   useEffect(() => {
     if (isChatWindow) return;
-    if (handsFree && chatWindowOpen) {
+    // Deferred handoff: never yank the conversation mid-turn. While Henry is
+    // thinking/speaking (or the user is mid-utterance) the conversation stays
+    // HERE and he finishes his sentence; the moment the turn settles back to
+    // 'ready', the mic moves to the chat window. state is a dep, so the
+    // playing→ready transition re-fires this.
+    if (handsFree && chatWindowOpen && state === 'ready') {
       requestVoiceHandoff('chat');
       void setHandsFree(false);
       deactivate();
     }
-  }, [handsFree, chatWindowOpen, setHandsFree, deactivate]);
+  }, [handsFree, chatWindowOpen, state, setHandsFree, deactivate]);
 
   useEffect(() => {
     const target = isChatWindow ? 'chat' : 'main';
