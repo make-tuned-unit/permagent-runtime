@@ -313,4 +313,123 @@ mod tests {
             .unwrap();
         assert_eq!(n, 2);
     }
+
+    /// END-TO-END CONTRACT TEST. Stands up a mock site speaking exactly the
+    /// JSON the install brief tells the coding agent to produce, and drains it.
+    /// If the brief and the poller ever drift apart, this fails — which is the
+    /// only thing standing between "the agent built it right" and silent zero.
+    #[tokio::test]
+    async fn drains_a_site_that_followed_the_install_brief() {
+        use wiremock::matchers::{header, method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // Page 1: exactly the shape documented in agent_prompt_for().
+        Mock::given(method("GET"))
+            .and(path("/api/permagent-analytics/drain"))
+            .and(header("x-permagent-key", "SECRET123"))
+            .and(query_param("since", "0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "events": [
+                    { "id": 1, "kind": "pageview", "path": "/", "referrer": null,
+                      "name": null, "visitorHash": "aa11", "at": "2026-07-20T09:00:00.000Z" },
+                    { "id": 2, "kind": "event", "path": "/deals", "referrer": "https://google.com",
+                      "name": "signup", "visitorHash": "bb22", "at": "2026-07-21T10:30:00.000Z" }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        // Page 2 (cursor advanced): empty — drained to the tip.
+        Mock::given(method("GET"))
+            .and(path("/api/permagent-analytics/drain"))
+            .and(query_param("since", "2"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "events": [] })),
+            )
+            .mount(&server)
+            .await;
+
+        let pool = mem_pool().await;
+        let mut state = crate::routes::first_party_analytics::DrainState {
+            site_key: "k".into(),
+            ingest_base: None,
+            drain_url: None,
+            cursor: None,
+            last_drain_at: None,
+            last_error: None,
+        };
+        let url = format!("{}/api/permagent-analytics/drain", server.uri());
+
+        let n = drain_project(&pool, "p1", &url, "SECRET123", &mut state)
+            .await
+            .expect("drain succeeds");
+        assert_eq!(n, 2, "both events ingested");
+        assert_eq!(
+            state.cursor.as_deref(),
+            Some("2"),
+            "cursor advanced to the tip"
+        );
+        assert!(state.last_error.is_none());
+        assert!(
+            state.last_drain_at.is_some(),
+            "freshness recorded for the UI"
+        );
+
+        // Event identity survived the hop: kind, name, referrer, and — the one
+        // that silently ruins charts — the ORIGINAL timestamps.
+        let rows: Vec<(String, String, Option<String>, String)> = sqlx::query_as(
+            "SELECT kind, path, name, created_at FROM analytics_events ORDER BY source_event_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, "pageview");
+        assert_eq!(rows[1].0, "event");
+        assert_eq!(rows[1].2.as_deref(), Some("signup"));
+        assert!(rows[0].3.starts_with("2026-07-20"), "got {}", rows[0].3);
+        assert!(rows[1].3.starts_with("2026-07-21"), "got {}", rows[1].3);
+
+        // A second pass (daemon restarted, same window re-offered) must not
+        // double-count — the failure mode that inflates every number.
+        state.cursor = None;
+        drain_project(&pool, "p1", &url, "SECRET123", &mut state)
+            .await
+            .unwrap();
+        let total: i64 = sqlx::query_scalar("SELECT count(*) FROM analytics_events")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(total, 2, "re-drain must not duplicate");
+    }
+
+    /// A wrong/missing key must surface as a visible error, not silent zero.
+    #[tokio::test]
+    async fn rejected_key_reports_an_error() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("Unauthorized"))
+            .mount(&server)
+            .await;
+
+        let pool = mem_pool().await;
+        let mut state = crate::routes::first_party_analytics::DrainState {
+            site_key: "k".into(),
+            ingest_base: None,
+            drain_url: None,
+            cursor: None,
+            last_drain_at: None,
+            last_error: None,
+        };
+        let err = drain_project(&pool, "p1", &server.uri(), "WRONG", &mut state)
+            .await
+            .unwrap_err();
+        assert!(err.contains("401"), "got {err}");
+        assert!(
+            state.last_error.as_deref().unwrap_or("").contains("401"),
+            "the UI must be able to show why ingestion stopped"
+        );
+    }
 }
