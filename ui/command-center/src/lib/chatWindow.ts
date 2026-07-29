@@ -60,7 +60,11 @@ export async function createChatWindow(appTheme: string): Promise<WebviewWindowT
   // through here — flag the window as open so the launcher pill hides
   // regardless of which surface created it. The launcher's close listener
   // clears it when the window goes away.
-  useCommandCenter.getState().setChatWindowOpen(true);
+  //
+  // Also close the dock: detached and docked chat are meant to be mutually
+  // exclusive, and paths other than the detach button left the sidebar open
+  // behind the new window (two chats, and mid-conversation two orbs).
+  useCommandCenter.setState({ chatWindowOpen: true, chatDockOpen: false });
 
   return new WebviewWindow('chat', {
     url: 'index.html?view=chat',

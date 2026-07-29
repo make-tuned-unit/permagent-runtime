@@ -35,6 +35,15 @@ export function ChatDock() {
 
   if (!open) return null;
 
+  // Closing the dock closes the CONVERSATION too. The orb belongs to a chat
+  // surface; with the last surface gone there is nowhere honest to show it,
+  // and leaving the mic hot behind a closed UI is worse than ending cleanly.
+  const closeChat = () => {
+    const { voiceConversation } = useCommandCenter.getState();
+    voiceConversation?.exit();
+    closeChatDock();
+  };
+
   const detach = async () => {
     closeChatDock();
     if (isTauri) {
@@ -96,7 +105,7 @@ export function ChatDock() {
             </svg>
           </button>
         )}
-        <button onClick={closeChatDock} title="Close chat" style={iconBtn(colors)}>
+        <button onClick={closeChat} title="Close chat" style={iconBtn(colors)}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
             <path d="M18 6L6 18M6 6l12 12" />
           </svg>
