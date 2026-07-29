@@ -1,36 +1,32 @@
-// VoiceHost — the per-window voice engine singleton.
+// VoiceHost — THE voice engine singleton, main window only.
 //
-// useVoice owns real resources (mic stream, WebSocket, playback graph), so it
-// must live where surface churn can't reach it: mounted ONCE at the window
-// root (App for the main window, ChatApp for the popped-out chat window).
-// Closing the dock, detaching chat, or switching views only unmounts the
-// VIEWS — the conversation keeps running here, uninterrupted.
+// The engine (mic, VAD, playback graph, WebSocket) lives here for the app's
+// whole lifetime. The main window always exists, so a conversation can never
+// be interrupted by chat-surface churn: dock open/close, pop-out, redock —
+// audio just keeps flowing. The popped-out chat window renders a MIRROR orb
+// from the polled live feed (lib/voiceHandoff) and sends start/end commands
+// back; it never runs an engine of its own.
 //
-// Publishes two store slices: `voiceEngine` (state + controls for VoiceButton)
-// and `voiceConversation` (the hands-free orb takeover contract).
+// Publishes: `voiceEngine` (controls for VoiceButton), `voiceConversation`
+// (the orb takeover contract), and the localStorage live feed (state + audio
+// level at ~150ms) that mirror orbs dance to.
 
 import { useEffect, useRef } from 'react';
 import { useVoice } from '../../hooks/useVoice';
 import { useCommandCenter } from '../../lib/store';
 import {
-  VOICE_HANDOFF_KEY,
-  VOICE_END_KEY,
   clearLiveConversation,
-  consumeVoiceHandoff,
+  consumeVoiceEnd,
+  consumeVoiceStart,
   publishLiveConversation,
-  requestVoiceHandoff,
 } from '../../lib/voiceHandoff';
-
-/** True inside the popped-out chat WebviewWindow (index.html?view=chat). */
-const isChatWindow =
-  typeof location !== 'undefined' &&
-  new URLSearchParams(location.search).get('view') === 'chat';
 
 export function VoiceHost() {
   const chatSessionId = useCommandCenter(s => s.chatSessionId);
   const setVoiceEngine = useCommandCenter(s => s.setVoiceEngine);
   const setVoiceConversation = useCommandCenter(s => s.setVoiceConversation);
   const chatWindowOpen = useCommandCenter(s => s.chatWindowOpen);
+  const openChatDock = useCommandCenter(s => s.openChatDock);
 
   const {
     state,
@@ -67,74 +63,64 @@ export function VoiceHost() {
     getAnalyser, getMicAnalyser, setHandsFree, setVoiceEngine,
   ]);
 
-  // ── Cross-window handoff ─────────────────────────────────────────────
-  // The conversation follows the chat surface. When the chat window opens
-  // while a conversation runs HERE (main window), hand it off: end locally,
-  // post the ticket; the chat window consumes it and resumes hands-free on
-  // the same session. Mirrored on chat-window close via beforeunload.
   const handsFreeRef = useRef(handsFree);
   handsFreeRef.current = handsFree;
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
-  useEffect(() => {
-    if (isChatWindow) return;
-    // Deferred handoff: never yank the conversation mid-turn. While Henry is
-    // thinking/speaking (or the user is mid-utterance) the conversation stays
-    // HERE and he finishes his sentence; the moment the turn settles back to
-    // 'ready', the mic moves to the chat window. state is a dep, so the
-    // playing→ready transition re-fires this.
-    if (handsFree && chatWindowOpen && state === 'ready') {
-      requestVoiceHandoff('chat');
-      void setHandsFree(false);
-      deactivate();
-    }
-  }, [handsFree, chatWindowOpen, state, setHandsFree, deactivate]);
-
-  useEffect(() => {
-    const target = isChatWindow ? 'chat' : 'main';
-    const tryTake = () => {
-      if (consumeVoiceHandoff(target)) void setHandsFree(true);
-    };
-    tryTake(); // covers a window created AFTER the ticket was posted
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === VOICE_HANDOFF_KEY) tryTake();
-    };
-    window.addEventListener('storage', onStorage);
-    return () => window.removeEventListener('storage', onStorage);
-  }, [setHandsFree]);
-
-  useEffect(() => {
-    if (!isChatWindow) return;
-    const onUnload = () => {
-      if (handsFreeRef.current) requestVoiceHandoff('main');
-    };
-    window.addEventListener('beforeunload', onUnload);
-    return () => window.removeEventListener('beforeunload', onUnload);
-  }, []);
-
-  // Live-conversation mirror: while this window OWNS a conversation,
-  // heartbeat its state so another window can render the orb in mirror mode
-  // (the pop-out opens straight into orb view while audio finishes here).
+  // ── Live feed for mirror orbs (~150ms heartbeat while hands-free) ──
   useEffect(() => {
     if (!handsFree) {
       clearLiveConversation();
       return;
     }
-    publishLiveConversation(state);
-    const id = setInterval(() => publishLiveConversation(state), 3000);
-    return () => clearInterval(id);
-  }, [handsFree, state]);
+    const data = new Uint8Array(32);
+    let smoothed = 0;
+    const id = setInterval(() => {
+      const s = stateRef.current;
+      const analyser = s === 'playing' ? getAnalyser() : getMicAnalyser();
+      let level = 0;
+      if (analyser) {
+        analyser.getByteFrequencyData(data);
+        let sum = 0;
+        const n = Math.max(1, Math.floor(data.length * 0.6));
+        for (let i = 0; i < n; i++) sum += data[i];
+        level = (sum / n / 255) * 1.2;
+      }
+      smoothed = smoothed + (level - smoothed) * (level > smoothed ? 0.6 : 0.25);
+      publishLiveConversation(s, smoothed);
+    }, 150);
+    return () => {
+      clearInterval(id);
+      clearLiveConversation();
+    };
+  }, [handsFree, getAnalyser, getMicAnalyser]);
 
-  // A mirror-orb click in the other window asks the owner to end it.
+  // ── Polled commands from mirror surfaces ──
+  // (Polling, not `storage` events — WKWebView doesn't reliably deliver those
+  // across webviews, which is what broke the old handoff design.)
   useEffect(() => {
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === VOICE_END_KEY && handsFreeRef.current) {
+    const id = setInterval(() => {
+      if (consumeVoiceEnd() && handsFreeRef.current) {
         void setHandsFree(false);
         deactivate();
       }
-    };
-    window.addEventListener('storage', onStorage);
-    return () => window.removeEventListener('storage', onStorage);
+      if (consumeVoiceStart() && !handsFreeRef.current) {
+        void setHandsFree(true);
+      }
+    }, 400);
+    return () => clearInterval(id);
   }, [setHandsFree, deactivate]);
+
+  // ── Closing the chat window brings the conversation home to the sidebar ──
+  const prevChatWindowOpen = useRef(chatWindowOpen);
+  useEffect(() => {
+    const was = prevChatWindowOpen.current;
+    prevChatWindowOpen.current = chatWindowOpen;
+    if (was && !chatWindowOpen && handsFreeRef.current) {
+      openChatDock();
+    }
+  }, [chatWindowOpen, openChatDock]);
 
   // Conversation-mode takeover: while hands-free is on, publish the live voice
   // state + analyser taps for the orb. Exiting must actually STOP LISTENING:
