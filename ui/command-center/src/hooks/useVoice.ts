@@ -534,7 +534,11 @@ export function useVoice(options: UseVoiceOptions = {}) {
             // Browser-level noise suppression — attenuates broadband
             // non-speech (keyboard clatter, fans) before the VAD ever sees it.
             noiseSuppression: true,
-            autoGainControl: true,
+            // AGC is deliberately OFF. It renormalizes toward a target level,
+            // so during silence it AMPLIFIES the noise floor — pushing room
+            // tone and key clicks up over our fixed RMS thresholds. It works
+            // directly against a fixed-threshold VAD.
+            autoGainControl: false,
           },
         });
         mediaStreamRef.current = stream;
@@ -679,7 +683,10 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const vadOnsetStreakRef = useRef(0);
   const vadTurnStartRef = useRef(0);
 
-  const VAD_ONSET = 0.02;
+  // A mechanical keyboard's click is a loud, very SHORT transient. Speech is
+  // quieter per-buffer but sustained — so the discriminator that works is
+  // duration, not level. Onset must hold across several consecutive buffers.
+  const VAD_ONSET = 0.025;
   const VAD_KEEPALIVE = 0.010;
   const VAD_BARGE = 0.05;
   const VAD_SILENCE_MS = 900;
@@ -688,7 +695,19 @@ export function useVoice(options: UseVoiceOptions = {}) {
    *  keyboard click is a single-buffer transient; speech sustains — this was
    *  tripping recording on every keystroke (empty-transcript chatter in the
    *  daemon log). */
-  const VAD_ONSET_STREAK = 2;
+  const VAD_ONSET_STREAK = 3;
+  /**
+   * Spectral gate: fraction of energy that must sit in the low/voice bands for
+   * a loud buffer to count as speech.
+   *
+   * Level alone cannot separate a mechanical key click from a word — the click
+   * is often LOUDER. But it is broadband (a wide, bright transient), while
+   * voiced speech concentrates energy in its low harmonics. With fftSize 64 at
+   * 16kHz each bin spans 250Hz, so bins 0-4 cover roughly 0-1.2kHz (voice) and
+   * the rest carry the click's brightness. This costs no latency, unlike
+   * simply demanding a longer onset streak, which eats the first word.
+   */
+  const VAD_VOICE_BAND_RATIO = 0.55;
 
   const stopVadMonitor = useCallback(() => {
     vadProcRef.current?.disconnect();
@@ -701,6 +720,28 @@ export function useVoice(options: UseVoiceOptions = {}) {
     // keyboard click complete it — defeating the debounce entirely.
     vadOnsetStreakRef.current = 0;
     vadBargeStreakRef.current = 0;
+  }, []);
+
+  /** True when the current mic spectrum looks like voice rather than a
+   *  broadband transient (see VAD_VOICE_BAND_RATIO). Fails OPEN when no
+   *  analyser exists, so voice never becomes undetectable. */
+  const vadSpectrumRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
+  const looksLikeVoice = useCallback(() => {
+    const analyser = micAnalyserRef.current;
+    if (!analyser) return true;
+    if (!vadSpectrumRef.current) {
+      vadSpectrumRef.current = new Uint8Array(analyser.frequencyBinCount);
+    }
+    const data = vadSpectrumRef.current;
+    analyser.getByteFrequencyData(data);
+    let low = 0;
+    let total = 0;
+    for (let i = 0; i < data.length; i++) {
+      total += data[i];
+      if (i <= 4) low += data[i];
+    }
+    if (total <= 0) return true;
+    return low / total >= VAD_VOICE_BAND_RATIO;
   }, []);
 
   const startVadMonitor = useCallback(() => {
@@ -733,7 +774,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
         // Sustained-onset gate: one loud buffer (a key click) is ignored;
         // real speech clears the streak in ~250ms — imperceptible latency,
         // and the recording still captures the utterance from its 2nd buffer.
-        if (rms > VAD_ONSET) {
+        if (rms > VAD_ONSET && looksLikeVoice()) {
           vadOnsetStreakRef.current += 1;
           if (vadOnsetStreakRef.current >= VAD_ONSET_STREAK) {
             vadOnsetStreakRef.current = 0;

@@ -53,6 +53,29 @@ export default function ChatApp() {
     })();
   }, [theme]);
 
+  // Own this window's close. Relying on the MAIN window's onCloseRequested
+  // proxy left the window alive on the first X (its handler cleared the
+  // open-flag, which reopened the sidebar, while the window itself stayed) —
+  // hence closing twice, and a dock + window both showing. A window destroying
+  // itself is unambiguous.
+  useEffect(() => {
+    if (!('__TAURI_INTERNALS__' in window)) return;
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    (async () => {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        const win = getCurrentWindow();
+        const un = await win.onCloseRequested(async (e) => {
+          e.preventDefault(); // we destroy explicitly below
+          try { await win.destroy(); } catch { /* already gone */ }
+        });
+        if (disposed) un(); else unlisten = un;
+      } catch { /* non-Tauri — nothing to own */ }
+    })();
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
+
   // Persist this window's position/size so it reopens where the user left it.
   useEffect(() => {
     let cleanup: (() => void) | undefined;
