@@ -100,8 +100,11 @@ where
 }
 
 pub fn handle_list(format: &str, verbose: bool) -> Result<()> {
-    let recipes = match list_available_recipes() {
-        Ok(recipes) => recipes,
+    // Built-ins first: they ship in the binary and always work, so they are
+    // the honest answer to "what can I run right now?" on a clean install.
+    let mut recipes = crate::recipes::builtin_recipes::builtin_recipe_infos();
+    match list_available_recipes() {
+        Ok(found) => recipes.extend(found),
         Err(e) => {
             return Err(anyhow::anyhow!("Failed to list recipes: {}", e));
         }
@@ -121,6 +124,7 @@ pub fn handle_list(format: &str, verbose: bool) -> Result<()> {
                     let source_info = match recipe.source {
                         RecipeSource::Local => format!("local: {}", recipe.path),
                         RecipeSource::GitHub => format!("github: {}", recipe.path),
+                        RecipeSource::Builtin => "built-in".to_string(),
                     };
 
                     let description = if let Some(desc) = &recipe.description {
