@@ -173,11 +173,24 @@ export function VoiceOrb({
       const tt = noiseT;
 
       // ── Backdrop glow ──
+      //
+      // Two constraints, both learned from the halo reading as a clipped grey
+      // box on the light theme:
+      //
+      // 1. The gradient must reach zero alpha BEFORE the canvas edge. At the
+      //    old outer radius (R * 1.9 = 0.57 * SIZE) the glow was still opaque
+      //    where the square canvas cut it off, leaving straight vertical edges
+      //    with transparent corners. SIZE * 0.5 lands exactly on the nearest
+      //    edge, so the falloff completes inside the bitmap.
+      // 2. It must fade to its OWN hue at zero alpha, never to `rgba(0,0,0,0)`.
+      //    Canvas interpolates gradient stops per-channel, so fading toward
+      //    transparent BLACK drags RGB down as alpha drops — a grey wash that
+      //    is invisible on the dark themes and obvious over near-white.
       ctx.clearRect(0, 0, SIZE, SIZE);
-      const glow = ctx.createRadialGradient(cx, cy, R * 0.2, cx, cy, R * 1.9);
+      const glow = ctx.createRadialGradient(cx, cy, R * 0.2, cx, cy, SIZE * 0.5);
       glow.addColorStop(0, `rgba(64, 120, 255, ${0.10 + level * 0.14})`);
-      glow.addColorStop(0.6, `rgba(141, 68, 174, ${0.05 + level * 0.08})`);
-      glow.addColorStop(1, 'rgba(0,0,0,0)');
+      glow.addColorStop(0.55, `rgba(141, 68, 174, ${0.05 + level * 0.08})`);
+      glow.addColorStop(1, 'rgba(141, 68, 174, 0)');
       ctx.fillStyle = glow;
       ctx.fillRect(0, 0, SIZE, SIZE);
 
