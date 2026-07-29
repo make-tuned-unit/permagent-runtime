@@ -286,6 +286,7 @@ struct ChatView: View {
     @State private var sending = false
     @State private var sentCount = 0
     @State private var sessionId = MobileSession.chatSessionId()
+    @State private var showVoice = false
 
     var body: some View {
         NavigationStack {
@@ -314,6 +315,19 @@ struct ChatView: View {
             }
             .background(Brand.shell)
             .navigationTitle("Henry")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { showVoice = true } label: {
+                        Image(systemName: "waveform")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(Brand.cyan)
+                    }
+                    .accessibilityLabel("Talk with Henry")
+                }
+            }
+            // Same per-install session id as text chat, so voice turns land in
+            // this same conversation on the hub.
+            .fullScreenCover(isPresented: $showVoice) { VoiceView(sessionId: sessionId) }
             // Tactile: a light tap when you send.
             .sensoryFeedback(.impact(weight: .light), trigger: sentCount)
         }

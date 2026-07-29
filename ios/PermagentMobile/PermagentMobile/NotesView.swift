@@ -214,7 +214,7 @@ struct NoteComposer: View {
     let onSaved: () async -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @StateObject private var recorder = DictationRecorder()
+    @StateObject private var recorder = NoteDictationRecorder()
     @State private var title = ""
     @State private var text = ""          // note body — NOT named `body` (that's View.body)
     @State private var saving = false
@@ -383,7 +383,7 @@ struct NoteComposer: View {
 // take; @MainActor so the @Published flags drive the composer directly.
 
 @MainActor
-final class DictationRecorder: ObservableObject {
+final class NoteDictationRecorder: ObservableObject {
     @Published var isRecording = false
     @Published var permissionDenied = false
 

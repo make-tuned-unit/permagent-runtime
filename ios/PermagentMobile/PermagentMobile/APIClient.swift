@@ -25,6 +25,13 @@ actor APIClient {
 
     var isPaired: Bool { config != nil }
 
+    /// The stored pairing (base URL + bearer token) — for consumers that open
+    /// their own connections (the /voice WebSocket does query-param auth).
+    func currentConfig() -> HubConfig? {
+        loadSavedPairing()
+        return config
+    }
+
     func get<T: Decodable>(_ path: String, as type: T.Type) async throws -> T {
         try await request(path, method: "GET", body: Optional<Int>.none)
     }
@@ -145,7 +152,7 @@ actor APIClient {
                     let msg = ReplyMessage(
                         role: "user",
                         created: Int(Date().timeIntervalSince1970),
-                        content: [ReplyContent(type: "text", text: text)],
+                        content: [ReplyContent(type: "text", text: text, thinking: nil)],
                         metadata: ReplyMeta(userVisible: true, agentVisible: true)
                     )
                     req.httpBody = try JSONEncoder().encode(ReplyRequest(user_message: msg, session_id: sessionId))

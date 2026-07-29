@@ -13,6 +13,7 @@
 
 import SwiftUI
 import AVFoundation
+import UIKit
 
 // ── Recorder: 16 kHz mono 16-bit WAV, exactly what the hub's Whisper wants ────
 
