@@ -613,18 +613,37 @@ async fn configure_session_prompts(
             // Non-interactive runs keep the silent auto-map.
             use std::io::IsTerminal;
             let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
-            let wants_map = if interactive {
-                cliclack::confirm(format!(
-                    "Map this codebase before starting? Permagent extracts symbols with \
-                     tree-sitter and ranks them (PageRank over the reference graph) into a \
-                     ~{budget}-token map, so the agent looks things up from signatures \
-                     instead of reading whole files."
-                ))
-                .initial_value(true)
-                .interact()
-                .unwrap_or(true)
-            } else {
-                true
+            // Remember the answer PER REPO. The map itself is mtime-cached, so
+            // re-asking every single session was pure friction — you answer
+            // the same way for the same tree every time. First run asks; after
+            // that it just says what it did.
+            let repo_key = std::env::current_dir().ok().map(|p| {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                p.to_string_lossy().hash(&mut h);
+                format!("coding_repo_map_{:x}", h.finish())
+            });
+            let remembered = repo_key
+                .as_ref()
+                .and_then(|k| config.get_param::<bool>(k).ok());
+            let wants_map = match (interactive, remembered) {
+                (_, Some(prev)) => prev,
+                (true, None) => {
+                    let answer = cliclack::confirm(format!(
+                        "Map this codebase before starting? Permagent extracts symbols with \
+                         tree-sitter and ranks them (PageRank over the reference graph) into a \
+                         ~{budget}-token map, so the agent looks things up from signatures \
+                         instead of reading whole files. (Asked once per repo.)"
+                    ))
+                    .initial_value(true)
+                    .interact()
+                    .unwrap_or(true);
+                    if let Some(k) = repo_key.as_ref() {
+                        let _ = config.set_param(k, serde_json::json!(answer));
+                    }
+                    answer
+                }
+                (false, None) => true,
             };
             if wants_map {
                 if let Ok(root) = std::env::current_dir() {
