@@ -46,6 +46,7 @@ export function VoiceOrb({
 
     const data = new Uint8Array(32); // frequencyBinCount for fftSize 64
     let phase = 0;
+    let drift = 0;
 
     const tick = () => {
       const s = stateRef.current;
@@ -54,29 +55,33 @@ export function VoiceOrb({
       const analyser =
         s === 'playing' ? getPlaybackAnalyser() : getMicAnalyser();
       if (s === 'processing' || s === 'connecting' || !analyser) {
-        // No live signal — a slow autonomous breath (~4s cycle).
+        // No live signal — a slow autonomous breath (~6s cycle), barely there.
         phase += 0.016;
-        target = 0.18 + 0.12 * (0.5 + 0.5 * Math.sin(phase * 1.6));
+        target = 0.12 + 0.06 * (0.5 + 0.5 * Math.sin(phase));
       } else {
         analyser.getByteFrequencyData(data);
         // Voice energy sits in the low bins; average the lower ~60%.
         let sum = 0;
         const n = Math.max(1, Math.floor(data.length * 0.6));
         for (let i = 0; i < n; i++) sum += data[i];
-        target = (sum / n / 255) * 1.4;
+        target = (sum / n / 255) * 1.2;
       }
 
       // Asymmetric smoothing: rise fast (feels responsive), fall slow (no flicker).
       const prev = levelRef.current;
-      const level = prev + (target - prev) * (target > prev ? 0.35 : 0.08);
+      const level = prev + (target - prev) * (target > prev ? 0.3 : 0.06);
       levelRef.current = level;
 
+      // Mostly-static presence: small scale swing, and a very slow rotation
+      // drift so the asymmetric blob silhouette never reads as a stamped
+      // circle. The glow (halo + box-shadow via opacity) carries the audio.
+      drift += 0.03;
       if (orbRef.current) {
-        orbRef.current.style.transform = `scale(${1 + level * 0.35})`;
+        orbRef.current.style.transform = `rotate(${drift}deg) scale(${1 + level * 0.1})`;
       }
       if (haloRef.current) {
-        haloRef.current.style.transform = `scale(${1 + level * 0.6})`;
-        haloRef.current.style.opacity = `${0.25 + level * 0.55}`;
+        haloRef.current.style.transform = `rotate(${-drift * 0.6}deg) scale(${1 + level * 0.22})`;
+        haloRef.current.style.opacity = `${0.3 + level * 0.5}`;
       }
       rafRef.current = requestAnimationFrame(tick);
     };
@@ -129,8 +134,9 @@ export function VoiceOrb({
           style={{
             position: 'absolute',
             inset: 0,
-            borderRadius: '50%',
-            background: `radial-gradient(circle, ${stateColor}55 0%, transparent 70%)`,
+            // Squashed, off-round halo — the imperfection reads organic.
+            borderRadius: '58% 42% 55% 45% / 45% 57% 43% 55%',
+            background: `radial-gradient(ellipse at 45% 40%, ${stateColor}55 0%, transparent 70%)`,
             filter: 'blur(18px)',
             opacity: 0.3,
             willChange: 'transform, opacity',
@@ -141,11 +147,13 @@ export function VoiceOrb({
           ref={orbRef}
           aria-hidden
           style={{
-            width: 120,
-            height: 120,
-            borderRadius: '50%',
-            background: `radial-gradient(circle at 35% 30%, ${colors.cyan}, ${colors.purple} 85%)`,
-            boxShadow: `0 0 60px ${stateColor}66, inset 0 0 30px rgba(255,255,255,0.12)`,
+            width: 124,
+            height: 116,
+            // Not a perfect orb: an asymmetric blob silhouette, with the slow
+            // rAF rotation drift keeping the irregularity alive.
+            borderRadius: '54% 46% 49% 51% / 47% 52% 48% 53%',
+            background: `radial-gradient(circle at 38% 32%, ${colors.cyan}, ${colors.purple} 82%)`,
+            boxShadow: `0 0 55px ${stateColor}55, inset 0 0 28px rgba(255,255,255,0.10)`,
             willChange: 'transform',
             transition: `box-shadow 400ms ${ease.out}`,
           }}

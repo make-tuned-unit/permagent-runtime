@@ -39,6 +39,8 @@ interface OnboardingStatus {
 interface DismissState {
   dismissedUntil?: number;
   lastDismissedId?: string;
+  /** Capabilities the user clicked past — future loads start on a fresh one. */
+  skippedIds?: string[];
 }
 
 function readState(): DismissState {
@@ -69,7 +71,8 @@ export function LearnNext() {
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
   const openChatDock = useCommandCenter(s => s.openChatDock);
 
-  const [item, setItem] = useState<LearnNextItem | null>(null);
+  const [items, setItems] = useState<LearnNextItem[]>([]);
+  const [idx, setIdx] = useState(0);
   const [totals, setTotals] = useState<{ used: number; teachable: number } | null>(null);
   const [visible, setVisible] = useState(false);
 
@@ -82,10 +85,15 @@ export function LearnNext() {
       try {
         const status = await apiFetch<OnboardingStatus>('/api/onboarding/status');
         if (cancelled) return;
-        const top = status.learn_next[0];
-        if (top) {
-          setItem(top);
+        if (status.learn_next.length > 0) {
+          setItems(status.learn_next);
           setTotals(status.totals);
+          // Start on a capability the user hasn't clicked past — the backend
+          // ranks statically, so without this the same #1 (Decision Inbox)
+          // greeted every single app open.
+          const skipped = new Set(st.skippedIds ?? []);
+          const fresh = status.learn_next.findIndex(i => !skipped.has(i.id));
+          setIdx(fresh >= 0 ? fresh : 0);
           setVisible(true);
         }
       } catch {
@@ -97,11 +105,24 @@ export function LearnNext() {
     };
   }, []);
 
+  const item = items[idx] ?? null;
   if (!item || !visible) return null;
 
   const dismiss = () => {
-    writeState({ dismissedUntil: Date.now() + DISMISS_COOLDOWN, lastDismissedId: item.id });
+    const st = readState();
+    writeState({ ...st, dismissedUntil: Date.now() + DISMISS_COOLDOWN, lastDismissedId: item.id });
     setVisible(false);
+  };
+
+  // Cycle to the next unlearned capability (wraps). Remembers what was
+  // clicked past so the next app open starts somewhere new.
+  const nextTip = () => {
+    if (items.length < 2) return;
+    const st = readState();
+    const skipped = new Set(st.skippedIds ?? []);
+    skipped.add(item.id);
+    writeState({ ...st, skippedIds: [...skipped].slice(-100) });
+    setIdx((idx + 1) % items.length);
   };
 
   // The real teaching loop: hand the agent an explicit ask; it responds by
@@ -165,6 +186,26 @@ export function LearnNext() {
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+        {items.length > 1 && (
+          <button
+            onClick={nextTip}
+            aria-label="Show a different capability"
+            title="Next tip"
+            style={{
+              padding: '7px 10px',
+              borderRadius: 9,
+              border: `1px solid ${colors.border}`,
+              background: 'transparent',
+              color: colors.textMuted,
+              fontFamily: font.body,
+              fontSize: 12,
+              cursor: 'pointer',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            ›
+          </button>
+        )}
         <button
           onClick={showMe}
           style={{
