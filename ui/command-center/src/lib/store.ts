@@ -4,6 +4,7 @@ import { emitActivity, type ActivityEventName, type ActivitySourceSurface } from
 import type { SessionSummary, DaemonMessage, SSEEvent, AppContextPayload, TokenState } from './api';
 import { costFromFrame } from './costMeter';
 import { maybeSpeakReply, replyDedupeKey } from './speakReplies';
+import { readLiveConversation } from './voiceHandoff';
 import { appendTraceRecord, sessionFrameToRecord } from './traceEvents';
 import { startEventPruning } from './eventBus';
 import type { ProjectPerson } from '../components/projects/types';
@@ -1438,11 +1439,15 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         // the state settles, never blocking the text path.
         {
           const lastAssistant = [...get().chatMessages].reverse().find(m => m.role === 'assistant');
-          // Content-based dedupe: a replayed Finish (fresh window / redock
-          // reconnect) reproduces the same reply text and stays silent; a
-          // genuinely new reply has new text and speaks. The connect-burst
-          // mute covers voice-pipeline turns the dedupe key never saw.
-          if (lastAssistant?.content && Date.now() >= _speakSuppressUntil) {
+          // Never during a live voice conversation (local OR mirrored from the
+          // other window): voice turns are already spoken by the /voice
+          // pipeline — a Finish-driven synthesis here double-speaks, and a
+          // replayed Finish in a fresh window can voice a PARTIAL streaming
+          // reply ("Lets begin"). Otherwise: content-based dedupe + the
+          // connect-burst mute keep replays silent.
+          const voiceConversationLive =
+            get().voiceEngine?.handsFree || readLiveConversation() !== null;
+          if (lastAssistant?.content && !voiceConversationLive && Date.now() >= _speakSuppressUntil) {
             void maybeSpeakReply(
               lastAssistant.content,
               undefined,

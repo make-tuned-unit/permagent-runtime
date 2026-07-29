@@ -312,10 +312,11 @@ function App() {
 function VoiceConversationFallback() {
   const conv = useCommandCenter(s => s.voiceConversation);
   const dockOpen = useCommandCenter(s => s.chatDockOpen);
-  // `conv` is set only while THIS window's engine holds the conversation —
-  // after the (turn-end-deferred) handoff to the chat window it clears, so
-  // the takeover disappears exactly when the conversation actually leaves.
-  if (!conv || dockOpen) return null;
+  const chatWindowOpen = useCommandCenter(s => s.chatWindowOpen);
+  // With the chat window open, ITS mirror orb is the conversation surface —
+  // never take over the main app underneath it, even while this window's
+  // engine finishes the current turn's audio before the deferred handoff.
+  if (!conv || dockOpen || chatWindowOpen) return null;
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 90 }}>
       <VoiceOrb

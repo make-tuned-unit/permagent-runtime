@@ -522,7 +522,15 @@ export function useVoice(options: UseVoiceOptions = {}) {
     if (!mediaStreamRef.current) {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          audio: { sampleRate, channelCount: 1, echoCancellation: true },
+          audio: {
+            sampleRate,
+            channelCount: 1,
+            echoCancellation: true,
+            // Browser-level noise suppression — attenuates broadband
+            // non-speech (keyboard clatter, fans) before the VAD ever sees it.
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
         });
         mediaStreamRef.current = stream;
         console.log('[useVoice] mic acquired');
@@ -663,13 +671,19 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const vadLastVoiceRef = useRef(0);
   const vadHeardSpeechRef = useRef(false);
   const vadBargeStreakRef = useRef(0);
+  const vadOnsetStreakRef = useRef(0);
   const vadTurnStartRef = useRef(0);
 
-  const VAD_ONSET = 0.015;
+  const VAD_ONSET = 0.02;
   const VAD_KEEPALIVE = 0.010;
   const VAD_BARGE = 0.05;
   const VAD_SILENCE_MS = 900;
   const VAD_MAX_TURN_MS = 45_000;
+  /** Consecutive ~128ms buffers over onset before a turn starts. A mechanical
+   *  keyboard click is a single-buffer transient; speech sustains — this was
+   *  tripping recording on every keystroke (empty-transcript chatter in the
+   *  daemon log). */
+  const VAD_ONSET_STREAK = 2;
 
   const stopVadMonitor = useCallback(() => {
     vadProcRef.current?.disconnect();
@@ -706,11 +720,20 @@ export function useVoice(options: UseVoiceOptions = {}) {
 
       if (s === 'ready') {
         vadBargeStreakRef.current = 0;
+        // Sustained-onset gate: one loud buffer (a key click) is ignored;
+        // real speech clears the streak in ~250ms — imperceptible latency,
+        // and the recording still captures the utterance from its 2nd buffer.
         if (rms > VAD_ONSET) {
-          vadHeardSpeechRef.current = true;
-          vadLastVoiceRef.current = now;
-          vadTurnStartRef.current = now;
-          startRecordingRef.current?.();
+          vadOnsetStreakRef.current += 1;
+          if (vadOnsetStreakRef.current >= VAD_ONSET_STREAK) {
+            vadOnsetStreakRef.current = 0;
+            vadHeardSpeechRef.current = true;
+            vadLastVoiceRef.current = now;
+            vadTurnStartRef.current = now;
+            startRecordingRef.current?.();
+          }
+        } else {
+          vadOnsetStreakRef.current = 0;
         }
       } else if (s === 'recording') {
         if (rms > VAD_KEEPALIVE) {
