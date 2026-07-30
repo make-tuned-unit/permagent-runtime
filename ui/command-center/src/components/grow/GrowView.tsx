@@ -227,12 +227,13 @@ interface FirstPartyStats {
   topEntryPages: { name: string; count: number }[];
 }
 
-type GrowLens = 'strategy' | 'calendar' | 'analytics';
+type GrowLens = 'actions' | 'strategy' | 'calendar' | 'analytics';
 // Async lifecycle for data-backed sections — loading / ready / error are
 // distinct so a fetch failure never masquerades as an empty result.
 type LoadState = 'loading' | 'ready' | 'error';
 
-const LENSES: GrowLens[] = ['strategy', 'calendar', 'analytics'];
+// Actions leads: the point of collecting analytics is deciding what to do.
+const LENSES: GrowLens[] = ['actions', 'strategy', 'calendar', 'analytics'];
 
 export function GrowView() {
   const { colors, gradient, reduceMotion } = useTheme();
@@ -241,7 +242,7 @@ export function GrowView() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [posts, setPosts] = useState<SocialCard[]>([]);
   const [postsState, setPostsState] = useState<LoadState>('loading');
-  const [lens, setLens] = useState<GrowLens>('strategy');
+  const [lens, setLens] = useState<GrowLens>('actions');
   const [ctx, setCtx] = useState<{ people: number; goals: number } | null>(null);
   const [focusLens, setFocusLens] = useState<GrowLens | null>(null);
   const postsRequestGeneration = useRef(0);
@@ -447,6 +448,7 @@ export function GrowView() {
           aria-label={`${lens} view`}
           style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 20 }}
         >
+          {lens === 'actions' && <GrowActions project={active} colors={colors} />}
           {lens === 'analytics' && <GrowAnalytics project={active} posts={posts} colors={colors} />}
           {lens === 'strategy' && (
           <section>
@@ -744,6 +746,199 @@ function ErrorState({ colors, message, onRetry, inline }: { colors: ThemeColors;
 // exposes without goal config (signups, retention) keep their honest "no
 // source" hints rather than faking a number.
 
+interface GrowthAction {
+  title: string;
+  evidence: string;
+  recommendation: string;
+  category: string;
+  impact: string;
+  confidence: string;
+}
+
+interface GrowthActionsData {
+  actions: GrowthAction[];
+  generatedAt: string | null;
+  reason: string | null;
+  periodDays: number | null;
+}
+
+/**
+ * Actions — what to DO about the data. The Analytics lens answers "what
+ * happened"; this answers "so what".
+ *
+ * Two sources, deliberately distinguished so the user can weigh them
+ * differently: the deterministic growth inbox (computed server-side from real
+ * signals, NO model involved) and the agent's read of the analytics. The
+ * second is labelled as a model's reading and every item carries the figure it
+ * was drawn from, because an ungrounded suggestion that looks like analysis is
+ * worse than no suggestion.
+ */
+function GrowActions({ project, colors }: { project: Project; colors: ThemeColors }) {
+  const [inbox, setInbox] = useState<GrowthInboxData | null>(null);
+  const [inboxState, setInboxState] = useState<LoadState>('loading');
+  const inboxGen = useRef(0);
+
+  const loadInbox = useCallback((id: string) => {
+    const generation = ++inboxGen.current;
+    setInboxState('loading');
+    apiFetch<GrowthInboxData>(`/api/projects/${encodeURIComponent(id)}/growth-inbox`)
+      .then((d) => {
+        if (generation !== inboxGen.current) return;
+        setInbox(d);
+        setInboxState('ready');
+      })
+      .catch(() => {
+        if (generation !== inboxGen.current) return;
+        setInbox(null);
+        setInboxState('error');
+      });
+  }, []);
+
+  const [actions, setActions] = useState<GrowthActionsData | null>(null);
+  const [actionsState, setActionsState] = useState<LoadState>('loading');
+  const [generating, setGenerating] = useState(false);
+  const actionsGen = useRef(0);
+
+  const loadActions = useCallback((id: string) => {
+    const generation = ++actionsGen.current;
+    setActionsState('loading');
+    apiFetch<GrowthActionsData>(`/api/projects/${encodeURIComponent(id)}/growth-actions`)
+      .then((d) => {
+        if (generation !== actionsGen.current) return;
+        setActions(d);
+        setActionsState('ready');
+      })
+      .catch(() => {
+        if (generation !== actionsGen.current) return;
+        setActionsState('error');
+      });
+  }, []);
+
+  // Regeneration is explicit. It spends a model call, and actions that
+  // reshuffle on every render cannot be acted on.
+  const generate = useCallback((id: string) => {
+    setGenerating(true);
+    apiFetch<GrowthActionsData>(
+      `/api/projects/${encodeURIComponent(id)}/growth-actions/generate`,
+      { method: 'POST' },
+    )
+      .then((d) => { setActions(d); setActionsState('ready'); })
+      .catch(() => setActionsState('error'))
+      .finally(() => setGenerating(false));
+  }, []);
+
+  useEffect(() => {
+    loadInbox(project.id);
+    loadActions(project.id);
+    return () => { ++inboxGen.current; ++actionsGen.current; };
+  }, [project.id, loadInbox, loadActions]);
+
+  const CATEGORY_COLOR: Record<string, string> = {
+    conversion: colors.cyan,
+    retention: colors.success,
+    churn: colors.danger,
+    ux: colors.purple,
+    acquisition: colors.warning ?? colors.cyan,
+    measurement: colors.textMuted,
+  };
+
+  const hasActions = (actions?.actions?.length ?? 0) > 0;
+
+  return (
+    <>
+      {/* Deterministic moves — no model in the loop. */}
+      <GrowthInboxSection
+        colors={colors}
+        state={inboxState}
+        inbox={inbox}
+        onRetry={() => loadInbox(project.id)}
+      />
+
+      <section style={{ marginTop: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+          <h3 style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>
+            From your analytics
+          </h3>
+          <div style={{ flex: 1 }} />
+          {actions?.generatedAt && (
+            <span style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono }}>
+              {new Date(actions.generatedAt).toLocaleString()}
+            </span>
+          )}
+          <button
+            onClick={() => generate(project.id)}
+            disabled={generating}
+            style={{
+              background: colors.surface, border: `1px solid ${colors.border}`,
+              borderRadius: radius.md, padding: '5px 12px', cursor: generating ? 'default' : 'pointer',
+              color: colors.text, fontFamily: font.body, fontSize: 12, opacity: generating ? 0.6 : 1,
+            }}
+          >{generating ? 'Reviewing…' : hasActions ? 'Review again' : 'Review my analytics'}</button>
+        </div>
+
+        {actionsState === 'loading' && (
+          <div style={{ fontSize: 12, color: colors.textDim }}>Loading…</div>
+        )}
+        {actionsState === 'error' && (
+          <div style={{ fontSize: 12, color: colors.danger }}>Couldn&rsquo;t load actions.</div>
+        )}
+
+        {/* An empty list ALWAYS explains itself — silence is indistinguishable
+            from breakage, and this panel is allowed to have nothing to say. */}
+        {actionsState === 'ready' && !hasActions && (
+          <div style={{
+            fontSize: 12, color: colors.textMuted, background: colors.bgDeeper,
+            border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: 12,
+          }}>
+            {actions?.reason ?? 'No review yet — run one to see what your data suggests.'}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {actions?.actions?.map((a, i) => (
+            <div key={`${a.title}-${i}`} style={{
+              background: colors.surface, border: `1px solid ${colors.border}`,
+              borderRadius: radius.lg, padding: 14,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
+                <span style={{
+                  fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em',
+                  textTransform: 'uppercase', color: CATEGORY_COLOR[a.category] ?? colors.textDim,
+                  border: `1px solid ${CATEGORY_COLOR[a.category] ?? colors.border}`,
+                  borderRadius: 999, padding: '1px 7px', flexShrink: 0,
+                }}>{a.category}</span>
+                <span style={{ fontFamily: font.display, fontSize: 14, fontWeight: 600, color: colors.text }}>
+                  {a.title}
+                </span>
+                <div style={{ flex: 1 }} />
+                <span style={{ fontFamily: font.mono, fontSize: 9, color: colors.textDim, flexShrink: 0 }}>
+                  {a.impact} impact · {a.confidence} confidence
+                </span>
+              </div>
+              {/* Evidence first: the number is what makes this checkable. */}
+              <div style={{
+                fontSize: 11, color: colors.textDim, fontFamily: font.mono,
+                borderLeft: `2px solid ${colors.border}`, paddingLeft: 8, marginBottom: 6,
+              }}>{a.evidence}</div>
+              <div style={{ fontSize: 13, color: colors.textMuted, lineHeight: 1.5 }}>
+                {a.recommendation}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {hasActions && (
+          <div style={{ fontSize: 10, color: colors.textDim, marginTop: 10 }}>
+            Read from your own analytics by your agent, over the last{' '}
+            {actions?.periodDays ?? 30} days. Each item cites the figure it came from — check it
+            before acting.
+          </div>
+        )}
+      </section>
+    </>
+  );
+}
+
 function GrowAnalytics({
   project, posts, colors,
 }: {
@@ -751,35 +946,10 @@ function GrowAnalytics({
   posts: SocialCard[];
   colors: ThemeColors;
 }) {
-  // The deterministic growth inbox — this week's ranked moves + wins, computed
-  // server-side (NO LLM) from the project's real signals. Fetched on-read so
-  // it's always fresh; its own load lifecycle keeps a fetch failure honest.
-  const [inbox, setInbox] = useState<GrowthInboxData | null>(null);
-  const [inboxState, setInboxState] = useState<LoadState>('loading');
-  const inboxRequestGeneration = useRef(0);
+  // The growth inbox moved to the Actions lens — this lens is now purely
+  // "what happened", with every "so what" living one tab over.
   const connectionRequestGeneration = useRef(0);
   const statsRequestGeneration = useRef(0);
-
-  const loadInbox = useCallback((id: string) => {
-    const generation = ++inboxRequestGeneration.current;
-    setInboxState('loading');
-    apiFetch<GrowthInboxData>(`/api/projects/${encodeURIComponent(id)}/growth-inbox`)
-      .then((d) => {
-        if (generation !== inboxRequestGeneration.current) return;
-        setInbox(d);
-        setInboxState('ready');
-      })
-      .catch(() => {
-        if (generation !== inboxRequestGeneration.current) return;
-        setInbox(null);
-        setInboxState('error');
-      });
-  }, []);
-
-  useEffect(() => {
-    loadInbox(project.id);
-    return () => { ++inboxRequestGeneration.current; };
-  }, [project.id, loadInbox]);
 
   // Analytics connection + live stats. The connection status loads first;
   // stats only fetch once a provider is connected (no pointless round-trip on
@@ -923,23 +1093,23 @@ function GrowAnalytics({
     },
   ];
 
+  // Third-party providers are an OPT-IN alternative, not a co-equal choice.
+  // Permagent's own collector is the encouraged path: it keeps the data on the
+  // user's infrastructure, so putting a vendor connection at the same visual
+  // weight would steer people away from that for no reason. Collapsed unless
+  // already connected, or deliberately opened.
+  const [showProviders, setShowProviders] = useState(false);
+  const providersOpen = showProviders || !!conn?.provider;
+
   return (
     <>
-      {/* Growth inbox — the headline: your 2-3 ranked moves this week + wins. */}
-      <GrowthInboxSection
-        colors={colors}
-        state={inboxState}
-        inbox={inbox}
-        onRetry={() => loadInbox(project.id)}
-      />
-
       <div style={{
         fontSize: 11, color: colors.textDim, background: colors.bgDeeper,
         border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: '8px 12px', marginBottom: 4,
       }}>
-        Growth analytics for <strong style={{ color: colors.text }}>{project.name}</strong>. Real
-        signal shows now; visitors and pageviews go live when you connect your analytics account
-        below (read-only) — nothing here is faked.
+        Analytics for <strong style={{ color: colors.text }}>{project.name}</strong>, collected by
+        Permagent onto your own infrastructure — nothing here is faked or shared. What to DO about
+        it lives in <strong style={{ color: colors.text }}>Actions</strong>.
       </div>
 
       {/* Self-hosted analytics (#23) — the daemon is the collector. */}
@@ -950,17 +1120,30 @@ function GrowAnalytics({
         onRefresh={() => loadFpStats(project.id)}
       />
 
-      {/* Analytics connection — the settings surface for the live metrics */}
-      <AnalyticsConnectionPanel
-        colors={colors}
-        projectId={project.id}
-        conn={conn}
-        connState={connState}
-        stats={stats}
-        statsState={statsState}
-        onReload={() => loadConnection(project.id)}
-        onRefreshStats={() => loadStats(project.id)}
-      />
+      {/* Third-party connection, deliberately understated. */}
+      {!providersOpen ? (
+        <button
+          onClick={() => setShowProviders(true)}
+          style={{
+            alignSelf: 'flex-start', background: 'transparent', border: 'none',
+            color: colors.textDim, fontFamily: font.body, fontSize: 11,
+            cursor: 'pointer', padding: '2px 0', textDecoration: 'underline',
+          }}
+        >
+          Already use Plausible, Fathom or GA? Connect it read-only instead
+        </button>
+      ) : (
+        <AnalyticsConnectionPanel
+          colors={colors}
+          projectId={project.id}
+          conn={conn}
+          connState={connState}
+          stats={stats}
+          statsState={statsState}
+          onReload={() => loadConnection(project.id)}
+          onRefreshStats={() => loadStats(project.id)}
+        />
+      )}
 
       {/* Metric tiles */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 12 }}>
@@ -1307,6 +1490,30 @@ function FirstPartyAnalyticsPanel({
                 />
               );
             })}
+          </div>
+          {/* Headline figures, each labelled for what it actually is. */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: 10 }}>
+            {([
+              ['Pageviews', stats.pageviews.toLocaleString(), `last ${stats.periodDays} days`],
+              // NOT "visitors": the hash merges people sharing a browser build,
+              // OS and language, so it undercounts — badly on mobile.
+              ['Devices', stats.deviceSignatures.toLocaleString(), 'distinct signatures, undercounts'],
+              ['Sessions', stats.sessions > 0 ? stats.sessions.toLocaleString() : '—',
+                stats.sessions > 0 ? 'first-party, no cookie' : 'relay predates sessions'],
+              ['Bounce', stats.bounceRate != null ? `${Math.round(stats.bounceRate * 100)}%` : '—',
+                stats.bounceRate != null ? 'one-page sessions' : 'needs sessions'],
+              ['Pages / session', stats.pagesPerSession != null ? stats.pagesPerSession.toFixed(1) : '—',
+                stats.pagesPerSession != null ? 'depth' : 'needs sessions'],
+            ] as const).map(([label, value, sub]) => (
+              <div key={label} style={{
+                background: colors.bgDeeper, border: `1px solid ${colors.border}`,
+                borderRadius: radius.md, padding: '8px 10px',
+              }}>
+                <div style={{ fontFamily: font.display, fontSize: 20, fontWeight: 700, color: colors.text, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+                <div style={{ fontFamily: font.mono, fontSize: 9, color: colors.textDim, letterSpacing: '0.06em', textTransform: 'uppercase', marginTop: 2 }}>{label}</div>
+                <div style={{ fontSize: 9, color: colors.textDim, marginTop: 1 }}>{sub}</div>
+              </div>
+            ))}
           </div>
           <div style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono }}>
             {stats.pageviews.toLocaleString()} pageviews · {stats.deviceSignatures.toLocaleString()} devices
@@ -1663,8 +1870,14 @@ function GrowthInboxSection({
   inbox: GrowthInboxData | null;
   onRetry: () => void;
 }) {
-  const hasSignal = !!inbox && (inbox.signal.posts > 0 || inbox.signal.shipped > 0);
-  const empty = !!inbox && inbox.moves.length === 0 && inbox.wins.length === 0;
+  // Defensive against a partial payload. This section previously only rendered
+  // inside the Analytics lens; it is now the top of Actions, the default tab,
+  // so a malformed response would crash the first thing the user sees.
+  const signal = inbox?.signal;
+  const moves = inbox?.moves ?? [];
+  const wins = inbox?.wins ?? [];
+  const hasSignal = !!signal && ((signal.posts ?? 0) > 0 || (signal.shipped ?? 0) > 0);
+  const empty = !!inbox && moves.length === 0 && wins.length === 0;
 
   return (
     <section>
@@ -1672,9 +1885,9 @@ function GrowthInboxSection({
         <h3 style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>
           Your growth moves this week
         </h3>
-        {hasSignal && inbox && (
+        {hasSignal && signal && (
           <span style={{ fontSize: 10, color: colors.textDim }}>
-            from {inbox.signal.posts} {inbox.signal.posts === 1 ? 'post' : 'posts'} · {inbox.signal.shipped} shipped
+            from {signal.posts} {signal.posts === 1 ? 'post' : 'posts'} · {signal.shipped} shipped
           </span>
         )}
       </div>
@@ -1693,8 +1906,8 @@ function GrowthInboxSection({
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {inbox.moves.length > 0 ? (
-            inbox.moves.map((m) => <MoveCard key={m.title} move={m} colors={colors} />)
+          {moves.length > 0 ? (
+            moves.map((m) => <MoveCard key={m.title} move={m} colors={colors} />)
           ) : (
             <div style={{
               border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: '12px 14px',
@@ -1703,7 +1916,7 @@ function GrowthInboxSection({
               You're on track — no urgent moves this week. Keep doing what's working below.
             </div>
           )}
-          {inbox.wins.length > 0 && <WinsStrip wins={inbox.wins} colors={colors} />}
+          {wins.length > 0 && <WinsStrip wins={wins} colors={colors} />}
         </div>
       )}
     </section>
