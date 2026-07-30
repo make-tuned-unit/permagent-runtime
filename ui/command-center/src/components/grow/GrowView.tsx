@@ -1125,6 +1125,27 @@ function FirstPartyAnalyticsPanel({
       .finally(() => setVerifying(false));
   }, [projectId]);
 
+  // Rotate the drain secret. It ships inside the install brief, so it lands in
+  // the coding agent's transcript and tool logs — a credential that has passed
+  // through a third-party model's context should be replaceable without
+  // rebuilding the install. Rotating 401s the deployed site until the new value
+  // is set on the app service and it redeploys.
+  const [rotating, setRotating] = useState(false);
+  const rotateSecret = useCallback(() => {
+    if (!window.confirm(
+      'Mint a new drain key?\n\nIngestion will fail with 401 until you set the new value on '
+      + 'your app service and redeploy. Copy the fresh brief afterwards.',
+    )) return;
+    setRotating(true);
+    apiFetch<FirstPartySetup>(
+      `/api/projects/${encodeURIComponent(projectId)}/analytics/first_party/rotate`,
+      { method: 'POST' },
+    )
+      .then((s) => { setSetup(s); onRefresh(); })
+      .catch(() => setSetupState('error'))
+      .finally(() => setRotating(false));
+  }, [projectId, onRefresh]);
+
   const copy = useCallback((kind: 'snippet' | 'prompt', text: string | null | undefined) => {
     if (!text) return;
     navigator.clipboard?.writeText(text).then(() => {
@@ -1205,6 +1226,12 @@ function FirstPartyAnalyticsPanel({
             <button style={buttonStyle} onClick={() => copy('snippet', setup.snippet)}>
               {copied === 'snippet' ? 'Copied ✓' : 'Copy snippet only'}
             </button>
+            <button
+              style={{ ...buttonStyle, opacity: rotating ? 0.6 : 1 }}
+              disabled={rotating}
+              title="Mint a new drain key — the old one stops working immediately"
+              onClick={rotateSecret}
+            >{rotating ? 'Rotating…' : 'Rotate key'}</button>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <input
