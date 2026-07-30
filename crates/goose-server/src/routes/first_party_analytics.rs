@@ -807,7 +807,7 @@ async fn write_config(
 async fn enable_first_party(
     State(state): State<Arc<AppState>>,
     Path(project_id): Path<String>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
     body: Option<Json<EnableRequest>>,
 ) -> Result<Json<SetupResponse>, StatusCode> {
     let (pool, project) = project_and_pool(&state, &project_id).await?;

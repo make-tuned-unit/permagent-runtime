@@ -72,41 +72,22 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
         }
     }
 
-    // Initialize default provider from config.yaml so new sessions work immediately.
-    // This runs on EVERY daemon start (CLI-spawned or launchctl-loaded) to ensure
-    // the runtime state matches config.yaml — the single source of truth.
-    {
-        let config = permagent::config::Config::global();
-        let provider_name: Result<String, _> = config.get_goose_provider();
-        let model_name: Result<String, _> = config.get_goose_model();
-
-        match &provider_name {
-            Ok(name) => {
-                let model = match &model_name {
-                    Ok(m) => permagent::model::ModelConfig::new(m).ok(),
-                    Err(_) => None,
-                };
-                match permagent::providers::create(name, model.unwrap_or_default(), vec![]).await {
-                    Ok(provider) => {
-                        app_state.agent_manager.set_default_provider(provider).await;
-                        info!(
-                            "Default provider initialized: {} (model: {})",
-                            name,
-                            model_name.as_deref().unwrap_or("default")
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to initialize default provider '{}': {}", name, e);
-                    }
-                }
-            }
-            Err(_) => {
-                tracing::warn!(
-                    "GOOSE_PROVIDER not configured — run 'permagent setup' or configure via Settings"
-                );
-            }
-        }
-    }
+    // Initialize the default provider from config.yaml so new sessions work
+    // immediately. Runs on EVERY daemon start (CLI-spawned or launchctl-loaded)
+    // so runtime state matches config.yaml, the single source of truth.
+    //
+    // SPAWNED, NOT AWAITED — this is load-bearing. It used to be awaited right
+    // here, before the router was built and long before the listener bound, so
+    // a slow provider took the ENTIRE daemon with it. Observed 2026-07-30:
+    // `providers::create("anthropic", …)` did not return for 5h22m. The process
+    // looked perfectly healthy the whole time — background timers ticked, WAL
+    // checkpoints ran, the log showed a clean 2-second boot — while nothing
+    // could reach it, because the bind was 190 lines further down the same
+    // function. It bound 20ms after the call finally returned.
+    //
+    // Nothing about serving the UI, projects, sessions or analytics needs a
+    // model provider, so it must never gate the listener.
+    tokio::spawn(init_default_provider(app_state.clone()));
 
     // Generate a random secret for the tunnel forwarding protocol.
     // The local server no longer checks this header — it is only used by the
@@ -265,4 +246,58 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
 
     info!("server shutdown complete");
     Ok(())
+}
+
+/// Build the configured default provider and install it, off the boot path.
+///
+/// Bounded: a provider that never answers reports itself instead of hanging
+/// forever. The timeout is generous — a cold provider handshake on a slow link
+/// is legitimate — but finite, which is the whole point. Failure is not fatal:
+/// sessions surface a provider error, which is far better than an unreachable
+/// daemon, and Settings can re-configure without a restart.
+async fn init_default_provider(app_state: std::sync::Arc<state::AppState>) {
+    const PROVIDER_INIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+
+    let config = permagent::config::Config::global();
+    let Ok(name) = config.get_goose_provider() else {
+        tracing::warn!(
+            "GOOSE_PROVIDER not configured — run 'permagent setup' or configure via Settings"
+        );
+        return;
+    };
+    let model_name: Result<String, _> = config.get_goose_model();
+    let model = match &model_name {
+        Ok(m) => permagent::model::ModelConfig::new(m).ok(),
+        Err(_) => None,
+    };
+
+    let started = std::time::Instant::now();
+    match tokio::time::timeout(
+        PROVIDER_INIT_TIMEOUT,
+        permagent::providers::create(&name, model.unwrap_or_default(), vec![]),
+    )
+    .await
+    {
+        Ok(Ok(provider)) => {
+            app_state.agent_manager.set_default_provider(provider).await;
+            info!(
+                "Default provider initialized: {} (model: {}) in {:?}",
+                name,
+                model_name.as_deref().unwrap_or("default"),
+                started.elapsed()
+            );
+        }
+        Ok(Err(e)) => {
+            tracing::warn!("Failed to initialize default provider '{}': {}", name, e);
+        }
+        Err(_) => {
+            tracing::error!(
+                "Default provider '{}' did not initialize within {:?} — leaving it unset. \
+                 Sessions will report a provider error until it is reconfigured in Settings. \
+                 The daemon is otherwise serving normally.",
+                name,
+                PROVIDER_INIT_TIMEOUT
+            );
+        }
+    }
 }
