@@ -252,12 +252,24 @@ fn relay_snippet(collect_path: &str) -> String {
       fetch(E, {{ method: "POST", body: body, keepalive: true }}).catch(function () {{}});
     }}
   }}
-  send("pv");
+  // Dedupe on pathname. React Router calls replaceState during mount, so
+  // hooking both without this fires the initial pageview AND a second from the
+  // wrapper — every figure permanently ~2x high, and plausible-looking.
+  // Apps that sync filters into the URL via replaceState inflate much further.
+  // Hooking only pushState is not the fix either: that misses Router
+  // navigations and undercounts.
+  var lastPath = null;
+  function pageview() {{
+    if (location.pathname === lastPath) return;
+    lastPath = location.pathname;
+    send("pv");
+  }}
+  pageview();
   ["pushState", "replaceState"].forEach(function (m) {{
     var orig = history[m];
-    history[m] = function () {{ orig.apply(this, arguments); send("pv"); }};
+    history[m] = function () {{ orig.apply(this, arguments); pageview(); }};
   }});
-  addEventListener("popstate", function () {{ send("pv"); }});
+  addEventListener("popstate", pageview);
   window.permagent = window.permagent || {{}};
   window.permagent.event = function (name) {{ send("ev", name); }};
 }})();
@@ -289,6 +301,22 @@ fn agent_prompt_for(
          timer. The daemon is NOT reachable from the internet — never point the browser at it. \
          Buffering in our database is deliberate: the daemon is often asleep, and events must \
          survive until it wakes.\n\n\
+         BEFORE YOU START, two checks that cause TOTAL SILENT FAILURE when skipped.\n\n\
+         (a) CONTENT SECURITY POLICY. The snippet below is INLINE. If this app sets a CSP with \
+         script-src (helmet, a _headers or netlify.toml file, an nginx config, a \
+         <meta http-equiv=\"Content-Security-Policy\"> tag, or a framework default such as \
+         Next.js middleware or SvelteKit's csp config), the browser will REFUSE to run it and \
+         you will get zero events in every environment with no error anywhere. grep for a CSP \
+         first, then deliberately pick ONE of:\n\
+         - a sha256 hash of the inline script, DERIVED FROM THE BUILT HTML AT RUNTIME (preferred \
+         — it survives later snippet edits);\n\
+         - a nonce, if the app already has nonce plumbing;\n\
+         - serve the snippet as a first-party .js file and drop the inline approach.\n\
+         Do NOT hardcode a literal hash string: it works once, then breaks silently the next \
+         time the snippet changes.\n\n\
+         (b) IDEMPOTENCY. This brief may be run twice. Detect and SKIP anything already \
+         present — a duplicated snippet double-counts, and a duplicated migration fails the \
+         deploy.\n\n\
          BUILD FOUR THINGS.\n\n\
          1) A table `permagent_analytics_events` via this project's normal migration mechanism \
          (Knex/Prisma/Drizzle/SQL — match what the repo already uses; on Railway or Neon this \
@@ -331,23 +359,49 @@ fn agent_prompt_for(
          re-requests from its last cursor after any failure.\n\n\
          4) The browser snippet, injected on every page just before </head> (root layout for \
          Next.js/Astro/Remix, index.html for a Vite SPA):\n\n{snippet}\n\n\
-         Note it hooks pushState AND replaceState, so client-side route changes are counted.\n\n\
-         CONFIG. Set PERMAGENT_ANALYTICS_KEY in the deployment environment (Railway: service \
-         Variables; Neon-backed apps: wherever the app's other env vars live). Use exactly \
-         this value:\n\n    {secret}\n\n\
+         Paste it VERBATIM. In particular the endpoint must remain the relative path \
+         \"{collect_path}\" exactly as written — echo that string back in your report. NEVER \
+         substitute an absolute host: http://127.0.0.1:… beacons to each VISITOR'S own machine, \
+         and any http:// URL is blocked as mixed content from an HTTPS page. The lastPath guard \
+         is load-bearing; without it React Router's mount-time replaceState double-counts every \
+         pageview.\n\n\
+         If this app PRERENDERS or statically generates routes (headless Chrome at build time, \
+         next export, astro build): (i) confirm the snippet survives into the built HTML for \
+         every route — prerender post-processing sometimes strips <script> tags by regex, \
+         written for some third-party provider but happy to eat this one too; and (ii) suppress \
+         beacons during build-time renders, or each build records a phantom pageview per route.\n\n\
+         CONFIG. Set PERMAGENT_ANALYTICS_KEY on THE SERVICE THAT RUNS THIS APP'S SERVER PROCESS \
+         — not the database service. On Railway/Render/Fly a project has several services and \
+         putting it on Postgres looks completely correct while producing a 401 that is \
+         indistinguishable from a wrong key. Redeploy/restart the service after adding it. Use \
+         exactly this value:\n\n    {secret}\n\n\
          Add it to .env.example as an empty placeholder. NEVER commit the real value.\n\n\
+         RETENTION. The events table grows without bound — the drain is a read-only cursor and \
+         never deletes. Add a prune step (e.g. delete rows older than 90 days) or state the \
+         retention window you chose in your report.\n\n\
+         REPORT PARTIAL WORK HONESTLY. If you finish only some of the four, say exactly which \
+         — a committed snippet with no table, no endpoints and no migration looks like success \
+         and produces silence.\n\n\
          If this app has no server-side runtime at all (a purely static site), STOP and report \
          that — do not invent a third-party service or a serverless vendor to work around it.\n\n\
-         VERIFY BEFORE REPORTING DONE.\n\
-         - Load a page and confirm the beacon POST returns 202 in the browser network tab.\n\
+         VERIFY BEFORE REPORTING DONE — against the DEPLOYED origin, not localhost. Every \
+         failure mode of this install is silent (fire-and-forget beacons, 202 responses, \
+         empty catch blocks, a 401 that looks like a wrong key), so skipping this step is how \
+         an install ships broken and looks finished.\n\
+         - Fetch the deployed HTML for TWO different routes and confirm the snippet is in both, \
+         with the relative endpoint intact.\n\
+         - Confirm no CSP blocks it: either there is no script-src, or its hash/nonce covers \
+         the snippet. Check the browser console for a Content Security Policy violation.\n\
+         - Load a page and confirm the beacon POST returns 202 in the browser network tab, and \
+         that a single load produces EXACTLY ONE pageview row (not two).\n\
          - Confirm a row actually landed: select the newest few rows from \
          permagent_analytics_events.\n\
          - Curl the drain with the key and confirm JSON comes back:\n\
            curl -s -H \"x-permagent-key: $PERMAGENT_ANALYTICS_KEY\" \
          '<deployed-origin>{drain_path}?since=0&limit=5'\n\
          - Confirm the drain returns 401 with a wrong key.\n\
-         Then report the deployed origin and the full drain URL, which get pasted back into \
-         Permagent to start ingestion."
+         Paste the output of those checks into your report, then report the deployed origin and \
+         the full drain URL, which get pasted back into Permagent to start ingestion."
     )
 }
 
@@ -1000,8 +1054,36 @@ mod tests {
             snippet.contains("replaceState"),
             "SPA routes must be counted"
         );
+        // Hooking both WITHOUT a pathname guard double-counts every load:
+        // React Router calls replaceState during mount, so the initial
+        // pageview fires again from the wrapper. Measured 2x on a real
+        // install — plausible-looking and permanently wrong. Hooking only
+        // pushState is not the fix either; that undercounts Router
+        // navigations.
+        assert!(
+            snippet.contains("lastPath"),
+            "snippet must dedupe pageviews on pathname or every figure is ~2x high"
+        );
+        assert!(
+            !snippet.contains("http://") && !snippet.contains("https://"),
+            "the collect endpoint must stay RELATIVE — an absolute host beacons to the \
+             visitor's own machine and is blocked as mixed content"
+        );
         let prompt = setup["agentPrompt"].as_str().unwrap();
         assert!(prompt.contains("window.permagent.event"));
+        // The install's one total-silent-failure mode. Omitting it cost ~3
+        // hours on the first real install: helmet's script-src 'self' refused
+        // the inline snippet, producing zero events and no error anywhere.
+        assert!(
+            prompt.contains("Content Security Policy") || prompt.contains("CONTENT SECURITY"),
+            "brief must make the agent check CSP before injecting an inline script"
+        );
+        // The env var went on the Postgres service on the first real install:
+        // everything looked right and the only symptom was an ambiguous 401.
+        assert!(
+            prompt.contains("SERVICE THAT RUNS THIS APP'S SERVER PROCESS"),
+            "brief must disambiguate WHICH service gets the key"
+        );
         // The brief must carry the drain contract and a real secret, or the
         // agent on the other end cannot build a working relay.
         assert!(prompt.contains(DRAIN_PATH));
