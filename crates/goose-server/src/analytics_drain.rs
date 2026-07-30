@@ -33,6 +33,9 @@ const PAGE_LIMIT: u32 = 500;
 /// Bound one project's catch-up per tick so a huge backlog can't monopolise a
 /// pass; the next tick continues from the advanced cursor.
 const MAX_PAGES_PER_TICK: u32 = 20;
+/// How long collected events are kept. Beyond the dashboard's longest window,
+/// so nothing displayable is ever removed.
+const RETENTION_DAYS: u32 = 400;
 
 fn http_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
@@ -133,6 +136,7 @@ async fn run_once(state: &AppState) -> Result<(), String> {
         .pool_clone()
         .await
         .map_err(|e| e.to_string())?;
+    prune_old_events(&pool).await;
     let projects = projects::list_projects(&pool, Some("active")).await?;
     for project in projects {
         let Some(mut config) = crate::routes::first_party_analytics::drain_config(&project) else {
@@ -170,6 +174,28 @@ async fn run_once(state: &AppState) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Retention. `analytics_events` otherwise grows forever: the drain is a
+/// read-only cursor that never deletes, so every pageview ever collected stays
+/// in this database. The dashboard's longest window is a year, so anything
+/// older cannot be displayed and is pure storage cost.
+///
+/// Best-effort and non-fatal: a failed prune must never stop a drain pass.
+async fn prune_old_events(pool: &Pool<Sqlite>) {
+    match sqlx::query("DELETE FROM analytics_events WHERE created_at < datetime('now', ?1)")
+        .bind(format!("-{RETENTION_DAYS} days"))
+        .execute(pool)
+        .await
+    {
+        Ok(r) if r.rows_affected() > 0 => tracing::info!(
+            target: "analytics_drain",
+            pruned = r.rows_affected(),
+            "pruned analytics events older than {RETENTION_DAYS} days"
+        ),
+        Ok(_) => {}
+        Err(e) => tracing::warn!(target: "analytics_drain", "analytics prune failed: {e}"),
+    }
 }
 
 async fn drain_project(
