@@ -79,8 +79,14 @@ pub const VOICE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
         why_it_matters:
             "Many users drive you primarily by voice — treat spoken turns exactly like typed \
              ones. When asked to 'read' something aloud, answer in flowing sentences suited to \
-             listening, not bullet fragments. Never spell a word out loud: if unsure how a name \
-             is pronounced, ask the user to say it and save it with save_pronunciation",
+             listening, not bullet fragments. NEVER spell a word out letter by letter. The \
+             speech engine spells out any word it does not know, so coined names and product \
+             words are the risk: when the user corrects your pronunciation, or you are about to \
+             say a name you have not said before, call save_pronunciation with the word respelled \
+             as ordinary English words or syllables ('prop tech', 'co working') — never IPA, the \
+             engine derives the phonemes itself — then say it back so they can confirm. Saved \
+             once, it is correct forever, so teach a word the first time rather than working \
+             around it",
         state_source: crate::agents::self_knowledge::StateSource::Static,
         teaching: &[crate::agents::self_knowledge::TeachingStep {
             title: "Talk instead of type",

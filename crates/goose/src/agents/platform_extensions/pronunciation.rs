@@ -44,22 +44,19 @@ impl PronunciationClient {
         Ok(Self { info })
     }
 
-    async fn handle_save(
-        &self,
-        word: &str,
-        sounds_like: &str,
-        ipa: &str,
-    ) -> Result<Vec<Content>, String> {
-        if word.trim().is_empty() || ipa.trim().is_empty() {
-            return Err("word and ipa are both required".to_string());
+    async fn handle_save(&self, word: &str, sounds_like: &str) -> Result<Vec<Content>, String> {
+        if word.trim().is_empty() || sounds_like.trim().is_empty() {
+            return Err("word and sounds_like are both required".to_string());
         }
         let client = reqwest::Client::new();
+        // No `ipa` field: the daemon derives phonemes from the respelling using
+        // the same G2P that speaks. Authoring IPA here was the old contract and
+        // it could not work — see provider::phonemize_text.
         let mut req = client
             .put("http://127.0.0.1:3001/voice/pronunciations")
-            .timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(10))
             .json(&serde_json::json!({
                 "word": word,
-                "ipa": ipa,
                 "sounds_like": sounds_like,
             }));
         // /voice/pronunciations sits behind the daemon's bearer choke point
@@ -83,32 +80,37 @@ impl PronunciationClient {
 
 impl PronunciationClient {
     pub(crate) fn get_tools() -> Vec<Tool> {
+        // No `ipa` parameter, deliberately. It used to be required, and it could
+        // not work: producing Kokoro-flavoured IPA means authoring an encoding
+        // you cannot hear, so there is no way to notice being wrong. The only
+        // entry ever saved that way stored "permagent" as "pʌmˈeɪdʒənt" /
+        // "PUM-ay-jent" — self-consistent and confidently wrong, since the
+        // product is "PER-ma-jent". A respelling is something a model IS
+        // reliable at, and the daemon converts it with the same G2P that speaks,
+        // so what gets stored is exactly what will be said.
         let schema: JsonObject = serde_json::from_value(serde_json::json!({
             "type": "object",
             "properties": {
                 "word": {
                     "type": "string",
-                    "description": "The word or name exactly as it is written, e.g. 'Permagent'"
+                    "description": "The word or name exactly as it is written, e.g. 'proptech'"
                 },
                 "sounds_like": {
                     "type": "string",
-                    "description": "Human respelling for display, e.g. 'PER-ma-jent'"
-                },
-                "ipa": {
-                    "type": "string",
-                    "description": "IPA phonemes in the Kokoro/misaki style the TTS engine speaks, derived from how the user said it, e.g. 'pˈɜːməʤɛnt'"
+                    "description": "The word respelled as ORDINARY ENGLISH WORDS OR SYLLABLES separated by spaces — this is converted to phonemes by the speech engine itself, so it must be pronounceable English. Good: 'prop tech', 'co working', 'per ma jent', 'ess cue lite'. Bad: IPA symbols, hyphens-as-syllables, or capitals for stress ('PER-ma-jent')."
                 }
             },
-            "required": ["word", "sounds_like", "ipa"]
+            "required": ["word", "sounds_like"]
         }))
         .expect("static schema");
 
         vec![Tool::new(
             "save_pronunciation".to_string(),
             "Save how a word is pronounced so speech says it correctly forever. THE RULE: never \
-             spell a word out loud — if you are unsure how a name will sound (or the user \
-             corrects your pronunciation), ask them to say it, derive the IPA from their \
-             pronunciation, save it here, then say the word back so they can confirm."
+             spell a word out letter by letter. If you are unsure how a name will sound, or the \
+             user corrects you, ask how it is said, respell it as ordinary English words or \
+             syllables, save it here, then say the word back so they can confirm. Give \
+             `sounds_like` only — never IPA; the speech engine derives the phonemes itself."
                 .to_string(),
             schema,
         )]
@@ -151,10 +153,7 @@ impl McpClientTrait for PronunciationClient {
         };
         match name {
             "save_pronunciation" => {
-                match self
-                    .handle_save(&arg("word"), &arg("sounds_like"), &arg("ipa"))
-                    .await
-                {
+                match self.handle_save(&arg("word"), &arg("sounds_like")).await {
                     Ok(content) => Ok(CallToolResult::success(content)),
                     Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
                 }
