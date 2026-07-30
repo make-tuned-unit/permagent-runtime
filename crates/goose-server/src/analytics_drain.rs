@@ -18,6 +18,7 @@
 //! source's own timestamp is written to `created_at` rather than letting it
 //! default to the fetch time, which would collapse history into one day.
 
+use crate::routes::analytics_classify as classify;
 use crate::state::AppState;
 use permagent::projects;
 use serde::Deserialize;
@@ -64,6 +65,32 @@ struct DrainEvent {
     /// back to now rather than dropping the event.
     #[serde(default)]
     at: Option<String>,
+
+    // ── v40 dimensions ──
+    // All optional: a relay built against the earlier contract keeps working
+    // and simply carries none of them, rather than failing to parse and
+    // stalling the cursor.
+    /// Flat scalar event payload. Re-sanitized here rather than trusted: the
+    /// site's collector is written by a coding agent against a brief, and the
+    /// clamps are ours to enforce.
+    #[serde(default)]
+    properties: Option<serde_json::Value>,
+    #[serde(default)]
+    is_bot: Option<bool>,
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
+    utm_source: Option<String>,
+    #[serde(default)]
+    utm_medium: Option<String>,
+    #[serde(default)]
+    utm_campaign: Option<String>,
+    #[serde(default)]
+    country: Option<String>,
+    /// Raw user agent, if the relay sends it. Used ONLY to classify is_bot when
+    /// the site did not, and never stored.
+    #[serde(default)]
+    user_agent: Option<String>,
 }
 
 fn id_as_string<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
@@ -213,7 +240,6 @@ async fn insert_event(
         Some("event") | Some("ev") => "event",
         _ => "pageview",
     };
-    let path = ev.path.clone().unwrap_or_else(|| "/".to_string());
     let created_at = ev
         .at
         .clone()
@@ -221,19 +247,49 @@ async fn insert_event(
 
     // INSERT OR IGNORE against UNIQUE(project_id, source_event_id): re-draining
     // the same window is a no-op instead of inflating every count.
+    // Campaign params ride in the path when the relay does not split them out,
+    // so extract here too and store the path without its query — otherwise
+    // every ?utm_source= variant is a separate "page".
+    let raw_path = ev.path.as_deref().unwrap_or("/");
+    let utm = classify::extract_utm(raw_path);
+    let stored_path = classify::normalize_path(raw_path);
+    // Trust the site's flag when it sent one; otherwise classify from the user
+    // agent if the relay forwarded it. A relay that sends neither yields false,
+    // which is the honest default — we cannot know.
+    let is_bot = ev.is_bot.unwrap_or_else(|| {
+        ev.user_agent
+            .as_deref()
+            .map(|ua| classify::is_bot(Some(ua)))
+            .unwrap_or(false)
+    }) as i64;
+    let properties = ev
+        .properties
+        .as_ref()
+        .and_then(classify::sanitize_properties);
+
+    // INSERT OR IGNORE against UNIQUE(project_id, source_event_id): re-draining
+    // the same window is a no-op instead of inflating every count.
     sqlx::query(
         "INSERT OR IGNORE INTO analytics_events
-            (project_id, kind, path, referrer, name, visitor_hash, created_at, source_event_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            (project_id, kind, path, referrer, name, visitor_hash, created_at, source_event_id,
+             properties, is_bot, session_id, utm_source, utm_medium, utm_campaign, country)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
     )
     .bind(project_id)
     .bind(kind)
-    .bind(path)
+    .bind(&stored_path)
     .bind(ev.referrer.as_deref())
     .bind(ev.name.as_deref())
     .bind(ev.visitor_hash.as_deref())
     .bind(created_at)
     .bind(&ev.id)
+    .bind(&properties)
+    .bind(is_bot)
+    .bind(ev.session_id.as_deref())
+    .bind(ev.utm_source.as_deref().or(utm.source.as_deref()))
+    .bind(ev.utm_medium.as_deref().or(utm.medium.as_deref()))
+    .bind(ev.utm_campaign.as_deref().or(utm.campaign.as_deref()))
+    .bind(ev.country.as_deref())
     .execute(pool)
     .await
     .map_err(|e| format!("insert failed: {e}"))?;
@@ -261,6 +317,14 @@ mod tests {
             name: None,
             visitor_hash: Some("abc".into()),
             at: Some(at.to_string()),
+            properties: None,
+            is_bot: None,
+            session_id: None,
+            utm_source: None,
+            utm_medium: None,
+            utm_campaign: None,
+            country: None,
+            user_agent: None,
         }
     }
 

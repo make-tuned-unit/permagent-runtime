@@ -197,12 +197,21 @@ interface FirstPartyStats {
   receiving: boolean;
   periodDays: number;
   pageviews: number;
-  visitors: number;
+  /** Distinct device signatures — NOT people. See the label in the UI. */
+  deviceSignatures: number;
   eventsLast5m: number;
+  botsExcluded: number;
+  includingBots: boolean;
   byDay: { day: string; pageviews: number; visitors: number }[];
   topPages: { name: string; count: number }[];
   topReferrers: { name: string; count: number }[];
   topEvents: { name: string; count: number }[];
+  topSources: { name: string; count: number }[];
+  topCampaigns: { name: string; count: number }[];
+  sessions: number;
+  bounceRate: number | null;
+  pagesPerSession: number | null;
+  topEntryPages: { name: string; count: number }[];
 }
 
 type GrowLens = 'strategy' | 'calendar' | 'analytics';
@@ -836,7 +845,11 @@ function GrowAnalytics({
   const fpLive = !!fpStats?.receiving;
   // First-party numbers win when the collector is receiving; the third-party
   // provider fills in otherwise.
-  const visitors = fpLive ? fpStats!.visitors : connected ? stats?.visitors ?? null : null;
+  // First-party counts DEVICE SIGNATURES, not people: the hash collapses
+  // everyone sharing a browser build, OS version and language into one value,
+  // which on mobile merges many real people. It systematically undercounts, so
+  // the label changes with the source rather than presenting both as "Visitors".
+  const visitors = fpLive ? fpStats!.deviceSignatures : connected ? stats?.visitors ?? null : null;
   const pageviews = fpLive ? fpStats!.pageviews : connected ? stats?.pageviews ?? null : null;
   const fetchFailed = connected && (statsState === 'error' || !!stats?.error);
 
@@ -858,10 +871,12 @@ function GrowAnalytics({
     { stage: 'Content live', value: posts.length, source: true, hint: 'Published social posts' },
     { stage: 'Reach', value: null as number | null, source: false, hint: 'Impressions — connect a channel' },
     {
-      stage: 'Visitors',
+      stage: fpLive ? 'Devices' : 'Visitors',
       value: visitors,
       source: visitors != null,
-      hint: liveHint(`Not exposed by ${providerLabel}`, 'Site sessions — connect analytics below'),
+      hint: fpLive
+        ? 'Distinct device signatures, not people — browsers sharing a build, OS and language merge into one, so this undercounts'
+        : liveHint(`Not exposed by ${providerLabel}`, 'Site sessions — connect analytics below'),
     },
     {
       stage: 'Signups',
@@ -1208,12 +1223,22 @@ function FirstPartyAnalyticsPanel({
             })}
           </div>
           <div style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono }}>
-            {stats.pageviews.toLocaleString()} pageviews · {stats.visitors.toLocaleString()} visitors · last {stats.periodDays}d
+            {stats.pageviews.toLocaleString()} pageviews · {stats.deviceSignatures.toLocaleString()} devices
+            {stats.sessions > 0 && <> · {stats.sessions.toLocaleString()} sessions</>}
+            {stats.bounceRate != null && <> · {Math.round(stats.bounceRate * 100)}% bounce</>}
+            {' '}· last {stats.periodDays}d
+            {/* A filtered figure must never read as a quiet day. */}
+            {stats.botsExcluded > 0 && !stats.includingBots && (
+              <> · {stats.botsExcluded.toLocaleString()} bot hits excluded</>
+            )}
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
             {([
               ['Top pages', stats.topPages],
+              ['Sources', stats.topSources],
               ['Referrers', stats.topReferrers],
+              ['Campaigns', stats.topCampaigns],
+              ['Entry pages', stats.topEntryPages],
               ['Events', stats.topEvents],
             ] as const).map(([label, rows]) => (
               <div key={label}>

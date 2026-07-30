@@ -21,6 +21,8 @@
 //! Visitor uniques are privacy-preserving: sha256(site_key, UA,
 //! Accept-Language, UTC day) — no IP stored, rotates daily.
 
+use crate::routes::analytics_classify as classify;
+use crate::routes::analytics_verify as verify;
 use crate::state::AppState;
 use axum::{
     extract::{Path, Query, State},
@@ -181,13 +183,34 @@ struct FirstPartyStats {
     receiving: bool,
     period_days: u32,
     pageviews: i64,
-    visitors: i64,
+    /// Distinct DEVICE SIGNATURES, not people. The hash collapses everyone
+    /// sharing a browser build, OS version and language into one value, which
+    /// on mobile merges many real people — so this systematically UNDERCOUNTS.
+    /// The field name is deliberately not `visitors`: the UI must not present
+    /// it as a precise headcount.
+    device_signatures: i64,
     /// Events in the last 5 minutes — the "live" indicator.
     events_last_5m: i64,
+    /// How many rows the bot filter removed from every figure above. Surfaced
+    /// so a filtered number is never mistaken for a quiet day.
+    bots_excluded: i64,
+    /// True when bot traffic is included (the `includeBots` toggle).
+    including_bots: bool,
     by_day: Vec<DayCount>,
     top_pages: Vec<NamedCount>,
     top_referrers: Vec<NamedCount>,
     top_events: Vec<NamedCount>,
+    // ── v40 ──
+    /// Referrers bucketed into direct / search / social / referral.
+    top_sources: Vec<NamedCount>,
+    top_campaigns: Vec<NamedCount>,
+    /// Sessions and what they unlock. Zero/None until a relay sends session ids.
+    sessions: i64,
+    /// Share of sessions with exactly one pageview, 0..1. None when there are
+    /// no sessions to divide by — an honest gap, not a misleading 0%.
+    bounce_rate: Option<f64>,
+    pages_per_session: Option<f64>,
+    top_entry_pages: Vec<NamedCount>,
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -246,8 +269,28 @@ fn relay_snippet(collect_path: &str) -> String {
         r#"<script>
 (function () {{
   var E = "{collect_path}";
-  function send(kind, name) {{
-    var body = JSON.stringify({{ k: kind, p: location.pathname, r: document.referrer || null, n: name || null }});
+  // First-party session id: sessionStorage, no cookie, never cross-site, gone
+  // when the tab closes. visitor_hash rotates daily, so without this there is
+  // no bounce rate, pages per session or entry page.
+  var S = null;
+  try {{
+    S = sessionStorage.getItem("_pa_sid");
+    if (!S) {{
+      S = Math.random().toString(36).slice(2) + Date.now().toString(36);
+      sessionStorage.setItem("_pa_sid", S);
+    }}
+  }} catch (e) {{ /* private mode: sessions degrade, pageviews still count */ }}
+  function send(kind, name, props, ref) {{
+    var body = JSON.stringify({{
+      k: kind,
+      // Full path+query so the server can pull utm_* from its allowlist; it
+      // stores the path WITHOUT the query, so pages still aggregate.
+      p: location.pathname + location.search,
+      r: ref || null,
+      n: name || null,
+      d: props || null,
+      s: S
+    }});
     if (!(navigator.sendBeacon && navigator.sendBeacon(E, body))) {{
       fetch(E, {{ method: "POST", body: body, keepalive: true }}).catch(function () {{}});
     }}
@@ -259,10 +302,16 @@ fn relay_snippet(collect_path: &str) -> String {
   // Hooking only pushState is not the fix either: that misses Router
   // navigations and undercounts.
   var lastPath = null;
+  // document.referrer keeps pointing at the ORIGINAL external referrer after a
+  // client-side route change, so reporting it on every SPA navigation inflates
+  // referrer counts. Send it once, on the first pageview of this page load.
+  var sentRef = false;
   function pageview() {{
     if (location.pathname === lastPath) return;
     lastPath = location.pathname;
-    send("pv");
+    var ref = sentRef ? null : (document.referrer || null);
+    sentRef = true;
+    send("pv", null, null, ref);
   }}
   pageview();
   ["pushState", "replaceState"].forEach(function (m) {{
@@ -271,7 +320,23 @@ fn relay_snippet(collect_path: &str) -> String {
   }});
   addEventListener("popstate", pageview);
   window.permagent = window.permagent || {{}};
-  window.permagent.event = function (name) {{ send("ev", name); }};
+  // Second argument is a FLAT object of string/number/boolean properties, e.g.
+  // permagent.event("list_item_added", {{ source: "deals", store: "sobeys" }}).
+  // Nested values are dropped server-side because they cannot be grouped by.
+  window.permagent.event = function (name, props) {{ send("ev", name, props, null); }};
+  // Opt-in, conservative autocapture: outbound link clicks only. Call
+  // permagent.autocapture() to enable. Deliberately not on by default — it
+  // manufactures events the site never asked for.
+  window.permagent.autocapture = function () {{
+    addEventListener("click", function (e) {{
+      var a = e.target && e.target.closest && e.target.closest("a[href]");
+      if (!a) return;
+      var url;
+      try {{ url = new URL(a.href, location.href); }} catch (err) {{ return; }}
+      if (url.host === location.host) return;
+      send("ev", "outbound_click", {{ host: url.host, href: url.href.slice(0, 256) }}, null);
+    }}, true);
+  }};
 }})();
 </script>"#
     )
@@ -327,13 +392,34 @@ fn agent_prompt_for(
          - path: text; referrer: text null; name: text null\n\
          - visitor_hash: text null\n\
          - created_at: timestamptz NOT NULL default now()  <- the EVENT time\n\
-         Index (id) and (created_at).\n\n\
+         - properties: jsonb null      <- event payload; add a GIN index on it\n\
+         - is_bot: boolean NOT NULL default false\n\
+         - session_id: text null\n\
+         - utm_source / utm_medium / utm_campaign: text null\n\
+         - country: text null\n\
+         Index (id) and (created_at), plus (is_bot, created_at).\n\n\
          2) POST {collect_path} — the collector. Requirements that are easy to get wrong:\n\
          - navigator.sendBeacon sends Content-Type text/plain, so a JSON body parser will NOT \
          parse it. Accept text/* (or any type) on THIS ROUTE and JSON.parse defensively; \
          malformed bodies return 204, never a 500.\n\
-         - Body shape: {{ k: 'pv'|'ev', p: string, r: string|null, n: string|null }}. Map \
-         k='pv' to kind='pageview', k='ev' to 'event'. Clamp p/r to 512 chars and n to 128.\n\
+         - Body shape: {{ k: 'pv'|'ev', p: string, r: string|null, n: string|null, \
+         d: object|null, s: string|null }}. Map k='pv' to kind='pageview', k='ev' to 'event'. \
+         Clamp p/r to 512 chars, n to 128, s to 64.\n\
+         - `d` is the event's PROPERTIES. Keep flat scalars only (string/number/bool); drop \
+         nested objects and arrays, cap at 32 keys, 256 chars per value and 4 kb total, and \
+         TRUNCATE rather than reject — a rejected beacon is a silently lost event. Store as \
+         jsonb in `properties`.\n\
+         - `s` is a first-party session id from sessionStorage. Store verbatim in session_id.\n\
+         - `p` arrives as path+query. Store `path` WITHOUT the query (or every ?utm_source= \
+         variant becomes a separate page), and extract utm_source/utm_medium/utm_campaign from \
+         an ALLOWLIST — utm_*, ref, gclid, fbclid — never the whole query string, which routinely \
+         carries emails and tokens.\n\
+         - Set is_bot from the User-Agent server-side (bot/crawler/spider/headless/curl/ \
+         python-requests/facebookexternalhit/…; a MISSING user agent counts as a bot). Store the \
+         flag, never the agent string.\n\
+         - If you can resolve country cheaply from an edge header (Cloudflare CF-IPCountry, \
+         Vercel x-vercel-ip-country, Fly Fly-Client-IP region), store the two-letter code and \
+         DISCARD the IP. Never persist the IP itself.\n\
          - EXEMPT this route from global rate limiting, or a normal browsing session gets \
          throttled and silently loses pageviews.\n\
          - Register it BEFORE any SPA catch-all route, or the catch-all swallows it.\n\
@@ -352,7 +438,11 @@ fn agent_prompt_for(
          - Return rows with id > since, ORDERED BY id ASC, as JSON:\n\
          {{ \"events\": [ {{ \"id\": 123, \"kind\": \"pageview\", \"path\": \"/deals\", \
          \"referrer\": null, \"name\": null, \"visitorHash\": \"ab12…\", \
-         \"at\": \"2026-07-29T15:04:05.000Z\" }} ] }}\n\
+         \"at\": \"2026-07-29T15:04:05.000Z\", \"properties\": null, \"isBot\": false, \
+         \"sessionId\": \"s1\", \"utmSource\": null, \"utmMedium\": null, \
+         \"utmCampaign\": null, \"country\": null }} ] }}\n\
+         - The fields after `at` are optional: an older relay that omits them still drains \
+         correctly, it simply carries no dimensions. Send them when you have them.\n\
          - `at` MUST be the row's created_at in ISO-8601 UTC. The daemon stores it verbatim; \
          if you send the current time instead, every chart collapses into one day.\n\
          - Ordering and the id > since filter are the entire correctness story — the daemon \
@@ -382,6 +472,30 @@ fn agent_prompt_for(
          REPORT PARTIAL WORK HONESTLY. If you finish only some of the four, say exactly which \
          — a committed snippet with no table, no endpoints and no migration looks like success \
          and produces silence.\n\n\
+         MIGRATING OFF AN EXISTING PROVIDER. When you replace posthog.capture / mixpanel.track / \
+         analytics.track calls, CARRY THE PROPERTIES ACROSS — they are the whole value of the \
+         event. posthog.capture('list_item_added', {{ store: 'sobeys', price: 4.99 }}) becomes \
+         permagent.event('list_item_added', {{ store: 'sobeys', price: 4.99 }}), NOT \
+         permagent.event('list_item_added'). Dropping the second argument silently destroys the \
+         data that answers every product question, and nothing will ever surface the loss. If \
+         any call site's properties cannot be carried over, list it explicitly in your report.\n\n\
+         WHERE THINGS GO, by stack (match the repo; these are the usual answers):\n\
+         - Next.js app router: snippet in app/layout.tsx (next/script, strategy=afterInteractive \
+         or a raw <script> in <head>); routes as app/api/permagent-analytics/{{collect,drain}}/route.ts; \
+         CSP in next.config.js headers() or middleware.ts.\n\
+         - Vite SPA + Express: snippet in index.html; routes on the Express app BEFORE the SPA \
+         catch-all; CSP wherever helmet is configured.\n\
+         - Astro: snippet in the base layout; routes as src/pages/api/…; CSP in the adapter or \
+         host headers.\n\
+         - Remix / React Router: snippet in root.tsx; routes as resource routes; CSP in \
+         entry.server.tsx.\n\
+         - SvelteKit: snippet in src/app.html; routes as +server.ts; CSP in svelte.config.js \
+         (kit.csp).\n\
+         - Rails: snippet in app/views/layouts/application.html.erb; routes + controller; CSP in \
+         config/initializers/content_security_policy.rb.\n\
+         - Django: snippet in the base template; a view + urls.py entry; CSP via django-csp.\n\
+         - Laravel: snippet in resources/views/layouts/app.blade.php; routes/web.php or api.php; \
+         CSP in middleware.\n\n\
          If this app has no server-side runtime at all (a purely static site), STOP and report \
          that — do not invent a third-party service or a serverless vendor to work around it.\n\n\
          VERIFY BEFORE REPORTING DONE — against the DEPLOYED origin, not localhost. Every \
@@ -401,7 +515,11 @@ fn agent_prompt_for(
          '<deployed-origin>{drain_path}?since=0&limit=5'\n\
          - Confirm the drain returns 401 with a wrong key.\n\
          Paste the output of those checks into your report, then report the deployed origin and \
-         the full drain URL, which get pasted back into Permagent to start ingestion."
+         the full drain URL, which get pasted back into Permagent.\n\n\
+         Permagent then runs the SAME assertions itself against the deployed origin before it \
+         starts ingesting — fetching the HTML on two routes, reading the CSP, posting a real \
+         beacon and exercising the drain with a correct and a wrong key. It reports pass/fail \
+         per check. If your report and that run disagree, the run is right."
     )
 }
 
@@ -652,6 +770,10 @@ async fn enable_first_party(
 struct StatsQuery {
     #[serde(default)]
     days: Option<u32>,
+    /// Include traffic classified as automated. Off by default — crawler
+    /// traffic on an SEO-heavy site otherwise dominates every figure.
+    #[serde(default)]
+    include_bots: Option<bool>,
 }
 
 async fn first_party_stats(
@@ -664,16 +786,60 @@ async fn first_party_stats(
     let days = q.days.unwrap_or(30).clamp(1, 365);
     let since = format!("-{days} days");
 
-    let (pageviews, visitors): (i64, i64) = sqlx::query_as(
-        "SELECT count(*), count(DISTINCT visitor_hash)
-         FROM analytics_events
-         WHERE project_id = ?1 AND kind = 'pageview' AND created_at >= datetime('now', ?2)",
+    // Bots are excluded from EVERY figure by default. On a site with 50
+    // prerendered SEO pages, crawler traffic is a large share of all requests
+    // and counting it makes the numbers noise. `?includeBots=true` opts back in.
+    let including_bots = q.include_bots.unwrap_or(false);
+    // Interpolated, not bound: it is a fixed fragment chosen from two literals,
+    // never user input.
+    let bot_filter = if including_bots {
+        ""
+    } else {
+        " AND is_bot = 0"
+    };
+
+    let bots_excluded: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM analytics_events
+         WHERE project_id = ?1 AND is_bot = 1 AND created_at >= datetime('now', ?2)",
     )
     .bind(&project.id)
     .bind(&since)
     .fetch_one(&pool)
     .await
+    .unwrap_or(0);
+
+    let (pageviews, device_signatures): (i64, i64) = sqlx::query_as(&format!(
+        "SELECT count(*), count(DISTINCT visitor_hash)
+         FROM analytics_events
+         WHERE project_id = ?1 AND kind = 'pageview'
+           AND created_at >= datetime('now', ?2){bot_filter}"
+    ))
+    .bind(&project.id)
+    .bind(&since)
+    .fetch_one(&pool)
+    .await
     .unwrap_or((0, 0));
+
+    // ── Sessions (v40) ──
+    // visitor_hash rotates daily, so none of this is computable without a
+    // session id. Rows predating the relay change have NULL and are simply not
+    // counted, rather than being invented as one-page sessions.
+    let (sessions, session_pageviews, bounced): (i64, i64, i64) = sqlx::query_as(&format!(
+        "SELECT count(*), coalesce(sum(views), 0), coalesce(sum(views = 1), 0) FROM (
+           SELECT session_id, count(*) AS views
+           FROM analytics_events
+           WHERE project_id = ?1 AND kind = 'pageview' AND session_id IS NOT NULL
+             AND created_at >= datetime('now', ?2){bot_filter}
+           GROUP BY session_id
+         )"
+    ))
+    .bind(&project.id)
+    .bind(&since)
+    .fetch_one(&pool)
+    .await
+    .unwrap_or((0, 0, 0));
+    let bounce_rate = (sessions > 0).then(|| bounced as f64 / sessions as f64);
+    let pages_per_session = (sessions > 0).then(|| session_pageviews as f64 / sessions as f64);
 
     let events_last_5m: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM analytics_events
@@ -684,12 +850,13 @@ async fn first_party_stats(
     .await
     .unwrap_or(0);
 
-    let by_day: Vec<DayCount> = sqlx::query_as::<_, (String, i64, i64)>(
+    let by_day: Vec<DayCount> = sqlx::query_as::<_, (String, i64, i64)>(&format!(
         "SELECT date(created_at), count(*), count(DISTINCT visitor_hash)
          FROM analytics_events
-         WHERE project_id = ?1 AND kind = 'pageview' AND created_at >= datetime('now', ?2)
-         GROUP BY date(created_at) ORDER BY date(created_at)",
-    )
+         WHERE project_id = ?1 AND kind = 'pageview'
+           AND created_at >= datetime('now', ?2){bot_filter}
+         GROUP BY date(created_at) ORDER BY date(created_at)"
+    ))
     .bind(&project.id)
     .bind(&since)
     .fetch_all(&pool)
@@ -710,11 +877,12 @@ async fn first_party_stats(
     };
 
     let top_pages = named(
-        sqlx::query_as::<_, (String, i64)>(
+        sqlx::query_as::<_, (String, i64)>(&format!(
             "SELECT path, count(*) FROM analytics_events
-             WHERE project_id = ?1 AND kind = 'pageview' AND created_at >= datetime('now', ?2)
-             GROUP BY path ORDER BY count(*) DESC LIMIT 10",
-        )
+             WHERE project_id = ?1 AND kind = 'pageview'
+               AND created_at >= datetime('now', ?2){bot_filter}
+             GROUP BY path ORDER BY count(*) DESC LIMIT 10"
+        ))
         .bind(&project.id)
         .bind(&since)
         .fetch_all(&pool)
@@ -722,13 +890,108 @@ async fn first_party_stats(
         .unwrap_or_default(),
     );
 
-    let top_referrers = named(
-        sqlx::query_as::<_, (String, i64)>(
-            "SELECT referrer, count(*) FROM analytics_events
-             WHERE project_id = ?1 AND kind = 'pageview' AND referrer IS NOT NULL
-               AND referrer <> '' AND created_at >= datetime('now', ?2)
-             GROUP BY referrer ORDER BY count(*) DESC LIMIT 10",
-        )
+    // Raw referrers, grouped by HOST rather than full URL — a hundred distinct
+    // deep links from one site are one source, not a hundred.
+    let referrer_rows = sqlx::query_as::<_, (String, i64)>(&format!(
+        "SELECT referrer, count(*) FROM analytics_events
+         WHERE project_id = ?1 AND kind = 'pageview' AND referrer IS NOT NULL
+           AND referrer <> '' AND created_at >= datetime('now', ?2){bot_filter}
+         GROUP BY referrer ORDER BY count(*) DESC LIMIT 200"
+    ))
+    .bind(&project.id)
+    .bind(&since)
+    .fetch_all(&pool)
+    .await
+    .unwrap_or_default();
+
+    // Self-referrals are internal navigation, not a traffic source. On an SPA
+    // document.referrer still holds the ORIGINAL external referrer after a
+    // client-side route change, so without this every internal navigation
+    // re-reports it and inflates the list.
+    let site_host = config_from_project(&project)
+        .and_then(|c| c.drain_url)
+        .and_then(|u| classify::referrer_host(&u));
+
+    let mut by_host: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let mut by_class: std::collections::HashMap<&'static str, i64> =
+        std::collections::HashMap::new();
+    let mut internal = 0i64;
+    for (referrer, count) in &referrer_rows {
+        let class = classify::classify_referrer(Some(referrer), site_host.as_deref());
+        if class == classify::ReferrerClass::Internal {
+            internal += count;
+            continue;
+        }
+        *by_class.entry(class.as_str()).or_default() += count;
+        if let Some(host) = classify::referrer_host(referrer) {
+            *by_host.entry(host).or_default() += count;
+        }
+    }
+    // Everything with no referrer at all is direct.
+    let direct: i64 = sqlx::query_scalar(&format!(
+        "SELECT count(*) FROM analytics_events
+         WHERE project_id = ?1 AND kind = 'pageview'
+           AND (referrer IS NULL OR referrer = '')
+           AND created_at >= datetime('now', ?2){bot_filter}"
+    ))
+    .bind(&project.id)
+    .bind(&since)
+    .fetch_one(&pool)
+    .await
+    .unwrap_or(0);
+    if direct + internal > 0 {
+        *by_class.entry("direct").or_default() += direct + internal;
+    }
+
+    let sort_desc = |mut v: Vec<NamedCount>| -> Vec<NamedCount> {
+        v.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.name.cmp(&b.name)));
+        v.truncate(10);
+        v
+    };
+    let top_referrers = sort_desc(
+        by_host
+            .into_iter()
+            .map(|(name, count)| NamedCount { name, count })
+            .collect(),
+    );
+    let top_sources = sort_desc(
+        by_class
+            .into_iter()
+            .map(|(name, count)| NamedCount {
+                name: name.to_string(),
+                count,
+            })
+            .collect(),
+    );
+
+    let top_campaigns = named(
+        sqlx::query_as::<_, (String, i64)>(&format!(
+            "SELECT coalesce(utm_campaign, utm_source), count(*) FROM analytics_events
+             WHERE project_id = ?1 AND (utm_campaign IS NOT NULL OR utm_source IS NOT NULL)
+               AND created_at >= datetime('now', ?2){bot_filter}
+             GROUP BY coalesce(utm_campaign, utm_source)
+             ORDER BY count(*) DESC LIMIT 10"
+        ))
+        .bind(&project.id)
+        .bind(&since)
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default(),
+    );
+
+    // Entry pages: the first pageview of each session. Feeds the funnel view
+    // and answers "where do people land?".
+    let top_entry_pages = named(
+        sqlx::query_as::<_, (String, i64)>(&format!(
+            "SELECT path, count(*) FROM (
+               SELECT session_id, path,
+                      row_number() OVER (PARTITION BY session_id ORDER BY id) AS rn
+               FROM analytics_events
+               WHERE project_id = ?1 AND kind = 'pageview' AND session_id IS NOT NULL
+                 AND created_at >= datetime('now', ?2){bot_filter}
+             ) WHERE rn = 1
+             GROUP BY path ORDER BY count(*) DESC LIMIT 10"
+        ))
         .bind(&project.id)
         .bind(&since)
         .fetch_all(&pool)
@@ -737,11 +1000,12 @@ async fn first_party_stats(
     );
 
     let top_events = named(
-        sqlx::query_as::<_, (String, i64)>(
+        sqlx::query_as::<_, (String, i64)>(&format!(
             "SELECT coalesce(name, '(unnamed)'), count(*) FROM analytics_events
-             WHERE project_id = ?1 AND kind = 'event' AND created_at >= datetime('now', ?2)
-             GROUP BY name ORDER BY count(*) DESC LIMIT 10",
-        )
+             WHERE project_id = ?1 AND kind = 'event'
+               AND created_at >= datetime('now', ?2){bot_filter}
+             GROUP BY name ORDER BY count(*) DESC LIMIT 10"
+        ))
         .bind(&project.id)
         .bind(&since)
         .fetch_all(&pool)
@@ -755,12 +1019,219 @@ async fn first_party_stats(
         receiving,
         period_days: days,
         pageviews,
-        visitors,
+        device_signatures,
         events_last_5m,
+        bots_excluded,
+        including_bots,
         by_day,
         top_pages,
         top_referrers,
         top_events,
+        top_sources,
+        top_campaigns,
+        sessions,
+        bounce_rate,
+        pages_per_session,
+        top_entry_pages,
+    }))
+}
+
+// ── Install verification ─────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VerifyRequest {
+    /// Deployed origin, e.g. `https://www.grocerysaver.ca`.
+    origin: String,
+    /// Extra route to check besides `/`. The snippet being on the home page
+    /// only is a common partial install.
+    #[serde(default)]
+    second_route: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VerifyResponse {
+    verified: bool,
+    checks: Vec<verify::Check>,
+    summary: String,
+}
+
+/// Run the install checks against a DEPLOYED origin.
+///
+/// This exists because analytics has no natural error signal: a broken install
+/// looks exactly like a quiet one. It does not trust the site's own report —
+/// it fetches the HTML, reads the CSP, posts a real beacon, and exercises the
+/// drain with a correct and an incorrect key.
+async fn verify_install(
+    State(state): State<Arc<AppState>>,
+    Path(project_id): Path<String>,
+    Json(req): Json<VerifyRequest>,
+) -> Result<Json<VerifyResponse>, StatusCode> {
+    let (_pool, project) = project_and_pool(&state, &project_id).await?;
+    let config = config_from_project(&project).ok_or(StatusCode::NOT_FOUND)?;
+    let origin = req.origin.trim().trim_end_matches('/').to_string();
+    if !origin.starts_with("http://") && !origin.starts_with("https://") {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let secret = stored_drain_secret_readonly(&project.id);
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        // A redirect to a login wall would otherwise be reported as "snippet
+        // missing", which sends the user hunting in the wrong place.
+        .redirect(reqwest::redirect::Policy::limited(3))
+        .build()
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // ── HTML on two routes, and the CSP from the first ──
+    let mut html_by_route: Vec<(String, Result<String, String>)> = Vec::new();
+    let mut csp: Option<String> = None;
+    let routes = ["/".to_string(), req.second_route.unwrap_or_default()];
+    for route in routes.iter().filter(|r| !r.is_empty()) {
+        let url = format!("{origin}{route}");
+        match client.get(&url).send().await {
+            Ok(resp) => {
+                if csp.is_none() {
+                    csp = resp
+                        .headers()
+                        .get("content-security-policy")
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::to_string);
+                }
+                match resp.text().await {
+                    Ok(body) => {
+                        // A meta tag counts too — frameworks set it that way.
+                        if csp.is_none() {
+                            if let Some(idx) = body
+                                .to_lowercase()
+                                .find("http-equiv=\"content-security-policy\"")
+                            {
+                                if let Some(content) = body[idx..].split("content=\"").nth(1) {
+                                    if let Some(end) = content.find('"') {
+                                        csp = Some(content[..end].to_string());
+                                    }
+                                }
+                            }
+                        }
+                        html_by_route.push((route.clone(), Ok(body)));
+                    }
+                    Err(e) => html_by_route.push((route.clone(), Err(e.to_string()))),
+                }
+            }
+            Err(e) => html_by_route.push((route.clone(), Err(e.to_string()))),
+        }
+    }
+
+    // ── Drain before, beacon, drain after ──
+    // The delta is how we assert "exactly one pageview per load" without any
+    // access to the site's database.
+    let drain_url = config
+        .drain_url
+        .clone()
+        .unwrap_or_else(|| format!("{origin}{DRAIN_PATH}"));
+    let drain_get = |since: String, key: Option<String>| {
+        let client = client.clone();
+        let url = format!(
+            "{drain_url}{}since={since}&limit=1000",
+            if drain_url.contains('?') { '&' } else { '?' }
+        );
+        async move {
+            let mut req = client.get(&url);
+            if let Some(k) = key {
+                req = req.header("x-permagent-key", k);
+            }
+            req.send().await
+        }
+    };
+
+    let mut before_max = "0".to_string();
+    let mut drain_result: Option<(u16, bool)> = None;
+    if let Some(key) = secret.clone() {
+        if let Ok(resp) = drain_get("0".to_string(), Some(key)).await {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            let parsed: Option<serde_json::Value> = serde_json::from_str(&body).ok();
+            let is_json = parsed
+                .as_ref()
+                .map(|v| v.get("events").is_some())
+                .unwrap_or(false);
+            drain_result = Some((status, is_json));
+            if let Some(events) = parsed.as_ref().and_then(|v| v["events"].as_array()) {
+                for ev in events {
+                    let id = ev["id"]
+                        .as_i64()
+                        .map(|n| n.to_string())
+                        .or_else(|| ev["id"].as_str().map(str::to_string));
+                    if let Some(id) = id {
+                        if id.parse::<i64>().unwrap_or(0) >= before_max.parse::<i64>().unwrap_or(0)
+                        {
+                            before_max = id;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // One real beacon, exactly as a browser would send it.
+    let beacon_status = client
+        .post(format!("{origin}{COLLECT_PATH}"))
+        .header("content-type", "text/plain")
+        .header(
+            "user-agent",
+            // Marked so the row it creates is classified as a bot and never
+            // pollutes the user's real figures.
+            "Mozilla/5.0 (compatible; PermagentVerify/1.0; +headless) HeadlessChrome/1.0",
+        )
+        .body(r#"{"k":"pv","p":"/__permagent_verify","r":null,"n":null}"#)
+        .send()
+        .await
+        .ok()
+        .map(|r| r.status().as_u16());
+
+    // Give the site a moment to commit before re-reading.
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+
+    let mut pageview_delta: Option<i64> = None;
+    if let Some(key) = secret.clone() {
+        if let Ok(resp) = drain_get(before_max.clone(), Some(key)).await {
+            if let Ok(body) = resp.text().await {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                    pageview_delta = v["events"].as_array().map(|a| {
+                        a.iter()
+                            .filter(|e| e["path"].as_str() == Some("/__permagent_verify"))
+                            .count() as i64
+                    });
+                }
+            }
+        }
+    }
+
+    // A deliberately wrong key must be refused.
+    let wrong_key_status = drain_get("0".to_string(), Some("permagent-verify-wrong-key".into()))
+        .await
+        .ok()
+        .map(|r| r.status().as_u16());
+
+    let checks = verify::build_checks(
+        &html_by_route,
+        csp.as_deref(),
+        beacon_status,
+        pageview_delta,
+        drain_result,
+        wrong_key_status,
+    );
+    let verified = verify::verdict(&checks);
+    let summary = verify::summarize(&checks);
+    tracing::info!(
+        target: "permagentd::analytics",
+        project = %project.name, %verified, "install verification run"
+    );
+    Ok(Json(VerifyResponse {
+        verified,
+        checks,
+        summary,
     }))
 }
 
@@ -796,6 +1267,17 @@ struct BeaconBody {
     r: Option<String>,
     #[serde(default)]
     n: Option<String>,
+    /// Event properties (v40). Flat scalars only; sanitized server-side.
+    /// Without this an event carried a NAME alone, so migrating a site off a
+    /// third-party analytics tool — which the install brief mandates —
+    /// silently destroyed every property on every call site.
+    #[serde(default)]
+    d: Option<serde_json::Value>,
+    /// First-party session id from sessionStorage (v40). No cookie, not
+    /// cross-site. visitor_hash rotates daily, so this is what makes bounce
+    /// rate, pages-per-session and entry/exit pages computable at all.
+    #[serde(default)]
+    s: Option<String>,
 }
 
 fn clamp(s: Option<String>, max: usize) -> Option<String> {
@@ -880,13 +1362,25 @@ async fn collect(
     hasher.update(day.as_bytes());
     let visitor_hash = hex::encode(&hasher.finalize()[..16]);
 
-    let path = clamp(beacon.p, 512).unwrap_or_else(|| "/".to_string());
+    // Classify server-side, at collect time, so the raw signal is never stored:
+    // the user agent decides is_bot and is then discarded, and only allowlisted
+    // campaign params survive out of the query string.
+    let raw_path = beacon.p.clone().unwrap_or_else(|| "/".to_string());
+    let utm = classify::extract_utm(&raw_path);
+    // The stored path drops the query, or every ?utm_source= variant becomes a
+    // distinct "page" and the top-pages list fragments into near-duplicates.
+    let path = classify::normalize_path(&raw_path);
     let referrer = clamp(beacon.r, 512);
     let name = clamp(beacon.n, 128);
+    let is_bot = classify::is_bot(Some(ua)) as i64;
+    let properties = beacon.d.as_ref().and_then(classify::sanitize_properties);
+    let session_id = clamp(beacon.s, 64);
 
     let inserted = sqlx::query(
-        "INSERT INTO analytics_events (project_id, kind, path, referrer, name, visitor_hash)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO analytics_events
+           (project_id, kind, path, referrer, name, visitor_hash,
+            properties, is_bot, session_id, utm_source, utm_medium, utm_campaign)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
     )
     .bind(&project_id)
     .bind(kind)
@@ -894,6 +1388,12 @@ async fn collect(
     .bind(&referrer)
     .bind(&name)
     .bind(&visitor_hash)
+    .bind(&properties)
+    .bind(is_bot)
+    .bind(&session_id)
+    .bind(&utm.source)
+    .bind(&utm.medium)
+    .bind(&utm.campaign)
     .execute(&pool)
     .await;
 
@@ -926,6 +1426,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route(
             "/api/projects/{project_id}/analytics/first_party/drain",
             post(set_drain),
+        )
+        .route(
+            "/api/projects/{project_id}/analytics/first_party/verify",
+            post(verify_install),
         )
         .with_state(state)
 }
@@ -1161,12 +1665,21 @@ mod tests {
         assert_eq!(stats["enabled"], serde_json::json!(true));
         assert_eq!(stats["receiving"], serde_json::json!(true));
         assert_eq!(stats["pageviews"], serde_json::json!(1));
-        assert_eq!(stats["visitors"], serde_json::json!(1));
+        assert_eq!(stats["deviceSignatures"], serde_json::json!(1));
+        // Bots are excluded by default, and the count of what was filtered is
+        // surfaced so a filtered figure never reads as a quiet day.
+        assert_eq!(stats["includingBots"], serde_json::json!(false));
+        assert!(stats["botsExcluded"].is_number());
         assert_eq!(stats["topPages"][0]["name"], serde_json::json!("/pricing"));
+        // Grouped by HOST, not raw URL: a hundred deep links from one site are
+        // one source, not a hundred rows.
         assert_eq!(
             stats["topReferrers"][0]["name"],
-            serde_json::json!("https://news.ycombinator.com/")
+            serde_json::json!("news.ycombinator.com")
         );
+        // …and bucketed. Hacker News is classified social — it is a community
+        // aggregator, which is the useful grouping, not a generic referral.
+        assert_eq!(stats["topSources"][0]["name"], serde_json::json!("social"));
         assert_eq!(stats["topEvents"][0]["name"], serde_json::json!("signup"));
     }
 
