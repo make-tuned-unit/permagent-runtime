@@ -997,6 +997,11 @@ impl SessionStorage {
                     if version < 39 {
                         spectral_schema::migrate_v38_to_v39(&self.pool).await?;
                     }
+                    // v40: analytics dimensions (properties, is_bot, session_id,
+                    // utm_*, country). Additive + base-independent.
+                    if version < 40 {
+                        spectral_schema::migrate_v39_to_v40(&self.pool).await?;
+                    }
                     // Version-independent safety net for the cfg-gated v22
                     // recognition columns. The always-on v23 above can stamp
                     // schema_version past the `version < 22` gate on a feature-off

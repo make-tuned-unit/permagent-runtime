@@ -2539,6 +2539,67 @@ pub async fn apply_analytics_events_schema(pool: &Pool<Sqlite>) -> Result<()> {
     )
     .execute(pool)
     .await?;
+
+    // v40: the dimensions that make the data answerable rather than decorative.
+    // Every one is additive and nullable (or defaulted), so old rows stay valid
+    // and a database at any prior version reaches the same shape.
+    //
+    // properties — event payloads. Until this existed `window.permagent.event`
+    //   took a NAME only, so migrating a site off PostHog (which the install
+    //   brief mandates) silently destroyed every property on every call site.
+    //   JSON text rather than a column per key: the shape is the site's, not
+    //   ours.
+    // is_bot    — classified server-side at collect time from the user agent.
+    //   An SEO site's crawler traffic otherwise drowns the real numbers.
+    // session_id — first-party, sessionStorage, no cookie. visitor_hash rotates
+    //   daily, so without this there is no bounce rate, pages per session, or
+    //   entry/exit page.
+    // utm_*     — an ALLOWLIST, never the whole query string, which would drag
+    //   PII in. Campaign attribution is impossible without it.
+    // country   — resolved at collect time and stored alone; the IP is never
+    //   persisted, so the no-IP guarantee holds.
+    for (column, ddl) in [
+        ("properties", "properties TEXT"),
+        ("is_bot", "is_bot INTEGER NOT NULL DEFAULT 0"),
+        ("session_id", "session_id TEXT"),
+        ("utm_source", "utm_source TEXT"),
+        ("utm_medium", "utm_medium TEXT"),
+        ("utm_campaign", "utm_campaign TEXT"),
+        ("country", "country TEXT"),
+    ] {
+        let present: i64 = sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM pragma_table_info('analytics_events') WHERE name = '{column}'"
+        ))
+        .fetch_one(pool)
+        .await?;
+        if present == 0 {
+            sqlx::query(&format!("ALTER TABLE analytics_events ADD COLUMN {ddl}"))
+                .execute(pool)
+                .await?;
+        }
+    }
+    // Bots are excluded from every default figure, so the filter belongs in the
+    // index the dashboard actually queries through.
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_analytics_events_project_bot_time
+         ON analytics_events(project_id, is_bot, created_at)",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// v40: analytics dimensions — event `properties`, `is_bot`, `session_id`,
+/// `utm_*` and `country`. All additive (PRAGMA-guarded ADD COLUMN); the work is
+/// in `apply_analytics_events_schema`, which runs on EVERY boot, so a database
+/// at any prior version converges without depending on this migration firing.
+pub async fn migrate_v39_to_v40(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v39 -> v40 (analytics dimensions)");
+    apply_analytics_events_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (40)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v40 (analytics dimensions)");
     Ok(())
 }
 
