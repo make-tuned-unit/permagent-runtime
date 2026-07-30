@@ -639,6 +639,45 @@ fn stored_drain_secret(project_id: &str) -> Option<String> {
     }
 }
 
+/// Mint a NEW drain secret, replacing the current one.
+///
+/// There was no rotation path at all, which matters more than usual here: the
+/// secret is embedded in the install brief, so it lands in the coding agent's
+/// transcript, its context window and often its tool logs. A credential that
+/// has been through a third-party model's context should be rotatable without
+/// tearing the whole install down.
+///
+/// Rotating INVALIDATES the deployed site until the new value is set on the
+/// app service and it redeploys — draining will 401 in the meantime, which the
+/// UI already surfaces. The response carries the fresh brief to paste.
+async fn rotate_drain_secret(
+    State(state): State<Arc<AppState>>,
+    Path(project_id): Path<String>,
+) -> Result<Json<SetupResponse>, StatusCode> {
+    let (pool, project) = project_and_pool(&state, &project_id).await?;
+    let config = config_from_project(&project).ok_or(StatusCode::NOT_FOUND)?;
+    let bytes: [u8; 32] = rand::random();
+    let minted = hex::encode(bytes);
+    permagent::config::Config::global()
+        .set_secret(&drain_secret_key(&project.id), &minted)
+        .map_err(|e| {
+            tracing::warn!("could not rotate analytics drain secret: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    tracing::info!(
+        target: "permagentd::analytics",
+        project = %project.name,
+        "analytics drain secret rotated — the deployed site will 401 until the new value is set"
+    );
+    let receiving = has_any_events(&pool, &project.id).await;
+    Ok(Json(setup_response(
+        Some(&config),
+        &project,
+        Some(minted.as_str()),
+        receiving,
+    )))
+}
+
 /// Point the daemon at the site's drain endpoint (the value the coding agent
 /// reports back after installing the relay). Clearing it stops ingestion.
 async fn set_drain(
@@ -1430,6 +1469,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route(
             "/api/projects/{project_id}/analytics/first_party/verify",
             post(verify_install),
+        )
+        .route(
+            "/api/projects/{project_id}/analytics/first_party/rotate",
+            post(rotate_drain_secret),
         )
         .with_state(state)
 }
