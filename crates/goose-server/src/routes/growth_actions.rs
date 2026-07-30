@@ -44,7 +44,20 @@ pub struct GrowthAction {
     pub evidence: String,
     /// The concrete change to make.
     pub recommendation: String,
-    /// conversion | retention | churn | ux | acquisition | measurement
+    /// The ordered steps to carry it out. An action nobody knows how to start
+    /// is a observation wearing an action's clothes.
+    #[serde(default)]
+    pub steps: Vec<String>,
+    /// What `artifact` is, so the UI can label and offer it correctly:
+    /// prompt (paste into a coding harness) | post (social copy) | none.
+    #[serde(default)]
+    pub artifact_kind: String,
+    /// Ready-to-use text — a coding-harness prompt or drafted post. This is
+    /// what turns "improve your SEO" into something that gets done.
+    #[serde(default)]
+    pub artifact: Option<String>,
+    /// conversion | retention | churn | ux | acquisition | measurement |
+    /// content | seo | aeo
     pub category: String,
     /// high | medium | low
     pub impact: String,
@@ -170,12 +183,72 @@ pub fn render_summary(project_name: &str, s: &AnalyticsSummary) -> String {
              are unavailable. The site's relay predates session support.\n",
         );
     }
+
+    // Content and answer-engine signals, called out explicitly. Buried in a
+    // referrer list a single chatgpt.com hit reads as noise; named, it is the
+    // strongest AEO signal a small site gets — proof the content is being cited
+    // by an answer engine and worth making more quotable.
+    let answer_engines: Vec<&str> = ANSWER_ENGINES
+        .iter()
+        .copied()
+        .filter(|host| {
+            s.top_referrers
+                .iter()
+                .any(|(r, _)| r.to_ascii_lowercase().contains(host))
+        })
+        .collect();
+    if !answer_engines.is_empty() {
+        out.push_str(&format!(
+            "\nAEO SIGNAL: referrals arrived from answer engines ({}). The content is being \
+             cited in generated answers — worth making more quotable and structured.\n",
+            answer_engines.join(", ")
+        ));
+    }
+    let content_pages: Vec<&(String, i64)> = s
+        .top_pages
+        .iter()
+        .filter(|(p, _)| {
+            let p = p.to_ascii_lowercase();
+            p.contains("/blog")
+                || p.contains("/guide")
+                || p.contains("/article")
+                || p.contains("/post")
+        })
+        .collect();
+    if !content_pages.is_empty() {
+        let total_content: i64 = content_pages.iter().map(|(_, c)| *c).sum();
+        out.push_str(&format!(
+            "\nCONTENT: {} of {} pageviews land on written content ({}). Expanding, \
+             interlinking and structuring the strongest of these is available as an action.\n",
+            total_content,
+            s.pageviews,
+            content_pages
+                .iter()
+                .map(|(p, c)| format!("{p} — {c}"))
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    }
     out
 }
 
+/// Referrer hosts that indicate a generated answer cited this site. Distinct
+/// from ordinary search: it means the content was quoted, not merely ranked.
+const ANSWER_ENGINES: &[&str] = &[
+    "chatgpt.com",
+    "chat.openai.com",
+    "perplexity.ai",
+    "claude.ai",
+    "copilot.microsoft.com",
+    "gemini.google.com",
+    "you.com",
+    "phind.com",
+];
+
 const SYSTEM: &str = "You are a growth analyst reviewing one product's own first-party web \
     analytics. Propose concrete moves that would strengthen the product: increase conversion, \
-    reduce churn, improve retention, or improve UX.\n\n\
+    reduce churn, improve retention, improve UX, or grow qualified traffic through content, SEO \
+    and AEO (answer-engine optimisation — being cited by ChatGPT, Perplexity, Claude, Copilot).\n\n\
     HARD RULES:\n\
     - Ground EVERY action in a figure from the data. Quote the number in `evidence`.\n\
     - Never invent metrics that are not present. If something cannot be measured, an action \
@@ -184,9 +257,24 @@ const SYSTEM: &str = "You are a growth analyst reviewing one product's own first
     - Do not explain a number by traffic the bot filter already removed.\n\
     - Prefer few strong actions over many weak ones. Between two and five.\n\
     - If the data genuinely does not support any specific action, return an empty list.\n\n\
+    EVERY ACTION MUST BE DOABLE. Give ordered `steps`, and wherever the work is writing code or \
+    writing copy, include a ready-to-use `artifact`:\n\
+    - artifactKind \"prompt\": a complete, self-contained instruction to paste into a coding \
+      agent working in that repo. Name the concrete change — the route, the meta tags, the \
+      schema.org type, the heading structure. Assume the agent cannot see this dashboard, so \
+      restate what it needs.\n\
+    - artifactKind \"post\": the actual drafted post text, ready to publish, in the product's \
+      voice. Not a description of a post.\n\
+    - artifactKind \"none\": only when the work is a human decision, not a deliverable.\n\n\
+    Content, SEO and AEO specifics worth acting on when the data shows them: a blog post pulling \
+    disproportionate traffic is worth expanding and interlinking; search referrals concentrated \
+    on one engine suggest the others are unindexed; a referral from an ANSWER ENGINE means the \
+    content is being cited and is worth making more quotable (clear headings, direct answers, \
+    FAQ and structured data); an entry page with high bounce needs its first screen rewritten.\n\n\
     Reply ONLY with JSON:\n\
     {\"actions\":[{\"title\":\"...\",\"evidence\":\"...\",\"recommendation\":\"...\",\
-    \"category\":\"conversion|retention|churn|ux|acquisition|measurement\",\
+    \"steps\":[\"...\"],\"artifactKind\":\"prompt|post|none\",\"artifact\":\"...\",\
+    \"category\":\"conversion|retention|churn|ux|acquisition|measurement|content|seo|aeo\",\
     \"impact\":\"high|medium|low\",\"confidence\":\"high|medium|low\"}]}";
 
 /// Parse and sanitize the model's reply.
@@ -237,10 +325,35 @@ pub fn parse_actions(text: &str) -> Vec<GrowthAction> {
             let title = get("title")?;
             let evidence = get("evidence")?;
             let recommendation = get("recommendation")?;
+            let steps: Vec<String> = item
+                .get("steps")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str())
+                        .map(str::trim)
+                        .filter(|x| !x.is_empty())
+                        .map(|x| x.chars().take(300).collect::<String>())
+                        .take(8)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let artifact = get("artifact").map(|a| a.chars().take(4000).collect::<String>());
+            // An artifact kind with nothing attached would render an empty
+            // "copy" affordance, so the two are reconciled here rather than in
+            // the UI.
+            let artifact_kind = if artifact.is_some() {
+                norm(item.get("artifactKind"), &["prompt", "post"], "prompt")
+            } else {
+                "none".to_string()
+            };
             Some(GrowthAction {
                 title: title.chars().take(120).collect(),
                 evidence: evidence.chars().take(400).collect(),
                 recommendation: recommendation.chars().take(600).collect(),
+                steps,
+                artifact_kind,
+                artifact,
                 category: norm(
                     item.get("category"),
                     &[
@@ -250,6 +363,9 @@ pub fn parse_actions(text: &str) -> Vec<GrowthAction> {
                         "ux",
                         "acquisition",
                         "measurement",
+                        "content",
+                        "seo",
+                        "aeo",
                     ],
                     "ux",
                 ),
@@ -597,6 +713,69 @@ mod tests {
         assert!(text.contains("not measurable"), "{text}");
     }
 
+    /// A single answer-engine referral is the strongest AEO signal a small site
+    /// gets, and it is invisible buried in a referrer list. Taken from real
+    /// data: one chatgpt.com hit among 19 referrals.
+    #[test]
+    fn names_answer_engine_referrals_explicitly() {
+        let mut s = busy();
+        s.top_referrers = vec![
+            ("https://google.com/".into(), 12),
+            ("https://chatgpt.com/".into(), 1),
+        ];
+        let text = render_summary("GrocerySaver", &s);
+        assert!(text.contains("AEO SIGNAL"), "{text}");
+        assert!(text.contains("chatgpt.com"), "{text}");
+    }
+
+    #[test]
+    fn ordinary_search_referrals_are_not_an_aeo_signal() {
+        let mut s = busy();
+        s.top_referrers = vec![("https://google.com/".into(), 12)];
+        assert!(!render_summary("X", &s).contains("AEO SIGNAL"));
+    }
+
+    #[test]
+    fn calls_out_content_pages_so_they_can_be_expanded() {
+        let mut s = busy();
+        s.top_pages = vec![("/blog/canadian-grocery-stores".into(), 8), ("/".into(), 6)];
+        let text = render_summary("X", &s);
+        assert!(text.contains("CONTENT:"), "{text}");
+        assert!(text.contains("/blog/canadian-grocery-stores"), "{text}");
+    }
+
+    #[test]
+    fn captures_steps_and_a_usable_artifact() {
+        let reply = r#"{"actions":[{"title":"Expand the grocery-stores post",
+            "evidence":"8 of 37 pageviews","recommendation":"Expand and structure it",
+            "steps":["Add an FAQ section","Add schema.org FAQPage"],
+            "artifactKind":"prompt","artifact":"In this repo, open the blog post at …",
+            "category":"aeo","impact":"high","confidence":"medium"}]}"#;
+        let a = &parse_actions(reply)[0];
+        assert_eq!(a.steps.len(), 2);
+        assert_eq!(a.category, "aeo");
+        assert_eq!(a.artifact_kind, "prompt");
+        assert!(a.artifact.as_deref().unwrap().starts_with("In this repo"));
+    }
+
+    /// An artifactKind with nothing attached would render an empty copy button.
+    #[test]
+    fn an_artifact_kind_without_an_artifact_becomes_none() {
+        let reply = r#"{"actions":[{"title":"t","evidence":"e","recommendation":"r",
+            "artifactKind":"post"}]}"#;
+        let a = &parse_actions(reply)[0];
+        assert_eq!(a.artifact_kind, "none");
+        assert!(a.artifact.is_none());
+    }
+
+    #[test]
+    fn an_action_with_no_steps_still_parses() {
+        let reply = r#"{"actions":[{"title":"t","evidence":"e","recommendation":"r"}]}"#;
+        let a = &parse_actions(reply)[0];
+        assert!(a.steps.is_empty());
+        assert_eq!(a.artifact_kind, "none");
+    }
+
     #[test]
     fn parses_a_well_formed_reply() {
         let reply = r#"Sure! {"actions":[{"title":"Cut the deals bounce",
@@ -659,6 +838,9 @@ mod tests {
             title: title.into(),
             evidence: "e".into(),
             recommendation: "r".into(),
+            steps: Vec::new(),
+            artifact_kind: "none".into(),
+            artifact: None,
             category: "ux".into(),
             impact: impact.into(),
             confidence: confidence.into(),
