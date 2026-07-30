@@ -14,6 +14,7 @@ import { ProjectChip } from './ProjectChip';
 import { CostStatusline } from './CostStatusline';
 import { progressRailStep } from '../../lib/buildProgress';
 import type { Project } from './useProjects';
+import { ViewHeader } from '../common/ViewHeader';
 
 // Ensure a project site_url has a scheme so the in-app browser navigates
 // instead of treating it as a search query (e.g. www.reckonize.org → https://…).
@@ -152,27 +153,21 @@ export function BuildView() {
       background: gradient.workspace,
       color: colors.text, fontFamily: font.body,
     }}>
-      {/* Title strip */}
-      <div style={{
-        padding: '14px 24px', display: 'flex', alignItems: 'center', gap: 14,
-        borderBottom: `1px solid ${colors.border}`, flexShrink: 0,
-      }}>
-        <Mobius size={36} state={mobiusState as any} glow={0.9} />
-        <div style={{ minWidth: 0 }}>
-          <div style={{ fontFamily: font.display, fontSize: 14, fontWeight: 600, letterSpacing: '-0.01em' }}>
-            {activeTask ? activeTask.title : 'Build'}
-          </div>
-          <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2, display: 'flex', alignItems: 'center', gap: 8 }}>
+      <ViewHeader
+        leading={<Mobius size={36} state={mobiusState as any} glow={0.9} />}
+        title={activeTask ? activeTask.title : 'Build'}
+        subtitle={
+          <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{
               width: 5, height: 5, borderRadius: '50%',
               background: hasActive ? colors.cyan : colors.textDim,
               boxShadow: hasActive ? `0 0 6px ${colors.cyanGlow}` : 'none',
             }} />
             {agentName} · {hasActive ? 'thinking' : 'idle'}
-          </div>
-        </div>
-        <ProjectChip onLaunch={handleLaunch} onVisitSite={handleVisitSite} />
-        <div style={{ flex: 1 }} />
+          </span>
+        }
+        actions={<>
+          <ProjectChip onLaunch={handleLaunch} onVisitSite={handleVisitSite} />
 
         {/* Progress rail — driven by the daemon's per-task progress estimate
             (dashboard in_flight[].progress, 0..0.95). Previously hardcoded to
@@ -229,7 +224,8 @@ export function BuildView() {
             title="Open this run's session in the chat dock to steer or stop it"
           >Take over</button>
         )}
-      </div>
+        </>}
+      />
 
       {/* Terminal + Browser side by side, resizable */}
       <div style={{ flex: 1, minHeight: 0, padding: '12px 18px' }}>
