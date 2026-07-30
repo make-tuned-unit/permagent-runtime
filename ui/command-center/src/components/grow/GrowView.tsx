@@ -750,6 +750,10 @@ interface GrowthAction {
   title: string;
   evidence: string;
   recommendation: string;
+  steps: string[];
+  /** prompt (paste into a coding harness) | post (social copy) | none */
+  artifactKind: string;
+  artifact: string | null;
   category: string;
   impact: string;
   confidence: string;
@@ -840,7 +844,18 @@ function GrowActions({ project, colors }: { project: Project; colors: ThemeColor
     ux: colors.purple,
     acquisition: colors.warning ?? colors.cyan,
     measurement: colors.textMuted,
+    content: colors.cyan,
+    seo: colors.success,
+    aeo: colors.purple,
   };
+
+  const [copiedArtifact, setCopiedArtifact] = useState<number | null>(null);
+  const copyArtifact = useCallback((index: number, text: string) => {
+    navigator.clipboard?.writeText(text).then(() => {
+      setCopiedArtifact(index);
+      setTimeout(() => setCopiedArtifact((c) => (c === index ? null : c)), 1600);
+    });
+  }, []);
 
   const hasActions = (actions?.actions?.length ?? 0) > 0;
 
@@ -923,6 +938,42 @@ function GrowActions({ project, colors }: { project: Project; colors: ThemeColor
               <div style={{ fontSize: 13, color: colors.textMuted, lineHeight: 1.5 }}>
                 {a.recommendation}
               </div>
+
+              {/* Ordered steps: an action nobody knows how to start is an
+                  observation wearing an action's clothes. */}
+              {a.steps?.length > 0 && (
+                <ol style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 12, color: colors.textMuted, lineHeight: 1.6 }}>
+                  {a.steps.map((step, si) => <li key={si}>{step}</li>)}
+                </ol>
+              )}
+
+              {/* The deliverable — a coding-harness prompt or drafted post,
+                  ready to use. This is what turns "improve your SEO" into
+                  something that actually gets done. */}
+              {a.artifact && (
+                <div style={{ marginTop: 10 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <span style={{ fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em', textTransform: 'uppercase', color: colors.textDim }}>
+                      {a.artifactKind === 'post' ? 'Draft post' : 'Prompt for your coding agent'}
+                    </span>
+                    <div style={{ flex: 1 }} />
+                    <button
+                      onClick={() => copyArtifact(i, a.artifact!)}
+                      style={{
+                        background: colors.surface, border: `1px solid ${colors.border}`,
+                        borderRadius: radius.sm, padding: '3px 10px', cursor: 'pointer',
+                        color: colors.text, fontFamily: font.body, fontSize: 11,
+                      }}
+                    >{copiedArtifact === i ? 'Copied ✓' : 'Copy'}</button>
+                  </div>
+                  <pre style={{
+                    margin: 0, background: colors.bgDeeper, border: `1px solid ${colors.border}`,
+                    borderRadius: radius.md, padding: 10, fontSize: 11, fontFamily: font.mono,
+                    color: colors.textMuted, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                    maxHeight: 200, overflowY: 'auto',
+                  }}>{a.artifact}</pre>
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -1474,23 +1525,46 @@ function FirstPartyAnalyticsPanel({
 
       {receiving && stats && (
         <>
-          {/* Daily pageview bars — pure divs, no chart dependency. */}
-          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 64 }}>
-            {stats.byDay.map((d) => {
-              const max = Math.max(1, ...stats.byDay.map((x) => x.pageviews));
-              return (
-                <div
-                  key={d.day}
-                  title={`${d.day}: ${d.pageviews} pageviews · ${d.visitors} visitors`}
-                  style={{
-                    flex: 1, minWidth: 3, height: `${Math.max(6, (d.pageviews / max) * 100)}%`,
-                    background: `linear-gradient(180deg, ${colors.cyan}, ${colors.purple})`,
-                    borderRadius: 2, opacity: 0.85,
-                  }}
-                />
-              );
-            })}
-          </div>
+          {/* Daily pageviews across the WHOLE window.
+              byDay only returns days that have traffic, so plotting it directly
+              gave one full-width bar per active day, every one at 100% height —
+              a solid colour block that carried no information at all. Padding
+              the window with zero-days turns it back into a real shape: two
+              busy days out of thirty should look like two spikes, not a wall. */}
+          {(() => {
+            const byDay = new Map(stats.byDay.map((d) => [d.day, d]));
+            const days: { day: string; pageviews: number; visitors: number }[] = [];
+            for (let i = stats.periodDays - 1; i >= 0; i--) {
+              const dt = new Date();
+              dt.setDate(dt.getDate() - i);
+              const key = dt.toISOString().slice(0, 10);
+              days.push(byDay.get(key) ?? { day: key, pageviews: 0, visitors: 0 });
+            }
+            const max = Math.max(1, ...days.map((d) => d.pageviews));
+            return (
+              <div style={{ display: 'flex', alignItems: 'flex-end', gap: 1, height: 48 }}>
+                {days.map((d) => (
+                  <div
+                    key={d.day}
+                    title={d.pageviews > 0
+                      ? `${d.day}: ${d.pageviews} pageviews · ${d.visitors} devices`
+                      : `${d.day}: no traffic`}
+                    style={{
+                      flex: 1, minWidth: 2,
+                      // A zero day is a hairline, not a bar — visibly empty
+                      // rather than a misleading minimum-height stub.
+                      height: d.pageviews > 0 ? `${Math.max(8, (d.pageviews / max) * 100)}%` : '1px',
+                      background: d.pageviews > 0
+                        ? `linear-gradient(180deg, ${colors.cyan}, ${colors.purple})`
+                        : colors.border,
+                      borderRadius: 1,
+                      opacity: d.pageviews > 0 ? 0.9 : 1,
+                    }}
+                  />
+                ))}
+              </div>
+            );
+          })()}
           {/* Headline figures, each labelled for what it actually is. */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: 10 }}>
             {([
