@@ -97,7 +97,7 @@ impl PronunciationClient {
                 },
                 "sounds_like": {
                     "type": "string",
-                    "description": "The word respelled as ORDINARY ENGLISH WORDS OR SYLLABLES separated by spaces — this is converted to phonemes by the speech engine itself, so it must be pronounceable English. Good: 'prop tech', 'co working', 'per ma jent', 'ess cue lite'. Bad: IPA symbols, hyphens-as-syllables, or capitals for stress ('PER-ma-jent')."
+                    "description": "The word respelled as REAL ENGLISH WORDS separated by spaces. Every part must be a word that exists, because the speech engine looks each one up — an invented syllable gets spelled out letter by letter and the save is refused. Good: 'prop tech', 'co working', 'per ma gent', 'ess cue light'. Bad: invented syllables ('jent', 'ment'), IPA symbols, hyphens, or capitals for stress ('PER-ma-jent'). If a save is refused, swap the offending part for a real word that sounds the same."
                 }
             },
             "required": ["word", "sounds_like"]
@@ -108,9 +108,10 @@ impl PronunciationClient {
             "save_pronunciation".to_string(),
             "Save how a word is pronounced so speech says it correctly forever. THE RULE: never \
              spell a word out letter by letter. If you are unsure how a name will sound, or the \
-             user corrects you, ask how it is said, respell it as ordinary English words or \
-             syllables, save it here, then say the word back so they can confirm. Give \
-             `sounds_like` only — never IPA; the speech engine derives the phonemes itself."
+             user corrects you, ask how it is said, respell it using REAL English words, save it \
+             here, then say the word back so they can confirm. Give `sounds_like` only — never \
+             IPA; the speech engine derives the phonemes itself. A refused save means one of your \
+             parts is not a real word: swap it for one that sounds the same and retry."
                 .to_string(),
             schema,
         )]

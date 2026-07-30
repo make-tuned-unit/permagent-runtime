@@ -686,10 +686,29 @@ impl TextToSpeech for OrtKokoroTts {
             .g2p
             .lock()
             .map_err(|e| anyhow::anyhow!("G2P lock: {}", e))?;
-        let (phonemes, _unresolved) = phonemize(&g2p, text, &PronunciationLexicon::default())?;
+        let (phonemes, unresolved) = phonemize(&g2p, text, &PronunciationLexicon::default())?;
         let phonemes = phonemes.trim().to_string();
         if phonemes.is_empty() {
             anyhow::bail!("'{text}' produced no phonemes — try a different respelling");
+        }
+        // A respelling is only as good as its parts being REAL words. Anything
+        // unresolved here will be spelled letter by letter, so accepting it
+        // would store exactly the defect this path exists to prevent: teaching
+        // "permagent" as "per ma jent" yielded "per mah JAY-EE-EN-TEE", and the
+        // save reported success. Reject with the offending part named, so the
+        // caller can pick a real word ("gent" for "jent") and try again.
+        if !unresolved.is_empty() {
+            anyhow::bail!(
+                "the respelling '{text}' contains {} that speech cannot pronounce and would \
+                 spell out letter by letter: {}. Respell using REAL English words — e.g. \
+                 'gent' not 'jent', 'purr' not 'per' — each of which is spoken as written",
+                if unresolved.len() == 1 {
+                    "a part"
+                } else {
+                    "parts"
+                },
+                unresolved.join(", ")
+            );
         }
         // The unknown marker means misaki could not phonemize part of the
         // respelling; storing it would bake a "❓" into speech.
@@ -820,6 +839,30 @@ mod tests {
             clean(&spoken)
         );
         assert!(clean(&spoken).contains('w'), "and must contain a /w/");
+    }
+
+    /// A respelling is only as good as its parts being real words, and this is
+    /// the signal `phonemize_text` rejects on. Found by live testing, not by the
+    /// fake-dictionary tests: teaching "permagent" as "per ma jent" derived
+    /// "pɜː mˈɑː dʒˈeɪ ˈiː ˈɛn tˈiː" — "per mah JAY-EE-EN-TEE" — because "jent"
+    /// is not a word, and the save reported SUCCESS. Swapping in a real word
+    /// ("gent") must resolve cleanly.
+    #[test]
+    fn a_respelling_built_from_non_words_is_detectable() {
+        let g2p = real_g2p();
+        let lex = PronunciationLexicon::default();
+
+        let (_, bad) = phonemize(&g2p, "per ma jent", &lex).unwrap();
+        assert!(
+            bad.contains(&"jent".to_string()),
+            "'jent' is not a word and must be reported so the save can be refused: {bad:?}"
+        );
+
+        let (_, good) = phonemize(&g2p, "per ma gent", &lex).unwrap();
+        assert!(
+            good.is_empty(),
+            "a respelling of real words must resolve cleanly: {good:?}"
+        );
     }
 
     /// A word with no safe split is reported so it reaches the review queue
