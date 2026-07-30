@@ -192,6 +192,19 @@ interface FirstPartySetup {
   lastError: string | null;
   receiving: boolean;
 }
+interface VerifyCheck {
+  id: string;
+  label: string;
+  passed: boolean;
+  detail: string;
+}
+
+interface VerifyResponse {
+  verified: boolean;
+  checks: VerifyCheck[];
+  summary: string;
+}
+
 interface FirstPartyStats {
   enabled: boolean;
   receiving: boolean;
@@ -1085,6 +1098,33 @@ function FirstPartyAnalyticsPanel({
       .finally(() => setSaving(false));
   }, [projectId, onRefresh]);
 
+  // Install verification — the loud failure signal analytics otherwise lacks.
+  // Every failure mode here is silent (202s, empty catch blocks, a 401 that
+  // looks like a wrong key), so this runs the assertions against the DEPLOYED
+  // origin rather than trusting the coding agent's report.
+  const [verifying, setVerifying] = useState(false);
+  const [verifyResult, setVerifyResult] = useState<VerifyResponse | null>(null);
+  const runVerify = useCallback((origin: string) => {
+    if (!origin) return;
+    setVerifying(true);
+    setVerifyResult(null);
+    apiFetch<VerifyResponse>(
+      `/api/projects/${encodeURIComponent(projectId)}/analytics/first_party/verify`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ origin, secondRoute: '/about' }),
+      },
+    )
+      .then(setVerifyResult)
+      .catch((e) => setVerifyResult({
+        verified: false,
+        checks: [],
+        summary: `Could not run verification: ${e instanceof Error ? e.message : String(e)}`,
+      }))
+      .finally(() => setVerifying(false));
+  }, [projectId]);
+
   const copy = useCallback((kind: 'snippet' | 'prompt', text: string | null | undefined) => {
     if (!text) return;
     navigator.clipboard?.writeText(text).then(() => {
@@ -1182,7 +1222,26 @@ function FirstPartyAnalyticsPanel({
               disabled={saving}
               onClick={() => setDrain(ingestBase.trim())}
             >{saving ? 'Saving…' : 'Start ingesting'}</button>
+            <button
+              style={{ ...buttonStyle, opacity: verifying ? 0.6 : 1 }}
+              disabled={verifying}
+              title="Fetch the deployed site and assert the install actually works"
+              onClick={() => {
+                // Derive the origin from the drain URL the agent reported.
+                const url = ingestBase.trim() || setup.drainUrl || '';
+                try { runVerify(new URL(url).origin); } catch { /* not a URL yet */ }
+              }}
+            >{verifying ? 'Verifying…' : 'Verify install'}</button>
           </div>
+          {verifyResult && (
+            <div style={{
+              fontSize: 11, fontFamily: font.mono, whiteSpace: 'pre-wrap',
+              background: colors.bgDeeper, borderRadius: radius.md, padding: 10,
+              border: `1px solid ${verifyResult.verified ? colors.border : colors.danger}`,
+              color: verifyResult.verified ? colors.textMuted : colors.text,
+              maxHeight: 260, overflowY: 'auto',
+            }}>{verifyResult.summary}</div>
+          )}
           {setup.lastError && (
             <div style={{ fontSize: 10, color: colors.danger, fontFamily: font.mono }}>
               Last drain failed: {setup.lastError}
