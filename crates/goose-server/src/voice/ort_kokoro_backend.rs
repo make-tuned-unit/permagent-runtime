@@ -731,6 +731,130 @@ impl OrtKokoroModelPaths {
 mod tests {
     use super::*;
 
+    // ── Real-dictionary pronunciation tests ──
+    //
+    // These build an actual misaki G2P. That needs NO downloaded assets — the
+    // dictionaries and tagger are embedded in the crate — so unlike the
+    // synthesis test below they run in CI. `phonemize` is the whole
+    // pronunciation decision, so this is where the reported bugs are pinned
+    // against ground truth rather than against a hand-written fake.
+
+    fn real_g2p() -> G2P {
+        G2P::new(Language::EnglishGB)
+    }
+
+    /// Strip the zero-width joiners misaki emits inside vowel digraphs, so
+    /// comparisons read the way the phonemes actually sound.
+    fn clean(s: &str) -> String {
+        s.replace('\u{200d}', "")
+    }
+
+    #[test]
+    fn proptech_is_spoken_not_spelled() {
+        let g2p = real_g2p();
+        let lex = PronunciationLexicon::default();
+
+        // Ground truth: what misaki does with the word UNTOUCHED. Without the
+        // espeak fallback this is the letter-by-letter spelling that shipped.
+        let (raw, _) = g2p.g2p("proptech").unwrap();
+        // And what it produces for the decomposition.
+        let (parts, _) = g2p.g2p("prop tech").unwrap();
+
+        let (got, unresolved) = phonemize(&g2p, "proptech", &lex).unwrap();
+
+        assert_eq!(
+            clean(&got),
+            clean(&parts),
+            "expected the compound to phonemize as its parts"
+        );
+        assert_ne!(
+            clean(&got),
+            clean(&raw),
+            "expected to DIFFER from the untouched (letter-spelled) form"
+        );
+        assert!(
+            unresolved.is_empty(),
+            "a resolved compound must not be reported unresolved: {unresolved:?}"
+        );
+    }
+
+    #[test]
+    fn common_product_compounds_resolve_against_the_real_dictionary() {
+        let g2p = real_g2p();
+        let lex = PronunciationLexicon::default();
+        for (word, respelling) in [
+            ("webhook", "web hook"),
+            ("dogfood", "dog food"),
+            ("changelog", "change log"),
+            ("toolchain", "tool chain"),
+            ("devops", "dev ops"),
+        ] {
+            let (got, _) = phonemize(&g2p, word, &lex).unwrap();
+            let (want, _) = g2p.g2p(respelling).unwrap();
+            assert_eq!(
+                clean(&got),
+                clean(&want),
+                "{word} should sound like {respelling}"
+            );
+        }
+    }
+
+    /// "coworking" is IN misaki's dictionary and WRONG there — kˈaʊɜːkɪŋ, the
+    /// vowel of COW with no /w/. Being "known", the compound splitter never
+    /// touches it, so only the built-in override can fix it. This asserts the
+    /// override is actually reached at synthesis.
+    #[test]
+    fn the_corrupt_coworking_entry_is_overridden() {
+        let g2p = real_g2p();
+        let (dictionary_form, _) = g2p.g2p("coworking").unwrap();
+        assert!(
+            clean(&dictionary_form).starts_with("kˈaʊ"),
+            "upstream dictionary changed; re-check the override. got {}",
+            clean(&dictionary_form)
+        );
+
+        let (spoken, _) = phonemize(&g2p, "coworking", &technical_lexicon()).unwrap();
+        assert!(
+            clean(&spoken).starts_with("kˈəʊ"),
+            "coworking must be said with the vowel of COAT: got {}",
+            clean(&spoken)
+        );
+        assert!(clean(&spoken).contains('w'), "and must contain a /w/");
+    }
+
+    /// A word with no safe split is reported so it reaches the review queue
+    /// instead of being silently spelled out.
+    #[test]
+    fn an_unsplittable_unknown_word_is_reported() {
+        let g2p = real_g2p();
+        let (_, unresolved) = phonemize(&g2p, "zzqxwv", &PronunciationLexicon::default()).unwrap();
+        assert_eq!(unresolved, vec!["zzqxwv".to_string()]);
+    }
+
+    /// A taught word wins over everything: dictionary, corruption and splitter.
+    #[test]
+    fn a_taught_pronunciation_is_authoritative() {
+        let g2p = real_g2p();
+        let lex = PronunciationLexicon::from_pairs([("proptech", "ZZZ")]);
+        let (got, _) = phonemize(&g2p, "proptech.", &lex).unwrap();
+        assert_eq!(
+            got, "ZZZ.",
+            "override applies and keeps sentence punctuation"
+        );
+    }
+
+    /// An ordinary sentence must be untouched by any of this.
+    #[test]
+    fn plain_english_is_unaffected() {
+        let g2p = real_g2p();
+        let sentence = "I will open the project and read the notes aloud.";
+        let (got, unresolved) =
+            phonemize(&g2p, sentence, &PronunciationLexicon::default()).unwrap();
+        let (want, _) = g2p.g2p(sentence).unwrap();
+        assert_eq!(clean(&got), clean(&want));
+        assert!(unresolved.is_empty(), "{unresolved:?}");
+    }
+
     /// Proves `voice_id` actually routes through to Kokoro synthesis: two
     /// distinct non-default voices produce different waveforms for the same
     /// text, and a bogus key is rejected (so a silent fallback to the default
