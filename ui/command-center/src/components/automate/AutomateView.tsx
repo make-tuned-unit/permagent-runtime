@@ -14,6 +14,7 @@ import {
 } from '../../lib/cleanupRecovery';
 import { usePersona } from '../settings/useSettings';
 import { RunRoster } from './RunRoster';
+import { ViewHeader } from '../common/ViewHeader';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -423,13 +424,15 @@ export function AutomateView() {
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', background: gradient.workspace, color: colors.text, fontFamily: font.body }}>
 
-      {/* ── Main scrollable content ── */}
-      <div style={{ flex: 1, minWidth: 0, height: '100%', overflowY: 'auto', padding: '20px 32px 40px' }}>
-
-        {/* Header */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
-          <div style={{ fontFamily: font.display, fontSize: 20, fontWeight: 600 }}>Automate</div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+      {/* ── Main column: fixed header + scrolling content ──
+          The header used to live INSIDE the scroll container and slid out of
+          view as you scrolled, taking the view's identity and its Create button
+          with it. It is now a fixed sibling above the scroller, matching every
+          other view. */}
+      <div style={{ flex: 1, minWidth: 0, height: '100%', display: 'flex', flexDirection: 'column' }}>
+        <ViewHeader
+          title="Automate"
+          actions={<>
             {showSearch && (
               <input
                 autoFocus
@@ -455,8 +458,10 @@ export function AutomateView() {
               padding: '6px 14px', borderRadius: radius.md, background: colors.cyan, color: colors.textOnCyan,
               fontWeight: 600, fontSize: 12, border: 'none', cursor: 'pointer', fontFamily: font.body,
             }}>+ Create</button>
-          </div>
-        </div>
+          </>}
+        />
+
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '20px 32px 40px' }}>
 
         {/* Live run roster — everything at work right now, at a glance */}
         <RunRoster />
@@ -725,6 +730,7 @@ export function AutomateView() {
           )}
         </Section>
 
+        </div>
       </div>
 
       {/* ── Detail panel (slides in from right) ── */}

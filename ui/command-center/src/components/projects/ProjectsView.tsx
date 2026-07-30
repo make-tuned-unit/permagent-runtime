@@ -8,6 +8,7 @@ import { useGoalEvents } from '../../lib/useGoalEvents';
 import { useCommandCenter } from '../../lib/store';
 import { ProjectWorkspace } from './ProjectWorkspace';
 import { PERSONAL_ID, CANCELLABLE_STATES, type Project, type BoardColumn, type Card } from './types';
+import { ViewHeader } from '../common/ViewHeader';
 
 const LS_KEY = 'permagent-projects-last-opened';
 
@@ -314,13 +315,10 @@ projects, onOpenProject, onStatusChange }: {
 
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: gradient.workspace, color: colors.text, fontFamily: font.body }}>
-      {/* Header */}
-      <div style={{ padding: '16px 24px', borderBottom: `1px solid ${colors.border}`, flexShrink: 0 }}>
-        <div style={{ fontFamily: font.display, fontSize: 16, fontWeight: 600, letterSpacing: '-0.01em' }}>Projects</div>
-        <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2 }}>
-          {active.length} active — drag a card onto Paused or Archived below to shelve it
-        </div>
-      </div>
+      <ViewHeader
+        title="Projects"
+        subtitle={`${active.length} active — drag a card onto Paused or Archived below to shelve it`}
+      />
 
       <div style={{ flex: 1, overflowY: 'auto', padding: '18px 24px' }}>
         {/* ACTIVE — the page. Responsive grid, drop target for reactivation. */}

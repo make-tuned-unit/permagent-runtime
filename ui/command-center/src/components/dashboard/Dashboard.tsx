@@ -12,6 +12,7 @@ import { DashboardOverflowMenu } from './DashboardOverflowMenu';
 import { ResetConfirmModal } from './ResetConfirmModal';
 import { Echo } from './Echo';
 import { LearnNext } from './LearnNext';
+import { ViewHeader } from '../common/ViewHeader';
 import { useState, useCallback, useRef, useMemo } from 'react';
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
@@ -227,17 +228,16 @@ export function Dashboard() {
   return (
     <div
       style={{
-        width: '100%', height: '100%', overflowY: 'auto', overflowX: 'hidden',
+        width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
         background: gradient.workspace,
-        padding: '28px 32px 40px',
       }}
     >
-      {/* Edit mode toolbar */}
-      <div style={{
-        position: 'sticky', top: 0, zIndex: 10,
-        display: 'flex', justifyContent: 'flex-end', alignItems: 'center',
-        gap: 10, marginBottom: 16, height: 32,
-      }}>
+      {/* Home had no title at all — the one view of the four that never named
+          itself, and its controls were sticky INSIDE the scroller. Both now
+          match every other view. */}
+      <ViewHeader
+        title="Home"
+        actions={<>
         <SaveIndicator state={saveState} />
         {isEditMode && (
           <DashboardOverflowMenu items={[
@@ -260,7 +260,10 @@ export function Dashboard() {
         >
           {isEditMode ? <><FiCheck size={14} /> Done</> : <FiEdit2 size={14} />}
         </button>
-      </div>
+        </>}
+      />
+
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: '28px 32px 40px' }}>
 
       {/* Echo — a forgotten thread from your Brain, resurfaced unprompted.
           Renders itself only when there's a genuinely dormant thread and it
@@ -398,6 +401,9 @@ export function Dashboard() {
         </div>
       )}
 
+      </div>
+
+      {/* Overlays sit OUTSIDE the scroller so they are not clipped by it. */}
       {showPicker && (
         <AddCardPicker
           registry={registry}
