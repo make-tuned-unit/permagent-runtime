@@ -34,7 +34,12 @@ use std::sync::Arc;
 #[derive(serde::Deserialize)]
 struct SavePronunciationRequest {
     word: String,
-    ipa: String,
+    /// Phonemes, OPTIONAL. Omit it: the daemon derives them from `sounds_like`
+    /// using the very G2P that speaks. Supplying IPA by hand is an escape hatch
+    /// for someone who genuinely knows Kokoro's alphabet, not the normal path —
+    /// see `phonemize_text` for why hand-authored IPA cannot be trusted.
+    #[serde(default)]
+    ipa: Option<String>,
     sounds_like: String,
 }
 
@@ -44,21 +49,76 @@ async fn list_pronunciations(
     Json(crate::voice::user_lexicon::all())
 }
 
+/// GET /voice/pronunciations/unresolved — words synthesis had to spell out.
+///
+/// The review queue: every word that missed the dictionary, the lexicon AND the
+/// compound splitter, so it was spelled letter by letter. Ordered most-frequent
+/// first, which is the order worth teaching them in.
+async fn unresolved_pronunciations() -> Json<serde_json::Value> {
+    let items: Vec<serde_json::Value> = crate::voice::oov_log::snapshot()
+        .into_iter()
+        .map(|(word, count)| serde_json::json!({ "word": word, "spelled_out_times": count }))
+        .collect();
+    Json(serde_json::json!({ "unresolved": items }))
+}
+
 /// PUT /voice/pronunciations — upsert one; effective on the very next
 /// synthesized sentence (the lexicon is re-read per call).
+///
+/// The respelling is the source of truth. When `ipa` is absent it is DERIVED by
+/// running `sounds_like` through the live TTS backend's G2P, which makes the
+/// stored phonemes exactly what the engine will say. That closes the loop
+/// hand-written IPA left open: the only entry ever saved that way stored
+/// "permagent" as "pʌmˈeɪdʒənt" / "PUM-ay-jent" — internally consistent and
+/// confidently wrong (it is "PER-ma-jent"), with nothing able to detect it.
 async fn save_pronunciation_route(
+    State(state): State<Arc<AppState>>,
     Json(req): Json<SavePronunciationRequest>,
 ) -> Result<Json<serde_json::Value>, ErrorResponse> {
+    let supplied = req.ipa.as_deref().map(str::trim).filter(|s| !s.is_empty());
+
+    let (ipa, derived) = match supplied {
+        Some(ipa) => (ipa.to_string(), false),
+        None => {
+            if req.sounds_like.trim().is_empty() {
+                return Err(ErrorResponse::bad_request(
+                    "sounds_like is required — respell the word using ordinary English words or \
+                     syllables, e.g. 'prop tech'",
+                ));
+            }
+            let tts = state.voice_tts.read().await.clone().ok_or_else(|| {
+                ErrorResponse::service_unavailable(
+                    "Voice models not loaded — cannot derive pronunciation from a respelling yet",
+                )
+            })?;
+            let respelling = req.sounds_like.clone();
+            // G2P holds a std Mutex and loads no I/O; still, keep it off the
+            // async runtime so a long lock wait cannot stall the reactor.
+            let phonemes = tokio::task::spawn_blocking(move || tts.phonemize_text(&respelling))
+                .await
+                .map_err(|e| ErrorResponse::internal(format!("phonemize task panicked: {e}")))?
+                .map_err(|e| ErrorResponse::bad_request(e.to_string()))?;
+            (phonemes, true)
+        }
+    };
+
     let count = crate::voice::user_lexicon::save(
         &req.word,
         crate::voice::user_lexicon::PronunciationEntry {
-            ipa: req.ipa,
+            ipa: ipa.clone(),
             sounds_like: req.sounds_like,
         },
     )
     .map_err(ErrorResponse::bad_request)?;
-    tracing::info!(target: "permagentd::voice", word = %req.word, "pronunciation saved");
-    Ok(Json(serde_json::json!({ "saved": true, "total": count })))
+    // Taught — drop it from the outstanding queue.
+    crate::voice::oov_log::forget(&req.word);
+    tracing::info!(
+        target: "permagentd::voice",
+        word = %req.word, %ipa, derived, "pronunciation saved"
+    );
+    Ok(Json(serde_json::json!({
+        "saved": true, "total": count, "ipa": ipa, "derived_from_respelling": derived
+    })))
 }
 
 /// DELETE /voice/pronunciations/{word}
@@ -119,6 +179,10 @@ pub fn http_routes(state: Arc<AppState>) -> Router {
         .route(
             "/voice/pronunciations",
             axum::routing::get(list_pronunciations).put(save_pronunciation_route),
+        )
+        .route(
+            "/voice/pronunciations/unresolved",
+            get(unresolved_pronunciations),
         )
         .route(
             "/voice/pronunciations/{word}",

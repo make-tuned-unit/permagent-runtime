@@ -200,6 +200,30 @@ fn technical_lexicon() -> PronunciationLexicon {
         ("permagentd", "pˈɜːməʤɛnt dˈiː"), // the daemon: "Permagent-D"
         ("spectral", "spˈɛktrəl"),         // SPEK-truhl
         ("kinrows", "kˈɪnrəʊz"),           // KIN-rohz
+        // ── Corrupt misaki dictionary entries ──
+        // These words ARE in misaki's dictionary, so the OOV compound splitter
+        // never sees them — they must be overridden by hand. Each value below
+        // is the G2P output for the correct respelling.
+        //
+        // "coworking" ships as kˈaʊɜːkɪŋ — the vowel of COW and no /w/ at all,
+        // i.e. "cow-erking". Its parts are both right (co → kˈəʊ,
+        // working → wˈɜːkɪŋ), which is exactly the respelling fix.
+        ("coworking", "kˈəʊwˈɜːkɪŋ"),
+        ("coworkings", "kˈəʊwˈɜːkɪŋz"),
+        ("co-working", "kˈəʊwˈɜːkɪŋ"),
+        // "repo" ships as ɹˈiːpQ — a literal capital Q, which is not a phoneme.
+        ("repo", "ɹˈiːpəʊ"),
+        ("repos", "ɹˈiːpəʊz"),
+        // ── Seeds: OOV with no safe compound split ──
+        // Verified against the gb dictionaries: none of these decompose, so
+        // without an entry each is spelled out letter by letter.
+        ("sqlite", "ˌɛskjuːˌɛlˈaɪt"), // "S-Q-L-ite", how it is said aloud
+        ("xterm", "ˈɛkstɜːm"),        // "ex-term"
+        ("kubernetes", "kˌuːbənˈɛtiːz"),
+        ("agritech", "ˈaɡrɪtɛk"),
+        ("kuzu", "kˈuːzuː"),
+        ("neon", "nˈiːɒn"),
+        ("proptech", "prˈɒptɛk"), // resolves by split too; pinned for demos
         // Acronyms, spelled out letter-by-letter.
         ("api", "ˌeɪpˌiːˈaɪ"),
         ("url", "jˌuːˌɑːrˈɛl"),
@@ -300,23 +324,59 @@ fn plan_segments(sentence: &str, lexicon: &PronunciationLexicon) -> Vec<Segment>
     segments
 }
 
+/// misaki's own dictionaries, as the compound splitter's oracle. `Lexicon`
+/// exposes `golds`/`silvers` publicly, so this borrows the already-loaded maps
+/// — no second copy of 390k entries.
+struct MisakiDict<'a>(&'a G2P);
+
+impl crate::voice::compound::WordDict for MisakiDict<'_> {
+    fn in_gold(&self, word: &str) -> bool {
+        self.0.lexicon.golds.contains_key(word)
+    }
+    fn known(&self, word: &str) -> bool {
+        // is_known() also covers misaki's own casing/symbol special cases, so a
+        // word it can already handle is never needlessly split.
+        self.0.lexicon.golds.contains_key(word)
+            || self.0.lexicon.silvers.contains_key(word)
+            || self.0.lexicon.is_known(word, "")
+    }
+}
+
 /// Phonemize `sentence` to a single IPA string, consulting `lexicon` for
 /// overrides before falling back to misaki G2P for the rest.
-fn phonemize(g2p: &G2P, sentence: &str, lexicon: &PronunciationLexicon) -> anyhow::Result<String> {
+///
+/// Out-of-vocabulary compounds are decomposed BEFORE G2P (see voice::compound):
+/// without its espeak fallback misaki spells unknown words letter by letter, so
+/// "proptech" arrived as "P-R-O-P-T-E-C-H". Rewriting the text — rather than
+/// splicing phonemes together by hand — keeps misaki's tagging and stress
+/// assignment in charge of the result.
+///
+/// Words that survive as unresolved are returned so the caller can log what
+/// speech is still guessing at, instead of that only surfacing mid-demo.
+fn phonemize(
+    g2p: &G2P,
+    sentence: &str,
+    lexicon: &PronunciationLexicon,
+) -> anyhow::Result<(String, Vec<String>)> {
     let mut out = String::new();
+    let mut unresolved: Vec<String> = Vec::new();
     for seg in plan_segments(sentence, lexicon) {
         if !out.is_empty() {
             out.push(' ');
         }
         match seg {
+            // A lexicon hit is authoritative — never second-guess a taught word.
             Segment::Override(p) => out.push_str(&p),
             Segment::Text(t) => {
-                let (phonemes, _tokens) = g2p.g2p(&t)?;
+                let (expanded, mut oov) =
+                    crate::voice::compound::expand_compounds(&MisakiDict(g2p), &t);
+                unresolved.append(&mut oov);
+                let (phonemes, _tokens) = g2p.g2p(&expanded)?;
                 out.push_str(&phonemes);
             }
         }
     }
-    Ok(out)
+    Ok((out, unresolved))
 }
 
 /// Voice style vectors loaded from voices-v1.0.bin (NPZ format).
@@ -510,13 +570,24 @@ impl TextToSpeech for OrtKokoroTts {
 
             // G2P (lexicon overrides consulted before misaki for each word)
             let t_g2p = std::time::Instant::now();
-            let phonemes = {
+            let (phonemes, unresolved) = {
                 let g2p = self
                     .g2p
                     .lock()
                     .map_err(|e| anyhow::anyhow!("G2P lock: {}", e))?;
                 phonemize(&g2p, sentence, &lexicon)?
             };
+            // Words speech is still guessing at. Logged, not silent: an
+            // unresolved word WILL be spelled out letter by letter, and the
+            // only alternative to recording it here is discovering it live.
+            if !unresolved.is_empty() {
+                crate::voice::oov_log::record(&unresolved);
+                tracing::info!(
+                    target: "permagentd::voice",
+                    "PRONUNCIATION unresolved (spelled out): {}",
+                    unresolved.join(", ")
+                );
+            }
             let g2p_ms = t_g2p.elapsed().as_millis();
 
             // Tokenize
@@ -601,6 +672,34 @@ impl TextToSpeech for OrtKokoroTts {
             .collect();
         names.sort();
         names
+    }
+
+    /// Derive phonemes for a respelling, using the SAME G2P that speaks.
+    ///
+    /// Deliberately runs with an EMPTY lexicon: the point is to convert a
+    /// respelling from first principles, and consulting the user lexicon here
+    /// would let a previous (possibly wrong) entry for the same word feed back
+    /// into its own replacement. Compound expansion still applies, so a
+    /// respelling may itself contain an OOV compound.
+    fn phonemize_text(&self, text: &str) -> anyhow::Result<String> {
+        let g2p = self
+            .g2p
+            .lock()
+            .map_err(|e| anyhow::anyhow!("G2P lock: {}", e))?;
+        let (phonemes, _unresolved) = phonemize(&g2p, text, &PronunciationLexicon::default())?;
+        let phonemes = phonemes.trim().to_string();
+        if phonemes.is_empty() {
+            anyhow::bail!("'{text}' produced no phonemes — try a different respelling");
+        }
+        // The unknown marker means misaki could not phonemize part of the
+        // respelling; storing it would bake a "❓" into speech.
+        if phonemes.contains(&g2p.unk) {
+            anyhow::bail!(
+                "'{text}' could not be pronounced — respell it using ordinary English words \
+                 or syllables, e.g. 'prop tech' or 'per ma jent'"
+            );
+        }
+        Ok(phonemes)
     }
 }
 

@@ -121,4 +121,25 @@ pub trait TextToSpeech: Send + Sync {
 
     /// All selectable voice keys (e.g. "bf_emma"), for the picker roster.
     fn list_voices(&self) -> Vec<String>;
+
+    /// Convert plain text to this backend's phoneme representation.
+    ///
+    /// This is what makes pronunciation teachable. Asking a language model for
+    /// Kokoro-flavoured IPA asks it to author an encoding it cannot hear, so it
+    /// has no way to notice being wrong — and it was: the only entry ever saved
+    /// that way stored "permagent" as ipa "pʌmˈeɪdʒənt" / sounds_like
+    /// "PUM-ay-jent", i.e. self-consistent and confidently wrong (the product
+    /// is "PER-ma-jent"). Nothing in the system could detect that, because
+    /// there is no ground truth to compare IPA against.
+    ///
+    /// Running a human RESPELLING ("per ma jent", "prop tech") through the same
+    /// G2P that speaks removes the guesswork: the stored phonemes are by
+    /// construction exactly what will be said, and the respelling itself is
+    /// something a reader can sanity-check at a glance.
+    ///
+    /// Default: unsupported, so backends without a G2P seam (the sherpa dev
+    /// backend) degrade honestly instead of silently storing nothing.
+    fn phonemize_text(&self, _text: &str) -> anyhow::Result<String> {
+        anyhow::bail!("this TTS backend cannot derive phonemes from text")
+    }
 }
