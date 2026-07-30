@@ -83,8 +83,9 @@ pub const VOICE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
              speech engine spells out any word it does not know, so coined names and product \
              words are the risk: when the user corrects your pronunciation, or you are about to \
              say a name you have not said before, call save_pronunciation with the word respelled \
-             as ordinary English words or syllables ('prop tech', 'co working') — never IPA, the \
-             engine derives the phonemes itself — then say it back so they can confirm. Saved \
+             using REAL English words ('prop tech', 'co working', 'per ma gent') — never IPA and \
+             never invented syllables, since the engine looks each part up and refuses a save it \
+             would have to spell out — then say it back so they can confirm. Saved \
              once, it is correct forever, so teach a word the first time rather than working \
              around it",
         state_source: crate::agents::self_knowledge::StateSource::Static,
