@@ -30,6 +30,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use permagent::app_views::{self, AnalyticsWindow};
 use permagent::projects::{self, Project, UpdateProject};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -892,27 +893,23 @@ async fn first_party_stats(
         " AND is_bot = 0"
     };
 
-    let bots_excluded: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM analytics_events
-         WHERE project_id = ?1 AND is_bot = 1 AND created_at >= datetime('now', ?2)",
+    // Shared with `observe_app`: the Grow UI and Henry must use one definition
+    // of visitors, pageviews, bot filtering, top paths, and campaigns.
+    let shared = app_views::analytics_summary(
+        &pool,
+        &project.id,
+        AnalyticsWindow::days(days),
+        including_bots,
+        10,
     )
-    .bind(&project.id)
-    .bind(&since)
-    .fetch_one(&pool)
     .await
-    .unwrap_or(0);
-
-    let (pageviews, device_signatures): (i64, i64) = sqlx::query_as(&format!(
-        "SELECT count(*), count(DISTINCT visitor_hash)
-         FROM analytics_events
-         WHERE project_id = ?1 AND kind = 'pageview'
-           AND created_at >= datetime('now', ?2){bot_filter}"
-    ))
-    .bind(&project.id)
-    .bind(&since)
-    .fetch_one(&pool)
-    .await
-    .unwrap_or((0, 0));
+    .map_err(|e| {
+        tracing::warn!("first-party analytics aggregation failed: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let bots_excluded = shared.bot_events;
+    let pageviews = shared.pageviews;
+    let device_signatures = shared.unique_visitors;
 
     // ── Sessions (v40) ──
     // visitor_hash rotates daily, so none of this is computable without a
@@ -970,19 +967,15 @@ async fn first_party_stats(
             .collect()
     };
 
-    let top_pages = named(
-        sqlx::query_as::<_, (String, i64)>(&format!(
-            "SELECT path, count(*) FROM analytics_events
-             WHERE project_id = ?1 AND kind = 'pageview'
-               AND created_at >= datetime('now', ?2){bot_filter}
-             GROUP BY path ORDER BY count(*) DESC LIMIT 10"
-        ))
-        .bind(&project.id)
-        .bind(&since)
-        .fetch_all(&pool)
-        .await
-        .unwrap_or_default(),
-    );
+    let top_pages = shared
+        .top_paths
+        .items
+        .iter()
+        .map(|item| NamedCount {
+            name: item.name.clone(),
+            count: item.count,
+        })
+        .collect();
 
     // Raw referrers, grouped by HOST rather than full URL — a hundred distinct
     // deep links from one site are one source, not a hundred.
@@ -1058,20 +1051,15 @@ async fn first_party_stats(
             .collect(),
     );
 
-    let top_campaigns = named(
-        sqlx::query_as::<_, (String, i64)>(&format!(
-            "SELECT coalesce(utm_campaign, utm_source), count(*) FROM analytics_events
-             WHERE project_id = ?1 AND (utm_campaign IS NOT NULL OR utm_source IS NOT NULL)
-               AND created_at >= datetime('now', ?2){bot_filter}
-             GROUP BY coalesce(utm_campaign, utm_source)
-             ORDER BY count(*) DESC LIMIT 10"
-        ))
-        .bind(&project.id)
-        .bind(&since)
-        .fetch_all(&pool)
-        .await
-        .unwrap_or_default(),
-    );
+    let top_campaigns = shared
+        .top_utm_campaigns
+        .items
+        .iter()
+        .map(|item| NamedCount {
+            name: item.name.clone(),
+            count: item.count,
+        })
+        .collect();
 
     // Entry pages: the first pageview of each session. Feeds the funnel view
     // and answers "where do people land?".

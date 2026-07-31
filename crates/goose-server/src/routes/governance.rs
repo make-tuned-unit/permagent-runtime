@@ -29,273 +29,34 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use serde::{Deserialize, Serialize};
-use sqlx::{Pool, Row, Sqlite};
+use serde::Deserialize;
+use sqlx::{Pool, Sqlite};
 use std::collections::BTreeMap;
-use std::path::Path;
 use std::sync::Arc;
 
-use permagent::config::{Config, ConfigError};
-use permagent::cost_router::budget::{
-    self, budget_verdict, BudgetBand, BudgetCeilings, BudgetConfig,
+#[allow(unused_imports)]
+pub use permagent::app_views::{
+    build_spend_snapshot, BudgetView, CeilingsView, ProjectSpend, SessionSpend, SpendRow,
+    SpendSnapshot,
 };
+use permagent::config::{Config, ConfigError};
+use permagent::cost_router::budget;
+#[cfg(test)]
+use permagent::cost_router::budget::BudgetConfig;
 
 use crate::state::AppState;
 
 // ── Spend ────────────────────────────────────────────────────────────────
 
-/// A lean per-session spend row read from the `sessions` rollup columns. Kept
-/// separate from the fat `Session` so the Governance view never pays for the
-/// heavy message/extension blobs it does not show.
-#[derive(Debug, Clone)]
-pub struct SpendRow {
-    pub id: String,
-    pub name: String,
-    pub working_dir: String,
-    pub session_type: String,
-    pub cost_usd: f64,
-    pub tokens: i64,
-    pub updated_at: String,
-}
-
-/// One session's spend, wire-friendly, with its budget band vs the session
-/// ceiling so the UI can warn on sessions that crossed soft/gate/hard.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionSpend {
-    pub id: String,
-    pub name: String,
-    pub working_dir: String,
-    pub session_type: String,
-    pub cost_usd: f64,
-    pub tokens: i64,
-    pub updated_at: String,
-    /// "ok" | "soft" | "gate" | "hard" — this session's spend against the
-    /// session budget ceiling.
-    pub band: String,
-}
-
-/// Spend rolled up to a project (grouped by working directory).
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProjectSpend {
-    /// Full working directory the sessions ran in.
-    pub path: String,
-    /// Friendly label — the project name when a project's root path matches,
-    /// otherwise the directory's final path component.
-    pub label: String,
-    pub cost_usd: f64,
-    pub tokens: i64,
-    pub session_count: usize,
-}
-
-/// A budget ceiling triplet, wire-friendly.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CeilingsView {
-    pub soft: f64,
-    pub gate: f64,
-    pub hard: f64,
-}
-
-impl From<BudgetCeilings> for CeilingsView {
-    fn from(c: BudgetCeilings) -> Self {
-        Self {
-            soft: c.soft,
-            gate: c.gate,
-            hard: c.hard,
-        }
-    }
-}
-
-/// The optional user budget the cost-router enforces (gates through the
-/// Decision Inbox at the ceiling). Both scopes are surfaced; the session scope
-/// is the "spend cap for this machine" the Governance view lets the user set.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BudgetView {
-    pub session: CeilingsView,
-    pub task: CeilingsView,
-}
-
-impl From<BudgetConfig> for BudgetView {
-    fn from(c: BudgetConfig) -> Self {
-        Self {
-            session: c.session.into(),
-            task: c.task.into(),
-        }
-    }
-}
-
-/// The full spend snapshot for the Governance view's Spend panel.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SpendSnapshot {
-    /// Sum of every session's running cost — the lifetime total spend.
-    pub running_total_usd: f64,
-    /// Sum of every session's accumulated total tokens.
-    pub total_tokens: i64,
-    /// Number of sessions that actually consumed (cost or tokens > 0).
-    pub session_count: usize,
-    /// The current optional budget ceilings.
-    pub budget: BudgetView,
-    /// Per-session spend, highest first, capped at the requested limit.
-    pub sessions: Vec<SessionSpend>,
-    /// Per-project spend, highest first.
-    pub projects: Vec<ProjectSpend>,
-}
-
-fn band_str(b: BudgetBand) -> &'static str {
-    match b {
-        BudgetBand::Ok => "ok",
-        BudgetBand::Soft => "soft",
-        BudgetBand::Gate => "gate",
-        BudgetBand::Hard => "hard",
-    }
-}
-
-/// Final path component of a working dir, or the whole string if it has none.
-fn basename(path: &str) -> String {
-    Path::new(path)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or(path)
-        .to_string()
-}
-
-/// Pure aggregation: fold lean spend rows into the wire snapshot. Sessions are
-/// sorted by cost desc and capped at `limit`; projects are grouped by working
-/// dir (labelled via `project_names`, a working_dir → name map) and sorted by
-/// cost desc. Each session gets its band against the session budget ceiling.
-/// Pure so it is unit-testable without a database.
-pub fn build_spend_snapshot(
-    rows: Vec<SpendRow>,
-    project_names: &BTreeMap<String, String>,
-    cfg: &BudgetConfig,
-    limit: usize,
-) -> SpendSnapshot {
-    let running_total_usd: f64 = rows.iter().map(|r| r.cost_usd).sum();
-    let total_tokens: i64 = rows.iter().map(|r| r.tokens).sum();
-    let session_count = rows.len();
-
-    // ── Per-project rollup (grouped by working dir) ──
-    let mut by_project: BTreeMap<String, ProjectSpend> = BTreeMap::new();
-    for r in &rows {
-        let entry = by_project
-            .entry(r.working_dir.clone())
-            .or_insert_with(|| ProjectSpend {
-                path: r.working_dir.clone(),
-                label: project_names
-                    .get(&r.working_dir)
-                    .cloned()
-                    .unwrap_or_else(|| basename(&r.working_dir)),
-                cost_usd: 0.0,
-                tokens: 0,
-                session_count: 0,
-            });
-        entry.cost_usd += r.cost_usd;
-        entry.tokens += r.tokens;
-        entry.session_count += 1;
-    }
-    let mut projects: Vec<ProjectSpend> = by_project.into_values().collect();
-    projects.sort_by(|a, b| {
-        b.cost_usd
-            .partial_cmp(&a.cost_usd)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.path.cmp(&b.path))
-    });
-
-    // ── Per-session, banded, sorted by cost desc, capped ──
-    let mut sessions: Vec<SessionSpend> = rows
-        .into_iter()
-        .map(|r| {
-            let band = budget_verdict(0.0, r.cost_usd, cfg).band;
-            SessionSpend {
-                id: r.id,
-                name: r.name,
-                working_dir: r.working_dir,
-                session_type: r.session_type,
-                cost_usd: r.cost_usd,
-                tokens: r.tokens,
-                updated_at: r.updated_at,
-                band: band_str(band).to_string(),
-            }
-        })
-        .collect();
-    sessions.sort_by(|a, b| {
-        b.cost_usd
-            .partial_cmp(&a.cost_usd)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.id.cmp(&b.id))
-    });
-    sessions.truncate(limit);
-
-    SpendSnapshot {
-        running_total_usd,
-        total_tokens,
-        session_count,
-        budget: (*cfg).into(),
-        sessions,
-        projects,
-    }
-}
-
-/// Read the lean per-session spend rows from the `sessions` rollup columns.
-/// Only sessions that actually consumed (cost or tokens > 0) are returned, so
-/// terminal/gateway sessions with no inference do not clutter the view.
-pub async fn read_spend_rows(pool: &Pool<Sqlite>) -> anyhow::Result<Vec<SpendRow>> {
-    let rows = sqlx::query(
-        "SELECT id, \
-                CASE WHEN name != '' THEN name ELSE description END AS label, \
-                working_dir, session_type, \
-                COALESCE(accumulated_cost_usd, 0.0) AS cost, \
-                COALESCE(accumulated_total_tokens, 0) AS tokens, \
-                updated_at \
-         FROM sessions \
-         WHERE COALESCE(accumulated_cost_usd, 0.0) > 0.0 \
-            OR COALESCE(accumulated_total_tokens, 0) > 0 \
-         ORDER BY cost DESC, id",
-    )
-    .fetch_all(pool)
-    .await?;
-
-    Ok(rows
-        .iter()
-        .map(|row| SpendRow {
-            id: row.try_get("id").unwrap_or_default(),
-            name: row.try_get("label").unwrap_or_default(),
-            working_dir: row.try_get("working_dir").unwrap_or_default(),
-            session_type: row.try_get("session_type").unwrap_or_default(),
-            cost_usd: row.try_get("cost").unwrap_or(0.0),
-            tokens: row.try_get("tokens").unwrap_or(0),
-            updated_at: {
-                // TIMESTAMP columns come back as text; tolerate either.
-                row.try_get::<String, _>("updated_at").unwrap_or_default()
-            },
-        })
-        .collect())
-}
+pub use permagent::app_views::read_spend_rows;
 
 /// Map each project's root path → its name, for friendly per-project labels.
 /// Best-effort: a failure (or no projects table rows) yields an empty map and
 /// the view falls back to the directory basename.
 pub async fn read_project_names(pool: &Pool<Sqlite>) -> BTreeMap<String, String> {
-    let rows = sqlx::query("SELECT root_path, name FROM projects WHERE root_path IS NOT NULL")
-        .fetch_all(pool)
+    permagent::app_views::read_project_names(pool)
         .await
-        .unwrap_or_default();
-    rows.iter()
-        .filter_map(|row| {
-            let path: String = row.try_get("root_path").ok()?;
-            let name: String = row.try_get("name").ok()?;
-            if path.is_empty() {
-                None
-            } else {
-                Some((path, name))
-            }
-        })
-        .collect()
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Deserialize)]
