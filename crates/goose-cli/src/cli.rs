@@ -741,6 +741,25 @@ enum ActivityCommand {
 }
 
 #[derive(Subcommand)]
+enum ExportCommand {
+    /// Export production recognition and recall traces for Spectral replay
+    #[command(name = "spectral-replay")]
+    SpectralReplay {
+        /// Directory to receive recognition.jsonl, recall.jsonl, and manifest.json
+        #[arg(long, value_name = "DIR")]
+        out: PathBuf,
+
+        /// Omit raw query text and retain only its stable SHA-256 probe hash
+        #[arg(long)]
+        redact_queries: bool,
+
+        /// Include events at or after this RFC 3339 timestamp
+        #[arg(long, value_name = "TS")]
+        since: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum Command {
     /// Manage agent identity (name, tone, traits)
     #[command(about = "Manage agent identity", visible_alias = "a")]
@@ -945,6 +964,13 @@ enum Command {
     Activity {
         #[command(subcommand)]
         command: ActivityCommand,
+    },
+
+    /// Export local data in portable formats
+    #[command(about = "Export local data")]
+    Export {
+        #[command(subcommand)]
+        command: ExportCommand,
     },
 
     /// Start the Permagent daemon via launchd
@@ -1161,6 +1187,7 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::Gateway { .. }) => "gateway",
         Some(Command::Integrations { .. }) => "integrations",
         Some(Command::Activity { .. }) => "activity",
+        Some(Command::Export { .. }) => "export",
         Some(Command::Schedule { .. }) => "schedule",
         Some(Command::Start {}) => "start",
         Some(Command::Stop {}) => "stop",
@@ -1982,6 +2009,15 @@ pub async fn cli() -> anyhow::Result<()> {
         Some(Command::Gateway { command }) => handle_gateway_command(command).await,
         Some(Command::Integrations { command }) => handle_integrations_command(command).await,
         Some(Command::Activity { command }) => handle_activity_command(command).await,
+        Some(Command::Export { command }) => match command {
+            ExportCommand::SpectralReplay {
+                out,
+                redact_queries,
+                since,
+            } => {
+                crate::commands::spectral_replay::handle_spectral_replay(out, redact_queries, since)
+            }
+        },
         Some(Command::Schedule { command }) => handle_schedule_command(command).await,
         Some(Command::Update {
             canary,

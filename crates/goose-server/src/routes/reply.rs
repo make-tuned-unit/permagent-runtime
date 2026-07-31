@@ -407,7 +407,7 @@ pub async fn reply(
         }
 
         // ── Phase 3: Recall from brain before model invocation ──
-        if let Some(brain) = state.brain.as_ref() {
+        let recall_trace = if let Some(brain) = state.brain.as_ref() {
             let user_query = user_message.as_concat_text();
             let recognition_ctx = state.build_recognition_context(Some(&session_id));
             let recognition_pool = state.session_manager().pool_clone().await.ok();
@@ -418,8 +418,10 @@ pub async fn reply(
                 recognition_ctx,
                 recognition_pool,
             )
-            .await;
-        }
+            .await
+        } else {
+            crate::brain_ops::RecallInjection::default()
+        };
 
         let mut stream = match agent
             .reply(
@@ -503,6 +505,20 @@ pub async fn reply(
                 }
             }
         }
+
+        let traced_assistant_reply = all_messages
+            .messages()
+            .iter()
+            .rev()
+            .take_while(|message| message.role != rmcp::model::Role::User)
+            .filter(|message| message.role == rmcp::model::Role::Assistant)
+            .map(|message| message.as_concat_text())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n");
+        recall_trace.finish(traced_assistant_reply);
 
         // ── Phase 4: Remember turn after response completes ──
         if let Some(brain) = state.brain.as_ref() {

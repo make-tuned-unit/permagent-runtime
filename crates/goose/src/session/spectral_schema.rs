@@ -798,6 +798,10 @@ pub async fn apply_recognition_schema(pool: &Pool<Sqlite>) -> Result<()> {
             outcome_source      TEXT,
             outcome_observed_at TEXT,
             cited_memory_ids    TEXT NOT NULL DEFAULT '[]',
+            injected_memory_ids TEXT,
+            injected_memory_ids_source TEXT,
+            citation_checked_at TEXT,
+            outcome_label       TEXT,
             recognition_verdict TEXT,
             familiarity         REAL
         )",
@@ -2136,9 +2140,9 @@ pub async fn migrate_v21_to_v22(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
-/// Ensure the v22 recognition columns + feed table exist, **independent of the
-/// global schema version**. Idempotent (PRAGMA-guarded `ADD COLUMN` +
-/// `CREATE TABLE IF NOT EXISTS`) and safe to run on every boot.
+/// Ensure the recognition replay columns + v22 feed table exist,
+/// **independent of the global schema version**. Idempotent (PRAGMA-guarded
+/// `ADD COLUMN` + `CREATE TABLE IF NOT EXISTS`) and safe on every boot.
 ///
 /// This exists to close the cfg-gated-migration-skip hazard: the v22 step is
 /// gated behind `#[cfg(feature = "spectral-recognition")]`, but a later
@@ -2159,6 +2163,22 @@ pub async fn apply_recognition_v22_columns(pool: &Pool<Sqlite>) -> Result<()> {
             "familiarity",
             "ALTER TABLE recognition_events ADD COLUMN familiarity REAL",
         ),
+        (
+            "injected_memory_ids",
+            "ALTER TABLE recognition_events ADD COLUMN injected_memory_ids TEXT",
+        ),
+        (
+            "injected_memory_ids_source",
+            "ALTER TABLE recognition_events ADD COLUMN injected_memory_ids_source TEXT",
+        ),
+        (
+            "citation_checked_at",
+            "ALTER TABLE recognition_events ADD COLUMN citation_checked_at TEXT",
+        ),
+        (
+            "outcome_label",
+            "ALTER TABLE recognition_events ADD COLUMN outcome_label TEXT",
+        ),
     ] {
         let has_column: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM pragma_table_info('recognition_events') WHERE name = ?",
@@ -2176,6 +2196,53 @@ pub async fn apply_recognition_v22_columns(pool: &Pool<Sqlite>) -> Result<()> {
     }
 
     apply_recognition_feed_schema(pool).await?;
+
+    // A short-lived pre-release repair incorrectly treated the historical
+    // default cited_memory_ids='[]' as a measured no-match. Without the
+    // detector-ran marker an ignored label is ungrounded, so clear it.
+    let cleared = sqlx::query(
+        "UPDATE recognition_events
+            SET outcome_label = NULL
+          WHERE outcome_label = 'ignored'
+            AND citation_checked_at IS NULL",
+    )
+    .execute(pool)
+    .await?
+    .rows_affected();
+    if cleared > 0 {
+        info!(
+            "recognition schema repair: cleared {cleared} unmeasured historical ignored label(s)"
+        );
+    }
+
+    // Historical injection is exactly reconstructible: the production filter
+    // was pure and stable for the whole data window (score >= 0.7, rank order,
+    // top 3), and both rank and signal_score were persisted for every member.
+    let reconstructed = sqlx::query(
+        "UPDATE recognition_events
+            SET injected_memory_ids = COALESCE((
+                    SELECT json_group_array(memory_id)
+                      FROM (
+                        SELECT memory_id
+                          FROM recognition_set_members members
+                         WHERE members.retrieval_id = recognition_events.retrieval_id
+                           AND members.signal_score >= 0.7
+                         ORDER BY members.rank
+                         LIMIT 3
+                      )
+                ), '[]'),
+                injected_memory_ids_source = 'reconstructed'
+          WHERE injected_memory_ids IS NULL
+            AND strategy = 'cascade'",
+    )
+    .execute(pool)
+    .await?
+    .rows_affected();
+    if reconstructed > 0 {
+        info!(
+            "recognition schema repair: reconstructed exact injected sets for {reconstructed} historical event(s)"
+        );
+    }
     Ok(())
 }
 
@@ -3180,15 +3247,52 @@ mod recognition_schema_tests {
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("CREATE TABLE recognition_events (retrieval_id TEXT PRIMARY KEY, query TEXT)")
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "CREATE TABLE recognition_events (
+                retrieval_id TEXT PRIMARY KEY,
+                query TEXT,
+                strategy TEXT NOT NULL,
+                outcome_polarity TEXT,
+                cited_memory_ids TEXT NOT NULL DEFAULT '[]'
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE recognition_set_members (
+                retrieval_id TEXT NOT NULL,
+                memory_id TEXT NOT NULL,
+                signal_score REAL,
+                rank INTEGER
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO recognition_events (retrieval_id, query, strategy, outcome_polarity)
+             VALUES ('ignored', 'q1', 'cascade', 'Positive'),
+                    ('unknown', 'q2', 'cascade', NULL),
+                    ('historical-negative', 'q3', 'cascade', 'Negative')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO recognition_set_members (retrieval_id, memory_id, signal_score, rank)
+             VALUES ('ignored', 'm1', 0.9, 0), ('unknown', 'm2', 0.6, 0),
+                    ('historical-negative', 'm3', 0.8, 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
         let cols = |pool: Pool<Sqlite>| async move {
             sqlx::query_scalar::<_, i64>(
                 "SELECT COUNT(*) FROM pragma_table_info('recognition_events') \
-                 WHERE name IN ('recognition_verdict','familiarity')",
+                 WHERE name IN ('recognition_verdict','familiarity','injected_memory_ids',
+                                'injected_memory_ids_source','citation_checked_at','outcome_label')",
             )
             .fetch_one(&pool)
             .await
@@ -3202,17 +3306,65 @@ mod recognition_schema_tests {
 
         assert_eq!(
             cols(pool.clone()).await,
-            2,
-            "v22 columns applied even though schema_version is stamped at 23"
+            6,
+            "recognition columns applied even though schema_version is stamped at 23"
         );
         assert!(
             table_exists(&pool, "recognition_tool_events").await,
             "feed table also ensured"
         );
 
-        // Idempotent: a second boot adds nothing.
+        // Simulate the faulty pre-release historical backfill. With no detector
+        // marker, the next boot must clear it rather than preserve fabrication.
+        sqlx::query("UPDATE recognition_events SET outcome_label = 'ignored' WHERE retrieval_id = 'ignored'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Idempotent schema; corrective data pass clears the unmeasured label.
         apply_recognition_v22_columns(&pool).await.unwrap();
-        assert_eq!(cols(pool.clone()).await, 2, "idempotent on re-run");
+        assert_eq!(cols(pool.clone()).await, 6, "idempotent on re-run");
+
+        let labels: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT retrieval_id, outcome_label FROM recognition_events ORDER BY retrieval_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            labels,
+            vec![
+                ("historical-negative".into(), None),
+                ("ignored".into(), None),
+                ("unknown".into(), None),
+            ],
+            "historical labels remain unmeasured"
+        );
+
+        let injections: Vec<(String, String, Option<String>)> = sqlx::query_as(
+            "SELECT retrieval_id, injected_memory_ids, injected_memory_ids_source
+               FROM recognition_events ORDER BY retrieval_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            injections,
+            vec![
+                (
+                    "historical-negative".into(),
+                    "[\"m3\"]".into(),
+                    Some("reconstructed".into())
+                ),
+                (
+                    "ignored".into(),
+                    "[\"m1\"]".into(),
+                    Some("reconstructed".into())
+                ),
+                ("unknown".into(), "[]".into(), Some("reconstructed".into())),
+            ],
+            "historical injection is replayed from rank, score floor, and top-K"
+        );
     }
 
     #[tokio::test]
