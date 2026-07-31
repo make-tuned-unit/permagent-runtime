@@ -65,18 +65,31 @@ pub fn inspect_html(html: &str) -> Result<(), String> {
     // An absolute URL immediately before the collect path means the endpoint was
     // rewritten to a host.
     for scheme in ["http://", "https://"] {
-        if let Some(idx) = html.find(&format!("{scheme}")) {
-            let tail = &html[idx..];
+        if let Some(idx) = html.find(scheme) {
+            // `find` returns a char boundary, so these slices cannot split a
+            // character — but take them through `get` so the invariant is
+            // enforced rather than assumed. This parses HTML from arbitrary
+            // sites, where multi-byte characters are a certainty.
+            let Some(tail) = html.get(idx..) else {
+                continue;
+            };
             if let Some(end) = tail.find(COLLECT_PATH) {
                 // Only flag when the absolute URL is the endpoint itself
                 // (no intervening quote or tag boundary).
-                let between = &tail[..end];
+                let Some(between) = tail.get(..end) else {
+                    continue;
+                };
                 if !between.contains('"') && !between.contains('\'') && !between.contains('<') {
+                    // Truncate the preview by CHARACTERS. The previous
+                    // `&tail[..between.len().min(48)]` sliced by BYTE count and
+                    // panicked outright on any multi-byte character inside the
+                    // first 48 bytes — an em-dash or non-ASCII domain in real
+                    // served HTML was enough to take the verify route down.
+                    let preview: String = between.chars().take(48).collect();
                     return Err(format!(
-                        "the collect endpoint was rewritten to an absolute URL ({}…). It MUST \
+                        "the collect endpoint was rewritten to an absolute URL ({preview}…). It MUST \
                          stay the relative path {COLLECT_PATH}: an absolute host beacons to the \
-                         visitor's own machine and is blocked as mixed content from HTTPS.",
-                        &tail[..between.len().min(48)]
+                         visitor's own machine and is blocked as mixed content from HTTPS."
                     ));
                 }
             }

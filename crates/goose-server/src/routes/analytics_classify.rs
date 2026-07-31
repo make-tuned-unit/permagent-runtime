@@ -308,7 +308,7 @@ pub fn sanitize_properties(raw: &serde_json::Value) -> Option<String> {
         // something unparseable.
         let mut keys: Vec<String> = out.keys().cloned().collect();
         while encoded.len() > PROPS_MAX_BYTES {
-            let Some(drop) = keys.pop() else { return None };
+            let drop = keys.pop()?;
             out.remove(&drop);
             if out.is_empty() {
                 return None;
