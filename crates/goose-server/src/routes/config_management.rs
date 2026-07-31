@@ -141,6 +141,26 @@ pub struct MaskedSecret {
     pub masked_value: String,
 }
 
+#[derive(Deserialize, ToSchema)]
+pub struct ExtensionProbeRequest {
+    /// Display name of the configured extension to probe (e.g. "Brave Search").
+    pub name: String,
+}
+
+/// Result of actually starting an extension and asking it for its tools.
+/// Serialized camelCase like the rest of this module's responses.
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionProbeResponse {
+    /// True only when the server started AND answered with at least one tool.
+    pub ok: bool,
+    pub tool_count: usize,
+    /// Tool names it advertised — the concrete evidence the key works.
+    pub tools: Vec<String>,
+    /// Why it failed, verbatim, when `ok` is false.
+    pub error: Option<String>,
+}
+
 #[derive(Serialize, ToSchema)]
 #[serde(untagged)]
 pub enum ConfigValueResponse {
@@ -266,6 +286,79 @@ pub async fn read_config(
         Err(e) => return Err(e.into()),
     };
     Ok(Json(response_value))
+}
+
+/// How long to wait for an extension to start and answer `list_tools`. Well
+/// past a healthy stdio server's startup, short enough that a wedged one still
+/// gives the user an answer.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
+
+#[utoipa::path(
+    post,
+    path = "/config/extensions/probe",
+    request_body = ExtensionProbeRequest,
+    responses(
+        (status = 200, description = "Probe completed (check `ok`)", body = ExtensionProbeResponse),
+    )
+)]
+/// Actually start a configured extension and ask it for its tools.
+///
+/// "Key saved" only proves a string reached the keychain — a typo'd key looks
+/// identical to a working one, and search then fails silently at the moment the
+/// user needs it. This runs the real thing: resolve the config (which pulls the
+/// key through `env_keys`), spawn the server, list its tools. Tool names coming
+/// back are the evidence; anything else is reported verbatim rather than
+/// summarized into a green light.
+///
+/// Always answers 200 — a failed probe is a RESULT, not a request error. The
+/// manager is local to this call, so the probe never mutates a live session.
+pub async fn probe_extension(
+    Json(req): Json<ExtensionProbeRequest>,
+) -> Result<Json<ExtensionProbeResponse>, ErrorResponse> {
+    let fail = |error: String| {
+        Ok(Json(ExtensionProbeResponse {
+            ok: false,
+            tool_count: 0,
+            tools: Vec::new(),
+            error: Some(error),
+        }))
+    };
+
+    let Some(config) = permagent::config::extensions::get_extension_by_name(&req.name) else {
+        return fail(format!("No extension named '{}' is configured.", req.name));
+    };
+    let key = config.key();
+
+    let manager = std::sync::Arc::new(
+        permagent::agents::extension_manager::ExtensionManager::new_without_provider(
+            permagent::config::paths::Paths::data_dir(),
+        ),
+    );
+
+    let probe = async {
+        manager.add_extension(config, None, None, None).await?;
+        manager
+            .get_prefixed_tools("extension-probe", Some(key.clone()))
+            .await
+    };
+
+    match tokio::time::timeout(PROBE_TIMEOUT, probe).await {
+        Ok(Ok(tools)) if !tools.is_empty() => Ok(Json(ExtensionProbeResponse {
+            ok: true,
+            tool_count: tools.len(),
+            tools: tools.iter().map(|t| t.name.to_string()).collect(),
+            error: None,
+        })),
+        // Started but advertised nothing: not a working search provider, and
+        // saying "ok" here is exactly the false green light this route exists
+        // to remove.
+        Ok(Ok(_)) => fail("The server started but offered no tools.".to_string()),
+        Ok(Err(e)) => fail(format!("{e}")),
+        Err(_) => fail(format!(
+            "The server did not answer within {}s.",
+            PROBE_TIMEOUT.as_secs()
+        )),
+    }
 }
 
 #[utoipa::path(
@@ -1041,6 +1134,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/config/read", post(read_config))
         .route("/config/extensions", get(get_extensions))
         .route("/config/extensions", post(add_extension))
+        .route("/config/extensions/probe", post(probe_extension))
         .route("/config/extensions/{name}", delete(remove_extension))
         .route("/config/providers", get(providers))
         .route("/config/providers/{name}/models", get(get_provider_models))
@@ -1101,6 +1195,27 @@ mod tests {
             v.get("masked_value").is_none(),
             "snake_case is not the wire name — clients key off maskedValue"
         );
+    }
+
+    /// The probe response is camelCase on the wire too — same trap as
+    /// `maskedValue`, and this one gates a green "Working" light, so a client
+    /// reading `tool_count` would silently render every healthy provider as
+    /// broken.
+    #[test]
+    fn extension_probe_response_serializes_as_camel_case() {
+        let v = serde_json::to_value(ExtensionProbeResponse {
+            ok: true,
+            tool_count: 2,
+            tools: vec!["brave_web_search".into(), "brave_local_search".into()],
+            error: None,
+        })
+        .unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["toolCount"], 2);
+        assert_eq!(v["tools"][0], "brave_web_search");
+        assert!(v.get("tool_count").is_none());
+        // A clean probe carries no error field noise.
+        assert!(v["error"].is_null());
     }
 
     /// A secret read is untagged, so the masked struct flattens to the response

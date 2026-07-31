@@ -994,6 +994,16 @@ export const api = {
     }>; warnings: string[];
   }>('/config/extensions'),
 
+  /** Actually start a configured extension and ask it for its tools. "Key
+   *  saved" only proves a string reached the keychain; this proves the key
+   *  WORKS. Always resolves (a failed probe is a result, not an error).
+   *  camelCase on the wire — see the `maskedValue` regression. */
+  probeExtension: (name: string) =>
+    apiFetch<{ ok: boolean; toolCount: number; tools: string[]; error?: string | null }>(
+      '/config/extensions/probe',
+      { method: 'POST', body: JSON.stringify({ name }) },
+    ),
+
   upsertConfig: (key: string, value: unknown, isSecret?: boolean) =>
     apiFetch<unknown>('/config/upsert', {
       method: 'POST',
