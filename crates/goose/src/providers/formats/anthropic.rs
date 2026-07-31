@@ -971,7 +971,25 @@ where
                                 (None, None) => None,
                             };
 
-                            let merged_usage = crate::providers::base::Usage::new(merged_input, merged_output, merged_total);
+                            // `message_start` carries Anthropic's input/cache
+                            // breakdown; the trailing `message_delta` normally
+                            // carries only the final output count. Preserve the
+                            // cache split when rebuilding Usage here or the
+                            // ledger prices every cached token as fresh input.
+                            let merged_cache_read = existing_usage
+                                .usage
+                                .cache_read_input_tokens
+                                .or(delta_usage.cache_read_input_tokens);
+                            let merged_cache_write = existing_usage
+                                .usage
+                                .cache_write_input_tokens
+                                .or(delta_usage.cache_write_input_tokens);
+                            let merged_usage = crate::providers::base::Usage::new(
+                                merged_input,
+                                merged_output,
+                                merged_total,
+                            )
+                            .with_cache_tokens(merged_cache_read, merged_cache_write);
                             final_usage = Some(crate::providers::base::ProviderUsage::new(existing_usage.model.clone(), merged_usage));
                         } else {
                             let model = event.data.get("model")
@@ -1487,6 +1505,7 @@ mod tests {
         redacted_thinking: Vec<String>,
         text: Vec<String>,
         tool_calls: Vec<String>,
+        usage: Option<crate::providers::base::ProviderUsage>,
     }
 
     async fn collect_stream(events: &str) -> StreamedParts {
@@ -1498,7 +1517,10 @@ mod tests {
         let mut msg_stream = std::pin::pin!(response_to_streaming_message(stream));
         let mut parts = StreamedParts::default();
 
-        while let Some(Ok((message, _usage))) = msg_stream.next().await {
+        while let Some(Ok((message, usage))) = msg_stream.next().await {
+            if usage.is_some() {
+                parts.usage = usage;
+            }
             if let Some(msg) = message {
                 for c in &msg.content {
                     match c {
@@ -1559,6 +1581,31 @@ mod tests {
         assert_eq!(parts.thinking[0].0, "Let me analyze this problem.");
         assert_eq!(parts.thinking[0].1, "sig_abc123");
         assert_eq!(parts.text, vec!["Here is the answer."]);
+    }
+
+    #[tokio::test]
+    async fn streaming_message_delta_preserves_cache_usage_from_message_start() {
+        let events = concat!(
+            r#"data: {"type":"message_start","message":{"id":"msg_cache","role":"assistant","content":[],"model":"claude-haiku-4-5-20251001","usage":{"input_tokens":7,"output_tokens":0,"cache_creation_input_tokens":10000,"cache_read_input_tokens":5000}}}"#,
+            "\n",
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            "\n",
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Done."}}"#,
+            "\n",
+            r#"data: {"type":"content_block_stop","index":0}"#,
+            "\n",
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":50}}"#,
+            "\n",
+            r#"data: {"type":"message_stop"}"#,
+        );
+
+        let parts = collect_stream(events).await;
+        let usage = parts.usage.expect("stream should yield final usage").usage;
+        assert_eq!(usage.input_tokens, Some(15007));
+        assert_eq!(usage.output_tokens, Some(50));
+        assert_eq!(usage.total_tokens, Some(15057));
+        assert_eq!(usage.cache_read_input_tokens, Some(5000));
+        assert_eq!(usage.cache_write_input_tokens, Some(10000));
     }
 
     #[tokio::test]
