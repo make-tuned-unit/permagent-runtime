@@ -65,6 +65,28 @@ async fn run_once(state: &Arc<AppState>) -> Result<(), String> {
                 project = %project.name,
                 "watcher insight placed on the project overview"
             );
+
+            // Report up to Henry as well as onto the project overview. The
+            // overview waits to be looked at; a briefing reaches Henry on his
+            // next turn, so he can mention it without the user going hunting.
+            //
+            // `Info`, not `Attention`: the honesty law above means an insight
+            // only exists when real signals fired, but it still asks nothing of
+            // anyone. Severity is about what is REQUIRED, not how interesting
+            // the Watcher found it.
+            permagent::briefings::file_briefing(
+                &pool,
+                permagent::briefings::NewBriefing {
+                    from_agent: "watcher".to_string(),
+                    kind: "insight".to_string(),
+                    severity: permagent::briefings::Severity::Info,
+                    summary: format!("{}: {}", project.name, text),
+                    detail: None,
+                    ref_kind: Some("project".to_string()),
+                    ref_id: Some(project.id.clone()),
+                },
+            )
+            .await;
         }
     }
     Ok(())

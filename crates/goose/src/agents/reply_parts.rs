@@ -288,6 +288,57 @@ impl Agent {
             Vec::new()
         };
 
+        // Unread briefings from the worker agents. NOT gated on the
+        // orchestrator: the agents that file these (Steward, Watcher) run on
+        // their own schedules whether or not orchestration is enabled, so
+        // gating this would silently mute them on the default profile — which
+        // is exactly the profile this machine runs.
+        //
+        // Capped: the brief rides in every turn's system prompt, so an
+        // unbounded list would grow the prompt without bound. `unacknowledged`
+        // orders by severity first, so the cap drops routine chatter rather
+        // than the thing waiting on a decision.
+        const MAX_BRIEFINGS_IN_PROMPT: i64 = 5;
+        let agent_briefings = match self.config.session_manager.pool_clone().await {
+            Ok(pool) => {
+                let unread = crate::briefings::unacknowledged(&pool, MAX_BRIEFINGS_IN_PROMPT).await;
+
+                // Acknowledge the FYI ones now that they have been put in front
+                // of Henry — otherwise they ride in every subsequent prompt
+                // forever and crowd out newer reports.
+                //
+                // Attention/ActionRequired deliberately survive: those are
+                // waiting on something (usually a human decision on a card),
+                // and dropping one because Henry happened to see it once is how
+                // a pending force-push quietly stops being mentioned. They
+                // clear when the underlying thing resolves — see the resolve
+                // path in `crate::briefings`.
+                let fyi: Vec<String> = unread
+                    .iter()
+                    .filter(|b| b.severity == crate::briefings::Severity::Info)
+                    .map(|b| b.id.clone())
+                    .collect();
+                if !fyi.is_empty() {
+                    let _ = crate::briefings::acknowledge(&pool, &fyi).await;
+                }
+
+                Some(
+                    unread
+                        .into_iter()
+                        .map(|b| crate::agents::self_knowledge::BriefingLine {
+                            from: crate::briefings::display_name_for(&b.from_agent),
+                            severity: b.severity.render().to_string(),
+                            summary: b.summary,
+                        })
+                        .collect(),
+                )
+            }
+            // No pool (tests, degraded boot). `None`, NOT an empty list — the
+            // brief must omit the section rather than tell Henry his agents
+            // have nothing pending on the strength of a read that never ran.
+            Err(_) => None,
+        };
+
         let prompt_manager = self.prompt_manager.lock().await;
         let mut system_prompt = prompt_manager
             .builder()
@@ -299,6 +350,7 @@ impl Agent {
             .with_goose_mode(goose_mode)
             .with_scheduled_job_count(scheduled_job_count)
             .with_dispatchable_workers(dispatchable_workers)
+            .with_agent_briefings(agent_briefings)
             .build();
 
         // Handle toolshim if enabled
@@ -593,10 +645,7 @@ impl Agent {
         // Ollama et al. run locally — not chargeable. Subscription/quota detection
         // is not yet wired (no per-provider plan signal here), so a priced remote
         // provider records as `paid_api`.
-        let is_local = provider
-            .as_deref()
-            .map(|p| p.to_ascii_lowercase().contains("ollama"))
-            .unwrap_or(false);
+        let is_local = provider.as_deref().is_some_and(is_local_provider);
         let cost_tier = if is_local {
             CostTier::LocalFree
         } else {
@@ -687,6 +736,11 @@ impl Agent {
 
         Ok(())
     }
+}
+
+fn is_local_provider(provider: &str) -> bool {
+    let provider = provider.to_ascii_lowercase();
+    provider == "local" || provider.contains("ollama")
 }
 
 /// Check whether a tool should be callable by an app based on MCP Apps visibility metadata.
@@ -786,6 +840,14 @@ mod tests {
             Some(1.0)
         );
         assert_eq!(cache_hit_rate_of(&Usage::default()), None);
+    }
+
+    #[test]
+    fn local_cost_tier_recognizes_both_local_provider_engines() {
+        assert!(is_local_provider("local"));
+        assert!(is_local_provider("ollama"));
+        assert!(is_local_provider("remote-ollama"));
+        assert!(!is_local_provider("anthropic"));
     }
 
     #[tokio::test]

@@ -51,6 +51,17 @@ struct NextScheduled {
     currently_running: bool,
 }
 
+/// One unread report from a worker agent, for the HUD. Mirrors what Henry sees
+/// in his own brief, so the user and Henry are looking at the same list.
+#[derive(Serialize)]
+struct BriefingSummary {
+    id: String,
+    from: String,
+    severity: String,
+    summary: String,
+    created_at: String,
+}
+
 #[derive(Serialize)]
 struct HenryStatusResponse {
     identity: Identity,
@@ -62,6 +73,8 @@ struct HenryStatusResponse {
     today_totals: TodayTotals,
     lifetime_stats: LifetimeStats,
     next_scheduled: Option<NextScheduled>,
+    /// What Henry's agents have reported and he has not yet cleared.
+    briefings: Vec<BriefingSummary>,
 }
 
 async fn henry_status(State(state): State<Arc<AppState>>) -> Json<HenryStatusResponse> {
@@ -140,15 +153,19 @@ async fn henry_status(State(state): State<Arc<AppState>>) -> Json<HenryStatusRes
         .await
         .unwrap_or_else(|_| (0, vec![], 0, 0, None, 0, 0));
 
-    // Scheduled jobs
+    // Scheduled jobs. This is HENRY's status, so it reports only jobs Henry
+    // owns. A job carrying a `worker_persona` belongs to that agent — the
+    // Steward's `git-steward` recipe being the case that surfaced this: with no
+    // ownership filter, the globally-oldest job won `next_scheduled` regardless
+    // of whose it was, and Henry's HUD announced the Steward's cron as his own.
     let jobs = state.scheduler().list_scheduled_jobs().await;
-    let scheduled_fires_today = jobs
-        .iter()
+    let henry_owned = || jobs.iter().filter(|j| j.worker_persona.is_none());
+
+    let scheduled_fires_today = henry_owned()
         .filter(|j| j.last_run.map(|lr| lr >= today_midnight).unwrap_or(false))
         .count();
 
-    let next_scheduled = jobs
-        .iter()
+    let next_scheduled = henry_owned()
         .filter(|j| !j.paused)
         .min_by_key(|j| j.last_run)
         .map(|j| NextScheduled {
@@ -163,6 +180,24 @@ async fn henry_status(State(state): State<Arc<AppState>>) -> Json<HenryStatusRes
         tokio::task::spawn_blocking(move || query_brain_memory_stats(&today_str2))
             .await
             .unwrap_or((0, 0));
+
+    // Unread agent reports. Same source and ordering Henry sees in his own
+    // brief — severity first — so the HUD and the agent never disagree about
+    // what is outstanding.
+    let briefings = match state.session_manager().pool_clone().await {
+        Ok(pool) => permagent::briefings::unacknowledged(&pool, 20)
+            .await
+            .into_iter()
+            .map(|b| BriefingSummary {
+                id: b.id,
+                from: permagent::briefings::display_name_for(&b.from_agent),
+                severity: b.severity.render().to_string(),
+                summary: b.summary,
+                created_at: b.created_at,
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
 
     Json(HenryStatusResponse {
         identity,
@@ -184,6 +219,7 @@ async fn henry_status(State(state): State<Arc<AppState>>) -> Json<HenryStatusRes
             first_active,
         },
         next_scheduled,
+        briefings,
     })
 }
 

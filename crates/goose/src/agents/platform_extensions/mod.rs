@@ -1,5 +1,6 @@
 pub mod analyze;
 pub mod app_conductor;
+pub mod app_perception;
 pub mod apps;
 pub mod best_of_n_adapter;
 pub mod browser;
@@ -504,15 +505,38 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: app_conductor::EXTENSION_NAME,
                 display_name: "App Conductor",
-                description: "Navigate the user to tabs and views in the Permagent app (navigate_app), act within them — open/close/detach the chat dock, show/hide the Build tab's browser and terminal panes (app_action) — and carry them the last mile past a tab to a specific item: a goal's detail or a project's Grow planner (open_item)",
+                description: "Act on the Permagent app: navigate the user to tabs and views (navigate_app), open/close/detach the chat dock or show/hide the Build tab's browser and terminal panes (app_action), and carry them to a specific goal detail or project Grow planner (open_item). These are action-only tools; read app state with observe_app",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
                 why_it_matters:
-                    "Drive the app for the user — take them to the right view, operate it, and open the specific goal or project view they mean — instead of telling them where to click.",
+                    "Drive the app for the user — take them to the right view, operate it, and open the specific goal or project view they mean. Perception stays separate: use observe_app when you need to know what a surface contains.",
                 teaching: &[],
                 client_factory: |ctx| {
                     Box::new(app_conductor::AppConductorClient::new(ctx).unwrap())
+                },
+            },
+        );
+
+        map.insert(
+            app_perception::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: app_perception::EXTENSION_NAME,
+                display_name: "App Perception",
+                description:
+                    "Read privacy-bounded aggregate state from the data behind the Permagent app \
+                     without navigating or taking screenshots (observe_app): analytics, projects, \
+                     goals/cards, spend, sessions, agent briefings, and an overall home summary",
+                default_enabled: true,
+                unprefixed_tools: true,
+                hidden: false,
+                why_it_matters:
+                    "The app is your home, not a UI you visit. Use observe_app to know what is \
+                     happening from the same local data its surfaces render, while keeping raw \
+                     rows and private join identifiers out of conversation history.",
+                teaching: &[],
+                client_factory: |ctx| {
+                    Box::new(app_perception::AppPerceptionClient::new(ctx).unwrap())
                 },
             },
         );

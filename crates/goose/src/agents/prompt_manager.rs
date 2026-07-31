@@ -77,6 +77,7 @@ pub struct SystemPromptBuilder<'a, M> {
     /// Workers the orchestrator can dispatch goals to, with live status. Fetched
     /// async at the call site (the probe may block). Empty → section omitted.
     dispatchable_workers: Vec<crate::agents::self_knowledge::DispatchableWorker>,
+    agent_briefings: Option<Vec<crate::agents::self_knowledge::BriefingLine>>,
 }
 
 impl<'a> SystemPromptBuilder<'a, PromptManager> {
@@ -145,6 +146,15 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
         workers: Vec<crate::agents::self_knowledge::DispatchableWorker>,
     ) -> Self {
         self.dispatchable_workers = workers;
+        self
+    }
+
+    /// Provide the unread agent briefings for the self-knowledge brief.
+    pub fn with_agent_briefings(
+        mut self,
+        briefings: Option<Vec<crate::agents::self_knowledge::BriefingLine>>,
+    ) -> Self {
+        self.agent_briefings = briefings;
         self
     }
 
@@ -222,6 +232,7 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
             agent_display_name: display_name.clone(),
             scheduled_job_count: self.scheduled_job_count,
             dispatchable_workers: self.dispatchable_workers.clone(),
+            agent_briefings: self.agent_briefings.clone(),
         }
         .build();
 
@@ -356,6 +367,7 @@ impl PromptManager {
             goose_mode: None,
             scheduled_job_count: None,
             dispatchable_workers: Vec::new(),
+            agent_briefings: None,
         }
     }
 

@@ -1018,6 +1018,13 @@ impl SessionStorage {
                     // version. The on-disk SKILL.md source-of-truth migration
                     // (skills::reconcile_skills_to_disk) relies on it. Additive +
                     // idempotent, so SPECTRAL_SCHEMA_VERSION is not bumped.
+                    // Version-independent: the agent-briefings table (worker
+                    // agents reporting to Henry). Applied by table existence
+                    // every boot for the same reason as the recognition
+                    // columns above — a version gate is exactly how that one
+                    // went missing in production.
+                    spectral_schema::apply_briefings_schema(&self.pool).await?;
+
                     spectral_schema::apply_skill_path_column(&self.pool).await?;
 
                     // Version-independent: ensure the projects.graph_entity_id

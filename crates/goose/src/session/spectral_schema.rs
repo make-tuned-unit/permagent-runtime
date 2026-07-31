@@ -1077,6 +1077,43 @@ pub async fn apply_project_graph_entity_column(pool: &Pool<Sqlite>) -> Result<()
 
 /// Add the `skills.skill_path` index column: it points each indexed skill at its
 /// on-disk `SKILL.md` folder (the portable agentskills.io source-of-truth). The
+/// Apply the `agent_briefings` schema — the worker-agents-report-to-Henry
+/// line (see [`crate::briefings`]).
+///
+/// Deliberately NOT a numbered migration. Applied by table existence on every
+/// boot, so it cannot be skipped by a version stamp advancing past it — the
+/// same hazard that left `recognition_verdict` missing from a v40 production DB
+/// for weeks. Additive and idempotent; SPECTRAL_SCHEMA_VERSION stays 14.
+pub async fn apply_briefings_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS agent_briefings (
+            id              TEXT PRIMARY KEY,
+            from_agent      TEXT NOT NULL,
+            kind            TEXT NOT NULL,
+            severity        TEXT NOT NULL,
+            summary         TEXT NOT NULL,
+            detail          TEXT,
+            ref_kind        TEXT,
+            ref_id          TEXT,
+            created_at      TEXT NOT NULL,
+            acknowledged_at TEXT
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // The read path is always "what has Henry not seen yet", so the index is
+    // on the unacknowledged set rather than the whole table.
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_briefings_unacked
+            ON agent_briefings(acknowledged_at, created_at DESC)",
+    )
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
 /// DB row is the fast lookup + repetition-detection index; the folder is
 /// authoritative. PRAGMA-guarded and applied by column-existence — NOT gated on
 /// a version stamp — so it is present on any DB regardless of the recorded schema

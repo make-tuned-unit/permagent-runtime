@@ -432,6 +432,31 @@ pub fn default_roster() -> HashMap<String, WorkerPersona> {
         },
     );
 
+    // The Steward owns repo hygiene and CI. It already exists as a scheduled
+    // recipe (the `git-steward` starter) and a safety core in crate::steward;
+    // this roster entry is what lets that scheduled run carry the Steward's own
+    // identity instead of borrowing Henry's. Without it the job resolves to the
+    // primary persona, which is why Henry's HUD used to advertise the Steward's
+    // cron as his own.
+    //
+    // `engine: Pending` deliberately — the Steward is not a dispatchable worker
+    // (the roster's engine-pending entries are excluded from selection). It
+    // proposes and detects; it does not take handed-off goals.
+    roster.insert(
+        "steward".to_string(),
+        WorkerPersona {
+            first_name: "Steward".to_string(),
+            role: "Repo hygiene and CI — keeps git repos clean, investigates \
+                   CI failures, proposes (never performs) destructive git ops"
+                .to_string(),
+            tool_kinds: vec!["shell".to_string()],
+            availability_check: "bin_exists:git".to_string(),
+            cost_tier: "local_free".to_string(),
+            engine: WorkerEngineKind::Pending,
+            ..Default::default()
+        },
+    );
+
     roster.insert(
         "reviewer".to_string(),
         WorkerPersona {
@@ -799,12 +824,16 @@ workers:
     }
 
     #[test]
-    fn default_roster_seeds_three_workers_with_engines() {
+    fn default_roster_seeds_expected_workers_with_engines() {
         let roster = default_roster();
+        // Assert the actual keys, not a bare count — a count tells you the
+        // roster changed but not how, and this assertion has already drifted
+        // from its own name once ("three" while asserting four).
+        let mut keys: Vec<&str> = roster.keys().map(String::as_str).collect();
+        keys.sort_unstable();
         assert_eq!(
-            roster.len(),
-            4,
-            "expected claude_code + codex + librarian + reviewer"
+            keys,
+            vec!["claude_code", "codex", "librarian", "reviewer", "steward"],
         );
 
         // The reviewer: in-process subagent, review-tagged (routes to the Review
@@ -847,6 +876,13 @@ workers:
             roster["librarian"].availability_check,
             "model_loaded:qwen2.5"
         );
+
+        // Steward: owns repo hygiene / CI. Registered so its scheduled recipe
+        // carries the Steward's identity rather than borrowing the primary's,
+        // but engine-pending so it is never dispatched a goal — it detects and
+        // proposes, it does not take handed-off work.
+        assert_eq!(roster["steward"].engine, WorkerEngineKind::Pending);
+        assert_eq!(roster["steward"].availability_check, "bin_exists:git");
     }
 
     #[test]
@@ -857,7 +893,8 @@ workers:
         if config.workers.is_empty() {
             config.workers = default_roster();
         }
-        assert_eq!(config.workers.len(), 4);
+        assert_eq!(config.workers.len(), default_roster().len());
+        assert!(config.workers.contains_key("steward"));
     }
 
     #[test]
