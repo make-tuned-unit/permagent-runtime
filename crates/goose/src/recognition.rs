@@ -21,11 +21,31 @@
 
 use chrono::Utc;
 use sqlx::{Pool, Sqlite};
+use std::collections::HashSet;
+use std::sync::Arc;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
 /// A single retrieved-set member: `(memory_id, signal_score, rank)`.
 pub type SetMember = (String, f64, i64);
+
+/// A memory that passed the prompt-injection filter. Its content is retained
+/// only in memory until turn end so conservative exact-overlap citation
+/// detection can run off the reply hot path; only the id is persisted.
+#[derive(Debug, Clone)]
+pub struct InjectedMemory {
+    pub id: String,
+    pub content: String,
+}
+
+/// Persistence handle for one recall. Dropping it detaches the initial write;
+/// completing it after the reply chains citation detection behind that write.
+pub struct PendingRecognition {
+    pool: Pool<Sqlite>,
+    retrieval_id: String,
+    injected: Arc<[InjectedMemory]>,
+    persistence: tokio::task::JoinHandle<()>,
+}
 
 fn now_iso() -> String {
     Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
@@ -43,10 +63,28 @@ pub fn spawn_persist_recognition(
     query: String,
     strategy: String,
     members: Vec<SetMember>,
-) {
-    tokio::spawn(async move {
-        if let Err(e) =
-            persist_recognition(&pool, &recognition_ctx, &query, &strategy, &members).await
+    injected: Vec<InjectedMemory>,
+) -> PendingRecognition {
+    let retrieval_id = Uuid::now_v7().to_string();
+    let task_pool = pool.clone();
+    let task_retrieval_id = retrieval_id.clone();
+    let injected: Arc<[InjectedMemory]> = injected.into();
+    let task_injected = Arc::clone(&injected);
+    let persistence = tokio::spawn(async move {
+        let injected_ids: Vec<String> = task_injected
+            .iter()
+            .map(|memory| memory.id.clone())
+            .collect();
+        if let Err(e) = persist_recognition_with_id(
+            &task_pool,
+            &task_retrieval_id,
+            &recognition_ctx,
+            &query,
+            &strategy,
+            &members,
+            &injected_ids,
+        )
+        .await
         {
             warn!(
                 target: "permagent::recognition",
@@ -55,16 +93,23 @@ pub fn spawn_persist_recognition(
             );
         }
     });
+    PendingRecognition {
+        pool,
+        retrieval_id,
+        injected,
+        persistence,
+    }
 }
 
-async fn persist_recognition(
+async fn persist_recognition_with_id(
     pool: &Pool<Sqlite>,
+    retrieval_id: &str,
     recognition_ctx: &spectral::graph::RecognitionContext,
     query: &str,
     strategy: &str,
     members: &[SetMember],
+    injected_memory_ids: &[String],
 ) -> Result<(), sqlx::Error> {
-    let retrieval_id = Uuid::now_v7().to_string();
     let now = now_iso();
     let rc_persona = recognition_ctx.persona.clone().unwrap_or_default();
     let rc_session_id = recognition_ctx.session_id.clone();
@@ -72,16 +117,25 @@ async fn persist_recognition(
     // Top-level session_id is NOT NULL; the recognition-context session is the
     // authoritative source, empty string only if a caller recalls session-less.
     let session_id = rc_session_id.clone().unwrap_or_default();
+    let injected_json = serde_json::Value::Array(
+        injected_memory_ids
+            .iter()
+            .cloned()
+            .map(serde_json::Value::String)
+            .collect(),
+    )
+    .to_string();
 
     let mut tx = pool.begin().await?;
 
     sqlx::query(
         "INSERT INTO recognition_events
             (retrieval_id, session_id, query, retrieved_at,
-             rc_persona, rc_session_id, rc_focus_wing, strategy)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             rc_persona, rc_session_id, rc_focus_wing, strategy,
+             injected_memory_ids, injected_memory_ids_source)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'recorded')",
     )
-    .bind(&retrieval_id)
+    .bind(retrieval_id)
     .bind(&session_id)
     .bind(query)
     .bind(&now)
@@ -89,6 +143,7 @@ async fn persist_recognition(
     .bind(&rc_session_id)
     .bind(&rc_focus_wing)
     .bind(strategy)
+    .bind(&injected_json)
     .execute(&mut *tx)
     .await?;
 
@@ -98,7 +153,7 @@ async fn persist_recognition(
                 (retrieval_id, memory_id, signal_score, rank)
              VALUES (?, ?, ?, ?)",
         )
-        .bind(&retrieval_id)
+        .bind(retrieval_id)
         .bind(memory_id)
         .bind(signal_score)
         .bind(rank)
@@ -114,6 +169,141 @@ async fn persist_recognition(
         members.len(),
         strategy
     );
+    Ok(())
+}
+
+#[cfg(test)]
+async fn persist_recognition(
+    pool: &Pool<Sqlite>,
+    recognition_ctx: &spectral::graph::RecognitionContext,
+    query: &str,
+    strategy: &str,
+    members: &[SetMember],
+) -> Result<(), sqlx::Error> {
+    persist_recognition_with_id(
+        pool,
+        &Uuid::now_v7().to_string(),
+        recognition_ctx,
+        query,
+        strategy,
+        members,
+        &[],
+    )
+    .await
+}
+
+impl PendingRecognition {
+    /// After the assistant reply ends, conservatively detect exact normalized
+    /// five-word overlap with injected memory content and persist the cited ids.
+    /// The join and overlap scan both run in this detached task, never inline on
+    /// the reply path. Failures are logged and never propagated.
+    pub fn spawn_record_reply_usage(self, assistant_reply: String) {
+        if assistant_reply.trim().is_empty() {
+            debug!(
+                target: "permagent::recognition",
+                "Skipping citation write-back for retrieval {}: assistant reply is empty",
+                self.retrieval_id
+            );
+            return;
+        }
+
+        tokio::spawn(async move {
+            if let Err(e) = self.persistence.await {
+                warn!(
+                    target: "permagent::recognition",
+                    "Recognition persistence task failed before citation write-back: {}",
+                    e
+                );
+                return;
+            }
+
+            let cited = cited_memories_by_content_overlap(&self.injected, &assistant_reply);
+            if let Err(e) = record_reply_usage(&self.pool, &self.retrieval_id, &cited).await {
+                warn!(
+                    target: "permagent::recognition",
+                    "Failed to persist cited memories for retrieval {}: {}",
+                    self.retrieval_id,
+                    e
+                );
+            }
+        });
+    }
+}
+
+const CITATION_SHINGLE_WORDS: usize = 5;
+const CITATION_SHINGLE_MIN_CHARS: usize = 24;
+
+fn normalized_words(text: &str) -> Vec<String> {
+    text.split(|ch: char| !ch.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(|word| word.to_lowercase())
+        .collect()
+}
+
+fn cited_memories_by_content_overlap(
+    injected: &[InjectedMemory],
+    assistant_reply: &str,
+) -> Vec<String> {
+    let reply_words = normalized_words(assistant_reply);
+    let reply_shingles: HashSet<String> = reply_words
+        .windows(CITATION_SHINGLE_WORDS)
+        .map(|words| words.join(" "))
+        .filter(|shingle| shingle.len() >= CITATION_SHINGLE_MIN_CHARS)
+        .collect();
+
+    if reply_shingles.is_empty() {
+        return Vec::new();
+    }
+
+    injected
+        .iter()
+        .filter(|memory| {
+            normalized_words(&memory.content)
+                .windows(CITATION_SHINGLE_WORDS)
+                .map(|words| words.join(" "))
+                .any(|shingle| {
+                    shingle.len() >= CITATION_SHINGLE_MIN_CHARS && reply_shingles.contains(&shingle)
+                })
+        })
+        .map(|memory| memory.id.clone())
+        .collect()
+}
+
+async fn record_reply_usage(
+    pool: &Pool<Sqlite>,
+    retrieval_id: &str,
+    cited_memory_ids: &[String],
+) -> Result<(), sqlx::Error> {
+    let cited_json = serde_json::Value::Array(
+        cited_memory_ids
+            .iter()
+            .cloned()
+            .map(serde_json::Value::String)
+            .collect(),
+    )
+    .to_string();
+    let checked_at = now_iso();
+    sqlx::query(
+        "UPDATE recognition_events
+            SET cited_memory_ids = ?,
+                citation_checked_at = ?,
+                outcome_label = CASE
+                    WHEN outcome_polarity = 'Negative' THEN 'wrong'
+                    WHEN outcome_polarity = 'Positive' AND ? THEN 'useful'
+                    WHEN outcome_polarity = 'Positive' AND EXISTS (
+                        SELECT 1 FROM recognition_set_members members
+                         WHERE members.retrieval_id = recognition_events.retrieval_id
+                    ) THEN 'ignored'
+                    ELSE outcome_label
+                END
+          WHERE retrieval_id = ?",
+    )
+    .bind(cited_json)
+    .bind(checked_at)
+    .bind(!cited_memory_ids.is_empty())
+    .bind(retrieval_id)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -172,9 +362,10 @@ pub async fn mark_observation_bounced(pool: &Pool<Sqlite>, normalized: &str) {
     let result = sqlx::query(
         "INSERT INTO recognition_events
             (retrieval_id, session_id, query, retrieved_at, rc_persona, strategy,
-             outcome_kind, outcome_polarity, outcome_source, outcome_observed_at)
+             outcome_kind, outcome_polarity, outcome_source, outcome_observed_at,
+             outcome_label)
          VALUES (?, 'initiative', ?, ?, 'henry', 'initiative',
-                 'DecisionBounced', 'Negative', 'Decision', ?)",
+                 'DecisionBounced', 'Negative', 'Decision', ?, 'wrong')",
     )
     .bind(&retrieval_id)
     .bind(normalized)
@@ -224,13 +415,26 @@ async fn write_back_outcome(
     let now = now_iso();
     let result = sqlx::query(
         "UPDATE recognition_events
-            SET outcome_kind = ?, outcome_polarity = ?, outcome_source = ?, outcome_observed_at = ?
+            SET outcome_kind = ?, outcome_polarity = ?, outcome_source = ?, outcome_observed_at = ?,
+                outcome_label = CASE
+                    WHEN ? = 'Negative' THEN 'wrong'
+                    WHEN ? = 'Positive' AND citation_checked_at IS NOT NULL
+                         AND cited_memory_ids <> '[]' THEN 'useful'
+                    WHEN ? = 'Positive' AND citation_checked_at IS NOT NULL AND EXISTS (
+                        SELECT 1 FROM recognition_set_members members
+                         WHERE members.retrieval_id = recognition_events.retrieval_id
+                    ) THEN 'ignored'
+                    ELSE outcome_label
+                END
           WHERE session_id = ? AND outcome_kind IS NULL",
     )
     .bind(kind)
     .bind(polarity)
     .bind(source)
     .bind(&now)
+    .bind(polarity)
+    .bind(polarity)
+    .bind(polarity)
     .bind(session_id)
     .execute(pool)
     .await;
@@ -497,6 +701,13 @@ mod tests {
             .await
             .expect("row now exists for the observation");
         assert!(seen.was_bounced(), "declined observation reads as bounced");
+        let label: Option<String> =
+            sqlx::query_scalar("SELECT outcome_label FROM recognition_events WHERE query = ?")
+                .bind(cmd)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(label.as_deref(), Some("wrong"));
         // Empty command is a no-op (defensive).
         mark_observation_bounced(&pool, "").await;
     }
@@ -582,7 +793,8 @@ mod tests {
 
         let row = sqlx::query(
             "SELECT retrieval_id, session_id, query, rc_persona, rc_focus_wing, strategy,
-                    outcome_kind, cited_memory_ids
+                    outcome_kind, cited_memory_ids, injected_memory_ids,
+                    injected_memory_ids_source, citation_checked_at
                FROM recognition_events",
         )
         .fetch_one(&pool)
@@ -596,6 +808,15 @@ mod tests {
         assert_eq!(row.get::<String, _>("strategy"), "cascade");
         assert!(row.get::<Option<String>, _>("outcome_kind").is_none());
         assert_eq!(row.get::<String, _>("cited_memory_ids"), "[]");
+        assert_eq!(row.get::<String, _>("injected_memory_ids"), "[]");
+        assert_eq!(
+            row.get::<Option<String>, _>("injected_memory_ids_source")
+                .as_deref(),
+            Some("recorded")
+        );
+        assert!(row
+            .get::<Option<String>, _>("citation_checked_at")
+            .is_none());
 
         let members: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM recognition_set_members WHERE retrieval_id = ?",
@@ -646,6 +867,40 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(kind.as_deref(), Some("TaskResolved"));
+        let label: Option<String> = sqlx::query_scalar(
+            "SELECT outcome_label FROM recognition_events WHERE session_id = 'sess-x'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(
+            label.is_none(),
+            "positive outcome alone is not evidence that recall was ignored"
+        );
+
+        let retrieval_id: String = sqlx::query_scalar(
+            "SELECT retrieval_id FROM recognition_events WHERE session_id = 'sess-x'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        record_reply_usage(&pool, &retrieval_id, &[]).await.unwrap();
+        let measured = sqlx::query(
+            "SELECT outcome_label, citation_checked_at FROM recognition_events
+              WHERE session_id = 'sess-x'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            measured
+                .get::<Option<String>, _>("outcome_label")
+                .as_deref(),
+            Some("ignored")
+        );
+        assert!(measured
+            .get::<Option<String>, _>("citation_checked_at")
+            .is_some());
 
         let untouched: Option<String> = sqlx::query_scalar(
             "SELECT outcome_kind FROM recognition_events WHERE session_id = 'sess-y'",
@@ -678,7 +933,7 @@ mod tests {
         write_back_decision_outcome(&pool, "goal-1", false).await;
 
         let row = sqlx::query(
-            "SELECT outcome_kind, outcome_polarity, outcome_source
+            "SELECT outcome_kind, outcome_polarity, outcome_source, outcome_label
                FROM recognition_events WHERE session_id = ?",
         )
         .bind(worker_session)
@@ -697,6 +952,188 @@ mod tests {
             row.get::<Option<String>, _>("outcome_source").as_deref(),
             Some("Decision")
         );
+        assert_eq!(
+            row.get::<Option<String>, _>("outcome_label").as_deref(),
+            Some("wrong")
+        );
+    }
+
+    #[test]
+    fn citation_detection_requires_distinctive_exact_overlap() {
+        let injected = vec![
+            InjectedMemory {
+                id: "used".into(),
+                content: "The deployment token rotates every Tuesday at noon UTC.".into(),
+            },
+            InjectedMemory {
+                id: "unused".into(),
+                content: "The garden irrigation timer starts before sunrise each day.".into(),
+            },
+        ];
+        assert_eq!(
+            cited_memories_by_content_overlap(
+                &injected,
+                "Remember that the deployment token rotates every Tuesday at noon UTC."
+            ),
+            vec!["used"]
+        );
+        assert!(
+            cited_memories_by_content_overlap(&injected, "The token rotates weekly.").is_empty(),
+            "semantic guesses and short overlap are deliberately rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_reply_leaves_usage_unmeasured() {
+        let pool = test_pool().await;
+        let retrieval_id = "empty-reply";
+        persist_recognition_with_id(
+            &pool,
+            retrieval_id,
+            &ctx("empty-reply"),
+            "q",
+            "cascade",
+            &[],
+            &[],
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE recognition_events
+                SET cited_memory_ids = '[\"prior\"]'
+              WHERE retrieval_id = ?",
+        )
+        .bind(retrieval_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        PendingRecognition {
+            pool: pool.clone(),
+            retrieval_id: retrieval_id.into(),
+            injected: Arc::from([]),
+            persistence: tokio::spawn(async {}),
+        }
+        .spawn_record_reply_usage(String::new());
+
+        let row = sqlx::query(
+            "SELECT cited_memory_ids, citation_checked_at
+               FROM recognition_events WHERE retrieval_id = ?",
+        )
+        .bind(retrieval_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.get::<String, _>("cited_memory_ids"), "[\"prior\"]");
+        assert!(row
+            .get::<Option<String>, _>("citation_checked_at")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn short_reply_records_measured_zero() {
+        let pool = test_pool().await;
+        let retrieval_id = "short-reply";
+        persist_recognition_with_id(
+            &pool,
+            retrieval_id,
+            &ctx("short-reply"),
+            "q",
+            "cascade",
+            &[],
+            &[],
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE recognition_events
+                SET cited_memory_ids = '[\"prior\"]'
+              WHERE retrieval_id = ?",
+        )
+        .bind(retrieval_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        PendingRecognition {
+            pool: pool.clone(),
+            retrieval_id: retrieval_id.into(),
+            injected: Arc::from([]),
+            persistence: tokio::spawn(async {}),
+        }
+        .spawn_record_reply_usage("Yes.".into());
+
+        let row = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                let row = sqlx::query(
+                    "SELECT cited_memory_ids, citation_checked_at
+                       FROM recognition_events WHERE retrieval_id = ?",
+                )
+                .bind(retrieval_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                if row
+                    .get::<Option<String>, _>("citation_checked_at")
+                    .is_some()
+                {
+                    break row;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("citation write-back should complete");
+        assert_eq!(row.get::<String, _>("cited_memory_ids"), "[]");
+        assert!(row
+            .get::<Option<String>, _>("citation_checked_at")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn citation_and_positive_outcome_derive_useful_in_either_order() {
+        let pool = test_pool().await;
+        for session in ["citation-first", "outcome-first"] {
+            persist_recognition(
+                &pool,
+                &ctx(session),
+                "q",
+                "cascade",
+                &[("m1".into(), 0.9, 0)],
+            )
+            .await
+            .unwrap();
+        }
+        let citation_first: String = sqlx::query_scalar(
+            "SELECT retrieval_id FROM recognition_events WHERE session_id = 'citation-first'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        record_reply_usage(&pool, &citation_first, &["m1".into()])
+            .await
+            .unwrap();
+        write_back_task_outcome(&pool, "citation-first").await;
+
+        let outcome_first: String = sqlx::query_scalar(
+            "SELECT retrieval_id FROM recognition_events WHERE session_id = 'outcome-first'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        write_back_task_outcome(&pool, "outcome-first").await;
+        record_reply_usage(&pool, &outcome_first, &["m1".into()])
+            .await
+            .unwrap();
+
+        let labels: Vec<String> = sqlx::query_scalar(
+            "SELECT outcome_label FROM recognition_events
+              WHERE citation_checked_at IS NOT NULL ORDER BY session_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(labels, vec!["useful", "useful"]);
     }
 
     // ----- read side (#360 glue) -----

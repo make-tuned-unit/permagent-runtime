@@ -1002,15 +1002,13 @@ impl SessionStorage {
                     if version < 40 {
                         spectral_schema::migrate_v39_to_v40(&self.pool).await?;
                     }
-                    // Version-independent safety net for the cfg-gated v22
-                    // recognition columns. The always-on v23 above can stamp
-                    // schema_version past the `version < 22` gate on a feature-off
-                    // DB, so a later feature-on boot would skip v21->v22 and the
-                    // recognition columns would be silently missing (breakage on
-                    // activation). Apply them by column-existence, independent of
-                    // the version stamp, so activation is safe from any version.
+                    // Version-independent safety net for recognition columns.
+                    // The always-on v23 above can stamp schema_version past the
+                    // cfg-gated `version < 22` migration, leaving a feature-off DB
+                    // permanently without the columns. This is the third instance
+                    // of the cfg-gated-migration-skip hazard: schema repairs must
+                    // run on every boot, regardless of the feature that writes them.
                     // Idempotent — a steady-state boot adds nothing.
-                    #[cfg(feature = "spectral-recognition")]
                     spectral_schema::apply_recognition_v22_columns(&self.pool).await?;
 
                     // Version-independent: ensure the skills.skill_path index

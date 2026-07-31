@@ -907,7 +907,7 @@ async fn stream_reply_with_tts(
     // keys ("ambient_context" vs "memory_recall") so there's no write conflict.
     let t_ctx = std::time::Instant::now();
     let ambient_fut = crate::brain_ops::inject_ambient_context(state, &agent);
-    let recall_hits = if let Some(ref brain) = state.brain {
+    let recall_trace = if let Some(ref brain) = state.brain {
         let recognition_ctx = state.build_recognition_context(Some(&sid));
         let recognition_pool = state.session_manager().pool_clone().await.ok();
         let recall_fut = crate::brain_ops::inject_recall(
@@ -917,14 +917,14 @@ async fn stream_reply_with_tts(
             recognition_ctx,
             recognition_pool,
         );
-        let (_, n) = tokio::join!(ambient_fut, recall_fut);
-        n
+        let (_, trace) = tokio::join!(ambient_fut, recall_fut);
+        trace
     } else {
         ambient_fut.await;
-        0
+        crate::brain_ops::RecallInjection::default()
     };
     let ctx_recall_ms = t_ctx.elapsed().as_millis();
-    tracing::info!(target: "permagentd::voice", "  ctx+recall: {}ms ({} recall hits)", ctx_recall_ms, recall_hits);
+    tracing::info!(target: "permagentd::voice", "  ctx+recall: {}ms ({} recall hits)", ctx_recall_ms, recall_trace.count);
 
     let session_config = SessionConfig {
         id: sid.clone(),
@@ -1049,6 +1049,7 @@ async fn stream_reply_with_tts(
                                     audio.samples.iter().flat_map(|s| s.to_le_bytes()).collect();
                                 if socket.send(Message::Binary(bytes.into())).await.is_err() {
                                     tracing::warn!(target: "permagentd::voice", "Client disconnected during streaming");
+                                    // Deliberately leave the trace unfinished: a disconnected turn has no complete reply to measure.
                                     return Ok(());
                                 }
                             }
@@ -1146,6 +1147,8 @@ async fn stream_reply_with_tts(
         "TIMING Total: {}ms (STT={}ms Reply+TTS={}ms, TTS_total={}ms, {} sentences)",
         total_ms, stt_ms, reply_ms, total_tts_ms, sentence_num
     );
+
+    recall_trace.finish(full_reply.clone());
 
     // Persist voice turn to Brain — same as text chat, so future recall
     // can surface what was discussed via voice.

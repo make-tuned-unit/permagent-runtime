@@ -12,6 +12,7 @@ pub mod recipe;
 pub mod schedule;
 pub mod session;
 pub mod setup;
+pub mod spectral_replay;
 pub mod term;
 pub mod update;
 pub mod worker;

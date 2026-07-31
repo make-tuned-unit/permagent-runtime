@@ -8,6 +8,8 @@ use std::sync::Arc;
 
 // ── Recall constants & filter ────────────────────────────────────────────
 
+// The spectral_schema.rs historical backfill intentionally pins replicas of
+// these values; reconcile any still-NULL injected sets before retuning them.
 /// Score floor for recall hits — memories below this are excluded.
 pub const RECALL_SCORE_FLOOR: f64 = 0.7;
 /// Maximum number of recall hits injected into the system prompt.
@@ -24,35 +26,80 @@ pub fn filter_recall_hits(
         .collect()
 }
 
+/// Result of one recall injection. The pending recognition write is optional
+/// because the daemon can run without a session DB pool.
+#[derive(Default)]
+pub struct RecallInjection {
+    pub count: usize,
+    pending: Option<permagent::recognition::PendingRecognition>,
+}
+
+impl RecallInjection {
+    /// Finish the trace after the reply. Detection and persistence remain
+    /// detached/best-effort inside the recognition module.
+    pub fn finish(self, assistant_reply: String) {
+        if let Some(pending) = self.pending {
+            pending.spawn_record_reply_usage(assistant_reply);
+        }
+    }
+}
+
 // ── Recall injection ─────────────────────────────────────────────────────
 
 /// Inject recall results into the agent's system prompt.
 /// Filters by `RECALL_SCORE_FLOOR` (0.7), takes `RECALL_TOP_K` (3).
-/// Returns count of memories injected. Errors are logged, never propagated.
+/// Returns the injected count plus an optional turn-end attribution handle.
+/// Errors are logged, never propagated.
 pub async fn inject_recall(
     brain: &permagent::brain_handle::SafeBrain,
     agent: &Arc<permagent::agents::Agent>,
     user_query: &str,
     recognition_ctx: spectral::graph::RecognitionContext,
     recognition_pool: Option<sqlx::Pool<sqlx::Sqlite>>,
-) -> usize {
+) -> RecallInjection {
     if user_query.is_empty() {
-        return 0;
+        return RecallInjection::default();
     }
 
     let query_for_log = user_query.chars().take(80).collect::<String>();
     match brain.recall_cascade(user_query, &recognition_ctx).await {
         Ok(result) => {
+            let top_hits = filter_recall_hits(&result.merged_hits);
+            let count = top_hits.len();
+            let prefix = if top_hits.is_empty() {
+                None
+            } else {
+                let mut prefix = String::from("Relevant memories from past context:\n");
+                for hit in &top_hits {
+                    prefix.push_str(&format!("- {}\n", hit.content));
+                }
+                Some(prefix)
+            };
+            drop(top_hits);
+
             // Recognition instrumentation: persist the recall event + its WHOLE
             // retrieved set UNCONDITIONALLY (the falsifiable AmbientFrame
             // substrate), minting a retrieval_id for later outcome write-back.
-            // Captures the full set before the top-K injection filter narrows it.
-            if let Some(pool) = recognition_pool {
+            // Also persist the exact post-filter ids injected into the prompt.
+            let pending = recognition_pool.map(|pool| {
                 let members: Vec<permagent::recognition::SetMember> = result
                     .merged_hits
                     .iter()
                     .enumerate()
                     .map(|(rank, hit)| (hit.id.clone(), hit.signal_score, rank as i64))
+                    .collect();
+                // Move the already-filtered hit content into the detached turn
+                // handle: citation tracking adds no content clone or overlap scan
+                // to the reply hot path.
+                let injected = result
+                    .merged_hits
+                    .into_iter()
+                    .filter(|hit| hit.signal_score >= RECALL_SCORE_FLOOR)
+                    .take(RECALL_TOP_K)
+                    .map(|hit| permagent::recognition::InjectedMemory {
+                        id: hit.id,
+                        content: hit.content,
+                    })
                     .collect();
                 permagent::recognition::spawn_persist_recognition(
                     pool,
@@ -60,8 +107,9 @@ pub async fn inject_recall(
                     user_query.to_string(),
                     "cascade".to_string(),
                     members,
-                );
-            }
+                    injected,
+                )
+            });
 
             // Recognition seam (query mode): the verdict-alongside-recall
             // hook. Today a debug log; when Spectral's recognize() lands, this
@@ -74,24 +122,16 @@ pub async fn inject_recall(
                 recognition_ctx.session_id.as_deref(),
             );
 
-            let top_hits = filter_recall_hits(&result.merged_hits);
-
-            if top_hits.is_empty() {
+            let Some(prefix) = prefix else {
                 tracing::debug!(
                     target: "permagentd::brain",
                     "Recall returned no hits above {} threshold for query: {:?}",
                     RECALL_SCORE_FLOOR,
                     query_for_log
                 );
-                return 0;
-            }
+                return RecallInjection { count: 0, pending };
+            };
 
-            let mut prefix = String::from("Relevant memories from past context:\n");
-            for hit in &top_hits {
-                prefix.push_str(&format!("- {}\n", hit.content));
-            }
-
-            let count = top_hits.len();
             tracing::info!(
                 target: "permagentd::brain",
                 "Recall injected {} memories into system prompt for query: {:?}",
@@ -102,7 +142,7 @@ pub async fn inject_recall(
             agent
                 .extend_system_prompt("memory_recall".to_string(), prefix)
                 .await;
-            count
+            RecallInjection { count, pending }
         }
         Err(e) => {
             tracing::warn!(
@@ -110,7 +150,7 @@ pub async fn inject_recall(
                 "Brain recall failed: {}",
                 e
             );
-            0
+            RecallInjection::default()
         }
     }
 }
