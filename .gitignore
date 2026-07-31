@@ -24,6 +24,12 @@ target/
 # MSVC Windows builds of rustc generate these, which store debugging information
 *.pdb
 
+# Agent tooling artifacts. AGENTS.md is regenerated with a fresh timestamp on
+# every session by the claude-mem plugin (<claude-mem-context> wrapper), so an
+# untracked copy otherwise leaves the tree permanently dirty and can be swept
+# into a commit by an auto-committing session.
+/AGENTS.md
+
 # UI
 node_modules
 ./ui/desktop/out
@@ -92,3 +98,6 @@ graph.kz
 ui/command-center/dist/
 
 .claude/worktrees/
+
+# Xcode per-user state (schemes, breakpoints, window layout) — never shared
+**/xcuserdata/

@@ -17,6 +17,7 @@ import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/tokens';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
+import { ViewHeader } from '../common/ViewHeader';
 import type { Project } from '../projects/types';
 
 // Appended to every Grow prompt that DRAFTS user-facing copy (value props,
@@ -364,36 +365,42 @@ export function GrowView() {
 
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: gradient.workspace, color: colors.text, fontFamily: font.body }}>
-      {/* Header + project switcher — brand ribbon accent */}
-      <div style={{ position: 'relative', padding: '16px 24px', borderBottom: `1px solid ${colors.border}`, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 16 }}>
-        <div style={{ position: 'absolute', left: 0, right: 0, bottom: -1, height: 2, background: `linear-gradient(90deg, ${colors.cyan}, ${colors.purple})`, opacity: 0.5 }} />
-        <div>
-          <div style={{ fontFamily: font.display, fontSize: 16, fontWeight: 600, letterSpacing: '-0.01em' }}>Grow</div>
-          <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 3, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <span>Take {active ? active.name : 'your project'} to market — Henry drafts with the project's real context.</span>
-            {active?.siteUrl && (
-              <a href={active.siteUrl} target="_blank" rel="noreferrer" style={{ color: colors.cyan, textDecoration: 'none' }}>site ↗</a>
-            )}
-            {active?.repoUrl && (
-              <a href={active.repoUrl} target="_blank" rel="noreferrer" style={{ color: colors.cyan, textDecoration: 'none' }}>repo ↗</a>
-            )}
-            {active && (
-              <button
-                type="button"
-                onClick={openInProjects}
-                title={`Open ${active.name} in Projects`}
-                style={{
-                  color: colors.cyan, background: 'none', border: 'none', padding: 0,
-                  cursor: 'pointer', fontSize: 11, fontFamily: font.body,
-                }}
-              >open project ↗</button>
-            )}
-            {ctx && (
-              <span style={{ color: colors.textDim }}>{ctx.goals} {ctx.goals === 1 ? 'goal' : 'goals'} · {ctx.people} {ctx.people === 1 ? 'person' : 'people'}</span>
-            )}
-          </div>
-        </div>
-        <div style={{ flex: 1 }} />
+      {/* Header + project switcher. The title/subtitle come from ViewHeader so
+          Grow wears the same header as Home, Projects, Automate and Build —
+          this view used to hand-roll a 16px title against the ramp's 20px
+          `type.title`, which read as a visibly smaller heading. The wrapper
+          exists only to carry Grow's brand ribbon, which ViewHeader has no
+          slot for; it must stay `position: relative` for the ribbon to anchor. */}
+      <div style={{ position: 'relative', flexShrink: 0 }}>
+        <div style={{ position: 'absolute', left: 0, right: 0, bottom: -1, height: 2, background: `linear-gradient(90deg, ${colors.cyan}, ${colors.purple})`, opacity: 0.5, zIndex: 1 }} />
+        <ViewHeader
+          title="Grow"
+          subtitle={
+            <span style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <span>Take {active ? active.name : 'your project'} to market — Henry drafts with the project's real context.</span>
+              {active?.siteUrl && (
+                <a href={active.siteUrl} target="_blank" rel="noreferrer" style={{ color: colors.cyan, textDecoration: 'none' }}>site ↗</a>
+              )}
+              {active?.repoUrl && (
+                <a href={active.repoUrl} target="_blank" rel="noreferrer" style={{ color: colors.cyan, textDecoration: 'none' }}>repo ↗</a>
+              )}
+              {active && (
+                <button
+                  type="button"
+                  onClick={openInProjects}
+                  title={`Open ${active.name} in Projects`}
+                  style={{
+                    color: colors.cyan, background: 'none', border: 'none', padding: 0,
+                    cursor: 'pointer', font: 'inherit',
+                  }}
+                >open project ↗</button>
+              )}
+              {ctx && (
+                <span style={{ color: colors.textDim }}>{ctx.goals} {ctx.goals === 1 ? 'goal' : 'goals'} · {ctx.people} {ctx.people === 1 ? 'person' : 'people'}</span>
+              )}
+            </span>
+          }
+          actions={<>
         {/* VIEW axis — segmented tab toggle (mirrors the Kanban/overview toggle) */}
         <div role="tablist" aria-label="Grow view" style={{ display: 'flex', gap: 2, background: colors.bgDeeper, borderRadius: radius.md, padding: 2 }}>
           {LENSES.map((l) => {
@@ -432,6 +439,8 @@ export function GrowView() {
         >
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
+          </>}
+        />
       </div>
 
       {projectsState === 'error' ? (

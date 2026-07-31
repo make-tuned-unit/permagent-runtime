@@ -34,7 +34,7 @@
 		AA0EDD200AC9AB1D53EB3754 /* AgentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentsView.swift; sourceTree = "<group>"; };
 		C4BD3E1B6A179219E2AC1FDD /* VoiceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceView.swift; sourceTree = "<group>"; };
 		C775F55DDB9DE14F8D4323E6 /* PermagentApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermagentApp.swift; sourceTree = "<group>"; };
-		E8D531DED49DC50B4B71FE69 /* Permagent.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Permagent.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		E8D531DED49DC50B4B71FE69 /* Permagent.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Permagent.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FC49B12939BF081C69BFE0E1 /* Views.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -104,8 +104,6 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
-				TargetAttributes = {
-				};
 			};
 			buildConfigurationList = 2C52E59FB12CF0D71319F5D9 /* Build configuration list for PBXProject "PermagentMobile" */;
 			developmentRegion = en;
@@ -221,7 +219,11 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = GANM22MFCH;
 				INFOPLIST_FILE = PermagentMobile/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Permagent;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -302,7 +304,11 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = GANM22MFCH;
 				INFOPLIST_FILE = PermagentMobile/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Permagent;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

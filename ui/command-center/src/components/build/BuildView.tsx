@@ -155,15 +155,28 @@ export function BuildView() {
     }}>
       <ViewHeader
         leading={<Mobius size={36} state={mobiusState as any} glow={0.9} />}
-        title={activeTask ? activeTask.title : 'Build'}
+        // A tab's title is the tab's name. Build used to swap in the active
+        // task's title, which made it the one view whose header didn't say
+        // what tab you were on. The task moved to the subtitle — still
+        // visible, just no longer impersonating the page title.
+        title="Build"
         subtitle={
-          <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
             <span style={{
-              width: 5, height: 5, borderRadius: '50%',
+              width: 5, height: 5, borderRadius: '50%', flexShrink: 0,
               background: hasActive ? colors.cyan : colors.textDim,
               boxShadow: hasActive ? `0 0 6px ${colors.cyanGlow}` : 'none',
             }} />
-            {agentName} · {hasActive ? 'thinking' : 'idle'}
+            {activeTask && (
+              // Task titles are user/agent text and can be long — truncate
+              // here rather than let the subtitle push the bar to two rows.
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+                {activeTask.title}
+              </span>
+            )}
+            <span style={{ flexShrink: 0 }}>
+              {activeTask ? '· ' : ''}{agentName} · {hasActive ? 'thinking' : 'idle'}
+            </span>
           </span>
         }
         actions={<>

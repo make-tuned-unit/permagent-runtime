@@ -18,8 +18,10 @@ import { font, type } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 export interface ViewHeaderProps {
-  /** The view's name, or the live subject it is showing (Build swaps in the
-   *  active task's title). Truncates rather than wrapping the bar to two rows. */
+  /** The view's name — always the tab you are on, so the header answers
+   *  "where am I". Live subjects (Build's active task) belong in `subtitle`;
+   *  a title that swaps out makes the one view that can't tell you that.
+   *  Truncates rather than wrapping the bar to two rows. */
   title: ReactNode;
   /** Supporting line: a count, a status, a hint. Omit when there is nothing
    *  honest to say — an empty line is worse than none. */
