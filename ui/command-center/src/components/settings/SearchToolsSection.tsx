@@ -12,12 +12,16 @@ interface ProviderRowState {
   enabled: boolean;
   input: string;
   busy: boolean;
+  /** The stored key, masked by the daemon (e.g. `BSAArB-L***…`). A boolean
+   *  "Key saved" asks the user to take our word for it; showing the real prefix
+   *  lets them recognize the key they pasted. Empty when nothing is stored. */
+  masked: string;
   /** Last save/toggle failure — rendered inline (2026-07 wiring audit: the
    *  old console-only error made a failed key save look like a stuck form). */
   error: string;
 }
 
-const blank = (): ProviderRowState => ({ configured: false, enabled: false, input: '', busy: false, error: '' });
+const blank = (): ProviderRowState => ({ configured: false, enabled: false, input: '', busy: false, masked: '', error: '' });
 
 /**
  * Generic "Search & tools" credential section — the bridge from #226/#352,
@@ -46,11 +50,13 @@ export function SearchToolsSection() {
 
     await Promise.all(SEARCH_PROVIDERS.map(async p => {
       let configured = false;
+      let masked = '';
       try {
         const r = await api.readConfig(p.keyName, true);
-        configured = !!(r?.maskedValue || r?.value);
+        masked = r?.maskedValue ?? '';
+        configured = !!(masked || r?.value);
       } catch { /* key not set */ }
-      patch(p.id, { configured, enabled: enabledNames.has(p.displayName) });
+      patch(p.id, { configured, masked, enabled: enabledNames.has(p.displayName) });
     }));
   }, []);
 
@@ -65,6 +71,9 @@ export function SearchToolsSection() {
       // connector — it reads the key back through env_keys.
       await saveAndEnableSearchProvider(p, value);
       patch(p.id, { input: '', configured: true, enabled: true });
+      // Re-read so the badge shows the key the DAEMON actually stored, not what
+      // we optimistically assumed — the save is only real once it reads back.
+      await refresh();
     } catch (e) {
       console.error('Failed to save search key:', e);
       patch(p.id, { error: `Couldn't save the key: ${e instanceof Error ? e.message : String(e)}` });
@@ -112,8 +121,12 @@ export function SearchToolsSection() {
                   <span
                     className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded"
                     style={{ backgroundColor: `${colors.success}26`, color: colors.success }}
+                    title={r.masked ? `Stored in your keychain as ${r.masked}` : undefined}
                   >
                     <FiCheck size={10} /> Key saved
+                    {r.masked && (
+                      <span style={{ fontFamily: font.mono, opacity: 0.8 }}>{r.masked}</span>
+                    )}
                   </span>
                 ) : (
                   <span
