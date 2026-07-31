@@ -1081,4 +1081,40 @@ pub fn routes(state: Arc<AppState>) -> Router {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    /// The masked-secret wire shape is camelCase — `maskedValue`, NOT
+    /// `masked_value`. The command-center read it under the snake_case name, so
+    /// every "is this key configured?" check answered false against a keychain
+    /// that DID hold the key: saved Brave/Tavily keys showed "No key" the moment
+    /// the user navigated back to Settings, and the agent was told search was
+    /// unconfigured. Pin the name so a rename has to break this test first.
+    #[test]
+    fn masked_secret_serializes_as_camel_case() {
+        let v = serde_json::to_value(MaskedSecret {
+            masked_value: "abc***".to_string(),
+        })
+        .unwrap();
+        assert_eq!(v["maskedValue"], "abc***");
+        assert!(
+            v.get("masked_value").is_none(),
+            "snake_case is not the wire name — clients key off maskedValue"
+        );
+    }
+
+    /// A secret read is untagged, so the masked struct flattens to the response
+    /// body itself; an unset key answers a bare `null`. Both shapes are what the
+    /// client's `{ value?, maskedValue? } | null` type has to survive.
+    #[test]
+    fn config_value_response_is_untagged_for_both_arms() {
+        let masked = serde_json::to_value(ConfigValueResponse::MaskedValue(MaskedSecret {
+            masked_value: "tvly-dev***".to_string(),
+        }))
+        .unwrap();
+        assert_eq!(masked["maskedValue"], "tvly-dev***");
+
+        let missing = serde_json::to_value(ConfigValueResponse::Value(Value::Null)).unwrap();
+        assert!(missing.is_null());
+    }
+}

@@ -1448,11 +1448,22 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
           // hands-free is still false (visible in daemon.err as SSE connect →
           // POST /voice/synthesize → GET /voice 101, in that order, every time).
           //
-          // `isStreaming` is the honest discriminator: a live turn sets it (from
-          // sendMessage, or adopted from ActiveRequests when attaching mid-turn)
-          // and this handler clears it just below, while replayed history never
-          // sets it. Replays are therefore silent by construction.
-          const isLiveTurn = get().isStreaming;
+          // `isStreaming` ALONE is not enough, because it has two sources: this
+          // window's own `sendMessage`, and adoption from the `ActiveRequests`
+          // frame the daemon sends on every (re)connect. Popping the chat out
+          // mid-turn hits the second: the new window adopts isStreaming=true,
+          // THEN the null-cursor replay delivers the whole session's history,
+          // and the first replayed Finish — whose `lastAssistant` is the
+          // session's opening reply — passed this guard and re-spoke the
+          // greeting the user had already heard.
+          //
+          // `_streamingMessageId` is the honest half: it is set ONLY by
+          // `sendMessage` (this window's own placeholder) and deliberately left
+          // alone by ActiveRequests adoption, so it is exactly "this client
+          // watched this turn stream in" — which is what the rule always meant.
+          // A window that merely attached to a live turn has none, and replayed
+          // history never sets one, so both are silent by construction.
+          const isLiveTurn = get().isStreaming && get()._streamingMessageId !== null;
           // Never during a live voice conversation (local OR mirrored from the
           // other window) either: voice turns are already spoken by the /voice
           // pipeline, so synthesizing here would double-speak.

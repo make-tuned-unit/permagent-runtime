@@ -48,7 +48,7 @@ export function SearchToolsSection() {
       let configured = false;
       try {
         const r = await api.readConfig(p.keyName, true);
-        configured = !!(r.masked_value || r.value);
+        configured = !!(r?.maskedValue || r?.value);
       } catch { /* key not set */ }
       patch(p.id, { configured, enabled: enabledNames.has(p.displayName) });
     }));

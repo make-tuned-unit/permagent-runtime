@@ -976,8 +976,12 @@ export const api = {
   // Config
   getConfig: () => apiFetch<PermagentConfig>('/config'),
 
+  /** Read a config value. For `isSecret` the daemon answers with the masked
+   *  secret — `{"maskedValue": "…"}`, camelCase on the wire (`MaskedSecret` is
+   *  `rename_all = "camelCase"`). An unset key answers a bare `null`, so callers
+   *  must treat the response as possibly null. */
   readConfig: (key: string, isSecret?: boolean) =>
-    apiFetch<{ value?: unknown; masked_value?: string }>('/config/read', {
+    apiFetch<{ value?: unknown; maskedValue?: string } | null>('/config/read', {
       method: 'POST', body: JSON.stringify({ key, is_secret: isSecret ?? false }),
     }),
 
