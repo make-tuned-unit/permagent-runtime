@@ -1179,6 +1179,7 @@ mod tests {
             ],
             truncated: false,
             status: "ok".into(),
+            generation: "gen-a".into(),
         };
         let out = format_snapshot(&snap);
         assert!(out.contains("[0] link \"Home\""));
@@ -1192,6 +1193,7 @@ mod tests {
             elements: vec![],
             truncated: false,
             status: "refused_scheme".into(),
+            generation: String::new(),
         };
         assert!(format_snapshot(&refused).contains("http(s)"));
     }
