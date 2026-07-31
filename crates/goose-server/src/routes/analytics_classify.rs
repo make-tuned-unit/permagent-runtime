@@ -319,6 +319,28 @@ pub fn sanitize_properties(raw: &serde_json::Value) -> Option<String> {
     Some(encoded)
 }
 
+/// Minimal percent-decoding for query values (`%20`, `+`). Full URL parsing is
+/// unnecessary here and would pull a dependency for three characters.
+fn percent_decode(value: &str) -> String {
+    let bytes = value.replace('+', " ");
+    let bytes = bytes.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(byte) = u8::from_str_radix(&String::from_utf8_lossy(&bytes[i + 1..i + 3]), 16)
+            {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -509,26 +531,4 @@ mod tests {
         // An object of only nested values keeps nothing.
         assert!(sanitize_properties(&json!({ "a": {"b": 1} })).is_none());
     }
-}
-
-/// Minimal percent-decoding for query values (`%20`, `+`). Full URL parsing is
-/// unnecessary here and would pull a dependency for three characters.
-fn percent_decode(value: &str) -> String {
-    let bytes = value.replace('+', " ");
-    let bytes = bytes.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(&String::from_utf8_lossy(&bytes[i + 1..i + 3]), 16)
-            {
-                out.push(byte);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
