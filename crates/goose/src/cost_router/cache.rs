@@ -131,19 +131,38 @@ pub const KEEP_MAIN_LOOP_MODEL_STABLE: bool = true;
 /// own cache) rather than by swapping the live loop's model (which busts it).
 pub const ROUTE_CHEAPER_TIERS_VIA_SUBAGENT: bool = true;
 
-/// True iff changing from `old_model` to `new_model` would bust a model-scoped
-/// cache. Any model change does — caches never transfer between models. This is
-/// the guard behind "don't swap the main-loop model mid-conversation".
-pub fn model_change_breaks_cache(old_model: &str, new_model: &str) -> bool {
-    old_model != new_model
+/// The identity a prompt cache is scoped to. Caches are held per **provider AND
+/// model** — the same model id served by two providers is two distinct caches —
+/// so both fields participate in every comparison. Carrying them as one value
+/// (rather than four loose `&str` params) makes a transposed argument a type
+/// error instead of a silent wrong answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModelKey<'a> {
+    pub provider: &'a str,
+    pub model: &'a str,
+}
+
+impl<'a> ModelKey<'a> {
+    pub fn new(provider: &'a str, model: &'a str) -> Self {
+        Self { provider, model }
+    }
+}
+
+/// True iff changing from `old` to `new` would bust a cache. Any change to
+/// either half of the key does — caches never transfer between models, nor
+/// between providers serving the same model id. This is the guard behind
+/// "don't swap the main-loop model mid-conversation".
+pub fn model_change_breaks_cache(old: ModelKey<'_>, new: ModelKey<'_>) -> bool {
+    old != new
 }
 
 /// Whether it is safe to route a `desired`-tier unit of work by swapping the
-/// live main-loop model. It is safe ONLY when the model does not actually change
-/// (same model as the loop already runs). Any real swap must instead go through
-/// a subagent — so a caller that would change the model is told `false`.
-pub fn may_swap_main_loop_model(current_model: &str, desired_model: &str) -> bool {
-    !model_change_breaks_cache(current_model, desired_model)
+/// live main-loop model. It is safe ONLY when the cache key does not actually
+/// change (same provider and model as the loop already runs). Any real swap must
+/// instead go through a subagent — so a caller that would change either half of
+/// the key is told `false`.
+pub fn may_swap_main_loop_model(current: ModelKey<'_>, desired: ModelKey<'_>) -> bool {
+    !model_change_breaks_cache(current, desired)
 }
 
 /// True iff `segments` are in canonical cache order — each strictly after the
@@ -162,11 +181,34 @@ mod tests {
 
     #[test]
     fn any_model_change_breaks_the_cache() {
-        assert!(model_change_breaks_cache("claude-frontier", "cheap-cloud"));
-        assert!(model_change_breaks_cache("qwen2.5:7b", "claude-frontier"));
+        let anthropic = |m| ModelKey::new("anthropic", m);
+        assert!(model_change_breaks_cache(
+            anthropic("claude-frontier"),
+            anthropic("cheap-cloud")
+        ));
+        assert!(model_change_breaks_cache(
+            ModelKey::new("ollama", "qwen2.5:7b"),
+            anthropic("claude-frontier")
+        ));
         assert!(!model_change_breaks_cache(
-            "claude-frontier",
-            "claude-frontier"
+            anthropic("claude-frontier"),
+            anthropic("claude-frontier")
+        ));
+    }
+
+    #[test]
+    fn same_model_id_on_a_different_provider_still_breaks_the_cache() {
+        // Regression (#941): the guard compared only the model string, so a
+        // provider swap that kept the model id read as "safe" and silently
+        // discarded the warm prefix. Caches are provider-scoped — this is a bust.
+        let model = "claude-sonnet-5";
+        assert!(model_change_breaks_cache(
+            ModelKey::new("anthropic", model),
+            ModelKey::new("bedrock", model)
+        ));
+        assert!(!may_swap_main_loop_model(
+            ModelKey::new("anthropic", model),
+            ModelKey::new("bedrock", model)
         ));
     }
 
@@ -174,11 +216,14 @@ mod tests {
     fn swapping_the_main_loop_model_is_refused_when_it_would_change() {
         // Routing a cheaper tier by swapping the loop model is refused — the
         // caller must use a subagent instead.
-        assert!(!may_swap_main_loop_model("claude-frontier", "qwen2.5:7b"));
-        // A no-op "swap" to the same model is fine (nothing is invalidated).
+        assert!(!may_swap_main_loop_model(
+            ModelKey::new("anthropic", "claude-frontier"),
+            ModelKey::new("ollama", "qwen2.5:7b")
+        ));
+        // A no-op "swap" to the same key is fine (nothing is invalidated).
         assert!(may_swap_main_loop_model(
-            "claude-frontier",
-            "claude-frontier"
+            ModelKey::new("anthropic", "claude-frontier"),
+            ModelKey::new("anthropic", "claude-frontier")
         ));
     }
 

@@ -229,8 +229,11 @@ impl PricedCandidate {
 /// returns something.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheapLadder {
-    /// Cheapest-first; the final entry is the anchor.
-    pub candidates: Vec<CheapCandidate>,
+    /// Cheapest-first; the final entry is the anchor. PRIVATE so the invariant
+    /// is a property of the type: [`CheapLadder::new`] is the only way in and it
+    /// always appends an anchor, so the vec can never be empty (#941 — a `pub`
+    /// field let `CheapLadder { candidates: vec![] }` panic in `anchor`).
+    candidates: Vec<CheapCandidate>,
 }
 
 impl Default for CheapLadder {
@@ -240,9 +243,7 @@ impl Default for CheapLadder {
     /// [`load_ladder`]. With nothing configured, the CheapCloud tier is exactly
     /// the anchor, preserving today's behavior.
     fn default() -> Self {
-        Self {
-            candidates: vec![default_anchor()],
-        }
+        Self::new(Vec::new(), default_anchor())
     }
 }
 
@@ -252,8 +253,24 @@ pub fn default_anchor() -> CheapCandidate {
 }
 
 impl CheapLadder {
+    /// The only constructor: `rungs` (cheapest-first, all strictly cheaper than
+    /// the anchor) followed by the always-available `anchor`, appended last. The
+    /// "last rung is the anchor" invariant is therefore enforced by the type
+    /// rather than trusted of each caller.
+    pub fn new(mut rungs: Vec<CheapCandidate>, anchor: CheapCandidate) -> Self {
+        rungs.push(anchor);
+        Self { candidates: rungs }
+    }
+
+    /// The rungs, cheapest-first; the final entry is always the anchor.
+    pub fn candidates(&self) -> &[CheapCandidate] {
+        &self.candidates
+    }
+
     /// The always-available anchor rung (the last candidate).
     pub fn anchor(&self) -> &CheapCandidate {
+        // Non-empty by construction: `new` is the only way to build a ladder and
+        // it always appends the anchor.
         self.candidates
             .last()
             .expect("cheap ladder always has an anchor")
@@ -337,8 +354,7 @@ pub fn build_ladder(
         seen.push(key);
         candidates.push(CheapCandidate::keyed(&c.provider, &c.model, &c.key_env));
     }
-    candidates.push(anchor);
-    CheapLadder { candidates }
+    CheapLadder::new(candidates, anchor)
 }
 
 // ── IO wrappers over the pure core ────────────────────────────────────────────
@@ -429,9 +445,7 @@ pub fn load_ladder() -> CheapLadder {
     let anchor = load_anchor();
 
     if let Some(pin) = load_pin(&is_key_set) {
-        return CheapLadder {
-            candidates: vec![pin, anchor],
-        };
+        return CheapLadder::new(vec![pin], anchor);
     }
 
     let anchor_cost = reference_cost_for(&anchor.provider, &anchor.model);
@@ -745,11 +759,24 @@ mod tests {
         // load_pin builds `[pin, anchor]`; the pin wins when its key is set and
         // falls through to the anchor when it is not.
         let pinned = CheapCandidate::keyed("prov_pin", "pinned-model", "PIN_KEY");
-        let l = CheapLadder {
-            candidates: vec![pinned, default_anchor()],
-        };
+        let l = CheapLadder::new(vec![pinned], default_anchor());
         assert_eq!(l.select(&available(&["PIN_KEY"])).provider, "prov_pin");
         assert!(l.select(&none()).anchor);
+    }
+
+    // ── The anchor invariant is structural, not conventional (#941) ────────
+
+    #[test]
+    fn a_ladder_built_with_no_rungs_still_has_an_anchor() {
+        // Regression: `candidates` used to be `pub`, so `CheapLadder {
+        // candidates: vec![] }` was constructible and panicked in `anchor()` /
+        // `select()`. The field is now private and `new` always appends the
+        // anchor, so the empty case degrades to anchor-only instead.
+        let l = CheapLadder::new(Vec::new(), default_anchor());
+        assert_eq!(l.candidates().len(), 1);
+        assert!(l.anchor().anchor);
+        assert!(l.select(&none()).anchor);
+        assert_eq!(l.escalate_after(l.anchor(), &none()), None);
     }
 
     // ── The ranking is the REAL canonical cost order (generality on live data)

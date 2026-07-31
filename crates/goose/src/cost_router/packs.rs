@@ -117,6 +117,12 @@ impl ModelPack {
             model: model.to_string(),
         }
     }
+
+    /// The prompt-cache identity this pack runs under. Caches are provider+model
+    /// scoped, so cache-stability questions must be asked with both halves.
+    pub fn cache_key(&self) -> crate::cost_router::cache::ModelKey<'_> {
+        crate::cost_router::cache::ModelKey::new(&self.provider, &self.model)
+    }
 }
 
 /// The full set of tiered packs — one per role. CONFIGURABLE: the defaults are
@@ -407,19 +413,25 @@ mod tests {
     #[test]
     fn cheaper_tiers_cannot_ride_the_main_loop_they_need_a_subagent() {
         let p = ModelPacks::default();
-        let main = &p.main_loop().model; // the editor holds the warm cache
+        let main = p.main_loop().cache_key(); // the editor holds the warm cache
 
         // Routing any cheaper tier by swapping the LIVE main-loop model is
-        // refused — it would bust the model-scoped cache. Each must go to a
-        // separate subagent context instead.
-        assert!(!may_swap_main_loop_model(main, p.model_for(Role::Hard)));
+        // refused — it would bust the provider+model-scoped cache. Each must go
+        // to a separate subagent context instead.
         assert!(!may_swap_main_loop_model(
             main,
-            p.model_for(Role::Mechanical)
+            p.pack_for(Role::Hard).cache_key()
         ));
-        assert!(!may_swap_main_loop_model(main, p.model_for(Role::Local)));
+        assert!(!may_swap_main_loop_model(
+            main,
+            p.pack_for(Role::Mechanical).cache_key()
+        ));
+        assert!(!may_swap_main_loop_model(
+            main,
+            p.pack_for(Role::Local).cache_key()
+        ));
 
-        // The one safe "swap" is the no-op: the loop keeps running its own model.
+        // The one safe "swap" is the no-op: the loop keeps running its own pack.
         assert!(may_swap_main_loop_model(main, main));
     }
 
