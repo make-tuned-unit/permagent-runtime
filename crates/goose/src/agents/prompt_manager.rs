@@ -558,6 +558,7 @@ mod tests {
         let _guard = env_lock::lock_env([
             ("HOME", Some(temp_root.as_str())),
             ("PERMAGENT_PATH_ROOT", Some(temp_root.as_str())),
+            ("INITIATIVE_ENABLED", Some("false")),
         ]);
 
         let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
@@ -574,6 +575,7 @@ mod tests {
         let _guard = env_lock::lock_env([
             ("HOME", Some(temp_root.as_str())),
             ("PERMAGENT_PATH_ROOT", Some(temp_root.as_str())),
+            ("INITIATIVE_ENABLED", Some("false")),
         ]);
 
         let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
@@ -597,6 +599,7 @@ mod tests {
         let _guard = env_lock::lock_env([
             ("HOME", Some(temp_root.as_str())),
             ("PERMAGENT_PATH_ROOT", Some(temp_root.as_str())),
+            ("INITIATIVE_ENABLED", Some("false")),
         ]);
 
         let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
@@ -631,6 +634,7 @@ mod tests {
         let _guard = env_lock::lock_env([
             ("HOME", Some(temp_root.as_str())),
             ("PERMAGENT_PATH_ROOT", Some(temp_root.as_str())),
+            ("INITIATIVE_ENABLED", Some("false")),
         ]);
         let session_manager = Arc::new(SessionManager::new(tmp_dir.path().to_path_buf()));
         let session = session_manager
