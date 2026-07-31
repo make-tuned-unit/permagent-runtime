@@ -48,6 +48,11 @@ pub struct PageSnapshot {
     /// "ok", "no_tab", "refused_scheme" (non-http(s) page), or "error".
     #[serde(default = "default_status")]
     pub status: String,
+    /// The snapshot generation these refs were stamped in. An act presents it
+    /// back so refs superseded by ANOTHER session's snapshot of the same shared
+    /// webview fail loudly instead of resolving to a restamped element (#939).
+    #[serde(default)]
+    pub generation: String,
 }
 
 /// Result of an act. On success carries a FRESH snapshot so the caller re-grounds
@@ -80,6 +85,10 @@ pub struct ActRequest {
     pub value: Option<String>,
     pub webview_id: String,
     pub page_url: String,
+    /// Generation the caller's refs came from (#939). Absent from an older
+    /// caller means "no generation check" — the page-URL guard still applies.
+    #[serde(default)]
+    pub generation: Option<String>,
 }
 
 /// Validate an act: `click` takes no value; `type` requires a value present
@@ -163,6 +172,7 @@ async fn act(
             "value": req.value,
             "webview_id": req.webview_id,
             "page_url": req.page_url,
+            "generation": req.generation,
         }),
     ));
 
@@ -267,6 +277,28 @@ mod tests {
         assert_eq!(req.value.as_deref(), Some("hi"));
         assert_eq!(req.webview_id, "browser-1");
         assert_eq!(req.page_url, "https://example.com/");
+        // Absent generation is tolerated — the URL guard still applies.
+        assert_eq!(req.generation, None);
+    }
+
+    /// #939: the generation rides the act so a superseded ref is refused.
+    #[test]
+    fn act_request_carries_the_snapshot_generation() {
+        let req: ActRequest = serde_json::from_str(
+            r#"{"ref":3,"action":"click","webview_id":"browser-1","page_url":"https://example.com/","generation":"gen-7"}"#,
+        )
+        .unwrap();
+        assert_eq!(req.generation.as_deref(), Some("gen-7"));
+    }
+
+    #[test]
+    fn page_snapshot_round_trips_the_generation() {
+        let json = r#"{"url":"https://e.com","elements":[],"generation":"gen-9"}"#;
+        let snap: PageSnapshot = serde_json::from_str(json).unwrap();
+        assert_eq!(snap.generation, "gen-9");
+        // A frontend that omits it degrades to the empty (unchecked) generation.
+        let bare: PageSnapshot = serde_json::from_str(r#"{"url":"x","elements":[]}"#).unwrap();
+        assert_eq!(bare.generation, "");
     }
 
     #[test]

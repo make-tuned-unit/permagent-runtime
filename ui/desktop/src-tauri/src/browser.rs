@@ -554,6 +554,10 @@ pub struct PageSnapshot {
     /// "ok", "refused_scheme" (non-http(s) page), or "error".
     #[serde(default = "default_status")]
     pub status: String,
+    /// The generation these refs were stamped in. An act must present it back,
+    /// so a snapshot taken by another session invalidates these refs (#939).
+    #[serde(default)]
+    pub generation: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -579,15 +583,27 @@ struct ActArgs<'a> {
     value: Option<&'a str>,
 }
 
-fn snapshot_js(cap: usize) -> String {
+/// A fresh snapshot generation token. Refs are only valid within the generation
+/// they were stamped in, so every snapshot mints a new one (#939).
+fn new_generation() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+fn snapshot_js(cap: usize, generation_json: &str) -> String {
     format!(
-        "(function(){{\n{GROUNDING_JS}\nreturn JSON.stringify(__permagentSnapshot({cap}));\n}})()"
+        "(function(){{\n{GROUNDING_JS}\nreturn JSON.stringify(__permagentSnapshot({cap}, {generation_json}));\n}})()"
     )
 }
 
-fn act_js(args_json: &str, expected_url_json: &str, cap: usize) -> String {
+fn act_js(
+    args_json: &str,
+    expected_url_json: &str,
+    expected_generation_json: &str,
+    next_generation_json: &str,
+    cap: usize,
+) -> String {
     format!(
-        "(function(){{\n{GROUNDING_JS}\nif (String(window.location.href) !== {expected_url_json}) return JSON.stringify({{ok:false,error:'The page changed since the snapshot. Take a fresh snapshot before acting.'}});\nreturn JSON.stringify(__permagentAct({args_json}, {cap}));\n}})()"
+        "(function(){{\n{GROUNDING_JS}\nif (String(window.location.href) !== {expected_url_json}) return JSON.stringify({{ok:false,error:'The page changed since the snapshot. Take a fresh snapshot before acting.'}});\nreturn JSON.stringify(__permagentAct({args_json}, {cap}, {expected_generation_json}, {next_generation_json}));\n}})()"
     )
 }
 
@@ -620,7 +636,9 @@ pub async fn get_page_snapshot(app: AppHandle, webview_id: String) -> Result<Pag
     let webview = app
         .get_webview(&webview_id)
         .ok_or_else(|| "Webview not found".to_string())?;
-    let js = snapshot_js(MAX_SNAPSHOT_ELEMENTS);
+    let generation_json = serde_json::to_string(&new_generation())
+        .map_err(|e| format!("Serialize generation failed: {e}"))?;
+    let js = snapshot_js(MAX_SNAPSHOT_ELEMENTS, &generation_json);
     eval_returning_json(&webview, &js, std::time::Duration::from_secs(5))
 }
 
@@ -629,6 +647,7 @@ pub async fn get_page_snapshot(app: AppHandle, webview_id: String) -> Result<Pag
 /// depth — the daemon route validates too). The in-page scheme guard in
 /// `__permagentAct` refuses non-http(s) pages.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn act_on_ref(
     app: AppHandle,
     webview_id: String,
@@ -636,6 +655,7 @@ pub async fn act_on_ref(
     action: String,
     value: Option<String>,
     expected_url: String,
+    expected_generation: Option<String>,
 ) -> Result<ActResult, String> {
     if !matches!(action.as_str(), "click" | "type" | "select") {
         return Err(format!("Unsupported action: {action}"));
@@ -652,7 +672,17 @@ pub async fn act_on_ref(
         serde_json::to_string(&args).map_err(|e| format!("Serialize args failed: {e}"))?;
     let expected_url_json = serde_json::to_string(&expected_url)
         .map_err(|e| format!("Serialize expected URL failed: {e}"))?;
-    let js = act_js(&args_json, &expected_url_json, MAX_SNAPSHOT_ELEMENTS);
+    let expected_generation_json = serde_json::to_string(&expected_generation.unwrap_or_default())
+        .map_err(|e| format!("Serialize expected generation failed: {e}"))?;
+    let next_generation_json = serde_json::to_string(&new_generation())
+        .map_err(|e| format!("Serialize generation failed: {e}"))?;
+    let js = act_js(
+        &args_json,
+        &expected_url_json,
+        &expected_generation_json,
+        &next_generation_json,
+        MAX_SNAPSHOT_ELEMENTS,
+    );
     eval_returning_json(&webview, &js, std::time::Duration::from_secs(8))
 }
 
@@ -665,12 +695,52 @@ mod tests {
         let js = act_js(
             r#"{"ref":1,"action":"click"}"#,
             r#""https://example.com/form""#,
+            r#""gen-a""#,
+            r#""gen-b""#,
             MAX_SNAPSHOT_ELEMENTS,
         );
         let guard = js.find("window.location.href").unwrap();
         let act = js.find("__permagentAct({").unwrap();
         assert!(guard < act);
         assert!(js.contains("The page changed since the snapshot"));
+    }
+
+    /// #939: the act carries the generation its refs were stamped in, plus a
+    /// fresh one for the post-action snapshot. Without this a second session
+    /// snapshotting the same tab restamps every ref from 0 and the first
+    /// session's "ref 3" silently resolves to a different element.
+    #[test]
+    fn act_script_passes_the_expected_and_next_generations() {
+        let js = act_js(
+            r#"{"ref":3,"action":"click"}"#,
+            r#""https://example.com/form""#,
+            r#""gen-expected""#,
+            r#""gen-next""#,
+            MAX_SNAPSHOT_ELEMENTS,
+        );
+        assert!(
+            js.contains("gen-expected"),
+            "expected generation is injected"
+        );
+        assert!(js.contains("gen-next"), "next generation is injected");
+        // Order matters: __permagentAct(args, cap, expectedGen, nextGen).
+        let call = js.find("__permagentAct({").unwrap();
+        let expected_at = js[call..].find("gen-expected").unwrap();
+        let next_at = js[call..].find("gen-next").unwrap();
+        assert!(expected_at < next_at);
+    }
+
+    /// Every snapshot mints a distinct generation — the whole point is that a
+    /// later snapshot supersedes an earlier one's refs.
+    #[test]
+    fn each_snapshot_generation_is_unique() {
+        assert_ne!(new_generation(), new_generation());
+    }
+
+    #[test]
+    fn snapshot_script_stamps_the_generation() {
+        let js = snapshot_js(MAX_SNAPSHOT_ELEMENTS, r#""gen-1""#);
+        assert!(js.contains("__permagentSnapshot(150, \"gen-1\")"));
     }
 
     #[test]

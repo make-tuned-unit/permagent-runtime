@@ -133,7 +133,12 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
   // Bridge: daemon MCP tool → Tauri webview content extraction → daemon fulfillment
   useBrowserContentBridge(activeTab?.webviewId ?? null);
   // Bridge: daemon MCP tool → Tauri webview snapshot/act (#649) → daemon fulfillment
-  useBrowserActBridge(activeTab?.webviewId ?? null);
+  // Owned webviews (all tabs), not just the active one: the act event fans out
+  // to every client, so ownership decides who performs it (#939).
+  useBrowserActBridge(
+    activeTab?.webviewId ?? null,
+    tabs.map((t) => t.webviewId),
+  );
 
   // Initialize Tauri API
   useEffect(() => {

@@ -173,15 +173,43 @@ function __permagentValue(el) {
   return undefined;
 }
 
+// The snapshot GENERATION currently stamped on the document.
+//
+// Refs are only meaningful within one generation. The webview is shared, but
+// `data-permagent-ref` is a global DOM attribute while snapshot bookkeeping is
+// per session: session B snapshotting the same tab clears and restamps every
+// ref from 0, so session A acting on "ref 3" would silently resolve to B's
+// element. The URL guard cannot catch it — same page, same URL. Stamping the
+// generation on <html> and requiring a match makes a superseded ref fail loudly
+// instead of hitting the wrong element. (#939)
+function __permagentGeneration() {
+  try {
+    return document.documentElement.getAttribute('data-permagent-gen') || '';
+  } catch (e) {
+    return '';
+  }
+}
+
+function __permagentStampGeneration(gen) {
+  if (typeof gen !== 'string' || !gen) return '';
+  try {
+    document.documentElement.setAttribute('data-permagent-gen', gen);
+    return gen;
+  } catch (e) {
+    return '';
+  }
+}
+
 // Walk the interactive elements, stamp fresh refs, return the compact list.
 // Renumbers from 0 every call (clears prior refs first) so a snapshot always
 // supersedes the last — refs are never carried across snapshots.
-function __permagentSnapshot(maxEls) {
+function __permagentSnapshot(maxEls, gen) {
   var cap = typeof maxEls === 'number' && maxEls > 0 ? maxEls : 150;
   var url = location.href || '';
   if (!__permagentIsWebScheme(location.protocol)) {
-    return { url: url, elements: [], truncated: false, status: 'refused_scheme' };
+    return { url: url, elements: [], truncated: false, status: 'refused_scheme', generation: '' };
   }
+  var generation = __permagentStampGeneration(gen);
   var stale = document.querySelectorAll('[data-permagent-ref]');
   for (var s = 0; s < stale.length; s++) stale[s].removeAttribute('data-permagent-ref');
 
@@ -203,7 +231,13 @@ function __permagentSnapshot(maxEls) {
     elements.push(entry);
     n++;
   }
-  return { url: url, elements: elements, truncated: truncated, status: 'ok' };
+  return {
+    url: url,
+    elements: elements,
+    truncated: truncated,
+    status: 'ok',
+    generation: generation,
+  };
 }
 
 // Real sites listen on the pointer/mouse sequence, not only 'click'. Dispatch
@@ -298,9 +332,21 @@ function __permagentSelect(el, value) {
 // Find a ref and act on it. Always returns a FRESH snapshot on success so the
 // caller re-grounds on post-action refs (Playwright-MCP's key discipline).
 // A missing ref is a structured error, never a throw.
-function __permagentAct(args, maxEls) {
+// `expectedGen` is the generation the caller's refs were stamped in; `nextGen`
+// stamps the fresh post-action snapshot. Both may be omitted (older callers),
+// in which case the generation check is skipped and behavior is unchanged.
+function __permagentAct(args, maxEls, expectedGen, nextGen) {
   if (!__permagentIsWebScheme(location.protocol)) {
     return { ok: false, error: 'refused_scheme: only http(s) pages can be acted on' };
+  }
+  // Refuse a ref from a superseded snapshot BEFORE touching the page: another
+  // session may have restamped these numbers onto different elements. (#939)
+  if (typeof expectedGen === 'string' && expectedGen && __permagentGeneration() !== expectedGen) {
+    return {
+      ok: false,
+      error:
+        'the page was re-snapshotted since these refs were taken — take a fresh get_page_snapshot before acting',
+    };
   }
   var refId = args && args.ref;
   var action = args && args.action;
@@ -320,7 +366,11 @@ function __permagentAct(args, maxEls) {
     } else if (action === 'select') {
       var ok = __permagentSelect(el, value == null ? '' : String(value));
       if (!ok) {
-        return { ok: false, error: 'no option matched "' + value + '"', snapshot: __permagentSnapshot(maxEls) };
+        return {
+          ok: false,
+          error: 'no option matched "' + value + '"',
+          snapshot: __permagentSnapshot(maxEls, nextGen),
+        };
       }
     } else {
       return { ok: false, error: 'unknown action: ' + action };
@@ -328,5 +378,5 @@ function __permagentAct(args, maxEls) {
   } catch (e) {
     return { ok: false, error: 'action failed: ' + (e && e.message ? e.message : String(e)) };
   }
-  return { ok: true, snapshot: __permagentSnapshot(maxEls) };
+  return { ok: true, snapshot: __permagentSnapshot(maxEls, nextGen) };
 }

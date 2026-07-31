@@ -58,6 +58,11 @@ struct PageSnapshot {
     truncated: bool,
     #[serde(default)]
     status: String,
+    /// Generation these refs were stamped in — bound to the session and
+    /// presented back on act, so another session's snapshot of the same shared
+    /// webview invalidates them instead of silently re-pointing them (#939).
+    #[serde(default)]
+    generation: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -143,6 +148,8 @@ pub struct BrowserClient {
 struct PageIdentity {
     webview_id: String,
     page_url: String,
+    /// The snapshot generation this session's refs belong to (#939).
+    generation: String,
 }
 
 /// Accept bare domains ("bbc.com") by assuming https; refuse non-web schemes.
@@ -686,6 +693,7 @@ impl BrowserClient {
         let identity = snap.webview_id.as_ref().map(|webview_id| PageIdentity {
             webview_id: webview_id.clone(),
             page_url: snap.url.clone(),
+            generation: snap.generation.clone(),
         });
         let mut identities = self
             .snapshot_identities
@@ -734,6 +742,7 @@ impl BrowserClient {
                 "value": value,
                 "webview_id": identity.webview_id,
                 "page_url": identity.page_url,
+                "generation": identity.generation,
             }))
             .send()
             .await
@@ -772,6 +781,7 @@ impl BrowserClient {
                             PageIdentity {
                                 webview_id: webview_id.clone(),
                                 page_url: snapshot.url.clone(),
+                                generation: snapshot.generation.clone(),
                             },
                         );
                     }

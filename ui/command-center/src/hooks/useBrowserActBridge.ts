@@ -13,9 +13,18 @@ import { wireEventType } from '../lib/wireEvent';
  * broadcasts to every subscriber, so each bridge stays a small, independent unit
  * and the proven read path is left untouched. Reconnects on WebSocket drop.
  */
-export function useBrowserActBridge(activeWebviewId: string | null | undefined) {
+export function useBrowserActBridge(
+  activeWebviewId: string | null | undefined,
+  /** Every webview THIS client owns (all its tabs). The act event fans out to
+   *  every connected client, so ownership — not focus — decides who performs
+   *  it: an act still targets the snapshot's webview after the user switches
+   *  tabs, but only the client holding that webview runs it (#939). */
+  ownedWebviewIds: ReadonlyArray<string | null> = [],
+) {
   const webviewIdRef = useRef(activeWebviewId);
   webviewIdRef.current = activeWebviewId;
+  const ownedRef = useRef(ownedWebviewIds);
+  ownedRef.current = ownedWebviewIds;
 
   useEffect(() => {
     let ws: WebSocket | null = null;
@@ -40,7 +49,7 @@ export function useBrowserActBridge(activeWebviewId: string | null | undefined) 
             return;
           }
           if (eventType === 'browser_act_requested') {
-            await handleAct(event.payload, webviewIdRef.current);
+            await handleAct(event.payload, ownedRef.current);
             return;
           }
         } catch {
@@ -75,6 +84,8 @@ interface SnapshotResult {
   elements: Array<{ ref: number; role: string; name: string; tag: string; value?: string }>;
   truncated: boolean;
   status: string;
+  /** Generation these refs were stamped in — presented back on act (#939). */
+  generation?: string;
 }
 
 interface ActResult {
@@ -111,7 +122,7 @@ async function handleSnapshot(requestId: unknown, wvId: string | null | undefine
   }
 }
 
-async function handleAct(payload: unknown, _activeWebviewId: string | null | undefined) {
+async function handleAct(payload: unknown, ownedWebviewIds: ReadonlyArray<string | null>) {
   const p = (payload ?? {}) as {
     request_id?: unknown;
     ref?: unknown;
@@ -119,12 +130,18 @@ async function handleAct(payload: unknown, _activeWebviewId: string | null | und
     value?: unknown;
     webview_id?: unknown;
     page_url?: unknown;
+    generation?: unknown;
   };
   const requestId = p.request_id;
   if (typeof requestId !== 'string' || !requestId) return;
 
-  const binding = resolveActBinding(p, _activeWebviewId);
-  if (!binding) {
+  const binding = resolveActBinding(p, ownedWebviewIds);
+
+  // Another client owns this webview — stay SILENT. Answering (even with an
+  // error) would race the owner's real result through the same one-shot slot.
+  if (binding.kind === 'ignore') return;
+
+  if (binding.kind === 'unbound') {
     await fulfillAct(requestId, {
       ok: false,
       error: 'The browser snapshot identity is missing. Take a fresh snapshot before acting.',
@@ -137,6 +154,7 @@ async function handleAct(payload: unknown, _activeWebviewId: string | null | und
     const result = (await core.invoke('act_on_ref', {
       webviewId: binding.webviewId,
       expectedUrl: binding.pageUrl,
+      expectedGeneration: binding.generation,
       refId: p.ref,
       action: p.action,
       value: p.value ?? null,
@@ -148,19 +166,50 @@ async function handleAct(payload: unknown, _activeWebviewId: string | null | und
   }
 }
 
+export type ActBinding =
+  | { kind: 'act'; webviewId: string; pageUrl: string; generation: string | null }
+  /** A different client's webview owns this act — do nothing at all. */
+  | { kind: 'ignore' }
+  /** Malformed/missing identity — answer with an error so the agent is told. */
+  | { kind: 'unbound' };
+
+/**
+ * Decide this client's role for an act event.
+ *
+ * The act is broadcast on `/events` to EVERY connected command-center client,
+ * and each used to run it independently — so with two windows open, one
+ * `act_on_page` executed TWICE in the webview. The second `fulfill` 404s, which
+ * made it invisible to the agent while a non-idempotent action (submit payment,
+ * confirm delete) had already double-fired (#939).
+ *
+ * The gate is OWNERSHIP, not focus. An act targets the webview the snapshot was
+ * taken in — deliberately, so it still lands after the user switches tabs — so
+ * the client that performs it is the one holding that webview among its tabs,
+ * whether or not it is the active tab.
+ */
 export function resolveActBinding(
-  payload: { webview_id?: unknown; page_url?: unknown },
-  _activeWebviewId: string | null | undefined,
-): { webviewId: string; pageUrl: string } | null {
+  payload: { webview_id?: unknown; page_url?: unknown; generation?: unknown },
+  ownedWebviewIds: ReadonlyArray<string | null>,
+): ActBinding {
   if (
     typeof payload.webview_id !== 'string' ||
     !payload.webview_id ||
     typeof payload.page_url !== 'string' ||
     !payload.page_url
   ) {
-    return null;
+    return { kind: 'unbound' };
   }
-  return { webviewId: payload.webview_id, pageUrl: payload.page_url };
+  // Not my webview, not my act. Silence rather than an error — another client
+  // IS the owner and its answer is the real one; answering would race it.
+  if (!ownedWebviewIds.includes(payload.webview_id)) {
+    return { kind: 'ignore' };
+  }
+  return {
+    kind: 'act',
+    webviewId: payload.webview_id,
+    pageUrl: payload.page_url,
+    generation: typeof payload.generation === 'string' ? payload.generation : null,
+  };
 }
 
 async function fulfillSnapshot(requestId: string, snapshot: SnapshotResult) {
