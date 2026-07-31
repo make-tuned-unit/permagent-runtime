@@ -1181,8 +1181,8 @@ mod tests {
     ///   branch lands here automatically.
     fn extension_tool_inventories() -> Vec<(&'static str, Vec<String>)> {
         use crate::agents::platform_extensions::{
-            analyze, app_conductor, app_perception, apps, browser, chatrecall, desktop, developer,
-            ext_manager, file_to_project, listen, model_manager, orchestrator, people,
+            analyze, app_conductor, app_perception, apps, browser, chatrecall, dashboard, desktop,
+            developer, ext_manager, file_to_project, listen, model_manager, orchestrator, people,
             project_manager, pronunciation, recipe_author, skills, storage_health, summarize,
             summon, todo,
         };
@@ -1229,6 +1229,10 @@ mod tests {
             (
                 chatrecall::EXTENSION_NAME,
                 names(chatrecall::ChatRecallClient::get_tools()),
+            ),
+            (
+                dashboard::EXTENSION_NAME,
+                names(dashboard::DashboardClient::get_tools()),
             ),
             (
                 // Flag-gated at runtime (DESKTOP_CONTROL_ENABLED): `list_tools`

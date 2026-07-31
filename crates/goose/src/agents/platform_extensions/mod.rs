@@ -7,6 +7,7 @@ pub mod browser;
 pub mod chatrecall;
 #[cfg(feature = "code-mode")]
 pub mod code_execution;
+pub mod dashboard;
 pub mod desktop;
 pub mod developer;
 pub mod execution_receipt;
@@ -221,6 +222,37 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                     },
                 ],
                 client_factory: |ctx| Box::new(listen::ListenClient::new(ctx).unwrap()),
+            },
+        );
+
+        map.insert(
+            dashboard::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: dashboard::EXTENSION_NAME,
+                display_name: "Dashboard",
+                description: "Read the live cards on the user's Home dashboard (read_dashboard) — \
+                              local weather, system stats, today's calendar — the same numbers \
+                              they are looking at",
+                default_enabled: true,
+                unprefixed_tools: true,
+                hidden: false,
+                why_it_matters:
+                    "The dashboard already holds answers, localized to this user. Asked for the \
+                     weather, read the weather card instead of searching the web — the card knows \
+                     where they are, needs no API key, and matches what is on their screen. \
+                     Searching for something a card already shows is slower and often wrong.",
+                teaching: &[crate::agents::self_knowledge::TeachingStep {
+                    title: "Read the room",
+                    body: "Bring the user Home and read a card back to them — the weather where \
+                           they actually are, or how their machine is doing — so they see you \
+                           looking at the same screen they are.",
+                    open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                        tab: "Home",
+                        section: None,
+                    }),
+                    confirm: None,
+                }],
+                client_factory: |ctx| Box::new(dashboard::DashboardClient::new(ctx).unwrap()),
             },
         );
 
