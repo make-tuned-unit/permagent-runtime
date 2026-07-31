@@ -210,6 +210,33 @@ pub async fn surface_destructive_proposal(
                 command = %proposal.command,
                 "protected-branch guard refused destructive git op"
             );
+
+            // A guard refusal deliberately creates NO card — there is nothing
+            // for a human to approve. But it must not vanish into a log either:
+            // the Steward attempting a protected-branch op is exactly the kind
+            // of thing Henry should be able to raise. Reported, not actioned.
+            crate::briefings::file_briefing(
+                pool,
+                crate::briefings::NewBriefing {
+                    from_agent: "steward".to_string(),
+                    kind: "guard_refusal".to_string(),
+                    severity: crate::briefings::Severity::Attention,
+                    summary: format!(
+                        "Guard refused {} on protected branch `{}` ({}). No card created.",
+                        proposal.kind.as_str(),
+                        proposal.branch,
+                        proposal.repo_path,
+                    ),
+                    detail: Some(format!(
+                        "Attempted command: {}\nStated reason: {}",
+                        proposal.command, proposal.reason
+                    )),
+                    ref_kind: None,
+                    ref_id: None,
+                },
+            )
+            .await;
+
             Ok(ProposalOutcome::HardBlocked { reason })
         }
         Routing::Autonomous => Ok(ProposalOutcome::NotDestructive),
@@ -264,11 +291,55 @@ pub async fn surface_destructive_proposal(
                     description: Some(description),
                     card_type: Some("standard".to_string()),
                     column_id: None,
+                    // Attribution note: this card is the STEWARD's, not Henry's,
+                    // and `metadata_json.steward = true` above records that. It
+                    // is still authored as "henry" because `cards.created_by`
+                    // is constrained by a DB CHECK that does not include
+                    // "steward"; widening it needs an in-place table rebuild.
+                    // Changing this string without that migration makes card
+                    // creation FAIL, which would silently drop destructive-op
+                    // proposals that must reach a human — the exact outcome the
+                    // Steward exists to prevent.
                     created_by: Some("henry".to_string()),
                     metadata_json: Some(metadata_json),
                 },
             )
-            .await?;
+            .await;
+
+            // If the board write fails, the proposal has nowhere to land: this
+            // runs inside a scheduled job, so the propagated error becomes a log
+            // line nobody is watching, and a destructive operation the Steward
+            // wanted a human to rule on just disappears. Report the failure
+            // itself so Henry can say "I tried to raise something and could
+            // not", then still propagate.
+            let card = match card {
+                Ok(card) => card,
+                Err(e) => {
+                    crate::briefings::file_briefing(
+                        pool,
+                        crate::briefings::NewBriefing {
+                            from_agent: "steward".to_string(),
+                            kind: "proposal_delivery_failed".to_string(),
+                            severity: crate::briefings::Severity::ActionRequired,
+                            summary: format!(
+                                "Could NOT record a proposed {} on `{}` ({}) — the approval card \
+                                 failed to save, so it is not on the board.",
+                                proposal.kind.as_str(),
+                                proposal.branch,
+                                proposal.repo_path,
+                            ),
+                            detail: Some(format!(
+                                "Card write error: {e}\nProposed command: {}\nReason: {}",
+                                proposal.command, proposal.reason
+                            )),
+                            ref_kind: None,
+                            ref_id: None,
+                        },
+                    )
+                    .await;
+                    return Err(e);
+                }
+            };
 
             tracing::info!(
                 target: "steward",
@@ -278,6 +349,28 @@ pub async fn surface_destructive_proposal(
                 risk = ?risk,
                 "destructive git op routed to board for approval"
             );
+
+            // Report up to Henry. The card is where the human decides; this is
+            // so Henry knows a decision is pending and can raise it unprompted
+            // instead of the board waiting to be noticed.
+            crate::briefings::file_briefing(
+                pool,
+                crate::briefings::NewBriefing {
+                    from_agent: "steward".to_string(),
+                    kind: "destructive_proposal".to_string(),
+                    severity: crate::briefings::Severity::ActionRequired,
+                    summary: format!(
+                        "Proposed {} on `{}` ({}) — awaiting approval on the board.",
+                        proposal.kind.as_str(),
+                        proposal.branch,
+                        proposal.repo_path,
+                    ),
+                    detail: Some(proposal.reason.clone()),
+                    ref_kind: Some("card".to_string()),
+                    ref_id: Some(card.id.clone()),
+                },
+            )
+            .await;
 
             Ok(ProposalOutcome::CardCreated {
                 card_id: card.id,
@@ -406,17 +499,20 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
         id: "git_steward",
         display_name: "Git Steward",
         category: crate::agents::self_knowledge::FeatureCategory::Worker,
-        what_it_does:
-            "A scheduled, local-model worker that sweeps the repository for hygiene — it \
-             drafts commit messages, PR descriptions and changelogs, and detects stale \
+        what_it_does: "The agent that owns repo hygiene and CI. It runs on its OWN schedule (the \
+             `git-steward` recipe — its cron belongs to it, not to you), sweeping repositories \
+             to draft commit messages, PR descriptions and changelogs, and to detect stale \
              merged branches and orphaned worktrees (a merged branch whose worktree was \
-             never reaped). It surfaces a single repo-health report card on the board and \
-             writes a recallable Brain memory of what it found; destructive cleanup (branch \
-             deletion) is routed to you as a separate approval card, never run autonomously",
+             never reaped). It surfaces a repo-health card on the board, writes a recallable \
+             Brain memory, and BRIEFS YOU directly — both when it proposes destructive \
+             cleanup (which becomes an approval card for the user) and when its \
+             protected-branch guard refuses an operation outright, which creates no card at \
+             all. Destructive work is never run autonomously",
         why_it_matters:
-            "It turns invisible repo grind into something you can both see and recall: ask \
-             what the Steward found and the answer is a clean fact in the Brain, while the \
-             board shows the actionable items. Read/report only — it proposes, you act",
+            "It turns invisible repo grind into something you can see, recall, and speak to \
+             unprompted. Because it reports to you, you can raise a pending branch deletion \
+             or a refused force-push without the user having to go looking at the board. \
+             Read/report only — it proposes, the user acts",
         // Worker category ⇒ Queryable by the registry invariant. It carries no
         // bespoke live-state arm in `worker_live_state` (its scheduled run is
         // already reflected in the Scheduler's job count), so it renders

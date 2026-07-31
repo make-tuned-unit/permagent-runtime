@@ -21,6 +21,11 @@ interface HenryStatus {
   today_totals: { messages_sent: number; tasks_dispatched: number; scheduled_fires: number; memories_formed: number };
   lifetime_stats: { total_memories: number; total_sessions: number; days_active: number; first_active: string | null };
   next_scheduled: { id: string; cron: string; currently_running: boolean } | null;
+  /** Unread reports from the worker agents — the same list, in the same
+   *  severity order, that Henry sees in his own brief. Optional so an older
+   *  daemon (no `briefings` field) renders without the panel rather than
+   *  crashing on undefined. */
+  briefings?: { id: string; from: string; severity: string; summary: string; created_at: string }[];
 }
 
 // ── Henry's trim color ──────────────────────────────────────────────
@@ -194,6 +199,35 @@ function HenryStatusBody({ status }: { status: HenryStatus | null }) {
         )}
       </Section>
 
+      {/* Briefings from the worker agents. Placed above TODAY because this is
+          the only panel that can be waiting on someone — the same reason it
+          renders first in Henry's own brief. Omitted entirely when nothing is
+          unread rather than showing an empty box. */}
+      {status.briefings && status.briefings.length > 0 && (
+        <Section title="BRIEFINGS" trimColor={COLORS.neonAmber}>
+          {status.briefings.map((b) => (
+            <div key={b.id} style={briefingRowStyle}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span
+                  style={{
+                    ...briefingSeverityStyle,
+                    color:
+                      b.severity === 'action required'
+                        ? COLORS.neonAmber
+                        : COLORS.marbleVeining,
+                    opacity: b.severity === 'info' ? 0.7 : 1,
+                  }}
+                >
+                  {b.severity}
+                </span>
+                <span style={briefingFromStyle}>{b.from}</span>
+              </div>
+              <div style={briefingSummaryStyle}>{b.summary}</div>
+            </div>
+          ))}
+        </Section>
+      )}
+
       {/* Today */}
       <Section title="TODAY" trimColor={COLORS.neonAmber}>
         <StatRow label="Messages sent" value={today.messages_sent} />
@@ -226,6 +260,29 @@ function HenryStatusBody({ status }: { status: HenryStatus | null }) {
 }
 
 // ── Styles ───────────────────────────────────────────────────────────
+
+const briefingRowStyle: React.CSSProperties = {
+  padding: '6px 0',
+  borderBottom: `1px solid ${COLORS.marbleVeining}22`,
+};
+
+const briefingSeverityStyle: React.CSSProperties = {
+  fontSize: 9,
+  letterSpacing: '0.08em',
+  textTransform: 'uppercase',
+  fontWeight: 600,
+};
+
+const briefingFromStyle: React.CSSProperties = {
+  fontSize: 10,
+  color: COLORS.marbleVeining,
+};
+
+const briefingSummaryStyle: React.CSSProperties = {
+  fontSize: 11,
+  marginTop: 2,
+  lineHeight: 1.4,
+};
 
 const spinnerStyle: React.CSSProperties = {
   display: 'inline-block',

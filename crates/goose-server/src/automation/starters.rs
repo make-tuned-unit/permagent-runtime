@@ -20,6 +20,12 @@ struct StarterRecipe {
     id: &'static str,
     cron: &'static str,
     yaml: &'static str,
+    /// Worker persona that OWNS this job, when it is another agent's embodiment
+    /// rather than Henry's own automation. `None` means Henry owns it.
+    ///
+    /// This is what keeps Henry's HUD honest: it reports only jobs it owns, so
+    /// the Steward's cron is no longer advertised as Henry's next scheduled run.
+    owner: Option<&'static str>,
 }
 
 // Crons are stored in 6-field (seconds-prefixed) form so the scheduler never
@@ -31,16 +37,21 @@ const STARTERS: &[StarterRecipe] = &[
         id: "workspace-snapshot",
         cron: "0 0 8 * * 1-5",
         yaml: WORKSPACE_SNAPSHOT_YAML,
+        owner: None,
     },
     StarterRecipe {
         id: "storage-insights",
         cron: "0 0 19 * * 0",
         yaml: STORAGE_INSIGHTS_YAML,
+        owner: None,
     },
+    // The Steward's embodiment: crate::steward's docs call this recipe the
+    // Steward itself, so the job belongs to the Steward, not to Henry.
     StarterRecipe {
         id: "git-steward",
         cron: "0 0 6 * * 1-5",
         yaml: STEWARD_YAML,
+        owner: Some("steward"),
     },
 ];
 
@@ -158,7 +169,7 @@ pub async fn seed_starter_recipes(scheduler: &dyn SchedulerTrait) {
             paused: false,
             current_session_id: None,
             process_start_time: None,
-            worker_persona: None,
+            worker_persona: starter.owner.map(str::to_string),
             starter_id: Some(starter.id.to_string()),
             starter_version: Some(version),
             starter_content_hash: Some(hash),

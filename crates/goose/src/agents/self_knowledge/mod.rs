@@ -208,6 +208,7 @@ pub static SURFACE_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::events::TRACE_FEATURE,
     crate::dictation::MEETING_DICTATION_FEATURE,
     crate::sovereignty::GOVERNANCE_SURFACE_FEATURE,
+    crate::agents::platform_extensions::app_perception::SELF_KNOWLEDGE_FEATURE,
 ];
 
 /// Tool ids that are described under another category and therefore skipped in
@@ -236,6 +237,28 @@ pub struct SelfKnowledgeBuilder {
     /// snapshot-stable. Empty → the section is omitted (e.g. tests, or when
     /// orchestration is not active).
     pub dispatchable_workers: Vec<DispatchableWorker>,
+    /// Unread reports from the worker agents (see [`crate::briefings`]).
+    /// Pre-computed by the async caller.
+    ///
+    /// `None` means the briefings could not be read at all (no pool — tests, a
+    /// degraded boot). `Some(vec![])` means they WERE read and nothing is
+    /// pending. The distinction is load-bearing: with a plain `Vec`, a failed
+    /// read is indistinguishable from a clean slate, and Henry would tell the
+    /// user "nothing to report" on the strength of a query that never ran.
+    pub agent_briefings: Option<Vec<BriefingLine>>,
+}
+
+/// One unread briefing, flattened for rendering. Deliberately a display-only
+/// struct rather than `briefings::Briefing` — the builder must stay pure, and
+/// the brief has no business carrying ids, timestamps or ref links into every
+/// prompt. Henry gets the headline; the detail is a query away.
+#[derive(Debug, Clone)]
+pub struct BriefingLine {
+    /// Reporting agent's display name ("Steward"), not its roster key.
+    pub from: String,
+    /// Rendered severity ("action required", "attention", "info").
+    pub severity: String,
+    pub summary: String,
 }
 
 /// A worker the orchestrator can dispatch a goal to, plus its live status,
@@ -314,6 +337,35 @@ impl SelfKnowledgeBuilder {
              assumption about your own abilities."
         )
         .ok();
+
+        // ── Briefings from the worker agents ──
+        // Placed FIRST among the live sections on purpose: this is the only
+        // part of the brief that can be waiting on you. The agents report to
+        // you; you answer to the user.
+        //
+        // `None` (could not read) omits the section entirely rather than
+        // rendering an empty one — claiming "nothing to report" off a query
+        // that never ran is worse than saying nothing.
+        if let Some(briefings) = &self.agent_briefings {
+            writeln!(out, "\n## Briefings from your agents").ok();
+            writeln!(
+                out,
+                "Your worker agents — the Steward, the Watcher — report their work \
+                 to you. They post to boards and panels for the user, but they \
+                 also brief you directly, so you can raise what matters unprompted \
+                 instead of waiting to be asked. Seeing a briefing is not approving \
+                 it: destructive work still waits on a human."
+            )
+            .ok();
+            if briefings.is_empty() {
+                writeln!(out, "\nNothing unread right now.").ok();
+            } else {
+                writeln!(out, "\nUnread:").ok();
+                for b in briefings {
+                    writeln!(out, "- **{}** [{}] — {}", b.from, b.severity, b.summary).ok();
+                }
+            }
+        }
 
         // ── Tools ──
         writeln!(out, "\n## Tools you can call").ok();
@@ -593,6 +645,7 @@ mod tests {
         "trace",
         "meeting_dictation",
         "governance",
+        "app_awareness",
     ];
     /// The Phase-2-v1 lesson set — each must resolve to a descriptor with steps.
     const V1_LESSON_IDS: &[&str] = &["reader", "brain", "scheduler", "persona"];
@@ -651,6 +704,7 @@ mod tests {
             agent_display_name: "Aria".to_string(),
             scheduled_job_count: None,
             dispatchable_workers: Vec::new(),
+            agent_briefings: None,
         }
         .build();
         assert!(brief.contains("## Guardrails you operate under"));
@@ -728,6 +782,7 @@ mod tests {
             agent_display_name: "Aria".to_string(),
             scheduled_job_count: Some(3),
             dispatchable_workers: Vec::new(),
+            agent_briefings: None,
         }
         .build();
 
@@ -770,6 +825,7 @@ mod tests {
             agent_display_name: "Aria".to_string(),
             scheduled_job_count: None,
             dispatchable_workers: Vec::new(),
+            agent_briefings: None,
         }
         .build();
 
@@ -797,6 +853,7 @@ mod tests {
             agent_display_name: "Aria".to_string(),
             scheduled_job_count: None,
             dispatchable_workers: Vec::new(),
+            agent_briefings: None,
         }
         .build();
 
@@ -829,6 +886,7 @@ mod tests {
             agent_display_name: "Aria".to_string(),
             scheduled_job_count: None,
             dispatchable_workers: Vec::new(),
+            agent_briefings: None,
         }
         .build();
 
@@ -856,6 +914,7 @@ mod tests {
             agent_display_name: "Aria".to_string(),
             scheduled_job_count: None,
             dispatchable_workers: Vec::new(),
+            agent_briefings: None,
         }
         .build();
 
@@ -876,6 +935,7 @@ mod tests {
             agent_display_name: "Aria".to_string(),
             scheduled_job_count: None,
             dispatchable_workers: Vec::new(),
+            agent_briefings: None,
         }
         .build();
         // It appears once (under workers). Exactly one bold occurrence.
@@ -893,6 +953,7 @@ mod tests {
             agent_display_name: "Aria".to_string(),
             scheduled_job_count: None,
             dispatchable_workers: Vec::new(),
+            agent_briefings: None,
         }
         .build();
         // Rendered once, under Tools (it is a platform extension, not hidden).
@@ -919,6 +980,7 @@ mod tests {
             agent_display_name: "Aria".to_string(),
             scheduled_job_count: None,
             dispatchable_workers: Vec::new(),
+            agent_briefings: None,
         }
         .build();
         assert!(!empty.contains("Workers you can dispatch goals to"));
@@ -937,11 +999,64 @@ mod tests {
                     status: "engine pending".to_string(),
                 },
             ],
+            agent_briefings: None,
         }
         .build();
         assert!(brief.contains("## Workers you can dispatch goals to"));
         assert!(brief.contains("**Claude Code** — available"));
         assert!(brief.contains("**Librarian** — engine pending"));
+    }
+
+    /// The three states must stay distinguishable. `None` (could not read) and
+    /// `Some(vec![])` (read, nothing pending) are NOT the same claim, and
+    /// collapsing them would have Henry telling the user his agents have
+    /// nothing to report on the strength of a query that never ran.
+    #[test]
+    fn briefings_distinguish_unreadable_from_empty_from_present() {
+        let base = |briefings| {
+            SelfKnowledgeBuilder {
+                agent_display_name: "Henry".to_string(),
+                scheduled_job_count: None,
+                dispatchable_workers: Vec::new(),
+                agent_briefings: briefings,
+            }
+            .build()
+        };
+
+        // Could not read → the section is omitted entirely. Henry says nothing
+        // about briefings rather than something false.
+        let unreadable = base(None);
+        assert!(
+            !unreadable.contains("Briefings from your agents"),
+            "an unreadable briefing store must omit the section, not render it empty"
+        );
+
+        // Read, nothing pending → the section renders and says so.
+        let empty = base(Some(Vec::new()));
+        assert!(empty.contains("## Briefings from your agents"));
+        assert!(empty.contains("Nothing unread right now."));
+
+        // Present → each briefing is listed with its reporter and severity.
+        let present = base(Some(vec![BriefingLine {
+            from: "Steward".to_string(),
+            severity: "action required".to_string(),
+            summary: "Proposed branch delete on `feat/x` — awaiting approval.".to_string(),
+        }]));
+        assert!(present.contains("**Steward** [action required]"));
+        assert!(present.contains("awaiting approval"));
+        assert!(
+            !present.contains("Nothing unread right now."),
+            "a populated list must not also claim nothing is unread"
+        );
+
+        // The standing relationship is stated whenever the section renders, so
+        // Henry knows his agents report to him even on a quiet day.
+        for brief in [&empty, &present] {
+            assert!(
+                brief.contains("report their work"),
+                "the brief must state the reporting relationship, not just the backlog"
+            );
+        }
     }
 
     #[test]
@@ -993,6 +1108,7 @@ mod tests {
             agent_display_name: "Aria".to_string(),
             scheduled_job_count: None,
             dispatchable_workers: Vec::new(),
+            agent_briefings: None,
         }
         .build();
         // The harness + cost optimizer render under Surfaces and self-describe
@@ -1065,9 +1181,10 @@ mod tests {
     ///   branch lands here automatically.
     fn extension_tool_inventories() -> Vec<(&'static str, Vec<String>)> {
         use crate::agents::platform_extensions::{
-            analyze, app_conductor, apps, browser, chatrecall, desktop, developer, ext_manager,
-            file_to_project, listen, model_manager, orchestrator, people, project_manager,
-            pronunciation, recipe_author, skills, storage_health, summarize, summon, todo,
+            analyze, app_conductor, app_perception, apps, browser, chatrecall, desktop, developer,
+            ext_manager, file_to_project, listen, model_manager, orchestrator, people,
+            project_manager, pronunciation, recipe_author, skills, storage_health, summarize,
+            summon, todo,
         };
 
         fn names(tools: Vec<rmcp::model::Tool>) -> Vec<String> {
@@ -1096,6 +1213,10 @@ mod tests {
             (
                 app_conductor::EXTENSION_NAME,
                 names(app_conductor::AppConductorClient::get_tools()),
+            ),
+            (
+                app_perception::EXTENSION_NAME,
+                names(app_perception::AppPerceptionClient::get_tools()),
             ),
             (
                 apps::EXTENSION_NAME,

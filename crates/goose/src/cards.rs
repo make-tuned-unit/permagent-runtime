@@ -671,6 +671,13 @@ pub async fn create_card(pool: &Pool<Sqlite>, input: CreateCard) -> Result<Card,
     }
 
     let created_by = input.created_by.as_deref().unwrap_or("user");
+    // Agents allowed to author a card. This list is MIRRORED BY A DB CHECK
+    // constraint on `cards.created_by` — widening it here alone does not work:
+    // the insert then passes Rust validation and fails at the database with an
+    // opaque constraint error instead of a clear one. Adding an author means
+    // an in-place table rebuild (the decisions.kind precedent), so it is not a
+    // one-line change. Agents not on this list author as "henry" and record
+    // their true identity in `metadata_json` instead.
     if ![
         "user",
         "henry",
@@ -942,6 +949,14 @@ pub async fn delete_card(pool: &Pool<Sqlite>, card_id: &str) -> Result<bool, Str
         .execute(pool)
         .await
         .map_err(|e| e.to_string())?;
+
+    // A card an agent briefed Henry about is now gone, so the briefing that
+    // points at it is answered. Without this, Henry keeps raising a decision
+    // that no longer exists. Best-effort — deleting a card must not fail
+    // because a briefing could not be cleared.
+    if result.rows_affected() > 0 {
+        crate::briefings::resolve_for_ref(pool, "card", card_id).await;
+    }
 
     Ok(result.rows_affected() > 0)
 }

@@ -24,11 +24,16 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
              while newer memories piled up elsewhere) or fresh news about a project the user is \
              actively working on — and reaches out at most once a day. It arrives as an in-app and \
              desktop notification, and (opt-in) a phone push. It only ever surfaces; it never acts, \
-             and it stays silent when nothing clears the bar",
+             and it stays silent when nothing clears the bar. Separately, once or twice a day \
+             per project, it composes a short project insight from REAL per-project signals only \
+             (never invented) onto the project overview — and briefs you about it, so you can \
+             mention it without the user opening the panel",
         why_it_matters:
             "It is how the agent keeps the user on track without being asked — resurfacing \
              forgotten threads and catching news around their projects, the proactive presence a \
-             permanent agent with a memory is uniquely able to offer. Gentle and rare by \
+             permanent agent with a memory is uniquely able to offer. Because it reports to you \
+             as well as to the panel, its observations reach the user through you rather than \
+             waiting to be found. Gentle and rare by \
              construction: one nudge a day at most, quiet hours, deduped by subject and story, and \
              phone push stays off until the user opts in",
         // Workers are Queryable by contract; the Watcher has no live status to
