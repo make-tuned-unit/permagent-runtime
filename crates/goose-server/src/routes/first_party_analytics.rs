@@ -252,6 +252,11 @@ fn mint_site_key() -> String {
     hex::encode(bytes)
 }
 
+// Currently unused: the install snippet is served through the install-brief
+// payload rather than generated here. Kept rather than deleted because it is
+// the canonical sendBeacon/keepalive snippet and the brief may want to share
+// it — delete it if the brief is now the single source of truth.
+#[allow(dead_code)]
 fn snippet_for(ingest_url: &str) -> String {
     // sendBeacon with a stringified body avoids a CORS preflight entirely
     // (text/plain simple request); fetch keepalive is the fallback.
@@ -617,6 +622,10 @@ fn setup_response(
 
 /// Base URL guess from the request's Host header — right for same-machine
 /// dev, and the UI lets the user override it for anything public.
+// Currently unused: callers derive the base URL from the stored project site
+// URL instead of the request headers. Kept as the header-derivation fallback
+// for a hosting setup where the site URL is not recorded.
+#[allow(dead_code)]
 fn base_from_headers(headers: &HeaderMap) -> Option<String> {
     headers
         .get(axum::http::header::HOST)
@@ -1185,13 +1194,26 @@ async fn verify_install(
                     Ok(body) => {
                         // A meta tag counts too — frameworks set it that way.
                         if csp.is_none() {
-                            if let Some(idx) = body
-                                .to_lowercase()
-                                .find("http-equiv=\"content-security-policy\"")
+                            // Search AND slice the same lowercased string. The
+                            // previous version found the index in
+                            // `body.to_lowercase()` and then sliced `body` —
+                            // lowercasing can change byte length for non-ASCII
+                            // input, so that offset could be wrong, land
+                            // mid-character, or sit past the end and panic.
+                            // CSP directives are case-insensitive, so matching
+                            // on the lowered copy loses nothing here.
+                            let lowered = body.to_lowercase();
+                            if let Some(idx) =
+                                lowered.find("http-equiv=\"content-security-policy\"")
                             {
-                                if let Some(content) = body[idx..].split("content=\"").nth(1) {
+                                if let Some(content) = lowered
+                                    .get(idx..)
+                                    .and_then(|tail| tail.split("content=\"").nth(1))
+                                {
                                     if let Some(end) = content.find('"') {
-                                        csp = Some(content[..end].to_string());
+                                        if let Some(value) = content.get(..end) {
+                                            csp = Some(value.to_string());
+                                        }
                                     }
                                 }
                             }

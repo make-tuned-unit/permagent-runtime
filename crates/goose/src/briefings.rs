@@ -50,7 +50,10 @@ impl Severity {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    /// Parse the value stored in `agent_briefings.severity`. Deliberately NOT
+    /// `FromStr` — this is a lossy DB-column decode that cannot fail (unknown
+    /// values degrade to `Info`), whereas `FromStr` implies a fallible parse.
+    pub fn from_stored(s: &str) -> Self {
         match s {
             "action_required" => Severity::ActionRequired,
             "attention" => Severity::Attention,
@@ -210,8 +213,7 @@ pub async fn acknowledge(pool: &Pool<Sqlite>, ids: &[String]) -> Result<u64> {
         return Ok(0);
     }
     let now = chrono::Utc::now().to_rfc3339();
-    let placeholders = std::iter::repeat("?")
-        .take(ids.len())
+    let placeholders = std::iter::repeat_n("?", ids.len())
         .collect::<Vec<_>>()
         .join(",");
     let sql = format!(
@@ -261,7 +263,7 @@ fn row_to_briefing(row: sqlx::sqlite::SqliteRow) -> Briefing {
         id: row.get("id"),
         from_agent: row.get("from_agent"),
         kind: row.get("kind"),
-        severity: Severity::from_str(&row.get::<String, _>("severity")),
+        severity: Severity::from_stored(&row.get::<String, _>("severity")),
         summary: row.get("summary"),
         detail: row.get("detail"),
         ref_kind: row.get("ref_kind"),

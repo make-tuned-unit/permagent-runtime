@@ -113,6 +113,12 @@ fn default_env_filter() -> EnvFilter {
         // row write failed / no db pool) under this target — an unlogged cloud
         // call is a lying audit, so these lines must never be dropped (#580).
         .add_directive("sovereignty=info".parse().unwrap())
+        // Analytics drain: the outbound pull loop logs what it drained, what it
+        // skipped, and why a drain failed. Without a directive the whole target
+        // is silently dropped — and a drain that quietly stopped working looks
+        // identical to a site with no traffic (#580, caught by the guard test
+        // below rather than by anyone noticing missing events).
+        .add_directive("analytics_drain=info".parse().unwrap())
         .add_directive(LevelFilter::WARN.into())
 }
 
