@@ -116,20 +116,19 @@ pub fn validate_act(action: &str, value: Option<&str>) -> Result<(), String> {
 async fn read_snapshot(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<PageSnapshot>, StatusCode> {
-    let (request_id, rx) = state.browser_snapshot_bridge.request().await;
+    // `slot` owns the pending entry — see PendingSlot: an abandoned request
+    // releases it on drop instead of leaking the map entry.
+    let (slot, rx) = state.browser_snapshot_bridge.request();
 
     permagent::events::emit(permagent::events::PermagentEvent::new(
         permagent::events::PermagentEventType::BrowserSnapshotRequested,
-        serde_json::json!({ "request_id": request_id }),
+        serde_json::json!({ "request_id": slot.id() }),
     ));
 
     match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
         Ok(Ok(snapshot)) => Ok(Json(snapshot)),
         Ok(Err(_)) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-        Err(_) => {
-            state.browser_snapshot_bridge.cancel(&request_id).await;
-            Err(StatusCode::GATEWAY_TIMEOUT)
-        }
+        Err(_) => Err(StatusCode::GATEWAY_TIMEOUT),
     }
 }
 
@@ -139,11 +138,7 @@ async fn fulfill_snapshot(
     Path(request_id): Path<String>,
     Json(snapshot): Json<PageSnapshot>,
 ) -> StatusCode {
-    if state
-        .browser_snapshot_bridge
-        .fulfill(&request_id, snapshot)
-        .await
-    {
+    if state.browser_snapshot_bridge.fulfill(&request_id, snapshot) {
         StatusCode::OK
     } else {
         StatusCode::NOT_FOUND
@@ -161,12 +156,12 @@ async fn act(
         return Err(StatusCode::UNPROCESSABLE_ENTITY);
     }
 
-    let (request_id, rx) = state.browser_act_bridge.request().await;
+    let (slot, rx) = state.browser_act_bridge.request();
 
     permagent::events::emit(permagent::events::PermagentEvent::new(
         permagent::events::PermagentEventType::BrowserActRequested,
         serde_json::json!({
-            "request_id": request_id,
+            "request_id": slot.id(),
             "ref": req.ref_id,
             "action": req.action,
             "value": req.value,
@@ -179,10 +174,7 @@ async fn act(
     match tokio::time::timeout(std::time::Duration::from_secs(15), rx).await {
         Ok(Ok(result)) => Ok(Json(result)),
         Ok(Err(_)) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-        Err(_) => {
-            state.browser_act_bridge.cancel(&request_id).await;
-            Err(StatusCode::GATEWAY_TIMEOUT)
-        }
+        Err(_) => Err(StatusCode::GATEWAY_TIMEOUT),
     }
 }
 
@@ -192,7 +184,7 @@ async fn fulfill_act(
     Path(request_id): Path<String>,
     Json(result): Json<ActResult>,
 ) -> StatusCode {
-    if state.browser_act_bridge.fulfill(&request_id, result).await {
+    if state.browser_act_bridge.fulfill(&request_id, result) {
         StatusCode::OK
     } else {
         StatusCode::NOT_FOUND
