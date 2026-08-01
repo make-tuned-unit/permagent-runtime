@@ -335,15 +335,25 @@ pub async fn probe_extension(
         ),
     );
 
-    let probe = async {
+    // Run the probe on its OWN task and time out the join handle, NOT the
+    // future inline. Starting an extension resolves its `env_keys` through the
+    // keychain, and `SecKeychainFindGenericPassword` is a BLOCKING call: on a
+    // fresh ad-hoc-signed build the ACL no longer matches the new cdhash, so it
+    // sits on a "allow access" dialog indefinitely. Awaited inline that blocks
+    // the worker thread, the timer never gets polled, and `timeout` cannot fire
+    // — the request hangs forever instead of failing at PROBE_TIMEOUT (observed
+    // 2026-07-31: two probes hung past 60s with a 25s timeout set). Timing out
+    // a separate task lets the caller get an honest answer even while the
+    // blocked thread is still parked.
+    let probe = tokio::spawn(async move {
         manager.add_extension(config, None, None, None).await?;
         manager
             .get_prefixed_tools("extension-probe", Some(key.clone()))
             .await
-    };
+    });
 
     match tokio::time::timeout(PROBE_TIMEOUT, probe).await {
-        Ok(Ok(tools)) if !tools.is_empty() => Ok(Json(ExtensionProbeResponse {
+        Ok(Ok(Ok(tools))) if !tools.is_empty() => Ok(Json(ExtensionProbeResponse {
             ok: true,
             tool_count: tools.len(),
             tools: tools.iter().map(|t| t.name.to_string()).collect(),
@@ -352,10 +362,14 @@ pub async fn probe_extension(
         // Started but advertised nothing: not a working search provider, and
         // saying "ok" here is exactly the false green light this route exists
         // to remove.
-        Ok(Ok(_)) => fail("The server started but offered no tools.".to_string()),
-        Ok(Err(e)) => fail(format!("{e}")),
+        Ok(Ok(Ok(_))) => fail("The server started but offered no tools.".to_string()),
+        Ok(Ok(Err(e))) => fail(format!("{e}")),
+        // The probe task itself died (panic or cancellation) — report it rather
+        // than letting a crashed probe read as a plain failure.
+        Ok(Err(e)) => fail(format!("The probe did not complete: {e}")),
         Err(_) => fail(format!(
-            "The server did not answer within {}s.",
+            "The server did not answer within {}s. If a keychain access dialog \
+             is waiting on screen, allow it and test again.",
             PROBE_TIMEOUT.as_secs()
         )),
     }
