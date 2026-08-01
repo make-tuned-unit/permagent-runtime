@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use futures::stream::BoxStream;
-use futures::{stream, FutureExt, Stream, StreamExt, TryStreamExt};
+use futures::{stream, Stream, StreamExt, TryStreamExt};
 use tracing_futures::Instrument;
 use uuid::Uuid;
 
@@ -85,6 +85,27 @@ fn redacted_tool_input_summary(
         })
         .to_string(),
     )
+}
+
+/// Best-effort error text from a tool result that carries `is_error`.
+///
+/// The failure is in the CONTENT, not the transport, so there is no `Err` to
+/// stringify. Falls back to a named placeholder rather than an empty string —
+/// `tasks.error_message` is a diagnostic column and a blank one is the same
+/// error-dilution this whole change exists to remove.
+fn tool_error_text(result: &rmcp::model::CallToolResult) -> String {
+    let joined = result
+        .content
+        .iter()
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let trimmed = joined.trim();
+    if trimmed.is_empty() {
+        "tool reported is_error with no text content".to_string()
+    } else {
+        trimmed.chars().take(2000).collect()
+    }
 }
 
 fn tool_task_description(
@@ -738,25 +759,12 @@ impl Agent {
             result,
         );
 
-        // Task logging: completion/failure. The result is a ToolCallResult containing
-        // a boxed future, so we log at this point with best-effort output capture.
-        if let Some(ref tid) = task_id {
+        // Auto-skills: repetition detection keys on the argument SHAPE, which is
+        // known at dispatch and does not depend on how the call turns out.
+        // Deliberately left here rather than moved into the resolved future,
+        // which cannot hold `&self`.
+        if task_id.is_some() {
             if let Some(logger) = crate::tasks::global() {
-                let duration_ms = task_start.elapsed().as_millis() as u64;
-                // We don't have the resolved result yet (it's a future), so log
-                // completion with empty output. The actual result is consumed later
-                // by the agent loop. This is a Phase 1 trade-off.
-                logger
-                    .log_task_completed(
-                        tid,
-                        Some(&tool_name_str),
-                        args_value.as_ref(),
-                        &serde_json::json!({}),
-                        duration_ms,
-                    )
-                    .await;
-
-                // Auto-skills: check for repetition patterns after completion
                 let skills_config = crate::tasks::SkillsConfig::from_config();
                 if let Some(proposal_prompt) =
                     logger.check_repetition_candidates(&skills_config).await
@@ -769,15 +777,82 @@ impl Agent {
 
         debug!("WAITING_TOOL_END: {}", tool_call.name);
 
+        // Task outcome is recorded when the result RESOLVES, from the result
+        // itself.
+        //
+        // This used to log `completed` unconditionally at dispatch, before the
+        // boxed future had run, with an empty output blob — annotated in-source
+        // as a Phase 1 trade-off. The consequence reached much further than the
+        // tasks table: `log_task_completed` drives
+        // `recognition::write_back_task_outcome`, which stamps `Positive` over
+        // every still-unattributed recall in the session. So a failing tool call
+        // recorded a success, and `recognition_events.outcome_label` — the
+        // useful/ignored/wrong column that is the closest thing to ground truth
+        // about whether recall helped — could essentially never become `wrong`.
+        // Any evaluation or training signal built on that label was reading a
+        // constant.
+        //
+        // A tool call counts as failed when the future errors OR the result
+        // carries `is_error` (the MCP-level failure the transport reports as a
+        // successful round-trip — the case a naive `Result` check misses).
+        let task_outcome = task_id.map(|tid| (tid, tool_name_str.clone(), args_value.clone()));
+        // Split the stream off before the future moves into the async block.
+        let ToolCallResult {
+            notification_stream,
+            result: result_future,
+        } = result;
+        let resolved = async move {
+            let out = result_future.await;
+            let out = super::large_response_handler::process_tool_response(out);
+
+            if let Some((tid, tool_name, args)) = task_outcome {
+                if let Some(logger) = crate::tasks::global() {
+                    let duration_ms = task_start.elapsed().as_millis() as u64;
+                    match &out {
+                        Ok(call_result) if call_result.is_error != Some(true) => {
+                            logger
+                                .log_task_completed(
+                                    &tid,
+                                    Some(&tool_name),
+                                    args.as_ref(),
+                                    &serde_json::json!({}),
+                                    duration_ms,
+                                )
+                                .await;
+                        }
+                        Ok(call_result) => {
+                            logger
+                                .log_task_failed_with_shape(
+                                    &tid,
+                                    Some(&tool_name),
+                                    args.as_ref(),
+                                    &tool_error_text(call_result),
+                                )
+                                .await;
+                        }
+                        Err(e) => {
+                            logger
+                                .log_task_failed_with_shape(
+                                    &tid,
+                                    Some(&tool_name),
+                                    args.as_ref(),
+                                    &e.to_string(),
+                                )
+                                .await;
+                        }
+                    }
+                }
+            }
+            out
+        };
+
         (
             request_id,
             Ok(ToolCallResult {
-                notification_stream: result.notification_stream,
-                result: Box::new(
-                    result
-                        .result
-                        .map(super::large_response_handler::process_tool_response),
-                ),
+                notification_stream,
+                // The slot wants `Unpin`; an async block is not, so pin it first
+                // (`Pin<Box<F>>` is both `Future` and `Unpin`).
+                result: Box::new(Box::pin(resolved)),
             }),
         )
     }
