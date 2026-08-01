@@ -294,6 +294,52 @@ pub struct ModelUpgradePayload {
     pub current_model: Option<String>,
 }
 
+/// A capability the agent found itself missing while trying to do what the user
+/// asked — surfaced as a request rather than acted on.
+///
+/// The motivating case: asked for the weather, the agent tried a search API, four
+/// government URLs, `weather.com`, DuckDuckGo and `curl` over several minutes,
+/// while the answer sat on the user's own dashboard. It had no tool to read it.
+/// The useful output of that struggle is not a lesson telling it to try harder —
+/// it is "I lack a tool for this, here is the evidence, should I have one?".
+///
+/// Deliberately evidence-first. `attempts` are the concrete things that were
+/// tried and failed; without them this is an agent asking for capabilities on a
+/// hunch, which is the phantom-guardrail failure mode (fabricating a problem to
+/// look diligent about solving it).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CapabilityGapPayload {
+    /// What the user was trying to get done, in their terms.
+    pub user_goal: String,
+    /// The capability that would have made it one step instead of many.
+    pub missing_capability: String,
+    /// What was actually tried, in order, and how each failed. The evidence.
+    pub attempts: Vec<String>,
+    /// Session the struggle happened in, so the transcript stays reachable.
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// An existing tool that nearly covers it, if any — often the answer is
+    /// "extend that one" rather than "build a new one".
+    #[serde(default)]
+    pub nearest_existing_tool: Option<String>,
+}
+
+fn validate_capability_gap_payload(p: &CapabilityGapPayload) -> Result<(), String> {
+    if p.user_goal.trim().is_empty() {
+        return Err("capability_gap requires a non-empty user_goal".to_string());
+    }
+    if p.missing_capability.trim().is_empty() {
+        return Err("capability_gap requires a non-empty missing_capability".to_string());
+    }
+    // Evidence, not vibes: a request with nothing tried is a guess.
+    if p.attempts.iter().all(|a| a.trim().is_empty()) {
+        return Err(
+            "capability_gap requires at least one concrete attempt that failed".to_string(),
+        );
+    }
+    Ok(())
+}
+
 fn validate_model_upgrade_payload(p: &ModelUpgradePayload) -> Result<(), String> {
     if p.model_id.trim().is_empty() {
         return Err("model_upgrade requires a non-empty model_id".to_string());
@@ -698,6 +744,7 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
         "model_upgrade",
         "tool_approval",
         "session_gate",
+        "capability_gap",
     ]
     .contains(&req.kind.as_str())
     {
@@ -775,6 +822,12 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
             Ok(p) => validate_session_gate_payload(&p),
             Err(e) => Err(e.to_string()),
         },
+        "capability_gap" => {
+            match serde_json::from_value::<CapabilityGapPayload>(req.payload.clone()) {
+                Ok(p) => validate_capability_gap_payload(&p),
+                Err(e) => Err(e.to_string()),
+            }
+        }
         _ => unreachable!("kind validated above"),
     };
     payload_result.map_err(|e| format!("payload failed schema for kind '{}': {}", req.kind, e))

@@ -29,6 +29,7 @@ pub mod project_manager;
 pub mod pronunciation;
 pub mod publish_sequence;
 pub mod recipe_author;
+pub mod retrospect;
 pub mod skills;
 pub mod steward;
 pub mod storage_health;
@@ -253,6 +254,37 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                     confirm: None,
                 }],
                 client_factory: |ctx| Box::new(dashboard::DashboardClient::new(ctx).unwrap()),
+            },
+        );
+
+        map.insert(
+            retrospect::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: retrospect::EXTENSION_NAME,
+                display_name: "Retrospect",
+                description: "Review where you struggled in a session (review_struggles) and ask \
+                              the user for a tool you turned out not to have \
+                              (request_capability) — a Decision Inbox proposal, not a build",
+                default_enabled: true,
+                unprefixed_tools: true,
+                hidden: false,
+                why_it_matters:
+                    "Some failures are you using a tool badly; some are you not having the tool. \
+                     review_struggles tells them apart from the recorded outcome of every call — \
+                     the same shape retried unchanged reads differently from six different \
+                     formulations that all missed. When it is a missing tool, say so and file \
+                     request_capability with what you tried, rather than flailing again next \
+                     time. Asking for a better tool is not a failure; hiding the gap is.",
+                teaching: &[crate::agents::self_knowledge::TeachingStep {
+                    title: "Look back at a rough patch",
+                    body: "After a session that went badly, call review_struggles and read the \
+                           result back honestly — including that a confidently wrong answer \
+                           leaves no failed call behind, so silence there is not proof it went \
+                           well. If a tool was missing, file request_capability.",
+                    open_surface: None,
+                    confirm: None,
+                }],
+                client_factory: |ctx| Box::new(retrospect::RetrospectClient::new(ctx).unwrap()),
             },
         );
 

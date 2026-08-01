@@ -1183,8 +1183,8 @@ mod tests {
         use crate::agents::platform_extensions::{
             analyze, app_conductor, app_perception, apps, browser, chatrecall, dashboard, desktop,
             developer, ext_manager, file_to_project, listen, model_manager, orchestrator, people,
-            project_manager, pronunciation, recipe_author, skills, storage_health, summarize,
-            summon, todo,
+            project_manager, pronunciation, recipe_author, retrospect, skills, storage_health,
+            summarize, summon, todo,
         };
 
         fn names(tools: Vec<rmcp::model::Tool>) -> Vec<String> {
@@ -1233,6 +1233,10 @@ mod tests {
             (
                 dashboard::EXTENSION_NAME,
                 names(dashboard::DashboardClient::get_tools()),
+            ),
+            (
+                retrospect::EXTENSION_NAME,
+                names(retrospect::RetrospectClient::get_tools()),
             ),
             (
                 // Flag-gated at runtime (DESKTOP_CONTROL_ENABLED): `list_tools`
