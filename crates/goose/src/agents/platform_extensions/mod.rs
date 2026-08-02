@@ -263,9 +263,10 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: retrospect::EXTENSION_NAME,
                 display_name: "Retrospect",
                 description: "Review where you struggled in a session (review_struggles), record \
-                              a grounded failure without fixing it (report_failure), and ask the \
+                              a grounded failure without fixing it (report_failure), propose a \
+                              regression test that pins it (propose_regression), and ask the \
                               user for a tool you turned out not to have (request_capability) — \
-                              a Decision Inbox proposal, not a build",
+                              Decision Inbox proposals, never builds",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,

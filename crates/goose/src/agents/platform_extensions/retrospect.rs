@@ -275,6 +275,41 @@ impl RetrospectClient {
         }))
         .expect("static schema");
 
+        let regression_schema: JsonObject = serde_json::from_value(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "incident_id": {
+                    "type": "string",
+                    "description": "The incident this regression pins. REQUIRED — a regression with no incident behind it is an invented test, not a learned one."
+                },
+                "task_id": {
+                    "type": "string",
+                    "description": "Directory-safe slug: lowercase letters, digits and dashes only (e.g. 'weather-card-read'). Becomes a directory name, so anything else is refused."
+                },
+                "title": { "type": "string", "description": "Short human-readable title." },
+                "prompt": {
+                    "type": "string",
+                    "description": "The objective handed to the harness — phrase it as the user's original request, not as a hint about the fix."
+                },
+                "test": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Grader command as an argv vector, e.g. [\"python3\", \"check.py\"]. Exit 0 means solved."
+                },
+                "oracle_filename": {
+                    "type": "string",
+                    "description": "Bare filename for the grader, e.g. 'check.py'. Not a path."
+                },
+                "oracle_source": {
+                    "type": "string",
+                    "description": "The grader's full source. Must be deterministic and must exit NON-ZERO on the failure being pinned — write it so it would have caught the original incident."
+                },
+                "category": { "type": "string", "description": "Optional grouping label." }
+            },
+            "required": ["incident_id", "task_id", "title", "prompt", "test", "oracle_filename", "oracle_source"]
+        }))
+        .expect("static schema");
+
         vec![
             Tool::new(
                 "review_struggles".to_string(),
@@ -302,6 +337,18 @@ impl RetrospectClient {
                     .to_string(),
                 report_schema,
             ),
+            Tool::new(
+                "propose_regression".to_string(),
+                "Propose a regression test that pins a confirmed incident, so the same failure \
+                 cannot come back unnoticed. This is the MOST VALUABLE thing you can do after a \
+                 failure: audits of production agents block ~87% of recurrences but predict ~0% of \
+                 novel ones, so a test is worth more than a note telling yourself to be careful. \
+                 Requires the incident_id it pins and a deterministic grader that exits non-zero \
+                 on the failure. Files a Decision Inbox proposal — nothing is written to disk \
+                 until the user approves."
+                    .to_string(),
+                regression_schema,
+            ),
         ]
     }
 
@@ -320,6 +367,54 @@ impl RetrospectClient {
             .map_err(|e| format!("Could not read task history: {e}"))?;
 
         Ok(vec![Content::text(format_struggles(session_id, &rows))])
+    }
+
+    /// File a proposed regression. The durable artifact of the loop: audits of a
+    /// production agent runtime measured 0% ex-ante prevention but 87%
+    /// regression blocking, so a test that fails if this recurs is worth more
+    /// than a lesson telling the agent to be more careful.
+    async fn handle_propose_regression(
+        &self,
+        payload: crate::decisions::RegressionProposalPayload,
+    ) -> Result<Vec<Content>, String> {
+        let pool = crate::tasks::global()
+            .map(|logger| logger.pool().clone())
+            .ok_or_else(|| "Decision storage is unavailable in this process.".to_string())?;
+
+        let headline = format!(
+            "Regression: {}",
+            payload.title.chars().take(60).collect::<String>()
+        );
+        let detail = format!(
+            "Pins incident {}.\n\nTask id: {}\nPrompt given to the harness:\n{}\n\nGrader ({}), \
+             run as `{}`:\n{}",
+            payload.incident_id,
+            payload.task_id,
+            payload.prompt,
+            payload.oracle_filename,
+            payload.test.join(" "),
+            payload.oracle_source,
+        );
+        let payload_json = serde_json::to_value(&payload)
+            .map_err(|e| format!("Could not serialize the proposal: {e}"))?;
+
+        let req = crate::decisions::NewDecision {
+            kind: "regression_proposal".to_string(),
+            headline: Some(headline),
+            detail: Some(detail),
+            payload: payload_json,
+            ..Default::default()
+        };
+        let decision = crate::decisions::create_decision(&pool, req)
+            .await
+            .map_err(|e| format!("Could not file the regression: {e}"))?;
+
+        Ok(vec![Content::text(format!(
+            "Filed a regression proposal in the Decision Inbox ({}). Nothing is written until the \
+             user approves it. Say plainly that you have proposed a test, not that the failure is \
+             now prevented.",
+            decision.id
+        ))])
     }
 
     async fn handle_request(
@@ -451,6 +546,21 @@ impl McpClientTrait for RetrospectClient {
                     .map(str::to_string)
                     .unwrap_or_else(|| ctx.session_id.clone());
                 match self.handle_review(&session_id).await {
+                    Ok(content) => Ok(CallToolResult::success(content)),
+                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
+                }
+            }
+            "propose_regression" => {
+                let payload: crate::decisions::RegressionProposalPayload =
+                    match serde_json::from_value(serde_json::Value::Object(args)) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            return Ok(CallToolResult::error(vec![Content::text(format!(
+                                "propose_regression arguments were not valid: {e}"
+                            ))]))
+                        }
+                    };
+                match self.handle_propose_regression(payload).await {
                     Ok(content) => Ok(CallToolResult::success(content)),
                     Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
                 }

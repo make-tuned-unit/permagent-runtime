@@ -11,6 +11,84 @@ const RUNNING_LEASE_SECONDS: i64 = 300;
 /// The result displayed by the inline answer path.
 pub type EffectResult = (Option<String>, Option<String>);
 
+/// Where approved regressions are materialised, relative to the repo root.
+const EVAL_TASKS_DIR: &str = "crates/permagent-eval/tasks";
+
+/// Write an approved regression as a `permagent-eval` task directory.
+///
+/// Re-validates the slug and filename rather than trusting the payload: these
+/// values reach the filesystem, and the approval gate authorises WHAT is
+/// written, not WHERE. Refuses to overwrite an existing task — a proposal that
+/// silently replaced a passing regression would be a way to delete coverage
+/// through the approval path.
+fn write_regression_task(
+    payload: &crate::decisions::RegressionProposalPayload,
+) -> Result<String, GuardError> {
+    use std::io::Write;
+
+    if !crate::decisions::is_safe_task_id(&payload.task_id) {
+        return Err(GuardError::Invalid(format!(
+            "unsafe regression task_id '{}'",
+            payload.task_id
+        )));
+    }
+    if !crate::decisions::is_safe_oracle_filename(&payload.oracle_filename) {
+        return Err(GuardError::Invalid(format!(
+            "unsafe oracle filename '{}'",
+            payload.oracle_filename
+        )));
+    }
+
+    let root = std::path::Path::new(EVAL_TASKS_DIR).join(&payload.task_id);
+    if root.exists() {
+        return Err(GuardError::Invalid(format!(
+            "regression task '{}' already exists — refusing to overwrite existing coverage",
+            payload.task_id
+        )));
+    }
+    let oracle_dir = root.join("oracle");
+    std::fs::create_dir_all(&oracle_dir)
+        .map_err(|e| GuardError::Invalid(format!("could not create task dir: {e}")))?;
+
+    let spec = serde_yaml::to_string(
+        &serde_yaml::from_str::<serde_yaml::Value>(&format!(
+            "id: {}\ntitle: {}\ncategory: {}\ntest: {}\nprompt: |\n{}\n",
+            serde_yaml::to_string(&payload.task_id)
+                .unwrap_or_default()
+                .trim(),
+            serde_yaml::to_string(&payload.title)
+                .unwrap_or_default()
+                .trim(),
+            serde_yaml::to_string(payload.category.as_deref().unwrap_or("regression"))
+                .unwrap_or_default()
+                .trim(),
+            serde_yaml::to_string(&payload.test)
+                .unwrap_or_default()
+                .trim(),
+            payload
+                .prompt
+                .lines()
+                .map(|l| format!("  {l}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ))
+        .map_err(|e| GuardError::Invalid(format!("could not build task.yaml: {e}")))?,
+    )
+    .map_err(|e| GuardError::Invalid(format!("could not serialize task.yaml: {e}")))?;
+
+    let mut f = std::fs::File::create(root.join("task.yaml"))
+        .map_err(|e| GuardError::Invalid(format!("could not write task.yaml: {e}")))?;
+    f.write_all(spec.as_bytes())
+        .map_err(|e| GuardError::Invalid(format!("could not write task.yaml: {e}")))?;
+
+    let mut o = std::fs::File::create(oracle_dir.join(&payload.oracle_filename))
+        .map_err(|e| GuardError::Invalid(format!("could not write oracle: {e}")))?;
+    o.write_all(payload.oracle_source.as_bytes())
+        .map_err(|e| GuardError::Invalid(format!("could not write oracle: {e}")))?;
+
+    Ok(root.display().to_string())
+}
+
 async fn goal_state(pool: &Pool<Sqlite>, goal_id: &str) -> Result<Option<String>, GuardError> {
     sqlx::query_scalar(
         "SELECT col.state_binding
@@ -44,6 +122,20 @@ pub async fn apply_decision_effect(
     }
     let acted_by = proof.acted_by().to_string();
     match (kind, decision.answer.as_deref()) {
+        // An approved regression becomes a real permagent-eval task on disk.
+        // The path is re-validated HERE and not trusted from the payload: the
+        // decision authorises the content, and a gate that also had to police
+        // path traversal would be one mistake away from arbitrary file write.
+        ("regression_proposal", Some("approve")) => {
+            let payload: crate::decisions::RegressionProposalPayload =
+                serde_json::from_value(decision.payload.clone()).map_err(|e| {
+                    GuardError::Invalid(format!("regression_proposal payload unreadable: {e}"))
+                })?;
+            match write_regression_task(&payload) {
+                Ok(path) => Ok((None, Some(format!("Regression written to {path}")))),
+                Err(e) => Err(e),
+            }
+        }
         ("approve_review", Some("approve")) => {
             let Some(goal_id) = decision.goal_id.as_deref() else {
                 return Ok((None, None));
