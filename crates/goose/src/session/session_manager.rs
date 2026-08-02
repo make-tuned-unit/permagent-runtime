@@ -1048,6 +1048,10 @@ impl SessionStorage {
                     // New-table-only and idempotent, so it runs on every boot
                     // without changing the pinned fresh-init base stamp.
                     spectral_schema::apply_incidents_schema(&self.pool).await?;
+
+                    // Governed lesson pool (Phase 3). Same discipline: new tables
+                    // only, idempotent, version-independent.
+                    spectral_schema::apply_lessons_schema(&self.pool).await?;
                 } else {
                     info!("Initializing Spectral schema at {:?}", self.db_path);
                     spectral_schema::init_spectral_db(&self.pool).await?;

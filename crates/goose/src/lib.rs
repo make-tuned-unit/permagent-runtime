@@ -41,6 +41,7 @@ pub mod inbox;
 pub mod incidents;
 pub mod initiative;
 pub mod instance_id;
+pub mod lessons;
 pub mod logging;
 pub mod mcp_utils;
 pub mod mesh;
