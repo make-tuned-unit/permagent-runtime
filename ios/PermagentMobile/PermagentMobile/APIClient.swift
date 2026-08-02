@@ -111,22 +111,20 @@ actor APIClient {
         let task = URLSession.shared.webSocketTask(with: comps.url!)
         task.resume()
         return AsyncStream { continuation in
-            func listen() {
-                task.receive { result in
-                    switch result {
-                    case .success(let message):
+            Task {
+                do {
+                    while !Task.isCancelled {
+                        let message = try await task.receive()
                         if case .string(let text) = message,
                            let data = text.data(using: .utf8),
                            let event = try? JSONDecoder().decode(DaemonEvent.self, from: data) {
                             continuation.yield(event)
                         }
-                        listen()
-                    case .failure:
-                        continuation.finish()
                     }
+                } catch {
+                    continuation.finish()
                 }
             }
-            listen()
             continuation.onTermination = { _ in task.cancel(with: .goingAway, reason: nil) }
         }
     }
@@ -326,23 +324,50 @@ enum MobileSession {
     }
 }
 
-struct DaemonEvent: Decodable {
+struct DaemonEvent: Decodable, Sendable {
     let type: String
     let payload: [String: AnyCodable]?
 }
 
 /// Minimal AnyCodable for event payloads.
-struct AnyCodable: Decodable {
-    let value: Any
+///
+/// Backed by a closed enum rather than `Any`. `Any` is not `Sendable`, which
+/// made `DaemonEvent` non-Sendable and meant yielding one into the event
+/// stream's continuation tripped Swift 6's `sending` check ("Sending 'event'
+/// risks causing data races"). Annotating the surrounding closure could not fix
+/// that — the TYPE was the problem, so the annotation only moved the error.
+///
+/// The enum is not a workaround: the decoder below only ever produced a String,
+/// Int, Double or Bool, so this is a faithful — and now checkable —
+/// representation of what the payload could always hold.
+struct AnyCodable: Decodable, Sendable {
+    enum Value: Sendable, Equatable {
+        case string(String)
+        case int(Int)
+        case double(Double)
+        case bool(Bool)
+        /// The decoder's existing fallback for an unrecognized scalar.
+        case empty
+    }
+
+    let value: Value
+
     init(from decoder: Decoder) throws {
         let c = try decoder.singleValueContainer()
-        if let s = try? c.decode(String.self) { value = s }
-        else if let i = try? c.decode(Int.self) { value = i }
-        else if let d = try? c.decode(Double.self) { value = d }
-        else if let b = try? c.decode(Bool.self) { value = b }
-        else { value = "" }
+        if let s = try? c.decode(String.self) { value = .string(s) }
+        else if let i = try? c.decode(Int.self) { value = .int(i) }
+        else if let d = try? c.decode(Double.self) { value = .double(d) }
+        else if let b = try? c.decode(Bool.self) { value = .bool(b) }
+        else { value = .empty }
     }
-    var string: String? { value as? String }
+
+    var string: String? {
+        switch value {
+        case .string(let string): return string
+        case .empty: return ""
+        default: return nil
+        }
+    }
 }
 
 enum KeychainStore {

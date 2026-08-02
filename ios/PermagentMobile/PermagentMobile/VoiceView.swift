@@ -162,8 +162,14 @@ final class VoiceEngine: ObservableObject {
         let session = AVAudioSession.sharedInstance()
         // voiceChat mode = echo cancellation, so hands-free VAD doesn't trip on
         // Henry's own TTS (same reason the web hook requests echoCancellation).
+        let bluetoothOption: AVAudioSession.CategoryOptions
+        if #available(iOS 26.0, *) {
+            bluetoothOption = .allowBluetoothHFP
+        } else {
+            bluetoothOption = .allowBluetooth
+        }
         try session.setCategory(
-            .playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth]
+            .playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, bluetoothOption]
         )
         try session.setActive(true)
 
