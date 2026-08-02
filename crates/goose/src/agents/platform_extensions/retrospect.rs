@@ -1,6 +1,6 @@
 //! Retrospect — the agent reviews where it struggled and asks for better tools.
 //!
-//! Two tools:
+//! Three tools:
 //!
 //! - `review_struggles` reads the RECORD of a session's tool calls (not the
 //!   prose transcript) and reports where work went sideways: calls that failed,
@@ -9,6 +9,8 @@
 //!   stopped being logged as completed.
 //! - `request_capability` files a `capability_gap` proposal into the Decision
 //!   Inbox when the honest conclusion is "I did not have a tool for this."
+//! - `report_failure` records a grounded incident. It captures that something
+//!   went wrong; it does not fix it or turn it into a lesson.
 //!
 //! ## Why a request and not a lesson
 //!
@@ -40,7 +42,9 @@ use rmcp::model::{
     CallToolResult, Content, Implementation, InitializeResult, JsonObject, ListToolsResult,
     ServerCapabilities, Tool,
 };
+use serde::Deserialize;
 use sqlx::{Pool, Sqlite};
+use std::str::FromStr;
 use tokio_util::sync::CancellationToken;
 
 pub static EXTENSION_NAME: &str = "retrospect";
@@ -49,6 +53,16 @@ pub static EXTENSION_NAME: &str = "retrospect";
 /// worth reporting rather than an ordinary miss. Two is the smallest number
 /// that distinguishes "it failed" from "it kept failing".
 const REPEAT_FAILURE_FLOOR: i64 = 2;
+
+#[derive(Debug, Deserialize)]
+struct ReportFailureParams {
+    surface: String,
+    user_goal: String,
+    observation: String,
+    mechanism: String,
+    artifact_kind: String,
+    artifact_ref: String,
+}
 
 /// One tool's failure record inside a session.
 #[derive(Debug, Clone, PartialEq)]
@@ -206,6 +220,61 @@ impl RetrospectClient {
         }))
         .expect("static schema");
 
+        let report_schema: JsonObject = serde_json::from_value(serde_json::json!({
+            "type": "object",
+            "properties": {
+                "surface": {
+                    "type": "string",
+                    "description": "Where the failure happened, such as chat, settings, browser, or voice."
+                },
+                "user_goal": {
+                    "type": "string",
+                    "description": "What the user was trying to accomplish."
+                },
+                "observation": {
+                    "type": "string",
+                    "description": "What actually happened."
+                },
+                "mechanism": {
+                    "type": "string",
+                    "enum": [
+                        "A_environment",
+                        "B_design_assumption",
+                        "C_error_swallowing",
+                        "D_fail_plausible",
+                        "E_operational_omission",
+                        "unclassified"
+                    ],
+                    "description": "Failure mechanism: A_environment = environment/platform quirk; B_design_assumption = code assumed a shape reality violated; C_error_swallowing = an actionable error was swallowed or diluted; D_fail_plausible = a missing or wrong signal led to a fluent plausible falsehood; E_operational_omission = a required step did not run or a diagnostic created a forensic blind spot; unclassified = evidence exists but the mechanism is not yet known."
+                },
+                "artifact_kind": {
+                    "type": "string",
+                    "enum": [
+                        "user_report",
+                        "tool_error",
+                        "exit_code",
+                        "http_status",
+                        "run_diff",
+                        "recognition_record"
+                    ],
+                    "description": "The kind of concrete, non-model evidence grounding the incident."
+                },
+                "artifact_ref": {
+                    "type": "string",
+                    "description": "REQUIRED concrete evidence: a user-message or task id, persisted error text, non-zero exit code, HTTP status, run diff, or recognition record. Your own narration is never itself evidence."
+                }
+            },
+            "required": [
+                "surface",
+                "user_goal",
+                "observation",
+                "mechanism",
+                "artifact_kind",
+                "artifact_ref"
+            ]
+        }))
+        .expect("static schema");
+
         vec![
             Tool::new(
                 "review_struggles".to_string(),
@@ -226,6 +295,12 @@ impl RetrospectClient {
                  it does NOT build anything. Requires concrete failed attempts as evidence."
                     .to_string(),
                 request_schema,
+            ),
+            Tool::new(
+                "report_failure".to_string(),
+                "Record that something went wrong as a grounded incident. This records the failure; it does NOT fix anything, create a lesson, or change future behavior. A concrete non-model artifact is required evidence — your own narration is never itself the evidence."
+                    .to_string(),
+                report_schema,
             ),
         ]
     }
@@ -305,6 +380,40 @@ impl RetrospectClient {
             decision.id
         ))])
     }
+
+    async fn handle_report(
+        &self,
+        session_id: &str,
+        params: ReportFailureParams,
+    ) -> Result<Vec<Content>, String> {
+        let mechanism = crate::incidents::Mechanism::from_str(&params.mechanism)
+            .map_err(|_| format!("Unknown incident mechanism: {}", params.mechanism))?;
+        let artifact_kind = crate::incidents::ArtifactKind::from_str(&params.artifact_kind)
+            .map_err(|_| format!("Unknown incident artifact kind: {}", params.artifact_kind))?;
+        let pool = crate::tasks::global()
+            .map(|logger| logger.pool().clone())
+            .ok_or_else(|| "Incident storage is unavailable in this process.".to_string())?;
+
+        let incident = crate::incidents::create_incident(
+            &pool,
+            crate::incidents::NewIncident {
+                session_id: (!session_id.trim().is_empty()).then(|| session_id.to_string()),
+                surface: params.surface,
+                user_goal: params.user_goal,
+                observation: params.observation,
+                mechanism,
+                artifact_kind,
+                artifact_ref: params.artifact_ref,
+            },
+        )
+        .await
+        .map_err(|e| format!("Could not record the incident: {e}"))?;
+
+        Ok(vec![Content::text(format!(
+            "Recorded incident {} as open. This records what went wrong; it did not fix anything or create a lesson.",
+            incident.id
+        ))])
+    }
 }
 
 #[async_trait]
@@ -360,6 +469,21 @@ impl McpClientTrait for RetrospectClient {
                     payload.session_id = Some(ctx.session_id.clone());
                 }
                 match self.handle_request(payload).await {
+                    Ok(content) => Ok(CallToolResult::success(content)),
+                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
+                }
+            }
+            "report_failure" => {
+                let params: ReportFailureParams =
+                    match serde_json::from_value(serde_json::Value::Object(args)) {
+                        Ok(params) => params,
+                        Err(e) => {
+                            return Ok(CallToolResult::error(vec![Content::text(format!(
+                                "report_failure arguments were not valid: {e}"
+                            ))]))
+                        }
+                    };
+                match self.handle_report(&ctx.session_id, params).await {
                     Ok(content) => Ok(CallToolResult::success(content)),
                     Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
                 }

@@ -755,10 +755,57 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // migrate_v37_to_v38 so fresh installs get it on first boot.
     apply_analytics_events_schema(pool).await?;
 
+    // Failure-learning incident capture. Version-independent, additive, and
+    // idempotent so the pinned fresh-init base stamp remains unchanged.
+    apply_incidents_schema(pool).await?;
+
     info!(
         "Spectral schema v{} initialized successfully",
         SPECTRAL_SCHEMA_VERSION
     );
+    Ok(())
+}
+
+/// Apply the Phase-1 failure-learning incident-capture schema.
+///
+/// This is deliberately version-independent: incident capture is an additive
+/// table and must become available on every database regardless of its recorded
+/// base version. It records grounded failures only; later learning-loop stages
+/// do not belong in this schema.
+pub async fn apply_incidents_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS incidents (
+            id            TEXT PRIMARY KEY,
+            created_at    TEXT NOT NULL,
+            session_id    TEXT REFERENCES sessions(id),
+            surface       TEXT NOT NULL,
+            user_goal     TEXT NOT NULL,
+            observation   TEXT NOT NULL,
+            mechanism     TEXT NOT NULL CHECK (mechanism IN (
+                'A_environment', 'B_design_assumption', 'C_error_swallowing',
+                'D_fail_plausible', 'E_operational_omission', 'unclassified'
+            )),
+            artifact_kind TEXT NOT NULL CHECK (artifact_kind IN (
+                'user_report', 'tool_error', 'exit_code', 'http_status',
+                'run_diff', 'recognition_record'
+            )),
+            artifact_ref  TEXT NOT NULL,
+            status        TEXT NOT NULL DEFAULT 'open'
+                          CHECK (status IN ('open','triaged','regressed','dismissed')),
+            resolved_at   TEXT
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_incidents_status_created
+         ON incidents(status, created_at)",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_incidents_session ON incidents(session_id)")
+        .execute(pool)
+        .await?;
     Ok(())
 }
 

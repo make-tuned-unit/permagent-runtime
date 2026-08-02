@@ -262,9 +262,10 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: retrospect::EXTENSION_NAME,
                 display_name: "Retrospect",
-                description: "Review where you struggled in a session (review_struggles) and ask \
-                              the user for a tool you turned out not to have \
-                              (request_capability) — a Decision Inbox proposal, not a build",
+                description: "Review where you struggled in a session (review_struggles), record \
+                              a grounded failure without fixing it (report_failure), and ask the \
+                              user for a tool you turned out not to have (request_capability) — \
+                              a Decision Inbox proposal, not a build",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
@@ -274,13 +275,16 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                      the same shape retried unchanged reads differently from six different \
                      formulations that all missed. When it is a missing tool, say so and file \
                      request_capability with what you tried, rather than flailing again next \
-                     time. Asking for a better tool is not a failure; hiding the gap is.",
+                     time. When something went wrong, report_failure records the grounded \
+                     incident but does not fix it. Asking for a better tool is not a failure; \
+                     hiding the gap is.",
                 teaching: &[crate::agents::self_knowledge::TeachingStep {
                     title: "Look back at a rough patch",
                     body: "After a session that went badly, call review_struggles and read the \
                            result back honestly — including that a confidently wrong answer \
                            leaves no failed call behind, so silence there is not proof it went \
-                           well. If a tool was missing, file request_capability.",
+                           well. Record grounded failures with report_failure; if a tool was \
+                           missing, file request_capability.",
                     open_surface: None,
                     confirm: None,
                 }],

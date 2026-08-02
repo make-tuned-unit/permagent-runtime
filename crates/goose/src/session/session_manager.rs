@@ -1043,6 +1043,11 @@ impl SessionStorage {
                     // and the rebuild is marker-gated to run at most once per
                     // widening, so run it on every boot.
                     spectral_schema::apply_decision_inbox_schema(&self.pool).await?;
+
+                    // Version-independent Phase-1 failure incident capture.
+                    // New-table-only and idempotent, so it runs on every boot
+                    // without changing the pinned fresh-init base stamp.
+                    spectral_schema::apply_incidents_schema(&self.pool).await?;
                 } else {
                     info!("Initializing Spectral schema at {:?}", self.db_path);
                     spectral_schema::init_spectral_db(&self.pool).await?;

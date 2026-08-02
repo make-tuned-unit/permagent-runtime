@@ -38,6 +38,7 @@ pub mod goose_apps;
 pub mod hints;
 pub mod identity;
 pub mod inbox;
+pub mod incidents;
 pub mod initiative;
 pub mod instance_id;
 pub mod logging;
