@@ -1,61 +1,76 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeCompactCards, reflow, type DashboardLayoutData } from './useLayout';
+import { compactLayoutPass, reflow, type DashboardLayoutData } from './useLayout';
 
 function card(type: string, w: number, h: number) {
   return { id: type, type, position: { x: 0, y: 0 }, size: { w, h }, visible: true };
 }
 
-describe('normalizeCompactCards', () => {
-  it('shrinks weather and system cards still at the old default size', () => {
-    const layout: DashboardLayoutData = { cards: [card('weather', 5, 4), card('system_stats', 5, 4)] };
-    const { layout: out, changed } = normalizeCompactCards(layout);
+describe('compactLayoutPass', () => {
+  it('shrinks ambient tiles to their compact ceiling', () => {
+    const layout: DashboardLayoutData = { cards: [card('weather', 4, 3), card('system_stats', 5, 4)] };
+    const { layout: out, changed } = compactLayoutPass(layout);
     expect(changed).toBe(true);
     expect(out.cards[0].size).toEqual({ w: 3, h: 2 });
     expect(out.cards[1].size).toEqual({ w: 3, h: 2 });
   });
 
-  it('leaves a deliberately resized card alone', () => {
-    // Someone who dragged their weather card to 8x6 has said what they want.
-    // A "migration" that overrode that would be a bug wearing a helpful hat.
-    const layout: DashboardLayoutData = { cards: [card('weather', 8, 6)] };
-    const { layout: out, changed } = normalizeCompactCards(layout);
-    expect(changed).toBe(false);
-    expect(out.cards[0].size).toEqual({ w: 8, h: 6 });
+  it('clamps the real-world sizes that the old exact-match rule missed', () => {
+    // The previous migration only matched exactly 5x4, so a dashboard
+    // auto-arranged to 4x3 / 4x6 shrank nothing and the change was invisible.
+    const layout: DashboardLayoutData = {
+      cards: [
+        card('hero', 4, 3), card('weather', 4, 3), card('system_stats', 4, 3),
+        card('decisions', 4, 6), card('stats', 4, 6), card('in_flight', 4, 6),
+        card('recent', 8, 6), card('calendar', 4, 6),
+      ],
+    };
+    const { layout: out, changed } = compactLayoutPass(layout);
+    expect(changed).toBe(true);
+    const byType = Object.fromEntries(out.cards.map(c => [c.type, c.size]));
+    expect(byType.weather).toEqual({ w: 3, h: 2 });
+    expect(byType.system_stats).toEqual({ w: 3, h: 2 });
+    expect(byType.decisions).toEqual({ w: 3, h: 3 });
+    expect(byType.stats).toEqual({ w: 4, h: 3 });
+    expect(byType.in_flight).toEqual({ w: 4, h: 3 });
+    expect(byType.recent).toEqual({ w: 8, h: 5 });
+    expect(byType.calendar).toEqual({ w: 4, h: 5 });
   });
 
-  it('leaves every other card type untouched', () => {
-    const layout: DashboardLayoutData = { cards: [card('hero', 5, 4), card('recent', 5, 4)] };
-    const { changed } = normalizeCompactCards(layout);
+  it('never GROWS a card the user made smaller', () => {
+    const layout: DashboardLayoutData = { cards: [card('recent', 3, 2)] };
+    const { layout: out, changed } = compactLayoutPass(layout);
+    expect(changed).toBe(false);
+    expect(out.cards[0].size).toEqual({ w: 3, h: 2 });
+  });
+
+  it('leaves unknown card types alone', () => {
+    const layout: DashboardLayoutData = { cards: [card('some_skill_card', 12, 8)] };
+    const { changed } = compactLayoutPass(layout);
     expect(changed).toBe(false);
   });
 
   it('returns the identical object when nothing changed, so no needless persist', () => {
-    const layout: DashboardLayoutData = { cards: [card('hero', 7, 4)] };
-    const { layout: out, changed } = normalizeCompactCards(layout);
+    const layout: DashboardLayoutData = { cards: [card('weather', 3, 2)] };
+    const { layout: out, changed } = compactLayoutPass(layout);
     expect(changed).toBe(false);
     expect(out).toBe(layout);
   });
 
-  it('repacks positions after shrinking so no hole is left behind', () => {
-    const layout: DashboardLayoutData = {
-      cards: [card('weather', 5, 4), card('hero', 7, 4)],
-    };
-    const { layout: out } = normalizeCompactCards(layout);
-    // weather is now 3 wide, so hero starts at x=3 and still fits the row.
+  it('repacks positions so shrinking leaves no hole', () => {
+    const layout: DashboardLayoutData = { cards: [card('weather', 5, 4), card('hero', 6, 3)] };
+    const { layout: out } = compactLayoutPass(layout);
     expect(out.cards[0].position).toEqual({ x: 0, y: 0 });
     expect(out.cards[1].position).toEqual({ x: 3, y: 0 });
   });
 
-  it('is idempotent — a second pass reports no change', () => {
+  it('is idempotent', () => {
     const layout: DashboardLayoutData = { cards: [card('weather', 5, 4)] };
-    const once = normalizeCompactCards(layout);
-    const twice = normalizeCompactCards(once.layout);
-    expect(twice.changed).toBe(false);
+    const once = compactLayoutPass(layout);
+    expect(compactLayoutPass(once.layout).changed).toBe(false);
   });
 
   it('handles an empty dashboard', () => {
-    const { changed } = normalizeCompactCards({ cards: [] });
-    expect(changed).toBe(false);
+    expect(compactLayoutPass({ cards: [] }).changed).toBe(false);
   });
 });
 

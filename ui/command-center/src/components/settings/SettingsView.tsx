@@ -463,16 +463,41 @@ export function AutonomyPanel() {
   );
 }
 
-function ToolsPanel() {
+export interface ToolExtension {
+  enabled: boolean;
+  type: string;
+  name: string;
+  description?: string;
+  display_name?: string | null;
+  bundled?: boolean | null;
+  available_tools?: string[];
+  env_keys?: string[];
+}
+
+/** What to show as an extension's title. `display_name` is absent on stdio
+ *  servers, so the identifying `name` is the fallback — never a blank tile. */
+export function extensionLabel(ext: ToolExtension): string {
+  const label = (ext.display_name ?? '').trim();
+  return label || ext.name || 'Unnamed extension';
+}
+
+function ToolsPanel({ goto }: PanelProps) {
   const { colors } = useThemeHook();
-  const [extensions, setExtensions] = useState<Array<{ enabled: boolean; type: string; name: string; description: string; display_name: string; bundled: boolean; available_tools: string[] }>>([]);
+  const [extensions, setExtensions] = useState<ToolExtension[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api.getExtensions().then(r => { setExtensions(r.extensions); setLoading(false); }).catch(() => setLoading(false));
+    api.getExtensions()
+      // Never hand a non-array to the render path: `.filter` on undefined is
+      // the same class of crash this panel just had.
+      .then(r => { setExtensions(Array.isArray(r?.extensions) ? r.extensions : []); setLoading(false); })
+      .catch(() => setLoading(false));
   }, []);
 
   const enabledCount = extensions.filter(e => e.enabled).length;
+  // stdio servers that declare required env vars are the ones with API keys —
+  // the panel points at where those are actually managed.
+  const needKeys = extensions.filter(e => (e.env_keys?.length ?? 0) > 0);
 
   return (
     <div>
@@ -481,18 +506,38 @@ function ToolsPanel() {
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: 12, color: colors.textMuted }}>{enabledCount} of {extensions.length} enabled</span>
       </div>
+      {needKeys.length > 0 && (
+        // API keys are managed in Search & tools, not here. Without this the
+        // only way to find that out is to guess — which is how someone ends up
+        // on this tab looking for their Brave key.
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+          padding: '9px 12px', marginBottom: 14, borderRadius: 8,
+          background: colors.bgDeeper, border: `1px solid ${colors.border}`,
+        }}>
+          <span style={{ fontSize: 12, color: colors.textMuted }}>
+            {needKeys.map(extensionLabel).join(' and ')} need API keys.
+          </span>
+          <button style={ghost(colors)} onClick={() => goto('search')}>
+            Manage keys in Search &amp; tools
+          </button>
+        </div>
+      )}
       {loading ? (
         <div style={{ color: colors.textDim, fontSize: 13 }}>Loading extensions...</div>
       ) : extensions.length === 0 ? (
         <Section title="No extensions"><div style={{ color: colors.textMuted, fontSize: 13 }}>No MCP tools or extensions configured.</div></Section>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
-          {extensions.map(ext => (
-            <div key={ext.name} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: 14, borderRadius: 10, background: colors.bgDeeper, border: `1px solid ${colors.border}` }}>
-              <div style={{ width: 32, height: 32, borderRadius: 8, background: ext.enabled ? colors.cyanSoft : colors.surfaceHi, border: `1px solid ${ext.enabled ? colors.borderHi : colors.border}`, display: 'grid', placeItems: 'center', fontFamily: font.display, fontSize: 13, fontWeight: 700, color: ext.enabled ? colors.cyan : colors.textMuted }}>{ext.display_name[0]?.toUpperCase()}</div>
+          {extensions.map((ext, i) => (
+            <div key={ext.name || `ext-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: 14, borderRadius: 10, background: colors.bgDeeper, border: `1px solid ${colors.border}` }}>
+              <div style={{ width: 32, height: 32, borderRadius: 8, background: ext.enabled ? colors.cyanSoft : colors.surfaceHi, border: `1px solid ${ext.enabled ? colors.borderHi : colors.border}`, display: 'grid', placeItems: 'center', fontFamily: font.display, fontSize: 13, fontWeight: 700, color: ext.enabled ? colors.cyan : colors.textMuted, flexShrink: 0 }}>{extensionLabel(ext).charAt(0).toUpperCase() || '?'}</div>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13, fontWeight: 600 }}>{ext.display_name}</div>
-                <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ext.type}{ext.bundled ? ' · bundled' : ''} · {ext.available_tools.length} tools</div>
+                <div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{extensionLabel(ext)}</div>
+                <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {ext.type}{ext.bundled ? ' · bundled' : ''} · {ext.available_tools?.length ?? 0} tools
+                  {(ext.env_keys?.length ?? 0) > 0 && ` · needs ${ext.env_keys!.join(', ')}`}
+                </div>
               </div>
               <div style={{ width: 8, height: 8, borderRadius: '50%', background: ext.enabled ? colors.success : colors.textDim, flexShrink: 0 }} />
             </div>
@@ -1091,7 +1136,7 @@ const PANELS: Record<string, (props: PanelProps) => JSX.Element> = {
 };
 
 
-function PairingQrCode({ value }: { value: string }) {
+function PairingQrCode({ value, size = 112 }: { value: string; size?: number }) {
   let matrix: boolean[][];
   try {
     matrix = makeQrMatrix(value);
@@ -1099,19 +1144,21 @@ function PairingQrCode({ value }: { value: string }) {
     return <span style={{ fontSize: 11 }}>QR unavailable — shorten the hub address or copy the link.</span>;
   }
   const quiet = 4;
-  const size = matrix.length + quiet * 2;
+  // Module extent of the symbol itself, in QR modules — distinct from `size`,
+  // which is the rendered pixel width.
+  const extent = matrix.length + quiet * 2;
   const path = matrix.flatMap((row, y) => row.map((dark, x) => dark ? `M${x + quiet},${y + quiet}h1v1h-1z` : '')).join('');
   return (
     <svg
       role="img"
       aria-label="Pairing QR code"
-      viewBox={`0 0 ${size} ${size}`}
-      width={112}
-      height={112}
+      viewBox={`0 0 ${extent} ${extent}`}
+      width={size}
+      height={size}
       style={{ display: 'block', background: '#fff', borderRadius: 8 }}
       shapeRendering="crispEdges"
     >
-      <rect width={size} height={size} fill="#fff" />
+      <rect width={extent} height={extent} fill="#fff" />
       <path d={path} fill="#000" />
     </svg>
   );
@@ -1128,6 +1175,15 @@ function DevicesPanel() {
   const [host, setHost] = useState('your-mac.tailnet-name.ts.net');
   const [copied, setCopied] = useState(false);
   const [tailnet, setTailnet] = useState<{ installed: boolean; running: boolean; magic_dns_name: string | null } | null>(null);
+  // Reachability is TWO facts: what the user asked for (`enabled`, persisted)
+  // and whether the running daemon is actually on the tailnet (`effective`).
+  // They diverge whenever a restart is pending or Tailscale is down, and the
+  // panel has to show the difference — a green toggle over an unreachable
+  // daemon is exactly the lie that made pairing fail silently.
+  const [access, setAccess] = useState<{
+    enabled: boolean; serve_url: string | null; available: boolean;
+  } | null>(null);
+  const [accessBusy, setAccessBusy] = useState(false);
 
   // ── Device registry (#628) ──
   const [devices, setDevices] = useState<DeviceInfo[] | null>(null);
@@ -1151,6 +1207,9 @@ function DevicesPanel() {
   // Deterministic detection: when the hub is on a tailnet, the address fills
   // itself — the user types nothing (Jesse's zero-strain rule, 2026-07-11).
   useEffect(() => {
+    apiFetch<{ enabled: boolean; serve_url: string | null; available: boolean }>(
+      '/api/tailnet/access',
+    ).then(setAccess).catch(() => {});
     apiFetch<{ installed: boolean; running: boolean; magic_dns_name: string | null }>('/api/tailnet/status')
       .then(t => {
         setTailnet(t);
@@ -1160,7 +1219,8 @@ function DevicesPanel() {
   }, []);
   // The pairing URL carries a one-time claim code — never a bearer token
   // (#628). It is minted on demand below and goes inert after one use.
-  const pairingUrl = claim ? `http://${host}:3001/ui/#claim=${claim.code}` : null;
+  const remoteBase = access?.serve_url ?? (host ? `http://${host}:3001` : null);
+  const pairingUrl = claim && remoteBase ? `${remoteBase}/ui/#claim=${claim.code}` : null;
   const isHub = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const [detail, setDetail] = useState(0); // progressive disclosure depth
   const [hubUp, setHubUp] = useState<boolean | null>(null);
@@ -1278,8 +1338,43 @@ function DevicesPanel() {
         ))}
       </Section>
 
-      <Section title="Pair a device" sub="Live — requires the daemon bound to your tailnet (HOST=0.0.0.0 or your Tailscale IP in the daemon environment) and Tailscale on both devices.">
-
+      <Section title="Pair a device" sub="Turn on tailnet access below, then scan the QR code with the device you are adding. Both devices must be on your tailnet.">
+        <Row
+          label="Remote access"
+          hint={
+            access?.available === false
+              ? 'Tailscale is not installed. Permagent does not require it — any tunnel that gives this Mac a reachable address works, and the hub address below accepts it.'
+              : access?.enabled
+                ? `Your devices can reach this hub at ${access.serve_url}. Tailscale publishes it to your private network only — the daemon itself still listens on localhost, so nothing is exposed to the Wi-Fi you are joined to, or to the internet.`
+                : 'Off — this hub is only reachable from this machine, so no phone can pair with it.'
+          }
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <Toggle
+              on={!!access?.enabled}
+              disabled={accessBusy || access?.available === false}
+              onChange={(next) => {
+                setAccessBusy(true);
+                apiFetch<{ enabled: boolean; serve_url: string | null; available: boolean }>(
+                  '/api/tailnet/access',
+                  {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: next }),
+                  },
+                )
+                  .then(setAccess)
+                  .catch(e => setPairError(e instanceof Error ? e.message : 'Could not change remote access'))
+                  .finally(() => setAccessBusy(false));
+              }}
+            />
+            <span style={{ fontSize: 12, color: colors.textMuted }}>
+              {accessBusy ? 'Applying…'
+                : access?.enabled ? `Live at ${access.serve_url}`
+                : 'This machine only'}
+            </span>
+          </div>
+        </Row>
         <Row label="Tailnet" hint={tailnet?.running ? 'Detected — address filled in automatically.' : tailnet?.installed ? 'Tailscale is installed but not connected.' : 'Tailscale not detected on this machine.'}>
           {tailnet?.running ? (
             <span style={{ fontSize: 12, color: colors.cyan }}>● Connected{tailnet.magic_dns_name ? ` — ${tailnet.magic_dns_name}` : ''}</span>
@@ -1324,34 +1419,50 @@ function DevicesPanel() {
           ? `Open this on the new device's browser. One-time: it goes inert after first use, and expires ${new Date(claim.expiresAt).toLocaleTimeString()}.`
           : 'Name the device and create a link — the URL carries a one-time claim code, not a token.'}>
           {pairingUrl ? (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-              <code style={{
-                fontFamily: font.mono, fontSize: 10, color: colors.cyan,
-                background: colors.bgDeeper, padding: '6px 8px', borderRadius: 6,
-                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 320,
-              }}>{pairingUrl}</code>
-              <button
-                style={ghost(colors)}
-                onClick={() => {
-                  navigator.clipboard.writeText(pairingUrl).then(() => {
-                    setCopied(true);
-                    setTimeout(() => setCopied(false), 1600);
-                    // Copying the pairing URL is deliberate engagement with the
-                    // Devices feature — but it is *intent*, not a completed
-                    // pairing, so this stays Ephemeral (never a Brain memory).
-                    // The real `devices_paired` signal is emitted by the new
-                    // device itself when it claims the code and receives its
-                    // own token (see exchangeClaim in lib/api.ts). No secret
-                    // in the payload.
-                    emitActivity('pairing_link_copied', 'settings');
-                  });
-                }}
-              >{copied ? 'Copied ✓' : 'Copy'}</button>
-              <PairingQrCode value={pairingUrl} />
+            // Scanning is the point: pairing a phone by retyping a MagicDNS
+            // hostname and a 16-character claim code is miserable. The QR was
+            // originally squeezed in beside the URL at 112px, which read as a
+            // decoration and is small for a phone to acquire — it leads now,
+            // at a size that scans from a comfortable distance.
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, minWidth: 0 }}>
+              <div style={{ flexShrink: 0, textAlign: 'center' }}>
+                <PairingQrCode value={pairingUrl} size={196} />
+                <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 6 }}>
+                  Scan with your iPhone
+                </div>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0, paddingTop: 2 }}>
+                <span style={{ fontSize: 11, color: colors.textDim }}>
+                  Open Permagent on the phone and scan this. No typing.
+                </span>
+                <code style={{
+                  fontFamily: font.mono, fontSize: 10, color: colors.cyan,
+                  background: colors.bgDeeper, padding: '6px 8px', borderRadius: 6,
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 320,
+                }}>{pairingUrl}</code>
+                <button
+                  style={{ ...ghost(colors), alignSelf: 'flex-start' }}
+                  onClick={() => {
+                    navigator.clipboard.writeText(pairingUrl).then(() => {
+                      setCopied(true);
+                      setTimeout(() => setCopied(false), 1600);
+                      // Copying the pairing URL is deliberate engagement with the
+                      // Devices feature — but it is *intent*, not a completed
+                      // pairing, so this stays Ephemeral (never a Brain memory).
+                      // The real `devices_paired` signal is emitted by the new
+                      // device itself when it claims the code and receives its
+                      // own token (see exchangeClaim in lib/api.ts). No secret
+                      // in the payload.
+                      emitActivity('pairing_link_copied', 'settings');
+                    });
+                  }}
+                >{copied ? 'Copied ✓' : 'Copy link instead'}</button>
+              </div>
             </div>
           ) : (
             <span style={{ fontSize: 12, color: colors.textDim }}>
-              No active pairing link.
+              No active pairing link — name the device above and create one; the
+              QR code to scan appears here.
             </span>
           )}
         </Row>

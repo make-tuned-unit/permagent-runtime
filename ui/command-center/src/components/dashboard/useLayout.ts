@@ -50,35 +50,64 @@ export function reflow(cards: DashboardCardLayout[]): DashboardCardLayout[] {
 }
 
 /**
- * Card types that became small compact tiles, and the exact size they used to
- * occupy. Weather and machine load are ambient readouts — glanced at, never
- * acted on — and at 5x4 each was taking the same room as the decision queue.
+ * Compact target sizes, in grid units (12 columns, 60px rows).
+ *
+ * These are CEILINGS applied once, not fixed sizes: a card larger than its
+ * entry is shrunk to it, a card already smaller is left alone. The numbers
+ * come from what each card actually needs to show its content without a void —
+ * ambient readouts are two rows, stat blocks three, lists five.
  */
-const COMPACT_MIGRATIONS: Record<string, { from: CardSize; to: CardSize }> = {
-  weather: { from: { w: 5, h: 4 }, to: { w: 3, h: 2 } },
-  system_stats: { from: { w: 5, h: 4 }, to: { w: 3, h: 2 } },
+const COMPACT_SIZES: Record<string, CardSize> = {
+  weather: { w: 3, h: 2 },
+  system_stats: { w: 3, h: 2 },
+  hero: { w: 6, h: 3 },
+  decisions: { w: 3, h: 3 },
+  stats: { w: 4, h: 3 },
+  in_flight: { w: 5, h: 3 },
+  todos: { w: 4, h: 5 },
+  calendar: { w: 4, h: 5 },
+  recent: { w: 8, h: 5 },
+  timeline: { w: 12, h: 5 },
 };
 
 /**
- * One-time shrink of ambient cards already placed on a saved dashboard.
- *
- * A manifest's `defaultSize` only applies when a card is ADDED, so without this
- * the change would reach new dashboards and never the ones that already exist.
- *
- * It only touches a card still sitting at EXACTLY the old default size. Anyone
- * who deliberately resized their weather card has said what they want, and a
- * "migration" that overrode that would be a bug wearing a helpful hat.
+ * Marker for the one-time compaction. Without it the pass would re-apply on
+ * every load and silently undo any card the user deliberately enlarged
+ * afterwards — a "helpful" migration that never stops helping is a bug.
+ * Client-side because it is a UI preference, not shared state.
  */
-export function normalizeCompactCards(
+const COMPACT_PASS_KEY = 'permagent.dashboard.compactPass.v1';
+
+export function hasRunCompactPass(): boolean {
+  try { return localStorage.getItem(COMPACT_PASS_KEY) === '1'; } catch { return false; }
+}
+
+export function markCompactPassDone(): void {
+  try { localStorage.setItem(COMPACT_PASS_KEY, '1'); } catch { /* private mode — retry next load */ }
+}
+
+/**
+ * Shrink oversized cards to their compact ceiling, once.
+ *
+ * The earlier version only touched cards sitting at EXACTLY the old 5x4
+ * default. That was too narrow to be useful: real dashboards had been
+ * auto-arranged to 4x3 and 4x6, matched nothing, and nothing shrank — the
+ * change shipped and was invisible. Clamping "anything larger than the
+ * ceiling" is what the user actually asked for, and the run-once marker is
+ * what keeps it from becoming an override.
+ */
+export function compactLayoutPass(
   layout: DashboardLayoutData,
 ): { layout: DashboardLayoutData; changed: boolean } {
   let changed = false;
   const cards = layout.cards.map(card => {
-    const rule = COMPACT_MIGRATIONS[card.type];
-    if (!rule) return card;
-    if (card.size.w !== rule.from.w || card.size.h !== rule.from.h) return card;
+    const target = COMPACT_SIZES[card.type];
+    if (!target) return card;
+    const w = Math.min(card.size.w, target.w);
+    const h = Math.min(card.size.h, target.h);
+    if (w === card.size.w && h === card.size.h) return card;
     changed = true;
-    return { ...card, size: { ...rule.to } };
+    return { ...card, size: { w, h } };
   });
   if (!changed) return { layout, changed: false };
   return { layout: { ...layout, cards: reflow(cards) }, changed: true };
@@ -92,10 +121,13 @@ export function useLayout() {
     apiFetch<DashboardLayoutData>('/api/dashboard/layout')
       .then(fetched => {
         if (cancelled) return;
-        const { layout: normalized, changed } = normalizeCompactCards(fetched);
+        // Run the compaction at most once per machine; afterwards the user's
+        // own sizing is authoritative.
+        const { layout: normalized, changed } = hasRunCompactPass()
+          ? { layout: fetched, changed: false }
+          : compactLayoutPass(fetched);
         setLayout(normalized);
-        // Persist the shrink once so it doesn't recompute on every load — and
-        // so a later deliberate resize isn't undone next time.
+        markCompactPassDone();
         if (changed) {
           apiFetch<DashboardLayoutData>('/api/dashboard/layout', {
             method: 'PUT',

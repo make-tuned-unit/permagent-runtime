@@ -1,29 +1,45 @@
 import { radius } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
-import { Stat } from '../atoms';
+import { SectionTitle, StatCompact } from '../atoms';
 import type { DashboardStats } from '../useDashboard';
 
 interface Props {
   stats: DashboardStats;
 }
 
+/**
+ * Four counters. Previously four 32px numbers on `alignContent: center`, which
+ * floated them in the middle of the card with dead bands above and below — the
+ * card was mostly padding. Now titled, top-aligned and compact, so the same
+ * four facts occupy roughly a third of the height.
+ */
 export function StatsCard({ stats }: Props) {
   const { colors } = useTheme();
   return (
     <div style={{
-      padding: 24, borderRadius: radius.lg,
+      padding: 16, borderRadius: radius.lg,
       background: colors.surface,
       border: `1px solid ${colors.border}`,
       boxShadow: [colors.cardShadow, colors.cardHighlight].filter(Boolean).join(', '),
       height: '100%', boxSizing: 'border-box',
       overflow: 'hidden',
-      display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20,
-      alignContent: 'center',
+      display: 'flex', flexDirection: 'column',
     }}>
-      <Stat label="Sessions today" value={stats.sessions_today} />
-      <Stat label="Total sessions" value={stats.sessions_total} />
-      <Stat label="Memory nodes" value={stats.memory_count} />
-      <Stat label="New today" value={stats.memory_delta_today} delta={stats.memory_delta_today > 0 ? `+${stats.memory_delta_today}` : undefined} cyan />
+      <SectionTitle title="Activity" />
+      <div style={{
+        display: 'grid', gridTemplateColumns: '1fr 1fr',
+        gap: '12px 14px', alignContent: 'start',
+      }}>
+        <StatCompact label="Sessions today" value={stats.sessions_today} />
+        <StatCompact label="Total sessions" value={stats.sessions_total} />
+        <StatCompact label="Memory nodes" value={stats.memory_count} />
+        <StatCompact
+          label="New today"
+          value={stats.memory_delta_today}
+          delta={stats.memory_delta_today > 0 ? `+${stats.memory_delta_today}` : undefined}
+          cyan
+        />
+      </div>
     </div>
   );
 }

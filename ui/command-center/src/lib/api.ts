@@ -986,12 +986,24 @@ export const api = {
     }),
 
   // Extensions / MCP tools
+  /**
+   * Extension list for the Tools & MCPs panel.
+   *
+   * These fields are OPTIONAL on the wire and the types must say so. The Rust
+   * side flattens ExtensionConfig, whose variants differ: `display_name` is an
+   * `Option<String>` that the `stdio` variant omits entirely, and `bundled`
+   * serializes as null. Declaring them required is what crashed the panel —
+   * `ext.display_name[0]` on an absent field threw and took the app down, for
+   * exactly the two stdio servers (Brave, Tavily) the user came to look at.
+   */
   getExtensions: () => apiFetch<{
     extensions: Array<{
       enabled: boolean; type: string; name: string;
-      description: string; display_name: string;
-      bundled: boolean; available_tools: string[];
-    }>; warnings: string[];
+      description?: string; display_name?: string | null;
+      bundled?: boolean | null; available_tools?: string[];
+      /** Names (never values) of env vars the server needs, e.g. BRAVE_API_KEY. */
+      env_keys?: string[];
+    }>; warnings?: string[];
   }>('/config/extensions'),
 
   /** Actually start a configured extension and ask it for its tools. "Key

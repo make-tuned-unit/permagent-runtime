@@ -102,6 +102,121 @@ async fn tailnet_status() -> Json<serde_json::Value> {
     }))
 }
 
+/// GET /api/tailnet/access — is this hub reachable by your other devices?
+///
+/// Reports the state of `tailscale serve`, NOT a bind address. The daemon
+/// deliberately stays on localhost: Tailscale's own security guidance is that a
+/// backend listening on 0.0.0.0 (or even directly on the tailnet IP) can have
+/// its identity headers spoofed by any peer that reaches it, so the backend
+/// should be localhost-only and fronted by Serve. Serve also means nothing has
+/// to change when the machine's tailnet IP changes — there is no address stored
+/// anywhere to go stale.
+async fn tailnet_access_get() -> Json<serde_json::Value> {
+    let serve = read_serve_state().await;
+    Json(serde_json::json!({
+        "enabled": serve.is_some(),
+        "serve_url": serve,
+        "available": tailscale_bin().is_some(),
+    }))
+}
+
+#[derive(serde::Deserialize)]
+struct TailnetAccessRequest {
+    enabled: bool,
+}
+
+/// PUT /api/tailnet/access — turn remote reachability on or off.
+///
+/// On: `tailscale serve --bg --http=80 <port>` publishes the loopback daemon to
+/// the tailnet and nowhere else. Off: `tailscale serve --http=80 off`. Both are
+/// idempotent and instant — no daemon restart, because the daemon's own bind
+/// never changes.
+async fn tailnet_access_put(
+    Json(req): Json<TailnetAccessRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let bin = tailscale_bin().ok_or((
+        StatusCode::PRECONDITION_FAILED,
+        "Tailscale is not installed".to_string(),
+    ))?;
+    let port = std::env::var("PORT").unwrap_or_else(|_| "3001".to_string());
+
+    let args: Vec<String> = if req.enabled {
+        vec!["serve".into(), "--bg".into(), "--http=80".into(), port]
+    } else {
+        vec!["serve".into(), "--http=80".into(), "off".into()]
+    };
+
+    let out = tokio::process::Command::new(&bin)
+        .args(&args)
+        .output()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if !out.status.success() {
+        let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            if msg.is_empty() {
+                "tailscale serve failed".into()
+            } else {
+                msg
+            },
+        ));
+    }
+
+    let serve = read_serve_state().await;
+    Ok(Json(serde_json::json!({
+        "enabled": serve.is_some(),
+        "serve_url": serve,
+        "available": true,
+    })))
+}
+
+fn tailscale_bin() -> Option<String> {
+    for bin in [
+        "tailscale",
+        "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+    ] {
+        if std::process::Command::new(bin)
+            .arg("version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
+            return Some(bin.to_string());
+        }
+    }
+    None
+}
+
+/// The URL Serve is publishing this daemon on, or None when Serve is off.
+/// Parsed from `tailscale serve status --json` rather than the human output,
+/// which is formatted for reading and changes between releases.
+async fn read_serve_state() -> Option<String> {
+    let bin = tailscale_bin()?;
+    let out = tokio::process::Command::new(bin)
+        .args(["serve", "status", "--json"])
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let parsed: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    // Web handlers are keyed "<host>:<port>"; presence of any handler means
+    // Serve is publishing something for this node.
+    let web = parsed.get("Web")?.as_object()?;
+    let key = web.keys().next()?;
+    let host = key.split(':').next()?;
+    let port = key.rsplit(':').next().unwrap_or("80");
+    Some(if port == "443" {
+        format!("https://{host}")
+    } else if port == "80" {
+        format!("http://{host}")
+    } else {
+        format!("http://{host}:{port}")
+    })
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/status", get(status))
@@ -110,6 +225,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
         // modern /api surface (also what the vite dev proxy forwards).
         .route("/api/system_info", get(system_info))
         .route("/api/tailnet/status", get(tailnet_status))
+        .route(
+            "/api/tailnet/access",
+            get(tailnet_access_get).put(tailnet_access_put),
+        )
         .with_state(state)
 }
 

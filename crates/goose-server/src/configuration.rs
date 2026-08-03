@@ -11,6 +11,47 @@ pub struct Settings {
     pub tls_key_path: Option<String>,
 }
 
+/// The current Tailscale IPv4 for this machine, or None if Tailscale is absent,
+/// logged out, or has no v4 address.
+///
+/// NOT used to choose a bind address — the daemon deliberately stays on
+/// localhost and is fronted by `tailscale serve` (Tailscale's own guidance: a
+/// backend reachable directly on the tailnet can have its identity headers
+/// spoofed by any tailnet peer). This exists so the Devices panel can report
+/// the machine's tailnet identity.
+pub fn detect_tailscale_ipv4() -> Option<String> {
+    let candidates = [
+        "tailscale",
+        "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+    ];
+    for bin in candidates {
+        let Ok(out) = std::process::Command::new(bin)
+            .args(["status", "--json"])
+            .output()
+        else {
+            continue;
+        };
+        if !out.status.success() {
+            continue;
+        }
+        let parsed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+        if parsed.pointer("/BackendState").and_then(|v| v.as_str()) != Some("Running") {
+            return None;
+        }
+        let ip = parsed
+            .pointer("/Self/TailscaleIPs")
+            .and_then(|v| v.as_array())
+            .and_then(|ips| {
+                ips.iter()
+                    .filter_map(|v| v.as_str())
+                    .find(|s| s.parse::<std::net::Ipv4Addr>().is_ok())
+            })
+            .map(str::to_string);
+        return ip;
+    }
+    None
+}
+
 impl Settings {
     pub fn socket_addr(&self) -> SocketAddr {
         format!("{}:{}", self.host, self.port)

@@ -90,6 +90,12 @@ pub struct CardCell {
     pub delta: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub accent: bool,
+    /// Name of a glyph the renderer should draw beside this cell (see
+    /// `cardIcons.tsx`). The data source names the meaning; the UI must not
+    /// infer it from display text, which breaks the moment a label is
+    /// reworded. Unknown names simply render no icon.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 /// Normalized response every manifest-card data endpoint returns.
@@ -323,6 +329,7 @@ async fn get_system_stats() -> Json<CardData> {
     ) {
         cells.push(CardCell {
             label: "CPU load".to_string(),
+            icon: Some("cpu".to_string()),
             value: format!("{}%", cpu_load_percent(load, ncpu)),
             accent: true,
             ..Default::default()
@@ -338,6 +345,7 @@ async fn get_system_stats() -> Json<CardData> {
     ) {
         cells.push(CardCell {
             label: "Memory".to_string(),
+            icon: Some("memory".to_string()),
             value: fmt_gb_ratio(vm_used_bytes(&vm_stat), total),
             ..Default::default()
         });
@@ -350,6 +358,7 @@ async fn get_system_stats() -> Json<CardData> {
     {
         cells.push(CardCell {
             label: "Disk".to_string(),
+            icon: Some("disk".to_string()),
             value: format!("{} used", cap),
             ..Default::default()
         });
@@ -372,6 +381,7 @@ async fn get_system_stats() -> Json<CardData> {
         let now = chrono::Utc::now().timestamp();
         cells.push(CardCell {
             label: "Uptime".to_string(),
+            icon: Some("clock".to_string()),
             value: fmt_uptime(now - boot),
             ..Default::default()
         });
@@ -494,6 +504,23 @@ fn http_client() -> Option<reqwest::Client> {
 }
 
 /// WMO weather-interpretation code → short human label.
+/// WMO weather code → glyph name understood by `cardIcons.tsx`. Kept beside
+/// [`weather_code_label`] so the two stay in step; a code that gains a label
+/// should gain an icon in the same edit.
+fn weather_code_icon(code: i64) -> &'static str {
+    match code {
+        0 => "clear",
+        1..=2 => "partly-cloudy",
+        3 => "overcast",
+        45 | 48 => "fog",
+        51 | 53 | 55 | 56 | 57 => "drizzle",
+        61 | 63 | 65 | 66 | 67 | 80..=82 => "rain",
+        71 | 73 | 75 | 77 | 85 | 86 => "snow",
+        95 | 96 | 99 => "thunderstorm",
+        _ => "overcast",
+    }
+}
+
 fn weather_code_label(code: i64) -> &'static str {
     match code {
         0 => "Clear",
@@ -531,12 +558,14 @@ fn weather_cells(v: &serde_json::Value, place: &str) -> Vec<CardCell> {
             None => weather_code_label(code).to_string(),
         },
         accent: true,
+        icon: Some(weather_code_icon(code).to_string()),
         ..Default::default()
     }];
     if let (Some(hi), Some(lo)) = (hi, lo) {
         cells.push(CardCell {
             label: "High / Low".to_string(),
             value: format!("{}° / {}°", hi.round() as i64, lo.round() as i64),
+            icon: Some("thermometer".to_string()),
             ..Default::default()
         });
     }
@@ -544,6 +573,7 @@ fn weather_cells(v: &serde_json::Value, place: &str) -> Vec<CardCell> {
         cells.push(CardCell {
             label: "Humidity".to_string(),
             value: format!("{}%", h.round() as i64),
+            icon: Some("droplet".to_string()),
             ..Default::default()
         });
     }

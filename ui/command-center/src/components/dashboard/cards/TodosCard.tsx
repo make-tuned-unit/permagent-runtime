@@ -1,7 +1,7 @@
 import { memo, useState } from 'react';
 import { radius } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
-import { SectionTitle } from '../atoms';
+import { SectionTitle, EmptyNote } from '../atoms';
 import { useCommandCenter } from '../../../lib/store';
 import {
   relativeDueLabel,
@@ -43,7 +43,7 @@ export const TodosCard = memo(function TodosCard({ todos }: Props) {
       background: colors.surface,
       border: `1px solid ${colors.border}`,
       boxShadow: [colors.cardShadow, colors.cardHighlight].filter(Boolean).join(', '),
-      padding: '18px 20px',
+      padding: 16,
       display: 'flex', flexDirection: 'column',
       overflow: 'hidden',
     }}>
@@ -68,14 +68,11 @@ export const TodosCard = memo(function TodosCard({ todos }: Props) {
           >Try again</button>
         </Centered>
       ) : loading && total === 0 ? (
-        <Centered><div style={{ fontSize: 12, color: colors.textDim }}>Loading…</div></Centered>
+        <EmptyNote>Loading…</EmptyNote>
       ) : total === 0 ? (
-        <Centered>
-          <div style={{ fontSize: 13, color: colors.textMuted, marginBottom: 4 }}>Nothing due</div>
-          <div style={{ fontSize: 11, color: colors.textDim }}>
-            Give a card on any board a due date and it shows up here
-          </div>
-        </Centered>
+        <EmptyNote hint="Give a card on any board a due date and it shows up here">
+          Nothing due
+        </EmptyNote>
       ) : (
         <div style={{ flex: 1, overflowY: 'auto', marginTop: 4, marginRight: -8, paddingRight: 8 }}>
           {groups.map(group => (
