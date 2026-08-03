@@ -374,6 +374,15 @@ interface CommandCenterStore {
   openGrowForProject: string | null;
   growProject: (projectId: string) => void;
   setOpenGrowForProject: (id: string | null) => void;
+
+  // Board deep-link: the dashboard's due-to-do list sets this, Projects reads
+  // it to select the project, open the Kanban lens, and highlight the card.
+  // Consumed-then-cleared via clearPendingCardNavigation() (same one-shot
+  // pattern as openGrowForProject) so revisiting Projects later doesn't
+  // re-open a board the user has since navigated away from.
+  pendingCardNavigation: { projectId: string; cardId: string } | null;
+  openCardOnBoard: (projectId: string, cardId: string) => void;
+  clearPendingCardNavigation: () => void;
   openInBrowser: (url: string) => void;
   clearPendingBrowserUrl: () => void;
 
@@ -1544,6 +1553,19 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   openGrowForProject: null,
   growProject: (projectId) => { set({ openGrowForProject: projectId }); navigateToTool('grow'); },
   setOpenGrowForProject: (id) => set({ openGrowForProject: id }),
+  pendingCardNavigation: null,
+  openCardOnBoard: (projectId, cardId) => {
+    // Reuse pendingProjectNavigation for the project hop rather than selecting
+    // the project here: that path already self-heals when the target is missing
+    // from ProjectsView's ≤5s-old snapshot (#266). pendingCardNavigation adds
+    // only what it doesn't cover — open the Kanban lens, highlight the card.
+    set({
+      pendingProjectNavigation: projectId,
+      pendingCardNavigation: { projectId, cardId },
+    });
+    navigateToTool('projects');
+  },
+  clearPendingCardNavigation: () => set({ pendingCardNavigation: null }),
   buildTerminalHidden: false,
   buildBrowserHidden: false,
   // Never allow both hidden: hiding one re-shows the other.

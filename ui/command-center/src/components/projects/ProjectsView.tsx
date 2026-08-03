@@ -518,6 +518,13 @@ export function ProjectKanban({ project }: { project: Project }) {
   const pressStart = useRef<{ x: number; y: number } | null>(null);
   const dragMoved = useRef(false);
   const openGoalDetail = useCommandCenter(s => s.openGoalDetail);
+  const pendingCard = useCommandCenter(s => s.pendingCardNavigation);
+  const clearPendingCardNavigation = useCommandCenter(s => s.clearPendingCardNavigation);
+  // The card the dashboard's to-do list asked us to surface. Held in local
+  // state so the ring outlives the store entry, which is cleared as soon as we
+  // consume it (one-shot deep link — see openCardOnBoard).
+  const [highlightedCardId, setHighlightedCardId] = useState<string | null>(null);
+  const cardEls = useRef<Map<string, HTMLDivElement>>(new Map());
 
   const getColumnAtPoint = useCallback((x: number, y: number): string | null => {
     for (const [colId, el] of colRefs.current.entries()) {
@@ -548,6 +555,37 @@ export function ProjectKanban({ project }: { project: Project }) {
   }, [project.id]);
 
   const retryBoard = useCallback(() => { setLoading(true); loadBoard(); }, [loadBoard]);
+
+  // Deep link from the dashboard's to-do list. Waits for the card to actually
+  // exist in this board's state — the navigation and the board fetch race, and
+  // scrolling to an element that hasn't rendered silently does nothing. The
+  // store entry is cleared on consumption so returning to Projects later does
+  // not re-scroll to a stale card; the ring then fades on a timer.
+  useEffect(() => {
+    if (!pendingCard || pendingCard.projectId !== project.id) return;
+    if (!cards.some(c => c.id === pendingCard.cardId)) return;
+    const cardId = pendingCard.cardId;
+    setHighlightedCardId(cardId);
+    clearPendingCardNavigation();
+    const el = cardEls.current.get(cardId);
+    el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const timer = setTimeout(() => setHighlightedCardId(null), 2600);
+    return () => clearTimeout(timer);
+  }, [pendingCard, project.id, cards, clearPendingCardNavigation]);
+
+  // Set or clear a to-do's due date, then refetch so the badge reflects what
+  // actually persisted rather than what we hoped would.
+  const handleSetDueDate = useCallback(async (cardId: string, dueDate: string | null) => {
+    try {
+      await apiFetch(`/api/projects/${project.id}/cards/${cardId}/due-date`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dueDate }),
+      });
+    } finally {
+      await loadBoard();
+    }
+  }, [project.id, loadBoard]);
 
   useEffect(() => { loadBoard(); }, [loadBoard]);
   // Live board: refetch when any goal is created or transitions (shared
@@ -728,10 +766,20 @@ export function ProjectKanban({ project }: { project: Project }) {
                   <CardItem
                     key={card.id}
                     card={card}
+                    cardRef={el => {
+                      if (el) cardEls.current.set(card.id, el);
+                      else cardEls.current.delete(card.id);
+                    }}
+                    highlighted={highlightedCardId === card.id}
                     onPointerDown={(e) => handleCardPointerDown(e, card.id, card.title)}
                     onOpen={card.cardType === 'goal' ? () => openGoalDetail(project.id, card.id) : undefined}
                     isDragging={draggingCard === card.id}
                     onDelete={() => handleDeleteCard(card.id)}
+                    onSetDueDate={
+                      card.cardType === 'standard'
+                        ? (dueDate) => { void handleSetDueDate(card.id, dueDate); }
+                        : undefined
+                    }
                     onCancel={
                       card.cardType === 'goal' &&
                       CANCELLABLE_STATES.includes(col.stateBinding ?? '')
@@ -824,7 +872,7 @@ export function ProjectKanban({ project }: { project: Project }) {
 }
 
 function CardItem({
-card, onPointerDown, onOpen, isDragging, onDelete, onCancel }: {
+card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highlighted, cardRef }: {
   card: Card;
   onPointerDown: (e: React.PointerEvent) => void;
   /** Activate the card (open goal detail) via keyboard — mirrors the click path
@@ -833,13 +881,23 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel }: {
   isDragging: boolean;
   onDelete: () => void;
   onCancel?: () => void;
+  /** Set (or clear, with null) the to-do's due date. Absent for goal cards,
+   *  whose scheduling belongs to the goal lifecycle, not a date field. */
+  onSetDueDate?: (dueDate: string | null) => void;
+  /** Briefly ringed after a deep-link from the dashboard's to-do list, so the
+   *  card you clicked is findable on a board that may hold dozens. */
+  highlighted?: boolean;
+  cardRef?: (el: HTMLDivElement | null) => void;
 }) {
   const { colors, gradient, reduceMotion } = useTheme();
   const [showMenu, setShowMenu] = useState(false);
+  const [editingDue, setEditingDue] = useState(false);
   const isGoal = card.cardType === 'goal';
+  const dueDate = typeof card.metadataJson?.dueDate === 'string' ? card.metadataJson.dueDate : null;
 
   return (
     <div
+      ref={cardRef}
       role="button"
       tabIndex={0}
       aria-label={onOpen ? `Open card ${card.title}` : card.title}
@@ -852,15 +910,16 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel }: {
       style={{
         padding: '8px 10px', borderRadius: 7,
         background: colors.surface,
-        border: `1px solid ${colors.border}`,
+        border: `1px solid ${highlighted ? colors.cyan : colors.border}`,
+        boxShadow: highlighted ? `0 0 0 3px ${colors.cyanSoft}` : undefined,
         cursor: 'grab', position: 'relative',
         opacity: isDragging ? 0.4 : 1,
-        transition: reduceMotion ? 'none' : 'opacity 150ms',
+        transition: reduceMotion ? 'none' : 'opacity 150ms, box-shadow 300ms, border-color 300ms',
       }}
       onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
-      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; setShowMenu(false); }}
+      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = highlighted ? colors.cyan : colors.border; setShowMenu(false); }}
       onFocus={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
-      onBlur={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; }}
+      onBlur={e => { (e.currentTarget as HTMLElement).style.borderColor = highlighted ? colors.cyan : colors.border; }}
     >
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
         <div style={{ fontSize: 12, fontWeight: 500, flex: 1, minWidth: 0 }}>{card.title}</div>
@@ -890,6 +949,40 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel }: {
           {card.description}
         </div>
       )}
+      {editingDue && onSetDueDate ? (
+        <input
+          type="date"
+          autoFocus
+          defaultValue={dueDate ?? ''}
+          onPointerDown={e => e.stopPropagation()}
+          onClick={e => e.stopPropagation()}
+          onBlur={e => { onSetDueDate(e.target.value || null); setEditingDue(false); }}
+          onKeyDown={e => {
+            e.stopPropagation();
+            if (e.key === 'Enter') { onSetDueDate((e.target as HTMLInputElement).value || null); setEditingDue(false); }
+            if (e.key === 'Escape') setEditingDue(false);
+          }}
+          style={{
+            marginTop: 5, fontSize: 10, padding: '2px 4px', width: '100%', boxSizing: 'border-box',
+            borderRadius: 4, border: `1px solid ${colors.border}`,
+            background: colors.surface, color: colors.text,
+          }}
+        />
+      ) : dueDate ? (
+        <button
+          onPointerDown={e => e.stopPropagation()}
+          onClick={e => { e.stopPropagation(); if (onSetDueDate) setEditingDue(true); }}
+          title={onSetDueDate ? 'Change the due date' : undefined}
+          style={{
+            fontSize: 10, padding: '1px 5px', borderRadius: 4, marginTop: 4,
+            display: 'inline-block', border: 'none',
+            cursor: onSetDueDate ? 'pointer' : 'default',
+            background: colors.cyanSoft, color: colors.cyan, fontFamily: font.body,
+          }}
+        >
+          Due {dueDate}
+        </button>
+      ) : null}
       {card.cardType !== 'standard' && (
         <span style={{
           fontSize: 10, padding: '1px 5px', borderRadius: 4, marginTop: 4, display: 'inline-block',
@@ -922,6 +1015,38 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel }: {
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
             >
               Cancel goal
+            </button>
+          )}
+          {onSetDueDate && (
+            <button
+              role="menuitem"
+              onClick={(e) => { e.stopPropagation(); setShowMenu(false); setEditingDue(true); }}
+              style={{
+                width: '100%', padding: '5px 8px', borderRadius: 4,
+                background: 'transparent', border: 'none',
+                color: colors.textMuted, fontSize: 11, fontFamily: font.body,
+                cursor: 'pointer', textAlign: 'left',
+              }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = colors.borderHi; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+            >
+              {dueDate ? 'Change due date' : 'Set due date'}
+            </button>
+          )}
+          {onSetDueDate && dueDate && (
+            <button
+              role="menuitem"
+              onClick={(e) => { e.stopPropagation(); setShowMenu(false); onSetDueDate(null); }}
+              style={{
+                width: '100%', padding: '5px 8px', borderRadius: 4,
+                background: 'transparent', border: 'none',
+                color: colors.textMuted, fontSize: 11, fontFamily: font.body,
+                cursor: 'pointer', textAlign: 'left',
+              }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = colors.borderHi; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+            >
+              Clear due date
             </button>
           )}
           <button

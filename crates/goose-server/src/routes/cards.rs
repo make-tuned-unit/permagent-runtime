@@ -14,6 +14,11 @@
 //!   POST   /api/projects/:project_id/cards/:card_id/cancel — Cancel a goal (kills worker, terminal)
 //!   POST   /api/projects/:project_id/cards/reorder         — Batch reorder cards
 //!
+//! Dated to-dos, for the dashboard's cross-project due list:
+//!   GET    /api/cards/due                                       — Every dated, unfinished to-do, soonest first
+//!   PUT    /api/projects/:project_id/cards/:card_id/due-date    — Set (or clear, with null) a due date
+//!   POST   /api/projects/:project_id/cards/:card_id/dismiss-due — Hide a to-do from the due list
+//!
 //! Post-creation roadmap editing (#251) + per-goal auto-approve (#252):
 //!   POST   /api/projects/:project_id/roadmap/goals                        — Insert a goal into the roadmap
 //!   PUT    /api/projects/:project_id/roadmap/goals/:card_id/dependencies  — Set a goal's depends_on (validated)
@@ -742,10 +747,115 @@ async fn list_active_goals_handler(
     }))
 }
 
+// ── Due to-dos (cross-project dashboard) ───────────────────────────────────
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DueCardResponse {
+    id: String,
+    title: String,
+    project_id: String,
+    project_name: String,
+    column_id: String,
+    column_name: String,
+    due_date: String,
+    assigned_to: Option<String>,
+    updated_at: String,
+}
+
+impl From<cards::DueCard> for DueCardResponse {
+    fn from(c: cards::DueCard) -> Self {
+        Self {
+            id: c.id,
+            title: c.title,
+            project_id: c.project_id,
+            project_name: c.project_name,
+            column_id: c.column_id,
+            column_name: c.column_name,
+            due_date: c.due_date,
+            assigned_to: c.assigned_to,
+            updated_at: c.updated_at,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetDueDateRequest {
+    /// `null` clears the due date, removing the to-do from the dashboard.
+    due_date: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetDismissedRequest {
+    dismissed: bool,
+}
+
+/// Every dated, unfinished to-do across all projects, soonest first.
+async fn list_due_cards_handler(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<DueCardResponse>>, StatusCode> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let items = cards::list_due_cards(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(items.into_iter().map(DueCardResponse::from).collect()))
+}
+
+async fn set_due_date_handler(
+    State(state): State<Arc<AppState>>,
+    Path((_project_id, card_id)): Path<(String, String)>,
+    Json(req): Json<SetDueDateRequest>,
+) -> Result<Json<CardResponse>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let updated = cards::set_card_due_date(&pool, &card_id, req.due_date.as_deref())
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Card not found".to_string()))?;
+    Ok(Json(CardResponse::from(updated)))
+}
+
+async fn set_due_dismissed_handler(
+    State(state): State<Arc<AppState>>,
+    Path((_project_id, card_id)): Path<(String, String)>,
+    Json(req): Json<SetDismissedRequest>,
+) -> Result<Json<CardResponse>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let updated = cards::set_card_due_dismissed(&pool, &card_id, req.dismissed, &now)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Card not found".to_string()))?;
+    Ok(Json(CardResponse::from(updated)))
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         // Active goals — single source of truth for every "in flight" surface
         .route("/api/goals/active", get(list_active_goals_handler))
+        // Dated to-dos across every board, for the dashboard's due list
+        .route("/api/cards/due", get(list_due_cards_handler))
+        .route(
+            "/api/projects/{project_id}/cards/{card_id}/due-date",
+            axum::routing::put(set_due_date_handler),
+        )
+        .route(
+            "/api/projects/{project_id}/cards/{card_id}/dismiss-due",
+            post(set_due_dismissed_handler),
+        )
         // Columns
         .route(
             "/api/projects/{project_id}/columns",
@@ -793,4 +903,207 @@ pub fn routes(state: Arc<AppState>) -> Router {
             post(set_auto_approve_handler),
         )
         .with_state(state)
+}
+
+#[cfg(test)]
+mod due_tests {
+    use super::*;
+    use axum::{body::Body, http::Request};
+    use serial_test::serial;
+    use tower::ServiceExt;
+
+    async fn body_json(response: axum::response::Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        if bytes.is_empty() {
+            return serde_json::Value::Null;
+        }
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// Exercises the real wire contract: a to-do created over HTTP, dated over
+    /// HTTP, and read back from the cross-project due list. The SQL is covered
+    /// by unit tests in `permagent::cards`; what this pins is the part they
+    /// cannot see — the routes are actually mounted, and the JSON is camelCase
+    /// the way the dashboard reads it.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn due_list_round_trips_over_http() {
+        crate::test_support::test_root();
+        let state = AppState::new(true).await.unwrap();
+        let app = routes(state);
+
+        let project_id = permagent::projects::PERSONAL_PROJECT_ID;
+
+        // Create a to-do.
+        let created = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/projects/{}/cards", project_id))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "title": "water the plants" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let card = body_json(created).await;
+        let card_id = card["id"].as_str().unwrap().to_string();
+
+        // Undated: absent from the due list.
+        let listed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/cards/due")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(listed.status(), StatusCode::OK);
+        let before = body_json(listed).await;
+        assert!(
+            !before
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["id"] == card_id.as_str()),
+            "an undated card must not appear in the due list"
+        );
+
+        // Give it a due date.
+        let dated = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/projects/{}/cards/{}/due-date",
+                        project_id, card_id
+                    ))
+                    .method("PUT")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "dueDate": "2026-08-09" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(dated.status(), StatusCode::OK);
+
+        // Now present, with the camelCase fields the dashboard binds to.
+        let listed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/cards/due")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let after = body_json(listed).await;
+        let row = after
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == card_id.as_str())
+            .expect("dated to-do must appear in the due list");
+        assert_eq!(row["dueDate"], "2026-08-09");
+        assert_eq!(row["title"], "water the plants");
+        assert!(row["projectName"].is_string());
+        assert!(row["columnName"].is_string());
+
+        // Dismiss removes it from the list.
+        let dismissed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/projects/{}/cards/{}/dismiss-due",
+                        project_id, card_id
+                    ))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "dismissed": true }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(dismissed.status(), StatusCode::OK);
+
+        let listed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/cards/due")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let dismissed_list = body_json(listed).await;
+        assert!(
+            !dismissed_list
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["id"] == card_id.as_str()),
+            "a dismissed to-do must not appear in the due list"
+        );
+    }
+
+    /// A malformed date must be refused at the edge with a 400, not stored and
+    /// left to sort into a nonsense position later.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn malformed_due_date_is_rejected_over_http() {
+        crate::test_support::test_root();
+        let state = AppState::new(true).await.unwrap();
+        let app = routes(state);
+        let project_id = permagent::projects::PERSONAL_PROJECT_ID;
+
+        let created = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/projects/{}/cards", project_id))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "title": "bad date" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let card_id = body_json(created).await["id"].as_str().unwrap().to_string();
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/projects/{}/cards/{}/due-date",
+                        project_id, card_id
+                    ))
+                    .method("PUT")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "dueDate": "next tuesday" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
 }

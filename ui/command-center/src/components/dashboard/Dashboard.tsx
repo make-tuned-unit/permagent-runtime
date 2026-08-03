@@ -5,6 +5,7 @@ import { useTheme } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 import { useDashboard } from './useDashboard';
 import { useLiveGoals } from '../../lib/useLiveGoals';
+import { useDueTodos } from '../../lib/useDueTodos';
 import { useLayout, DEFAULT_LAYOUT, type DashboardLayoutData, type DashboardCardLayout } from './useLayout';
 import { useCardRegistry } from './cards/useCardRegistry';
 import { AddCardPicker } from './AddCardPicker';
@@ -61,6 +62,10 @@ export function Dashboard() {
   // Stable props identity for the memoized InFlightCard — only changes when the
   // (deduped) goal list actually changes, so a benign refetch never re-renders it.
   const inFlightProps = useMemo(() => ({ goals: activeGoals }), [activeGoals]);
+  // Dated to-dos across every board. Fetched once here and passed down, like
+  // the goal subscription above — the card must not fetch per render.
+  const dueTodos = useDueTodos();
+  const todosProps = useMemo(() => ({ todos: dueTodos }), [dueTodos]);
   const { layout, persistLayout } = useLayout();
   // Rendered registry = first-party code cards + daemon-served manifest cards.
   const registry = useCardRegistry();
@@ -219,6 +224,7 @@ export function Dashboard() {
     in_flight: inFlightProps,
     decisions: { activeCount },
     recent: { items: data.recent },
+    todos: todosProps,
   };
 
   const visibleCards = layout.cards.filter(c => c.visible);

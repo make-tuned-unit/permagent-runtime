@@ -778,6 +778,228 @@ pub async fn create_card(pool: &Pool<Sqlite>, input: CreateCard) -> Result<Card,
     Ok(card)
 }
 
+/// Metadata key holding a to-do's due date (ISO-8601 date, `YYYY-MM-DD`).
+///
+/// Due dates live in `metadata_json` rather than in a column: the field is new
+/// and unproven, and this way it costs no migration and can be withdrawn as
+/// cheaply as it was added. If the dashboard earns its keep, promote it to a
+/// real column with an index. It is deliberately NOT a protected goal key, so
+/// the ordinary `update_card` path may write it.
+pub const DUE_DATE_KEY: &str = "dueDate";
+
+/// Metadata key holding the RFC-3339 instant a to-do was dismissed from the
+/// dashboard. Dismissal hides a to-do from the cross-project list WITHOUT
+/// touching the card itself — the card stays exactly where it is on its board.
+/// Rescheduling clears it (see [`set_card_due_date`]): choosing a new due date
+/// is an explicit statement that you want the to-do back.
+pub const DUE_DISMISSED_KEY: &str = "dueDismissedAt";
+
+/// Column names treated as terminal for to-dos, lower-cased.
+///
+/// Standard (non-goal) cards sit on `manual` columns, which carry no
+/// `state_binding` — unlike goal cards there is no structural signal that a
+/// column means "finished", so the only available signal is the name. That is
+/// a genuine limitation: rename Done to "Shipped" and its cards reappear as
+/// to-dos. It is recorded rather than hidden, and is the first thing to fix if
+/// due dates graduate to a real column.
+const TERMINAL_COLUMN_NAMES: &[&str] = &["done", "complete", "completed", "cancelled", "canceled"];
+
+/// A to-do with a due date, resolved across every project for the dashboard.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DueCard {
+    pub id: String,
+    pub title: String,
+    pub project_id: String,
+    pub project_name: String,
+    pub column_id: String,
+    pub column_name: String,
+    /// ISO-8601 date (`YYYY-MM-DD`) parsed from `metadata_json.dueDate`.
+    pub due_date: String,
+    pub assigned_to: Option<String>,
+    pub updated_at: String,
+}
+
+/// Every dated, unfinished to-do across all projects, soonest due first.
+///
+/// Scope, and why each exclusion is here:
+/// - `card_type = 'standard'` — goal cards have their own governed lifecycle
+///   and their own surfaces; mixing them in would invite moving a goal from a
+///   to-do list, which the goal-transition guard forbids anyway.
+/// - a due date is required — without this filter the "dashboard" is every
+///   card on every board, which is not a priority view.
+/// - not archived, not in a terminal column — finished work is not a to-do.
+/// - not dismissed — the user said they did not want to see it.
+///
+/// Overdue items sort first naturally, since the ordering is by date ascending
+/// and the caller groups by comparing against today.
+pub async fn list_due_cards(pool: &Pool<Sqlite>) -> Result<Vec<DueCard>, String> {
+    let placeholders = vec!["?"; TERMINAL_COLUMN_NAMES.len()].join(", ");
+    let sql = format!(
+        "SELECT c.id, c.title, c.project_id, c.column_id, c.assigned_to, c.updated_at, \
+                bc.name AS column_name, \
+                COALESCE(p.name, c.project_id) AS project_name, \
+                json_extract(c.metadata_json, '$.{due}') AS due_date \
+         FROM cards c \
+         JOIN board_columns bc ON c.column_id = bc.id \
+         LEFT JOIN projects p ON p.id = c.project_id \
+         WHERE c.card_type = 'standard' \
+           AND c.archived_at IS NULL \
+           AND json_extract(c.metadata_json, '$.{due}') IS NOT NULL \
+           AND json_extract(c.metadata_json, '$.{dismissed}') IS NULL \
+           AND lower(bc.name) NOT IN ({terminal}) \
+         ORDER BY due_date ASC, c.updated_at DESC",
+        due = DUE_DATE_KEY,
+        dismissed = DUE_DISMISSED_KEY,
+        terminal = placeholders,
+    );
+    let mut q = sqlx::query(&sql);
+    for name in TERMINAL_COLUMN_NAMES {
+        q = q.bind(*name);
+    }
+    let rows = q.fetch_all(pool).await.map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|r| DueCard {
+            id: r.get("id"),
+            title: r.get("title"),
+            project_id: r.get("project_id"),
+            project_name: r.get("project_name"),
+            column_id: r.get("column_id"),
+            column_name: r.get("column_name"),
+            due_date: r.get::<Option<String>, _>("due_date").unwrap_or_default(),
+            assigned_to: r.get("assigned_to"),
+            updated_at: r.get("updated_at"),
+        })
+        .collect())
+}
+
+/// Set or clear a to-do's due date, merging into existing metadata.
+///
+/// Passing `None` clears the date, which also removes the card from the
+/// dashboard list. Any change to the date clears a previous dismissal — the
+/// user rescheduling something is asking to be reminded of it again.
+pub async fn set_card_due_date(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    due_date: Option<&str>,
+) -> Result<Option<Card>, String> {
+    if let Some(date) = due_date {
+        validate_due_date(date)?;
+    }
+    let Some(card) = get_card(pool, card_id).await? else {
+        return Ok(None);
+    };
+    let mut metadata = card.metadata_json;
+    if !metadata.is_object() {
+        metadata = serde_json::json!({});
+    }
+    let map = metadata
+        .as_object_mut()
+        .ok_or_else(|| "Card metadata is not an object".to_string())?;
+    match due_date {
+        Some(date) => {
+            map.insert(DUE_DATE_KEY.to_string(), serde_json::json!(date));
+        }
+        None => {
+            map.remove(DUE_DATE_KEY);
+        }
+    }
+    // Rescheduling un-dismisses: see DUE_DISMISSED_KEY.
+    map.remove(DUE_DISMISSED_KEY);
+
+    update_card(
+        pool,
+        card_id,
+        UpdateCard {
+            metadata_json: Some(metadata),
+            ..Default::default()
+        },
+    )
+    .await
+}
+
+/// Hide a to-do from the dashboard list without altering the card.
+///
+/// `dismissed = false` restores it. This writes only the dismissal key; the
+/// card's column, position, and due date are untouched, so dismissing from the
+/// dashboard never silently reorganises someone's board.
+pub async fn set_card_due_dismissed(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    dismissed: bool,
+    now: &str,
+) -> Result<Option<Card>, String> {
+    let Some(card) = get_card(pool, card_id).await? else {
+        return Ok(None);
+    };
+    let mut metadata = card.metadata_json;
+    if !metadata.is_object() {
+        metadata = serde_json::json!({});
+    }
+    let map = metadata
+        .as_object_mut()
+        .ok_or_else(|| "Card metadata is not an object".to_string())?;
+    if dismissed {
+        map.insert(DUE_DISMISSED_KEY.to_string(), serde_json::json!(now));
+    } else {
+        map.remove(DUE_DISMISSED_KEY);
+    }
+
+    update_card(
+        pool,
+        card_id,
+        UpdateCard {
+            metadata_json: Some(metadata),
+            ..Default::default()
+        },
+    )
+    .await
+}
+
+/// Accept only `YYYY-MM-DD`. The value is interpolated nowhere, but a bad date
+/// would sort into a nonsense position and silently corrupt the ordering, so it
+/// is rejected at the edge instead of being stored and puzzled over later.
+fn validate_due_date(value: &str) -> Result<(), String> {
+    let bytes = value.as_bytes();
+    let shaped = bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit());
+    if !shaped {
+        return Err(format!(
+            "Due date must be an ISO-8601 calendar date (YYYY-MM-DD), got '{}'",
+            value
+        ));
+    }
+    // Read the digits out of the byte slice rather than re-slicing the &str:
+    // every byte is already known to be ASCII, so this cannot split a
+    // character, and it does not ask the reader to prove that.
+    let digit = |i: usize| u32::from(bytes[i] - b'0');
+    let month = digit(5) * 10 + digit(6);
+    let day = digit(8) * 10 + digit(9);
+    let year = digit(0) * 1000 + digit(1) * 100 + digit(2) * 10 + digit(3);
+    if !(1..=12).contains(&month) || day < 1 || day > days_in_month(year, month) {
+        return Err(format!("Due date '{}' is not a real calendar date", value));
+    }
+    Ok(())
+}
+
+/// Days in a Gregorian month. Keeps 31 February out of the ordering.
+fn days_in_month(year: u32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400) => {
+            29
+        }
+        2 => 28,
+        _ => 0,
+    }
+}
+
 /// A goal in an active lifecycle state, for the dashboard's unified "in flight"
 /// surfaces. Count and list both derive from [`list_active_goals`] so they can
 /// never disagree.
@@ -1275,6 +1497,262 @@ mod tests {
 
         let fetched = get_card(&pool, &card.id).await.unwrap().unwrap();
         assert_eq!(fetched.title, "Test Card");
+    }
+
+    // ── Due to-dos ─────────────────────────────────────────────────────────
+
+    async fn todo(pool: &Pool<Sqlite>, title: &str, due: Option<&str>) -> Card {
+        let card = create_card(
+            pool,
+            CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: title.to_string(),
+                description: None,
+                card_type: None,
+                column_id: None,
+                created_by: None,
+                metadata_json: None,
+            },
+        )
+        .await
+        .unwrap();
+        if let Some(d) = due {
+            set_card_due_date(pool, &card.id, Some(d))
+                .await
+                .unwrap()
+                .unwrap()
+        } else {
+            card
+        }
+    }
+
+    #[tokio::test]
+    async fn due_cards_are_sorted_soonest_first() {
+        let pool = test_pool().await;
+        todo(&pool, "later", Some("2026-09-01")).await;
+        todo(&pool, "sooner", Some("2026-08-05")).await;
+        todo(&pool, "overdue", Some("2026-07-01")).await;
+
+        let due = list_due_cards(&pool).await.unwrap();
+        let titles: Vec<_> = due.iter().map(|c| c.title.as_str()).collect();
+        assert_eq!(titles, vec!["overdue", "sooner", "later"]);
+    }
+
+    #[tokio::test]
+    async fn undated_cards_are_excluded() {
+        let pool = test_pool().await;
+        todo(&pool, "dated", Some("2026-08-05")).await;
+        todo(&pool, "undated", None).await;
+
+        let due = list_due_cards(&pool).await.unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].title, "dated");
+    }
+
+    #[tokio::test]
+    async fn due_cards_carry_their_project_and_column_names() {
+        let pool = test_pool().await;
+        todo(&pool, "thing", Some("2026-08-05")).await;
+        let due = list_due_cards(&pool).await.unwrap();
+        assert_eq!(due[0].column_name, "Backlog");
+        assert!(!due[0].project_name.is_empty());
+        // The project name must resolve to a real name, not the raw id.
+        assert_ne!(due[0].project_name, due[0].project_id);
+    }
+
+    #[tokio::test]
+    async fn finished_todos_drop_off_the_list() {
+        let pool = test_pool().await;
+        let card = todo(&pool, "shipped", Some("2026-08-05")).await;
+        assert_eq!(list_due_cards(&pool).await.unwrap().len(), 1);
+
+        update_card(
+            &pool,
+            &card.id,
+            UpdateCard {
+                column_id: Some("col-personal-done".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(list_due_cards(&pool).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn archived_todos_drop_off_the_list() {
+        let pool = test_pool().await;
+        let card = todo(&pool, "archived", Some("2026-08-05")).await;
+        update_card(
+            &pool,
+            &card.id,
+            UpdateCard {
+                archived_at: Some(Some("2026-08-02T00:00:00Z".to_string())),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(list_due_cards(&pool).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn dismissing_hides_the_todo_but_leaves_the_card_alone() {
+        let pool = test_pool().await;
+        let card = todo(&pool, "noisy", Some("2026-08-05")).await;
+        let before = get_card(&pool, &card.id).await.unwrap().unwrap();
+
+        set_card_due_dismissed(&pool, &card.id, true, "2026-08-02T12:00:00Z")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(list_due_cards(&pool).await.unwrap().is_empty());
+
+        // The card itself must be untouched: same column, same position, same
+        // due date. Dismissing from the dashboard is not a board edit.
+        let after = get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert_eq!(after.column_id, before.column_id);
+        assert_eq!(after.position, before.position);
+        assert_eq!(
+            after.metadata_json[DUE_DATE_KEY],
+            before.metadata_json[DUE_DATE_KEY]
+        );
+        assert!(!after.archived_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn undismissing_restores_the_todo() {
+        let pool = test_pool().await;
+        let card = todo(&pool, "back", Some("2026-08-05")).await;
+        set_card_due_dismissed(&pool, &card.id, true, "2026-08-02T12:00:00Z")
+            .await
+            .unwrap();
+        set_card_due_dismissed(&pool, &card.id, false, "2026-08-02T12:00:00Z")
+            .await
+            .unwrap();
+        assert_eq!(list_due_cards(&pool).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn rescheduling_clears_a_dismissal() {
+        // Pushing a dismissed to-do to a new date is an explicit request to be
+        // reminded again, so it must come back without a separate un-dismiss.
+        let pool = test_pool().await;
+        let card = todo(&pool, "revived", Some("2026-08-05")).await;
+        set_card_due_dismissed(&pool, &card.id, true, "2026-08-02T12:00:00Z")
+            .await
+            .unwrap();
+        assert!(list_due_cards(&pool).await.unwrap().is_empty());
+
+        set_card_due_date(&pool, &card.id, Some("2026-09-09"))
+            .await
+            .unwrap();
+        let due = list_due_cards(&pool).await.unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].due_date, "2026-09-09");
+    }
+
+    #[tokio::test]
+    async fn clearing_a_due_date_removes_it_from_the_list() {
+        let pool = test_pool().await;
+        let card = todo(&pool, "undated now", Some("2026-08-05")).await;
+        set_card_due_date(&pool, &card.id, None).await.unwrap();
+        assert!(list_due_cards(&pool).await.unwrap().is_empty());
+        let after = get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert!(after.metadata_json.get(DUE_DATE_KEY).is_none());
+    }
+
+    #[tokio::test]
+    async fn setting_a_due_date_preserves_other_metadata() {
+        let pool = test_pool().await;
+        let card = create_card(
+            &pool,
+            CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: "has meta".to_string(),
+                description: None,
+                card_type: None,
+                column_id: None,
+                created_by: None,
+                metadata_json: Some(serde_json::json!({ "colour": "blue" })),
+            },
+        )
+        .await
+        .unwrap();
+        let updated = set_card_due_date(&pool, &card.id, Some("2026-08-05"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.metadata_json["colour"], "blue");
+        assert_eq!(updated.metadata_json[DUE_DATE_KEY], "2026-08-05");
+    }
+
+    #[tokio::test]
+    async fn malformed_due_dates_are_refused() {
+        let pool = test_pool().await;
+        let card = todo(&pool, "bad date", None).await;
+        for bad in [
+            "05/08/2026",
+            "2026-8-5",
+            "tomorrow",
+            "2026-13-01",
+            "2026-08-32",
+            "2026-00-10",
+            "2026-01-00",
+            "2026-02-30", // February never has 30 days
+            "2026-04-31", // April has 30
+            "2027-02-29", // 2027 is not a leap year
+            "2026-08-0x",
+            "",
+        ] {
+            assert!(
+                set_card_due_date(&pool, &card.id, Some(bad)).await.is_err(),
+                "expected '{}' to be refused",
+                bad
+            );
+        }
+        assert!(set_card_due_date(&pool, &card.id, Some("2026-08-05"))
+            .await
+            .is_ok());
+        // Real leap day must still be accepted.
+        assert!(set_card_due_date(&pool, &card.id, Some("2028-02-29"))
+            .await
+            .is_ok());
+        assert!(set_card_due_date(&pool, &card.id, Some("2026-12-31"))
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn goal_cards_never_appear_as_todos() {
+        // Goals have a governed lifecycle and their own surfaces; a to-do list
+        // that could move them would collide with the goal-transition guard.
+        let pool = test_pool().await;
+        let goal = create_card(
+            &pool,
+            CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: "a goal".to_string(),
+                description: None,
+                card_type: Some("goal".to_string()),
+                column_id: None,
+                created_by: None,
+                metadata_json: Some(serde_json::json!({ DUE_DATE_KEY: "2026-08-05" })),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(goal.card_type, "goal");
+        assert!(list_due_cards(&pool).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn setting_a_due_date_on_a_missing_card_reports_not_found() {
+        let pool = test_pool().await;
+        assert!(set_card_due_date(&pool, "no-such-card", Some("2026-08-05"))
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
