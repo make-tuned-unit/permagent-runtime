@@ -17,6 +17,7 @@ import { resolveSettingsSection } from './sections';
 import { trustEnvOverrideNotice } from './autonomy';
 import { VoicePicker } from '../voice/VoicePicker';
 import { H1, Section, Row, TextInput, Chip, Toggle, Slider, Kbd, SaveButton } from './atoms';
+import { makeQrMatrix } from '../../lib/qrMatrix';
 
 function PreviewBadge() {
   const { colors } = useThemeHook();
@@ -1089,6 +1090,33 @@ const PANELS: Record<string, (props: PanelProps) => JSX.Element> = {
   sovereignty: SovereigntyPanel,
 };
 
+
+function PairingQrCode({ value }: { value: string }) {
+  let matrix: boolean[][];
+  try {
+    matrix = makeQrMatrix(value);
+  } catch {
+    return <span style={{ fontSize: 11 }}>QR unavailable — shorten the hub address or copy the link.</span>;
+  }
+  const quiet = 4;
+  const size = matrix.length + quiet * 2;
+  const path = matrix.flatMap((row, y) => row.map((dark, x) => dark ? `M${x + quiet},${y + quiet}h1v1h-1z` : '')).join('');
+  return (
+    <svg
+      role="img"
+      aria-label="Pairing QR code"
+      viewBox={`0 0 ${size} ${size}`}
+      width={112}
+      height={112}
+      style={{ display: 'block', background: '#fff', borderRadius: 8 }}
+      shapeRendering="crispEdges"
+    >
+      <rect width={size} height={size} fill="#fff" />
+      <path d={path} fill="#000" />
+    </svg>
+  );
+}
+
 /** Devices — hub-and-spoke pairing (MULTI_DEVICE.md, #628). The hub (this
  *  machine) holds the one Brain; every other device connects to it over the
  *  tailnet by opening a pairing URL once. The URL carries a ONE-TIME claim
@@ -1319,6 +1347,7 @@ function DevicesPanel() {
                   });
                 }}
               >{copied ? 'Copied ✓' : 'Copy'}</button>
+              <PairingQrCode value={pairingUrl} />
             </div>
           ) : (
             <span style={{ fontSize: 12, color: colors.textDim }}>

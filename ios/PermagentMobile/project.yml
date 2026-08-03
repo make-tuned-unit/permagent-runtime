@@ -39,6 +39,7 @@ targets:
       properties:
         CFBundleDisplayName: Permagent
         NSMicrophoneUsageDescription: Permagent uses the microphone to dictate notes and talk with Henry.
+        NSCameraUsageDescription: Permagent uses the camera to scan the pairing QR code displayed on your Mac.
         NSLocalNetworkUsageDescription: Permagent connects to your Permagent hub on your local network or tailnet.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true

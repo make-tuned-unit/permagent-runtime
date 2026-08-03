@@ -29,6 +29,8 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSCameraUsageDescription</key>
+	<string>Permagent uses the camera to scan the pairing QR code displayed on your Mac.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Permagent connects to your Permagent hub on your local network or tailnet.</string>
 	<key>NSMicrophoneUsageDescription</key>

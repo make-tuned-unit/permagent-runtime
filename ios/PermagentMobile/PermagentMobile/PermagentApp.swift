@@ -27,6 +27,13 @@ struct PermagentApp: App {
 
 @MainActor
 final class HubSession: ObservableObject {
+    enum PairingError: Error {
+        case malformedURL
+        case hubUnreachable
+        case claimRejected(statusCode: Int)
+        case unexpectedResponse(statusCode: Int?)
+    }
+
     @Published var isPaired = false
     @Published var unread = 0
 
@@ -41,11 +48,13 @@ final class HubSession: ObservableObject {
     ///   exchanged for this device's own bearer token via the public
     ///   `POST /pair/claim` (routes/devices.rs, #628)
     /// - legacy:      http://<hub>:3001/ui/#token=<token> — a raw bearer token
-    func pair(from url: String) async -> Bool {
+    func pair(from url: String) async -> Result<Void, PairingError> {
         guard let comps = URLComponents(string: url.trimmingCharacters(in: .whitespaces)),
+              let scheme = comps.scheme,
+              scheme == "http" || scheme == "https",
               let host = comps.host,
-              let base = URL(string: "\(comps.scheme ?? "http")://\(host):\(comps.port ?? 3001)")
-        else { return false }
+              let base = URL(string: "\(scheme)://\(host):\(comps.port ?? 3001)")
+        else { return .failure(.malformedURL) }
         func fragmentValue(_ key: String) -> String? {
             comps.fragment?
                 .split(separator: "&")
@@ -55,37 +64,55 @@ final class HubSession: ObservableObject {
 
         let token: String
         if let code = fragmentValue("claim"), !code.isEmpty {
-            guard let minted = await Self.exchangeClaim(code: code, base: base) else { return false }
-            token = minted
+            switch await Self.exchangeClaim(code: code, base: base) {
+            case .success(let minted): token = minted
+            case .failure(let error): return .failure(error)
+            }
         } else if let legacy = fragmentValue("token"), !legacy.isEmpty {
             token = legacy
         } else {
-            return false
+            return .failure(.malformedURL)
         }
         await APIClient.shared.pair(HubConfig(baseURL: base, token: token))
         isPaired = true
         await listen()
-        return true
+        return .success(())
     }
 
     /// `POST /pair/claim` `{"code": …}` → `{"token": …, "device": {…}}`.
     /// The code is 128-bit random, single-use, 10-min lived; unknown/expired
     /// codes answer 404. Only `token` is needed here — the device name was
     /// fixed when the hub minted the code.
-    private static func exchangeClaim(code: String, base: URL) async -> String? {
+    private static func exchangeClaim(code: String, base: URL) async -> Result<String, PairingError> {
         struct Req: Encodable { let code: String }
         struct Resp: Decodable { let token: String }
         var req = URLRequest(url: base.appendingPathComponent("/pair/claim"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        guard let body = try? JSONEncoder().encode(Req(code: code)) else { return nil }
+        guard let body = try? JSONEncoder().encode(Req(code: code)) else {
+            return .failure(.unexpectedResponse(statusCode: nil))
+        }
         req.httpBody = body
-        guard let (data, resp) = try? await URLSession.shared.data(for: req),
-              let http = resp as? HTTPURLResponse,
-              (200..<300).contains(http.statusCode),
-              let decoded = try? JSONDecoder().decode(Resp.self, from: data)
-        else { return nil }
-        return decoded.token
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: req)
+        } catch {
+            return .failure(.hubUnreachable)
+        }
+        guard let http = response as? HTTPURLResponse else {
+            return .failure(.unexpectedResponse(statusCode: nil))
+        }
+        if http.statusCode == 404 || http.statusCode == 410 {
+            return .failure(.claimRejected(statusCode: http.statusCode))
+        }
+        guard (200..<300).contains(http.statusCode),
+              let decoded = try? JSONDecoder().decode(Resp.self, from: data),
+              !decoded.token.isEmpty
+        else {
+            return .failure(.unexpectedResponse(statusCode: http.statusCode))
+        }
+        return .success(decoded.token)
     }
 
     private func listen() async {

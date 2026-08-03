@@ -2,45 +2,69 @@
 // the hub's existing API; no device-local state beyond the pairing token.
 
 import SwiftUI
+import AVFoundation
 
 // ── Pairing ──────────────────────────────────────────────────────────────────
 
 struct PairingView: View {
+    private enum CameraState {
+        case checking, ready, denied, unavailable
+    }
+
     @EnvironmentObject var session: HubSession
     @State private var url = ""
-    @State private var failed = false
+    @State private var errorMessage: String?
+    @State private var cameraState: CameraState = .checking
+    @State private var scannerID = UUID()
+    @State private var isPairing = false
+
     var body: some View {
-        VStack(spacing: 24) {
-            Spacer()
+        ScrollView {
+            VStack(spacing: 20) {
+            Spacer(minLength: 28)
             Text("PERMAGENT")
                 .font(.system(.title2, design: .monospaced).weight(.bold))
                 .foregroundStyle(Brand.ribbon)
             Text("Pair with your hub")
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(Brand.text)
-            Text("On your Mac: Settings → Devices → copy the pairing URL, then paste it here. Both devices must be on your tailnet.")
+            Text("On your Mac, open Settings → Devices and create a pairing link. Scan its QR code here. Both devices must be on your tailnet.")
                 .font(.footnote)
                 .foregroundStyle(Brand.textMuted)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
+
+            cameraContent
+
+            HStack(spacing: 12) {
+                Rectangle().fill(Brand.borderHi).frame(height: 1)
+                Text("OR PASTE THE LINK")
+                    .font(.system(.caption2, design: .monospaced).weight(.semibold))
+                    .foregroundStyle(Brand.textDim)
+                    .fixedSize()
+                Rectangle().fill(Brand.borderHi).frame(height: 1)
+            }
+            .padding(.horizontal, 32)
+
             GlassCard {
-                TextField("http://your-mac.tailnet.ts.net:3001/ui/#token=…", text: $url)
+                TextField("http://your-mac.tailnet.ts.net:3001/ui/#claim=…", text: $url)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .font(.system(.footnote, design: .monospaced))
                     .foregroundStyle(Brand.text)
             }
             .padding(.horizontal, 24)
-            if failed {
-                Text("That doesn't look like a pairing URL — copy it fresh from Settings → Devices.")
+            if let errorMessage {
+                Text(errorMessage)
                     .font(.caption)
                     .foregroundStyle(Brand.danger)
+                    .multilineTextAlignment(.center)
                     .padding(.horizontal, 32)
             }
             Button {
-                Task { failed = !(await session.pair(from: url)) }
+                Task { await pair(using: url) }
             } label: {
-                Text("Connect")
+                Text(isPairing ? "Connecting…" : "Connect with pasted link")
                     .font(.body.weight(.semibold))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)
@@ -49,8 +73,200 @@ struct PairingView: View {
                     .foregroundStyle(Brand.deepVoid)
             }
             .padding(.horizontal, 24)
-            Spacer()
-            Spacer()
+            .disabled(isPairing || url.trimmingCharacters(in: .whitespaces).isEmpty)
+            Spacer(minLength: 28)
+            }
+        }
+        .task { await prepareCamera() }
+    }
+
+    @ViewBuilder
+    private var cameraContent: some View {
+        switch cameraState {
+        case .checking:
+            ProgressView("Checking camera access…")
+                .foregroundStyle(Brand.textMuted)
+                .frame(height: 210)
+        case .ready:
+            ZStack(alignment: .bottom) {
+                QRScannerView(
+                    onCode: { code in
+                        url = code
+                        Task { await pair(using: code) }
+                    },
+                    onUnavailable: { cameraState = .unavailable }
+                )
+                .id(scannerID)
+                .frame(height: 230)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(Brand.cyan, lineWidth: 2)
+                    .frame(width: 170, height: 170)
+                    .padding(.bottom, 30)
+                Text(isPairing ? "Pairing…" : "Point the camera at the QR code")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(.black.opacity(0.7))
+                    .clipShape(Capsule())
+                    .padding(.bottom, 8)
+            }
+            .padding(.horizontal, 24)
+            if errorMessage != nil {
+                Button("Scan another code") {
+                    errorMessage = nil
+                    scannerID = UUID()
+                }
+                .font(.caption.weight(.semibold))
+            }
+        case .denied:
+            cameraNotice(
+                icon: "camera.fill",
+                text: "Camera access is off. Open iOS Settings → Permagent → Camera and enable it, or paste the pairing link below."
+            )
+        case .unavailable:
+            cameraNotice(
+                icon: "camera.slash.fill",
+                text: "No camera is available on this device. Paste the pairing link below instead."
+            )
+        }
+    }
+
+    private func cameraNotice(icon: String, text: String) -> some View {
+        GlassCard {
+            VStack(spacing: 10) {
+                Image(systemName: icon).font(.title2).foregroundStyle(Brand.textMuted)
+                Text(text)
+                    .font(.caption)
+                    .foregroundStyle(Brand.textMuted)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+        }
+        .padding(.horizontal, 24)
+    }
+
+    private func prepareCamera() async {
+        guard AVCaptureDevice.default(for: .video) != nil else {
+            cameraState = .unavailable
+            return
+        }
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            cameraState = .ready
+        case .notDetermined:
+            cameraState = await AVCaptureDevice.requestAccess(for: .video) ? .ready : .denied
+        case .denied, .restricted:
+            cameraState = .denied
+        @unknown default:
+            cameraState = .unavailable
+        }
+    }
+
+    private func pair(using value: String) async {
+        guard !isPairing else { return }
+        isPairing = true
+        errorMessage = nil
+        let result = await session.pair(from: value)
+        isPairing = false
+        guard case .failure(let error) = result else { return }
+        switch error {
+        case .malformedURL:
+            errorMessage = "That isn’t a valid pairing URL. On your Mac, open Settings → Devices and scan or copy a fresh link containing #claim= or #token=."
+        case .hubUnreachable:
+            errorMessage = "Couldn’t reach the hub. Check that the hub address matches the machine actually running the daemon, and that both devices are on the tailnet."
+        case .claimRejected(let statusCode):
+            errorMessage = "The hub rejected this pairing code (HTTP \(statusCode)). It may be expired, already used, or unknown. Create a fresh pairing link in Settings → Devices and scan it."
+        case .unexpectedResponse(let statusCode):
+            if let statusCode {
+                errorMessage = "The hub returned an unexpected or unreadable response (HTTP \(statusCode)). Check that the daemon is healthy, then create a fresh pairing link and try again."
+            } else {
+                errorMessage = "The hub returned an unreadable response. Check that the address points to the Permagent daemon, then try again."
+            }
+        }
+    }
+}
+
+private final class CameraPreviewView: UIView {
+    override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
+    var previewLayer: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
+}
+
+private struct QRScannerView: UIViewRepresentable {
+    let onCode: (String) -> Void
+    let onUnavailable: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onCode: onCode)
+    }
+
+    func makeUIView(context: Context) -> CameraPreviewView {
+        let view = CameraPreviewView()
+        view.backgroundColor = .black
+        guard let camera = AVCaptureDevice.default(for: .video),
+              let input = try? AVCaptureDeviceInput(device: camera),
+              context.coordinator.session.canAddInput(input)
+        else {
+            onUnavailable()
+            return view
+        }
+
+        let output = AVCaptureMetadataOutput()
+        guard context.coordinator.session.canAddOutput(output) else {
+            onUnavailable()
+            return view
+        }
+        context.coordinator.session.addInput(input)
+        context.coordinator.session.addOutput(output)
+        output.setMetadataObjectsDelegate(context.coordinator, queue: .main)
+        output.metadataObjectTypes = [.qr]
+        view.previewLayer.session = context.coordinator.session
+        view.previewLayer.videoGravity = .resizeAspectFill
+        context.coordinator.start()
+        return view
+    }
+
+    func updateUIView(_ uiView: CameraPreviewView, context: Context) {}
+
+    static func dismantleUIView(_ uiView: CameraPreviewView, coordinator: Coordinator) {
+        coordinator.stop()
+    }
+
+    final class Coordinator: NSObject, AVCaptureMetadataOutputObjectsDelegate, @unchecked Sendable {
+        let session = AVCaptureSession()
+        private let queue = DispatchQueue(label: "ai.permagent.qr-scanner")
+        private let onCode: (String) -> Void
+        private var hasScanned = false
+
+        init(onCode: @escaping (String) -> Void) {
+            self.onCode = onCode
+        }
+
+        func start() {
+            queue.async { [session] in session.startRunning() }
+        }
+
+        func stop() {
+            queue.async { [session] in
+                if session.isRunning { session.stopRunning() }
+            }
+        }
+
+        func metadataOutput(
+            _ output: AVCaptureMetadataOutput,
+            didOutput metadataObjects: [AVMetadataObject],
+            from connection: AVCaptureConnection
+        ) {
+            guard !hasScanned,
+                  let qr = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
+                  qr.type == .qr,
+                  let value = qr.stringValue
+            else { return }
+            hasScanned = true
+            stop()
+            onCode(value)
         }
     }
 }
