@@ -99,9 +99,11 @@ export function ManifestCard({ manifest }: Props) {
     }
   }, [manifest.configure, configValue, fetchData]);
 
+  const isCompact = manifest.layout === 'compact';
+
   const shell = (children: React.ReactNode) => (
     <div style={{
-      padding: 24, borderRadius: radius.lg,
+      padding: isCompact ? 14 : 24, borderRadius: radius.lg,
       background: colors.surface,
       border: `1px solid ${colors.border}`,
       boxShadow: [colors.cardShadow, colors.cardHighlight].filter(Boolean).join(', '),
@@ -201,6 +203,51 @@ export function ManifestCard({ manifest }: Props) {
   }
 
   // ── Populated layouts ──────────────────────────────────────────────────────
+  if (isCompact) {
+    // Hero + supporting rows. The first cell is the reading you actually came
+    // for; everything after it is context and is rendered as such.
+    const [hero, ...rest] = cells;
+    return shell(
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+        <div style={{
+          fontFamily: font.body, fontSize: 10, fontWeight: 600, letterSpacing: '0.09em',
+          textTransform: 'uppercase', color: colors.textDim,
+          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+        }}>
+          {hero.label || manifest.name}
+        </div>
+        <div style={{
+          fontFamily: font.display, fontSize: 24, fontWeight: 600, lineHeight: 1.15,
+          marginTop: 3, color: hero.accent ? colors.cyan : colors.text,
+          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+        }}>
+          {hero.value}
+        </div>
+        {rest.length > 0 && (
+          <div style={{
+            marginTop: 'auto', paddingTop: 8,
+            display: 'flex', flexDirection: 'column', gap: 3, minHeight: 0, overflow: 'hidden',
+          }}>
+            {rest.map((c, i) => (
+              <div key={i} style={{
+                display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8,
+              }}>
+                <span style={{
+                  fontFamily: font.body, fontSize: 10.5, color: colors.textDim,
+                  whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                }}>{c.label}</span>
+                <span style={{
+                  fontFamily: font.body, fontSize: 11, fontWeight: 500, flexShrink: 0,
+                  color: c.accent ? colors.cyan : colors.textMuted,
+                }}>{c.value}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>,
+    );
+  }
+
   return shell(
     <>
       <SectionTitle title={manifest.name} />

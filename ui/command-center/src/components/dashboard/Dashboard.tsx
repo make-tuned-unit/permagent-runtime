@@ -6,7 +6,7 @@ import { Mobius } from '../mobius/Mobius';
 import { useDashboard } from './useDashboard';
 import { useLiveGoals } from '../../lib/useLiveGoals';
 import { useDueTodos } from '../../lib/useDueTodos';
-import { useLayout, DEFAULT_LAYOUT, type DashboardLayoutData, type DashboardCardLayout } from './useLayout';
+import { useLayout, reflow, DEFAULT_LAYOUT, type DashboardLayoutData, type DashboardCardLayout } from './useLayout';
 import { useCardRegistry } from './cards/useCardRegistry';
 import { AddCardPicker } from './AddCardPicker';
 import { DashboardOverflowMenu } from './DashboardOverflowMenu';
@@ -28,26 +28,6 @@ function persistAndNotify(
   Promise.all([persistLayout(newLayout), minVisible])
     .then(() => { setSaveState('saved'); setTimeout(() => setSaveState('idle'), 1000); })
     .catch(() => { setSaveState('error'); setTimeout(() => setSaveState('idle'), 2000); });
-}
-
-/** Recompute grid positions from array order, packing cards into rows. */
-function reflow(cards: DashboardCardLayout[]): DashboardCardLayout[] {
-  let x = 0;
-  let y = 0;
-  let rowHeight = 0;
-  return cards.map(card => {
-    const w = card.size.w;
-    const h = card.size.h;
-    if (x + w > 12) {
-      x = 0;
-      y += rowHeight;
-      rowHeight = 0;
-    }
-    const placed = { ...card, position: { x, y } };
-    x += w;
-    rowHeight = Math.max(rowHeight, h);
-    return placed;
-  });
 }
 
 const ROW_HEIGHT = 60;

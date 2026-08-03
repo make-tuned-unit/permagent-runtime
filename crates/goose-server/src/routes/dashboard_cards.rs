@@ -125,8 +125,10 @@ pub fn builtin_card_manifests() -> Vec<CardManifest> {
             card_type: "system_stats".to_string(),
             name: "System".to_string(),
             description: "CPU, memory, disk and uptime at a glance".to_string(),
-            default_size: CardSize { w: 5, h: 4 },
-            layout: "stat-grid".to_string(),
+            // Ambient readout: glanced at, never acted on. It gets a small tile
+            // so the surfaces the user actually works from keep the width.
+            default_size: CardSize { w: 3, h: 2 },
+            layout: "compact".to_string(),
             data_endpoint: "/api/dashboard/system-stats".to_string(),
             refresh_seconds: Some(30),
             source: "built-in".to_string(),
@@ -147,8 +149,8 @@ pub fn builtin_card_manifests() -> Vec<CardManifest> {
             card_type: "weather".to_string(),
             name: "Weather".to_string(),
             description: "Current conditions for your location".to_string(),
-            default_size: CardSize { w: 5, h: 4 },
-            layout: "stat-grid".to_string(),
+            default_size: CardSize { w: 3, h: 2 },
+            layout: "compact".to_string(),
             data_endpoint: "/api/dashboard/weather".to_string(),
             refresh_seconds: Some(900),
             source: "built-in".to_string(),
