@@ -154,7 +154,17 @@ export function BuildView() {
       color: colors.text, fontFamily: font.body,
     }}>
       <ViewHeader
-        leading={<Mobius size={36} state={mobiusState as any} glow={0.9} />}
+        // ProjectChip lives on the LEFT, beside the Mobius, and not in
+        // `actions`. The Build tab's browser is a NATIVE webview that
+        // composites above all DOM, so a menu opening on the right edge drops
+        // straight into it and gets sliced in half. ProjectChip does push the
+        // browser-overlay counter, but that is not sufficient here — keeping
+        // the menu over the left-hand pane is what actually avoids the
+        // collision, which is why it lived here originally.
+        leading={<div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <Mobius size={36} state={mobiusState as any} glow={0.9} />
+          <ProjectChip onLaunch={handleLaunch} onVisitSite={handleVisitSite} />
+        </div>}
         // A tab's title is the tab's name. Build used to swap in the active
         // task's title, which made it the one view whose header didn't say
         // what tab you were on. The task moved to the subtitle — still
@@ -180,8 +190,6 @@ export function BuildView() {
           </span>
         }
         actions={<>
-          <ProjectChip onLaunch={handleLaunch} onVisitSite={handleVisitSite} />
-
         {/* Progress rail — driven by the daemon's per-task progress estimate
             (dashboard in_flight[].progress, 0..0.95). Previously hardcoded to
             step 3 whenever anything ran (2026-07 wiring audit). */}
