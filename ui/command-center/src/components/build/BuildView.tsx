@@ -3,7 +3,6 @@ import { Panel, Group, Separator } from 'react-resizable-panels';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/tokens';
-import { Mobius } from '../mobius/Mobius';
 import { useDashboard } from '../dashboard/useDashboard';
 import { useCommandCenter } from '../../lib/store';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
@@ -119,7 +118,6 @@ export function BuildView() {
   const agentName = data?.agent.name ?? 'Agent';
   const hasActive = (data?.in_flight.length ?? 0) > 0;
   const activeTask = hasActive ? data!.in_flight[0] : null;
-  const mobiusState = hasActive ? 'thinking' : 'idle';
 
   // Take over: open the in-flight session in the chat dock so the user can
   // steer (or stop) the run directly. `in_flight[i].id` IS a session id — the
@@ -154,22 +152,18 @@ export function BuildView() {
       color: colors.text, fontFamily: font.body,
     }}>
       <ViewHeader
-        // ProjectChip lives on the LEFT, beside the Mobius, and not in
-        // `actions`. The Build tab's browser is a NATIVE webview that
-        // composites above all DOM, so a menu opening on the right edge drops
-        // straight into it and gets sliced in half. ProjectChip does push the
-        // browser-overlay counter, but that is not sufficient here — keeping
-        // the menu over the left-hand pane is what actually avoids the
-        // collision, which is why it lived here originally.
-        leading={<div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <Mobius size={36} state={mobiusState as any} glow={0.9} />
-          <ProjectChip onLaunch={handleLaunch} onVisitSite={handleVisitSite} />
-        </div>}
         // A tab's title is the tab's name. Build used to swap in the active
         // task's title, which made it the one view whose header didn't say
         // what tab you were on. The task moved to the subtitle — still
         // visible, just no longer impersonating the page title.
         title="Build"
+        // ProjectChip sits immediately right of the title (afterTitle), NOT in
+        // `actions` at the far edge. The Build browser is a native webview that
+        // composites above all DOM, so a menu opening on the right drops into
+        // it and gets sliced; keeping the chip left, over the DOM pane, avoids
+        // that. The Mobius that used to lead the header is gone — Build now
+        // matches every other tab, whose header is a left-aligned title.
+        afterTitle={<ProjectChip onLaunch={handleLaunch} onVisitSite={handleVisitSite} />}
         subtitle={
           <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
             <span style={{
