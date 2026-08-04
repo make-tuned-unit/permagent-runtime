@@ -240,7 +240,13 @@ fn normalized_words(text: &str) -> Vec<String> {
         .collect()
 }
 
-fn cited_memories_by_content_overlap(
+/// Which injected memories the reply actually drew on, by content overlap.
+///
+/// Public so the `Brain::turn` outcome path reports usage by the SAME rule the
+/// recognition write-back already uses. Two different definitions of "used"
+/// would make the turn corpus incomparable with the recognition data it is
+/// meant to be validated against.
+pub fn cited_memories_by_content_overlap(
     injected: &[InjectedMemory],
     assistant_reply: &str,
 ) -> Vec<String> {

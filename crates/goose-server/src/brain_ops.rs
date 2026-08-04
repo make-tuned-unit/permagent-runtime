@@ -32,6 +32,18 @@ pub fn filter_recall_hits(
 pub struct RecallInjection {
     pub count: usize,
     pending: Option<permagent::recognition::PendingRecognition>,
+    /// Open `Brain::turn` receipt for a SAMPLED turn, awaiting its outcome
+    /// report. `None` on the overwhelming majority of turns — see
+    /// `permagent::turn_sampling` for why this path is not the default.
+    turn: Option<PendingTurn>,
+}
+
+/// A sampled `turn` awaiting outcome attribution at end of turn.
+struct PendingTurn {
+    brain: permagent::brain_handle::SafeBrain,
+    receipt: spectral::TurnReceipt,
+    /// The delivered set, in the shape the citation rule consumes.
+    delivered: Vec<permagent::recognition::InjectedMemory>,
 }
 
 impl RecallInjection {
@@ -39,9 +51,65 @@ impl RecallInjection {
     /// detached/best-effort inside the recognition module.
     pub fn finish(self, assistant_reply: String) {
         if let Some(pending) = self.pending {
-            pending.spawn_record_reply_usage(assistant_reply);
+            pending.spawn_record_reply_usage(assistant_reply.clone());
+        }
+        if let Some(turn) = self.turn {
+            spawn_record_turn_outcome(turn, assistant_reply);
         }
     }
+}
+
+/// Report which delivered memories the reply actually used.
+///
+/// Detached and best-effort like the recognition write-back: a turn is
+/// instrumentation, and instrumentation must never delay or fail a reply. But
+/// it MUST happen — an unreported turn leaves memory state unchanged and
+/// yields no learning signal, which is the whole reason `turn` exists.
+fn spawn_record_turn_outcome(turn: PendingTurn, assistant_reply: String) {
+    tokio::spawn(async move {
+        // Same citation rule as the recognition path, deliberately: two
+        // definitions of "used" would make the corpora incomparable.
+        let cited = permagent::recognition::cited_memories_by_content_overlap(
+            &turn.delivered,
+            &assistant_reply,
+        );
+        let cited: std::collections::HashSet<&str> = cited.iter().map(String::as_str).collect();
+
+        // Report EVERY delivered hit, not just the used ones. Silence about a
+        // delivered-but-unused memory is indistinguishable from a memory that
+        // was never delivered, and the negative examples are half the signal.
+        let outcomes: Vec<(String, spectral::MemoryOutcome)> = turn
+            .delivered
+            .iter()
+            .map(|hit| {
+                let outcome = if cited.contains(hit.id.as_str()) {
+                    spectral::MemoryOutcome::Used
+                } else {
+                    // `Ignored` = delivered but not used. NOT `Wrong` — that
+                    // is negative evidence meaning "actively misleading", and
+                    // content overlap cannot distinguish unhelpful from unused.
+                    // Overstating it would poison the corpus.
+                    spectral::MemoryOutcome::Ignored
+                };
+                (hit.id.clone(), outcome)
+            })
+            .collect();
+
+        let used = outcomes
+            .iter()
+            .filter(|(_, o)| matches!(o, spectral::MemoryOutcome::Used))
+            .count();
+        match turn.brain.record_turn_outcome(turn.receipt, outcomes).await {
+            Ok(_) => tracing::debug!(
+                target: "permagentd::turn",
+                used, "recorded turn outcome"
+            ),
+            Err(e) => tracing::warn!(
+                target: "permagentd::turn",
+                "Failed to record turn outcome: {e}"
+            ),
+        }
+    });
 }
 
 // ── Recall injection ─────────────────────────────────────────────────────
@@ -62,6 +130,59 @@ pub async fn inject_recall(
     }
 
     let query_for_log = user_query.chars().take(80).collect::<String>();
+
+    // Sampled `Brain::turn`, in SHADOW: the reply is still built from
+    // recall_cascade below, so a sampled turn cannot change what the user sees
+    // — it only contributes a labelled (query, delivered-set, outcome) row to
+    // the corpus Spectral needs. Shadowing costs a second retrieval, which is
+    // affordable precisely because it is sampled and off by default.
+    //
+    // Failures are swallowed to None: instrumentation must never break a reply.
+    let turn = if permagent::turn_sampling::should_sample_turn() {
+        match brain
+            .turn(
+                user_query,
+                spectral::Visibility::Private,
+                recognition_ctx.clone(),
+            )
+            .await
+        {
+            Ok(result) => {
+                // Content lives on `hits`; the receipt's `delivered` carries
+                // the KEY that outcomes must be reported against. They are both
+                // in rank order, so zip them — and key the InjectedMemory by
+                // `key`, not `id`: record_turn_outcome rejects outcomes for
+                // keys it did not deliver, and id != key here.
+                let delivered: Vec<permagent::recognition::InjectedMemory> = result
+                    .receipt
+                    .delivered
+                    .iter()
+                    .zip(result.hits.iter())
+                    .map(|(d, hit)| permagent::recognition::InjectedMemory {
+                        id: d.key.clone(),
+                        content: hit.content.clone(),
+                    })
+                    .collect();
+                tracing::debug!(
+                    target: "permagentd::turn",
+                    delivered = delivered.len(),
+                    "sampled turn opened"
+                );
+                Some(PendingTurn {
+                    brain: brain.clone(),
+                    receipt: result.receipt,
+                    delivered,
+                })
+            }
+            Err(e) => {
+                tracing::warn!(target: "permagentd::turn", "sampled turn failed: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     match brain.recall_cascade(user_query, &recognition_ctx).await {
         Ok(result) => {
             let top_hits = filter_recall_hits(&result.merged_hits);
@@ -129,7 +250,11 @@ pub async fn inject_recall(
                     RECALL_SCORE_FLOOR,
                     query_for_log
                 );
-                return RecallInjection { count: 0, pending };
+                return RecallInjection {
+                    count: 0,
+                    pending,
+                    turn: None,
+                };
             };
 
             tracing::info!(
@@ -142,7 +267,11 @@ pub async fn inject_recall(
             agent
                 .extend_system_prompt("memory_recall".to_string(), prefix)
                 .await;
-            RecallInjection { count, pending }
+            RecallInjection {
+                count,
+                pending,
+                turn,
+            }
         }
         Err(e) => {
             tracing::warn!(

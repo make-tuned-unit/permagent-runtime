@@ -9865,18 +9865,19 @@ dependencies = [
 [[package]]
 name = "spectral"
 version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=486459c#486459ce208599c25259f5f43a08999927584b05"
+source = "git+https://github.com/make-tuned-unit/spectral?rev=c2c8381#c2c8381a6fb31c8b30efeec4668ac623f7c194a7"
 dependencies = [
  "anyhow",
  "chrono",
+ "regex",
  "reqwest 0.12.28",
+ "serde",
  "serde_json",
  "spectral-cascade",
  "spectral-core",
  "spectral-graph",
  "spectral-ingest",
  "spectral-recognition",
- "spectral-spectrogram",
  "spectral-tact",
  "tokio",
 ]
@@ -9884,7 +9885,7 @@ dependencies = [
 [[package]]
 name = "spectral-cascade"
 version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=486459c#486459ce208599c25259f5f43a08999927584b05"
+source = "git+https://github.com/make-tuned-unit/spectral?rev=c2c8381#c2c8381a6fb31c8b30efeec4668ac623f7c194a7"
 dependencies = [
  "chrono",
  "spectral-ingest",
@@ -9893,7 +9894,7 @@ dependencies = [
 [[package]]
 name = "spectral-core"
 version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=486459c#486459ce208599c25259f5f43a08999927584b05"
+source = "git+https://github.com/make-tuned-unit/spectral?rev=c2c8381#c2c8381a6fb31c8b30efeec4668ac623f7c194a7"
 dependencies = [
  "blake3",
  "ed25519-dalek",
@@ -9905,7 +9906,7 @@ dependencies = [
 [[package]]
 name = "spectral-graph"
 version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=486459c#486459ce208599c25259f5f43a08999927584b05"
+source = "git+https://github.com/make-tuned-unit/spectral?rev=c2c8381#c2c8381a6fb31c8b30efeec4668ac623f7c194a7"
 dependencies = [
  "anyhow",
  "blake3",
@@ -9919,7 +9920,6 @@ dependencies = [
  "spectral-core",
  "spectral-ingest",
  "spectral-recognition",
- "spectral-spectrogram",
  "spectral-tact",
  "strsim",
  "thiserror 2.0.19",
@@ -9931,7 +9931,7 @@ dependencies = [
 [[package]]
 name = "spectral-ingest"
 version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=486459c#486459ce208599c25259f5f43a08999927584b05"
+source = "git+https://github.com/make-tuned-unit/spectral?rev=c2c8381#c2c8381a6fb31c8b30efeec4668ac623f7c194a7"
 dependencies = [
  "anyhow",
  "blake3",
@@ -9950,10 +9950,9 @@ dependencies = [
 [[package]]
 name = "spectral-recognition"
 version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=486459c#486459ce208599c25259f5f43a08999927584b05"
+source = "git+https://github.com/make-tuned-unit/spectral?rev=c2c8381#c2c8381a6fb31c8b30efeec4668ac623f7c194a7"
 dependencies = [
  "anyhow",
- "reqwest 0.12.28",
  "rusqlite",
  "serde",
  "serde_json",
@@ -9961,24 +9960,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "spectral-spectrogram"
-version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=486459c#486459ce208599c25259f5f43a08999927584b05"
-dependencies = [
- "chrono",
- "regex",
- "serde",
- "serde_json",
- "spectral-core",
- "spectral-ingest",
- "thiserror 2.0.19",
- "tracing",
-]
-
-[[package]]
 name = "spectral-tact"
 version = "0.0.1"
-source = "git+https://github.com/make-tuned-unit/spectral?rev=486459c#486459ce208599c25259f5f43a08999927584b05"
+source = "git+https://github.com/make-tuned-unit/spectral?rev=c2c8381#c2c8381a6fb31c8b30efeec4668ac623f7c194a7"
 dependencies = [
  "anyhow",
  "regex",
