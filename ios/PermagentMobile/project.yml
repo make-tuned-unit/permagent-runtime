@@ -41,9 +41,24 @@ targets:
         NSMicrophoneUsageDescription: Permagent uses the microphone to dictate notes and talk with Henry.
         NSCameraUsageDescription: Permagent uses the camera to scan the pairing QR code displayed on your Mac.
         NSLocalNetworkUsageDescription: Permagent connects to your Permagent hub on your local network or tailnet.
+        # App Transport Security. NSAllowsArbitraryLoads used to sit here beside
+        # NSAllowsLocalNetworking, which does NOT mean "allow everything": from
+        # iOS 10 a granular subkey wins and the blanket key is IGNORED, so the
+        # effective policy was local-networking-only. A tailnet hub is neither —
+        # Tailscale is CGNAT (100.64.0.0/10), not RFC1918, and MagicDNS names end
+        # in .ts.net, not .local — so cleartext HTTP to the hub was refused and
+        # the phone reported "blocked as insecure (TLS)".
+        #
+        # Scoped exception instead: tailnet traffic is already WireGuard-encrypted
+        # end to end, so HTTP over it is not plaintext on the wire, and every
+        # other host stays under full ATS. Delete this once Tailscale HTTPS certs
+        # are enabled and Serve moves to 443.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
-          NSAllowsArbitraryLoads: true
+          NSExceptionDomains:
+            ts.net:
+              NSExceptionAllowsInsecureHTTPLoads: true
+              NSIncludesSubdomains: true
         # Export compliance, declared up front so App Store Connect stops asking
         # on every upload. FALSE is the correct answer here and was verified
         # against the source, not assumed: the app implements no cryptography of
