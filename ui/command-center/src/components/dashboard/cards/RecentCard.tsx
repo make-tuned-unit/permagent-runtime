@@ -2,7 +2,7 @@ import { useCallback } from 'react';
 import { font, radius } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { useCommandCenter } from '../../../lib/store';
-import { SectionTitle, StatusIcon } from '../atoms';
+import { SectionTitle, StatusIcon, EmptyNote } from '../atoms';
 import type { RecentSession } from '../useDashboard';
 
 function timeAgo(iso: string): string {
@@ -38,22 +38,15 @@ export function RecentCard({ items }: Props) {
       background: colors.surface,
       border: `1px solid ${colors.border}`,
       boxShadow: [colors.cardShadow, colors.cardHighlight].filter(Boolean).join(', '),
-      padding: '18px 20px',
+      padding: 16,
       display: 'flex', flexDirection: 'column',
       overflow: 'hidden',
     }}>
       <SectionTitle title="Recent" right={items.length > 0 ? 'last 24h' : undefined} />
       {items.length === 0 ? (
-        <div style={{
-          flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
-        }}>
-          <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: 13, color: colors.textMuted, marginBottom: 4 }}>No recent activity</div>
-            <div style={{ fontSize: 11, color: colors.textDim }}>Sessions you run will appear here</div>
-          </div>
-        </div>
+        <EmptyNote hint="Sessions you run will appear here">No recent activity</EmptyNote>
       ) : (
-        <div style={{ flex: 1, overflow: 'auto' }}>
+        <div style={{ flex: 1, overflow: 'auto', marginRight: -8, paddingRight: 8 }}>
           {items.map((item, i) => (
             <ActivityItem key={item.id} item={item} isLast={i === items.length - 1} onOpen={openSession} />
           ))}
@@ -82,7 +75,7 @@ function ActivityItem({ item, isLast, onOpen }: { item: RecentSession; isLast: b
       onFocus={e => { e.currentTarget.style.background = colors.border; e.currentTarget.style.boxShadow = `0 0 0 2px ${colors.cyanGlow}`; }}
       onBlur={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.boxShadow = 'none'; }}
       style={{
-      display: 'flex', alignItems: 'center', gap: 16, padding: '14px 18px',
+      display: 'flex', alignItems: 'center', gap: 10, padding: '7px 8px',
       borderBottom: isLast ? 'none' : `1px solid ${colors.border}`,
       cursor: 'pointer', borderRadius: radius.sm, outline: 'none',
       background: 'transparent', transition: 'background 100ms, box-shadow 100ms',
@@ -90,16 +83,16 @@ function ActivityItem({ item, isLast, onOpen }: { item: RecentSession; isLast: b
       <StatusIcon state={item.state} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{
-          fontFamily: font.body, fontSize: 14, fontWeight: 500, color: colors.text,
+          fontFamily: font.body, fontSize: 12.5, fontWeight: 500, color: colors.text,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         }}>{item.title}</div>
-        <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>
+        <div style={{ fontSize: 10.5, color: colors.textDim, marginTop: 1 }}>
           {timeAgo(item.ended_at)}
         </div>
       </div>
       <span style={{
-        fontFamily: font.body, fontSize: 11, fontWeight: 600,
-        letterSpacing: '0.06em', textTransform: 'uppercase',
+        fontFamily: font.body, fontSize: 9.5, fontWeight: 600,
+        letterSpacing: '0.06em', textTransform: 'uppercase', flexShrink: 0,
         color: statusColor[item.state] || colors.textMuted,
       }}>{item.state.replace('_', ' ')}</span>
     </div>

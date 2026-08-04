@@ -249,6 +249,25 @@ export function Dashboard() {
         </>}
       />
 
+      {isEditMode && (
+        // The resize/reorder affordances are only discoverable once you know
+        // they exist — the corner grip is small and drag-to-move has no
+        // chrome. This names both so "shape cards into columns or rows" is not
+        // a hidden feature.
+        <div style={{
+          flexShrink: 0, padding: '8px 32px',
+          background: colors.cyanSoft, borderBottom: `1px solid ${colors.border}`,
+          fontFamily: font.body, fontSize: 12, color: colors.cyan,
+          display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          <FiEdit2 size={12} />
+          <span>
+            Drag a card to move it · drag the corner grip to resize — wider for a
+            row, taller for a column. Changes save automatically.
+          </span>
+        </div>
+      )}
+
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: '28px 32px 40px' }}>
 
       {/* Echo — a forgotten thread from your Brain, resurfaced unprompted.
@@ -446,14 +465,16 @@ function ResizeHandle({ onPointerDown }: { onPointerDown: (e: React.PointerEvent
   return (
     <div
       onPointerDown={onPointerDown}
+      title="Drag to resize — wider for a row, taller for a column"
       style={{
-        position: 'absolute', bottom: 0, right: 0, width: 20, height: 20,
-        cursor: 'nwse-resize', zIndex: 5,
+        position: 'absolute', bottom: 4, right: 4, width: 22, height: 22,
+        cursor: 'nwse-resize', zIndex: 5, borderRadius: 6,
+        background: colors.cyanSoft, border: `1px solid ${colors.cyan}`,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}
     >
-      <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-        <path d="M9 1L1 9M9 5L5 9M9 9L9 9" stroke={colors.textDim} strokeWidth={1.5} strokeLinecap="round" />
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+        <path d="M11 3L3 11M11 7L7 11" stroke={colors.cyan} strokeWidth={1.6} strokeLinecap="round" />
       </svg>
     </div>
   );
