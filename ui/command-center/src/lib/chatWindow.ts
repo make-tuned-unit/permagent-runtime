@@ -66,8 +66,19 @@ export async function createChatWindow(appTheme: string): Promise<WebviewWindowT
   // behind the new window (two chats, and mid-conversation two orbs).
   useCommandCenter.setState({ chatWindowOpen: true, chatDockOpen: false });
 
+  // Hand the CURRENT session id to the chat window explicitly. It used to be
+  // discovered via localStorage, but on macOS WKWebView storage does not
+  // reliably cross windows — so the popped-out chat would find nothing, mint a
+  // fresh session, and replay Henry's greeting over the conversation the user
+  // was already having in the dock. Passing it in the URL makes the handoff
+  // deterministic regardless of storage partitioning.
+  const currentSession = useCommandCenter.getState().chatSessionId;
+  const url = currentSession
+    ? `index.html?view=chat&session=${encodeURIComponent(currentSession)}`
+    : 'index.html?view=chat';
+
   return new WebviewWindow('chat', {
-    url: 'index.html?view=chat',
+    url,
     title: 'Permagent Chat',
     ...MIN_SIZE,
     decorations: true,

@@ -122,6 +122,14 @@ export default function ChatApp() {
     if (connectedRef.current) return;
     connectedRef.current = true;
     (async () => {
+      // Adopt the session the main window handed over (see createChatWindow).
+      // Without this the pop-out would ensureSession() a NEW one and replay the
+      // greeting over the dock conversation the user was mid-way through.
+      const handedOff = new URLSearchParams(location.search).get('session');
+      if (handedOff) {
+        useCommandCenter.setState({ chatSessionId: handedOff });
+        try { localStorage.setItem('permagent-chat-session-id', handedOff); } catch { /* */ }
+      }
       const sid = await ensureSession();
       if (sid) {
         await loadSessionMessages(sid);

@@ -175,8 +175,12 @@ struct PairingView: View {
         switch error {
         case .malformedURL:
             errorMessage = "That isn’t a valid pairing URL. On your Mac, open Settings → Devices and scan or copy a fresh link containing #claim= or #token=."
-        case .hubUnreachable:
-            errorMessage = "Couldn’t reach the hub. Check that the hub address matches the machine actually running the daemon, and that both devices are on the tailnet."
+        case .hubUnreachable(let detail):
+            if let detail {
+                errorMessage = "Couldn’t reach the hub — \(detail)"
+            } else {
+                errorMessage = "Couldn’t reach the hub. Check that the hub address matches the machine actually running the daemon, and that both devices are on the tailnet."
+            }
         case .claimRejected(let statusCode):
             errorMessage = "The hub rejected this pairing code (HTTP \(statusCode)). It may be expired, already used, or unknown. Create a fresh pairing link in Settings → Devices and scan it."
         case .unexpectedResponse(let statusCode):

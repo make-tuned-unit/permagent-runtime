@@ -29,7 +29,11 @@ struct PermagentApp: App {
 final class HubSession: ObservableObject {
     enum PairingError: Error {
         case malformedURL
-        case hubUnreachable
+        // Carries the underlying URLSession failure so the UI can name the real
+        // cause (DNS vs. connection refused vs. offline vs. TLS) instead of a
+        // single catch-all — the difference is exactly what tells us whether a
+        // pairing failure is the phone, the tailnet, or the hub.
+        case hubUnreachable(detail: String?)
         case claimRejected(statusCode: Int)
         case unexpectedResponse(statusCode: Int?)
     }
@@ -79,6 +83,29 @@ final class HubSession: ObservableObject {
         return .success(())
     }
 
+    /// Turn a URLSession failure into a short, specific phrase. The URLError
+    /// code is what disambiguates the four ways pairing "can't connect": name
+    /// resolution, a refused connection, no network at all, or a TLS problem.
+    private static func describeConnectionError(_ error: Error) -> String {
+        guard let urlError = error as? URLError else {
+            return error.localizedDescription
+        }
+        switch urlError.code {
+        case .cannotFindHost, .dnsLookupFailed:
+            return "the hub's name could not be resolved (DNS) — is MagicDNS on for this device?"
+        case .cannotConnectToHost:
+            return "the connection was refused — the hub is reachable but nothing is answering on that port."
+        case .notConnectedToInternet, .networkConnectionLost:
+            return "this device has no network connection."
+        case .timedOut:
+            return "the connection timed out — the hub did not respond."
+        case .appTransportSecurityRequiresSecureConnection, .secureConnectionFailed:
+            return "the connection was blocked as insecure (TLS)."
+        default:
+            return "\(urlError.localizedDescription) [URLError \(urlError.errorCode)]"
+        }
+    }
+
     /// `POST /pair/claim` `{"code": …}` → `{"token": …, "device": {…}}`.
     /// The code is 128-bit random, single-use, 10-min lived; unknown/expired
     /// codes answer 404. Only `token` is needed here — the device name was
@@ -98,7 +125,7 @@ final class HubSession: ObservableObject {
         do {
             (data, response) = try await URLSession.shared.data(for: req)
         } catch {
-            return .failure(.hubUnreachable)
+            return .failure(.hubUnreachable(detail: describeConnectionError(error)))
         }
         guard let http = response as? HTTPURLResponse else {
             return .failure(.unexpectedResponse(statusCode: nil))
