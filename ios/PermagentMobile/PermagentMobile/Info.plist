@@ -17,30 +17,11 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0</string>
+	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
-	<!-- App Transport Security.
-
-	     This dict previously set NSAllowsArbitraryLoads AND NSAllowsLocalNetworking
-	     together, which does NOT mean "allow everything". From iOS 10, a granular
-	     subkey takes precedence and the blanket NSAllowsArbitraryLoads is IGNORED —
-	     so the effective policy was local-networking-only. A tailnet hub is neither:
-	     Tailscale addresses live in the CGNAT range (100.64.0.0/10), not RFC1918,
-	     and MagicDNS names end in .ts.net, not .local. So cleartext HTTP to the hub
-	     was refused, surfacing on the phone as "blocked as insecure (TLS)".
-
-	     The fix is a scoped exception for ts.net rather than re-enabling arbitrary
-	     loads: the tailnet is already WireGuard-encrypted end to end, so HTTP over
-	     it is not plaintext on the wire, and every other host stays under full ATS.
-	     NSAllowsArbitraryLoads is dropped entirely — it was inert here and is a
-	     needless App Store review flag.
-
-	     If Tailscale HTTPS certs are enabled (admin console → DNS → HTTPS
-	     Certificates), Serve moves to 443 with a real cert and this exception can
-	     be deleted outright. -->
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
@@ -67,7 +48,10 @@
 		<string>audio</string>
 	</array>
 	<key>UILaunchScreen</key>
-	<dict/>
+	<dict>
+		<key>UIColorName</key>
+		<string>LaunchBackground</string>
+	</dict>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>

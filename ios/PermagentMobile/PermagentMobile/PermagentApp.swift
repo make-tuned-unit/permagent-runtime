@@ -8,6 +8,8 @@ import SwiftUI
 @main
 struct PermagentApp: App {
     @StateObject private var session = HubSession()
+    @State private var splashDone = false
+
     var body: some Scene {
         WindowGroup {
             ZStack {
@@ -17,8 +19,19 @@ struct PermagentApp: App {
                 } else {
                     PairingView().environmentObject(session)
                 }
+                // Splash sits OVER the real UI rather than gating it, so
+                // `bootstrap()` (Keychain read, hub reconnect) runs during the
+                // 2.5s instead of after it — the animation costs no launch time.
+                if !splashDone {
+                    SplashView { splashDone = true }
+                        .transition(.opacity)
+                        .zIndex(1)
+                }
             }
-            .preferredColorScheme(.dark)
+            // No `.preferredColorScheme` — the app follows the system
+            // appearance, as the desktop app does with its `system` theme
+            // preference. Brand tokens are dynamic colors (Theme.swift), so
+            // both palettes are already in place.
             .tint(Brand.cyan)
             .task { await session.bootstrap() }
         }
@@ -44,20 +57,36 @@ final class HubSession: ObservableObject {
     func bootstrap() async {
         await APIClient.shared.loadSavedPairing()
         isPaired = await APIClient.shared.isPaired
-        if isPaired { await listen() }
+        if isPaired {
+            // The agent's name comes from the hub, never a literal — see
+            // AgentIdentity. Fetched before `listen()` so the first render of
+            // any surface already has the real name rather than the generic
+            // fallback flashing to it.
+            await AgentIdentity.shared.refresh()
+            await listen()
+        }
     }
 
     /// Pair from a scanned/pasted URL. Two forms:
-    /// - current hub: http://<hub>:3001/ui/#claim=<code> — a one-time claim code
+    /// - current hub: http://<hub>/ui/#claim=<code> — a one-time claim code
     ///   exchanged for this device's own bearer token via the public
     ///   `POST /pair/claim` (routes/devices.rs, #628)
     /// - legacy:      http://<hub>:3001/ui/#token=<token> — a raw bearer token
+    ///
+    /// **Never default the port.** The hub's own pairing URL comes from
+    /// `tailscale serve`, which fronts the daemon on the scheme's default port
+    /// (80) and carries no explicit port at all — the daemon itself stays bound
+    /// to 127.0.0.1:3001 and is NOT reachable on 3001 from the tailnet. Filling
+    /// in 3001 when the URL omits a port rewrites a working serve URL into the
+    /// one address that is guaranteed to refuse the connection. An absent port
+    /// means the scheme default, which is what every other HTTP client does.
     func pair(from url: String) async -> Result<Void, PairingError> {
         guard let comps = URLComponents(string: url.trimmingCharacters(in: .whitespaces)),
               let scheme = comps.scheme,
               scheme == "http" || scheme == "https",
               let host = comps.host,
-              let base = URL(string: "\(scheme)://\(host):\(comps.port ?? 3001)")
+              let base = URL(string: comps.port.map { "\(scheme)://\(host):\($0)" }
+                  ?? "\(scheme)://\(host)")
         else { return .failure(.malformedURL) }
         func fragmentValue(_ key: String) -> String? {
             comps.fragment?
@@ -154,11 +183,20 @@ final class HubSession: ObservableObject {
 
 struct MainTabs: View {
     @EnvironmentObject var session: HubSession
+    // MUST observe, not just read. `AgentIdentity.shared.displayName` read
+    // without an observer renders once — at the generic fallback — and never
+    // updates when the hub answers, so the tab said "your agent" while the
+    // chat header (which does observe) correctly said the real name
+    // (reported 2026-08-04).
+    @ObservedObject private var identity = AgentIdentity.shared
     var body: some View {
         TabView {
             HomeView().tabItem { Label("Home", systemImage: "circle.hexagongrid.fill") }
-            ChatView().tabItem { Label("Henry", systemImage: "bubble.left.and.bubble.right.fill") }
-            DictateView().tabItem { Label("Dictate", systemImage: "mic.fill") }
+            ChatView().tabItem { Label(identity.displayName, systemImage: "bubble.left.and.bubble.right.fill") }
+            // "Notes" — the tab owns dictation AND the notes library. The mic
+            // icon stays because one tap on this tab still starts a note by
+            // voice; browsing is the secondary path inside it.
+            DictateView().tabItem { Label("Notes", systemImage: "mic.fill") }
             InboxView().tabItem { Label("Decisions", systemImage: "tray.full.fill") }
                 .badge(session.unread)
             GoalsView().tabItem { Label("In Flight", systemImage: "bolt.fill") }

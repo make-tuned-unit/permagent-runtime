@@ -1,0 +1,19 @@
+{
+  "fill" : {
+    "linear-gradient" : [
+      "display-p3:0.043,0.071,0.125,1.000",
+      "display-p3:0.106,0.141,0.251,1.000"
+    ]
+  },
+  "groups" : [
+    {
+      "layers" : [
+        { "image-name" : "Mobius.png" }
+      ]
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [ ],
+    "squares" : [ "macOS", "iOS" ]
+  }
+}

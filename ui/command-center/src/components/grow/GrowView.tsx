@@ -1172,8 +1172,17 @@ function GrowAnalytics({
         it lives in <strong style={{ color: colors.text }}>Actions</strong>.
       </div>
 
-      {/* Self-hosted analytics (#23) — the daemon is the collector. */}
+      {/* Self-hosted analytics (#23) — the daemon is the collector.
+          KEYED ON THE PROJECT. `loadSetup` refetches on a projectId change and
+          guards stale responses with a generation counter, but the panel's
+          other state does not reset — so after verifying Evntally and switching
+          to GetLadle, the previous project's PASS was still on screen, telling
+          the user analytics was installed here when it was not (reported
+          2026-08-04). In a surface where every failure is silent, a false
+          "verified" is the worst thing this panel can say. Keying remounts it,
+          which clears the whole class rather than the one field that leaked. */}
       <FirstPartyAnalyticsPanel
+        key={project.id}
         colors={colors}
         projectId={project.id}
         stats={fpStats}
@@ -1194,6 +1203,7 @@ function GrowAnalytics({
         </button>
       ) : (
         <AnalyticsConnectionPanel
+          key={project.id}
           colors={colors}
           projectId={project.id}
           conn={conn}

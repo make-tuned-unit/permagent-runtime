@@ -159,6 +159,7 @@ enum TodoExtractor {
 // ── The screen ───────────────────────────────────────────────────────────────
 
 struct DictateView: View {
+    @ObservedObject private var identity = AgentIdentity.shared
     private enum Phase: Equatable {
         case idle, recording, transcribing, review, saving
         case saved(project: String, cards: Int, todosInNote: Bool)
@@ -193,8 +194,15 @@ struct DictateView: View {
                     savedStage(project: project, cards: cards, todosInNote: inNote)
                 }
             }
-            .background(Brand.shell)
-            .navigationTitle("Dictate")
+            // Fill BEFORE painting, and let the paint reach the edges.
+            // Measured 2026-08-04 from a device screenshot: the outer ~30px
+            // each side were pure (0,0,0) — nothing drawn — because the
+            // stage's content did not expand, so `.background` only painted
+            // as wide as the content and the screen edges stayed bare. Home,
+            // whose ScrollView expands naturally, never showed the bars.
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Brand.shell.ignoresSafeArea())
+            .navigationTitle("Notes")
             .sensoryFeedback(.impact(weight: .medium), trigger: recordTaps)
             .sensoryFeedback(.success, trigger: savedCount)
         }
@@ -223,7 +231,7 @@ struct DictateView: View {
                             .shadow(color: Brand.cyanGlow, radius: phase == .recording ? 26 : 14)
                         Image(systemName: phase == .recording ? "stop.fill" : "mic.fill")
                             .font(.system(size: 30, weight: .semibold))
-                            .foregroundStyle(Brand.deepVoid)
+                            .foregroundStyle(Brand.onAccent)
                             .contentTransition(.symbolEffect(.replace))
                     }
                 }
@@ -240,7 +248,7 @@ struct DictateView: View {
                     HStack(spacing: 7) {
                         Circle().fill(Brand.cyan).frame(width: 7, height: 7)
                             .shadow(color: Brand.cyanGlow, radius: 5)
-                        Text("RECORDING").font(.brandLabel).foregroundStyle(Brand.cyan)
+                        Text("RECORDING").font(.brandLabel).foregroundStyle(Brand.cyanInk)
                     }
                     Text(timeString(recorder.elapsed))
                         .font(.brandDisplay).monospacedDigit()
@@ -265,7 +273,7 @@ struct DictateView: View {
             default:
                 VStack(spacing: 8) {
                     Text("Speak a note").font(.brandTitle).foregroundStyle(Brand.text)
-                    Text("Dictate on the phone; it lands as a note on a project you choose. Say things like \u{201C}I need to\u{2026}\u{201D} and Henry will propose them as to-dos.")
+                    Text("Dictate on the phone; it lands as a note on a project you choose. Say things like \u{201C}I need to\u{2026}\u{201D} and \(identity.name) will propose them as to-dos.")
                         .font(.brandCaption).foregroundStyle(Brand.textMuted)
                         .multilineTextAlignment(.center).padding(.horizontal, 36)
                 }
@@ -280,7 +288,7 @@ struct DictateView: View {
                             Button("Open Settings") {
                                 if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
                             }
-                            .font(.caption.weight(.semibold)).foregroundStyle(Brand.cyan)
+                            .font(.caption.weight(.semibold)).foregroundStyle(Brand.cyanInk)
                         }
                     }
                 }
@@ -289,9 +297,56 @@ struct DictateView: View {
             }
 
             Spacer()
+
+            // ── Notes, below the mic ────────────────────────────────────────
+            // This tab is now "Notes", and dictation is its FRONT DOOR rather
+            // than its whole content: the mic above still starts a note in one
+            // tap, and browsing or writing one by hand lives here instead of
+            // three levels down under More → Control. Idle only — while
+            // recording or transcribing the screen stays single-purpose.
+            if phase == .idle {
+                NavigationLink { NotesView() } label: { notesRow }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 6)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+
             Spacer()
         }
         .animation(Motion.ease, value: errorText)
+        .animation(Motion.ease, value: phase)
+    }
+
+    /// The row that opens the notes library. Styled as a quiet secondary next to
+    /// the mic — the ribbon belongs to the primary action, so this reads as a
+    /// surface with an accent glyph, never as a second CTA competing with it.
+    private var notesRow: some View {
+        HStack(spacing: 13) {
+            Image(systemName: "note.text")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Brand.cyanInk)
+                .frame(width: 34, height: 34)
+                .background(Brand.cyanSoft, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Notes").font(.brandHeading).foregroundStyle(Brand.text)
+                Text("Browse your projects, or write one by hand")
+                    .font(.brandCaption).foregroundStyle(Brand.textMuted)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(Brand.textDim)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(Brand.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Brand.border, lineWidth: 1)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     // ── Stage 2: review + confirm ────────────────────────────────────────────
@@ -314,7 +369,7 @@ struct DictateView: View {
                 if !todos.isEmpty {
                     GlassCard {
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("PROPOSED TO-DOS").font(.brandLabel).foregroundStyle(Brand.cyan)
+                            Text("PROPOSED TO-DOS").font(.brandLabel).foregroundStyle(Brand.cyanInk)
                             Text("Heard in your note. Only ticked items are created — as cards on the project board.")
                                 .font(.caption2).foregroundStyle(Brand.textDim)
                             ForEach($todos) { $todo in
@@ -409,7 +464,7 @@ struct DictateView: View {
                             }
                             Spacer()
                             if chosenProject == p {
-                                Image(systemName: "checkmark").foregroundStyle(Brand.cyan)
+                                Image(systemName: "checkmark").foregroundStyle(Brand.cyanInk)
                             }
                         }
                     }
@@ -423,7 +478,14 @@ struct DictateView: View {
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
-            .background(Brand.shell)
+            // Fill BEFORE painting, and let the paint reach the edges.
+            // Measured 2026-08-04 from a device screenshot: the outer ~30px
+            // each side were pure (0,0,0) — nothing drawn — because the
+            // stage's content did not expand, so `.background` only painted
+            // as wide as the content and the screen edges stayed bare. Home,
+            // whose ScrollView expands naturally, never showed the bars.
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Brand.shell.ignoresSafeArea())
             .navigationTitle("Project")
             .navigationBarTitleDisplayMode(.inline)
         }
@@ -440,7 +502,7 @@ struct DictateView: View {
                 Circle().fill(Brand.surface).frame(width: 84, height: 84)
                     .overlay(Circle().strokeBorder(Brand.borderHi, lineWidth: 1))
                 Image(systemName: "checkmark")
-                    .font(.system(size: 34, weight: .bold)).foregroundStyle(Brand.cyan)
+                    .font(.system(size: 34, weight: .bold)).foregroundStyle(Brand.cyanInk)
                     .shadow(color: Brand.cyanGlow, radius: 8)
             }
             Text("Noted.").font(.brandTitle).foregroundStyle(Brand.text)

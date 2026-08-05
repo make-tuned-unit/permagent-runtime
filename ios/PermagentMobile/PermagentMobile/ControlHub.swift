@@ -30,11 +30,6 @@ struct ControlHubView: View {
                             subtitle: "Scheduled jobs — run now, pause, or stop",
                             accent: Brand.violet)
 
-                    hubLink(destination: NotesView(),
-                            icon: "note.text",
-                            title: "Notes",
-                            subtitle: "Write or dictate a note to a project",
-                            accent: Brand.cyan)
                 }
                 .padding()
             }
@@ -117,7 +112,7 @@ struct HubErrorCard: View {
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
                         .background(Brand.cyanSoft)
-                        .foregroundStyle(Brand.cyan)
+                        .foregroundStyle(Brand.cyanInk)
                         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
                 .buttonStyle(.plain)

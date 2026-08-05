@@ -170,8 +170,9 @@ impl AppState {
         // project registry so content mentioning a project classifies into
         // that project's wing instead of Spectral's demo defaults (which dump
         // most real content into "general"). Empty (registry unavailable, no
-        // projects, or feature off) → builder gets no rules → Spectral
-        // defaults, exactly as before.
+        // projects, or feature off) → an EMPTY rule set is still passed, so
+        // Spectral's fixture defaults never apply. See the builder call below
+        // for why the absence of rules must not mean "use the fixtures".
         #[cfg(feature = "spectral-recognition")]
         let project_wing_rules: Vec<(String, String)> =
             match agent_manager.session_manager().pool_clone().await {
@@ -235,14 +236,35 @@ impl AppState {
                     .data_dir(&brain_dir)
                     .ontology_path(&ontology_path)
                     .device_id(spectral::DeviceId::from_descriptor(&device_id_str));
-                if !project_wing_rules.is_empty() {
-                    tracing::info!(
-                        target: "permagentd::brain",
-                        rules = project_wing_rules.len(),
-                        "Opening Brain with per-project wing rules"
-                    );
-                    builder = builder.wing_rules(project_wing_rules);
-                }
+                // ALWAYS pass the rule set, even when it is empty.
+                //
+                // Spectral resolves `config.wing_rules.unwrap_or_else(
+                // default_wing_rule_strings)`, so *not calling this* does not
+                // mean "no rules" — it means Spectral's FIXTURE rules
+                // (alice/apollo/acme/polaris/vega/…), whose patterns are as
+                // broad as `apollo|polymarket|strategy|weather|prediction|
+                // wager|trade`. Those capture real production writes: 118 live
+                // memories sit in fixture wings today, and Spectral observed a
+                // new one landing in `acme` mid-afternoon on 2026-08-04.
+                //
+                // The trap is that `spectral-recognition` is NOT a default
+                // feature, so in the SHIPPING build `project_wing_rules` is
+                // always empty and the old `if !is_empty()` guard meant the
+                // fixture rules were what the live brain always ran on — the
+                // per-project rules built to replace them were compiled out.
+                //
+                // Empty here classifies everything to "general", which is
+                // merely uninformative. A fixture wing is actively WRONG: it
+                // is recognition-validation ground truth and the TACT gate, so
+                // a false label poisons both. Uninformative beats wrong.
+                // Ambient writes keep their own wing via
+                // `activity::ingestion::derive_wing_slug` regardless.
+                tracing::info!(
+                    target: "permagentd::brain",
+                    rules = project_wing_rules.len(),
+                    "Opening Brain with per-project wing rules (empty ⇒ no fixture fallback)"
+                );
+                builder = builder.wing_rules(project_wing_rules);
                 let raw_brain = match builder.build() {
                     Ok(b) => {
                         tracing::info!(

@@ -35,6 +35,7 @@ struct WorkerEntry: Identifiable {
 }
 
 struct AgentsView: View {
+    @ObservedObject private var identity = AgentIdentity.shared
     @State private var running: [ScheduleJob] = []
     @State private var workers: [WorkerEntry] = []
     @State private var loaded = false
@@ -59,7 +60,7 @@ struct AgentsView: View {
                             if !running.isEmpty {
                                 Text("\(running.count)")
                                     .font(.brandLabel)
-                                    .foregroundStyle(Brand.cyan)
+                                    .foregroundStyle(Brand.cyanInk)
                             }
                             Spacer()
                         }
@@ -84,7 +85,7 @@ struct AgentsView: View {
                             .foregroundStyle(Brand.textDim)
                         if workers.isEmpty {
                             Text(loaded
-                                 ? "No workers configured. Henry runs solo until you add background agents on the desktop."
+                                 ? "No workers configured. \(identity.nameCapitalized) runs solo until you add background agents on the desktop."
                                  : "Loading…")
                                 .font(.brandCaption)
                                 .foregroundStyle(Brand.textMuted)
@@ -140,7 +141,7 @@ struct AgentsView: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 7)
                     .background(Brand.danger)
-                    .foregroundStyle(Brand.deepVoid)
+                    .foregroundStyle(Brand.onDanger)
                     .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
             }
             .buttonStyle(.plain)

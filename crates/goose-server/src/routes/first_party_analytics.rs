@@ -22,6 +22,7 @@
 //! Accept-Language, UTC day) — no IP stored, rotates daily.
 
 use crate::routes::analytics_classify as classify;
+use crate::routes::analytics_funnel as funnel;
 use crate::routes::analytics_verify as verify;
 use crate::state::AppState;
 use axum::{
@@ -880,6 +881,111 @@ struct StatsQuery {
     include_bots: Option<bool>,
 }
 
+/// Query for `/analytics/first_party/funnel`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FunnelQuery {
+    /// Ordered, comma-separated steps: `/pricing,event:checkout_started,event:purchase`.
+    steps: String,
+    days: Option<i64>,
+    include_bots: Option<bool>,
+    /// Property holding a numeric amount on the final step, e.g. `value`.
+    /// Named rather than assumed, because a site's field might be `amount`
+    /// or `total` and silently reading the wrong one would misreport revenue.
+    value_key: Option<String>,
+}
+
+/// Where visitors drop out of a funnel, and what completing it is worth.
+///
+/// The rows already carry everything needed — named events, first-party session
+/// ids and properties — so this is pure analysis over what the collector
+/// stores. Sequencing lives in `analytics_funnel`, where it is unit-tested
+/// against the ways a funnel can lie (out-of-order hits, repeat visits,
+/// later steps exceeding earlier ones).
+async fn first_party_funnel(
+    State(state): State<Arc<AppState>>,
+    Path(project_id): Path<String>,
+    Query(q): Query<FunnelQuery>,
+) -> Result<Json<funnel::Funnel>, StatusCode> {
+    let (pool, _project) = project_and_pool(&state, &project_id).await?;
+
+    let steps: Vec<funnel::Step> = q.steps.split(',').filter_map(funnel::Step::parse).collect();
+    if steps.is_empty() || steps.len() > 8 {
+        // A funnel with no steps is meaningless; more than eight is almost
+        // always a mistaken query string, and each step costs a scan.
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let days = q.days.unwrap_or(30).clamp(1, 365);
+    let since = format!("-{days} days");
+    let bot_filter = if q.include_bots.unwrap_or(false) {
+        ""
+    } else {
+        " AND is_bot = 0"
+    };
+
+    // One scan for all steps; the step each row satisfies is resolved in Rust.
+    let sql = format!(
+        "SELECT session_id, kind, path, name, created_at, properties
+         FROM analytics_events
+         WHERE project_id = ?1 AND created_at >= datetime('now', ?2){bot_filter}
+         ORDER BY created_at"
+    );
+    let rows = sqlx::query_as::<
+        _,
+        (
+            Option<String>,
+            String,
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+        ),
+    >(&sql)
+    .bind(&project_id)
+    .bind(&since)
+    .fetch_all(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let value_key = q.value_key.unwrap_or_else(|| "value".to_string());
+    let mut touches = Vec::new();
+    let mut excluded_sessionless: u64 = 0;
+
+    for (session_id, kind, path, name, created_at, properties) in rows {
+        let matched = steps.iter().position(|s| match s {
+            funnel::Step::Path { value } => kind == "pageview" && &path == value,
+            funnel::Step::Event { value } => {
+                kind == "event" && name.as_deref() == Some(value.as_str())
+            }
+        });
+        let Some(step_index) = matched else { continue };
+        // Only count a sessionless row against the exclusion if it would
+        // otherwise have mattered — counting every unrelated pageview would
+        // make the figure meaningless as a confidence signal.
+        let Some(session_id) = session_id else {
+            excluded_sessionless += 1;
+            continue;
+        };
+        let value = properties
+            .as_deref()
+            .and_then(|p| serde_json::from_str::<serde_json::Value>(p).ok())
+            .and_then(|v| v.get(&value_key).and_then(|n| n.as_f64()));
+        touches.push(funnel::Touch {
+            session_id,
+            step_index,
+            at: created_at,
+            value,
+        });
+    }
+
+    Ok(Json(funnel::compute(
+        &steps,
+        &touches,
+        excluded_sessionless,
+    )))
+}
+
 async fn first_party_stats(
     State(state): State<Arc<AppState>>,
     Path(project_id): Path<String>,
@@ -1526,6 +1632,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route(
             "/api/projects/{project_id}/analytics/first_party/stats",
             get(first_party_stats),
+        )
+        .route(
+            "/api/projects/{project_id}/analytics/first_party/funnel",
+            get(first_party_funnel),
         )
         .route(
             "/api/projects/{project_id}/analytics/first_party/drain",

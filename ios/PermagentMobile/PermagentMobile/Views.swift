@@ -47,7 +47,7 @@ struct PairingView: View {
             .padding(.horizontal, 32)
 
             GlassCard {
-                TextField("http://your-mac.tailnet.ts.net:3001/ui/#claim=…", text: $url)
+                TextField("http://your-mac.tailnet.ts.net/ui/#claim=…", text: $url)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .font(.system(.footnote, design: .monospaced))
@@ -70,7 +70,7 @@ struct PairingView: View {
                     .padding(.vertical, 14)
                     .background(Brand.ribbon)
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .foregroundStyle(Brand.deepVoid)
+                    .foregroundStyle(Brand.onAccent)
             }
             .padding(.horizontal, 24)
             .disabled(isPairing || url.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -294,6 +294,7 @@ struct OpenDecision: Decodable, Identifiable {
 }
 
 struct InboxView: View {
+    @ObservedObject private var identity = AgentIdentity.shared
     @State private var items: [OpenDecision] = []
     @State private var busy: Set<String> = []
     @State private var errorText: String?
@@ -307,7 +308,7 @@ struct InboxView: View {
                         .listRowBackground(Color.clear).listRowSeparator(.hidden)
                 }
                 if items.isEmpty {
-                    Text("Nothing needs you right now. Henry surfaces risk gates, reviews, and unblock requests here — approve or send back with a tap.")
+                    Text("Nothing needs you right now. \(identity.nameCapitalized) surfaces risk gates, reviews, and unblock requests here — approve or send back with a tap.")
                         .font(.brandCaption).foregroundStyle(Brand.textMuted)
                         .listRowBackground(Color.clear).listRowSeparator(.hidden)
                 }
@@ -316,7 +317,7 @@ struct InboxView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(d.kind.replacingOccurrences(of: "_", with: " ").uppercased())
                                 .font(.brandLabel)
-                                .foregroundStyle(Brand.cyan)
+                                .foregroundStyle(Brand.cyanInk)
                             Text(d.headline ?? "Decision")
                                 .font(.brandHeadline)
                                 .foregroundStyle(Brand.text)
@@ -351,7 +352,7 @@ struct InboxView: View {
         if d.isBinary {
             HStack(spacing: 10) {
                 answerButton(d, verb: "reject", label: "Send back", tint: Brand.textMuted, fill: Brand.surface)
-                answerButton(d, verb: "approve", label: "Approve", tint: Brand.deepVoid, fill: Brand.cyan)
+                answerButton(d, verb: "approve", label: "Approve", tint: Brand.onAccent, fill: Brand.cyan)
             }
             .padding(.top, 2)
         } else {
@@ -472,7 +473,7 @@ struct ReasoningDisclosure: View {
                 withAnimation(Motion.ease) { expanded.toggle() }
             } label: {
                 HStack(spacing: 5) {
-                    Text("✦").foregroundStyle(Brand.cyan).opacity(hasAnswer ? 0.65 : 1)
+                    Text("✦").foregroundStyle(Brand.cyanInk).opacity(hasAnswer ? 0.65 : 1)
                     Text(hasAnswer ? "Reasoning" : "Thinking…")
                         .font(.system(.caption2, design: .monospaced))
                         .foregroundStyle(Brand.textDim)
@@ -501,12 +502,65 @@ struct ReasoningDisclosure: View {
 }
 
 struct ChatView: View {
+    @ObservedObject private var identity = AgentIdentity.shared
     @State private var draft = ""
     @State private var messages: [ChatBubble] = []
     @State private var sending = false
     @State private var sentCount = 0
-    @State private var sessionId = MobileSession.chatSessionId()
+    // Resolved from the hub on appear — NOT minted locally. See MobileSession.
+    @State private var sessionId: String?
+    @State private var sessionError: String?
     @State private var showVoice = false
+
+    /// The hub session for this chat, resolved once and reused.
+    private func resolveSession() async throws -> String {
+        if let sessionId { return sessionId }
+        let id = try await MobileSession.chatSessionId()
+        sessionId = id
+        return id
+    }
+
+    /// Name the failure. One catch-all string ("Couldn't reach …") sent Jesse
+    /// hunting the tailnet while the hub was answering 200 in 16ms and dying
+    /// on `Session not found` — the same lesson `PairingFailure` already
+    /// taught: a message that describes the wrong layer is worse than no
+    /// message, because it is confidently misleading.
+    private static func describeChatFailure(_ error: Error) -> String {
+        if let api = error as? APIError {
+            switch api {
+            case .notPaired:
+                return "This device is not paired with a hub any more. Re-pair from Settings."
+            case .unauthorized:
+                return "The hub rejected this device's credentials (401). The pairing may have been revoked — re-pair from Settings."
+            case .badStatus(let code) where code == 424:
+                return "The hub has no agent configured yet (424). Set a model on the desktop, then try again."
+            case .badStatus(let code) where code == 422:
+                return "The hub started answering and then reported an error mid-reply. Check the desktop logs — the request reached it fine."
+            case .badStatus(let code) where (500...599).contains(code):
+                return "The hub errored while answering (HTTP \(code)). It received the message; the failure is on the hub."
+            case .badStatus(let code):
+                return "The hub answered unexpectedly (HTTP \(code))."
+            case .dictationUnavailable:
+                return "The hub has no local dictation model configured."
+            }
+        }
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .cannotFindHost, .dnsLookupFailed:
+                return "The hub's name could not be resolved (DNS) — is MagicDNS on for this device?"
+            case .cannotConnectToHost:
+                return "The connection was refused — the hub is reachable but nothing is answering on that port."
+            case .notConnectedToInternet, .networkConnectionLost:
+                return "This device lost its network connection mid-reply."
+            case .timedOut:
+                return "The hub did not respond in time — is your Mac awake and on the tailnet?"
+            default:
+                return "\(urlError.localizedDescription) [URLError \(urlError.errorCode)]"
+            }
+        }
+        return error.localizedDescription
+    }
+
 
     var body: some View {
         NavigationStack {
@@ -515,7 +569,7 @@ struct ChatView: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 10) {
                             if messages.isEmpty {
-                                Text("Ask Henry to do something on your hub — open a site in the desktop browser, dispatch a goal, check the Brain. It runs on your Mac; you watch it here.")
+                                Text("Ask \(identity.name) to do something on your hub — open a site in the desktop browser, dispatch a goal, check the Brain. It runs on your Mac; you watch it here.")
                                     .font(.brandCaption)
                                     .foregroundStyle(Brand.textMuted)
                                     .padding(.top, 48)
@@ -534,20 +588,31 @@ struct ChatView: View {
                 composer
             }
             .background(Brand.shell)
-            .navigationTitle("Henry")
+            .navigationTitle(identity.displayName)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
+                    // Straight in. No await before presenting: VoiceView resolves
+                    // the session itself (minting one if this chat has never been
+                    // sent to), so voice does not require typing a message first
+                    // and a resolution failure shows ON the voice screen instead
+                    // of sliding up an empty cover.
                     Button { showVoice = true } label: {
                         Image(systemName: "waveform")
                             .font(.body.weight(.semibold))
-                            .foregroundStyle(Brand.cyan)
+                            .foregroundStyle(Brand.cyanInk)
                     }
-                    .accessibilityLabel("Talk with Henry")
+                    .accessibilityLabel("Talk with \(identity.name)")
                 }
             }
-            // Same per-install session id as text chat, so voice turns land in
-            // this same conversation on the hub.
-            .fullScreenCover(isPresented: $showVoice) { VoiceView(sessionId: sessionId) }
+            // Voice shares the chat's hub session so spoken turns land in the
+            // same conversation. `sessionId` is passed if this chat already
+            // resolved one and left nil otherwise — VoiceView resolves and
+            // reports its own failures. The previous `if let sessionId` guard
+            // is what produced the black screen: when resolution had failed,
+            // the cover presented an EMPTY body.
+            .fullScreenCover(isPresented: $showVoice) {
+                VoiceView(sessionId: sessionId)
+            }
             // Tactile: a light tap when you send.
             .sensoryFeedback(.impact(weight: .light), trigger: sentCount)
         }
@@ -565,7 +630,7 @@ struct ChatView: View {
                 } else if !m.text.isEmpty {
                     Text(m.text)
                         .font(.brandBody)
-                        .foregroundStyle(m.role == "user" ? Brand.deepVoid : Brand.text)
+                        .foregroundStyle(m.role == "user" ? Brand.onAccent : Brand.text)
                         .textSelection(.enabled)
                 }
             }
@@ -580,7 +645,7 @@ struct ChatView: View {
 
     private var composer: some View {
         HStack(spacing: 8) {
-            TextField("Ask Henry…", text: $draft, axis: .vertical)
+            TextField("Ask \(identity.name)…", text: $draft, axis: .vertical)
                 .lineLimit(1...4)
                 .padding(12)
                 .background(Brand.surface)
@@ -615,7 +680,8 @@ struct ChatView: View {
         let idx = messages.count - 1
         Task {
             do {
-                for try await delta in APIClient.shared.replyStream(text, sessionId: sessionId) {
+                let sid = try await resolveSession()
+                for try await delta in APIClient.shared.replyStream(text, sessionId: sid) {
                     if idx < messages.count {
                         messages[idx].text += delta.text
                         messages[idx].thinking += delta.thinking
@@ -626,7 +692,7 @@ struct ChatView: View {
                 }
             } catch {
                 if idx < messages.count {
-                    messages[idx].text = "⚠️ Couldn't reach Henry — is your Mac awake and on the tailnet?"
+                    messages[idx].text = "⚠️ " + Self.describeChatFailure(error)
                 }
             }
             sending = false

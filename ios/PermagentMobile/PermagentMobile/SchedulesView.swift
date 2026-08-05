@@ -44,6 +44,7 @@ struct ScheduleJob: Decodable, Identifiable {
 }
 
 struct SchedulesView: View {
+    @ObservedObject private var identity = AgentIdentity.shared
     @State private var jobs: [ScheduleJob] = []
     @State private var loaded = false
     @State private var errorText: String?
@@ -69,7 +70,7 @@ struct SchedulesView: View {
                             Text("NO AUTOMATIONS")
                                 .font(.brandLabel)
                                 .foregroundStyle(Brand.textDim)
-                            Text("You haven't set up any scheduled jobs yet. Ask Henry to create one, or add it from the desktop — it'll show here with run and pause controls.")
+                            Text("You haven't set up any scheduled jobs yet. Ask \(identity.name) to create one, or add it from the desktop — it'll show here with run and pause controls.")
                                 .font(.brandCaption)
                                 .foregroundStyle(Brand.textMuted)
                         }
@@ -148,10 +149,10 @@ struct SchedulesView: View {
         HStack(spacing: 10) {
             if job.currently_running {
                 actionButton(job, verb: "kill", label: "Stop",
-                             tint: Brand.deepVoid, fill: Brand.danger)
+                             tint: Brand.onDanger, fill: Brand.danger)
             } else {
                 actionButton(job, verb: "run_now", label: "Run now",
-                             tint: Brand.deepVoid, fill: Brand.cyan)
+                             tint: Brand.onAccent, fill: Brand.cyan)
                 if job.paused {
                     actionButton(job, verb: "unpause", label: "Resume",
                                  tint: Brand.text, fill: Brand.surface)

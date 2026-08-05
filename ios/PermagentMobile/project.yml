@@ -10,20 +10,49 @@ targets:
     platform: iOS
     sources:
       - path: PermagentMobile
+        excludes:
+          - "Permagent.icon/**"
+      # The Icon Composer package must land as a SINGLE file reference. Left to
+      # recurse, xcodegen would add its icon.json and Assets/ as loose files and
+      # actool would never see a .icon at all.
+      - path: PermagentMobile/Permagent.icon
+        type: file
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ai.permagent.mobile
         SWIFT_VERSION: "6.0"
         TARGETED_DEVICE_FAMILY: "1,2"
         ENABLE_USER_SCRIPT_SANDBOXING: "YES"
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # Points at Permagent.icon (Icon Composer), not the old appiconset:
+        # macOS 26 / iOS 26 render the tile themselves and Xcode back-fills the
+        # legacy PNG sizes for the 17.0 floor from the same source.
+        ASSETCATALOG_COMPILER_APPICON_NAME: Permagent
         # Written into the .xcodeproj by Xcode on first open; kept here because
         # the project is xcodegen-generated and a regen would otherwise drop
         # them. Deliberately NOT mirroring the IPHONEOS_DEPLOYMENT_TARGET 18.6
         # that Xcode also wrote — the 17.0 floor above is intentional (liquid
         # glass on 26 with a 17–25 fallback), and 18.6 would silently drop it.
         DEVELOPMENT_TEAM: GANM22MFCH
-        CURRENT_PROJECT_VERSION: 1
+        # ── Versioning ──────────────────────────────────────────────────────
+        # EDIT THESE HERE, NOT IN XCODE. The .xcodeproj AND Info.plist are both
+        # generated from this file, so anything Xcode's General tab writes is
+        # discarded by the next `xcodegen generate`. That is half of why the
+        # version kept reverting.
+        #
+        # The other half: Info.plist used to hard-code CFBundleVersion "1" and
+        # CFBundleShortVersionString "1.0" (xcodegen's defaults when the keys
+        # are absent). Literal values mean the build settings below were never
+        # consulted at all — every build shipped as 1.0 (1) no matter what
+        # Xcode showed. The info.properties block now points both keys at these
+        # settings, so this is the single source of truth.
+        #
+        # MARKETING_VERSION tracks the product version in
+        # ui/desktop/package.json — one product, one number.
+        MARKETING_VERSION: "1.31.0"
+        # Build number must be unique and INCREASING for every TestFlight
+        # upload. `scripts/ios_build_number.sh` sets it from the git commit
+        # count, which is monotonic and needs no bookkeeping.
+        CURRENT_PROJECT_VERSION: 906
       configs:
         # Simulator/dev builds stay signing-free so a plain `xcodebuild build`
         # needs no certificate. This MUST NOT reach Release: an archive built
@@ -38,6 +67,11 @@ targets:
       path: PermagentMobile/Info.plist
       properties:
         CFBundleDisplayName: Permagent
+        # Reference the build settings rather than literals — see the comment
+        # on MARKETING_VERSION above. Without these two lines nothing else here
+        # has any effect on the shipped bundle.
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSMicrophoneUsageDescription: Permagent uses the microphone to dictate notes and talk with Henry.
         NSCameraUsageDescription: Permagent uses the camera to scan the pairing QR code displayed on your Mac.
         NSLocalNetworkUsageDescription: Permagent connects to your Permagent hub on your local network or tailnet.
@@ -67,7 +101,13 @@ targets:
         # If custom crypto is ever added, this MUST be revisited — it is a legal
         # declaration, not a build setting.
         ITSAppUsesNonExemptEncryption: false
-        UILaunchScreen: {}
+        # An EMPTY UILaunchScreen dict means a WHITE launch screen, and this app
+        # is deep-void dark end to end — the simulator showed over a second of
+        # white flashing before the splash faded in (screenshots, 2026-08-04).
+        # Naming a colour asset is the only way to tint it; a launch screen
+        # cannot run code, so it must be a static colour, not the shell gradient.
+        UILaunchScreen:
+          UIColorName: LaunchBackground
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft

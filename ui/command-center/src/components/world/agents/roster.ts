@@ -29,7 +29,11 @@ export const MEZZ_Y = 10.15;
 export const ROSTER: AgentIdentity[] = [
   {
     id: 'henry',
-    name: 'Henry',
+    // `id` is a stable KEY, not a label. The display name is overwritten
+    // from `/api/agent/identity` by stateSources on the first poll; this is
+    // only what shows before that lands, so it must not assert a name the
+    // user did not choose.
+    name: 'Agent',
     role: 'orchestrator',
     trimColor: AGENT_TRIM.henry,
     isHenry: true,

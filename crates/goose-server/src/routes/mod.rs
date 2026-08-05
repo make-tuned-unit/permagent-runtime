@@ -3,6 +3,7 @@ pub mod activity;
 pub mod agent;
 pub mod agents;
 pub mod analytics_classify;
+pub mod analytics_funnel;
 pub mod analytics_verify;
 pub mod attachments;
 pub mod backup;

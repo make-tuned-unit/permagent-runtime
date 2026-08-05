@@ -36,6 +36,9 @@
 export interface PtyDataPayload {
   session_id: string;
   data: string;
+  /** Total bytes this session has produced, including this chunk. Used to drop
+   *  chunks a replay already contains — see `get_pty_output` in terminal.rs. */
+  seq?: number;
 }
 
 export interface PtyStreamSink {

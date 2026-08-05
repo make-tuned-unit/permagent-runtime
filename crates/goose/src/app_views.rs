@@ -45,6 +45,19 @@ pub struct RankedCounts {
     pub truncated: bool,
 }
 
+/// One day of traffic. The agent could previously only see WINDOW TOTALS, so
+/// "traffic dipped on the 3rd" or "the campaign spiked Tuesday" were
+/// unanswerable — it had the same numbers whether the window was flat or a
+/// cliff. The Grow UI already charted this; the agent's view simply never
+/// carried it (reported 2026-08-04 as no daily drilldown).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct AnalyticsDay {
+    pub date: String,
+    pub pageviews: i64,
+    pub visitors: i64,
+    pub events: i64,
+}
+
 #[derive(Debug, Clone)]
 pub struct AnalyticsSummary {
     pub event_count: i64,
@@ -58,6 +71,10 @@ pub struct AnalyticsSummary {
     pub top_utm_sources: RankedCounts,
     pub top_utm_mediums: RankedCounts,
     pub top_utm_campaigns: RankedCounts,
+    /// Ascending by date, one row per day that had traffic. Days with no
+    /// traffic are absent rather than zero-filled — the caller knows the
+    /// window, and inventing rows would imply measurement that did not happen.
+    pub daily: Vec<AnalyticsDay>,
 }
 
 fn analytics_where(including_bots: bool) -> String {
@@ -208,6 +225,35 @@ pub async fn analytics_summary(
     )
     .await?;
 
+    // Daily drilldown. Same window and same bot filter as the headline, so a
+    // reader can add the days up and land on the totals above — a series that
+    // disagreed with its own headline would be worse than none.
+    let daily_sql = format!(
+        "SELECT date(created_at) AS day,
+                coalesce(sum(kind = 'pageview'), 0) AS pageviews,
+                count(DISTINCT CASE WHEN kind = 'pageview' THEN visitor_hash END) AS visitors,
+                count(*) AS events
+           FROM analytics_events
+          WHERE project_id = ?1{filter}
+          GROUP BY date(created_at)
+          ORDER BY date(created_at)"
+    );
+    let daily = sqlx::query(&daily_sql)
+        .bind(project_id)
+        .bind(&since)
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|r| -> anyhow::Result<AnalyticsDay> {
+            Ok(AnalyticsDay {
+                date: r.try_get("day")?,
+                pageviews: r.try_get("pageviews")?,
+                visitors: r.try_get("visitors")?,
+                events: r.try_get("events")?,
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
     Ok(AnalyticsSummary {
         event_count: row.try_get("event_count")?,
         pageviews: row.try_get("pageviews")?,
@@ -220,6 +266,7 @@ pub async fn analytics_summary(
         top_utm_sources,
         top_utm_mediums,
         top_utm_campaigns,
+        daily,
     })
 }
 

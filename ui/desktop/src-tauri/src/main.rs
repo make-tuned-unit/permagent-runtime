@@ -7,6 +7,7 @@ mod browser;
 mod daemon;
 mod files;
 mod menu;
+mod system_audio;
 mod terminal;
 
 /// Enable media capture (microphone getUserMedia) on a Tauri webview window.
@@ -17,7 +18,21 @@ mod terminal;
 /// panics). A failure degrades gracefully — mic capture unavailable, app runs.
 #[cfg(target_os = "macos")]
 fn enable_media_capture(window: &tauri::WebviewWindow) {
-    let _ = window.with_webview(|webview| {
+    let _ = window.with_webview(|webview| apply_media_capture(&webview));
+}
+
+/// Set `_mediaCaptureEnabled` on an already-resolved platform webview.
+///
+/// Split out from `enable_media_capture` so it can be applied to a CHILD
+/// `Webview` as well as a `WebviewWindow`. The in-app browser (browser.rs) is a
+/// child webview hosting third-party pages, and a child cannot enable itself:
+/// `enable_media_capture_cmd` is invoked from JS, and the JS running in a
+/// browser webview is Zoom's or Google Meet's, which has no Tauri bridge. So
+/// the browser webview had no media capture at all and `getUserMedia` failed —
+/// no video call could run in the app (reported 2026-08-04).
+#[cfg(target_os = "macos")]
+pub(crate) fn apply_media_capture(webview: &tauri::webview::PlatformWebview) {
+    {
         // Wrap in both ObjC exception catch AND Rust catch_unwind.
         // objc2::exception::catch handles NSException.
         // catch_unwind handles Rust panics.
@@ -68,7 +83,7 @@ fn enable_media_capture(window: &tauri::WebviewWindow) {
                 );
             }
         }
-    });
+    }
 }
 
 /// Tauri command: enable media capture on the calling webview window.
@@ -239,8 +254,69 @@ fn main() {
                 let _ = w.set_focus();
             }
         }))
+        // ── Pane-window teardown safety net (native, IPC-independent) ──
+        //
+        // A detached pane window's JS asks for its own destruction: it
+        // preventDefaults CloseRequested, redocks its tabs, then destroys
+        // itself — and every step of that travels over the DYING window's own
+        // IPC bridge. When that bridge stalls, the whole chain stalls with it,
+        // including any "fallback" invoke, which is why bounding the JS
+        // teardown did not stop the window surviving (reported twice,
+        // 2026-08-04). A rescue routed through the thing being rescued is not
+        // a rescue.
+        //
+        // So the guarantee lives here instead. On CloseRequested for a pane
+        // window we let the JS handler run its redock, but arm a native timer:
+        // if the window is still alive when it fires, Rust destroys it
+        // directly. No webview IPC is involved, so a wedged bridge cannot
+        // block it. The happy path is unchanged — the window is already gone
+        // and the timer finds nothing.
+        .on_window_event(|window, event| {
+            if !matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                return;
+            }
+            // Pane windows are labelled `<kind>-<uuid>` by paneWindows.ts
+            // (`browser-…` / `terminal-…`). NOT "pane-…" — checking for that
+            // prefix would silently never match. The app's own windows are
+            // "main" and "chat", so neither is caught here. Child browser
+            // WEBVIEWS are also `browser-<n>`, but they live in a different
+            // namespace and `on_window_event` never fires for them.
+            let label = window.label().to_string();
+            let is_pane = label.starts_with("browser-") || label.starts_with("terminal-");
+            if !is_pane {
+                return;
+            }
+            // HIDE IT NOW, natively. Measured 2026-08-04: the JS teardown is
+            // genuinely wedged — the window never closes itself and the native
+            // timer does all the work — so the user sat watching a dead window
+            // with the redocked content flashing behind it for the whole
+            // fallback delay. The close was REQUESTED; the window is going
+            // away either way, so there is no honest reason to keep painting
+            // it while we wait. Hiding here (not from the pane's JS) is the
+            // whole point: the pane's own IPC is the thing that is stuck.
+            //
+            // The window object stays alive, so the JS redock already in
+            // flight keeps running against it and tabs still come home.
+            let _ = window.hide();
+
+            let app = window.app_handle().clone();
+            std::thread::spawn(move || {
+                // Still generous enough for the JS redock (2s budget) to hand
+                // the tabs back before the window object goes away. The delay
+                // is now invisible — the window is already hidden — so this is
+                // a correctness margin, not something the user waits through.
+                std::thread::sleep(std::time::Duration::from_millis(2500));
+                if let Some(w) = app.get_window(&label) {
+                    eprintln!(
+                        "[permagent-app] pane window {label} did not close itself — destroying natively"
+                    );
+                    let _ = w.destroy();
+                }
+            });
+        })
         .manage(terminal::PtySessions::new())
         .manage(browser::BrowserSessions::new())
+        .manage(system_audio::SystemAudioState::default())
         .invoke_handler(tauri::generate_handler![
             terminal::spawn_pty_session,
             terminal::write_to_pty,
@@ -248,12 +324,19 @@ fn main() {
             terminal::kill_pty,
             terminal::get_pty_output,
             browser::create_browser_webview,
+            system_audio::start_system_audio,
+            system_audio::stop_system_audio,
+            system_audio::system_audio_available,
+            system_audio::read_audio_chunk,
             browser::reparent_browser,
             browser::navigate_browser,
             browser::update_browser_bounds,
             browser::hide_browser,
             browser::close_browser,
             browser::destroy_pane_window,
+            browser::browser_current_url,
+            browser::browser_nav_state,
+            browser::browser_go,
             browser::zoom_browser,
             browser::get_page_content,
             browser::get_page_snapshot,

@@ -58,7 +58,30 @@ export default function PaneWindowApp() {
       try {
         await withDeadline(redockAll(), 2000);
       } finally {
-        try { await win.destroy(); } catch { /* already gone */ }
+        // `destroy()` MUST be bounded too. It was the one await in this path
+        // without a deadline, and it is the one that strands a window: after
+        // `redockAll` reparents the native child webviews out of this window,
+        // destroying it can stall on the same main-thread contention the
+        // redock was already guarded against. Observed 2026-08-04 — the tab
+        // came back to the main app, its content flashed behind, and the now
+        // EMPTY pane window refused to close. A bounded redock followed by an
+        // unbounded destroy just moves the hang one line down.
+        //
+        // So: try the JS teardown briefly, then fall back to the atomic native
+        // one (`destroy_pane_window`), which does not depend on this webview's
+        // IPC round-trip completing. No child webview ids — `redockAll` has
+        // already moved them to the main window and destroying them here would
+        // kill the tabs the user just got back.
+        const destroyed = await withDeadline(
+          win.destroy().then(() => true).catch(() => true),
+          1200,
+        );
+        if (!destroyed) {
+          await invoke('destroy_pane_window', {
+            windowLabel: win.label,
+            webviewIds: [],
+          }).catch(() => { /* nothing left that can close it */ });
+        }
         closing = false;
       }
     };

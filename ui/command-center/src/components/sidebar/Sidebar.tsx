@@ -6,6 +6,7 @@ import { Mobius } from '../mobius/Mobius';
 import { markAllRead, toggleTray, useNotifications, useTrayOpen } from '../../lib/notifications';
 import { resolveIconPath } from './icons';
 import { SidebarTooltip, useSidebarTooltip } from './SidebarTooltip';
+import { MeetingRecorder } from '../voice/MeetingRecorder';
 
 const SETTINGS_ICON = 'M12 9a3 3 0 100 6 3 3 0 000-6zM19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 008 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 004.6 15a1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 4.6a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0019.4 9c.16.55.62.96 1.18 1H21a2 2 0 110 4h-.09c-.6.04-1.06.45-1.51 1z';
 
@@ -230,6 +231,18 @@ export function Sidebar() {
       })}
 
       <div style={{ flex: 1 }} />
+
+      {/* Meeting dictation (call-notes MVP 1A) — click-to-toggle Record button
+          (NOT push-to-talk: PTT dies when the embedded webview holds focus).
+          Lives here because the Sidebar never unmounts, so a recording
+          survives workspace and overlay switches.
+
+          Deleted as collateral in the 2026-07-28 mega-session (065d617ed) and
+          restored 2026-08-04. It is the only surface that turns a call into a
+          project note, and the self-knowledge descriptor never stopped telling
+          Henry it existed — so for a week he pointed users at a button that
+          was not there. */}
+      <MeetingRecorder open={open} />
 
       {/* Console — Sessions, Inbox, Trace, and Governance as tabs of one
           overlay (2026-07-27 consolidation). Toggles closed when any console

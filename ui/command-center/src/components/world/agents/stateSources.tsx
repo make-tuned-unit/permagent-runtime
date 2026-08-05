@@ -22,6 +22,7 @@
 
 import { useEffect } from 'react';
 import { api } from '../../../lib/api';
+import { useCommandCenter } from '../../../lib/store';
 import { setAgentSource } from '../shared/agentStatus';
 import { subscribeWorldEvents } from '../shared/worldEvents';
 import { noteDescribe } from './librarianMining';
@@ -57,14 +58,18 @@ export function AgentStateSources() {
       try {
         const s = await api.getHenryStatus();
         if (cancelled) return;
-        const name = s.identity?.name || 'Henry';
+        // Fall back to the STORE's agent name, never a literal — "Henry" is
+        // this hub's default persona, not the product, and every user names
+        // their own agent (`/api/agent/identity`). A literal here renames
+        // someone else's agent the moment the identity field is absent.
+        const name = s.identity?.name || useCommandCenter.getState().agentName;
         setAgentSource('henry', name, mapHenryState(s.current_state), 'daemon');
         // Same poll, second truth: the REAL in-flight tool name (#84) feeds
         // the HenryToolSigil. One endpoint, no extra network.
         setHenryWork(extractHenryWork(s));
       } catch {
         if (!cancelled) {
-          setAgentSource('henry', 'Henry', 'error', 'daemon');
+          setAgentSource('henry', useCommandCenter.getState().agentName, 'error', 'daemon');
           // Unreachable daemon must not leave a stale tool claim floating.
           setHenryWork({ tool: null, tasksInFlight: 0 });
         }

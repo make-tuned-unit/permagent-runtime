@@ -3,6 +3,14 @@
 <plist version="1.0">
 <dict>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Permagent uses the microphone for push-to-talk voice input to the assistant.</string>
+	<string>Permagent uses the microphone for voice input to the assistant, and to capture your side of a meeting when you start a recording.</string>
+
+	<!-- Video calls in the in-app browser (Zoom / Google Meet / Teams).
+	     macOS does not merely DENY camera access when this key is absent — it
+	     terminates the process the moment capture is requested. Joining a call
+	     in the Build-tab browser would therefore have killed the app rather
+	     than showing a permission prompt. -->
+	<key>NSCameraUsageDescription</key>
+	<string>Permagent uses the camera for video calls you join in the in-app browser.</string>
 </dict>
 </plist>

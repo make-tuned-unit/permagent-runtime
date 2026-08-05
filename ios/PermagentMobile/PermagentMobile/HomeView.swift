@@ -20,6 +20,7 @@ struct ActivityRow: Decodable, Identifiable {
 }
 
 struct HomeView: View {
+    @ObservedObject private var identity = AgentIdentity.shared
     @EnvironmentObject var session: HubSession
     @State private var snap = HubSnapshot()
 
@@ -63,7 +64,7 @@ struct HomeView: View {
                                 .font(.brandLabel)
                                 .foregroundStyle(Brand.textDim)
                             if snap.activity.isEmpty {
-                                Text("All quiet. Henry will note goal moves, decisions, and Librarian passes here.")
+                                Text("All quiet. \(identity.nameCapitalized) will note goal moves, decisions, and Librarian passes here.")
                                     .font(.brandCaption)
                                     .foregroundStyle(Brand.textMuted)
                             } else {
@@ -91,7 +92,7 @@ struct HomeView: View {
                             Text("REMOTE HANDS")
                                 .font(.brandLabel)
                                 .foregroundStyle(Brand.textDim)
-                            Text("Anything you ask Henry here happens on the hub — open a site in the desktop browser, launch a project terminal, dispatch a goal. Your desktop shows it live.")
+                            Text("Anything you ask \(identity.name) here happens on the hub — open a site in the desktop browser, launch a project terminal, dispatch a goal. Your desktop shows it live.")
                                 .font(.brandCaption)
                                 .foregroundStyle(Brand.textMuted)
                         }
@@ -136,7 +137,6 @@ struct HomeView: View {
     }
 
     private func load() async {
-        struct Status: Decodable { let status: String }
         // The inbox returns { items, summary:{ total_pending } } — the count
         // lives under summary (was read at top level, so it always showed "–").
         struct Summary: Decodable { let total_pending: Int? }
@@ -144,7 +144,18 @@ struct HomeView: View {
         struct Goals: Decodable { struct G: Decodable { let id: String }; let goals: [G] }
         struct Activity: Decodable { let items: [ActivityRow]? }
 
-        snap.healthy = (try? await APIClient.shared.get("/status", as: Status.self)) != nil
+        // Reachability is the HTTP STATUS, not the body shape. `GET /status`
+        // answers 200 with the bare string `ok` — not JSON — so decoding it as
+        // `{ status: String }` always threw, `try?` swallowed it, and the phone
+        // reported "Hub unreachable" while every other call on the same
+        // connection succeeded and rendered live hub data (reported 2026-08-04,
+        // with Recent Activity populated behind the red banner).
+        //
+        // `send` checks 2xx and discards the body, which is exactly the question
+        // being asked. Never reintroduce a decode here: a health check that
+        // fails on payload shape cannot distinguish "hub is down" from "hub
+        // answered in a format I didn't expect", and those need opposite fixes.
+        snap.healthy = ((try? await APIClient.shared.send("/status", method: "GET")) != nil)
         if let d = try? await APIClient.shared.get("/api/decisions", as: Decisions.self) {
             withAnimation(Motion.spring) { snap.decisionsPending = d.summary?.total_pending }
         }

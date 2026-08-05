@@ -304,6 +304,17 @@ impl AppPerceptionClient {
                     "bot_events": summary.bot_events,
                     "bots_excluded_from_headline": summary.bot_events
                 },
+                // The day-by-day series. Without this the agent saw only window
+                // totals and could not answer "which day did it dip" — the
+                // drilldown gap reported 2026-08-04. Capped so a 365-day window
+                // cannot flood the context; the totals above stay authoritative.
+                "daily": summary.daily.iter().rev().take(90).rev().map(|d| json!({
+                    "date": d.date,
+                    "pageviews": d.pageviews,
+                    "visitors": d.visitors,
+                    "events": d.events
+                })).collect::<Vec<_>>(),
+                "daily_note": "one row per day WITH traffic, ascending; absent days had none",
                 "top_paths": analytics_ranked(&summary.top_paths, "path", "views"),
                 "utm": {
                     "sources": analytics_ranked(&summary.top_utm_sources, "name", "events"),

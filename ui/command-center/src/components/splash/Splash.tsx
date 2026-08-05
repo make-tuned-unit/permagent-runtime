@@ -13,10 +13,14 @@ export function Splash({ onDone }: Props) {
   const [showLine1, setShowLine1] = useState(false);
   const [showLine2, setShowLine2] = useState(false);
 
+  // The splash is timed to ONE complete pass of the Möbius loop — that is why
+  // it was 5000ms: 151 frames at 30fps. Halved by stepping two source frames
+  // per tick (below) rather than by cutting the animation off mid-turn, so the
+  // logo still completes its full revolution: 151/2 steps at 30fps ≈ 2520ms.
   useEffect(() => {
-    const t1 = setTimeout(() => setShowLine1(true), 600);
-    const t2 = setTimeout(() => setShowLine2(true), 2400);
-    const t3 = setTimeout(() => setPhase('out'), 5000);
+    const t1 = setTimeout(() => setShowLine1(true), 300);
+    const t2 = setTimeout(() => setShowLine2(true), 1200);
+    const t3 = setTimeout(() => setPhase('out'), 2500);
     return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
   }, []);
 
@@ -40,7 +44,7 @@ export function Splash({ onDone }: Props) {
         transition: `opacity 400ms ${ease.out}`,
       }}
     >
-      <Mobius size={180} state="thinking" glow={1} />
+      <Mobius size={180} state="thinking" glow={1} frameStep={2} />
 
       {/* ===== TAGLINE LOCKED =====
         * Format: "Built to grow with you. Forever."

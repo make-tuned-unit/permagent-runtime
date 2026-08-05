@@ -220,12 +220,44 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
       // Render discipline (#573): PTY bytes go to xterm VERBATIM via
       // handlePtyData — the frontend never injects or strips characters.
       // See ptyStream.ts for why the #239 local-echo path was removed.
-      const ptySink: PtyStreamSink = {
+      // ── Replay/live handoff ────────────────────────────────────────────
+      //
+      // The Rust side appends every chunk to a bounded replay buffer AND emits
+      // it as `pty_data`, so the two carry the SAME bytes. Subscribing first
+      // and then writing the replay wrote the overlap twice — a fragment of
+      // earlier output landing on top of whatever the TUI was drawing, which
+      // is how harness text ended up spliced into Claude Code's input line
+      // (reported 2026-08-04). Subscribing AFTER the replay instead would lose
+      // whatever arrived during the round trip.
+      //
+      // So: subscribe first and HOLD live chunks, then write the replay, then
+      // release only the chunks the replay did not already cover. `seq` is a
+      // stream position, so the comparison is exact in both directions.
+      let replayUpTo: number | null = null;
+      const held: Array<{ data: string; seq?: number }> = [];
+
+      const liveSink: PtyStreamSink = {
         write: (data) => {
+          if (replayUpTo === null) { held.push({ data, seq: pendingSeq }); return; }
           term.write(data);
           scheduleFlush();
         },
         onCwd: (path) => onCwdChangeRef.current?.(path),
+      };
+      // handlePtyData hands the sink only the string, so the chunk's seq rides
+      // alongside it rather than through the sink signature.
+      let pendingSeq: number | undefined;
+
+      const releaseHeld = (upTo: number | null) => {
+        replayUpTo = upTo ?? 0;
+        for (const chunk of held) {
+          // No seq (older daemon) → keep it: a duplicate is recoverable, a
+          // missing chunk is not.
+          if (chunk.seq !== undefined && upTo !== null && chunk.seq <= upTo) continue;
+          term.write(chunk.data);
+        }
+        held.length = 0;
+        scheduleFlush();
       };
 
       let unlistenData: (() => void) | null = null;
@@ -234,7 +266,10 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
       if (api) {
         unlistenData =
           (await api.listen('pty_data', (e) => {
-            handlePtyData(e.payload as PtyDataPayload, sessionIdRef.current, ptySink);
+            const payload = e.payload as PtyDataPayload;
+            pendingSeq = payload.seq;
+            handlePtyData(payload, sessionIdRef.current, liveSink);
+            pendingSeq = undefined;
           })) ?? null;
 
         unlistenExit =
@@ -265,9 +300,19 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         // same live PTY. Rehydrate its scrollback from the bounded Rust buffer.
         if (sessionIdRef.current) {
           try {
-            const replay = await api.invoke('get_pty_output', { sessionId: sessionIdRef.current }) as string;
-            if (!cancelled && replay) term.write(replay);
-          } catch { /* session may have exited during the handoff */ }
+            const replay = await api.invoke('get_pty_output', {
+              sessionId: sessionIdRef.current,
+            }) as { data: string; seq: number };
+            if (!cancelled && replay?.data) term.write(replay.data);
+            if (!cancelled) releaseHeld(replay?.seq ?? null);
+          } catch {
+            // Session may have exited during the handoff — release anyway, or
+            // the terminal would sit mute with live bytes stuck in the queue.
+            if (!cancelled) releaseHeld(null);
+          }
+        } else {
+          // Fresh session: nothing to replay, so nothing to hold back.
+          releaseHeld(null);
         }
         if (cancelled) {
           unlistenData?.();

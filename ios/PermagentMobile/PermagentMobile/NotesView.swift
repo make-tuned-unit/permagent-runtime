@@ -38,6 +38,7 @@ struct ProjectNote: Decodable, Identifiable {
 // ── Notes screen ─────────────────────────────────────────────────────────────
 
 struct NotesView: View {
+    @ObservedObject private var identity = AgentIdentity.shared
     @State private var projects: [Project] = []
     @State private var selected: Project?
     @State private var notes: [ProjectNote] = []
@@ -96,7 +97,7 @@ struct NotesView: View {
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: "folder.fill")
-                    .foregroundStyle(Brand.cyan)
+                    .foregroundStyle(Brand.cyanInk)
                 Text(selected?.name ?? (projectsLoaded ? "Select a project" : "Loading…"))
                     .font(.brandHeadline)
                     .foregroundStyle(Brand.text)
@@ -120,7 +121,7 @@ struct NotesView: View {
     private var notesSection: some View {
         if selected == nil && projectsLoaded && projects.isEmpty {
             GlassCard {
-                Text("No projects yet. Create one on the desktop (or ask Henry), then jot or dictate notes to it from here.")
+                Text("No projects yet. Create one on the desktop (or ask \(identity.name)), then jot or dictate notes to it from here.")
                     .font(.brandCaption)
                     .foregroundStyle(Brand.textMuted)
                     .frame(maxWidth: .infinity, alignment: .leading)

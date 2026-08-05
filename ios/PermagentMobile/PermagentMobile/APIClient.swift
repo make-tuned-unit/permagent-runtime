@@ -4,7 +4,7 @@
 import Foundation
 
 struct HubConfig: Codable, Equatable {
-    var baseURL: URL       // http://<magicdns>:3001
+    var baseURL: URL       // http://<magicdns> — via tailscale serve, no port
     var token: String      // daemon_token (the pairing secret)
 }
 
@@ -313,14 +313,44 @@ private struct ReplyEvent: Decodable {
 }
 
 /// A stable per-install chat session id so the conversation persists across
-/// launches. The hub creates the session lazily on first reply (get_agent).
+/// launches.
+///
+/// The hub does NOT create sessions lazily — that assumption (in the comment
+/// this replaces) is why chat never worked from the phone. Minting a UUID
+/// locally and posting it as `session_id` made `/reply` answer 200 and then
+/// immediately fail its stream with
+/// `Failed to read session for <uuid>: Session not found`, which the UI
+/// reported as "Couldn't reach Henry" — pointing at the network while the
+/// network was fine (diagnosed from the hub log, 2026-08-04).
+///
+/// Sessions are created by `POST /api/sessions`, which returns the id. The
+/// phone must ask for one and use what it is given.
 enum MobileSession {
     private static let key = "ai.permagent.mobile-chat-session"
-    static func chatSessionId() -> String {
-        if let existing = UserDefaults.standard.string(forKey: key) { return existing }
-        let id = UUID().uuidString
-        UserDefaults.standard.set(id, forKey: key)
-        return id
+
+    private struct SessionResponse: Decodable { let id: String }
+    private struct CreateBody: Encodable { let workingDir: String }
+
+    /// The hub-created session for this install, creating one if needed.
+    ///
+    /// A cached id is verified against the hub before reuse: sessions can be
+    /// deleted on the desktop, and a stale id fails exactly the same way an
+    /// invented one did. Verification is a cheap GET and only happens once per
+    /// launch, so the cost is a single request against never chatting again.
+    static func chatSessionId() async throws -> String {
+        if let existing = UserDefaults.standard.string(forKey: key) {
+            if (try? await APIClient.shared.send("/api/sessions/\(existing)", method: "GET")) != nil {
+                return existing
+            }
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+        let created: SessionResponse = try await APIClient.shared.post(
+            "/api/sessions",
+            body: CreateBody(workingDir: "/tmp"),
+            as: SessionResponse.self
+        )
+        UserDefaults.standard.set(created.id, forKey: key)
+        return created.id
     }
 }
 
