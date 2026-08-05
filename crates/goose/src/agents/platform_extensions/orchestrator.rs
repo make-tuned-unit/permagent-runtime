@@ -379,7 +379,35 @@ impl OrchestratorClient {
             kanban_cache: Arc::new(tokio::sync::Mutex::new(KanbanContextCache::new())),
         };
 
-        // Spawn one-shot resume of in-progress goals from a prior daemon lifecycle
+        // Resume in-progress goals from a PRIOR DAEMON LIFECYCLE — at most once
+        // per process.
+        //
+        // This is `Self::new`, and `client_factory` runs it for every agent
+        // session that loads the orchestrator extension: every scheduled job,
+        // every chat turn. The sweep was therefore anything but one-shot. With
+        // `monitor-3-active-goals-every-2-minutes` on its schedule it ran every
+        // couple of minutes, and each pass treated freshly-dispatched goals as
+        // orphans and requeued them — eight Wave 1 goals died that way on
+        // 2026-08-05, logging "Resuming 8 in-progress goal(s) from prior
+        // session" twice in nine minutes while the daemon never restarted once.
+        //
+        // The guard is process-wide, not per-client, because that is the scope
+        // the sweep's own precondition assumes: "a prior daemon lifecycle" can
+        // only be recovered from once, at this daemon's start.
+        static RESUME_DONE: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if RESUME_DONE
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .is_err()
+        {
+            return Ok(client);
+        }
+
         let resume_sm = client.context.session_manager.clone();
         tokio::spawn(async move {
             // Small delay to let the DB pool and AgentManager finish initializing
@@ -4895,7 +4923,16 @@ async fn resume_single_goal(
         // Case 1: session is dead — requeue, or park on budget exhaustion.
         let new_attempt = attempt_count.saturating_add(1);
         let budget = goal_transition::goal_budget(&card.metadata_json);
-        let abandon_reason = "Abandoned during daemon restart";
+        // The condition tested above is "the worker SESSION is dead" — which is
+        // usually, but not necessarily, a daemon restart. Naming the cause
+        // instead of the symptom cost a full misdiagnosis on 2026-08-05: eight
+        // dispatched goals came back with "Abandoned during daemon restart",
+        // and the resulting investigation hunted a daemon crash that never
+        // happened (zero panics in a 15 MB log, last exit code 0, and HTTP
+        // requests served continuously straight through the supposed restart).
+        // The message must describe what was observed, so the next reader looks
+        // at the worker rather than the daemon.
+        let abandon_reason = "Worker session ended before the goal completed";
 
         // Also honor token/wallclock budgets on the resume path (S4).
         let other_exhaustion = goal_transition::check_budget(pool, &card.metadata_json).await?;
@@ -4937,7 +4974,7 @@ async fn resume_single_goal(
 
             tracing::info!(
                 target: "permagentd::brain",
-                "Goal '{}' moved to Ready after restart (attempt {}/{})",
+                "Goal '{}' requeued to Ready — worker session gone (attempt {}/{})",
                 card.title,
                 new_attempt,
                 budget.attempt_cap
@@ -6413,7 +6450,7 @@ mod tests {
         );
         assert_eq!(
             updated.metadata_json.get("last_error").unwrap().as_str(),
-            Some("Abandoned during daemon restart")
+            Some("Worker session ended before the goal completed")
         );
         assert_eq!(
             updated.metadata_json.get("goal_state").unwrap().as_str(),
@@ -6677,7 +6714,7 @@ mod tests {
                 .metadata_json
                 .get("last_error")
                 .and_then(|v| v.as_str())
-                .is_some_and(|e| e.contains("Abandoned during daemon restart")),
+                .is_some_and(|e| e.contains("Worker session ended")),
             "abandonment reason must be recorded in last_error"
         );
         // Parking does not fabricate a consumed attempt: the exhausted resume

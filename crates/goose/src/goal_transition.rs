@@ -2180,7 +2180,9 @@ mod tests {
             &goal.id,
             "system",
             2,
-            "Abandoned during daemon restart",
+            // See orchestrator.rs: the tested condition is a dead worker
+            // session, not a daemon restart. Keep these two strings identical.
+            "Worker session ended before the goal completed",
         )
         .await
         .unwrap();
