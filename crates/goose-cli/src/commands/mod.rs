@@ -4,6 +4,7 @@ pub mod configure;
 pub mod daemon;
 pub mod doctor;
 pub mod gateway;
+pub mod import_agent;
 pub mod info;
 pub mod integrations;
 pub mod packs;
