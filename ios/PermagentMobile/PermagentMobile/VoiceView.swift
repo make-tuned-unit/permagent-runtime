@@ -16,7 +16,8 @@
 //            {"type":"error","message":…}
 //
 // Turn-taking mirrors ui/command-center/src/hooks/useVoice.ts: push-to-talk or
-// hands-free VAD (RMS thresholds copied from the web hook) and barge-in by
+// hands-free VAD (VoiceVAD.swift — thresholds retuned for iOS's quieter
+// voiceChat-processed mic levels; see that file's header) and barge-in by
 // reconnecting a FRESH socket — closing the old one sets the daemon handler's
 // cancellation flag, so it stops synthesizing the reply the user talked over.
 
@@ -143,12 +144,10 @@ final class VoiceEngine: ObservableObject {
     /// away. Turning it off mid-turn ends that turn rather than stranding it.
     @Published var handsFree = true { didSet { if !handsFree && state == .listening { endTurn() } } }
 
-    // VAD thresholds — mirror useVoice.ts exactly.
-    private static let vadOnset: Float = 0.015
-    private static let vadKeepalive: Float = 0.010
-    private static let vadBarge: Float = 0.05
-    private static let vadSilenceMs: Double = 900
-    private static let vadMaxTurnMs: Double = 45_000
+    /// Hands-free turn-taking. The state machine (thresholds, silence window,
+    /// 60 s turn cap) lives in VoiceVAD.swift, pure and unit-tested — this
+    /// engine only feeds it frames and executes the actions it returns.
+    private var vad = VoiceVAD()
 
     private var sessionId = ""
     private var active = false
@@ -164,11 +163,6 @@ final class VoiceEngine: ObservableObject {
     )!
     private var pendingBuffers = 0
     private var replyEnded = false
-
-    private var vadLastVoice: TimeInterval = 0
-    private var vadHeardSpeech = false
-    private var vadBargeStreak = 0
-    private var vadTurnStart: TimeInterval = 0
 
     // ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -341,52 +335,40 @@ final class VoiceEngine: ObservableObject {
         if handsFree { vadStep(rms: rms) }
     }
 
-    // ── VAD (hands-free): thresholds and transitions mirror useVoice.ts ─────
+    // ── VAD (hands-free): the state machine itself is VoiceVAD, unit-tested ──
 
     private func vadStep(rms: Float) {
-        let now = Date().timeIntervalSince1970
+        let phase: VoiceVAD.Phase
         switch state {
-        case .ready:
-            vadBargeStreak = 0
-            if rms > Self.vadOnset {
-                vadHeardSpeech = true
-                vadLastVoice = now
-                vadTurnStart = now
-                beginTurn()
-            }
-        case .listening:
-            if rms > Self.vadKeepalive {
-                vadHeardSpeech = true
-                vadLastVoice = now
-            }
-            let silentMs = (now - vadLastVoice) * 1000
-            let turnMs = (now - vadTurnStart) * 1000
-            if (vadHeardSpeech && silentMs > Self.vadSilenceMs) || turnMs > Self.vadMaxTurnMs {
-                vadHeardSpeech = false
-                endTurn()
-            }
-        case .speaking, .thinking:
-            // Barge-in demands a sustained loud signal (2 consecutive buffers
-            // over the high bar) so residual TTS bleed can't cut Henry off —
-            // and, like the web hook, only fires while actually speaking.
-            if rms > Self.vadBarge {
-                vadBargeStreak += 1
-                if vadBargeStreak >= 2 && state == .speaking {
-                    vadBargeStreak = 0
-                    vadHeardSpeech = false
-                    interrupt()
-                }
-            } else {
-                vadBargeStreak = 0
-            }
-        default:
-            break
+        case .ready: phase = .ready
+        case .listening: phase = .listening
+        case .thinking: phase = .thinking
+        case .speaking: phase = .speaking
+        default: phase = .inactive
+        }
+        switch vad.step(rms: rms, phase: phase, now: Date().timeIntervalSince1970) {
+        case .beginTurn: enterListening()  // NOT beginTurn(): the VAD stamped its own clocks
+        case .endTurn: endTurn()
+        case .interrupt: interrupt()
+        case .none: break
         }
     }
 
     // ── Turns ────────────────────────────────────────────────────────────────
 
+    /// Begin a turn from OUTSIDE the VAD (the push-to-talk button). Stamps the
+    /// VAD's turn clocks so the max-turn cap measures from now — a turn begun
+    /// here used to inherit the previous hands-free turn's epoch, and the cap
+    /// could end it on the first frame after hands-free came back on.
     func beginTurn() {
+        guard state == .ready, wsTask != nil else { return }
+        vad.noteTurnBegan(at: Date().timeIntervalSince1970)
+        enterListening()
+    }
+
+    /// Send `start` and switch to `.listening`. The VAD's clocks are already
+    /// stamped, by whichever path got here.
+    private func enterListening() {
         guard state == .ready, wsTask != nil else { return }
         transcript = ""
         reply = ""
@@ -397,6 +379,7 @@ final class VoiceEngine: ObservableObject {
 
     func endTurn() {
         guard state == .listening else { return }
+        vad.noteTurnEnded()
         sendText(#"{"type":"stop"}"#)
         level = 0
         state = .thinking
