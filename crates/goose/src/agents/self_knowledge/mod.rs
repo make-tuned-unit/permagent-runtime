@@ -181,6 +181,7 @@ pub static GUARD_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::session::crash_capture::DURABILITY_FEATURE,
     crate::tool_monitor::SELF_KNOWLEDGE_FEATURE,
     crate::sovereignty::SELF_KNOWLEDGE_FEATURE,
+    crate::agents::platform_extensions::goal_engine::GOAL_LANDING_FEATURE,
 ];
 
 /// User-facing surfaces. Each entry is a `const` co-located with its module.
@@ -686,6 +687,7 @@ mod tests {
             "durability_supervision",
             "runaway_loop_guard",
             "sovereignty_guard",
+            "goal_landing",
         ];
         for id in KNOWN_GUARD_IDS {
             let n = GUARD_DESCRIPTORS.iter().filter(|d| d.id == *id).count();

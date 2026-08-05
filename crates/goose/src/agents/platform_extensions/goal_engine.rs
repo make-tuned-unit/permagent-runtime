@@ -469,6 +469,21 @@ impl GoalEngine for ExternalCliEngine {
     }
 }
 
+/// Self-knowledge descriptor for the goal landing path — how dispatched work
+/// becomes durable, reviewable code. Co-located with the engine per the
+/// descriptor convention.
+pub const GOAL_LANDING_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "goal_landing",
+        display_name: "Goal work landing path",
+        category: crate::agents::self_knowledge::FeatureCategory::Guard,
+        what_it_does: "Every dispatched goal runs in an isolated git worktree on its own goal/<run-id> branch; when the worker finishes, its commits are credential-scanned and pushed to that goal branch on origin — never to main. Failed and timed-out attempts push their partial work too, so no attempt's commits are ever lost. Landing on main happens only through the user's review and approval, never as a side effect of a worker finishing",
+        why_it_matters:
+            "When asked where a goal's work went: it is on its goal branch and cited in the review decision — not on main until the user approves. Never tell a user their goal's changes are live before the review gate has passed",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        teaching: &[],
+    };
+
 /// The branch a goal run's work lives on, derived from its run id. Named (not
 /// detached) so the commits are reachable from a ref: a detached worktree was
 /// one `git worktree prune` away from GC — three finished goals' commits were
