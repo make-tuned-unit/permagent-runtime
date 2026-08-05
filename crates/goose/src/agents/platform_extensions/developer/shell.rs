@@ -409,6 +409,25 @@ impl ShellTool {
                 "\n\nOutput may be incomplete because stream draining timed out after process exit.",
             );
         }
+
+        // Each shell call runs in a fresh process, so a `cd` inside the command
+        // is silently lost. Saying where the next call will actually start turns
+        // a would-be wrong-directory failure into a recoverable one.
+        if command_changes_dir(&params.command) {
+            let next_dir = working_dir
+                .map(|p| p.display().to_string())
+                .or_else(|| {
+                    std::env::current_dir()
+                        .ok()
+                        .map(|p| p.display().to_string())
+                })
+                .unwrap_or_else(|| "the session working directory".to_string());
+            rendered.push_str(&format!(
+                "\n\n[Note: directory changes do not persist between shell calls — each command \
+                 starts fresh in {next_dir}. To work in another directory, prefix the next \
+                 command with `cd <dir> && ...` or use absolute paths.]"
+            ));
+        }
         if let Some(error) = &execution.output_collection_error {
             rendered.push_str(&format!(
                 "\n\nOutput collection error occurred; output may be incomplete: {error}"
@@ -657,6 +676,20 @@ async fn collect_tagged_lines(
         let _ = tx.send((is_stderr, String::from_utf8_lossy(&line).into_owned()));
     }
     Ok(())
+}
+
+/// Heuristic: does this command line try to change the working directory?
+///
+/// Looks for `cd`/`pushd`/`popd` (and PowerShell's `Set-Location`/`sl`) in
+/// command position — at the start of the line or right after a separator
+/// (`;`, `&`, `|`, `(`, or a newline). Substrings inside words or paths
+/// (e.g. `abcd`, `./cd-tool`) don't count.
+fn command_changes_dir(command_line: &str) -> bool {
+    const DIR_CHANGERS: [&str; 5] = ["cd", "pushd", "popd", "set-location", "sl"];
+    command_line
+        .split(['\n', ';', '&', '|', '('])
+        .filter_map(|segment| segment.split_whitespace().next())
+        .any(|word| DIR_CHANGERS.contains(&word.to_ascii_lowercase().as_str()))
 }
 
 /// Build a human-readable truncation notice with platform-appropriate commands.
@@ -923,6 +956,68 @@ mod tests {
         slots.sort();
         let expected: Vec<usize> = (0..OUTPUT_SLOTS).collect();
         assert_eq!(slots, expected);
+    }
+
+    #[test]
+    fn command_changes_dir_detects_cd_in_command_position() {
+        assert!(command_changes_dir("cd /tmp"));
+        assert!(command_changes_dir("cd /tmp && ls"));
+        assert!(command_changes_dir("ls; cd src"));
+        assert!(command_changes_dir("pushd /tmp"));
+        assert!(command_changes_dir("(cd sub && make)"));
+        assert!(command_changes_dir("echo hi | cd /tmp"));
+    }
+
+    #[test]
+    fn command_changes_dir_ignores_lookalikes() {
+        assert!(!command_changes_dir("echo cd"));
+        assert!(!command_changes_dir("abcd /tmp"));
+        assert!(!command_changes_dir("cat cd.txt"));
+        assert!(!command_changes_dir("./cd-tool run"));
+        assert!(!command_changes_dir("grep -r 'pushd' ."));
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn shell_appends_cwd_note_when_command_changes_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = ShellTool::new_for_test().unwrap();
+        let result = tool
+            .shell_with_cwd(
+                ShellParams {
+                    command: "cd / && echo moved".to_string(),
+                    timeout_secs: None,
+                },
+                Some(dir.path()),
+            )
+            .await;
+
+        assert_eq!(result.is_error, Some(false));
+        let text = extract_text(&result);
+        assert!(text.contains("moved"));
+        assert!(
+            text.contains("directory changes do not persist"),
+            "expected a cwd note, got: {text}"
+        );
+        assert!(
+            text.contains(&dir.path().display().to_string()),
+            "the note must name the directory the next call starts in"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn shell_omits_cwd_note_for_plain_commands() {
+        let tool = ShellTool::new_for_test().unwrap();
+        let result = tool
+            .shell(ShellParams {
+                command: "echo plain".to_string(),
+                timeout_secs: None,
+            })
+            .await;
+
+        assert_eq!(result.is_error, Some(false));
+        assert!(!extract_text(&result).contains("directory changes do not persist"));
     }
 
     #[cfg(not(windows))]

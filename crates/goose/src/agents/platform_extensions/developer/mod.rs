@@ -106,7 +106,7 @@ impl DeveloperClient {
         vec![
             Tool::new(
                 "write".to_string(),
-                "Create a new file or overwrite an existing file. Creates parent directories if needed.".to_string(),
+                "Create a new file or overwrite an existing file. Creates parent directories if needed. The written file is read back and verified against the intended content before success is reported.".to_string(),
                 Self::schema::<FileWriteParams>(),
             )
             .annotate(ToolAnnotations::from_raw(
@@ -118,7 +118,7 @@ impl DeveloperClient {
             )),
             Tool::new(
                 "edit".to_string(),
-                "Edit a file by replacing `before` with `after` (use an empty `after` to delete). Matching tries exact text first, then falls back to whitespace- and indentation-insensitive matching, applying the first unique match; ambiguous or absent matches return an actionable error instead of guessing. For supported languages, an edit that would introduce a new syntax error is rejected and the file left unchanged.".to_string(),
+                "Edit a file by replacing `before` with `after` (use an empty `after` to delete). Matching tries exact text first, then falls back to whitespace- and indentation-insensitive matching, applying the first unique match; ambiguous or absent matches return an actionable error instead of guessing, and an edit whose replacement text is already in the file succeeds as a no-op (safe to retry). For supported languages, an edit that would introduce a new syntax error is rejected and the file left unchanged.".to_string(),
                 Self::schema::<FileEditParams>(),
             )
             .annotate(ToolAnnotations::from_raw(
@@ -135,7 +135,9 @@ impl DeveloperClient {
                      (set GOOSE_SHELL to override) - write command strings in that shell's \
                      syntax. Returns an object with stdout and stderr as separate fields. The \
                      output of each stream is limited to up to 2000 lines, and longer outputs \
-                     will be saved to a temporary file.",
+                     will be saved to a temporary file whose path is returned so the rest can \
+                     be read. Each command runs in a fresh process: `cd` does not persist \
+                     between calls.",
                     shell = shell_display_name(),
                 ),
                 Self::schema::<ShellParams>(),
@@ -162,7 +164,7 @@ impl DeveloperClient {
             )),
             Tool::new(
                 "search".to_string(),
-                "Search file contents by regex and get a SUMMARIZED result instead of every raw match: hits grouped by file, a per-file match count, the top matches per file (line number + a whitespace-collapsed context line), capped across files, with a trailing count of whatever was omitted. Broad queries stay token-cheap. Respects .gitignore. Prefer this for exploring a codebase; drop to `rg` via the shell tool only when you need every raw match. Params: pattern (regex, required); path (dir/file, default working dir); glob (e.g. \"*.rs\"); file_type (ripgrep type, e.g. \"rust\"); max_per_file (default 5); max_files (default 20).".to_string(),
+                "Search file contents by regex and get a SUMMARIZED result instead of every raw match: hits grouped by file, a per-file match count, the top matches per file (line number + a whitespace-collapsed context line), capped across files, with a trailing count of whatever was omitted. Broad queries stay token-cheap. Respects .gitignore. A zero-match result probes case-insensitive, literal, and unfiltered variants and suggests concrete retries. Prefer this for exploring a codebase; drop to `rg` via the shell tool only when you need every raw match. Params: pattern (regex, required); path (dir/file, default working dir); glob (e.g. \"*.rs\"); file_type (ripgrep type, e.g. \"rust\"); max_per_file (default 5); max_files (default 20).".to_string(),
                 Self::schema::<SearchParams>(),
             )
             .annotate(ToolAnnotations::from_raw(

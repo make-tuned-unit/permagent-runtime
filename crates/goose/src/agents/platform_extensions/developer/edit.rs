@@ -105,15 +105,38 @@ impl EditTools {
 
         let is_new = !path.exists();
 
-        match fs::write(path, &params.content) {
+        match fs::write(&path, &params.content) {
             Ok(()) => {
-                let line_count = params.content.lines().count();
-                let action = if is_new { "Created" } else { "Wrote" };
-                CallToolResult::success(vec![Content::text(format!(
-                    "{} {} ({} lines)",
-                    action, params.path, line_count
-                ))
-                .with_priority(0.0)])
+                // Trust but verify: read the file back and compare, so a silent
+                // filesystem failure (full disk, interfering watcher/sync tool)
+                // surfaces here instead of as a confusing downstream error.
+                match fs::read(&path) {
+                    Ok(on_disk) if on_disk == params.content.as_bytes() => {
+                        let line_count = params.content.lines().count();
+                        let action = if is_new { "Created" } else { "Wrote" };
+                        CallToolResult::success(vec![Content::text(format!(
+                            "{} {} ({} lines, verified on disk)",
+                            action, params.path, line_count
+                        ))
+                        .with_priority(0.0)])
+                    }
+                    Ok(on_disk) => CallToolResult::error(vec![Content::text(format!(
+                        "Write verification failed for {}: the write reported success but the \
+                         file on disk does not match the intended content (intended {} bytes, \
+                         found {} bytes). Something may be modifying the file concurrently — \
+                         read the file to see its current state, then retry the write.",
+                        params.path,
+                        params.content.len(),
+                        on_disk.len()
+                    ))
+                    .with_priority(0.0)]),
+                    Err(error) => CallToolResult::error(vec![Content::text(format!(
+                        "Wrote {} but could not read it back to verify: {}. Treat the write as \
+                         unverified — read the file to confirm its content before relying on it.",
+                        params.path, error
+                    ))
+                    .with_priority(0.0)]),
+                }
             }
             Err(error) => CallToolResult::error(vec![Content::text(format!(
                 "Failed to write {}: {}",
@@ -148,6 +171,21 @@ impl EditTools {
         let outcome = match flexible_replace(&content, &params.before, &params.after) {
             Ok(o) => o,
             Err(msg) => {
+                // Recovery: if the search text is gone but the replacement is
+                // already present, the edit was almost certainly applied in an
+                // earlier (possibly retried) call — succeed as a no-op instead
+                // of sending the model into a rewrite spiral.
+                if msg.starts_with("No match found")
+                    && edit_already_applied(&content, &params.after)
+                {
+                    return CallToolResult::success(vec![Content::text(format!(
+                        "No changes needed: {} already contains the replacement text, so this \
+                         edit appears to have been applied previously. The file was left \
+                         unchanged.",
+                        params.path
+                    ))
+                    .with_priority(0.0)]);
+                }
                 return CallToolResult::error(vec![Content::text(msg).with_priority(0.0)]);
             }
         };
@@ -202,6 +240,21 @@ impl Default for EditTools {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Minimum non-whitespace chars in `after` before its presence in the file
+/// counts as evidence the edit already landed. Tiny fragments (`}`, `);`)
+/// appear everywhere and would produce false "already applied" successes.
+const ALREADY_APPLIED_MIN_CHARS: usize = 8;
+
+/// Whether a failed edit looks like a retry of one that already landed: the
+/// replacement text is already in the file byte-for-byte (a replayed edit
+/// re-sends identical `after` text, so exact containment is the right test).
+/// Deletions (empty `after`) and trivial fragments are excluded — for those,
+/// containment is not evidence.
+fn edit_already_applied(content: &str, after: &str) -> bool {
+    after.chars().filter(|c| !c.is_whitespace()).count() >= ALREADY_APPLIED_MIN_CHARS
+        && content.contains(after)
 }
 
 // ── Flexible (fuzzy) matcher ────────────────────────────────────────────
@@ -989,6 +1042,33 @@ mod tests {
     }
 
     #[test]
+    fn test_file_write_reports_verified_success() {
+        let dir = setup();
+        let path = dir.path().join("verified.txt");
+        let tools = EditTools::new();
+
+        let result = tools.file_write(FileWriteParams {
+            path: path.to_string_lossy().to_string(),
+            content: "content to verify".to_string(),
+        });
+
+        assert!(!result.is_error.unwrap_or(false));
+        assert!(extract_text(&result).contains("verified on disk"));
+    }
+
+    #[test]
+    fn edit_already_applied_requires_distinctive_after() {
+        let content = "fn main() {\n    let value = compute();\n}\n";
+        assert!(edit_already_applied(content, "let value = compute();"));
+        assert!(!edit_already_applied(content, "let value = other();"));
+        // Trivial fragments and deletions never count.
+        assert!(!edit_already_applied(content, "}"));
+        assert!(!edit_already_applied(content, "();"));
+        assert!(!edit_already_applied(content, ""));
+        assert!(!edit_already_applied(content, "   \n  "));
+    }
+
+    #[test]
     fn test_file_write_creates_dirs() {
         let dir = setup();
         let path = dir.path().join("a/b/c/file.txt");
@@ -1040,6 +1120,64 @@ mod tests {
         assert!(text.contains("No match found"));
         assert!(text.contains("File preview:"));
         assert!(text.contains("some content"));
+    }
+
+    #[test]
+    fn test_file_edit_already_applied_is_success_noop() {
+        let dir = setup();
+        let path = dir.path().join("edit.txt");
+        let content = "fn main() {\n    println!(\"updated value\");\n}\n";
+        fs::write(&path, content).unwrap();
+        let tools = EditTools::new();
+
+        // Replay of an edit that already landed: `before` is gone, `after` present.
+        let result = tools.file_edit(FileEditParams {
+            path: path.to_string_lossy().to_string(),
+            before: "println!(\"original value\");".to_string(),
+            after: "println!(\"updated value\");".to_string(),
+        });
+
+        assert!(!result.is_error.unwrap_or(false));
+        let text = extract_text(&result);
+        assert!(text.contains("No changes needed"), "got: {text}");
+        assert!(text.contains("applied previously"), "got: {text}");
+        // File untouched.
+        assert_eq!(fs::read_to_string(&path).unwrap(), content);
+    }
+
+    #[test]
+    fn test_file_edit_trivial_after_still_errors() {
+        let dir = setup();
+        let path = dir.path().join("edit.txt");
+        // The file contains "}" everywhere; that must not count as "already applied".
+        fs::write(&path, "fn main() {\n    body();\n}\n").unwrap();
+        let tools = EditTools::new();
+
+        let result = tools.file_edit(FileEditParams {
+            path: path.to_string_lossy().to_string(),
+            before: "nonexistent();".to_string(),
+            after: "}".to_string(),
+        });
+
+        assert!(result.is_error.unwrap_or(false));
+        assert!(extract_text(&result).contains("No match found"));
+    }
+
+    #[test]
+    fn test_file_edit_absent_before_and_after_still_errors() {
+        let dir = setup();
+        let path = dir.path().join("edit.txt");
+        fs::write(&path, "some content").unwrap();
+        let tools = EditTools::new();
+
+        let result = tools.file_edit(FileEditParams {
+            path: path.to_string_lossy().to_string(),
+            before: "nonexistent before".to_string(),
+            after: "also absent replacement".to_string(),
+        });
+
+        assert!(result.is_error.unwrap_or(false));
+        assert!(extract_text(&result).contains("No match found"));
     }
 
     #[test]
