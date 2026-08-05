@@ -512,6 +512,11 @@ struct ChatView: View {
     @State private var sessionError: String?
     @State private var showVoice = false
     @State private var confirmEnd = false
+    @State private var showHistory = false
+    /// Owns the keyboard. Without this there was no way to put it away: it
+    /// covered the tab bar, so the user could neither leave chat nor reach the
+    /// send button's row — reported 2026-08-05.
+    @FocusState private var composerFocused: Bool
 
     /// Drop the thread and the id behind it. The next send resolves a new
     /// session, so this is the only place that has to forget anything.
@@ -519,7 +524,23 @@ struct ChatView: View {
         MobileSession.endConversation()
         sessionId = nil
         sessionError = nil
+        composerFocused = false
         withAnimation(Motion.ease) { messages = [] }
+    }
+
+    /// Open a past conversation: adopt its id and render its history. The hub
+    /// stays the source of truth — nothing is reconstructed on device.
+    private func openSession(_ id: String) async {
+        composerFocused = false
+        showHistory = false
+        do {
+            let loaded = try await MobileSession.adopt(id)
+            sessionId = id
+            sessionError = nil
+            withAnimation(Motion.spring) { messages = loaded }
+        } catch {
+            sessionError = Self.describeChatFailure(error)
+        }
     }
 
     /// The hub session for this chat, resolved once and reused.
@@ -591,6 +612,9 @@ struct ChatView: View {
                         }
                         .padding()
                     }
+                    // Drag the transcript down to put the keyboard away — the
+                    // native idiom, and the one people try first.
+                    .scrollDismissesKeyboard(.interactively)
                     .onChange(of: messages.count) { _, _ in
                         if let last = messages.last {
                             withAnimation(Motion.spring) { proxy.scrollTo(last.id, anchor: .bottom) }
@@ -607,14 +631,39 @@ struct ChatView: View {
                 // the app (reported 2026-08-04). Destructive-styled and
                 // confirmed, because it is the one action here that cannot be
                 // undone from the phone.
+                // A bare ↺ glyph read as "undo/refresh", not "end this
+                // conversation", and there was no route to an earlier thread
+                // at all. A labelled menu says both out loud.
                 ToolbarItem(placement: .topBarLeading) {
-                    Button(role: .destructive) { confirmEnd = true } label: {
-                        Image(systemName: "arrow.counterclockwise")
+                    Menu {
+                        Button {
+                            composerFocused = false
+                            showHistory = true
+                        } label: {
+                            Label("Past conversations", systemImage: "clock.arrow.circlepath")
+                        }
+                        Button(role: .destructive) {
+                            composerFocused = false
+                            confirmEnd = true
+                        } label: {
+                            Label("End this conversation", systemImage: "xmark.circle")
+                        }
+                        .disabled(messages.isEmpty && sessionId == nil)
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
                             .font(.body.weight(.semibold))
                             .foregroundStyle(Brand.textMuted)
                     }
-                    .disabled(messages.isEmpty && sessionId == nil)
-                    .accessibilityLabel("End this conversation")
+                    .accessibilityLabel("Conversation options")
+                }
+                // The escape hatch: with the keyboard up it covers the tab
+                // bar, so this is the only visible way back out to the rest
+                // of the app.
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { composerFocused = false }
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(Brand.cyan)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     // Straight in. No await before presenting: VoiceView resolves
@@ -638,6 +687,11 @@ struct ChatView: View {
             // the cover presented an EMPTY body.
             .fullScreenCover(isPresented: $showVoice) {
                 VoiceView(sessionId: sessionId)
+            }
+            .sheet(isPresented: $showHistory) {
+                ChatHistorySheet(currentSessionId: sessionId) { id in
+                    Task { await openSession(id) }
+                }
             }
             .confirmationDialog(
                 "End this conversation?",
@@ -687,6 +741,8 @@ struct ChatView: View {
                 .background(Brand.surface)
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .foregroundStyle(Brand.text)
+                .focused($composerFocused)
+                .submitLabel(.send)
             Button {
                 send()
             } label: {

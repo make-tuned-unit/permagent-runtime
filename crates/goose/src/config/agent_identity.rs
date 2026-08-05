@@ -458,6 +458,23 @@ pub fn default_roster() -> HashMap<String, WorkerPersona> {
     );
 
     roster.insert(
+        "strix".to_string(),
+        WorkerPersona {
+            first_name: "Strix".to_string(),
+            role: "Security review — continuously probes the user's own projects for \
+                   exposed secrets, vulnerable dependencies, injection and access-control \
+                   weaknesses, and risky configuration; REPORTS findings and PROPOSES \
+                   (never performs) anything intrusive"
+                .to_string(),
+            tool_kinds: vec!["shell".to_string(), "review".to_string()],
+            availability_check: "bin_exists:docker".to_string(),
+            cost_tier: "local_free".to_string(),
+            engine: WorkerEngineKind::Pending,
+            ..Default::default()
+        },
+    );
+
+    roster.insert(
         "reviewer".to_string(),
         WorkerPersona {
             first_name: "Reviewer".to_string(),
@@ -833,7 +850,14 @@ workers:
         keys.sort_unstable();
         assert_eq!(
             keys,
-            vec!["claude_code", "codex", "librarian", "reviewer", "steward"],
+            vec![
+                "claude_code",
+                "codex",
+                "librarian",
+                "reviewer",
+                "steward",
+                "strix",
+            ],
         );
 
         // The reviewer: in-process subagent, review-tagged (routes to the Review

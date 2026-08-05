@@ -156,6 +156,10 @@ pub static WORKER_DESCRIPTORS: &[FeatureDescriptor] = &[
     // inbox-triage character (#640) is hidden from the brief until deliberately
     // enabled, so the canonical prompt snapshots stay byte-for-byte identical.
     crate::concierge::SELF_KNOWLEDGE_FEATURE,
+    // Render-gated on `strix_enabled` (default OFF): a security agent that
+    // runs live scan tooling is switched on deliberately, and until then the
+    // brief stays byte-for-byte identical.
+    crate::strix::SELF_KNOWLEDGE_FEATURE,
 ];
 
 /// Whether a worker descriptor should be rendered into the `permagent_self`
@@ -170,6 +174,9 @@ fn worker_descriptor_visible(d: &FeatureDescriptor) -> bool {
     }
     if d.id == crate::concierge::CONCIERGE_FEATURE_ID {
         return crate::concierge::is_enabled();
+    }
+    if d.id == crate::strix::STRIX_FEATURE_ID {
+        return crate::strix::is_enabled();
     }
     true
 }
@@ -498,6 +505,11 @@ impl SelfKnowledgeBuilder {
             } else {
                 "off (initiative_enabled=false)".to_string()
             }),
+            "strix" => Some(if crate::strix::is_enabled() {
+                "on — sweeping your projects for security flaws".to_string()
+            } else {
+                "off (strix_enabled=false)".to_string()
+            }),
             _ => None,
         }
     }
@@ -620,6 +632,8 @@ mod tests {
         "playbook",
         // Same render-gated contract as the playbook (PERMAGENT_CONCIERGE_ENABLED).
         "concierge",
+        // Same render-gated contract, on the `strix_enabled` config key.
+        "strix",
     ];
     /// Every known surface id must have exactly one descriptor.
     const KNOWN_SURFACE_IDS: &[&str] = &[
