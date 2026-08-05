@@ -119,3 +119,30 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         UIBackgroundModes:
           - audio
+  # Hosted-app-free logic tests (currently the VoiceVAD turn machine). The
+  # target compiles the files under test directly instead of depending on the
+  # app target, so `xcodebuild test` needs no signing and no app install —
+  # keep it that way; anything needing the full app belongs in a UI-test
+  # target, not here.
+  PermagentTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: PermagentMobileTests
+      - path: PermagentMobile/VoiceVAD.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.permagent.mobile.tests
+        SWIFT_VERSION: "6.0"
+      configs:
+        Debug:
+          CODE_SIGNING_ALLOWED: "NO"
+schemes:
+  PermagentTests:
+    build:
+      targets:
+        PermagentTests: test
+    test:
+      config: Debug
+      targets:
+        - PermagentTests
