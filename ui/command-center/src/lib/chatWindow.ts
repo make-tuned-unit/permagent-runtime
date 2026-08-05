@@ -72,7 +72,17 @@ export async function createChatWindow(appTheme: string): Promise<WebviewWindowT
   // fresh session, and replay Henry's greeting over the conversation the user
   // was already having in the dock. Passing it in the URL makes the handoff
   // deterministic regardless of storage partitioning.
-  const currentSession = useCommandCenter.getState().chatSessionId;
+  // Make the handoff TOTAL: with no current session the URL carried nothing
+  // and the popped-out window minted a fresh session — a genuinely new
+  // conversation, hence a genuine (repeated) greeting. This bit voice-only
+  // users every time: their turns live in a session the dock never adopted,
+  // so chatSessionId was null exactly when a conversation was in progress.
+  let currentSession = useCommandCenter.getState().chatSessionId;
+  if (!currentSession) {
+    try {
+      currentSession = await useCommandCenter.getState().ensureSession();
+    } catch { /* fall through: the window will mint one as a last resort */ }
+  }
   const url = currentSession
     ? `index.html?view=chat&session=${encodeURIComponent(currentSession)}`
     : 'index.html?view=chat';

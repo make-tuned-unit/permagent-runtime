@@ -35,12 +35,15 @@ export function ChatDock() {
 
   if (!open) return null;
 
-  // Closing the dock closes the CONVERSATION too. The orb belongs to a chat
-  // surface; with the last surface gone there is nowhere honest to show it,
-  // and leaving the mic hot behind a closed UI is worse than ending cleanly.
+  // Closing the dock closes the CONVERSATION too — but only when the dock is
+  // the LAST chat surface. The popped-out window is also a surface (ChatView
+  // already yields to it with the same predicate); killing the conversation
+  // while it is open muted voice in the window the user was still using.
+  // With the last surface gone there is nowhere honest to show the orb, and
+  // leaving the mic hot behind a closed UI is worse than ending cleanly.
   const closeChat = () => {
-    const { voiceConversation } = useCommandCenter.getState();
-    voiceConversation?.exit();
+    const { voiceConversation, chatWindowOpen } = useCommandCenter.getState();
+    if (!chatWindowOpen) voiceConversation?.exit();
     closeChatDock();
   };
 

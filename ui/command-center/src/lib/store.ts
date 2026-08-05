@@ -221,6 +221,11 @@ interface CommandCenterStore {
    *  with a Retry instead of the old silent catch that disowned the session.
    *  Null while loading and after a successful load. */
   sessionLoadError: string | null;
+  /** False while loadSessionMessages is in flight. The greeting (bubble +
+   *  auto-speak) must not render off a momentarily-empty list: on pop-out the
+   *  history fetch races the identity fetch and the greeting fired over an
+   *  existing conversation every time. */
+  chatHistoryLoaded: boolean;
   addChatMessage: (msg: ChatMessage) => void;
   _streamingMessageId: string | null;
   /** request_id of the in-flight reply turn (client-generated in api.sendReply,
@@ -831,6 +836,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     try { return localStorage.getItem('permagent-chat-session-id'); } catch { return null; }
   })(),
   sessionLoadError: null,
+  chatHistoryLoaded: true,
   _streamingMessageId: null,
   _pendingContext: null,
   discussSeedDecisionId: null,
@@ -1318,13 +1324,18 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
    *  the #568 lesson), instead of silently discarding a working session and
    *  leaving connectSession running against a disowned id. */
   loadSessionMessages: async (sessionId: string) => {
-    set({ sessionLoadError: null });
+    set({ sessionLoadError: null, chatHistoryLoaded: false });
     try {
       const session = await api.getSession(sessionId);
       if (session.conversation && session.conversation.length > 0) {
         const responses = indexToolResponses(session.conversation);
         const msgs = session.conversation.map((m, i) => daemonMsgToChat(m, i, sessionId, responses));
         set({ chatMessages: msgs });
+      } else {
+        // An empty conversation is a LOADED fact, not an un-set state: leaving
+        // chatMessages untouched kept a stale greeting on screen forever for
+        // sessions whose turns went down the /voice socket.
+        set({ chatMessages: [] });
       }
     } catch (err) {
       if ((err as { status?: number }).status === 404) {
@@ -1340,6 +1351,8 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
             : 'Could not reach the agent',
         });
       }
+    } finally {
+      set({ chatHistoryLoaded: true });
     }
   },
 
