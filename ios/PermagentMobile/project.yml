@@ -134,6 +134,10 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ai.permagent.mobile.tests
         SWIFT_VERSION: "6.0"
+        # Test bundles have no checked-in plist; without generation, code
+        # signing (now that the target has a team) fails with "does not have
+        # an Info.plist file and one is not being generated".
+        GENERATE_INFOPLIST_FILE: "YES"
         # Same team as the app target: without it, any non-Debug build (or a
         # device destination) fails signing — Debug-only CODE_SIGNING_ALLOWED
         # NO covered the simulator but left Xcode's other paths teamless.
