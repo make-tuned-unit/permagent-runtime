@@ -469,11 +469,19 @@ impl GoalEngine for ExternalCliEngine {
     }
 }
 
-/// Create a detached git worktree at
-/// `<repo>/../.permagent-goal-worktrees/<run_id>` checked out at `baseline`.
-/// Returns the worktree path. The worktree is intentionally *not* removed on
-/// completion — its commits are the work product the Decision Inbox review
-/// points to.
+/// The branch a goal run's work lives on, derived from its run id. Named (not
+/// detached) so the commits are reachable from a ref: a detached worktree was
+/// one `git worktree prune` away from GC — three finished goals' commits were
+/// orphaned exactly that way on 2026-08-05 and had to be hand-rescued.
+pub(crate) fn goal_branch_name(run_id: &str) -> String {
+    format!("goal/{}", run_id)
+}
+
+/// Create a git worktree at `<repo>/../.permagent-goal-worktrees/<run_id>`
+/// checked out at `baseline` on a fresh `goal/<run_id>` branch. Returns the
+/// worktree path. The worktree is intentionally *not* removed on completion —
+/// its commits are the work product the Decision Inbox review points to, and
+/// the branch keeps them alive even if it is.
 pub(crate) async fn create_goal_worktree(
     repo: &Path,
     baseline: &str,
@@ -490,7 +498,8 @@ pub(crate) async fn create_goal_worktree(
         .arg(repo)
         .arg("worktree")
         .arg("add")
-        .arg("--detach")
+        .arg("-b")
+        .arg(goal_branch_name(run_id))
         .arg(&dest)
         .arg(baseline)
         .stdin(Stdio::null())
@@ -928,6 +937,17 @@ async fn await_external_child(
                 let evidence = collect_evidence(&working_dir, &baseline, worker_summary).await;
                 GoalOutcome::Success(Some(evidence))
             } else {
+                // W4: failure must not destroy the work. Scan + push whatever
+                // was committed to the goal branch so a partial attempt is
+                // durable and the retry (or a human) can build on it — a worker
+                // that failed at minute 119 with twelve commits used to leave
+                // nothing but an error string and a GC-able worktree.
+                if scan_committed_changes(&working_dir, &baseline)
+                    .await
+                    .is_none()
+                {
+                    push_clean_work(&working_dir, &baseline).await;
+                }
                 let code = output
                     .status
                     .code()
@@ -950,6 +970,14 @@ async fn await_external_child(
             // only reaps the leader via kill_on_drop).
             if let Some(p) = pid {
                 kill_process_group(p);
+            }
+            // Same W4 preservation as the failure arm: a timed-out worker's
+            // commits survive on the goal branch.
+            if scan_committed_changes(&working_dir, &baseline)
+                .await
+                .is_none()
+            {
+                push_clean_work(&working_dir, &baseline).await;
             }
             GoalOutcome::TimedOut {
                 secs: timeout.as_secs(),
@@ -988,11 +1016,14 @@ async fn run_external_cli(
 }
 
 /// #522 — the Permagent-owned push: after `scan_committed_changes` passes,
-/// push the worker's commits to `origin` `HEAD:main` (the target workers used
-/// when they owned the push). Skipped when the worker made no commits. A
-/// failure — unreachable remote, non-fast-forward from a concurrent push — is
-/// logged loudly and left for review-in-worktree; it never fails the goal and
-/// never bypasses the scan.
+/// push the worker's commits to the run's `goal/<run_id>` branch on `origin`.
+/// NEVER to main: work used to land on `origin/main` before completion checks
+/// or human review ran, making the Review gate advisory theatre — approve had
+/// nothing left to land and reject had no revert. The goal branch makes the
+/// work durable and reviewable; landing on main is the approve step's job.
+/// Skipped when the worker made no commits. A push failure — unreachable
+/// remote, no remote at all — is logged loudly and left for
+/// review-in-worktree; it never fails the goal and never bypasses the scan.
 pub(crate) async fn push_clean_work(worktree: &Path, baseline: &str) {
     let range = format!("{}..HEAD", baseline);
     let committed = git_text(worktree, &["rev-list", "--count", &range])
@@ -1004,10 +1035,30 @@ pub(crate) async fn push_clean_work(worktree: &Path, baseline: &str) {
         return; // nothing to publish (analysis/docs goal with no commits)
     }
 
+    // The worktree sits on its goal/<run_id> branch; push to the same-named
+    // remote ref. Pre-branch worktrees (detached HEAD) fall back to a branch
+    // named after the worktree dir — still never main.
+    let branch = {
+        let named = git_text(worktree, &["symbolic-ref", "--short", "HEAD"])
+            .await
+            .trim()
+            .to_string();
+        if named.is_empty() {
+            worktree
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(goal_branch_name)
+                .unwrap_or_else(|| "goal/unnamed-run".to_string())
+        } else {
+            named
+        }
+    };
+    let refspec = format!("HEAD:refs/heads/{}", branch);
+
     let mut cmd = Command::new("git");
     cmd.arg("-C")
         .arg(worktree)
-        .args(["push", "origin", "HEAD:main"])
+        .args(["push", "origin", &refspec])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1017,7 +1068,8 @@ pub(crate) async fn push_clean_work(worktree: &Path, baseline: &str) {
             tracing::info!(
                 worktree = %worktree.display(),
                 commits = committed,
-                "credential scan clean — pushed worker commits to origin/main (#522)"
+                branch = %branch,
+                "credential scan clean — pushed worker commits to the goal branch (#522)"
             );
         }
         Ok(out) => {
@@ -1982,9 +2034,10 @@ mod tests {
     }
 
     /// After a clean scan, Permagent's own push (no blocking env) publishes
-    /// the worker's commits; with no commits it is a no-op.
+    /// the worker's commits to the run's goal branch — NEVER to main; with no
+    /// commits it is a no-op.
     #[tokio::test]
-    async fn push_clean_work_publishes_commits() {
+    async fn push_clean_work_publishes_commits_to_goal_branch_not_main() {
         let tmp = tempfile::TempDir::new().unwrap();
         let (repo, baseline) = init_repo_with_remote(tmp.path());
         let wt = create_goal_worktree(&repo, &baseline, "cli-permagent-push")
@@ -1993,22 +2046,30 @@ mod tests {
 
         // No commits: no-op, origin untouched.
         push_clean_work(&wt, &baseline).await;
-        let tip = String::from_utf8(git(&repo, &["ls-remote", "origin", "refs/heads/main"]).stdout)
-            .unwrap();
-        assert!(tip.starts_with(&baseline));
+        let goal_ref = "refs/heads/goal/cli-permagent-push";
+        let tip = String::from_utf8(git(&repo, &["ls-remote", "origin", goal_ref]).stdout).unwrap();
+        assert!(tip.trim().is_empty(), "no-commit run must push nothing");
 
-        // With a commit: origin/main advances to the worktree HEAD.
+        // With a commit: the goal branch appears at the worktree HEAD, and
+        // origin/main does NOT move — landing on main is the approve step's
+        // job, not the completion path's.
         commit_in_worktree(&wt, "work.txt");
         let head = String::from_utf8(git(&wt, &["rev-parse", "HEAD"]).stdout)
             .unwrap()
             .trim()
             .to_string();
         push_clean_work(&wt, &baseline).await;
-        let tip = String::from_utf8(git(&repo, &["ls-remote", "origin", "refs/heads/main"]).stdout)
-            .unwrap();
+        let tip = String::from_utf8(git(&repo, &["ls-remote", "origin", goal_ref]).stdout).unwrap();
         assert!(
             tip.starts_with(&head),
-            "origin/main must be at the worker's HEAD after the Permagent-owned push"
+            "the goal branch must be at the worker's HEAD after the Permagent-owned push"
+        );
+        let main_tip =
+            String::from_utf8(git(&repo, &["ls-remote", "origin", "refs/heads/main"]).stdout)
+                .unwrap();
+        assert!(
+            main_tip.starts_with(&baseline),
+            "origin/main must NOT move on the completion path"
         );
     }
 

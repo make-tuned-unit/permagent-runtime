@@ -366,6 +366,29 @@ impl RecipeAuthorClient {
         let scheduler =
             get_global_scheduler().ok_or_else(|| "Scheduler not initialized".to_string())?;
 
+        // An agent may not run a paused automation — paused is either the
+        // user's explicit choice or the pending-approval state, and run_now
+        // firing regardless was the hole that defeated the approval gate.
+        if let Some(job) = scheduler
+            .list_scheduled_jobs()
+            .await
+            .iter()
+            .find(|j| j.id == args.id)
+        {
+            if job.paused {
+                return Err(format!(
+                    "Automation \"{}\" is paused{} and cannot be run by an agent. \
+                     The user can run or resume it from the Automate tab.",
+                    args.id,
+                    if job.requires_approval {
+                        " awaiting the user's approval"
+                    } else {
+                        ""
+                    }
+                ));
+            }
+        }
+
         let session_id = scheduler
             .run_now(&args.id)
             .await

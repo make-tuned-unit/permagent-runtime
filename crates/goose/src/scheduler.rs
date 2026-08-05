@@ -1334,6 +1334,20 @@ impl Scheduler {
             let mut jobs_guard = self.jobs.lock().await;
             match jobs_guard.get_mut(sched_id) {
                 Some((_, job)) => {
+                    // Approval gate backstop: run_now used to fire an
+                    // approval-pending job directly, bypassing the paused
+                    // state entirely — an agent could create_recipe (lands
+                    // paused) then run_recipe it on demand. Enforced HERE so
+                    // every caller (HTTP route, recipe_author, schedule_tool)
+                    // inherits it; the user approves by unpausing, which
+                    // clears the flag.
+                    if job.requires_approval {
+                        return Err(SchedulerError::AnyhowError(anyhow!(
+                            "Job '{}' is awaiting the user's approval and cannot be run \
+                             until the user resumes it from Automate",
+                            sched_id
+                        )));
+                    }
                     if job.currently_running {
                         return Err(SchedulerError::AnyhowError(anyhow!(
                             "Job '{}' is already running",
@@ -1404,6 +1418,26 @@ impl Scheduler {
                         job.last_status = Some(ScheduleRunStatus::Error);
                         job.last_error = Some(e.to_string());
                         job.consecutive_failures = job.consecutive_failures.saturating_add(1);
+                        // The breaker applies here too: without it, repeated
+                        // run_now calls could drive a failing job past the
+                        // 3-strike limit indefinitely (agent-reachable via
+                        // run_recipe).
+                        if job.consecutive_failures >= AUTO_PAUSE_AFTER_CONSECUTIVE_FAILURES
+                            && !job.paused
+                        {
+                            job.paused = true;
+                            job.last_error = Some(format!(
+                                "auto-paused after {} consecutive failures \
+                                 (resume from Automate once fixed). Last error: {}",
+                                job.consecutive_failures, e
+                            ));
+                            tracing::error!(
+                                target: "durability",
+                                job = %sched_id,
+                                "scheduled job auto-paused after {} consecutive failures (run_now)",
+                                job.consecutive_failures
+                            );
+                        }
                     }
                 }
             }
@@ -2367,6 +2401,39 @@ mod tests {
     fn scheduled_job_agents_are_headless() {
         let agent = new_scheduled_job_agent();
         assert!(agent.is_headless(), "scheduled-job agents must be headless");
+    }
+
+    /// The approval gate must hold on the run_now path: an agent could
+    /// otherwise create_recipe (lands paused + requires_approval) and fire it
+    /// immediately via run_recipe, bypassing the pause entirely.
+    #[tokio::test]
+    async fn run_now_refuses_approval_pending_job() {
+        let _guard = env_lock::lock_env([("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0"))]);
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let recipe_path = create_test_recipe(temp_dir.path(), "pending_job");
+        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let scheduler = Scheduler::new(storage_path, session_manager).await.unwrap();
+
+        let job = ScheduledJob {
+            id: "pending_job".to_string(),
+            source: recipe_path.to_string_lossy().to_string(),
+            cron: "0 0 * * * *".to_string(),
+            paused: true,
+            requires_approval: true,
+            ..Default::default()
+        };
+        scheduler.add_scheduled_job(job, true).await.unwrap();
+
+        let err = scheduler
+            .run_now("pending_job")
+            .await
+            .expect_err("run_now must refuse an approval-pending job");
+        assert!(
+            err.to_string().contains("approval"),
+            "refusal must name the approval gate, got: {}",
+            err
+        );
     }
 
     #[test]
