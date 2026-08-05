@@ -329,8 +329,12 @@ final class VoiceEngine: ObservableObject {
         if state == .listening {
             level = min(1, rms * 8)
             wsTask?.send(.data(data)) { _ in }
-        } else {
-            level = max(0, level * 0.9)
+        } else if state != .speaking {
+            // NOT while speaking: level is pulsed per delivered TTS chunk, and
+            // delivery finishes ~10-15s into a long answer (TTS runs ahead of
+            // playback). Letting the mic tap decay it afterwards flattened the
+            // orb mid-speech — it read as frozen while audio kept playing.
+            if level > 0.001 { level = max(0, level * 0.9) }
         }
         if handsFree { vadStep(rms: rms) }
     }
@@ -380,9 +384,36 @@ final class VoiceEngine: ObservableObject {
     func endTurn() {
         guard state == .listening else { return }
         vad.noteTurnEnded()
-        sendText(#"{"type":"stop"}"#)
+        // The stop send used to discard its error: a failed send left the
+        // daemon recording forever and this client in .thinking with no exit.
+        wsTask?.send(.string(#"{"type":"stop"}"#)) { [weak self] error in
+            guard error != nil else { return }
+            Task { @MainActor [weak self] in
+                guard let self, self.state == .thinking else { return }
+                self.notice = "Connection hiccup — try that again."
+                self.state = .ready
+            }
+        }
         level = 0
         state = .thinking
+        armThinkingWatchdog()
+    }
+
+    /// `.thinking` has no natural exit if the daemon parks (tool approval
+    /// waits indefinitely) or an early server return skips reply_end — the
+    /// orb sat in THINKING forever with the mic dead. Epoch-guarded: any real
+    /// transition (first audio chunk, reply_end, error, disconnect) advances
+    /// state, and the stale watchdog fires harmlessly against the guard.
+    private var thinkingEpoch = 0
+    private func armThinkingWatchdog() {
+        thinkingEpoch += 1
+        let epoch = thinkingEpoch
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            guard let self, self.thinkingEpoch == epoch, self.state == .thinking else { return }
+            self.notice = "Still working on it — check Decisions if I asked for approval."
+            self.state = .ready
+        }
     }
 
     /// Barge-in: silence is instant (playback torn down first), then the turn is

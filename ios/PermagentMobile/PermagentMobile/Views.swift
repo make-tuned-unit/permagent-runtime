@@ -552,6 +552,8 @@ struct ChatView: View {
                 return "The hub answered unexpectedly (HTTP \(code))."
             case .dictationUnavailable:
                 return "The hub has no local dictation model configured."
+            case .daemon(let message):
+                return message
             }
         }
         if let urlError = error as? URLError {
@@ -713,12 +715,25 @@ struct ChatView: View {
         }
         let idx = messages.count - 1
         Task {
+            var releasedForApproval = false
+            var showingApprovalNotice = false
             do {
                 let sid = try await resolveSession()
                 for try await delta in APIClient.shared.replyStream(text, sessionId: sid) {
                     if idx < messages.count {
+                        if showingApprovalNotice && (!delta.text.isEmpty || !delta.thinking.isEmpty) {
+                            messages[idx].text = ""
+                            messages[idx].thinking = ""
+                            showingApprovalNotice = false
+                        }
                         messages[idx].text += delta.text
                         messages[idx].thinking += delta.thinking
+                        if let approval = delta.awaitingApproval {
+                            messages[idx].text = "Waiting for your approval in Decisions — I asked to use \(approval.toolName)."
+                            sending = false
+                            releasedForApproval = true
+                            showingApprovalNotice = true
+                        }
                     }
                 }
                 if idx < messages.count && messages[idx].text.isEmpty {
@@ -729,7 +744,7 @@ struct ChatView: View {
                     messages[idx].text = "⚠️ " + Self.describeChatFailure(error)
                 }
             }
-            sending = false
+            if !releasedForApproval { sending = false }
         }
     }
 }

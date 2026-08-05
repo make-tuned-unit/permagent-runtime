@@ -8,7 +8,7 @@ struct HubConfig: Codable, Equatable {
     var token: String      // daemon_token (the pairing secret)
 }
 
-enum APIError: Error { case unauthorized, badStatus(Int), notPaired, dictationUnavailable }
+enum APIError: Error { case unauthorized, badStatus(Int), notPaired, dictationUnavailable, daemon(String) }
 
 actor APIClient {
     static let shared = APIClient()
@@ -171,14 +171,21 @@ actor APIClient {
                             if let m = event.message, m.role == "assistant" {
                                 let t = m.content.compactMap(\.text).joined()
                                 let th = m.content.compactMap(\.thinking).joined()
-                                if !t.isEmpty || !th.isEmpty {
-                                    continuation.yield(ReplyDelta(text: t, thinking: th))
+                                let action = m.content.first { $0.type == "actionRequired" }
+                                let approval = action.map {
+                                    AwaitingApproval(
+                                        toolName: $0.toolName ?? $0.data?.toolName ?? "a tool",
+                                        actionId: $0.id ?? $0.data?.id
+                                    )
+                                }
+                                if !t.isEmpty || !th.isEmpty || approval != nil {
+                                    continuation.yield(ReplyDelta(text: t, thinking: th, awaitingApproval: approval))
                                 }
                             }
                         case "Finish":
                             continuation.finish(); return
                         case "Error":
-                            continuation.finish(throwing: APIError.badStatus(422)); return
+                            continuation.finish(throwing: APIError.daemon(event.error ?? "The hub reported an unknown error.")); return
                         default:
                             break
                         }
@@ -289,12 +296,42 @@ extension APIClient {
 
 // ── /reply request + event shapes (mirror the daemon's serde) ────────────────
 
-/// One streamed slice of the reply: answer `text` and/or reasoning `thinking`.
-struct ReplyDelta { let text: String; let thinking: String }
+/// One streamed slice of the reply: answer `text`, reasoning `thinking`, and/or
+/// an approval request that has parked the agent.
+struct ReplyDelta { let text: String; let thinking: String; let awaitingApproval: AwaitingApproval? }
+struct AwaitingApproval { let toolName: String; let actionId: String? }
 
-/// A content block is `{ type, text?, thinking? }`; tool blocks have neither and
-/// decode to nil. Thinking blocks carry `thinking`; answer blocks carry `text`.
-private struct ReplyContent: Codable { let type: String; let text: String?; let thinking: String? }
+/// Thinking blocks carry `thinking`; answer blocks carry `text`; approval blocks
+/// carry their action details in `data` (and older hubs may put them directly on
+/// the block).
+private struct ReplyContent: Codable {
+    let type: String
+    let text: String?
+    let thinking: String?
+    let id: String?
+    let toolName: String?
+    let data: ReplyAction?
+
+    init(
+        type: String,
+        text: String? = nil,
+        thinking: String? = nil,
+        id: String? = nil,
+        toolName: String? = nil,
+        data: ReplyAction? = nil
+    ) {
+        self.type = type
+        self.text = text
+        self.thinking = thinking
+        self.id = id
+        self.toolName = toolName
+        self.data = data
+    }
+}
+private struct ReplyAction: Codable {
+    let id: String?
+    let toolName: String?
+}
 private struct ReplyMeta: Codable { let userVisible: Bool; let agentVisible: Bool }
 private struct ReplyMessage: Codable {
     let role: String

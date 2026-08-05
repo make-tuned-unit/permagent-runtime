@@ -109,8 +109,15 @@ struct VoiceOrbView: View {
     }
     @State private var motion = Motion()
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
-        TimelineView(.animation) { tl in
+        // 30fps cap: the orb this replaced ran at minimumInterval 1/30 and
+        // honored Reduce Motion; uncapped .animation runs at up to 120Hz on
+        // ProMotion with ~670 fills/frame on the main actor, fighting the
+        // audio pipeline. `.contentShape` keeps the parent's tap-to-interrupt
+        // alive even though the Canvas itself is hit-test-disabled.
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { tl in
             let t = tl.date.timeIntervalSinceReferenceDate
             Canvas { ctx, size in
                 draw(ctx: &ctx, size: size, t: t)
@@ -118,6 +125,7 @@ struct VoiceOrbView: View {
             .frame(width: ORB_SIZE, height: ORB_SIZE)
             .allowsHitTesting(false)
         }
+        .contentShape(Circle())
         .accessibilityHidden(true)
     }
 
@@ -139,6 +147,14 @@ struct VoiceOrbView: View {
         if thinking {
             let breath = 0.10 + 0.06 * (0.5 + 0.5 * sin(t * 1.6))
             tLow = breath; tMid = breath * 0.6; tHigh = breath * 0.3
+        } else if speaking && level < 0.04 {
+            // Self-driven fallback while SPEAKING with no live level: TTS
+            // chunks all arrive in the first seconds of a long answer, so a
+            // level-only orb flatlined mid-speech while audio kept playing.
+            // `thinking` always had this breath guard; speaking is the state
+            // that actually needed it.
+            let breath = 0.16 + 0.10 * (0.5 + 0.5 * sin(t * 2.3))
+            tLow = breath; tMid = breath * (0.55 + 0.25 * sin(t * 7)); tHigh = breath * 0.35
         } else {
             tLow = level
             tMid = level * (0.7 + 0.3 * sin(t * 11))
