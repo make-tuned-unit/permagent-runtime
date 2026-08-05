@@ -32,8 +32,15 @@ struct VoiceVAD {
         /// copy (0.010) sat at 0.67 × onset and read soft speech as silence;
         /// see the header comment for the premature-cutoff this caused.
         var keepalive: Float = 0.006
-        /// Sustained level demanded (twice consecutively) for barge-in.
-        var barge: Float = 0.05
+        /// Sustained level demanded (twice consecutively) for barge-in. Like
+        /// keepalive before it, this was copied VERBATIM from useVoice.ts
+        /// (0.05) while onset was lowered for iOS's AGC — leaving barge at
+        /// 3.3× onset where the web runs 2× (0.05/0.025). Interrupting took a
+        /// raised voice. Restored to the web's ratio at iOS's onset level.
+        /// Safe against the agent's own voice bleeding into the mic because
+        /// capture runs in `.voiceChat` mode, whose echo cancellation removes
+        /// the speaker signal — and two consecutive frames are still required.
+        var barge: Float = 0.03
         /// Trailing silence that completes a turn. Wider than the web's
         /// 900 ms on purpose: phone dictation pauses mid-thought for over a
         /// second without meaning "your turn".

@@ -230,6 +230,7 @@ final class VoiceEngine: ObservableObject {
         wsTask = nil
         playerNode?.stop()
         engine?.inputNode.removeTap(onBus: 0)
+        playerNode?.removeTap(onBus: 0)
         engine?.stop()
         engine = nil
         playerNode = nil
@@ -319,10 +320,48 @@ final class VoiceEngine: ObservableObject {
             guard !data.isEmpty else { return }
             Task { @MainActor in self.handleMicFrame(data, rms: rms) }
         }
+        // Playback tap — the orb's TRUTH while the agent speaks. The level used
+        // to be pulsed once per delivered TTS chunk, but the daemon synthesizes
+        // far faster than real time, so every chunk of a 30s answer lands in
+        // the first ~10s: the orb animated to the DELIVERY schedule, not the
+        // voice. Tapping the player node reads the audio actually being
+        // rendered, so the orb moves with his syllables.
+        //
+        // @Sendable is load-bearing here for exactly the reason spelled out
+        // above the input tap — this block runs on CoreAudio's realtime thread.
+        player.installTap(onBus: 0, bufferSize: 1024, format: playbackFormat) {
+            @Sendable [weak self] buffer, _ in
+            guard let self, let ch = buffer.floatChannelData else { return }
+            let n = Int(buffer.frameLength)
+            guard n > 0 else { return }
+            var sum: Float = 0
+            let stride = max(1, n / 256)
+            var count = 0
+            var i = 0
+            while i < n {
+                sum += ch[0][i] * ch[0][i]
+                count += 1
+                i += stride
+            }
+            let rms = (sum / Float(max(1, count))).squareRoot()
+            guard rms.isFinite else { return }
+            // Same 6× gain the per-chunk pulse used, so the orb's dynamics are
+            // unchanged — only its clock is.
+            let lvl = min(1, rms * 6)
+            Task { @MainActor in self.handlePlaybackLevel(lvl) }
+        }
         engine.prepare()
         try engine.start()
         self.engine = engine
         self.playerNode = player
+    }
+
+    /// Publish a playback level for the orb. Ignored unless the agent is
+    /// actually speaking, so a trailing tap callback can't light the orb after
+    /// a barge-in.
+    private func handlePlaybackLevel(_ lvl: Float) {
+        guard state == .speaking else { return }
+        level = lvl
     }
 
     private func handleMicFrame(_ data: Data, rms: Float) {
@@ -572,16 +611,9 @@ final class VoiceEngine: ObservableObject {
             guard let base = raw.baseAddress else { return }
             memcpy(channels[0], base, n * MemoryLayout<Float>.size)
         }
-        // A pulse per sentence for the orb.
-        var sum: Float = 0
-        let ch = channels[0]
-        let stride = max(1, n / 512)
-        var count = 0
-        var i = 0
-        while i < n { sum += ch[i] * ch[i]; count += 1; i += stride }
-        let computed = (sum / Float(max(1, count))).squareRoot() * 6
-        level = computed.isFinite ? min(1, computed) : 0
-
+        // No per-chunk level pulse here: chunks arrive far ahead of playback,
+        // so they are the wrong clock for the orb. The player tap installed in
+        // startAudio() drives `level` from the audio actually being heard.
         pendingBuffers += 1
         state = .speaking
         // Same inherited-isolation trap as the mic tap above: this completion
