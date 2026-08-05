@@ -441,6 +441,8 @@ interface CommandCenterStore {
     getPlaybackAnalyser: () => AnalyserNode | null;
     getMicAnalyser: () => AnalyserNode | null;
     exit: () => void;
+    /** When the wake gate is armed: the phrase to say (e.g. `Say "Hey Henry"`). */
+    wakeHint: string | null;
   } | null;
   setVoiceConversation: (conv: CommandCenterStore['voiceConversation']) => void;
 
@@ -461,6 +463,14 @@ interface CommandCenterStore {
     getAnalyser: () => AnalyserNode | null;
     getMicAnalyser: () => AnalyserNode | null;
     setHandsFree: (on: boolean) => void | Promise<void>;
+    /** Wake-word surface (hands-free activation): preference + live status. */
+    wakeWord: {
+      enabled: boolean;
+      setEnabled: (on: boolean) => void;
+      active: boolean;
+      phrase: string | null;
+      gated: boolean;
+    };
   } | null;
   setVoiceEngine: (engine: CommandCenterStore['voiceEngine']) => void;
 

@@ -6,7 +6,7 @@
  *       is synchronous (no getUserMedia race on quick press-and-release).
  * State machine: idle → connecting → ready → recording → processing → playing → ready
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getApiBaseUrl } from '../lib/api';
 import { getStreamToken } from '../lib/streamToken';
 import { markReplySpoken } from '../lib/speakReplies';
@@ -70,6 +70,37 @@ export function isInterruptibleState(state: VoiceState): boolean {
   return state === 'processing' || state === 'playing';
 }
 
+/**
+ * Pure routing for a daemon keyword detection (`{"type":"wake","kind":...}`).
+ *
+ * "wake" opens a turn, but only from `ready` — mid-turn it has nothing to
+ * open. "stop" halts a reply being spoken or produced; in `ready` there is
+ * nothing to halt (the utterance "stop" while idle is not a command).
+ * Extracted so the routing is unit-testable without a live socket.
+ */
+export function routeWakeEvent(
+  kind: string,
+  state: VoiceState,
+): 'start-turn' | 'halt-playback' | 'ignore' {
+  if (kind === 'wake') return state === 'ready' ? 'start-turn' : 'ignore';
+  if (kind === 'stop') {
+    return state === 'playing' || state === 'processing' ? 'halt-playback' : 'ignore';
+  }
+  return 'ignore';
+}
+
+/** localStorage key for the wake-word preference (default: enabled). */
+export const WAKE_WORD_LS_KEY = 'voice:wakeWordEnabled';
+
+/**
+ * After this long sitting idle in `ready`, the conversation is considered
+ * over and the wake gate re-arms: the next turn needs the wake phrase again
+ * instead of bare voice onset. While engaged (within this window of the last
+ * turn), VAD onset keeps turns flowing so the user isn't forced to repeat
+ * "hey <name>" every exchange.
+ */
+export const WAKE_REARM_MS = 30_000;
+
 export interface VoiceEvent {
   type: 'transcript' | 'reply_text' | 'reply_audio' | 'error' | 'state_change';
   text?: string;
@@ -131,6 +162,33 @@ export function useVoice(options: UseVoiceOptions = {}) {
   // narration. Held until audio playback fully drains, then fired — so the view
   // switches when the agent stops speaking, not the moment the tool resolves.
   const pendingNavRef = useRef<NavPayload | null>(null);
+
+  // ── Wake word (#hands-free activation) ────────────────────────────────────
+  // The daemon runs an on-device keyword spotter (sherpa-onnx KWS) over mic
+  // monitor frames we stream while hands-free. "hey <name>" opens a turn
+  // without touching the keyboard; a spoken "stop" ends the agent's turn.
+  const [wakeWordEnabled, setWakeWordEnabledState] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(WAKE_WORD_LS_KEY) !== '0';
+    } catch {
+      return true;
+    }
+  });
+  const wakeEnabledRef = useRef(wakeWordEnabled);
+  // Daemon confirmed it is spotting on this socket.
+  const [wakeActive, setWakeActive] = useState(false);
+  const wakeActiveRef = useRef(false);
+  const [wakePhrase, setWakePhrase] = useState<string | null>(null);
+  // Gated = the wake phrase is required to open the next turn. Ungated
+  // ("engaged") = a conversation is flowing and bare VAD onset opens turns.
+  const [wakeGated, setWakeGated] = useState(false);
+  const wakeGatedRef = useRef(false);
+  // Last moment the loop was in any non-ready state — the "conversation is
+  // live" clock that decides when the wake gate re-arms.
+  const lastConvActivityRef = useRef(0);
+  // Retry timer while the daemon reports the KWS model is still downloading.
+  const wakeRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const syncWakeModeRef = useRef<(() => void) | null>(null);
 
   const emit = useCallback((event: VoiceEvent) => {
     onEventRef.current?.(event);
@@ -220,6 +278,23 @@ export function useVoice(options: UseVoiceOptions = {}) {
     }
   }, [setStateAndEmit, flushNavIfIdle]);
 
+  // Halt playback and return to ready WITHOUT touching the socket — the
+  // response to a spoken "stop": the daemon already ended (or never had) the
+  // turn, so unlike barge-in there is nothing to cancel via reconnect. Any
+  // deferred navigation is dropped: the user just asked for the turn to end.
+  const haltPlayback = useCallback(() => {
+    playingRef.current = false;
+    audioQueueRef.current = [];
+    pendingAudioRef.current = false;
+    pendingNavRef.current = null;
+    playbackCtxRef.current?.close().catch(() => {});
+    playbackCtxRef.current = null;
+    analyserRef.current = null;
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      setStateAndEmit('ready');
+    }
+  }, [setStateAndEmit]);
+
   // --- WebSocket message handler ---
   const handleWsMessage = useCallback((event: MessageEvent) => {
     // Any inbound message proves the daemon is alive — reset the watchdog.
@@ -233,6 +308,48 @@ export function useVoice(options: UseVoiceOptions = {}) {
             readyResolveRef.current?.();
             readyResolveRef.current = null;
             readyRejectRef.current = null;
+            // Fresh handler on the daemon side — (re)request wake listening if
+            // hands-free wants it (covers first connect AND every reconnect).
+            syncWakeModeRef.current?.();
+            break;
+          case 'wake_status': {
+            const active = !!msg.active;
+            wakeActiveRef.current = active;
+            setWakeActive(active);
+            setWakePhrase(msg.phrase ?? null);
+            if (active) {
+              // Arm the gate unless a conversation was just interrupted (e.g.
+              // a barge-in reconnect): mid-conversation the user expects to
+              // keep talking without re-invoking the wake phrase.
+              const engaged = Date.now() - lastConvActivityRef.current < WAKE_REARM_MS;
+              wakeGatedRef.current = !engaged;
+              setWakeGated(!engaged);
+            } else if (msg.reason === 'downloading') {
+              // The daemon is fetching the KWS model; ask again shortly.
+              if (wakeRetryRef.current) clearTimeout(wakeRetryRef.current);
+              wakeRetryRef.current = setTimeout(() => {
+                wakeRetryRef.current = null;
+                syncWakeModeRef.current?.();
+              }, 8000);
+            }
+            break;
+          }
+          case 'wake': {
+            const action = routeWakeEvent(msg.kind ?? '', stateRef.current);
+            if (action === 'start-turn') {
+              wakeGatedRef.current = false;
+              setWakeGated(false);
+              lastConvActivityRef.current = Date.now();
+              startRecordingRef.current?.();
+            } else if (action === 'halt-playback') {
+              haltPlayback();
+            }
+            break;
+          }
+          case 'stopped':
+            // Spoken stop cancelled the in-flight turn server-side — no more
+            // audio is coming; drop whatever is still queued locally.
+            haltPlayback();
             break;
           case 'transcript':
             // A transcript proves STT is working this session — clear any stale
@@ -303,7 +420,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
         emit({ type: 'reply_audio', audio: { samples, sampleRate: 24000 } });
       }
     }
-  }, [setStateAndEmit, emit, playNextChunk, flushNavIfIdle, sessionId]);
+  }, [setStateAndEmit, emit, playNextChunk, flushNavIfIdle, haltPlayback, sessionId]);
 
   // Monotonic connect epoch. Each connectSocket call claims a new epoch; a
   // call that gets superseded while awaiting the daemon token (e.g. the
@@ -319,6 +436,10 @@ export function useVoice(options: UseVoiceOptions = {}) {
       wsRef.current.close();
       wsRef.current = null;
     }
+    // A new socket means a new daemon handler with no wake session; the
+    // 'ready' handler re-requests it once the connection is up.
+    wakeActiveRef.current = false;
+    setWakeActive(false);
 
     setStateAndEmit('connecting');
     setError(null);
@@ -585,6 +706,15 @@ export function useVoice(options: UseVoiceOptions = {}) {
     playbackCtxRef.current?.close().catch(() => {});
     playbackCtxRef.current = null;
     analyserRef.current = null;
+    // Wake listening dies with the socket
+    if (wakeRetryRef.current) {
+      clearTimeout(wakeRetryRef.current);
+      wakeRetryRef.current = null;
+    }
+    wakeActiveRef.current = false;
+    setWakeActive(false);
+    wakeGatedRef.current = false;
+    setWakeGated(false);
     // Close socket
     if (wsRef.current) {
       wsRef.current.onclose = null;
@@ -652,6 +782,38 @@ export function useVoice(options: UseVoiceOptions = {}) {
       setStateAndEmit('processing');
     }
   }, [sampleRate, setStateAndEmit]);
+
+  // Reconcile daemon-side wake listening with what the client wants
+  // (hands-free on + preference enabled). Safe to call any time; no-ops
+  // without an open socket. Late-bound via syncWakeModeRef for the message
+  // handler and setters declared earlier.
+  const syncWakeMode = useCallback(() => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const want = handsFreeRef.current && wakeEnabledRef.current;
+    if (want && !wakeActiveRef.current) {
+      ws.send(JSON.stringify({ type: 'wake_start', sample_rate: sampleRate }));
+    } else if (!want && wakeActiveRef.current) {
+      ws.send(JSON.stringify({ type: 'wake_stop' }));
+      wakeActiveRef.current = false;
+      setWakeActive(false);
+      wakeGatedRef.current = false;
+      setWakeGated(false);
+    }
+  }, [sampleRate]);
+  syncWakeModeRef.current = syncWakeMode;
+
+  /** Enable/disable the wake word (persisted; applies immediately). */
+  const setWakeWordEnabled = useCallback((on: boolean) => {
+    wakeEnabledRef.current = on;
+    setWakeWordEnabledState(on);
+    try {
+      localStorage.setItem(WAKE_WORD_LS_KEY, on ? '1' : '0');
+    } catch {
+      // Preference simply won't persist.
+    }
+    syncWakeModeRef.current?.();
+  }, []);
 
   /** Live TTS frequency analyser (present only while the agent is speaking). */
   const getAnalyser = useCallback(() => analyserRef.current, []);
@@ -758,8 +920,39 @@ export function useVoice(options: UseVoiceOptions = {}) {
       const now = Date.now();
       const s = stateRef.current;
 
+      // Wake mode: stream monitor frames to the daemon's on-device keyword
+      // spotter whenever the recording processor isn't already sending audio.
+      // These frames feed ONLY the spotter — never STT, never the LLM.
+      if (wakeActiveRef.current && s !== 'recording') {
+        const sock = wsRef.current;
+        if (sock && sock.readyState === WebSocket.OPEN) {
+          const buffer = new ArrayBuffer(input.length * 4);
+          new Float32Array(buffer).set(input);
+          sock.send(buffer);
+        }
+      }
+      // Conversation-liveness clock: any non-ready state means turns are
+      // flowing. Sitting in ready past the window re-arms the wake gate, so
+      // the NEXT turn needs the wake phrase again.
+      if (s !== 'ready') {
+        lastConvActivityRef.current = now;
+      } else if (
+        wakeActiveRef.current &&
+        !wakeGatedRef.current &&
+        now - lastConvActivityRef.current > WAKE_REARM_MS
+      ) {
+        wakeGatedRef.current = true;
+        setWakeGated(true);
+      }
+
       if (s === 'ready') {
         vadBargeStreakRef.current = 0;
+        // While the wake gate is armed, VAD onset must NOT open a turn — the
+        // wake phrase (detected daemon-side) is the only way in.
+        if (wakeActiveRef.current && wakeGatedRef.current) {
+          vadOnsetStreakRef.current = 0;
+          return;
+        }
         // Sustained-onset gate: one loud buffer (a key click) is ignored;
         // real speech clears the streak in ~250ms — imperceptible latency,
         // and the recording still captures the utterance from its 2nd buffer.
@@ -824,6 +1017,9 @@ export function useVoice(options: UseVoiceOptions = {}) {
       // the turn normally so anything already said still gets processed.
       if (stateRef.current === 'recording') stopRecordingRef.current?.();
     }
+    // Wake listening follows hands-free (on: start spotting if enabled;
+    // off: tell the daemon to stop).
+    syncWakeModeRef.current?.();
   }, [activate, startVadMonitor, stopVadMonitor]);
 
   // Late-bound refs so the monitor callback (created once) always calls the
@@ -836,6 +1032,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
   useEffect(() => {
     return () => {
       activeRef.current = false;
+      if (wakeRetryRef.current) clearTimeout(wakeRetryRef.current);
       processorRef.current?.disconnect();
       audioCtxRef.current?.close().catch(() => {});
       mediaStreamRef.current?.getTracks().forEach(t => t.stop());
@@ -848,6 +1045,22 @@ export function useVoice(options: UseVoiceOptions = {}) {
   stopRecordingRef.current = stopRecording;
   interruptRef.current = interrupt;
   useEffect(() => stopVadMonitor, [stopVadMonitor]);
+
+  // Stable identity so consumers can use it as an effect dependency without
+  // re-firing on unrelated renders.
+  const wakeWord = useMemo(
+    () => ({
+      enabled: wakeWordEnabled,
+      setEnabled: setWakeWordEnabled,
+      /** Daemon is actively spotting on this socket. */
+      active: wakeActive,
+      /** Human-readable wake phrase (e.g. "Hey Henry") for UI hints. */
+      phrase: wakePhrase,
+      /** True when the wake phrase is required to open the next turn. */
+      gated: wakeGated,
+    }),
+    [wakeWordEnabled, setWakeWordEnabled, wakeActive, wakePhrase, wakeGated],
+  );
 
   return {
     state,
@@ -863,5 +1076,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     getMicAnalyser,
     handsFree,
     setHandsFree,
+    /** Wake-word surface: preference, live daemon status, and gate state. */
+    wakeWord,
   };
 }

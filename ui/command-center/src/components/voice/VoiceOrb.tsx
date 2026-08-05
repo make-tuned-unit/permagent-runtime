@@ -74,6 +74,7 @@ export function VoiceOrb({
   getMicAnalyser,
   mirrorLevel,
   onExit,
+  wakeHint,
 }: {
   state: string;
   getPlaybackAnalyser: () => AnalyserNode | null;
@@ -82,6 +83,8 @@ export function VoiceOrb({
    *  window, since the analysers live in that window's audio graph. */
   mirrorLevel?: number;
   onExit: () => void;
+  /** Armed wake gate: what to say to open a turn (e.g. `Say "Hey Henry"`). */
+  wakeHint?: string | null;
 }) {
   const { colors } = useTheme();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -278,7 +281,7 @@ export function VoiceOrb({
         ? 'Voice error — click to exit'
         : state === 'idle'
           ? 'Reconnecting…'
-          : 'Listening';
+          : (wakeHint ?? 'Listening');
 
   return (
     <div

@@ -92,6 +92,9 @@ dirs = { workspace = true }
 urlencoding = { workspace = true }
 sherpa-onnx = { version = "1.13.2", default-features = false, features = ["shared"] }
 hound = "3.5"
+# Wake-word model tarball extraction (sherpa-onnx kws release ships .tar.bz2).
+tar = "0.4"
+bzip2 = "0.5"
 ort = { version = "2.0.0-rc.12", features = ["download-binaries"] }
 misaki-rs = { version = "0.3", default-features = false }
 zip = { version = "2", default-features = false, features = ["deflate"] }

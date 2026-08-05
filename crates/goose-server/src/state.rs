@@ -98,11 +98,19 @@ pub struct AppState {
     /// restart — `None` until the Kokoro models are present and loaded
     /// (see routes::voice voice-model endpoints).
     pub voice_tts: SharedTts,
+    /// Wake-word / spoken-stop keyword spotter (sherpa-onnx KWS zipformer).
+    /// Hot-swappable like TTS: `None` until the ~17MB model is downloaded, at
+    /// which point the on-demand downloader loads it without a restart.
+    pub wake_spotter: SharedWakeSpotter,
 }
 
 /// Hot-swappable TTS slot — `None` until Kokoro models are downloaded/loaded,
 /// then swapped in place by the on-demand downloader's completion callback.
 pub type SharedTts = Arc<tokio::sync::RwLock<Option<Arc<dyn crate::voice::TextToSpeech>>>>;
+
+/// Hot-swappable wake-word spotter slot, same lifecycle as [`SharedTts`].
+pub type SharedWakeSpotter =
+    Arc<tokio::sync::RwLock<Option<Arc<crate::voice::kws::WakeWordSpotter>>>>;
 
 impl AppState {
     pub async fn new(tls: bool) -> anyhow::Result<Arc<AppState>> {
@@ -923,6 +931,7 @@ impl AppState {
             app_catalog,
             voice_stt,
             voice_tts: Arc::new(tokio::sync::RwLock::new(voice_tts)),
+            wake_spotter: Arc::new(tokio::sync::RwLock::new(build_wake_spotter())),
         });
 
         // Agent runtime-state tick (#288 interim A): derive Henry's state from the
@@ -1110,6 +1119,32 @@ pub fn build_kokoro_tts() -> Option<Arc<dyn crate::voice::TextToSpeech>> {
         }
         Err(e) => {
             tracing::error!(target: "permagentd::voice", "TTS load failed: {}", e);
+            None
+        }
+    }
+}
+
+/// Build the wake-word keyword spotter if its model files are present.
+///
+/// Returns `None` (wake word unavailable) until the ~17MB KWS model is
+/// downloaded — the on-demand downloader fetches it and calls this again to
+/// hot-swap a live spotter into [`SharedWakeSpotter`] without a restart.
+pub fn build_wake_spotter() -> Option<Arc<crate::voice::kws::WakeWordSpotter>> {
+    let paths = crate::voice::kws::WakeWordModelPaths::default_paths();
+    if !paths.models_exist() {
+        tracing::info!(
+            target: "permagentd::voice",
+            "KWS model not found — wake word disabled until downloaded"
+        );
+        return None;
+    }
+    match crate::voice::kws::WakeWordSpotter::new(&paths.model_dir, 2) {
+        Ok(s) => {
+            tracing::info!(target: "permagentd::voice", "Wake-word spotter loaded (sherpa-onnx KWS)");
+            Some(Arc::new(s))
+        }
+        Err(e) => {
+            tracing::error!(target: "permagentd::voice", "Wake-word spotter load failed: {}", e);
             None
         }
     }

@@ -40,6 +40,7 @@ export function VoiceHost() {
     getMicAnalyser,
     handsFree,
     setHandsFree,
+    wakeWord,
   } = useVoice({ sessionId: chatSessionId ?? undefined });
 
   useEffect(() => {
@@ -55,10 +56,11 @@ export function VoiceHost() {
       getAnalyser,
       getMicAnalyser,
       setHandsFree,
+      wakeWord,
     });
     return () => setVoiceEngine(null);
   }, [
-    state, error, handsFree,
+    state, error, handsFree, wakeWord,
     activate, deactivate, startRecording, stopRecording, interrupt,
     getAnalyser, getMicAnalyser, setHandsFree, setVoiceEngine,
   ]);
@@ -155,9 +157,13 @@ export function VoiceHost() {
         void setHandsFree(false);
         deactivate();
       },
+      wakeHint:
+        wakeWord.active && wakeWord.gated && wakeWord.phrase
+          ? `Say "${wakeWord.phrase}"`
+          : null,
     });
     return () => setVoiceConversation(null);
-  }, [handsFree, state, getAnalyser, getMicAnalyser, setHandsFree, deactivate, setVoiceConversation]);
+  }, [handsFree, state, getAnalyser, getMicAnalyser, setHandsFree, deactivate, setVoiceConversation, wakeWord]);
 
   return null;
 }
