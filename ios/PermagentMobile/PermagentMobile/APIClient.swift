@@ -331,6 +331,16 @@ enum MobileSession {
     private struct SessionResponse: Decodable { let id: String }
     private struct CreateBody: Encodable { let workingDir: String }
 
+    /// Forget the current conversation, so the next turn mints a fresh one.
+    ///
+    /// Voice and text share this id deliberately — a spoken turn lands in the
+    /// same thread — so ending it here ends both. Nothing is deleted on the
+    /// hub: the old session keeps its history and stays browsable there; this
+    /// only stops new turns from joining it.
+    static func endConversation() {
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+
     /// The hub-created session for this install, creating one if needed.
     ///
     /// A cached id is verified against the hub before reuse: sessions can be

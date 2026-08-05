@@ -511,6 +511,16 @@ struct ChatView: View {
     @State private var sessionId: String?
     @State private var sessionError: String?
     @State private var showVoice = false
+    @State private var confirmEnd = false
+
+    /// Drop the thread and the id behind it. The next send resolves a new
+    /// session, so this is the only place that has to forget anything.
+    private func endConversation() {
+        MobileSession.endConversation()
+        sessionId = nil
+        sessionError = nil
+        withAnimation(Motion.ease) { messages = [] }
+    }
 
     /// The hub session for this chat, resolved once and reused.
     private func resolveSession() async throws -> String {
@@ -590,6 +600,20 @@ struct ChatView: View {
             .background(Brand.shell)
             .navigationTitle(identity.displayName)
             .toolbar {
+                // Ending a conversation had no affordance at all: the thread
+                // grew forever and the only way to start clean was to delete
+                // the app (reported 2026-08-04). Destructive-styled and
+                // confirmed, because it is the one action here that cannot be
+                // undone from the phone.
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(role: .destructive) { confirmEnd = true } label: {
+                        Image(systemName: "arrow.counterclockwise")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(Brand.textMuted)
+                    }
+                    .disabled(messages.isEmpty && sessionId == nil)
+                    .accessibilityLabel("End this conversation")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     // Straight in. No await before presenting: VoiceView resolves
                     // the session itself (minting one if this chat has never been
@@ -612,6 +636,16 @@ struct ChatView: View {
             // the cover presented an EMPTY body.
             .fullScreenCover(isPresented: $showVoice) {
                 VoiceView(sessionId: sessionId)
+            }
+            .confirmationDialog(
+                "End this conversation?",
+                isPresented: $confirmEnd,
+                titleVisibility: .visible
+            ) {
+                Button("End conversation", role: .destructive) { endConversation() }
+                Button("Keep talking", role: .cancel) { }
+            } message: {
+                Text("\(identity.nameCapitalized) starts fresh with no memory of this thread. The old one stays on your hub.")
             }
             // Tactile: a light tap when you send.
             .sensoryFeedback(.impact(weight: .light), trigger: sentCount)
