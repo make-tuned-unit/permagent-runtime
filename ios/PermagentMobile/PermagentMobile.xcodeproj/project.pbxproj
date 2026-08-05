@@ -43,6 +43,7 @@
 		79EF67298C7F75AB03541663 /* mobius_70.webp in Resources */ = {isa = PBXBuildFile; fileRef = F4403DC20C2D5999DD1B1673 /* mobius_70.webp */; };
 		7B192495931C573B896DF1F0 /* mobius_19.webp in Resources */ = {isa = PBXBuildFile; fileRef = 01AACB1FBD851BA34EE1ED9D /* mobius_19.webp */; };
 		7CDE4D3404EA6BF70CECEB1B /* mobius_58.webp in Resources */ = {isa = PBXBuildFile; fileRef = 79BB7C24CB5A54725466E6A0 /* mobius_58.webp */; };
+		7CF0821B363A714765825661 /* TodosView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7B80C27B4E2ECC150070E7B /* TodosView.swift */; };
 		7D2C9734F04E69CD82CCEAC7 /* mobius_46.webp in Resources */ = {isa = PBXBuildFile; fileRef = 8371B38D78B810EDE35E0120 /* mobius_46.webp */; };
 		7DD46702E4BB4F9A85B8A1AB /* mobius_26.webp in Resources */ = {isa = PBXBuildFile; fileRef = ACF042D26EBA2B8AA3FC72E1 /* mobius_26.webp */; };
 		7E0BB92621F39263691D2900 /* mobius_29.webp in Resources */ = {isa = PBXBuildFile; fileRef = F6C7E6718CD9980470FB3A90 /* mobius_29.webp */; };
@@ -170,6 +171,7 @@
 		C4BD3E1B6A179219E2AC1FDD /* VoiceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceView.swift; sourceTree = "<group>"; };
 		C52D8A69FE2C8DF32AC11D60 /* mobius_41.webp */ = {isa = PBXFileReference; path = mobius_41.webp; sourceTree = "<group>"; };
 		C775F55DDB9DE14F8D4323E6 /* PermagentApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermagentApp.swift; sourceTree = "<group>"; };
+		C7B80C27B4E2ECC150070E7B /* TodosView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodosView.swift; sourceTree = "<group>"; };
 		CC8E4CBB923FAD453492F9C1 /* mobius_21.webp */ = {isa = PBXFileReference; path = mobius_21.webp; sourceTree = "<group>"; };
 		CEC021DE8FB3CC7E8C84F947 /* mobius_15.webp */ = {isa = PBXFileReference; path = mobius_15.webp; sourceTree = "<group>"; };
 		D020F778D098308E570DE67A /* mobius_51.webp */ = {isa = PBXFileReference; path = mobius_51.webp; sourceTree = "<group>"; };
@@ -325,6 +327,7 @@
 				6F04A0A4A5E3D5490ADCF447 /* SchedulesView.swift */,
 				F2500EEA5FF92FB9A6C15CAB /* SplashView.swift */,
 				04E26A800CF1D4790CE5DA10 /* Theme.swift */,
+				C7B80C27B4E2ECC150070E7B /* TodosView.swift */,
 				FC49B12939BF081C69BFE0E1 /* Views.swift */,
 				6FEED3E5A9B281991FABC481 /* VoiceOrbView.swift */,
 				1EEE1C8D68C52C00634826E5 /* VoiceVAD.swift */,
@@ -520,6 +523,7 @@
 				9535CCB0091E9B276307213D /* SchedulesView.swift in Sources */,
 				F2CBA915EC484D57BF570E30 /* SplashView.swift in Sources */,
 				389CCEEEE3C95E4B8E3A0D3F /* Theme.swift in Sources */,
+				7CF0821B363A714765825661 /* TodosView.swift in Sources */,
 				EFB9D44B159846261786C6DF /* Views.swift in Sources */,
 				0D8A364D8FC9A0D197FD6F88 /* VoiceOrbView.swift in Sources */,
 				E2F92C125DDE2D99E40123D8 /* VoiceVAD.swift in Sources */,
@@ -601,7 +605,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = Permagent;
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 921;
+				CURRENT_PROJECT_VERSION = 922;
 				DEVELOPMENT_TEAM = GANM22MFCH;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				INFOPLIST_FILE = PermagentMobile/Info.plist;
@@ -719,7 +723,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = Permagent;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 921;
+				CURRENT_PROJECT_VERSION = 922;
 				DEVELOPMENT_TEAM = GANM22MFCH;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				INFOPLIST_FILE = PermagentMobile/Info.plist;

@@ -181,6 +181,13 @@ final class HubSession: ObservableObject {
     }
 }
 
+/// The app's top-level surfaces. Hashable tags so any card, row, or agent
+/// nudge can LAND somewhere: Home's tiles jump straight to their section
+/// instead of being read-only numbers.
+enum AppTab: Hashable {
+    case home, chat, notes, decisions, goals, control
+}
+
 struct MainTabs: View {
     @EnvironmentObject var session: HubSession
     // MUST observe, not just read. `AgentIdentity.shared.displayName` read
@@ -189,18 +196,25 @@ struct MainTabs: View {
     // chat header (which does observe) correctly said the real name
     // (reported 2026-08-04).
     @ObservedObject private var identity = AgentIdentity.shared
+    @State private var tab: AppTab = .home
     var body: some View {
-        TabView {
-            HomeView().tabItem { Label("Home", systemImage: "circle.hexagongrid.fill") }
+        TabView(selection: $tab) {
+            HomeView(tab: $tab).tabItem { Label("Home", systemImage: "circle.hexagongrid.fill") }
+                .tag(AppTab.home)
             ChatView().tabItem { Label(identity.displayName, systemImage: "bubble.left.and.bubble.right.fill") }
+                .tag(AppTab.chat)
             // "Notes" — the tab owns dictation AND the notes library. The mic
             // icon stays because one tap on this tab still starts a note by
             // voice; browsing is the secondary path inside it.
             DictateView().tabItem { Label("Notes", systemImage: "mic.fill") }
+                .tag(AppTab.notes)
             InboxView().tabItem { Label("Decisions", systemImage: "tray.full.fill") }
                 .badge(session.unread)
+                .tag(AppTab.decisions)
             GoalsView().tabItem { Label("In Flight", systemImage: "bolt.fill") }
+                .tag(AppTab.goals)
             ControlHubView().tabItem { Label("Control", systemImage: "slider.horizontal.3") }
+                .tag(AppTab.control)
         }
         .liquidGlassTabMinimize()
     }
