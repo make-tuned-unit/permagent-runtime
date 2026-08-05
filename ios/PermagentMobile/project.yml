@@ -134,6 +134,11 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ai.permagent.mobile.tests
         SWIFT_VERSION: "6.0"
+        # Same team as the app target: without it, any non-Debug build (or a
+        # device destination) fails signing — Debug-only CODE_SIGNING_ALLOWED
+        # NO covered the simulator but left Xcode's other paths teamless.
+        DEVELOPMENT_TEAM: GANM22MFCH
+        CODE_SIGN_STYLE: Automatic
       configs:
         Debug:
           CODE_SIGNING_ALLOWED: "NO"
