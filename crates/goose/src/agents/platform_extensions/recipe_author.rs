@@ -266,7 +266,12 @@ impl RecipeAuthorClient {
             cron: args.cron.clone(),
             last_run: None,
             currently_running: false,
-            paused: false,
+            // Agent-created automations never start live: they land paused and
+            // the user approves by resuming in Automate. This is what stops a
+            // headless session from re-creating a deleted job behind the
+            // user's back and having it fire (2026-08-05 credit burn).
+            paused: true,
+            requires_approval: true,
             current_session_id: None,
             process_start_time: None,
             worker_persona: args
@@ -301,7 +306,10 @@ impl RecipeAuthorClient {
             .map_err(|e| format!("Failed to schedule: {}", e))?;
 
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Created automation \"{}\" scheduled with cron \"{}\".{}",
+            "Created automation \"{}\" with cron \"{}\" — PAUSED, awaiting the user's \
+             approval. It will not run until the user resumes it from the Automate tab. \
+             Do not attempt to resume it yourself and do not create variants of it; tell \
+             the user it is waiting for their approval.{}",
             args.title.trim(),
             args.cron,
             rich_summary,
@@ -410,6 +418,13 @@ impl RecipeAuthorClient {
         })?;
 
         if job.paused {
+            if job.requires_approval {
+                return Err(format!(
+                    "Automation \"{}\" is paused awaiting the USER's approval and cannot be \
+                     resumed by an agent. The user must resume it from the Automate tab.",
+                    args.id
+                ));
+            }
             scheduler
                 .unpause_schedule(&args.id)
                 .await
@@ -513,7 +528,12 @@ impl RecipeAuthorClient {
                  richer authoring: input parameters, sub_recipes, automatic retry with success \
                  checks, extensions (tools) to enable, model/provider settings, and a \
                  worker_persona to run as. \
-                 This is the ONLY way to create automations — describing them in text does nothing."
+                 This is the ONLY way to create automations — describing them in text does nothing. \
+                 New automations are created PAUSED and run only after the user approves them \
+                 in Automate — never create a second variant because one appears inactive, and \
+                 never recreate an automation the user deleted. Schedules may not fire more often \
+                 than every 15 minutes. Headless runs get a minimal toolset unless the recipe \
+                 declares `extensions` explicitly."
                     .to_string(),
                 schema::<CreateRecipeParams>(),
             ),

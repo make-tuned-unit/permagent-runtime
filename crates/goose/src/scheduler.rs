@@ -237,12 +237,25 @@ pub struct ScheduledJob {
     /// True if the user has manually edited this starter recipe.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_customized: Option<bool>,
+
+    // ── Runaway guardrails (2026-08-05 credit-burn incident) ──
+    /// Failures since the last successful fire. Reset on success; at
+    /// `AUTO_PAUSE_AFTER_CONSECUTIVE_FAILURES` the job is auto-paused.
+    #[serde(default)]
+    pub consecutive_failures: u32,
+    /// True when this job was created by an agent and the user has not yet
+    /// approved it. Such jobs are created paused; agent tools refuse to
+    /// unpause them — only the user's unpause (Automate UI) clears the flag.
+    #[serde(default)]
+    pub requires_approval: bool,
 }
 
 /// Reliability + kind constants. Retry backoff is exponential and capped so a
 /// flapping job cannot storm.
 const RETRY_BASE_SECS: u64 = 10;
 const RETRY_MAX_SECS: u64 = 300;
+/// Fires that fail back-to-back before the job is auto-paused.
+const AUTO_PAUSE_AFTER_CONSECUTIVE_FAILURES: u32 = 3;
 /// Interval bounds (seconds): reject 0/absurd values. One year ceiling.
 const MIN_INTERVAL_SECS: u64 = 1;
 const MAX_INTERVAL_SECS: u64 = 31_536_000;
@@ -352,7 +365,74 @@ fn validate_schedule_spec(job: &ScheduledJob) -> Result<(), String> {
             ));
         }
     }
+    if let Some(violation) = schedule_floor_violation(job) {
+        return Err(violation);
+    }
     Ok(())
+}
+
+/// Minimum allowed firing interval for any schedule, in seconds. Every-minute
+/// agent-created crons burned ~$20 of API credits overnight on 2026-08-05; a
+/// floor makes that class of runaway impossible to install. Overridable for
+/// tests and deliberate power use via `PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS`.
+const DEFAULT_MIN_SCHEDULE_INTERVAL_SECS: u64 = 900;
+
+fn min_schedule_interval_secs() -> u64 {
+    std::env::var("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_MIN_SCHEDULE_INTERVAL_SECS)
+}
+
+/// `Some(reason)` when the job would fire more often than the interval floor.
+/// Cron cadence is measured empirically: the minimum gap over the next several
+/// occurrences (catches `*/1 * * * *` and dense field lists alike). `at` jobs
+/// fire once and are exempt.
+fn schedule_floor_violation(job: &ScheduledJob) -> Option<String> {
+    let floor = min_schedule_interval_secs();
+    if floor == 0 {
+        return None;
+    }
+    if let Some(secs) = job.every_seconds {
+        if secs < floor {
+            return Some(format!(
+                "interval every_seconds={} is below the minimum of {}s \
+                 (set PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS to override)",
+                secs, floor
+            ));
+        }
+    }
+    let cron_text = job.cron.trim();
+    if !cron_text.is_empty() {
+        if let Some(cron) = parse_cron_schedule(cron_text) {
+            // Only gaps BETWEEN occurrences measure cadence; the lead-in from
+            // "now" to the first fire does not.
+            let mut cursor = Utc::now();
+            let mut prev: Option<DateTime<Utc>> = None;
+            let mut min_gap: Option<i64> = None;
+            for _ in 0..8 {
+                let Some(next) = cron.find_next_occurrence(&cursor, false).ok() else {
+                    break;
+                };
+                if let Some(p) = prev {
+                    let gap = next.signed_duration_since(p).num_seconds();
+                    min_gap = Some(min_gap.map_or(gap, |m: i64| m.min(gap)));
+                }
+                prev = Some(next);
+                cursor = next;
+            }
+            if let Some(gap) = min_gap {
+                if gap > 0 && (gap as u64) < floor {
+                    return Some(format!(
+                        "cron '{}' fires every {}s — below the minimum of {}s \
+                         (set PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS to override)",
+                        cron_text, gap, floor
+                    ));
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Pure missed-run predicate: was a scheduled fire due in the window since
@@ -683,10 +763,33 @@ impl Scheduler {
                                 job.last_status = Some(ScheduleRunStatus::Ok);
                                 job.last_error = None;
                                 job.retry_count = 0;
+                                job.consecutive_failures = 0;
                             }
                             Err(e) => {
                                 job.last_status = Some(ScheduleRunStatus::Error);
                                 job.last_error = Some(e.to_string());
+                                job.consecutive_failures =
+                                    job.consecutive_failures.saturating_add(1);
+                                // Circuit breaker: a job that fails every fire
+                                // burns provider spend for nothing (5,110
+                                // credit-error retries in 2.5h on 2026-08-05).
+                                // Pause it; the user resumes from Automate.
+                                if job.consecutive_failures >= AUTO_PAUSE_AFTER_CONSECUTIVE_FAILURES
+                                    && !job.paused
+                                {
+                                    job.paused = true;
+                                    job.last_error = Some(format!(
+                                        "auto-paused after {} consecutive failures \
+                                         (resume from Automate once fixed). Last error: {}",
+                                        job.consecutive_failures, e
+                                    ));
+                                    tracing::error!(
+                                        target: "durability",
+                                        job = %task_job_id,
+                                        "scheduled job auto-paused after {} consecutive failures",
+                                        job.consecutive_failures
+                                    );
+                                }
                             }
                         }
                         (job.max_retries, job.retry_count)
@@ -967,6 +1070,25 @@ impl Scheduler {
         let mut reconciled = false;
 
         for mut job_to_load in list {
+            // Interval floor applies to persisted jobs too: add-time validation
+            // only covers jobs created after the guard shipped, and schedule.json
+            // is hand-editable. Violators are paused (not dropped) so the user
+            // sees them in Automate with the reason, instead of them firing.
+            if !job_to_load.paused {
+                if let Some(violation) = schedule_floor_violation(&job_to_load) {
+                    job_to_load.paused = true;
+                    job_to_load.last_error = Some(format!(
+                        "paused at load: {} — edit the schedule, then resume",
+                        violation
+                    ));
+                    reconciled = true;
+                    tracing::warn!(
+                        "Scheduled job '{}' paused at load: {}",
+                        job_to_load.id,
+                        violation
+                    );
+                }
+            }
             if !Path::new(&job_to_load.source).exists() {
                 tracing::warn!(
                     "Recipe file {} not found, skipping job '{}'",
@@ -1268,6 +1390,22 @@ impl Scheduler {
                 job.current_session_id = None;
                 job.process_start_time = None;
                 job.last_run = Some(Utc::now());
+                // Manual runs record their outcome like cron fires do — a
+                // failed Run Now used to leave last_status untouched, so the
+                // Automate view showed stale health for exactly the runs the
+                // user was watching most closely.
+                match &result {
+                    Ok(_) => {
+                        job.last_status = Some(ScheduleRunStatus::Ok);
+                        job.last_error = None;
+                        job.consecutive_failures = 0;
+                    }
+                    Err(e) => {
+                        job.last_status = Some(ScheduleRunStatus::Error);
+                        job.last_error = Some(e.to_string());
+                        job.consecutive_failures = job.consecutive_failures.saturating_add(1);
+                    }
+                }
             }
         }
 
@@ -1327,7 +1465,14 @@ impl Scheduler {
         {
             let mut jobs_guard = self.jobs.lock().await;
             match jobs_guard.get_mut(sched_id) {
-                Some((_, job)) => job.paused = false,
+                Some((_, job)) => {
+                    job.paused = false;
+                    // Unpausing IS the approval: the only route here for an
+                    // approval-pending job is the user's Automate UI — the
+                    // agent-facing resume path refuses while the flag is set.
+                    job.requires_approval = false;
+                    job.consecutive_failures = 0;
+                }
                 None => return Err(SchedulerError::JobNotFound(sched_id.to_string())),
             }
         }
@@ -1684,7 +1829,32 @@ async fn execute_job(
         )
         .await?;
 
-    let extensions = resolve_extensions_for_new_session(recipe.extensions.as_deref(), None);
+    // A recipe that declares no `extensions:` used to inherit the user's ENTIRE
+    // enabled set — including `orchestrator` (dispatch goals, spawn agents) and
+    // `recipe_author` (create more schedules via its process-global scheduler
+    // handle). That closed the self-replication loop behind the 2026-08-05
+    // frenzy: a scheduled session recreated deleted schedules and dispatched
+    // goals unattended. Headless sessions now get those only when the recipe
+    // declares them explicitly (and agent-created recipes land paused pending
+    // user approval, so the declaration is user-visible before the first run).
+    const HEADLESS_DENYLIST: &[&str] = &["orchestrator", "recipe_author"];
+    let declared = recipe.extensions.is_some();
+    let extensions: Vec<_> = resolve_extensions_for_new_session(recipe.extensions.as_deref(), None)
+        .into_iter()
+        .filter(|ext| {
+            let key = crate::config::extensions::name_to_key(&ext.name());
+            let denied = !declared && HEADLESS_DENYLIST.contains(&key.as_str());
+            if denied {
+                tracing::info!(
+                    "Scheduled job '{}': withholding inherited extension '{}' \
+                     (declare it in the recipe's `extensions:` to grant it)",
+                    job_id,
+                    key
+                );
+            }
+            !denied
+        })
+        .collect();
     for ext in &extensions {
         agent.add_extension(ext.clone(), &session.id).await?;
     }
@@ -1822,7 +1992,7 @@ async fn execute_job(
     use futures::StreamExt;
     let mut stream = std::pin::pin!(stream);
 
-    let mut stream_error = false;
+    let mut stream_error: Option<String> = None;
     while let Some(message_result) = stream.next().await {
         tokio::task::yield_now().await;
 
@@ -1836,7 +2006,7 @@ async fn execute_job(
             Ok(_) => {}
             Err(e) => {
                 tracing::error!("Error in agent stream: {}", e);
-                stream_error = true;
+                stream_error = Some(e.to_string());
                 break;
             }
         }
@@ -1969,7 +2139,11 @@ async fn execute_job(
 
     {
         let session_duration = start_time.elapsed();
-        let exit_type = if stream_error { "error" } else { "normal" };
+        let exit_type = if stream_error.is_some() {
+            "error"
+        } else {
+            "normal"
+        };
         let (total_tokens, message_count) = agent
             .config
             .session_manager
@@ -2027,6 +2201,21 @@ async fn execute_job(
                 tracing::debug!("Failed to send schedule telemetry: {}", e);
             }
         });
+    }
+
+    // A mid-stream failure (provider 400, network death) used to return Ok
+    // here, so the job was stamped last_status=ok with no assistant reply —
+    // during the 2026-08-05 credit exhaustion every run "succeeded" while
+    // producing nothing. Surface it: last_status/last_error, the failure
+    // activity event, retries, and escalation all key off this Err.
+    if let Some(err) = stream_error {
+        return Err(anyhow!(
+            "agent stream failed for scheduled job '{}' (session {} was created but the \
+             turn did not complete): {}",
+            job_id,
+            session.id,
+            err
+        ));
     }
 
     Ok(session.id)
@@ -2178,6 +2367,40 @@ mod tests {
     fn scheduled_job_agents_are_headless() {
         let agent = new_scheduled_job_agent();
         assert!(agent.is_headless(), "scheduled-job agents must be headless");
+    }
+
+    #[test]
+    fn interval_floor_rejects_runaway_schedules() {
+        let _guard = env_lock::lock_env([("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", None::<&str>)]);
+        // Every-minute cron — the exact shape that burned credits on 2026-08-05.
+        let every_minute = ScheduledJob {
+            cron: "0 */1 * * * *".to_string(),
+            ..Default::default()
+        };
+        assert!(validate_schedule_spec(&every_minute).is_err());
+        // Sub-floor fixed interval.
+        let every_minute_secs = ScheduledJob {
+            every_seconds: Some(60),
+            ..Default::default()
+        };
+        assert!(validate_schedule_spec(&every_minute_secs).is_err());
+        // Hourly cron and daily cron stay legal.
+        let hourly = ScheduledJob {
+            cron: "0 0 * * * *".to_string(),
+            ..Default::default()
+        };
+        assert!(validate_schedule_spec(&hourly).is_ok());
+        let weekdays_6am = ScheduledJob {
+            cron: "0 0 6 * * 1-5".to_string(),
+            ..Default::default()
+        };
+        assert!(validate_schedule_spec(&weekdays_6am).is_ok());
+        // One-time jobs are exempt (they fire once).
+        let one_shot = ScheduledJob {
+            at: Some(Utc::now() + chrono::Duration::seconds(30)),
+            ..Default::default()
+        };
+        assert!(validate_schedule_spec(&one_shot).is_ok());
     }
 
     #[test]
@@ -2408,6 +2631,9 @@ mod tests {
             ("GOOSE_MODEL", Some("gpt-4o")),
             ("OPENAI_API_KEY", Some("fake-openai-no-keyring")),
             ("OPENAI_CUSTOM_HEADERS", Some("")),
+            // These tests fire every second; disable the production interval
+            // floor (which would reject the job at add time).
+            ("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0")),
         ]);
         let temp_dir = tempdir().unwrap();
         let storage_path = temp_dir.path().join("schedule.json");
@@ -2446,6 +2672,9 @@ mod tests {
             ("GOOSE_MODEL", Some("gpt-4o")),
             ("OPENAI_API_KEY", Some("fake-openai-no-keyring")),
             ("OPENAI_CUSTOM_HEADERS", Some("")),
+            // These tests fire every second; disable the production interval
+            // floor (which would reject the job at add time).
+            ("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0")),
         ]);
         let temp_dir = tempdir().unwrap();
         let storage_path = temp_dir.path().join("schedule.json");
@@ -2485,6 +2714,9 @@ mod tests {
             ("GOOSE_MODEL", Some("gpt-4o")),
             ("OPENAI_API_KEY", Some("fake-openai-no-keyring")),
             ("OPENAI_CUSTOM_HEADERS", Some("")),
+            // These tests fire every second; disable the production interval
+            // floor (which would reject the job at add time).
+            ("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0")),
         ]);
         let temp_dir = tempdir().unwrap();
         let recipe_path = temp_dir.path().join("no_prompt.yaml");

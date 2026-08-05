@@ -156,7 +156,10 @@ impl Agent {
             cron: cron_expression.to_string(),
             last_run: None,
             currently_running: false,
-            paused: false,
+            // Agent-created: lands paused pending user approval (see
+            // recipe_author::handle_create_recipe for the rationale).
+            paused: true,
+            requires_approval: true,
             current_session_id: None,
             process_start_time: None,
             worker_persona: None,
