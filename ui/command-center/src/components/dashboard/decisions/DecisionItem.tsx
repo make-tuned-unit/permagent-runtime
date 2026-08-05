@@ -161,7 +161,7 @@ export function pushedRejectWarning(
 export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCancelGoal }: Props) {
   const { colors, reduceMotion } = useTheme();
   const { data: persona } = usePersona();
-  const agentName = persona?.display_name ?? 'Aria';
+  const agentName = persona?.display_name ?? 'your agent';
   const discussDecision = useCommandCenter(s => s.discussDecision);
   const openGoalDetail = useCommandCenter(s => s.openGoalDetail);
   const [pending, setPending] = useState<PendingAnswer | null>(null);

@@ -23,16 +23,22 @@ export function NotificationHost() {
   const [toastIds, setToastIds] = useState<string[]>([]);
 
   // Newest item becomes a transient toast (skip when the tray is open).
+  // One dismissal timer PER toast, never cancelled by a newer arrival: the
+  // old effect-cleanup cleared the previous toast's timer whenever newestId
+  // changed, so any toast followed within 6s by another had no timer left
+  // and sat on screen forever with no way to dismiss it.
   const newestId = items[0]?.id;
   useEffect(() => {
     if (!newestId || open) return;
     setToastIds((prev) => (prev.includes(newestId) ? prev : [newestId, ...prev].slice(0, 3)));
-    const t = setTimeout(
+    setTimeout(
       () => setToastIds((prev) => prev.filter((id) => id !== newestId)),
       TOAST_MS,
     );
-    return () => clearTimeout(t);
   }, [newestId, open]);
+
+  const dismissToast = (id: string) =>
+    setToastIds((prev) => prev.filter((tid) => tid !== id));
 
   const activate = (n: AppNotification) => {
     // A notification carrying a link (e.g. a Watcher nudge's source article)
@@ -108,16 +114,34 @@ export function NotificationHost() {
         display: 'flex', flexDirection: 'column', gap: 8, pointerEvents: 'none',
       }}>
         {toasts.map((n) => (
-          <button key={n.id} onClick={() => activate(n)} style={{
-            pointerEvents: 'auto', textAlign: 'left', cursor: 'pointer', width: 300,
-            background: colors.surface, backdropFilter: 'blur(24px) saturate(140%)',
-            border: `1px solid ${colors.borderHi}`, borderRadius: radius.md,
-            boxShadow: colors.elevationFloating, padding: '10px 12px',
-            color: colors.text, animation: `pa-toast-in 220ms ${ease.out}`,
-          }}>
-            <div style={{ fontFamily: font.body, fontSize: 12, fontWeight: 600, color: colors.cyan }}>{n.title}</div>
-            {n.body && <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2 }}>{n.body}</div>}
-          </button>
+          <div key={n.id} style={{ position: 'relative', pointerEvents: 'auto', width: 300 }}>
+            <button
+              onClick={() => { dismissToast(n.id); activate(n); }}
+              style={{
+                textAlign: 'left', cursor: 'pointer', width: '100%',
+                background: colors.surface, backdropFilter: 'blur(24px) saturate(140%)',
+                border: `1px solid ${colors.borderHi}`, borderRadius: radius.md,
+                boxShadow: colors.elevationFloating, padding: '10px 28px 10px 12px',
+                color: colors.text, animation: `pa-toast-in 220ms ${ease.out}`,
+              }}
+            >
+              <div style={{ fontFamily: font.body, fontSize: 12, fontWeight: 600, color: colors.cyan }}>{n.title}</div>
+              {n.body && <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2 }}>{n.body}</div>}
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); dismissToast(n.id); }}
+              aria-label="Dismiss notification"
+              title="Dismiss"
+              style={{
+                position: 'absolute', top: 6, right: 6, width: 18, height: 18,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: 'none', border: 'none', cursor: 'pointer',
+                color: colors.textDim, fontSize: 13, lineHeight: 1, padding: 0,
+              }}
+            >
+              ×
+            </button>
+          </div>
         ))}
       </div>
       <style>{`@keyframes pa-toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }`}</style>
