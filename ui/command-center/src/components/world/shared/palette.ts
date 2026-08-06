@@ -46,6 +46,12 @@ export const AGENT_TRIM = {
   // keeper of the grounds. Identity trim only — muted, distinct from every
   // STATE color (the no-green HUD law governs state signaling, not identity).
   steward: '#7FA890',
+  // Strix (crate::strix) — the security agent that probes your own projects
+  // for flaws. Dark oxblood: the owl at night, watchful and faintly menacing.
+  // Deliberately far from every STATE color (idle grey, working amber,
+  // available cyan, error red) — identity must never read as a state, and a
+  // security agent must never be mistaken for an alarm.
+  strix: '#8C4A5C',
 } as const;
 
 export type AgentHudState = keyof typeof STATE;

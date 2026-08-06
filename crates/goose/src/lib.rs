@@ -86,6 +86,7 @@ pub mod sources;
 pub mod sovereignty;
 pub mod steward;
 pub mod storage_health;
+pub mod strix;
 pub mod subprocess;
 pub mod tasks;
 pub mod token_counter;

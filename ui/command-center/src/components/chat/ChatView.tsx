@@ -20,6 +20,15 @@ export function ChatView() {
   // #629 multi-client liveness: re-read identity when `identity_changed`
   // arrives on /events (persona edited on another device).
   const identityRev = useCommandCenter(s => s.identityRev);
+  // Files dropped on the app shell while the dock is the chat surface land in
+  // this composer (see App.handleDrop). Subscribing to the field (not just
+  // takeChatFiles) makes a drop that happens after mount consume too.
+  const pendingChatFiles = useCommandCenter(s => s.pendingChatFiles);
+  useEffect(() => {
+    if (!pendingChatFiles) return;
+    const files = useCommandCenter.getState().takeChatFiles();
+    if (files && files.length > 0) chatInputRef.current?.addFiles(files);
+  }, [pendingChatFiles]);
 
   useEffect(() => {
     api.getIdentity().then(id => setAgentName(id.first_name)).catch(() => {});

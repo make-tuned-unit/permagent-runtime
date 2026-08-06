@@ -423,7 +423,12 @@ pub fn default_roster() -> HashMap<String, WorkerPersona> {
         "librarian".to_string(),
         WorkerPersona {
             first_name: "Librarian".to_string(),
-            role: "Brain-curation worker (Ollama) — engine not yet wired".to_string(),
+            // Engine stays Pending (not dispatchable for handed-off goals), but
+            // the nightly curation loop itself IS live — see
+            // routes/librarian/scheduling.rs.
+            role: "Brain-curation worker (Ollama) — nightly describe, consolidation \
+                   and pruning runs on its own schedule"
+                .to_string(),
             tool_kinds: vec!["memory_ops".to_string()],
             availability_check: "model_loaded:qwen2.5".to_string(),
             cost_tier: "local_free".to_string(),
@@ -451,7 +456,29 @@ pub fn default_roster() -> HashMap<String, WorkerPersona> {
                 .to_string(),
             tool_kinds: vec!["shell".to_string()],
             availability_check: "bin_exists:git".to_string(),
-            cost_tier: "local_free".to_string(),
+            // The scheduled run executes on the global default provider/model
+            // (scheduler::execute_job), which is a paid API here — claiming
+            // local_free was a documented lie the audit caught.
+            cost_tier: "paid_api".to_string(),
+            engine: WorkerEngineKind::Pending,
+            ..Default::default()
+        },
+    );
+
+    roster.insert(
+        "strix".to_string(),
+        WorkerPersona {
+            first_name: "Strix".to_string(),
+            role: "Security review — continuously probes the user's own projects for \
+                   exposed secrets, vulnerable dependencies, injection and access-control \
+                   weaknesses, and risky configuration; REPORTS findings and PROPOSES \
+                   (never performs) anything intrusive"
+                .to_string(),
+            tool_kinds: vec!["shell".to_string(), "review".to_string()],
+            availability_check: "bin_exists:docker".to_string(),
+            // The external Strix engine drives its own LLM (STRIX_LLM) — an
+            // API spend, not a free local run.
+            cost_tier: "paid_api".to_string(),
             engine: WorkerEngineKind::Pending,
             ..Default::default()
         },
@@ -833,7 +860,14 @@ workers:
         keys.sort_unstable();
         assert_eq!(
             keys,
-            vec!["claude_code", "codex", "librarian", "reviewer", "steward"],
+            vec![
+                "claude_code",
+                "codex",
+                "librarian",
+                "reviewer",
+                "steward",
+                "strix",
+            ],
         );
 
         // The reviewer: in-process subagent, review-tagged (routes to the Review
