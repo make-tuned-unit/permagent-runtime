@@ -8,6 +8,21 @@ import { StreamingIndicator } from './StreamingIndicator';
 import { usePersona } from '../settings/useSettings';
 import { useVoicePreview } from '../../lib/useVoices';
 import { hasSpokenKey, markReplySpoken, replyDedupeKey } from '../../lib/speakReplies';
+import type { ChatMessage } from '../../lib/store';
+
+/** A contentless assistant message renders as a bare name-and-time bubble —
+ *  which is exactly what the streaming placeholder is before its first token,
+ *  sitting above the StreamingIndicator as a second empty bubble (reported
+ *  2026-08-06). Nothing to read ⇒ nothing to draw; the indicator alone
+ *  carries the in-flight state. Exported pure for the regression test. */
+export function isRenderableChatMessage(msg: ChatMessage): boolean {
+  return msg.role !== 'assistant'
+    || !!msg.content?.trim()
+    || !!msg.thinking?.trim()
+    || (msg.images?.length ?? 0) > 0
+    || (msg.tool_calls?.length ?? 0) > 0
+    || !!msg.context_attached;
+}
 
 export function MessageList() {
   const { colors } = useTheme();
@@ -160,7 +175,7 @@ export function MessageList() {
           )
         )}
 
-        {timeline.map((msg) => (
+        {timeline.filter(isRenderableChatMessage).map((msg) => (
           <MessageBubble key={msg.id} message={msg} />
         ))}
 

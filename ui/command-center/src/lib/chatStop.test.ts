@@ -27,6 +27,7 @@ vi.mock('./api', () => ({
   apiFetch: vi.fn(),
   extractText: vi.fn(() => ''),
   extractThinking: vi.fn(() => ''),
+  hasToolActivity: vi.fn(() => false),
   fileToBase64: vi.fn(),
   readerIngest: vi.fn(),
 }));

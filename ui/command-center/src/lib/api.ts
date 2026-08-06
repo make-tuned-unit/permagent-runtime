@@ -566,12 +566,18 @@ export function buildUserMessage(
   };
 }
 
-/** Extract the first text content from a DaemonMessage */
+/** Extract the text content from a DaemonMessage.
+ *
+ * Distinct text blocks within one stored message are distinct SEGMENTS — the
+ * model spoke, used a tool, spoke again — so they join with a paragraph
+ * break, never glued ("…works.Let me dig deeper…"). Streamed delta frames
+ * carry a single block, so the separator is inert on the live path. */
 export function extractText(msg: DaemonMessage): string {
   return msg.content
     .filter((c): c is TextContent => c.type === 'text')
     .map(c => c.text)
-    .join('');
+    .filter(t => t.length > 0)
+    .join('\n\n');
 }
 
 /**
@@ -585,7 +591,18 @@ export function extractThinking(msg: DaemonMessage): string {
     .filter((c): c is { type: 'thinking'; thinking: string } =>
       c.type === 'thinking' && typeof (c as { thinking?: unknown }).thinking === 'string')
     .map(c => c.thinking)
-    .join('');
+    .filter(t => t.length > 0)
+    .join('\n\n');
+}
+
+/** True when a frame carries tool activity — the boundary between one text
+ *  segment and the next. Requests ride assistant frames; results come back on
+ *  user-role frames. The streaming path uses this to owe the next text delta
+ *  a paragraph break, so the live render matches the settled transcript
+ *  instead of snapping into shape on Finish. */
+export function hasToolActivity(msg: DaemonMessage): boolean {
+  return msg.content.some(c =>
+    c.type === 'toolRequest' || c.type === 'toolResponse' || c.type === 'toolConfirmationRequest');
 }
 
 /**

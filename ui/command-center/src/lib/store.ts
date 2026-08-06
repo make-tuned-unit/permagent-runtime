@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { api, apiFetch, extractText, extractThinking, fileToBase64, readerIngest } from './api';
+import { api, apiFetch, extractText, extractThinking, fileToBase64, hasToolActivity, readerIngest } from './api';
 import { emitActivity, type ActivityEventName, type ActivitySourceSurface } from './emitActivity';
 import type { SessionSummary, DaemonMessage, SSEEvent, AppContextPayload, TokenState } from './api';
 import { costFromFrame } from './costMeter';
@@ -238,6 +238,13 @@ interface CommandCenterStore {
   takeChatFiles: () => File[] | null;
   addChatMessage: (msg: ChatMessage) => void;
   _streamingMessageId: string | null;
+  /** Tool activity arrived since the last delta — the next text/thinking is a
+   *  NEW segment and owes the reader a paragraph break. Tracked PER CHANNEL:
+   *  a thinking-only delta consuming a single flag would leave the following
+   *  text glued ("…works.Let me dig deeper…"), which then SNAPPED into shape
+   *  on the Finish rehydrate. */
+  _textBreakPending: boolean;
+  _thinkingBreakPending: boolean;
   /** request_id of the in-flight reply turn (client-generated in api.sendReply,
    *  re-adopted from the daemon's ActiveRequests SSE event on reconnect). The
    *  Stop button's cancel target; null when idle. */
@@ -865,6 +872,8 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     return files;
   },
   _streamingMessageId: null,
+  _textBreakPending: false,
+  _thinkingBreakPending: false,
   _pendingContext: null,
   discussSeedDecisionId: null,
 
@@ -1040,6 +1049,8 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     const streamMsgId = `msg-${Date.now()}-stream`;
     set(s => ({
       isStreaming: true,
+      _textBreakPending: false,
+      _thinkingBreakPending: false,
       _streamingMessageId: streamMsgId,
       chatMessages: [...s.chatMessages, {
         id: streamMsgId,
@@ -1438,20 +1449,32 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       }
       case 'Message': {
         const msg = (data as { type: string; message: DaemonMessage }).message;
+        // Tool results ride user-role frames; requests ride assistant frames.
+        // Either one ends the current text segment — the next delta owes the
+        // reader a paragraph break (matches how the settled transcript joins
+        // stored segments, so nothing snaps into shape on Finish).
+        const toolActivity = hasToolActivity(msg);
         if (msg.role === 'assistant') {
           const delta = extractText(msg);
           const thinkingDelta = extractThinking(msg);
           const streamMsgId = get()._streamingMessageId;
           if (streamMsgId && (delta || thinkingDelta)) {
             const pending = get()._pendingContext;
+            const textBrk = get()._textBreakPending && !!delta;
+            const thinkBrk = get()._thinkingBreakPending && !!thinkingDelta;
             set(s => ({
               _pendingContext: null,
+              // Each channel consumes its own break only when it appends.
+              ...(delta ? { _textBreakPending: false } : {}),
+              ...(thinkingDelta ? { _thinkingBreakPending: false } : {}),
               chatMessages: s.chatMessages.map(m =>
                 m.id === streamMsgId
                   ? {
                       ...m,
-                      content: m.content + delta,
-                      ...(thinkingDelta ? { thinking: (m.thinking ?? '') + thinkingDelta } : {}),
+                      content: m.content + (textBrk && m.content ? '\n\n' : '') + delta,
+                      ...(thinkingDelta
+                        ? { thinking: (m.thinking ?? '') + (thinkBrk && m.thinking ? '\n\n' : '') + thinkingDelta }
+                        : {}),
                       ...(pending && !m.context_attached ? { context_attached: pending } : {}),
                     }
                   : m
@@ -1459,6 +1482,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
             }));
           }
         }
+        if (toolActivity) set({ _textBreakPending: true, _thinkingBreakPending: true });
 
         // Trace recording moved to the connectSession funnel (es.onmessage →
         // sessionFrameToRecord): every frame type is recorded there with its
