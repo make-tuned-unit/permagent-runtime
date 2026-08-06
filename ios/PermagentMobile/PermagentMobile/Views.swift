@@ -670,8 +670,13 @@ struct ChatView: View {
                             .padding(.vertical, 12)
                         }
                         // Drag the transcript down to put the keyboard away —
-                        // the native idiom, and the one people try first.
+                        // the native idiom, and the one people try first. A
+                        // plain tap on the transcript does the same (reported
+                        // 2026-08-06): the keyboard covers the tab bar, so
+                        // tap-out must bring navigation back. Simultaneous so
+                        // taps inside message rows (links, buttons) still land.
                         .scrollDismissesKeyboard(.interactively)
+                        .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
                         .onChange(of: messages.count) { _, _ in
                             if let last = messages.last {
                                 withAnimation(Motion.spring) { proxy.scrollTo(last.id, anchor: .bottom) }
@@ -682,17 +687,9 @@ struct ChatView: View {
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
-            .toolbar {
-                // The escape hatch: with the keyboard up it covers the tab
-                // bar, so this is the only visible way back out to the rest
-                // of the app.
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    Button("Done") { composerFocused = false }
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(ChatSurface.spark)
-                }
-            }
+            // (No keyboard "Done" accessory: tap-out and drag-down both
+            // dismiss now, and the floating button read as clutter — removed
+            // on Jesse's report 2026-08-06.)
             // Voice shares the chat's hub session so spoken turns land in the
             // same conversation. `sessionId` is passed if this chat already
             // resolved one and left nil otherwise — VoiceView resolves and
