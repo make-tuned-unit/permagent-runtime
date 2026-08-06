@@ -19,6 +19,7 @@ mod proactive;
 mod routes;
 mod session_event_bus;
 mod state;
+mod strix;
 mod watcher_insights;
 // The route modules are compiled into BOTH crate roots (this bin and the lib),
 // so the shared test-support helper their `#[cfg(test)]` modules reference must
