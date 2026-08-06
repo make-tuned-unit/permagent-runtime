@@ -221,6 +221,12 @@ impl AppConductorClient {
             )
         })?;
 
+        // The agent's explicit section wins; otherwise fall back to the
+        // entry's own fixed section (Console-consolidation entries like
+        // Sessions/Trace/Inbox are Settings sections and carry it in the
+        // catalog so `navigate_app("Sessions")` lands on the right pane).
+        let section = args.section.clone().or_else(|| entry.section.clone());
+
         // Speak-then-act seam: if a transport is intercepting navigations for
         // this session (a voice turn), hand the intent off to it instead of
         // emitting to the global bus — it will sequence the nav after the
@@ -230,7 +236,7 @@ impl AppConductorClient {
             tab: entry.name.clone(),
             tool_type: entry.tool_type.clone(),
             panel_type: entry.panel_type.clone(),
-            section: args.section.clone(),
+            section: section.clone(),
             state: args.state.clone(),
             reason: args.reason.clone(),
         };
@@ -239,7 +245,7 @@ impl AppConductorClient {
                 &entry.name,
                 &entry.tool_type,
                 &entry.panel_type,
-                args.section.as_deref(),
+                section.as_deref(),
                 args.state.as_ref(),
                 &args.reason,
             ));

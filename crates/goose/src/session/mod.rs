@@ -19,15 +19,16 @@ pub use thread_manager::{Thread, ThreadManager, ThreadMetadata};
 
 /// Self-knowledge descriptor for the Session history surface. Lets the agent
 /// tell the user where past conversations live and how to return to one. Static:
-/// editorial, no live status claim. Reachable as an overlay (no seeded workspace
-/// hosts it) — the agent opens it via `navigate_app("Sessions")`.
+/// editorial, no live status claim. Lives as the Sessions page inside Settings
+/// (2026-08 Console consolidation) — the agent opens it via
+/// `navigate_app("Sessions")`, which deep-links to Settings → Sessions.
 pub const SESSIONS_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
     crate::agents::self_knowledge::FeatureDescriptor {
         id: "sessions",
         display_name: "Session history",
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
         what_it_does:
-            "The list of the user's past conversations with you — each session shown with its title and when it was last active, so the user can browse their history, reopen an earlier conversation to pick up where they left off (it loads back into the chat dock), or rename and delete old ones",
+            "The list of the user's past conversations with you — the Sessions page in Settings, each session shown with its title and when it was last active, so the user can browse their history, reopen an earlier conversation to pick up where they left off (it loads back into the chat dock), or rename and delete old ones",
         why_it_matters:
             "It is how the user returns to and manages earlier conversations; when they ask to continue something you discussed before, find a past chat, or clear out old sessions, bring them here",
         state_source: crate::agents::self_knowledge::StateSource::Static,

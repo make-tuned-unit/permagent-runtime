@@ -1,10 +1,13 @@
 /**
  * @vitest-environment jsdom
  *
- * Governance → Spend wiring. Pins that the panel is REAL, not decorative:
+ * Settings → Spend wiring (panel moved here from the retired Governance
+ * surface). Pins that the panel is REAL, not decorative:
  *   1. it renders the running total + tokens from GET /api/governance/spend,
  *   2. it lists per-project and per-session spend from that same payload,
- *   3. saving the budget round-trips to POST /api/governance/budget.
+ *   3. saving the budget round-trips to POST /api/governance/budget,
+ *   4. the per-TASK ceilings are editable too — this panel fully supersedes
+ *      the old Autonomy "Spend cap" sliders.
  *
  * `../../lib/api` is mocked (the DataPanel.consent pattern) so mounting touches
  * no network.
@@ -101,7 +104,7 @@ describe('SpendPanel', () => {
       softInput.dispatchEvent(new Event('input', { bubbles: true }));
     });
 
-    const saveBtn = Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Save cap')!;
+    const saveBtn = Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Save caps')!;
     expect(saveBtn).toBeTruthy();
     await act(async () => { saveBtn.click(); });
     await flush();
@@ -123,7 +126,7 @@ describe('SpendPanel', () => {
       setter.call(softInput, '');
       softInput.dispatchEvent(new Event('input', { bubbles: true }));
     });
-    const saveBtn = Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Save cap')!;
+    const saveBtn = Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Save caps')!;
     await act(async () => { saveBtn.click(); });
     await flush();
 
@@ -131,6 +134,31 @@ describe('SpendPanel', () => {
     expect(patch.session).not.toHaveProperty('soft');
     expect(patch.session?.gate).toBe(25);
     expect(patch.session?.hard).toBe(50);
+  });
+
+  it('round-trips the per-task hard ceiling (supersedes the Autonomy spend-cap slider)', async () => {
+    getSpendMock.mockResolvedValue(SNAPSHOT as never);
+    setBudgetMock.mockResolvedValue({
+      session: { soft: 10, gate: 25, hard: 50 },
+      task: { soft: 2, gate: 5, hard: 12 },
+    } as never);
+    await act(async () => { root.render(<SpendPanel />); });
+    await flush();
+
+    const taskHardInput = container.querySelector('input[aria-label="Task Stop (hard) ceiling in USD"]') as HTMLInputElement;
+    expect(taskHardInput).toBeTruthy();
+    expect(taskHardInput.value).toBe('10'); // loaded from the spend read
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+      setter.call(taskHardInput, '12');
+      taskHardInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const saveBtn = Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Save caps')!;
+    await act(async () => { saveBtn.click(); });
+    await flush();
+
+    const patch = setBudgetMock.mock.calls[0][0];
+    expect(patch.task?.hard).toBe(12);
   });
 
   it('rejects negative ceilings without submitting a patch', async () => {
@@ -144,7 +172,7 @@ describe('SpendPanel', () => {
       setter.call(hardInput, '-1');
       hardInput.dispatchEvent(new Event('input', { bubbles: true }));
     });
-    const saveBtn = Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Save cap')!;
+    const saveBtn = Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Save caps')!;
     await act(async () => { saveBtn.click(); });
     await flush();
 
