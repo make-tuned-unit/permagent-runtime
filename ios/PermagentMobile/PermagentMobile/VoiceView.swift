@@ -148,6 +148,10 @@ final class VoiceEngine: ObservableObject {
     /// 60 s turn cap) lives in VoiceVAD.swift, pure and unit-tested — this
     /// engine only feeds it frames and executes the actions it returns.
     private var vad = VoiceVAD()
+    /// A route change mid-turn parks the new preset here; it applies at the
+    /// next non-listening frame so an open turn's clocks are never clobbered.
+    private var pendingVADConfig: VoiceVAD.Config?
+    private var routeObserver: NSObjectProtocol?
 
     private var sessionId = ""
     private var active = false
@@ -232,6 +236,10 @@ final class VoiceEngine: ObservableObject {
     func stop() {
         active = false
         connectEpoch += 1
+        if let routeObserver {
+            NotificationCenter.default.removeObserver(routeObserver)
+            self.routeObserver = nil
+        }
         wsTask?.cancel(with: .goingAway, reason: nil)
         wsTask = nil
         playerNode?.stop()
@@ -262,6 +270,22 @@ final class VoiceEngine: ObservableObject {
             .playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, bluetoothOption]
         )
         try session.setActive(true)
+        // Full input gain where the hardware allows it — every dB helps the
+        // arm's-length built-in mic clear the VAD floor.
+        if session.isInputGainSettable {
+            try? session.setInputGain(1.0)
+        }
+        // Thresholds are calibrated per input route: the bare iPhone's mic
+        // under voiceChat AGC runs far quieter than a headset mic at the
+        // mouth — with one fixed onset, "Listening" heard AirPods but not the
+        // phone itself. Apply now and on every route change (headphones in,
+        // AirPods out, CarPlay…).
+        applyVADConfigForCurrentRoute()
+        routeObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.applyVADConfigForCurrentRoute() }
+        }
 
         let engine = AVAudioEngine()
 
@@ -381,7 +405,25 @@ final class VoiceEngine: ObservableObject {
     /// word begun before onset without adding meaningful latency.
     private static let preRollFrames = 6
 
+    /// Swap the VAD to the preset for whatever is currently capturing. Applied
+    /// immediately unless a turn is open — then it parks until the turn ends,
+    /// so the endpoint clocks are never reset mid-utterance.
+    private func applyVADConfigForCurrentRoute() {
+        let ports = AVAudioSession.sharedInstance().currentRoute.inputs.map(\.portType.rawValue)
+        let cfg = VoiceVAD.configForRoute(inputPortTypes: ports)
+        if state == .listening {
+            pendingVADConfig = cfg
+        } else {
+            vad = VoiceVAD(config: cfg)
+            pendingVADConfig = nil
+        }
+    }
+
     private func handleMicFrame(_ data: Data, rms: Float) {
+        if let cfg = pendingVADConfig, state != .listening {
+            vad = VoiceVAD(config: cfg)
+            pendingVADConfig = nil
+        }
         if state == .listening {
             level = min(1, rms * 8)
             wsTask?.send(.data(data)) { _ in }

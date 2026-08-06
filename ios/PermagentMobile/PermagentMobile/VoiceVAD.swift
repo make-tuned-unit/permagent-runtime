@@ -41,16 +41,23 @@ struct VoiceVAD {
         /// capture runs in `.voiceChat` mode, whose echo cancellation removes
         /// the speaker signal — and two consecutive frames are still required.
         var barge: Float = 0.03
-        /// Trailing silence that completes a turn. Far wider than the web's
-        /// 900 ms on purpose: phone dictation pauses mid-thought — to find a
-        /// word, to check a screen — for well over a second without meaning
-        /// "your turn". Ending a turn early costs a whole re-ask, while
-        /// waiting an extra half second costs almost nothing, so this is
-        /// deliberately biased toward letting the user finish.
-        /// 1.8s: as long as the turn-taking guard in VoiceVADTests allows
-        /// (it asserts a turn ends inside 2s, because a sluggish handoff was
-        /// itself a reported complaint). Raise the guard before raising this.
+        /// Trailing silence that completes a LONG turn. Far wider than the
+        /// web's 900 ms on purpose: phone dictation pauses mid-thought — to
+        /// find a word, to check a screen — for well over a second without
+        /// meaning "your turn". Ending a dictation early costs a whole
+        /// re-ask, so long turns stay biased toward letting the user finish.
         var silenceMs: Double = 1_800
+        /// Trailing silence that completes a QUICK turn — one whose VOICED
+        /// duration so far is under `quickTurnSpeechMs`. Short conversational
+        /// asks ("what's on my board?") are almost always complete when the
+        /// speaker stops, and the flat 1.8 s window was pure added lag on
+        /// every one of them (reported 2026-08-06: "still a bit of lag").
+        /// The discriminator is voiced duration, not turn duration, so a
+        /// dictation's FIRST natural pause (which arrives after several
+        /// seconds of speech) still gets the wide window.
+        var quickSilenceMs: Double = 1_100
+        /// Voiced duration below which a turn counts as quick.
+        var quickTurnSpeechMs: Double = 3_500
         /// Hard cap on one listening turn: a full minute.
         var maxTurnMs: Double = 60_000
         /// Consecutive over-`barge` frames required before interrupting.
@@ -97,6 +104,35 @@ struct VoiceVAD {
         bargeStreak = 0
     }
 
+    // ── Route-aware presets ─────────────────────────────────────────────────
+    //
+    // The defaults were calibrated against a HEADSET mic at the mouth. The
+    // phone's built-in mic — at arm's length, under .voiceChat's AGC + noise
+    // suppression, with the loudspeaker's echo canceller running — delivers
+    // ordinary speech well below the 0.015 onset, which is why "Listening"
+    // heard a headset but not the bare iPhone (reported 2026-08-06). The
+    // built-in preset halves every threshold while preserving the ratios the
+    // header comment derives (keepalive = 0.4 × onset, barge = 2 × onset).
+
+    /// The calibrated-default preset (headset / Bluetooth mic).
+    static let headsetConfig = Config()
+
+    /// The built-in iPhone mic preset.
+    static var builtInMicConfig: Config {
+        var c = Config()
+        c.onset = 0.008
+        c.keepalive = 0.0032
+        c.barge = 0.016
+        return c
+    }
+
+    /// Pick the preset for the session's current input route, by port type
+    /// raw values (AVAudioSession.Port.builtInMic == "MicrophoneBuiltIn").
+    /// Pure so the chooser is unit-testable without an audio session.
+    static func configForRoute(inputPortTypes: [String]) -> Config {
+        inputPortTypes.contains("MicrophoneBuiltIn") ? builtInMicConfig : headsetConfig
+    }
+
     /// Feed one mic frame's RMS. Returns the transition the engine should
     /// perform, if any.
     mutating func step(rms: Float, phase: Phase, now: TimeInterval) -> Action {
@@ -116,7 +152,15 @@ struct VoiceVAD {
             }
             let silentMs = (now - lastVoice) * 1_000
             let turnMs = (now - turnStart) * 1_000
-            if (heardSpeech && silentMs > config.silenceMs) || turnMs > config.maxTurnMs {
+            // Adaptive endpoint: a quick ask hands over fast; a dictation
+            // keeps the patient window. Voiced duration (onset → last voice)
+            // is the discriminator so the current silence never counts
+            // against the classification.
+            let voicedMs = (lastVoice - turnStart) * 1_000
+            let window = voicedMs < config.quickTurnSpeechMs
+                ? config.quickSilenceMs
+                : config.silenceMs
+            if (heardSpeech && silentMs > window) || turnMs > config.maxTurnMs {
                 heardSpeech = false
                 return .endTurn
             }

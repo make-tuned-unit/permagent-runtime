@@ -83,18 +83,36 @@ final class VoiceVADTests: XCTestCase {
         }
     }
 
-    /// Turn-taking still works: once the speaker actually stops, the trailing
-    /// -silence window completes the turn promptly — not at the 60 s cap.
-    func testTrailingSilenceEndsTurn() {
+    /// A QUICK ask (short voiced duration) hands over fast: the adaptive
+    /// endpoint ends it on the tight window, not the dictation-patient one.
+    /// This is the "still a bit of lag" fix (2026-08-06) — every one-line
+    /// command used to pay the full 1.8 s.
+    func testQuickAskEndsOnTheTightWindow() {
         var vad = VoiceVAD()
         var now: TimeInterval = 2_000
         XCTAssertEqual(vad.step(rms: 0.03, phase: .ready, now: now), .beginTurn)
-        XCTAssertNil(run(&vad, rms: 0.03, phase: .listening, duration: 3, from: &now))
+        XCTAssertNil(run(&vad, rms: 0.03, phase: .listening, duration: 2, from: &now))
         guard let end = run(&vad, rms: 0.0005, phase: .listening, duration: 5, from: &now) else {
             return XCTFail("trailing silence never ended the turn")
         }
         XCTAssertEqual(end.action, .endTurn)
-        XCTAssertGreaterThan(end.at, 1.4)
+        XCTAssertGreaterThan(end.at, 0.9)
+        XCTAssertLessThan(end.at, 1.4, "quick-ask endpoint drifted — lag is back")
+    }
+
+    /// A LONG turn (dictation-length voiced duration) keeps the patient
+    /// window: once the speaker actually stops, it completes promptly — but
+    /// never on the tight window that would cut a mid-thought pause.
+    func testLongTurnKeepsThePatientWindow() {
+        var vad = VoiceVAD()
+        var now: TimeInterval = 2_000
+        XCTAssertEqual(vad.step(rms: 0.03, phase: .ready, now: now), .beginTurn)
+        XCTAssertNil(run(&vad, rms: 0.03, phase: .listening, duration: 5, from: &now))
+        guard let end = run(&vad, rms: 0.0005, phase: .listening, duration: 5, from: &now) else {
+            return XCTFail("trailing silence never ended the turn")
+        }
+        XCTAssertEqual(end.action, .endTurn)
+        XCTAssertGreaterThan(end.at, 1.6, "a long turn ended on the quick window — dictation pauses would cut again")
         XCTAssertLessThan(end.at, 2.0, "silence window drifted — turn-taking would feel sluggish")
     }
 
@@ -152,5 +170,43 @@ final class VoiceVADTests: XCTestCase {
     /// The listening cap is the required one minute.
     func testListeningCapIsSixtySeconds() {
         XCTAssertEqual(VoiceVAD.Config().maxTurnMs, 60_000)
+    }
+
+    // ── Route-aware thresholds ──────────────────────────────────────────────
+
+    /// The regression (2026-08-06): "Listening" heard a headset but not the
+    /// bare iPhone. Ordinary speech through the built-in mic under voiceChat
+    /// AGC lands around RMS 0.010 — under the headset onset (0.015), above
+    /// the built-in preset's (0.008). The built-in preset must open the turn.
+    func testBuiltInMicPresetHearsQuietOnset() {
+        var headset = VoiceVAD(config: VoiceVAD.headsetConfig)
+        XCTAssertEqual(headset.step(rms: 0.010, phase: .ready, now: 1), .none,
+                       "headset calibration unexpectedly loosened")
+        var builtIn = VoiceVAD(config: VoiceVAD.builtInMicConfig)
+        XCTAssertEqual(builtIn.step(rms: 0.010, phase: .ready, now: 1), .beginTurn,
+                       "the bare iPhone mic must hear ordinary speech")
+    }
+
+    /// The chooser keys on the built-in port type; any headset/BT route keeps
+    /// the calibrated defaults.
+    func testRouteChooserPicksPresetByPortType() {
+        let builtIn = VoiceVAD.configForRoute(inputPortTypes: ["MicrophoneBuiltIn"])
+        XCTAssertEqual(builtIn.onset, VoiceVAD.builtInMicConfig.onset)
+        let bt = VoiceVAD.configForRoute(inputPortTypes: ["BluetoothHFP"])
+        XCTAssertEqual(bt.onset, VoiceVAD.headsetConfig.onset)
+        let wired = VoiceVAD.configForRoute(inputPortTypes: ["MicrophoneWired"])
+        XCTAssertEqual(wired.onset, VoiceVAD.headsetConfig.onset)
+        // No inputs at all (route settling) keeps the defaults too.
+        XCTAssertEqual(VoiceVAD.configForRoute(inputPortTypes: []).onset,
+                       VoiceVAD.headsetConfig.onset)
+    }
+
+    /// The built-in preset preserves the calibrated ratios: keepalive at
+    /// 0.4 × onset (soft speech is not silence) and barge at 2 × onset
+    /// (interrupting must not take a shout).
+    func testBuiltInPresetPreservesThresholdRatios() {
+        let c = VoiceVAD.builtInMicConfig
+        XCTAssertEqual(c.keepalive / c.onset, 0.4, accuracy: 0.01)
+        XCTAssertEqual(c.barge / c.onset, 2.0, accuracy: 0.01)
     }
 }
