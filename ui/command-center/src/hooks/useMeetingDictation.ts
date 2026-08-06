@@ -308,7 +308,9 @@ export function useMeetingDictation() {
   }, [state, flushChunk, teardownAudio]);
 
   const saveNote = useCallback(async (projectId: string, title: string, body: string) => {
-    await api.createProjectNote(projectId, { title, body });
+    // kind:'meeting' triggers the daemon's background action-item extraction —
+    // to-dos stated in the meeting land on the project's kanban unasked.
+    await api.createProjectNote(projectId, { title, body, kind: 'meeting' });
     unsavedRef.current = null;
   }, []);
 

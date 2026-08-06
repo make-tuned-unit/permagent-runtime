@@ -1079,6 +1079,11 @@ async fn delete_project_document_handler(
 struct CreateNoteRequest {
     title: Option<String>,
     body: String,
+    /// Optional note kind. `"meeting"` marks a meeting transcript — after the
+    /// note lands, a background pass extracts action items onto the project's
+    /// kanban (see `extract_meeting_todos`). Absent/other kinds change nothing.
+    #[serde(default)]
+    kind: Option<String>,
 }
 
 /// GET /api/projects/{id}/notes — notes attached to a project, newest first.
@@ -1143,7 +1148,134 @@ async fn create_project_note_handler(
     tracing::info!(project = %project.id, note = %note.id, "project note created");
     // #629 liveness: broadcast so other connected clients refresh the notes panel.
     events::emit(events::project_changed(&project.id, "notes"));
+
+    // Meeting transcripts drive the kanban without being asked (Jesse,
+    // 2026-08-06): a background fast-model pass pulls the action items out of
+    // the transcript and files each as a card on this project's board. Spawned
+    // detached — the note is already durable, and a model failure must never
+    // affect the save.
+    if req.kind.as_deref() == Some("meeting") {
+        let pool_bg = pool.clone();
+        let project_bg = project.clone();
+        let note_body = req.body.clone();
+        let note_id = note.id.clone();
+        tokio::spawn(async move {
+            extract_meeting_todos(&pool_bg, &project_bg, &note_id, &note_body).await;
+        });
+    }
+
     Ok(Json(note))
+}
+
+/// Extract action items from a meeting transcript and file each as a kanban
+/// card on the project. Best-effort by contract: any failure is logged, never
+/// surfaced to the note-save path. Cards are attributed `created_by: "henry"`
+/// (the DB CHECK allows no other agent author) with the true origin in
+/// metadata, and each cites the source note so the card can be traced back.
+async fn extract_meeting_todos(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    project: &projects::Project,
+    note_id: &str,
+    transcript: &str,
+) {
+    let config = permagent::config::Config::global();
+    let (Ok(provider_name), Ok(model_name)) =
+        (config.get_goose_provider(), config.get_goose_model())
+    else {
+        tracing::warn!("meeting todo extraction skipped: no provider/model configured");
+        return;
+    };
+    let provider = match permagent::providers::create_with_named_model(
+        &provider_name,
+        &model_name,
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("meeting todo extraction skipped: provider init failed: {e}");
+            return;
+        }
+    };
+
+    let system = "You extract ACTION ITEMS from a meeting transcript for a kanban board. \
+                  Only include real commitments or tasks stated in the meeting — never invent, \
+                  never include vague aspirations. Each item: a short imperative title (max 10 \
+                  words) and one sentence of context from the transcript. Reply ONLY as JSON: \
+                  {\"todos\": [{\"title\": \"...\", \"context\": \"...\"}]} — an empty list if \
+                  the meeting produced no action items.";
+    let user = permagent::conversation::message::Message::user().with_text(format!(
+        "Project: {}\nMeeting transcript:\n{}",
+        project.name,
+        &transcript.chars().take(24_000).collect::<String>(),
+    ));
+    let Ok((response, _usage)) = provider
+        .complete_fast("meeting-todo-extraction", system, &[user], &[])
+        .await
+    else {
+        tracing::warn!("meeting todo extraction: model call failed");
+        return;
+    };
+    let text = response.as_concat_text();
+    let todos: Vec<(String, String)> = (|| {
+        let (start, end) = (text.find('{')?, text.rfind('}')?);
+        let v: serde_json::Value = serde_json::from_str(text.get(start..=end)?).ok()?;
+        Some(
+            v.get("todos")?
+                .as_array()?
+                .iter()
+                .filter_map(|t| {
+                    let title = t.get("title")?.as_str()?.trim().to_string();
+                    if title.is_empty() {
+                        return None;
+                    }
+                    let context = t
+                        .get("context")
+                        .and_then(|c| c.as_str())
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string();
+                    Some((title, context))
+                })
+                .collect(),
+        )
+    })()
+    .unwrap_or_default();
+
+    if todos.is_empty() {
+        tracing::info!(project = %project.id, "meeting todo extraction: no action items found");
+        return;
+    }
+
+    let mut created = 0usize;
+    for (title, context) in &todos {
+        let card = permagent::cards::CreateCard {
+            project_id: project.id.clone(),
+            title: title.clone(),
+            description: Some(format!(
+                "{context}\n\n— from the meeting note on this project"
+            )),
+            card_type: None,
+            column_id: None,
+            created_by: Some("henry".to_string()),
+            metadata_json: Some(serde_json::json!({
+                "created_by_agent": "henry",
+                "source": "meeting_note",
+                "source_note_id": note_id,
+            })),
+        };
+        match permagent::cards::create_card(pool, card).await {
+            Ok(_) => created += 1,
+            Err(e) => tracing::warn!(project = %project.id, "meeting todo card failed: {e}"),
+        }
+    }
+    tracing::info!(
+        project = %project.id,
+        "meeting todo extraction: {created} card(s) from {} action item(s)",
+        todos.len()
+    );
+    events::emit(events::project_changed(&project.id, "cards"));
 }
 
 /// DELETE /api/projects/{id}/notes/{note_id} — delete a note (+ best-effort

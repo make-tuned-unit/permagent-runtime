@@ -1368,7 +1368,7 @@ export const api = {
 
   /** Create a note on a project. The backend indexes its text into the Brain
    *  (best-effort) and returns the saved note. */
-  createProjectNote: (projectId: string, note: { title?: string; body: string }) =>
+  createProjectNote: (projectId: string, note: { title?: string; body: string; kind?: 'meeting' }) =>
     apiFetch<ProjectNote>(`/api/projects/${encodeURIComponent(projectId)}/notes`, {
       method: 'POST',
       body: JSON.stringify(note),
