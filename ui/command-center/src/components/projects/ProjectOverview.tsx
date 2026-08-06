@@ -66,6 +66,7 @@ export function ProjectOverview({ project, onProjectUpdated }: {
             ProjectDetails header for the ruled division. */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
           <SummaryPanel project={project} onProjectUpdated={onProjectUpdated} />
+          <StrixFindingsPanel project={project} />
           <WatcherInsightsPanel project={project} />
           <KeyFactsPanel project={project} />
           <ActivityPanel project={project} />
@@ -243,6 +244,78 @@ function WatcherInsightsPanel({ project }: { project: Project }) {
             </div>
           </div>
         ))}
+      </div>
+    </Panel>
+  );
+}
+
+// ── Strix findings ──────────────────────────────────────────────────────────
+// The security checklist Strix's sweep loop keeps on the project
+// (daemon strix loop → metadata_json.strix_findings). Each item carries its
+// severity, CWE, location, and how to fix it. Renders nothing until the first
+// finding exists — a clean project shows no security section at all.
+
+interface StrixFinding {
+  id: string;
+  title: string;
+  severity: string;
+  cwe?: string | null;
+  location?: string | null;
+  remediation?: string | null;
+  found_at: string;
+}
+
+const STRIX_SHOWN = 8;
+
+function readStrixFindings(metadata: Record<string, unknown>): StrixFinding[] {
+  const raw = metadata?.strix_findings;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((f): f is StrixFinding =>
+    typeof f === 'object' && f !== null &&
+    typeof (f as StrixFinding).id === 'string' &&
+    typeof (f as StrixFinding).title === 'string' &&
+    typeof (f as StrixFinding).severity === 'string');
+}
+
+function StrixFindingsPanel({ project }: { project: Project }) {
+  const { colors } = useTheme();
+  const findings = readStrixFindings(project.metadataJson);
+  if (findings.length === 0) return null;
+  const severityColor = (s: string) =>
+    s === 'high' ? colors.danger : s === 'medium' ? colors.warning : colors.textDim;
+  const shown = findings.slice(0, STRIX_SHOWN);
+  return (
+    <Panel title="Security — from Strix">
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {shown.map(f => (
+          <div key={f.id} style={{ display: 'flex', gap: 10, alignItems: 'baseline' }}>
+            <span style={{
+              fontSize: 9, fontWeight: 700, letterSpacing: 0.6, flexShrink: 0,
+              textTransform: 'uppercase', color: severityColor(f.severity),
+              lineHeight: '18px', width: 52,
+            }}>
+              {f.severity}
+            </span>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 12, color: colors.text, lineHeight: 1.5 }}>{f.title}</div>
+              <div style={{ fontSize: 10, color: colors.textDim, marginTop: 2, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {f.cwe && <span>{f.cwe}</span>}
+                {f.location && <span style={{ fontFamily: font.mono }}>{f.location}</span>}
+                <span>{formatDate(f.found_at)}</span>
+              </div>
+              {f.remediation && (
+                <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 3, lineHeight: 1.5 }}>
+                  {f.remediation}
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+        {findings.length > STRIX_SHOWN && (
+          <div style={{ fontSize: 10, color: colors.textDim }}>
+            +{findings.length - STRIX_SHOWN} more on the checklist
+          </div>
+        )}
       </div>
     </Panel>
   );

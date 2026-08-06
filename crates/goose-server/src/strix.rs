@@ -51,24 +51,29 @@ pub struct Finding {
 }
 
 pub fn spawn(state: Arc<AppState>) {
-    if !strix::is_enabled() {
-        tracing::debug!(
+    // The loop always spawns and re-reads the flag every tick, so flipping
+    // `strix_enabled` in Settings takes effect at the next tick — no daemon
+    // restart, and no silently-absent loop either way.
+    if strix::is_enabled() {
+        tracing::info!(
             target: "permagentd::strix",
-            "Strix is off ({}=false) — no security sweeps will run",
+            "Strix enabled — security sweeps every {}h, read-only posture",
+            TICK.as_secs() / 3600
+        );
+    } else {
+        tracing::info!(
+            target: "permagentd::strix",
+            "Strix is off ({}=false) — sweep loop idle until enabled",
             strix::STRIX_ENABLED_KEY
         );
-        return;
     }
-    tracing::info!(
-        target: "permagentd::strix",
-        "Strix enabled — security sweeps every {}h, read-only posture",
-        TICK.as_secs() / 3600
-    );
     tokio::spawn(async move {
         tokio::time::sleep(STARTUP_DELAY).await;
         loop {
-            if let Err(e) = sweep_once(&state).await {
-                tracing::debug!(target: "permagentd::strix", "sweep skipped: {e}");
+            if strix::is_enabled() {
+                if let Err(e) = sweep_once(&state).await {
+                    tracing::debug!(target: "permagentd::strix", "sweep skipped: {e}");
+                }
             }
             tokio::time::sleep(TICK).await;
         }
@@ -104,6 +109,8 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
 
     announce("working");
     let mut swept = 0usize;
+    let mut attempted = 0usize;
+    let mut scan_errors = 0usize;
     for project in projects {
         if project.id == PERSONAL_PROJECT_ID {
             continue;
@@ -125,6 +132,7 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
                 continue;
             }
         };
+        attempted += 1;
         match scan_project(&target).await {
             Ok(findings) if findings.is_empty() => {
                 tracing::info!(
@@ -134,25 +142,39 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
                 );
             }
             Ok(findings) => {
-                let count = findings.len();
-                record_findings(&pool, &project, findings).await?;
-                brief_if_serious(&pool, &project, count).await;
+                match record_findings(&pool, &project, findings).await {
+                    Ok(fresh) => brief_new_findings(&pool, &project, &fresh).await,
+                    Err(e) => tracing::warn!(
+                        target: "permagentd::strix",
+                        project = %project.name,
+                        "findings not recorded: {e}"
+                    ),
+                }
                 swept += 1;
             }
             Err(e) => {
-                // A missing scanner is a stated fact, not a silent skip.
+                // A missing scanner is a stated fact, not a silent skip — but
+                // one broken project must not end the sweep for the rest.
                 tracing::warn!(
                     target: "permagentd::strix",
                     project = %project.name,
                     "scan did not run: {e}"
                 );
-                announce("error");
-                return Ok(());
+                scan_errors += 1;
             }
         }
     }
-    announce("available");
-    tracing::info!(target: "permagentd::strix", "sweep complete — {swept} project(s) with findings");
+    // SCAN BLOCKED only when nothing could run at all (scanner absent);
+    // otherwise the World returns to idle so a one-off failure cannot latch.
+    if attempted > 0 && scan_errors == attempted {
+        announce("error");
+    } else {
+        announce("available");
+    }
+    tracing::info!(
+        target: "permagentd::strix",
+        "sweep complete — {swept} project(s) with findings, {scan_errors} scan error(s)"
+    );
     Ok(())
 }
 
@@ -161,9 +183,24 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
 /// because it is schema-validated and dedupes on CWE.
 async fn scan_project(target: &std::path::Path) -> Result<Vec<Finding>, String> {
     let mut cmd = tokio::process::Command::new("strix");
+    // Posture: the scope guard is code; the read-only posture rides the
+    // engine's instruction channel because the external CLI has no passive
+    // flag — its --scan-mode is depth (quick/standard/deep), not intrusiveness.
+    // `standard` + `full` scope: a recurring whole-project sweep, not a
+    // CI diff check and not an open-ended deep engagement per tick.
     cmd.arg("--target")
         .arg(target)
         .arg("--non-interactive")
+        .arg("--scan-mode")
+        .arg("standard")
+        .arg("--scope-mode")
+        .arg("full")
+        .arg("--instruction")
+        .arg(
+            "Static code analysis only. Do not run the application, do not send network \
+             traffic to any host, and do not modify, create, or delete any files in the \
+             target. Report findings; never remediate.",
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -294,13 +331,25 @@ pub fn parse_sarif(raw: &str) -> Result<Vec<Finding>, String> {
     Ok(out)
 }
 
+/// The findings that were not already on the checklist. Briefing on these —
+/// and only these — is what stops the same medium finding re-alerting Henry
+/// every six hours forever.
+fn fresh_findings(existing: &[Finding], incoming: &[Finding]) -> Vec<Finding> {
+    incoming
+        .iter()
+        .filter(|f| !existing.iter().any(|old| old.id == f.id))
+        .cloned()
+        .collect()
+}
+
 /// Merge findings into the project's metadata, newest first, deduped on id so
-/// a finding that persists across sweeps does not multiply.
+/// a finding that persists across sweeps does not multiply. Returns the
+/// findings that are new this sweep.
 async fn record_findings(
     pool: &Pool<Sqlite>,
     project: &Project,
     findings: Vec<Finding>,
-) -> Result<(), String> {
+) -> Result<Vec<Finding>, String> {
     let mut meta = project
         .metadata_json
         .as_object()
@@ -310,6 +359,8 @@ async fn record_findings(
         .get(METADATA_KEY)
         .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
+
+    let fresh = fresh_findings(&existing, &findings);
 
     let mut merged = findings;
     for old in existing {
@@ -332,11 +383,16 @@ async fn record_findings(
         },
     )
     .await
-    .map(|_| ())
+    .map(|_| fresh)
 }
 
-/// Tell Henry only when it matters — a briefing for every clean sweep is noise.
-async fn brief_if_serious(pool: &Pool<Sqlite>, project: &Project, count: usize) {
+/// Tell Henry only when it matters: new findings at medium severity or above.
+/// An unchanged finding set stays silent, and low-only noise never briefs.
+async fn brief_new_findings(pool: &Pool<Sqlite>, project: &Project, fresh: &[Finding]) {
+    let serious = fresh.iter().filter(|f| f.severity != "low").count();
+    if serious == 0 {
+        return;
+    }
     permagent::briefings::file_briefing(
         pool,
         permagent::briefings::NewBriefing {
@@ -344,8 +400,8 @@ async fn brief_if_serious(pool: &Pool<Sqlite>, project: &Project, count: usize) 
             kind: "security_findings".to_string(),
             severity: permagent::briefings::Severity::Attention,
             summary: format!(
-                "{count} security finding{} on {}",
-                if count == 1 { "" } else { "s" },
+                "{serious} new security finding{} on {}",
+                if serious == 1 { "" } else { "s" },
                 project.name
             ),
             detail: Some(
@@ -396,5 +452,31 @@ mod tests {
         assert!(parse_sarif(r#"{"runs": []}"#).unwrap().is_empty());
         assert!(parse_sarif(r#"{"version": "2.1.0"}"#).unwrap().is_empty());
         assert!(parse_sarif("not json").is_err());
+    }
+
+    fn finding(id: &str, severity: &str) -> Finding {
+        Finding {
+            id: id.to_string(),
+            title: "t".to_string(),
+            severity: severity.to_string(),
+            cwe: None,
+            location: None,
+            remediation: None,
+            found_at: "2026-08-05T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn only_genuinely_new_findings_are_fresh() {
+        let existing = vec![finding("CWE-89:src/db.rs", "high")];
+        let incoming = vec![
+            finding("CWE-89:src/db.rs", "high"),
+            finding("CWE-79:src/ui.rs", "medium"),
+        ];
+        let fresh = fresh_findings(&existing, &incoming);
+        assert_eq!(fresh.len(), 1);
+        assert_eq!(fresh[0].id, "CWE-79:src/ui.rs");
+        // An unchanged set is entirely stale — this is the re-brief suppressor.
+        assert!(fresh_findings(&existing, &existing).is_empty());
     }
 }
