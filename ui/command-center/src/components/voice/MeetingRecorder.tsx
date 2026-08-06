@@ -41,7 +41,9 @@ export function MeetingRecorder({ open }: { open: boolean }) {
     start, stop, retrySave, discard,
     systemAudio, setSystemAudio, systemAudioError, systemAudioAvailable,
     farChunksHeard,
+    recoveredDraft, recoverDraft, dismissDraft,
   } = useMeetingDictation();
+  const [recovering, setRecovering] = useState(false);
   // Whether this build carries the capture helper at all. Checked rather than
   // assumed so the toggle is never offered where it cannot work.
   const [canCaptureSystem, setCanCaptureSystem] = useState(false);
@@ -256,6 +258,54 @@ export function MeetingRecorder({ open }: { open: boolean }) {
                 Start recording
               </button>
             </div>
+          </div>
+        </div>,
+        document.body,
+      )}
+
+      {/* A transcript stranded by a crash/quit mid-recording: offer it back
+          before it can be forgotten. Renders only while idle so it never
+          competes with a live recording's indicator. */}
+      {recoveredDraft && state === 'idle' && createPortal(
+        <div style={{
+          position: 'fixed', right: 16, bottom: 16, zIndex: 999, maxWidth: 340,
+          background: gradient.dropdown, backdropFilter: 'blur(16px)',
+          border: `1px solid ${colors.borderHi}`, borderRadius: 12,
+          boxShadow: '0 12px 40px rgba(0,0,0,0.6)', padding: '10px 14px',
+          fontFamily: font.body, display: 'flex', flexDirection: 'column', gap: 8,
+        }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: colors.text }}>
+            Interrupted recording recovered
+          </div>
+          <div style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>
+            A recording for "{recoveredDraft.projectName}" was cut off before it
+            was saved. The transcribed part survived — save it as the meeting
+            note, or let it go.
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              onClick={async () => {
+                setRecovering(true);
+                const ok = await recoverDraft();
+                setRecovering(false);
+                if (ok) toast('Meeting note saved', `The recovered transcript was saved as a note on "${recoveredDraft.projectName}".`);
+              }}
+              disabled={recovering}
+              style={{
+                fontSize: 11, fontWeight: 600, padding: '5px 12px', borderRadius: 7,
+                cursor: recovering ? 'default' : 'pointer',
+                background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
+                color: colors.cyan, fontFamily: font.body,
+              }}>
+              {recovering ? 'Saving…' : 'Save the transcript'}
+            </button>
+            <button onClick={dismissDraft} style={{
+              fontSize: 11, padding: '5px 12px', borderRadius: 7, cursor: 'pointer',
+              background: 'transparent', border: `1px solid ${colors.border}`,
+              color: colors.textMuted, fontFamily: font.body,
+            }}>
+              Discard
+            </button>
           </div>
         </div>,
         document.body,

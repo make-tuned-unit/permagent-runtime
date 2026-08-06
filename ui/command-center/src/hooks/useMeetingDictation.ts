@@ -116,6 +116,37 @@ export interface MeetingTarget {
   projectName: string;
 }
 
+/** Where the in-flight transcript is stashed so an app quit/crash mid-meeting
+ *  cannot destroy it (2026-08-06: an install mid-call ate half a meeting —
+ *  the module's own contract says words are never dropped). Updated after
+ *  every transcribed chunk; cleared on save or discard. */
+const DRAFT_KEY = 'permagent-meeting-draft';
+
+interface MeetingDraft {
+  projectId: string;
+  projectName: string;
+  startedAt: string; // ISO
+  parts: string[];
+  farParts: string[];
+}
+
+function readDraft(): MeetingDraft | null {
+  try {
+    const raw = localStorage.getItem(DRAFT_KEY);
+    if (!raw) return null;
+    const d = JSON.parse(raw) as MeetingDraft;
+    if (!d.projectId || !Array.isArray(d.parts)) return null;
+    return d;
+  } catch { return null; }
+}
+
+/** Compose a draft's body with the same honesty rule as a live stop: the
+ *  two-speaker form only when far-side audio actually exists. */
+export function composeDraftBody(d: MeetingDraft): string {
+  const anyFar = d.farParts.some(p => p.trim().length > 0);
+  return anyFar ? composeMeetingTranscript(d.parts, d.farParts) : joinTranscript(d.parts);
+}
+
 export function useMeetingDictation() {
   const [state, setState] = useState<MeetingDictationState>('idle');
   const [error, setError] = useState<string | null>(null);
@@ -135,6 +166,13 @@ export function useMeetingDictation() {
   const farPartsRef = useRef<string[]>([]);
   const farQueueRef = useRef<Promise<void>>(Promise.resolve());
   const unlistenRef = useRef<Array<() => void>>([]);
+
+  // A transcript stranded by a crash/quit, found at mount. Non-null until the
+  // user saves or discards it.
+  const [recoveredDraft, setRecoveredDraft] = useState<MeetingDraft | null>(() => {
+    const d = readDraft();
+    return d && composeDraftBody(d).length > 0 ? d : null;
+  });
 
   const ctxRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -161,6 +199,26 @@ export function useMeetingDictation() {
   }, []);
 
   useEffect(() => () => teardownAudio(), [teardownAudio]);
+
+  /** Persist the in-flight transcript. Called after every chunk lands so the
+   *  stash is never more than one chunk behind reality. */
+  const targetRef = useRef<MeetingTarget | null>(null);
+  const stashDraft = useCallback(() => {
+    const t = targetRef.current;
+    if (!t) return;
+    try {
+      localStorage.setItem(DRAFT_KEY, JSON.stringify({
+        projectId: t.projectId,
+        projectName: t.projectName,
+        startedAt: startedAtRef.current.toISOString(),
+        parts: partsRef.current,
+        farParts: farPartsRef.current,
+      } satisfies MeetingDraft));
+    } catch { /* quota/serialization — the live path is unaffected */ }
+  }, []);
+  const clearDraft = useCallback(() => {
+    try { localStorage.removeItem(DRAFT_KEY); } catch { /* nothing to clear */ }
+  }, []);
 
 
   /** Is the ScreenCaptureKit sidecar present in this build? */
@@ -200,6 +258,7 @@ export function useMeetingDictation() {
             farPartsRef.current[slot] = GAP_MARKER;
             setFailedChunks(n => n + 1);
           }
+          stashDraft();
         });
       });
       const offErr = await listen<{ kind: string; detail: string }>('system_audio_error', e => {
@@ -219,7 +278,7 @@ export function useMeetingDictation() {
     } catch (e) {
       setSystemAudioError(`Couldn't start system audio capture: ${(e as Error).message ?? e}. Your own voice is still being recorded.`);
     }
-  }, []);
+  }, [stashDraft]);
 
   const stopSystemAudio = useCallback(async () => {
     unlistenRef.current.forEach(fn => { try { fn(); } catch { /* already gone */ } });
@@ -256,8 +315,9 @@ export function useMeetingDictation() {
         partsRef.current[slot] = GAP_MARKER;
         setFailedChunks(n => n + 1);
       }
+      stashDraft();
     });
-  }, []);
+  }, [stashDraft]);
 
   const start = useCallback(async (nextTarget: MeetingTarget) => {
     if (state === 'recording' || state === 'finishing') return;
@@ -269,6 +329,7 @@ export function useMeetingDictation() {
     if (systemAudio) await startSystemAudio();
     unsavedRef.current = null;
     setTarget(nextTarget);
+    targetRef.current = nextTarget;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
@@ -296,6 +357,9 @@ export function useMeetingDictation() {
       source.connect(proc);
       proc.connect(ctx.destination);
       startedAtRef.current = new Date();
+      // Seed the stash immediately: even a crash before the first chunk
+      // leaves a record of which project the recording was for.
+      stashDraft();
       timerRef.current = setInterval(() => {
         setElapsedSeconds(Math.floor((Date.now() - startedAtRef.current.getTime()) / 1000));
       }, 1000);
@@ -305,14 +369,15 @@ export function useMeetingDictation() {
       setState('error');
       teardownAudio();
     }
-  }, [state, flushChunk, teardownAudio]);
+  }, [state, flushChunk, teardownAudio, startSystemAudio, systemAudio, stashDraft]);
 
   const saveNote = useCallback(async (projectId: string, title: string, body: string) => {
     // kind:'meeting' triggers the daemon's background action-item extraction —
     // to-dos stated in the meeting land on the project's kanban unasked.
     await api.createProjectNote(projectId, { title, body, kind: 'meeting' });
     unsavedRef.current = null;
-  }, []);
+    clearDraft();
+  }, [clearDraft]);
 
   /** Stop recording, transcribe the tail, and save the note. */
   const stop = useCallback(async (): Promise<boolean> => {
@@ -380,10 +445,40 @@ export function useMeetingDictation() {
     bufferedRef.current = 0;
     partsRef.current = [];
     unsavedRef.current = null;
+    clearDraft();
     setTarget(null);
     setError(null);
     setState('idle');
-  }, [teardownAudio]);
+  }, [teardownAudio, clearDraft]);
+
+  /** Save a crash-recovered transcript as the meeting note it should have
+   *  been. Same path as a live save, so the kanban extraction runs too. */
+  const recoverDraft = useCallback(async (): Promise<boolean> => {
+    const d = recoveredDraft;
+    if (!d) return false;
+    const body = composeDraftBody(d);
+    const title = `${meetingNoteTitle(new Date(d.startedAt))} (recovered)`;
+    try {
+      await api.createProjectNote(d.projectId, { title, body, kind: 'meeting' });
+      emitActivity('dictation_completed', 'voice', { char_count: body.length });
+      // Only clear the stored slot if it still holds THIS draft — a new
+      // recording may have claimed it since.
+      const stored = readDraft();
+      if (stored && stored.startedAt === d.startedAt) clearDraft();
+      setRecoveredDraft(null);
+      return true;
+    } catch (e) {
+      setError(`Couldn't save the recovered transcript: ${(e as Error).message || 'request failed'}.`);
+      return false;
+    }
+  }, [recoveredDraft, clearDraft]);
+
+  /** Let the recovered transcript go. */
+  const dismissDraft = useCallback(() => {
+    const stored = readDraft();
+    if (stored && recoveredDraft && stored.startedAt === recoveredDraft.startedAt) clearDraft();
+    setRecoveredDraft(null);
+  }, [recoveredDraft, clearDraft]);
 
   return {
     state,
@@ -404,5 +499,9 @@ export function useMeetingDictation() {
     systemAudioAvailable,
     /** Far-side chunks actually received this recording — proof of capture. */
     farChunksHeard,
+    /** A transcript stranded by a crash/quit, awaiting save or dismissal. */
+    recoveredDraft,
+    recoverDraft,
+    dismissDraft,
   };
 }
