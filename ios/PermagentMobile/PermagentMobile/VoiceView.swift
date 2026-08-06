@@ -191,23 +191,22 @@ final class VoiceEngine: ObservableObject {
         defer { starting = false }
         state = .connecting
 
-        let resolved: String
-        if let provided {
-            resolved = provided
-        } else {
-            do {
-                resolved = try await MobileSession.chatSessionId()
-            } catch {
-                state = .failed("Couldn't open a conversation on your hub — \(error.localizedDescription)")
-                return
-            }
-        }
-        self.sessionId = resolved
-        active = true
+        // Startup used to be strictly serial — session round trip, THEN the
+        // permission prompt, THEN the audio engine, THEN the socket — so the
+        // orb sat on "connecting" for the SUM of a network call and CoreAudio
+        // bring-up. The two are independent: the mic does not need a session
+        // id, and the session does not need a microphone. Run them together
+        // and the wait becomes the slower of the two rather than the total.
+        async let sessionTask: String? = {
+            if let provided { return provided }
+            return try? await MobileSession.chatSessionId()
+        }()
+        async let micGranted = AVAudioApplication.requestRecordPermission()
 
-        guard await AVAudioApplication.requestRecordPermission() else {
+        // Audio first once permission lands: it is the piece that must be
+        // live before the user speaks.
+        guard await micGranted else {
             state = .failed("Microphone access is off for Permagent — enable it in Settings to talk with \(AgentIdentity.shared.name).")
-            active = false
             return
         }
         do {
@@ -217,9 +216,16 @@ final class VoiceEngine: ObservableObject {
             // hunting a missing on-device voice model that does not exist —
             // STT/TTS both run on the hub, over the /voice socket.
             state = .failed("Couldn't start audio — \(error.localizedDescription)")
-            active = false
             return
         }
+
+        guard let resolved = await sessionTask else {
+            state = .failed("Couldn't open a conversation on your hub.")
+            stop()
+            return
+        }
+        self.sessionId = resolved
+        active = true
         await connect()
     }
 
@@ -364,11 +370,27 @@ final class VoiceEngine: ObservableObject {
         level = lvl
     }
 
+    /// Rolling pre-roll of the most recent mic frames, kept while NOT
+    /// streaming. Speech is only detected once it crosses the VAD's onset
+    /// threshold — by which point the first syllable is already spoken and,
+    /// before this buffer, thrown away ("it misses the first words I say").
+    /// When a turn opens these frames are flushed ahead of the live audio, so
+    /// the hub transcribes the word from its actual beginning.
+    private var preRoll: [Data] = []
+    /// ~85 ms per frame; 6 frames ≈ half a second of lead-in, which covers a
+    /// word begun before onset without adding meaningful latency.
+    private static let preRollFrames = 6
+
     private func handleMicFrame(_ data: Data, rms: Float) {
         if state == .listening {
             level = min(1, rms * 8)
             wsTask?.send(.data(data)) { _ in }
-        } else if state != .speaking {
+        } else if state == .ready {
+            // Only while idle-and-armed: keep the tail of what was just heard.
+            preRoll.append(data)
+            if preRoll.count > Self.preRollFrames { preRoll.removeFirst() }
+        }
+        if state != .listening && state != .speaking {
             // NOT while speaking: level is pulsed per delivered TTS chunk, and
             // delivery finishes ~10-15s into a long answer (TTS runs ahead of
             // playback). Letting the mic tap decay it afterwards flattened the
@@ -417,6 +439,15 @@ final class VoiceEngine: ObservableObject {
         reply = ""
         notice = nil
         sendText(#"{"type":"start","sample_rate":16000}"#)
+        // Flush the lead-in BEFORE any live frame, so the hub hears the word
+        // from its beginning rather than from the moment it got loud enough
+        // to notice. Ordering matters: these are older than everything the
+        // tap will deliver next.
+        let lead = preRoll
+        preRoll.removeAll(keepingCapacity: true)
+        for frame in lead {
+            wsTask?.send(.data(frame)) { _ in }
+        }
         state = .listening
     }
 

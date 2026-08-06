@@ -511,16 +511,16 @@ struct ChatView: View {
     @State private var sessionId: String?
     @State private var sessionError: String?
     @State private var showVoice = false
-    @State private var confirmEnd = false
     @State private var showHistory = false
     /// Owns the keyboard. Without this there was no way to put it away: it
     /// covered the tab bar, so the user could neither leave chat nor reach the
     /// send button's row — reported 2026-08-05.
     @FocusState private var composerFocused: Bool
 
-    /// Drop the thread and the id behind it. The next send resolves a new
-    /// session, so this is the only place that has to forget anything.
-    private func endConversation() {
+    /// Start fresh. The old thread is NOT deleted — it stays on the hub and
+    /// is one tap away in Conversations, which is why this needs no
+    /// confirmation. The next send resolves a new session.
+    private func newConversation() {
         MobileSession.endConversation()
         sessionId = nil
         sessionError = nil
@@ -631,30 +631,35 @@ struct ChatView: View {
                 // the app (reported 2026-08-04). Destructive-styled and
                 // confirmed, because it is the one action here that cannot be
                 // undone from the phone.
-                // A bare ↺ glyph read as "undo/refresh", not "end this
-                // conversation", and there was no route to an earlier thread
-                // at all. A labelled menu says both out loud.
+                // Both one tap, the way every chat app does it: the list of
+                // conversations, and a new one. Burying them in a menu made
+                // the two most common actions cost two taps each.
                 ToolbarItem(placement: .topBarLeading) {
-                    Menu {
-                        Button {
-                            composerFocused = false
-                            showHistory = true
-                        } label: {
-                            Label("Past conversations", systemImage: "clock.arrow.circlepath")
-                        }
-                        Button(role: .destructive) {
-                            composerFocused = false
-                            confirmEnd = true
-                        } label: {
-                            Label("End this conversation", systemImage: "xmark.circle")
-                        }
-                        .disabled(messages.isEmpty && sessionId == nil)
+                    Button {
+                        composerFocused = false
+                        showHistory = true
                     } label: {
-                        Image(systemName: "ellipsis.circle")
+                        Image(systemName: "clock.arrow.circlepath")
                             .font(.body.weight(.semibold))
                             .foregroundStyle(Brand.textMuted)
                     }
-                    .accessibilityLabel("Conversation options")
+                    .accessibilityLabel("Past conversations")
+                }
+                ToolbarItem(placement: .topBarLeading) {
+                    // No confirmation: starting a new conversation is fully
+                    // reversible now that past ones are one tap away, and the
+                    // old thread is never deleted — it stays on the hub. A
+                    // destructive-styled confirm here was overclaiming.
+                    Button {
+                        composerFocused = false
+                        newConversation()
+                    } label: {
+                        Image(systemName: "square.and.pencil")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(Brand.textMuted)
+                    }
+                    .disabled(messages.isEmpty && sessionId == nil)
+                    .accessibilityLabel("New conversation")
                 }
                 // The escape hatch: with the keyboard up it covers the tab
                 // bar, so this is the only visible way back out to the rest
@@ -692,16 +697,6 @@ struct ChatView: View {
                 ChatHistorySheet(currentSessionId: sessionId) { id in
                     Task { await openSession(id) }
                 }
-            }
-            .confirmationDialog(
-                "End this conversation?",
-                isPresented: $confirmEnd,
-                titleVisibility: .visible
-            ) {
-                Button("End conversation", role: .destructive) { endConversation() }
-                Button("Keep talking", role: .cancel) { }
-            } message: {
-                Text("\(identity.nameCapitalized) starts fresh with no memory of this thread. The old one stays on your hub.")
             }
             // Tactile: a light tap when you send.
             .sensoryFeedback(.impact(weight: .light), trigger: sentCount)

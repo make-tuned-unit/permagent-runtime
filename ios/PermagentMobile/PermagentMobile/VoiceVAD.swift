@@ -41,10 +41,16 @@ struct VoiceVAD {
         /// capture runs in `.voiceChat` mode, whose echo cancellation removes
         /// the speaker signal — and two consecutive frames are still required.
         var barge: Float = 0.03
-        /// Trailing silence that completes a turn. Wider than the web's
-        /// 900 ms on purpose: phone dictation pauses mid-thought for over a
-        /// second without meaning "your turn".
-        var silenceMs: Double = 1_500
+        /// Trailing silence that completes a turn. Far wider than the web's
+        /// 900 ms on purpose: phone dictation pauses mid-thought — to find a
+        /// word, to check a screen — for well over a second without meaning
+        /// "your turn". Ending a turn early costs a whole re-ask, while
+        /// waiting an extra half second costs almost nothing, so this is
+        /// deliberately biased toward letting the user finish.
+        /// 1.8s: as long as the turn-taking guard in VoiceVADTests allows
+        /// (it asserts a turn ends inside 2s, because a sluggish handoff was
+        /// itself a reported complaint). Raise the guard before raising this.
+        var silenceMs: Double = 1_800
         /// Hard cap on one listening turn: a full minute.
         var maxTurnMs: Double = 60_000
         /// Consecutive over-`barge` frames required before interrupting.
