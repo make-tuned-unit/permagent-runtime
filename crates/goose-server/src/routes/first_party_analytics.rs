@@ -862,6 +862,7 @@ async fn enable_first_party(
         cursor: None,
         last_drain_at: None,
         last_error: None,
+        relay_latest_id: None,
     });
     if requested_base.is_some() {
         config.ingest_base = requested_base;
