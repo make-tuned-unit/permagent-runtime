@@ -314,6 +314,19 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
           // Fresh session: nothing to replay, so nothing to hold back.
           releaseHeld(null);
         }
+        // The (re)attached PTY still has the PREVIOUS mount's grid: the
+        // initial fit() above ran before onResize is registered below, so
+        // this xterm's dimensions never reach resize_pty on their own —
+        // and a TUI keeps painting for the old width, which is the garbled
+        // approval-gate bug after a Build pane toggle. Sync the grid
+        // explicitly; for a freshly spawned PTY this is a same-size no-op.
+        if (sessionIdRef.current) {
+          api.invoke('resize_pty', {
+            sessionId: sessionIdRef.current,
+            cols: term.cols,
+            rows: term.rows,
+          }).catch(() => {});
+        }
         if (cancelled) {
           unlistenData?.();
           unlistenExit?.();

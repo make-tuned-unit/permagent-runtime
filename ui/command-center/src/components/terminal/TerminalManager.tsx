@@ -57,6 +57,12 @@ function createTab(cwd?: string): TerminalTab {
 let persistedTabs: TerminalTab[] | null = null;
 let persistedActiveTabId: string | null = null;
 
+/** Test-only: clear the module-level persistence between test cases. */
+export function __resetTerminalPersistenceForTests() {
+  persistedTabs = null;
+  persistedActiveTabId = null;
+}
+
 interface TerminalManagerProps { initialTab?: TerminalTab | null; detached?: boolean }
 
 export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManagerProps>(function TerminalManager({ initialTab, detached = false }, ref) {
@@ -101,15 +107,21 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
   }, []);
   const selectPane = usePaneTabCycling('terminal', rootRef, cycleTabs);
 
-  // Persist state on unmount so terminal survives workspace switches
+  // Persist state CONTINUOUSLY, not only on unmount. A pane toggle in
+  // BuildView remounts this manager in a SINGLE React commit (the Group's key
+  // changes), and React runs the NEW instance's useState initializer during
+  // the render phase — BEFORE the old instance's cleanup runs in the commit
+  // phase. An unmount-only persist therefore handed the new instance stale
+  // (or null) state: a fresh single tab over still-live PTYs, with the real
+  // tabs only reappearing on the NEXT remount (reported 2026-08-06). Keeping
+  // the module vars current on every change makes the initializer read the
+  // truth no matter how the remount is scheduled.
   useEffect(() => {
-    return () => {
-      if (!detached) {
-        persistedTabs = tabsRef.current;
-        persistedActiveTabId = activeTabIdRef.current;
-      }
-    };
-  }, [detached]);
+    if (!detached) {
+      persistedTabs = tabs;
+      persistedActiveTabId = activeTabId;
+    }
+  }, [tabs, activeTabId, detached]);
 
   useEffect(() => {
     if (detached || !('__TAURI_INTERNALS__' in window)) return;
