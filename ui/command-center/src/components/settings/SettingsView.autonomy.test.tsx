@@ -8,35 +8,38 @@ vi.mock('../../lib/api', () => ({
   api: {
     getConfig: vi.fn(),
     upsertConfig: vi.fn(),
-    getBudget: vi.fn(),
-    setBudget: vi.fn(),
   },
   apiFetch: vi.fn(),
 }));
 
+// The approvals strip reuses the shared Decision-Inbox hook + overlay; mock
+// both so mounting AutonomyPanel opens no WebSocket and fetches nothing.
+vi.mock('../dashboard/decisions/useDecisions', () => ({
+  useDecisions: vi.fn(() => ({ data: null, loading: true, error: false })),
+}));
+vi.mock('../dashboard/decisions/DecisionInbox', () => ({
+  DecisionInbox: () => null,
+}));
+
 import { api } from '../../lib/api';
 import { AutonomyPanel } from './SettingsView';
+import { useDecisions } from '../dashboard/decisions/useDecisions';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
 const getConfig = vi.mocked(api.getConfig);
-const getBudget = vi.mocked(api.getBudget);
-const setBudget = vi.mocked(api.setBudget);
+const upsertConfig = vi.mocked(api.upsertConfig);
+const useDecisionsMock = vi.mocked(useDecisions);
 let container: HTMLDivElement;
 let root: Root;
-
-const budget = {
-  session: { soft: 2, gate: 4, hard: 7 },
-  task: { soft: 5, gate: 10, hard: 25 },
-};
 
 beforeEach(() => {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
   getConfig.mockReset().mockResolvedValue({ config: {}, effective_goose_mode: 'auto' } as never);
-  getBudget.mockReset().mockResolvedValue(budget);
-  setBudget.mockReset().mockResolvedValue(budget);
+  upsertConfig.mockReset().mockResolvedValue({} as never);
+  useDecisionsMock.mockReturnValue({ data: null, loading: true, error: false } as never);
 });
 
 afterEach(() => {
@@ -44,36 +47,59 @@ afterEach(() => {
   container.remove();
 });
 
-async function mount() {
-  await act(async () => { root.render(<AutonomyPanel />); });
+async function mount(goto?: (key: string) => void) {
+  await act(async () => { root.render(<AutonomyPanel goto={goto} />); });
   await act(async () => { await Promise.resolve(); await Promise.resolve(); });
 }
 
 describe('AutonomyPanel guardrail wiring', () => {
-  it('loads current spend caps and persists slider changes through the budget endpoint', async () => {
+  it('persists a selectable trust level through the config endpoint', async () => {
     await mount();
-    expect(getBudget).toHaveBeenCalledTimes(1);
-    const sliders = Array.from(container.querySelectorAll('input[type="range"]')) as HTMLInputElement[];
-    expect(sliders.map(input => input.value)).toEqual(['7', '25']);
-
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
-      setter.call(sliders[0], '9');
-      sliders[0].dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    expect(setBudget).toHaveBeenCalledWith({ session: { hard: 9 } });
+    const chatBtn = Array.from(container.querySelectorAll('button')).find(
+      b => b.textContent?.includes('Chat only'),
+    ) as HTMLButtonElement;
+    expect(chatBtn).toBeTruthy();
+    await act(async () => { chatBtn.click(); });
+    expect(upsertConfig).toHaveBeenCalledWith('GOOSE_MODE', 'chat');
   });
 
-  it('renders per-action confirmation controls disabled and non-interactive', async () => {
+  it('keeps the hanging per-tool modes locked (honest "Soon" guard)', async () => {
     await mount();
-    const section = Array.from(container.querySelectorAll('section, div')).find(
-      node => node.firstElementChild?.textContent === 'Always confirm before…',
-    );
-    expect(section).toBeTruthy();
-    const toggles = Array.from(section!.querySelectorAll('button')) as HTMLButtonElement[];
-    expect(toggles).toHaveLength(5);
-    expect(toggles.every(toggle => toggle.disabled)).toBe(true);
-    toggles.forEach(toggle => toggle.click());
-    expect(api.upsertConfig).not.toHaveBeenCalled();
+    const locked = Array.from(container.querySelectorAll('button')).filter(
+      b => b.textContent?.includes('Ask every time') || b.textContent?.includes('Smart approve'),
+    ) as HTMLButtonElement[];
+    expect(locked).toHaveLength(2);
+    expect(locked.every(b => b.disabled)).toBe(true);
+    locked.forEach(b => b.click());
+    expect(upsertConfig).not.toHaveBeenCalled();
+  });
+
+  it('shows the pending-approvals strip from the shared Decision-Inbox hook', async () => {
+    useDecisionsMock.mockReturnValue({
+      data: { total_pending: 3, handled_count: 0, goals_in_flight: 1, oldest_pending_at: null },
+      loading: false,
+      error: false,
+    } as never);
+    await mount();
+    expect(container.textContent).toContain('Pending approvals: 3');
+    expect(container.textContent).toContain('Open Decision Inbox');
+  });
+
+  it('replaced the spend-cap sliders with a link to Settings → Spend', async () => {
+    const goto = vi.fn();
+    await mount(goto);
+    // No sliders left — the Spend pane is the one writer of the budget now.
+    expect(container.querySelectorAll('input[type="range"]')).toHaveLength(0);
+    const link = Array.from(container.querySelectorAll('button')).find(
+      b => b.textContent?.includes('Set spend caps in Spend'),
+    ) as HTMLButtonElement;
+    expect(link).toBeTruthy();
+    await act(async () => { link.click(); });
+    expect(goto).toHaveBeenCalledWith('spend');
+  });
+
+  it('dropped the preview "Always confirm before…" toggles', async () => {
+    await mount();
+    expect(container.textContent).not.toContain('Always confirm before…');
   });
 });

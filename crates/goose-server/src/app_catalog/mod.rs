@@ -53,11 +53,15 @@ mod tests {
             .expect("Grow must be in the navigate_app catalog");
         assert_eq!(grow.tool_type, "grow");
 
+        // The Inbox page lives inside Settings (2026-08 Console
+        // consolidation): the stable name still resolves, and the entry's
+        // fixed `section` deep-links to the right Settings pane.
         let inbox = catalog
             .find_by_name("Inbox")
             .expect("Inbox must be in the navigate_app catalog");
-        assert_eq!(inbox.tool_type, "inbox");
+        assert_eq!(inbox.tool_type, "settings");
         assert_eq!(inbox.panel_type, "overlay");
+        assert_eq!(inbox.section.as_deref(), Some("inbox"));
 
         // Skills is an overlay-only surface (no seeded workspace hosts it), so
         // navigate_app("Skills") depends entirely on this catalog entry.
@@ -68,11 +72,11 @@ mod tests {
         assert_eq!(skills.panel_type, "overlay");
     }
 
-    /// Sessions + Trace are overlay-only surfaces (no seeded workspace hosts
-    /// either), so — exactly like Inbox and Skills — the catalog entry is the
-    /// ONLY thing that makes navigate_app resolve them, and `panel_type` must be
-    /// `overlay` so useAppNavigate routes them to `setActivePanel(...)` rather
-    /// than the no-op workspace-host search.
+    /// Sessions + Trace live inside Settings now (2026-08 Console
+    /// consolidation): the stable names still resolve via the catalog, but
+    /// each entry routes to the Settings overlay with a fixed `section`
+    /// (`sessions` / `activity`) so useAppNavigate lands
+    /// `setActivePanel('settings')` + `pendingSettingsSection`.
     #[test]
     fn sessions_and_trace_are_overlay_navigable() {
         let catalog: AppCatalog =
@@ -81,29 +85,29 @@ mod tests {
         let sessions = catalog
             .find_by_name("Sessions")
             .expect("Sessions must be in the navigate_app catalog");
-        assert_eq!(sessions.tool_type, "sessions");
+        assert_eq!(sessions.tool_type, "settings");
         assert_eq!(sessions.panel_type, "overlay");
+        assert_eq!(sessions.section.as_deref(), Some("sessions"));
 
         let trace = catalog
             .find_by_name("Trace")
             .expect("Trace must be in the navigate_app catalog");
-        assert_eq!(trace.tool_type, "trace");
+        assert_eq!(trace.tool_type, "settings");
         assert_eq!(trace.panel_type, "overlay");
+        assert_eq!(trace.section.as_deref(), Some("activity"));
     }
 
-    /// Governance is an overlay-only surface (no seeded workspace hosts it), so
-    /// — like Inbox/Skills/Sessions/Trace — the catalog entry is the ONLY thing
-    /// that makes `navigate_app("Governance")` resolve, and it must route as an
-    /// overlay so useAppNavigate lands it via `setActivePanel('governance')`.
+    /// The Governance surface was removed (2026-08 ruling): its panels merged
+    /// into Settings (Spend / Sovereignty / Models / Autonomy). The catalog
+    /// must no longer offer it, or the agent would navigate users to a surface
+    /// the app doesn't mount.
     #[test]
-    fn governance_is_overlay_navigable() {
+    fn governance_is_gone_from_the_catalog() {
         let catalog: AppCatalog =
             serde_yaml::from_str(CATALOG_YAML).expect("catalog.yaml must parse");
-
-        let gov = catalog
-            .find_by_name("Governance")
-            .expect("Governance must be in the navigate_app catalog");
-        assert_eq!(gov.tool_type, "governance");
-        assert_eq!(gov.panel_type, "overlay");
+        assert!(
+            catalog.find_by_name("Governance").is_none(),
+            "Governance was folded into Settings and must not be navigable"
+        );
     }
 }

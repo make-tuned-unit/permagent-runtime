@@ -51,10 +51,11 @@ type RowResult = { ok: boolean; text: string };
  * project (documents), or the scheduler (a social_post draft card). Reads the
  * real `GET /api/inbox` and routes through the real
  * `POST /api/inbox/{id}/route`; Permagent never guesses where a file goes.
- * Rendered as an overlay when activePanel === 'inbox' (agent-navigable via
- * navigate_app("Inbox")).
+ * Hosted embedded inside Settings → Inbox (2026-08 Console consolidation:
+ * `embedded` strips the header/Close chrome and the Escape handler, both of
+ * which Settings provides). navigate_app("Inbox") deep-links to that pane.
  */
-export function InboxPanel() {
+export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
   const { gradient, colors } = useThemeHook();
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
   const [files, setFiles] = useState<InboxFile[] | null>(null);
@@ -81,10 +82,11 @@ export function InboxPanel() {
   }, []);
 
   useEffect(() => {
+    if (embedded) return; // the hosting Settings view owns Escape
     const h = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); dismiss(); } };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
-  }, [dismiss]);
+  }, [dismiss, embedded]);
 
   // Projects load lazily, the first time a project-scoped picker opens.
   const ensureProjects = useCallback(() => {
@@ -143,19 +145,21 @@ export function InboxPanel() {
 
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: gradient.shell, color: colors.text, fontFamily: font.body }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '20px 32px', borderBottom: `1px solid ${colors.border}` }}>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontFamily: font.display, fontSize: 18, fontWeight: 700, letterSpacing: '-0.01em' }}>Downloads inbox</div>
-          <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>
-            Files you download in the in-app browser land here — send them to the Brain, a project, or the post scheduler. You choose; nothing is routed for you.
+      {!embedded && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '20px 32px', borderBottom: `1px solid ${colors.border}` }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontFamily: font.display, fontSize: 18, fontWeight: 700, letterSpacing: '-0.01em' }}>Downloads inbox</div>
+            <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>
+              Files you download in the in-app browser land here — send them to the Brain, a project, or the post scheduler. You choose; nothing is routed for you.
+            </div>
           </div>
+          <button
+            onClick={dismiss}
+            style={{ height: 30, padding: '0 12px', borderRadius: 8, background: 'transparent', border: `1px solid ${colors.border}`, color: colors.textMuted, cursor: 'pointer', fontFamily: font.body, fontSize: 12 }}
+          >Close</button>
         </div>
-        <button
-          onClick={dismiss}
-          style={{ height: 30, padding: '0 12px', borderRadius: 8, background: 'transparent', border: `1px solid ${colors.border}`, color: colors.textMuted, cursor: 'pointer', fontFamily: font.body, fontSize: 12 }}
-        >Close</button>
-      </div>
-      <div style={{ flex: 1, overflow: 'auto', padding: '20px 32px' }}>
+      )}
+      <div style={{ flex: 1, overflow: 'auto', padding: embedded ? '16px 20px' : '20px 32px' }}>
         {files === null ? (
           <div style={{ color: colors.textDim, fontSize: 13 }}>Loading inbox…</div>
         ) : files.length === 0 ? (

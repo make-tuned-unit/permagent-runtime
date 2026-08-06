@@ -1,14 +1,9 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { useCommandCenter } from './lib/store';
+import { useCommandCenter, navigateToTool } from './lib/store';
 import { useTheme } from './styles/useTheme';
 import { Sidebar } from './components/sidebar/Sidebar';
-import { ConsoleTabStrip, isConsolePanel } from './components/console/ConsoleTabs';
 import { SettingsView } from './components/settings/SettingsView';
-import { InboxPanel } from './components/inbox/InboxPanel';
 import { SkillsPanel } from './components/skills/SkillsPanel';
-import { SessionsList } from './components/sessions/SessionsList';
-import { ExecutionTrace } from './components/trace/ExecutionTrace';
-import { GovernanceView } from './components/governance/GovernanceView';
 import { WorkspaceRenderer } from './components/workspaces/WorkspaceRenderer';
 import { WorkspaceSaveErrorChip } from './components/workspaces/WorkspaceSaveErrorChip';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
@@ -27,6 +22,7 @@ import { api, fileToBase64 } from './lib/api';
 import { createChatWindow } from './lib/chatWindow';
 import type { LayoutNode } from './lib/store';
 import { useAppNavigate } from './hooks/useAppNavigate';
+import { getOpenOnLaunch } from './lib/openOnLaunch';
 import { useVersionSkew } from './hooks/useVersionSkew';
 import { onRepaintRegain, forceCompositorRepaint } from './lib/repaintOnRegain';
 
@@ -37,19 +33,13 @@ function MainContent() {
   const workspacesLoaded = useCommandCenter(s => s.workspacesLoaded);
 
   const showSettings = activePanel === 'settings';
-  // Skills Library renders as a labeled overlay (mirrors inbox) so accepting a
-  // skill proposal — which sets activePanel:'skills' — lands on a real surface
-  // instead of a blank/unchanged screen. Also the target of navigate_app("Skills").
+  // Skills Library renders as a labeled overlay so accepting a skill proposal
+  // — which sets activePanel:'skills' — lands on a real surface instead of a
+  // blank/unchanged screen. Also the target of navigate_app("Skills").
+  // The old Console overlay (Sessions/Inbox/Trace/Governance) is gone: those
+  // pages live inside Settings now (2026-08 ruling) and deep links route
+  // through pendingSettingsSection.
   const showSkills = activePanel === 'skills';
-  // Session history renders as a labeled overlay (mirrors skills/inbox) so a user
-  // can browse/switch/rename/delete past conversations. Reached from the sidebar
-  // "Sessions" row; selecting a session loads it into the chat dock.
-  // Execution trace renders as a labeled overlay (mirrors sessions/skills/inbox).
-  // ExecutionTrace reads the global `events` buffer and needs no session id, so a
-  // global overlay is the honest entry point. Reached from the sidebar "Trace" row.
-  // Governance renders as a labeled overlay (mirrors trace/sessions/inbox): a
-  // global, session-less surface, so a global overlay is the honest entry point.
-  // Reached from the sidebar "Governance" row and navigate_app("Governance").
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
 
   if (!workspacesLoaded) {
@@ -60,7 +50,7 @@ function MainContent() {
     );
   }
 
-  if (!activeWorkspaceId && !showSettings && !showSkills && !isConsolePanel(activePanel)) {
+  if (!activeWorkspaceId && !showSettings && !showSkills) {
     return (
       <div className="flex h-full items-center justify-center text-dark-muted text-xs font-mono">
         No workspaces available
@@ -83,24 +73,11 @@ function MainContent() {
           <SkillsPanel onClose={() => setActivePanel('chat')} />
         </div>
       )}
-      {/* Console — Sessions/Inbox/Trace/Governance as tabs of ONE overlay
-          (2026-07-27 consolidation). Same panel components, shared chrome. */}
-      {isConsolePanel(activePanel) && (
-        <div className="absolute inset-0 z-10" style={{ display: 'flex', flexDirection: 'column' }}>
-          <ConsoleTabStrip active={activePanel} />
-          <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-            {activePanel === 'sessions' && <SessionsList onClose={() => setActivePanel('chat')} />}
-            {activePanel === 'inbox' && <InboxPanel />}
-            {activePanel === 'trace' && <ExecutionTrace onClose={() => setActivePanel('chat')} />}
-            {activePanel === 'governance' && <GovernanceView />}
-          </div>
-        </div>
-      )}
       {workspaces.map(ws => (
         <div
           key={ws.id}
           className="absolute inset-0"
-          style={{ display: (!showSettings && !showSkills && !isConsolePanel(activePanel) && ws.id === activeWorkspaceId) ? 'block' : 'none' }}
+          style={{ display: (!showSettings && !showSkills && ws.id === activeWorkspaceId) ? 'block' : 'none' }}
         >
           <ErrorBoundary surface="the workspace">
             <WorkspaceRenderer workspaceId={ws.id} />
@@ -237,6 +214,18 @@ function App() {
   useEffect(() => {
     setActivePanel('chat');
   }, [setActivePanel]);
+
+  // "Open on launch" (Settings → Preferences, LIVE): once workspaces have
+  // loaded, land on the user's chosen destination. 'default' keeps the
+  // existing behavior (default workspace). Applied exactly once per launch.
+  const workspacesLoaded = useCommandCenter(s => s.workspacesLoaded);
+  const launchApplied = useRef(false);
+  useEffect(() => {
+    if (phase !== 'app' || !workspacesLoaded || launchApplied.current) return;
+    launchApplied.current = true;
+    const pref = getOpenOnLaunch();
+    if (pref !== 'default') navigateToTool(pref);
+  }, [phase, workspacesLoaded]);
 
   // Cmd+, opens settings (macOS convention)
   useEffect(() => {

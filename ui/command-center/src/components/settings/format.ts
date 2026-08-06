@@ -1,6 +1,7 @@
 /**
- * Pure formatting + mapping helpers for the Governance view. Kept separate from
- * the components so they are unit-testable without a DOM.
+ * Pure formatting + mapping helpers for the data-dense Settings panes (Spend,
+ * Sovereignty, Models — migrated from the retired Governance surface). Kept
+ * separate from the components so they are unit-testable without a DOM.
  */
 
 import type { ThemeColors } from '../../styles/tokens';

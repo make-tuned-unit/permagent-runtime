@@ -1,9 +1,11 @@
 /**
- * Governance → Spend. The one panel that needed a new read: per-session and
- * per-project token + dollar consumption with a running total, from the REAL
- * `GET /api/governance/spend` (which aggregates the cost_ledger rollup). Also
- * the optional budget: the session ceiling the cost-router enforces by gating
- * the agent through the Decision Inbox — set here via `POST /api/governance/budget`.
+ * Settings → Spend (moved here when the Governance surface folded into
+ * Settings). Per-session and per-project token + dollar consumption with a
+ * running total, from the REAL `GET /api/governance/spend` (which aggregates
+ * the cost_ledger rollup). Also the full budget the cost-router enforces by
+ * gating the agent through the Decision Inbox — BOTH the per-session and the
+ * per-task ceilings — set here via `POST /api/governance/budget`. This panel
+ * fully supersedes the old Autonomy "Spend cap" sliders.
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -18,10 +20,14 @@ export function SpendPanel() {
   const [snap, setSnap] = useState<SpendSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Editable session-ceiling draft (the "spend cap for this machine").
+  // Editable ceiling drafts — session (the "spend cap for this machine") and
+  // task (the tighter per-unit-of-work cap the old Autonomy slider wrote).
   const [soft, setSoft] = useState('');
   const [gate, setGate] = useState('');
   const [hard, setHard] = useState('');
+  const [taskSoft, setTaskSoft] = useState('');
+  const [taskGate, setTaskGate] = useState('');
+  const [taskHard, setTaskHard] = useState('');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -33,6 +39,9 @@ export function SpendPanel() {
         setSoft(String(s.budget.session.soft));
         setGate(String(s.budget.session.gate));
         setHard(String(s.budget.session.hard));
+        setTaskSoft(String(s.budget.task.soft));
+        setTaskGate(String(s.budget.task.gate));
+        setTaskHard(String(s.budget.task.hard));
       })
       .catch(() => setError('Could not load spend.'));
   }, []);
@@ -52,28 +61,35 @@ export function SpendPanel() {
         }
         return parsed;
       };
-      const parsedSoft = parseCeiling(soft);
-      const parsedGate = parseCeiling(gate);
-      const parsedHard = parseCeiling(hard);
-      const patch = {
-        session: {
+      const ceilings = (s: string, g: string, h: string) => {
+        const parsedSoft = parseCeiling(s);
+        const parsedGate = parseCeiling(g);
+        const parsedHard = parseCeiling(h);
+        return {
           ...(parsedSoft !== undefined && { soft: parsedSoft }),
           ...(parsedGate !== undefined && { gate: parsedGate }),
           ...(parsedHard !== undefined && { hard: parsedHard }),
-        },
+        };
+      };
+      const patch = {
+        session: ceilings(soft, gate, hard),
+        task: ceilings(taskSoft, taskGate, taskHard),
       };
       const budget = await api.setBudget(patch);
       setSnap(prev => (prev ? { ...prev, budget } : prev));
       setSoft(String(budget.session.soft));
       setGate(String(budget.session.gate));
       setHard(String(budget.session.hard));
+      setTaskSoft(String(budget.task.soft));
+      setTaskGate(String(budget.task.gate));
+      setTaskHard(String(budget.task.hard));
       setSaved(true);
     } catch {
       setError('Could not save the budget.');
     } finally {
       setSaving(false);
     }
-  }, [soft, gate, hard]);
+  }, [soft, gate, hard, taskSoft, taskGate, taskHard]);
 
   if (error && snap === null) {
     return <div style={{ color: colors.textMuted, fontSize: 13 }}>{error}</div>;
@@ -82,7 +98,7 @@ export function SpendPanel() {
     return <div style={{ color: colors.textDim, fontSize: 13 }}>Loading spend…</div>;
   }
 
-  const numInput = (v: string, on: (s: string) => void, label: string) => (
+  const numInput = (v: string, on: (s: string) => void, label: string, scope = 'Session') => (
     <label style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 90 }}>
       <span style={{ fontSize: 10, letterSpacing: '0.06em', textTransform: 'uppercase', color: colors.textDim }}>{label}</span>
       <div style={{ display: 'flex', alignItems: 'center', gap: 4, height: 30, padding: '0 8px', borderRadius: 8, background: colors.inputBg, border: `1px solid ${colors.border}` }}>
@@ -90,7 +106,7 @@ export function SpendPanel() {
         <input
           type="number" min="0" step="0.5" value={v}
           onChange={e => on(e.target.value)}
-          aria-label={`Session ${label} ceiling in USD`}
+          aria-label={`${scope} ${label} ceiling in USD`}
           style={{ flex: 1, minWidth: 0, background: 'transparent', border: 'none', outline: 'none', color: colors.text, fontFamily: font.mono, fontSize: 13, ...tabularNums }}
         />
       </div>
@@ -114,14 +130,23 @@ export function SpendPanel() {
 
       {/* Budget */}
       <Card>
-        <SectionLabel>Session budget — an optional cap you set</SectionLabel>
+        <SectionLabel>Budget — optional caps you set</SectionLabel>
         <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 8, marginBottom: 12 }}>
           Enforced locally: at the gate ceiling the agent pauses and asks in the Decision Inbox before spending more; at the hard ceiling it stops and preserves your work. Leave high to run uncapped.
         </div>
+        <div style={{ fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: colors.textDim, marginBottom: 6 }}>Per session</div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
           {numInput(soft, setSoft, 'Warn (soft)')}
           {numInput(gate, setGate, 'Ask (gate)')}
           {numInput(hard, setHard, 'Stop (hard)')}
+        </div>
+        <div style={{ fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: colors.textDim, margin: '14px 0 6px' }}>Per task</div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          {numInput(taskSoft, setTaskSoft, 'Warn (soft)', 'Task')}
+          {numInput(taskGate, setTaskGate, 'Ask (gate)', 'Task')}
+          {numInput(taskHard, setTaskHard, 'Stop (hard)', 'Task')}
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 14 }}>
           <button
             onClick={saveBudget}
             disabled={saving}
@@ -131,7 +156,7 @@ export function SpendPanel() {
               cursor: saving ? 'default' : 'pointer', fontFamily: font.body, fontSize: 12, fontWeight: 600,
             }}
           >
-            {saving ? 'Saving…' : 'Save cap'}
+            {saving ? 'Saving…' : 'Save caps'}
           </button>
           {saved && <span style={{ fontSize: 12, color: colors.success }}>Saved</span>}
         </div>

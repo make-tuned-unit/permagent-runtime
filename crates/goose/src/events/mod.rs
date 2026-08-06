@@ -35,15 +35,16 @@ pub const WORLD_VIEW_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
 /// Self-knowledge descriptor for the Execution trace surface — a live view over
 /// this same event bus. Lets the agent point the user at the raw event stream to
 /// inspect what the runtime is doing. Static: editorial, no live status claim.
-/// Reachable as an overlay (no seeded workspace hosts it) — the agent opens it
-/// via `navigate_app("Trace")`.
+/// Lives as the Activity page inside Settings (2026-08 Console consolidation) —
+/// the agent opens it via `navigate_app("Trace")`, which deep-links to
+/// Settings → Activity.
 pub const TRACE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
     crate::agents::self_knowledge::FeatureDescriptor {
         id: "trace",
         display_name: "Execution trace",
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
         what_it_does:
-            "A live, chronological readout of the runtime's most recent events straight off the running system's event streams — each entry a timestamp and event type as tool calls, worker activity, navigations, and lifecycle signals fire in real time. It reflects the whole running system and needs no session id",
+            "A live, chronological readout of the runtime's most recent events straight off the running system's event streams — the Activity page in Settings, each entry a timestamp and event type as tool calls, worker activity, navigations, and lifecycle signals fire in real time. It reflects the whole running system and needs no session id",
         why_it_matters:
             "It is the low-level, in-the-moment 'what is the system doing right now' view for inspecting or debugging behavior as it happens — distinct from the Activity timeline, which is the curated, durable record of what your agents did; when the user wants to watch the raw event stream or see what just fired under the hood, bring them here",
         state_source: crate::agents::self_knowledge::StateSource::Static,
