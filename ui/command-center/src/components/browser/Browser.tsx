@@ -321,6 +321,20 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
   const syncBounds = useCallback(() => {
     const inv = apiRef.current;
     if (!containerRef.current || !inv) return;
+
+    // A transient DOM overlay is up (record-meeting picker, modals): the
+    // native webview always composites above DOM, so the only correct bounds
+    // are offscreen. This must live HERE, not only in the overlay effect —
+    // the 500 ms pump and the ResizeObserver both call syncBounds, and
+    // without this check they snapped the webview back over the overlay
+    // within a tick of the hide (reported live 2026-08-06).
+    if (useCommandCenter.getState().overlayBlockingBrowser > 0) {
+      tabsRef.current.forEach((t) => {
+        if (t.webviewId) inv.invoke('hide_browser', { webviewId: t.webviewId }).catch(() => {});
+      });
+      return;
+    }
+
     const rect = containerRef.current.getBoundingClientRect();
 
     const currentTabs = tabsRef.current;
