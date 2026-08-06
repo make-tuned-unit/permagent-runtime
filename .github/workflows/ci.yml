@@ -203,6 +203,29 @@ jobs:
       - name: Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
 
+  ios-tests:
+    # Hosted-app-free iOS logic tests: the chat stream parser / segment-break
+    # accumulator / transcript restoration (ChatStreamTests) and the VoiceVAD
+    # turn machine. The PermagentTests target compiles the files under test
+    # directly — no app dependency, no signing, no install (see project.yml) —
+    # so this stays a minutes-scale job. Without it those regressions only
+    # fail on a developer's machine, which is how the segment-glue bug shipped.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install xcodegen
+        run: brew install xcodegen
+      - name: Generate project
+        working-directory: ios/PermagentMobile
+        run: xcodegen generate
+      - name: Run logic tests
+        working-directory: ios/PermagentMobile
+        run: |
+          DEVICE=$(xcrun simctl list devices available | grep -oE 'iPhone [^(]+' | head -1 | xargs)
+          echo "Using simulator: ${DEVICE}"
+          xcodebuild -project PermagentMobile.xcodeproj -scheme PermagentTests \
+            -destination "platform=iOS Simulator,name=${DEVICE}" test
+
   build:
     runs-on: ubuntu-latest
     steps:

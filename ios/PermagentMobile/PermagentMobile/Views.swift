@@ -444,12 +444,8 @@ struct GoalsView: View {
 
 // ── Chat (real: send to the hub's /reply, stream Henry's answer) ─────────────
 
-struct ChatBubble: Identifiable {
-    let id = UUID()
-    let role: String   // "user" | "assistant"
-    var text: String
-    var thinking: String = ""
-}
+// ChatBubble and the stream/transcript logic live in ChatStream.swift —
+// Foundation-only, compiled directly by the regression tests.
 
 /// Reasoning disclosure — mirrors the desktop chat: the model's thinking in a
 /// collapsible block that auto-opens while it's still thinking (no answer yet)
@@ -731,22 +727,13 @@ struct ChatView: View {
             Text("✻")
                 .font(.system(size: 40))
                 .foregroundStyle(ChatSurface.spark)
-            Text(Self.greeting(hour: Calendar.current.component(.hour, from: Date())))
+            Text(ChatGreeting.forHour(Calendar.current.component(.hour, from: Date())))
                 .font(.chatGreeting)
                 .foregroundStyle(ChatSurface.text.opacity(0.9))
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 150)
-    }
-
-    static func greeting(hour: Int) -> String {
-        switch hour {
-        case 5..<12: return "Morning thoughts?"
-        case 12..<17: return "What's on deck?"
-        case 17..<22: return "Evening plans?"
-        default: return "Moonlit chat?"
-        }
     }
 
     /// Shown while a reply is finishing on the hub without a live stream here.
@@ -948,26 +935,21 @@ struct ChatView: View {
         Task {
             var releasedForApproval = false
             var showingApprovalNotice = false
+            // The paragraph-break bookkeeping (per channel — a break announced
+            // by a thinking-only delta must still separate the next text) is
+            // AssistantAccumulator's, regression-tested in ChatStreamTests.
+            var acc = AssistantAccumulator()
             do {
                 let sid = try await resolveSession()
                 for try await delta in APIClient.shared.replyStream(text, sessionId: sid) {
                     if idx < messages.count {
                         if showingApprovalNotice && (!delta.text.isEmpty || !delta.thinking.isEmpty) {
-                            messages[idx].text = ""
-                            messages[idx].thinking = ""
+                            acc.reset()
                             showingApprovalNotice = false
                         }
-                        // A segment break means tool activity separated this
-                        // slice from the last — the reader gets a paragraph,
-                        // not "…works.Let me dig deeper…".
-                        if delta.segmentBreak && !messages[idx].text.isEmpty && !delta.text.isEmpty {
-                            messages[idx].text += "\n\n"
-                        }
-                        if delta.segmentBreak && !messages[idx].thinking.isEmpty && !delta.thinking.isEmpty {
-                            messages[idx].thinking += "\n\n"
-                        }
-                        messages[idx].text += delta.text
-                        messages[idx].thinking += delta.thinking
+                        acc.apply(delta)
+                        messages[idx].text = acc.text
+                        messages[idx].thinking = acc.thinking
                         if let approval = delta.awaitingApproval {
                             messages[idx].text = "Waiting for your approval in Decisions — I asked to use \(approval.toolName)."
                             sending = false
@@ -985,7 +967,7 @@ struct ChatView: View {
                 // socket). Mark the turn live and catch up from the stored
                 // transcript instead of painting a scary error over work that
                 // is still happening.
-                if Self.isConnectionLoss(error) {
+                if ChatConnection.isLoss(error) {
                     hubTurnLive = true
                     if idx < messages.count && messages[idx].text.isEmpty && messages[idx].thinking.isEmpty {
                         withAnimation(Motion.ease) { _ = messages.popLast() }
@@ -999,22 +981,6 @@ struct ChatView: View {
             }
             if !releasedForApproval { sending = false }
             endBackgroundGrace()
-        }
-    }
-
-    /// The network failures that mean "this device stopped watching", not
-    /// "the hub failed". Locking the phone or switching apps mid-stream
-    /// surfaces as any of these depending on how iOS tore the socket down —
-    /// all of them get the quiet catch-up path, never a scary error.
-    private static func isConnectionLoss(_ error: Error) -> Bool {
-        guard let urlError = error as? URLError else { return false }
-        switch urlError.code {
-        case .networkConnectionLost, .notConnectedToInternet, .timedOut, .cancelled,
-             .backgroundSessionWasDisconnected, .dataNotAllowed, .internationalRoamingOff,
-             .callIsActive:
-            return true
-        default:
-            return false
         }
     }
 

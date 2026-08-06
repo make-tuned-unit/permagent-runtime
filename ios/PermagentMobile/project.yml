@@ -130,6 +130,7 @@ targets:
     sources:
       - path: PermagentMobileTests
       - path: PermagentMobile/VoiceVAD.swift
+      - path: PermagentMobile/ChatStream.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ai.permagent.mobile.tests

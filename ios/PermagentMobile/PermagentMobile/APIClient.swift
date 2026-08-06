@@ -160,56 +160,21 @@ actor APIClient {
                     if http.statusCode == 401 { throw APIError.unauthorized }
                     guard (200..<300).contains(http.statusCode) else { throw APIError.badStatus(http.statusCode) }
 
-                    // Tool activity between text segments marks a paragraph
-                    // boundary: the model's next sentence is a NEW thought, and
-                    // gluing it to the last one ("…works.Let me dig deeper…")
-                    // was the missing-space bug reported 2026-08-06.
-                    var segmentBreakPending = false
+                    // The parsing — including the segment-break bookkeeping
+                    // that fixes "…works.Let me dig deeper…" — lives in
+                    // ReplyStreamParser (ChatStream.swift) so the regression
+                    // tests can drive it with raw SSE lines.
+                    var parser = ReplyStreamParser()
                     for try await line in bytes.lines {
-                        guard line.hasPrefix("data: ") else { continue }
-                        let json = String(line.dropFirst(6))
-                        guard let data = json.data(using: .utf8),
-                              let event = try? JSONDecoder().decode(ReplyEvent.self, from: data)
-                        else { continue }
-                        switch event.type {
-                        case "Message":
-                            if let m = event.message, m.role == "assistant" {
-                                let t = m.content.compactMap(\.text).joined()
-                                let th = m.content.compactMap(\.thinking).joined()
-                                let hasToolActivity = m.content.contains {
-                                    $0.type == "toolRequest" || $0.type == "toolResponse"
-                                        || $0.type == "toolConfirmationRequest"
-                                }
-                                let action = m.content.first { $0.type == "actionRequired" }
-                                let approval = action.map {
-                                    AwaitingApproval(
-                                        toolName: $0.toolName ?? $0.data?.toolName ?? "a tool",
-                                        actionId: $0.id ?? $0.data?.id
-                                    )
-                                }
-                                if !t.isEmpty || !th.isEmpty || approval != nil {
-                                    continuation.yield(ReplyDelta(
-                                        text: t,
-                                        thinking: th,
-                                        awaitingApproval: approval,
-                                        segmentBreak: segmentBreakPending
-                                    ))
-                                    segmentBreakPending = false
-                                }
-                                if hasToolActivity { segmentBreakPending = true }
-                            } else if let m = event.message, m.role == "user" {
-                                // Tool RESULTS come back as user-role frames —
-                                // they end a segment just as the request did.
-                                if m.content.contains(where: { $0.type == "toolResponse" }) {
-                                    segmentBreakPending = true
-                                }
-                            }
-                        case "Finish":
-                            continuation.finish(); return
-                        case "Error":
-                            continuation.finish(throwing: APIError.daemon(event.error ?? "The hub reported an unknown error.")); return
-                        default:
+                        switch parser.consume(line: line) {
+                        case .none:
                             break
+                        case .delta(let delta):
+                            continuation.yield(delta)
+                        case .finish:
+                            continuation.finish(); return
+                        case .error(let message):
+                            continuation.finish(throwing: APIError.daemon(message)); return
                         }
                     }
                     continuation.finish()
@@ -380,67 +345,9 @@ extension APIClient {
     }
 }
 
-// ── /reply request + event shapes (mirror the daemon's serde) ────────────────
-
-/// One streamed slice of the reply: answer `text`, reasoning `thinking`, and/or
-/// an approval request that has parked the agent. `segmentBreak` is true when
-/// tool activity separated this slice from the previous one — the renderer owes
-/// the reader a paragraph break there.
-struct ReplyDelta {
-    let text: String
-    let thinking: String
-    let awaitingApproval: AwaitingApproval?
-    var segmentBreak: Bool = false
-}
-struct AwaitingApproval { let toolName: String; let actionId: String? }
-
-/// Thinking blocks carry `thinking`; answer blocks carry `text`; approval blocks
-/// carry their action details in `data` (and older hubs may put them directly on
-/// the block).
-private struct ReplyContent: Codable {
-    let type: String
-    let text: String?
-    let thinking: String?
-    let id: String?
-    let toolName: String?
-    let data: ReplyAction?
-
-    init(
-        type: String,
-        text: String? = nil,
-        thinking: String? = nil,
-        id: String? = nil,
-        toolName: String? = nil,
-        data: ReplyAction? = nil
-    ) {
-        self.type = type
-        self.text = text
-        self.thinking = thinking
-        self.id = id
-        self.toolName = toolName
-        self.data = data
-    }
-}
-private struct ReplyAction: Codable {
-    let id: String?
-    let toolName: String?
-}
-private struct ReplyMeta: Codable { let userVisible: Bool; let agentVisible: Bool }
-private struct ReplyMessage: Codable {
-    let role: String
-    let created: Int
-    let content: [ReplyContent]
-    let metadata: ReplyMeta
-}
-private struct ReplyRequest: Encodable {
-    let user_message: ReplyMessage
-    let session_id: String
-}
-private struct ReplyEvent: Decodable {
-    let type: String
-    let message: ReplyMessage?
-    let error: String?
-}
+// The /reply request + event shapes, the stream parser, and the transcript
+// mapping all live in ChatStream.swift — Foundation-only so the regression
+// tests compile them without the app target.
 
 /// A stable per-install chat session id so the conversation persists across
 /// launches.
@@ -469,26 +376,13 @@ enum MobileSession {
     /// when it was live — the user's words and the agent's answers — not a
     /// transcript of every tool call underneath them.
     static func adopt(_ id: String) async throws -> [ChatBubble] {
-        struct Content: Decodable { let type: String; let text: String?; let thinking: String? }
-        struct Message: Decodable { let role: String; let content: [Content] }
-        struct Session: Decodable { let conversation: [Message]? }
+        struct Session: Decodable { let conversation: [StoredMessage]? }
 
         let session = try await APIClient.shared.get("/api/sessions/\(id)", as: Session.self)
         UserDefaults.standard.set(id, forKey: key)
-        // Distinct text blocks within one stored message are distinct segments
-        // (the model spoke, used a tool, spoke again) — joined with a paragraph
-        // break, never glued ("…works.Let me dig deeper…").
-        return (session.conversation ?? []).compactMap { m in
-            guard m.role == "user" || m.role == "assistant" else { return nil }
-            let text = m.content.compactMap(\.text)
-                .filter { !$0.isEmpty }
-                .joined(separator: "\n\n")
-            let thinking = m.content.compactMap(\.thinking)
-                .filter { !$0.isEmpty }
-                .joined(separator: "\n\n")
-            guard !text.isEmpty || !thinking.isEmpty else { return nil }
-            return ChatBubble(role: m.role, text: text, thinking: thinking)
-        }
+        // The mapping (segment joins, role filtering) is ChatTranscript's —
+        // pure and regression-tested in ChatStreamTests.
+        return ChatTranscript.bubbles(from: session.conversation ?? [])
     }
 
     /// The persisted conversation id, if any — read-only, never creates.
