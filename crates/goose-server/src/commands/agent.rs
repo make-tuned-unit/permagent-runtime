@@ -160,6 +160,10 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
     // inbox triage. Spawns a loop only when PERMAGENT_CONCIERGE_ENABLED is on.
     crate::concierge::spawn(app_state.clone());
 
+    // Strix — the security sweep. No-ops unless `strix_enabled` is set, and
+    // says so in the log either way.
+    crate::strix::spawn(app_state.clone());
+
     // Central notification policy (#66): classify workflow facts once, then
     // route them according to the user's channel thresholds.
     crate::notification_router::spawn(app_state.clone());
