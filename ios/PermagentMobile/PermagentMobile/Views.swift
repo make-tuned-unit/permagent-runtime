@@ -503,6 +503,7 @@ struct ReasoningDisclosure: View {
 
 struct ChatView: View {
     @ObservedObject private var identity = AgentIdentity.shared
+    @Environment(\.scenePhase) private var scenePhase
     @State private var draft = ""
     @State private var messages: [ChatBubble] = []
     @State private var sending = false
@@ -512,6 +513,13 @@ struct ChatView: View {
     @State private var sessionError: String?
     @State private var showVoice = false
     @State private var showHistory = false
+    /// True when the turn may still be running ON THE HUB while this device
+    /// stopped watching (locked, backgrounded, or the stream dropped). The hub
+    /// keeps working either way; this flag is what makes the phone catch up
+    /// instead of showing a torn reply.
+    @State private var hubTurnLive = false
+    /// Grace window so a short lock doesn't kill the stream immediately.
+    @State private var bgTask: UIBackgroundTaskIdentifier = .invalid
     /// Owns the keyboard. Without this there was no way to put it away: it
     /// covered the tab bar, so the user could neither leave chat nor reach the
     /// send button's row — reported 2026-08-05.
@@ -597,70 +605,38 @@ struct ChatView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 10) {
-                            if messages.isEmpty {
-                                Text("Ask \(identity.name) to do something on your hub — open a site in the desktop browser, dispatch a goal, check the Brain. It runs on your Mac; you watch it here.")
-                                    .font(.brandCaption)
-                                    .foregroundStyle(Brand.textMuted)
-                                    .padding(.top, 48)
-                                    .padding(.horizontal, 4)
+            ZStack {
+                ChatSurface.bg.ignoresSafeArea()
+                VStack(spacing: 0) {
+                    header
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 18) {
+                                if messages.isEmpty {
+                                    emptyState
+                                }
+                                ForEach(messages) { row($0) }
+                                if hubTurnLive {
+                                    catchingUpRow
+                                }
                             }
-                            ForEach(messages) { bubble($0) }
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 12)
                         }
-                        .padding()
-                    }
-                    // Drag the transcript down to put the keyboard away — the
-                    // native idiom, and the one people try first.
-                    .scrollDismissesKeyboard(.interactively)
-                    .onChange(of: messages.count) { _, _ in
-                        if let last = messages.last {
-                            withAnimation(Motion.spring) { proxy.scrollTo(last.id, anchor: .bottom) }
+                        // Drag the transcript down to put the keyboard away —
+                        // the native idiom, and the one people try first.
+                        .scrollDismissesKeyboard(.interactively)
+                        .onChange(of: messages.count) { _, _ in
+                            if let last = messages.last {
+                                withAnimation(Motion.spring) { proxy.scrollTo(last.id, anchor: .bottom) }
+                            }
                         }
                     }
+                    composer
                 }
-                composer
             }
-            .background(Brand.shell)
-            .navigationTitle(identity.displayName)
+            .toolbar(.hidden, for: .navigationBar)
             .toolbar {
-                // Ending a conversation had no affordance at all: the thread
-                // grew forever and the only way to start clean was to delete
-                // the app (reported 2026-08-04). Destructive-styled and
-                // confirmed, because it is the one action here that cannot be
-                // undone from the phone.
-                // Both one tap, the way every chat app does it: the list of
-                // conversations, and a new one. Burying them in a menu made
-                // the two most common actions cost two taps each.
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        composerFocused = false
-                        showHistory = true
-                    } label: {
-                        Image(systemName: "clock.arrow.circlepath")
-                            .font(.body.weight(.semibold))
-                            .foregroundStyle(Brand.textMuted)
-                    }
-                    .accessibilityLabel("Past conversations")
-                }
-                ToolbarItem(placement: .topBarLeading) {
-                    // No confirmation: starting a new conversation is fully
-                    // reversible now that past ones are one tap away, and the
-                    // old thread is never deleted — it stays on the hub. A
-                    // destructive-styled confirm here was overclaiming.
-                    Button {
-                        composerFocused = false
-                        newConversation()
-                    } label: {
-                        Image(systemName: "square.and.pencil")
-                            .font(.body.weight(.semibold))
-                            .foregroundStyle(Brand.textMuted)
-                    }
-                    .disabled(messages.isEmpty && sessionId == nil)
-                    .accessibilityLabel("New conversation")
-                }
                 // The escape hatch: with the keyboard up it covers the tab
                 // bar, so this is the only visible way back out to the rest
                 // of the app.
@@ -668,20 +644,7 @@ struct ChatView: View {
                     Spacer()
                     Button("Done") { composerFocused = false }
                         .font(.body.weight(.semibold))
-                        .foregroundStyle(Brand.cyan)
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    // Straight in. No await before presenting: VoiceView resolves
-                    // the session itself (minting one if this chat has never been
-                    // sent to), so voice does not require typing a message first
-                    // and a resolution failure shows ON the voice screen instead
-                    // of sliding up an empty cover.
-                    Button { showVoice = true } label: {
-                        Image(systemName: "waveform")
-                            .font(.body.weight(.semibold))
-                            .foregroundStyle(Brand.cyanInk)
-                    }
-                    .accessibilityLabel("Talk with \(identity.name)")
+                        .foregroundStyle(ChatSurface.spark)
                 }
             }
             // Voice shares the chat's hub session so spoken turns land in the
@@ -700,59 +663,229 @@ struct ChatView: View {
             }
             // Tactile: a light tap when you send.
             .sensoryFeedback(.impact(weight: .light), trigger: sentCount)
+            // The hub finishes the turn whether or not this device is
+            // watching. Coming back to the foreground, catch up from the
+            // hub's stored transcript rather than trusting whatever half of
+            // the stream made it here.
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active && hubTurnLive {
+                    Task { await catchUpFromHub() }
+                }
+            }
+            // Cold launch: put the ongoing conversation back on screen. A
+            // reply that finished while the app was closed is simply THERE —
+            // and one still running shows the catching-up row until it lands.
+            .task { await initialRestore() }
         }
     }
 
-    private func bubble(_ m: ChatBubble) -> some View {
+    // ── Chrome ──────────────────────────────────────────────────────────────
+
+    /// The two-cluster header: conversations on the left, voice on the right.
+    private var header: some View {
         HStack {
-            if m.role == "user" { Spacer(minLength: 44) }
-            VStack(alignment: .leading, spacing: 7) {
-                if m.role != "user" && !m.thinking.isEmpty {
-                    ReasoningDisclosure(thinking: m.thinking, hasAnswer: !m.text.isEmpty)
+            HStack(spacing: 0) {
+                Button {
+                    composerFocused = false
+                    showHistory = true
+                } label: {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(ChatSurface.muted)
+                        .frame(width: 40, height: 36)
                 }
-                if m.role != "user" && m.text.isEmpty && m.thinking.isEmpty {
-                    ThinkingDots()
-                } else if !m.text.isEmpty {
-                    Text(m.text)
-                        .font(.brandBody)
-                        .foregroundStyle(m.role == "user" ? Brand.onAccent : Brand.text)
-                        .textSelection(.enabled)
+                .accessibilityLabel("Past conversations")
+                // No confirmation: starting a new conversation is fully
+                // reversible now that past ones are one tap away, and the old
+                // thread is never deleted — it stays on the hub.
+                Button {
+                    composerFocused = false
+                    newConversation()
+                } label: {
+                    Image(systemName: "square.and.pencil")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(ChatSurface.muted)
+                        .frame(width: 40, height: 36)
                 }
+                .disabled(messages.isEmpty && sessionId == nil)
+                .accessibilityLabel("New conversation")
             }
-            .padding(12)
-            .background(m.role == "user" ? Brand.cyan : Brand.surface)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            if m.role != "user" { Spacer(minLength: 44) }
+            .background(ChatSurface.raised, in: Capsule())
+            .overlay(Capsule().strokeBorder(ChatSurface.border, lineWidth: 1))
+
+            Spacer()
+
+            Button { showVoice = true } label: {
+                Image(systemName: "waveform")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(ChatSurface.text)
+                    .frame(width: 38, height: 38)
+                    .background(ChatSurface.raised, in: Circle())
+                    .overlay(Circle().strokeBorder(ChatSurface.border, lineWidth: 1))
+            }
+            .accessibilityLabel("Talk with \(identity.name)")
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 6)
+        .padding(.bottom, 2)
+    }
+
+    /// Centered spark + a quiet serif greeting, sized to the hour.
+    private var emptyState: some View {
+        VStack(spacing: 22) {
+            Text("✻")
+                .font(.system(size: 40))
+                .foregroundStyle(ChatSurface.spark)
+            Text(Self.greeting(hour: Calendar.current.component(.hour, from: Date())))
+                .font(.chatGreeting)
+                .foregroundStyle(ChatSurface.text.opacity(0.9))
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 150)
+    }
+
+    static func greeting(hour: Int) -> String {
+        switch hour {
+        case 5..<12: return "Morning thoughts?"
+        case 12..<17: return "What's on deck?"
+        case 17..<22: return "Evening plans?"
+        default: return "Moonlit chat?"
+        }
+    }
+
+    /// Shown while a reply is finishing on the hub without a live stream here.
+    private var catchingUpRow: some View {
+        HStack(spacing: 10) {
+            ThinkingDots()
+            Text("\(identity.nameCapitalized) is still working on the hub — the reply lands here when it's done.")
+                .font(.brandCaption)
+                .foregroundStyle(ChatSurface.muted)
+        }
+        .padding(.top, 2)
+    }
+
+    // ── Transcript ──────────────────────────────────────────────────────────
+
+    /// Claude-style rows: the user's words in a soft card on the right; the
+    /// assistant's prose set directly on the page in a serif — the reading
+    /// surface is the page, not a bubble.
+    private func row(_ m: ChatBubble) -> some View {
+        Group {
+            if m.role == "user" {
+                HStack {
+                    Spacer(minLength: 56)
+                    Text(m.text)
+                        .font(.chatUser)
+                        .foregroundStyle(ChatSurface.text)
+                        .textSelection(.enabled)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(ChatSurface.raised)
+                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    if !m.thinking.isEmpty {
+                        ReasoningDisclosure(thinking: m.thinking, hasAnswer: !m.text.isEmpty)
+                    }
+                    if m.text.isEmpty && m.thinking.isEmpty {
+                        ThinkingDots()
+                    } else if !m.text.isEmpty {
+                        Text(m.text)
+                            .font(.chatProse)
+                            .lineSpacing(4)
+                            .foregroundStyle(ChatSurface.text)
+                            .textSelection(.enabled)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .id(m.id)
         .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
+    // ── Composer ────────────────────────────────────────────────────────────
+
+    /// One rounded card: the field on top, controls beneath — plus-menu on the
+    /// left, voice / send on the right. Send replaces voice the moment there
+    /// is something to send.
     private var composer: some View {
-        HStack(spacing: 8) {
-            TextField("Ask \(identity.name)…", text: $draft, axis: .vertical)
-                .lineLimit(1...4)
-                .padding(12)
-                .background(Brand.surface)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .foregroundStyle(Brand.text)
+        VStack(spacing: 10) {
+            TextField("Chat with \(identity.nameCapitalized)", text: $draft, axis: .vertical)
+                .lineLimit(1...5)
+                .font(.system(size: 16))
+                .foregroundStyle(ChatSurface.text)
+                .tint(ChatSurface.spark)
                 .focused($composerFocused)
-                .submitLabel(.send)
-            Button {
-                send()
-            } label: {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.title2)
-                    .foregroundStyle(canSend ? Brand.cyan : Brand.textDim)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 10) {
+                Menu {
+                    Button {
+                        newConversation()
+                    } label: {
+                        Label("New conversation", systemImage: "square.and.pencil")
+                    }
+                    Button {
+                        composerFocused = false
+                        showHistory = true
+                    } label: {
+                        Label("Past conversations", systemImage: "clock.arrow.circlepath")
+                    }
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(ChatSurface.text)
+                        .frame(width: 34, height: 34)
+                        .background(ChatSurface.control, in: Circle())
+                }
+                Text(identity.nameCapitalized)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(ChatSurface.muted)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(ChatSurface.control, in: Capsule())
+                Spacer()
+                if canSend {
+                    Button { send() } label: {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(ChatSurface.onSpark)
+                            .frame(width: 34, height: 34)
+                            .background(ChatSurface.spark, in: Circle())
+                    }
+                    .transition(.scale.combined(with: .opacity))
+                } else {
+                    Button { showVoice = true } label: {
+                        Image(systemName: "waveform")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(Color.black)
+                            .frame(width: 34, height: 34)
+                            .background(Color.white, in: Circle())
+                    }
+                    .accessibilityLabel("Talk with \(identity.name)")
+                    .transition(.scale.combined(with: .opacity))
+                }
             }
-            .disabled(!canSend)
         }
-        .padding()
+        .animation(Motion.ease, value: canSend)
+        .padding(14)
+        .background(ChatSurface.raised)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .strokeBorder(ChatSurface.border, lineWidth: 1)
+        )
+        .padding(.horizontal, 12)
+        .padding(.bottom, 8)
     }
 
     private var canSend: Bool {
         !sending && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
+
+    // ── Sending + surviving the lock screen ─────────────────────────────────
 
     private func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -765,6 +898,10 @@ struct ChatView: View {
             messages.append(ChatBubble(role: "assistant", text: ""))
         }
         let idx = messages.count - 1
+        // Ask iOS for the background grace window, so a lock or app switch
+        // mid-reply doesn't sever the stream instantly. When the window runs
+        // out the stream may die — that's what catchUpFromHub() is for.
+        beginBackgroundGrace()
         Task {
             var releasedForApproval = false
             var showingApprovalNotice = false
@@ -776,6 +913,15 @@ struct ChatView: View {
                             messages[idx].text = ""
                             messages[idx].thinking = ""
                             showingApprovalNotice = false
+                        }
+                        // A segment break means tool activity separated this
+                        // slice from the last — the reader gets a paragraph,
+                        // not "…works.Let me dig deeper…".
+                        if delta.segmentBreak && !messages[idx].text.isEmpty && !delta.text.isEmpty {
+                            messages[idx].text += "\n\n"
+                        }
+                        if delta.segmentBreak && !messages[idx].thinking.isEmpty && !delta.thinking.isEmpty {
+                            messages[idx].thinking += "\n\n"
                         }
                         messages[idx].text += delta.text
                         messages[idx].thinking += delta.thinking
@@ -791,11 +937,99 @@ struct ChatView: View {
                     messages[idx].text = "Done — check your desktop."
                 }
             } catch {
-                if idx < messages.count {
+                // A severed connection is NOT a failed reply: the hub keeps
+                // running the turn (its agent has no cancellation tied to this
+                // socket). Mark the turn live and catch up from the stored
+                // transcript instead of painting a scary error over work that
+                // is still happening.
+                if Self.isConnectionLoss(error) {
+                    hubTurnLive = true
+                    if idx < messages.count && messages[idx].text.isEmpty && messages[idx].thinking.isEmpty {
+                        withAnimation(Motion.ease) { _ = messages.popLast() }
+                    }
+                    if scenePhase == .active {
+                        await catchUpFromHub()
+                    }
+                } else if idx < messages.count {
                     messages[idx].text = "⚠️ " + Self.describeChatFailure(error)
                 }
             }
             if !releasedForApproval { sending = false }
+            endBackgroundGrace()
+        }
+    }
+
+    /// The network failures that mean "this device stopped watching", not
+    /// "the hub failed".
+    private static func isConnectionLoss(_ error: Error) -> Bool {
+        guard let urlError = error as? URLError else { return false }
+        switch urlError.code {
+        case .networkConnectionLost, .notConnectedToInternet, .timedOut, .cancelled:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Cold-launch restore: adopt the persisted conversation (if one exists)
+    /// and reconcile against anything that happened while the app was away.
+    private func initialRestore() async {
+        guard messages.isEmpty, sessionId == nil,
+              let id = MobileSession.persistedId else { return }
+        sessionId = id
+        await catchUpFromHub()
+    }
+
+    /// Re-sync this screen from the hub's stored transcript, then — if a turn
+    /// is still running — watch the session's event stream for the Finish and
+    /// re-sync once more. Content always comes from the transcript (the
+    /// hub's truth); the event stream is only the "done yet?" signal.
+    private func catchUpFromHub() async {
+        guard let sid = sessionId else { hubTurnLive = false; return }
+        if let loaded = try? await MobileSession.adopt(sid) {
+            withAnimation(Motion.ease) { messages = loaded }
+        }
+        do {
+            for try await event in APIClient.shared.sessionEvents(sessionId: sid) {
+                switch event {
+                case .activeRequests(let ids):
+                    if ids.isEmpty {
+                        // Nothing running — the transcript we just loaded is
+                        // the whole story.
+                        hubTurnLive = false
+                        return
+                    }
+                    hubTurnLive = true
+                case .finished:
+                    if let loaded = try? await MobileSession.adopt(sid) {
+                        withAnimation(Motion.ease) { messages = loaded }
+                    }
+                    hubTurnLive = false
+                    return
+                }
+            }
+        } catch {
+            // The watch stream itself failed (network flapped again). Leave
+            // hubTurnLive set: the next foreground pass retries.
+        }
+        // Stream ended without a terminal frame — re-sync and settle.
+        if let loaded = try? await MobileSession.adopt(sid) {
+            withAnimation(Motion.ease) { messages = loaded }
+        }
+        hubTurnLive = false
+    }
+
+    private func beginBackgroundGrace() {
+        endBackgroundGrace()
+        bgTask = UIApplication.shared.beginBackgroundTask(withName: "chat-reply") {
+            endBackgroundGrace()
+        }
+    }
+
+    private func endBackgroundGrace() {
+        if bgTask != .invalid {
+            UIApplication.shared.endBackgroundTask(bgTask)
+            bgTask = .invalid
         }
     }
 }

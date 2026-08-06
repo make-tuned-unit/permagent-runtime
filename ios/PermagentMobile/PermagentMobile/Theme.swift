@@ -158,6 +158,33 @@ extension Color {
     }
 }
 
+// ── Chat surface palette ─────────────────────────────────────────────────────
+// The conversation screen deliberately leaves the neon-cyan shell for a warm,
+// paper-like reading surface (requested 2026-08-06: "redesign chat to look
+// like Claude"). Assistant prose sits directly on the background — no bubble —
+// so the reading surface IS the page; only the user's messages get a card.
+// Everything else in the app keeps the Brand palette.
+enum ChatSurface {
+    /// The page. Warm near-black / warm paper.
+    static let bg = Color.brand(dark: 0x262624, light: 0xFAF9F5)
+    /// Composer card and user-message bubble — one step off the page.
+    static let raised = Color.brand(dark: 0x30302E, light: 0xF0EEE6)
+    /// Controls that sit on the raised card (the model pill, the plus button).
+    static let control = Color.brand(dark: 0x3D3D3B, light: 0xE4E1D7)
+    /// Primary prose.
+    static let text = Color.brand(dark: 0xF0EEE5, light: 0x1F1E1D)
+    /// Secondary — placeholders, timestamps, the greeting.
+    static let muted = Color.brand(dark: 0xA6A39A, light: 0x6E6C66)
+    static let dim = Color.brand(dark: 0x716F68, light: 0x9B988E)
+    /// The terracotta spark — accent for the empty-state mark and send button.
+    static let spark = Color.brand(dark: 0xD97757, light: 0xC96442)
+    /// Ink on a spark fill.
+    static let onSpark = Color(hex: 0xFFFFFF)
+    /// Hairlines on the raised card.
+    static let border = Color.brand(dark: 0xFFFFFF, darkAlpha: 0.06,
+                                    light: 0x1F1E1D, lightAlpha: 0.08)
+}
+
 // ── Typography ───────────────────────────────────────────────────────────────
 // One ramp, mirroring `type` in tokens.ts role for role and px for pt. The
 // scale previously used Dynamic Type styles (.subheadline, .caption2), which
@@ -195,6 +222,14 @@ extension Font {
     /// and casing are not carried by the font: apply `.tracking(0.88)` and
     /// `.textCase(.uppercase)` at the call site, as the web token does.
     static let brandLabel = Font.system(size: 11, weight: .semibold)
+
+    /// Chat prose — the assistant's answers read in a serif (New York), the
+    /// way long-form reading surfaces set them; UI chrome stays SF.
+    static let chatProse = Font.system(size: 16.5, weight: .regular, design: .serif)
+    /// The empty-state greeting — large, serif, quiet.
+    static let chatGreeting = Font.system(size: 28, weight: .regular, design: .serif)
+    /// User messages — the sender's own words stay sans, slightly smaller.
+    static let chatUser = Font.system(size: 15.5, weight: .regular)
 }
 
 /// Tabular figures — the iOS mirror of `tabularNums` in tokens.ts. Digits stop

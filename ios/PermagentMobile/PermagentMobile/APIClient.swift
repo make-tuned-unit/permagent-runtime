@@ -160,6 +160,11 @@ actor APIClient {
                     if http.statusCode == 401 { throw APIError.unauthorized }
                     guard (200..<300).contains(http.statusCode) else { throw APIError.badStatus(http.statusCode) }
 
+                    // Tool activity between text segments marks a paragraph
+                    // boundary: the model's next sentence is a NEW thought, and
+                    // gluing it to the last one ("…works.Let me dig deeper…")
+                    // was the missing-space bug reported 2026-08-06.
+                    var segmentBreakPending = false
                     for try await line in bytes.lines {
                         guard line.hasPrefix("data: ") else { continue }
                         let json = String(line.dropFirst(6))
@@ -171,6 +176,10 @@ actor APIClient {
                             if let m = event.message, m.role == "assistant" {
                                 let t = m.content.compactMap(\.text).joined()
                                 let th = m.content.compactMap(\.thinking).joined()
+                                let hasToolActivity = m.content.contains {
+                                    $0.type == "toolRequest" || $0.type == "toolResponse"
+                                        || $0.type == "toolConfirmationRequest"
+                                }
                                 let action = m.content.first { $0.type == "actionRequired" }
                                 let approval = action.map {
                                     AwaitingApproval(
@@ -179,13 +188,90 @@ actor APIClient {
                                     )
                                 }
                                 if !t.isEmpty || !th.isEmpty || approval != nil {
-                                    continuation.yield(ReplyDelta(text: t, thinking: th, awaitingApproval: approval))
+                                    continuation.yield(ReplyDelta(
+                                        text: t,
+                                        thinking: th,
+                                        awaitingApproval: approval,
+                                        segmentBreak: segmentBreakPending
+                                    ))
+                                    segmentBreakPending = false
+                                }
+                                if hasToolActivity { segmentBreakPending = true }
+                            } else if let m = event.message, m.role == "user" {
+                                // Tool RESULTS come back as user-role frames —
+                                // they end a segment just as the request did.
+                                if m.content.contains(where: { $0.type == "toolResponse" }) {
+                                    segmentBreakPending = true
                                 }
                             }
                         case "Finish":
                             continuation.finish(); return
                         case "Error":
                             continuation.finish(throwing: APIError.daemon(event.error ?? "The hub reported an unknown error.")); return
+                        default:
+                            break
+                        }
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// One frame from the session's reattachable event stream.
+    enum SessionEvent: Sendable {
+        /// The daemon's first frame: the session's in-flight request ids. Empty
+        /// means nothing is running — the stored transcript is the whole truth.
+        case activeRequests([String])
+        /// The turn finished (a terminal Finish frame arrived).
+        case finished
+    }
+
+    /// Reattach to a session's live event stream (GET /sessions/{id}/events).
+    ///
+    /// This is how a phone that was locked or closed mid-reply catches up: the
+    /// hub keeps running the turn regardless of who is watching, and this
+    /// stream's opening ActiveRequests frame says whether one is still live.
+    /// Deliberately NOT used for token-level rendering — replayed frames can
+    /// span earlier turns, so the caller re-fetches the stored transcript for
+    /// content and uses this stream only for "is it done yet".
+    nonisolated func sessionEvents(sessionId: String) -> AsyncThrowingStream<SessionEvent, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    await loadSavedPairing()
+                    guard let config = await self.config else {
+                        continuation.finish(throwing: APIError.notPaired); return
+                    }
+                    var comps = URLComponents(
+                        url: config.baseURL.appendingPathComponent("/sessions/\(sessionId)/events"),
+                        resolvingAgainstBaseURL: false
+                    )!
+                    comps.queryItems = [URLQueryItem(name: "token", value: config.token)]
+                    var req = URLRequest(url: comps.url!)
+                    req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+                    req.timeoutInterval = 600
+
+                    let (bytes, resp) = try await URLSession.shared.bytes(for: req)
+                    guard let http = resp as? HTTPURLResponse else { throw APIError.badStatus(0) }
+                    if http.statusCode == 401 { throw APIError.unauthorized }
+                    guard (200..<300).contains(http.statusCode) else { throw APIError.badStatus(http.statusCode) }
+
+                    struct Frame: Decodable { let type: String; let request_ids: [String]? }
+                    for try await line in bytes.lines {
+                        guard line.hasPrefix("data: ") else { continue }
+                        guard let data = String(line.dropFirst(6)).data(using: .utf8),
+                              let frame = try? JSONDecoder().decode(Frame.self, from: data)
+                        else { continue }
+                        switch frame.type {
+                        case "ActiveRequests":
+                            continuation.yield(.activeRequests(frame.request_ids ?? []))
+                        case "Finish", "Error":
+                            // Either way the turn is over; the transcript holds
+                            // whatever truth there is.
+                            continuation.yield(.finished)
                         default:
                             break
                         }
@@ -297,8 +383,15 @@ extension APIClient {
 // ── /reply request + event shapes (mirror the daemon's serde) ────────────────
 
 /// One streamed slice of the reply: answer `text`, reasoning `thinking`, and/or
-/// an approval request that has parked the agent.
-struct ReplyDelta { let text: String; let thinking: String; let awaitingApproval: AwaitingApproval? }
+/// an approval request that has parked the agent. `segmentBreak` is true when
+/// tool activity separated this slice from the previous one — the renderer owes
+/// the reader a paragraph break there.
+struct ReplyDelta {
+    let text: String
+    let thinking: String
+    let awaitingApproval: AwaitingApproval?
+    var segmentBreak: Bool = false
+}
 struct AwaitingApproval { let toolName: String; let actionId: String? }
 
 /// Thinking blocks carry `thinking`; answer blocks carry `text`; approval blocks
@@ -382,13 +475,27 @@ enum MobileSession {
 
         let session = try await APIClient.shared.get("/api/sessions/\(id)", as: Session.self)
         UserDefaults.standard.set(id, forKey: key)
+        // Distinct text blocks within one stored message are distinct segments
+        // (the model spoke, used a tool, spoke again) — joined with a paragraph
+        // break, never glued ("…works.Let me dig deeper…").
         return (session.conversation ?? []).compactMap { m in
             guard m.role == "user" || m.role == "assistant" else { return nil }
-            let text = m.content.compactMap(\.text).joined()
-            let thinking = m.content.compactMap(\.thinking).joined()
+            let text = m.content.compactMap(\.text)
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n\n")
+            let thinking = m.content.compactMap(\.thinking)
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n\n")
             guard !text.isEmpty || !thinking.isEmpty else { return nil }
             return ChatBubble(role: m.role, text: text, thinking: thinking)
         }
+    }
+
+    /// The persisted conversation id, if any — read-only, never creates.
+    /// Cold launch uses this to put the ongoing conversation back on screen
+    /// (and catch up on any reply that finished while the app was closed).
+    static var persistedId: String? {
+        UserDefaults.standard.string(forKey: key)
     }
 
     /// Forget the current conversation, so the next turn mints a fresh one.
