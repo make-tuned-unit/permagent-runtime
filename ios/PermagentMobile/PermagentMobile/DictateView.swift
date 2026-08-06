@@ -201,8 +201,12 @@ struct DictateView: View {
             // as wide as the content and the screen edges stayed bare. Home,
             // whose ScrollView expands naturally, never showed the bars.
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Brand.shell.ignoresSafeArea())
-            .navigationTitle("Notes")
+            // The same reading surface the chat page uses (ruled 2026-08-06:
+            // this screen follows the chat's design language) — the serif
+            // heading below is the page title, so the system bar hides on
+            // THIS view only; pushed views (NotesView) keep their own bars.
+            .background(ChatSurface.bg.ignoresSafeArea())
+            .toolbar(.hidden, for: .navigationBar)
             .sensoryFeedback(.impact(weight: .medium), trigger: recordTaps)
             .sensoryFeedback(.success, trigger: savedCount)
         }
@@ -213,6 +217,48 @@ struct DictateView: View {
     private var captureStage: some View {
         VStack(spacing: 26) {
             Spacer()
+
+            // The chat page's quiet opening, in this room: spark, then a serif
+            // heading — the page speaks softly until you do.
+            switch phase {
+            case .recording:
+                VStack(spacing: 10) {
+                    Text(timeString(recorder.elapsed))
+                        .font(.system(size: 44, weight: .regular, design: .serif))
+                        .monospacedDigit()
+                        .contentTransition(.numericText())
+                        .foregroundStyle(ChatSurface.text)
+                        .animation(Motion.ease, value: Int(recorder.elapsed))
+                    LevelMeter(levels: recorder.levels)
+                    Text("Tap stop when you're done — up to ten minutes.")
+                        .font(.brandCaption).foregroundStyle(ChatSurface.dim)
+                }
+                .transition(.opacity)
+            case .transcribing:
+                VStack(spacing: 14) {
+                    ThinkingDots()
+                    Text("Listening back…")
+                        .font(.chatGreeting)
+                        .foregroundStyle(ChatSurface.text.opacity(0.9))
+                    Text("Your Mac's local Whisper is transcribing. Audio never leaves your machines.")
+                        .font(.brandCaption).foregroundStyle(ChatSurface.muted)
+                        .multilineTextAlignment(.center).padding(.horizontal, 40)
+                }
+                .transition(.opacity)
+            default:
+                VStack(spacing: 22) {
+                    Text("✻")
+                        .font(.system(size: 40))
+                        .foregroundStyle(ChatSurface.spark)
+                    Text("Something on your mind?")
+                        .font(.chatGreeting)
+                        .foregroundStyle(ChatSurface.text.opacity(0.9))
+                    Text("Speak it; it lands as a note on a project you choose. Say \u{201C}I need to\u{2026}\u{201D} and \(identity.name) proposes it as a to-do.")
+                        .font(.brandCaption).foregroundStyle(ChatSurface.muted)
+                        .multilineTextAlignment(.center).padding(.horizontal, 44)
+                }
+                .transition(.opacity)
+            }
 
             ZStack {
                 // The visible recording indicator (house rule): breathing rings,
@@ -226,72 +272,40 @@ struct DictateView: View {
                 } label: {
                     ZStack {
                         Circle()
-                            .fill(Brand.ribbon)
-                            .frame(width: 92, height: 92)
-                            .shadow(color: Brand.cyanGlow, radius: phase == .recording ? 26 : 14)
-                        Image(systemName: phase == .recording ? "stop.fill" : "mic.fill")
-                            .font(.system(size: 30, weight: .semibold))
-                            .foregroundStyle(Brand.onAccent)
+                            .fill(ChatSurface.spark)
+                            .frame(width: 84, height: 84)
+                            .shadow(color: Brand.cyanGlow, radius: phase == .recording ? 24 : 10)
+                        Image(systemName: phase == .recording ? "stop.fill" : "mic")
+                            .font(.system(size: 28, weight: .semibold))
+                            .foregroundStyle(ChatSurface.onSpark)
                             .contentTransition(.symbolEffect(.replace))
                     }
                 }
                 .buttonStyle(.plain)
                 .disabled(phase == .transcribing)
+                .opacity(phase == .transcribing ? 0.35 : 1)
                 .accessibilityLabel(phase == .recording ? "Stop recording" : "Start recording")
             }
-            .frame(height: 150)
+            .frame(height: 140)
             .animation(Motion.spring, value: phase)
 
-            switch phase {
-            case .recording:
-                VStack(spacing: 10) {
-                    HStack(spacing: 7) {
-                        Circle().fill(Brand.cyan).frame(width: 7, height: 7)
-                            .shadow(color: Brand.cyanGlow, radius: 5)
-                        Text("RECORDING").font(.brandLabel).foregroundStyle(Brand.cyanInk)
-                    }
-                    Text(timeString(recorder.elapsed))
-                        .font(.brandDisplay).monospacedDigit()
-                        .contentTransition(.numericText())
-                        .foregroundStyle(Brand.text)
-                        .animation(Motion.ease, value: Int(recorder.elapsed))
-                    LevelMeter(levels: recorder.levels)
-                    Text("Tap stop when you're done — up to ten minutes.")
-                        .font(.brandCaption).foregroundStyle(Brand.textDim)
-                }
-                .transition(.opacity)
-            case .transcribing:
-                VStack(spacing: 12) {
-                    ThinkingDots()
-                    Text("Transcribing on your hub…")
-                        .font(.brandHeadline).foregroundStyle(Brand.text)
-                    Text("Your Mac's local Whisper is listening back. Audio never leaves your machines.")
-                        .font(.brandCaption).foregroundStyle(Brand.textMuted)
-                        .multilineTextAlignment(.center).padding(.horizontal, 40)
-                }
-                .transition(.opacity)
-            default:
-                VStack(spacing: 8) {
-                    Text("Speak a note").font(.brandTitle).foregroundStyle(Brand.text)
-                    Text("Dictate on the phone; it lands as a note on a project you choose. Say things like \u{201C}I need to\u{2026}\u{201D} and \(identity.name) will propose them as to-dos.")
-                        .font(.brandCaption).foregroundStyle(Brand.textMuted)
-                        .multilineTextAlignment(.center).padding(.horizontal, 36)
-                }
-                .transition(.opacity)
-            }
-
             if let errorText {
-                GlassCard {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(errorText).font(.brandCaption).foregroundStyle(Brand.danger)
-                        if micDenied {
-                            Button("Open Settings") {
-                                if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
-                            }
-                            .font(.caption.weight(.semibold)).foregroundStyle(Brand.cyanInk)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(errorText).font(.brandCaption).foregroundStyle(Brand.danger)
+                    if micDenied {
+                        Button("Open Settings") {
+                            if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
                         }
+                        .font(.caption.weight(.semibold)).foregroundStyle(ChatSurface.spark)
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(14)
+                .background(ChatSurface.raised, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(ChatSurface.border, lineWidth: 1)
+                )
                 .padding(.horizontal, 24)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -307,7 +321,7 @@ struct DictateView: View {
             if phase == .idle {
                 NavigationLink { NotesView() } label: { notesRow }
                     .buttonStyle(.plain)
-                    .padding(.horizontal, 24)
+                    .padding(.horizontal, 16)
                     .padding(.bottom, 6)
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
@@ -318,98 +332,117 @@ struct DictateView: View {
         .animation(Motion.ease, value: phase)
     }
 
-    /// The row that opens the notes library. Styled as a quiet secondary next to
-    /// the mic — the ribbon belongs to the primary action, so this reads as a
-    /// surface with an accent glyph, never as a second CTA competing with it.
+    /// The row that opens the notes library — a raised card in the chat
+    /// page's language, quiet next to the spark mic.
     private var notesRow: some View {
         HStack(spacing: 13) {
             Image(systemName: "note.text")
                 .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(Brand.cyanInk)
+                .foregroundStyle(ChatSurface.text)
                 .frame(width: 34, height: 34)
-                .background(Brand.cyanSoft, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .background(ChatSurface.control, in: Circle())
             VStack(alignment: .leading, spacing: 2) {
-                Text("Notes").font(.brandHeading).foregroundStyle(Brand.text)
+                Text("Notes").font(.brandHeading).foregroundStyle(ChatSurface.text)
                 Text("Browse your projects, or write one by hand")
-                    .font(.brandCaption).foregroundStyle(Brand.textMuted)
+                    .font(.brandCaption).foregroundStyle(ChatSurface.muted)
                     .lineLimit(1)
             }
             Spacer(minLength: 8)
             Image(systemName: "chevron.right")
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(Brand.textDim)
+                .foregroundStyle(ChatSurface.dim)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
-        .background(Brand.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(ChatSurface.raised, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Brand.border, lineWidth: 1)
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .strokeBorder(ChatSurface.border, lineWidth: 1)
         )
-        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
     // ── Stage 2: review + confirm ────────────────────────────────────────────
 
+    /// A raised card in the chat composer's shape — the review stage is built
+    /// from these the way the chat is built from its input card.
+    private func raisedCard<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 10, content: content)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(16)
+            .background(ChatSurface.raised, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .strokeBorder(ChatSurface.border, lineWidth: 1)
+            )
+    }
+
     private var reviewStage: some View {
         ScrollView {
             VStack(spacing: 14) {
-                GlassCard {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("TRANSCRIPT").font(.brandLabel).foregroundStyle(Brand.textDim)
-                        TextEditor(text: $transcript)
-                            .font(.brandBody).foregroundStyle(Brand.text)
-                            .scrollContentBackground(.hidden)
-                            .frame(minHeight: 120, maxHeight: 240)
-                        Text("Edit freely — this becomes the note.")
-                            .font(.caption2).foregroundStyle(Brand.textDim)
-                    }
+                // The transcript reads like the page it will become: serif
+                // prose, editable in place.
+                raisedCard {
+                    Text("YOUR NOTE")
+                        .font(.brandLabel).tracking(0.88)
+                        .foregroundStyle(ChatSurface.dim)
+                    TextEditor(text: $transcript)
+                        .font(.chatProse)
+                        .foregroundStyle(ChatSurface.text)
+                        .tint(ChatSurface.spark)
+                        .scrollContentBackground(.hidden)
+                        .frame(minHeight: 130, maxHeight: 260)
+                    Text("Edit freely — this becomes the note.")
+                        .font(.caption2).foregroundStyle(ChatSurface.dim)
                 }
 
                 if !todos.isEmpty {
-                    GlassCard {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("PROPOSED TO-DOS").font(.brandLabel).foregroundStyle(Brand.cyanInk)
-                            Text("Heard in your note. Only ticked items are created — as cards on the project board.")
-                                .font(.caption2).foregroundStyle(Brand.textDim)
-                            ForEach($todos) { $todo in
-                                Button {
-                                    withAnimation(Motion.ease) { todo.included.toggle() }
-                                } label: {
-                                    HStack(spacing: 10) {
-                                        Image(systemName: todo.included ? "checkmark.circle.fill" : "circle")
-                                            .foregroundStyle(todo.included ? Brand.cyan : Brand.textDim)
-                                        Text(todo.text)
-                                            .font(.brandCaption)
-                                            .foregroundStyle(todo.included ? Brand.text : Brand.textMuted)
-                                            .strikethrough(!todo.included, color: Brand.textDim)
-                                            .multilineTextAlignment(.leading)
-                                        Spacer()
-                                    }
+                    raisedCard {
+                        Text("HEARD AS TO-DOS")
+                            .font(.brandLabel).tracking(0.88)
+                            .foregroundStyle(ChatSurface.spark)
+                        Text("Only ticked items are created — as cards on the project board.")
+                            .font(.caption2).foregroundStyle(ChatSurface.dim)
+                        ForEach($todos) { $todo in
+                            Button {
+                                withAnimation(Motion.ease) { todo.included.toggle() }
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: todo.included ? "checkmark.circle.fill" : "circle")
+                                        .foregroundStyle(todo.included ? ChatSurface.spark : ChatSurface.dim)
+                                    Text(todo.text)
+                                        .font(.brandCaption)
+                                        .foregroundStyle(todo.included ? ChatSurface.text : ChatSurface.muted)
+                                        .strikethrough(!todo.included, color: ChatSurface.dim)
+                                        .multilineTextAlignment(.leading)
+                                    Spacer()
                                 }
-                                .buttonStyle(.plain)
                             }
+                            .buttonStyle(.plain)
                         }
                     }
                 }
 
                 // Confirm-first: the note is written nowhere until a project is
                 // chosen and Save is tapped.
-                GlassCard {
+                raisedCard {
                     Button { pickingProject = true } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: "folder.fill")
-                                .foregroundStyle(chosenProject == nil ? Brand.textDim : Brand.cyan)
+                        HStack(spacing: 12) {
+                            Image(systemName: "folder")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(chosenProject == nil ? ChatSurface.dim : ChatSurface.spark)
+                                .frame(width: 34, height: 34)
+                                .background(ChatSurface.control, in: Circle())
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(chosenProject?.name ?? "Choose a project")
                                     .font(.brandHeadline)
-                                    .foregroundStyle(chosenProject == nil ? Brand.textMuted : Brand.text)
+                                    .foregroundStyle(chosenProject == nil ? ChatSurface.muted : ChatSurface.text)
                                 Text(chosenProject.map { "/\($0.slug)" } ?? "Required — the note lands on its page")
-                                    .font(.brandLabel).foregroundStyle(Brand.textDim)
+                                    .font(.brandLabel).foregroundStyle(ChatSurface.dim)
                             }
                             Spacer()
                             Image(systemName: "chevron.up.chevron.down")
-                                .font(.caption).foregroundStyle(Brand.textDim)
+                                .font(.caption).foregroundStyle(ChatSurface.dim)
                         }
                     }
                     .buttonStyle(.plain)
@@ -420,20 +453,45 @@ struct DictateView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                PrimaryCTA(
+                sparkCTA(
                     title: phase == .saving ? "Saving…" : saveTitle,
-                    systemImage: phase == .saving ? nil : "arrow.up.doc.fill",
+                    systemImage: phase == .saving ? nil : "arrow.up",
                     enabled: canSave
                 ) { save() }
 
                 Button("Discard and start over") { reset() }
-                    .font(.caption).foregroundStyle(Brand.textDim)
+                    .font(.caption).foregroundStyle(ChatSurface.dim)
                     .padding(.top, 2)
             }
             .padding()
         }
         .scrollDismissesKeyboard(.interactively)
         .sheet(isPresented: $pickingProject) { projectPicker }
+    }
+
+    /// The chat's send-button language grown to a full-width action: spark
+    /// fill, dark ink, composer-card radius.
+    private func sparkCTA(
+        title: String, systemImage: String?, enabled: Bool, action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 7) {
+                if let systemImage {
+                    Image(systemName: systemImage).font(.subheadline.weight(.semibold))
+                }
+                Text(title).font(.body.weight(.semibold))
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 15)
+            .foregroundStyle(ChatSurface.onSpark.opacity(enabled ? 1 : 0.6))
+            .background(
+                ChatSurface.spark.opacity(enabled ? 1 : 0.3),
+                in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .animation(Motion.ease, value: enabled)
     }
 
     private var saveTitle: String {
@@ -456,15 +514,15 @@ struct DictateView: View {
                     } label: {
                         HStack(spacing: 10) {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(p.name).font(.brandHeadline).foregroundStyle(Brand.text)
+                                Text(p.name).font(.brandHeadline).foregroundStyle(ChatSurface.text)
                                 if !p.description.isEmpty {
                                     Text(p.description).font(.brandCaption)
-                                        .foregroundStyle(Brand.textMuted).lineLimit(1)
+                                        .foregroundStyle(ChatSurface.muted).lineLimit(1)
                                 }
                             }
                             Spacer()
                             if chosenProject == p {
-                                Image(systemName: "checkmark").foregroundStyle(Brand.cyanInk)
+                                Image(systemName: "checkmark").foregroundStyle(ChatSurface.spark)
                             }
                         }
                     }
@@ -472,7 +530,7 @@ struct DictateView: View {
                 }
                 if projects.isEmpty {
                     Text("No projects yet — create one on your desktop first.")
-                        .font(.brandCaption).foregroundStyle(Brand.textMuted)
+                        .font(.brandCaption).foregroundStyle(ChatSurface.muted)
                         .listRowBackground(Color.clear)
                 }
             }
@@ -485,27 +543,27 @@ struct DictateView: View {
             // as wide as the content and the screen edges stayed bare. Home,
             // whose ScrollView expands naturally, never showed the bars.
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Brand.shell.ignoresSafeArea())
+            .background(ChatSurface.bg.ignoresSafeArea())
             .navigationTitle("Project")
             .navigationBarTitleDisplayMode(.inline)
         }
         .presentationDetents([.medium, .large])
-        .presentationBackground(Brand.deepVoid)
+        .presentationBackground(ChatSurface.bg)
     }
 
     // ── Stage 3: saved ───────────────────────────────────────────────────────
 
     private func savedStage(project: String, cards: Int, todosInNote: Bool) -> some View {
-        VStack(spacing: 18) {
+        VStack(spacing: 20) {
             Spacer()
-            ZStack {
-                Circle().fill(Brand.surface).frame(width: 84, height: 84)
-                    .overlay(Circle().strokeBorder(Brand.borderHi, lineWidth: 1))
-                Image(systemName: "checkmark")
-                    .font(.system(size: 34, weight: .bold)).foregroundStyle(Brand.cyanInk)
-                    .shadow(color: Brand.cyanGlow, radius: 8)
-            }
-            Text("Noted.").font(.brandTitle).foregroundStyle(Brand.text)
+            Image(systemName: "checkmark")
+                .font(.system(size: 26, weight: .semibold))
+                .foregroundStyle(ChatSurface.onSpark)
+                .frame(width: 64, height: 64)
+                .background(ChatSurface.spark, in: Circle())
+            Text("Noted.")
+                .font(.chatGreeting)
+                .foregroundStyle(ChatSurface.text.opacity(0.9))
             VStack(spacing: 4) {
                 Text("Saved to \(project) and indexed into the Brain.")
                 if todosInNote {
@@ -514,9 +572,9 @@ struct DictateView: View {
                     Text("\(cards) to-do\(cards == 1 ? "" : "s") added to the project board.")
                 }
             }
-            .font(.brandCaption).foregroundStyle(Brand.textMuted)
+            .font(.brandCaption).foregroundStyle(ChatSurface.muted)
             .multilineTextAlignment(.center).padding(.horizontal, 40)
-            PrimaryCTA(title: "Dictate another", systemImage: "mic.fill") { reset() }
+            sparkCTA(title: "Dictate another", systemImage: "mic", enabled: true) { reset() }
                 .padding(.horizontal, 24).padding(.top, 8)
             Spacer()
             Spacer()
