@@ -612,6 +612,29 @@ function ModelsPanel({ goto }: PanelProps) {
       setStrixError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
     });
   };
+  // Sweep cadence (strix_sweep_hours) — each sweep is a real agentic scan of
+  // every active project on the user's API credits, so the cadence is theirs
+  // to set. Daemon default is daily; changes apply within ~15 minutes.
+  const [strixHours, setStrixHours] = useState<number>(24);
+  useEffect(() => {
+    let active = true;
+    api.readConfig('strix_sweep_hours')
+      .then(r => {
+        const v = Number((r as { value?: unknown })?.value);
+        if (active && Number.isFinite(v) && v > 0) setStrixHours(v);
+      })
+      .catch(() => { /* unset — daemon default (24h) applies */ });
+    return () => { active = false; };
+  }, []);
+  const saveStrixHours = (v: number) => {
+    const prev = strixHours;
+    setStrixHours(v);
+    setStrixError(null);
+    api.upsertConfig('strix_sweep_hours', v).catch(err => {
+      setStrixHours(prev);
+      setStrixError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  };
 
   // Poll Ollama status while panel is visible
   useEffect(() => {
@@ -827,7 +850,7 @@ function ModelsPanel({ goto }: PanelProps) {
       {/* ── The Guard security sweeps ────────────────────────────── */}
       <Section
         title="Security sweeps (The Guard)"
-        sub="The Guard — born of the Strix pentest engine — probes your own projects for security flaws and files findings on each project's Overview. Requires the external `strix` scanner and Docker installed. Sweeps every 6 hours; a change here takes effect at the next tick — no restart needed."
+        sub="The Guard — born of the Strix pentest engine — probes your own projects for security flaws and files findings on each project's Overview. Requires the external `strix` scanner and Docker installed. Each sweep runs a real AI scan of every active project on your API credits, so the cadence below is a cost dial. Changes apply within ~15 minutes — no restart needed."
       >
         {strixError && (
           <div style={{ fontSize: 12, color: colors.danger, padding: '4px 0 8px' }}>{strixError}</div>
@@ -838,6 +861,21 @@ function ModelsPanel({ goto }: PanelProps) {
           ) : (
             <Toggle on={strix} onChange={saveStrix} />
           )}
+        </Row>
+        <Row label="Sweep every" hint="How often the Guard re-scans. Daily is the cost-effective default; a security posture rarely changes faster.">
+          <select
+            value={strixHours}
+            onChange={e => saveStrixHours(Number(e.target.value))}
+            style={{
+              background: colors.inputBg, color: colors.text, fontSize: 12,
+              border: `1px solid ${colors.border}`, borderRadius: 6, padding: '4px 8px',
+            }}
+          >
+            <option value={12}>12 hours</option>
+            <option value={24}>24 hours (recommended)</option>
+            <option value={72}>3 days</option>
+            <option value={168}>Weekly</option>
+          </select>
         </Row>
       </Section>
     </div>

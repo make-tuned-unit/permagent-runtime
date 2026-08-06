@@ -28,9 +28,23 @@ use std::time::Duration;
 const METADATA_KEY: &str = "strix_findings";
 /// Keep the most recent findings per project; older ones age out.
 const MAX_KEPT: usize = 40;
-/// One sweep every six hours. A security posture does not change by the minute,
-/// and each pass costs real scanner time.
-const TICK: Duration = Duration::from_secs(6 * 3600);
+/// How often the loop wakes to check the flag and whether a sweep is due.
+/// Cheap (two config reads), so interval changes take effect within minutes.
+const CHECK_EVERY: Duration = Duration::from_secs(15 * 60);
+/// Sweep cadence config key (`~/.permagent/config.yaml`), in hours.
+const SWEEP_HOURS_KEY: &str = "strix_sweep_hours";
+/// Default sweep cadence. Daily, not 6-hourly: every pass is a real agentic
+/// scan of every active project on the USER'S API credits, and a security
+/// posture does not change four times a day. Clamped to [1h, 1 week].
+const DEFAULT_SWEEP_HOURS: u64 = 24;
+
+fn sweep_interval() -> Duration {
+    let hours = permagent::config::Config::global()
+        .get_param::<u64>(SWEEP_HOURS_KEY)
+        .unwrap_or(DEFAULT_SWEEP_HOURS)
+        .clamp(1, 168);
+    Duration::from_secs(hours * 3600)
+}
 /// Let boot (and any in-flight goal work) settle before the first sweep.
 const STARTUP_DELAY: Duration = Duration::from_secs(300);
 /// Hard bound on one project's scan.
@@ -58,7 +72,7 @@ pub fn spawn(state: Arc<AppState>) {
         tracing::info!(
             target: "permagentd::strix",
             "The Guard enabled — security sweeps every {}h, read-only posture",
-            TICK.as_secs() / 3600
+            sweep_interval().as_secs() / 3600
         );
     } else {
         tracing::info!(
@@ -69,13 +83,16 @@ pub fn spawn(state: Arc<AppState>) {
     }
     tokio::spawn(async move {
         tokio::time::sleep(STARTUP_DELAY).await;
+        let mut last_sweep: Option<tokio::time::Instant> = None;
         loop {
-            if strix::is_enabled() {
+            let due = last_sweep.is_none_or(|t| t.elapsed() >= sweep_interval());
+            if strix::is_enabled() && due {
+                last_sweep = Some(tokio::time::Instant::now());
                 if let Err(e) = sweep_once(&state).await {
                     tracing::debug!(target: "permagentd::strix", "sweep skipped: {e}");
                 }
             }
-            tokio::time::sleep(TICK).await;
+            tokio::time::sleep(CHECK_EVERY).await;
         }
     });
 }
@@ -181,8 +198,26 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
 /// Run the scanner over one project and parse its SARIF. Strix (the engine)
 /// writes `findings.sarif` per run; SARIF is preferred over its bespoke JSON
 /// because it is schema-validated and dedupes on CWE.
+/// Locate the `strix` CLI. The daemon runs under launchd with a bare PATH, so
+/// a plain `Command::new("strix")` misses the places users actually install it
+/// (pipx → ~/.local/bin, Homebrew → /opt/homebrew/bin). Falling back to those
+/// turns "silently never scans" into "works after `pipx install strix-agent`".
+fn resolve_strix_bin() -> PathBuf {
+    if let Some(home) = dirs::home_dir() {
+        let pipx = home.join(".local/bin/strix");
+        if pipx.is_file() {
+            return pipx;
+        }
+    }
+    let brew = PathBuf::from("/opt/homebrew/bin/strix");
+    if brew.is_file() {
+        return brew;
+    }
+    PathBuf::from("strix")
+}
+
 async fn scan_project(target: &std::path::Path) -> Result<Vec<Finding>, String> {
-    let mut cmd = tokio::process::Command::new("strix");
+    let mut cmd = tokio::process::Command::new(resolve_strix_bin());
     // Posture: the scope guard is code; the read-only posture rides the
     // engine's instruction channel because the external CLI has no passive
     // flag — its --scan-mode is depth (quick/standard/deep), not intrusiveness.
