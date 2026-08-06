@@ -23,6 +23,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { useCommandCenter } from '../../lib/store';
 import { apiFetch } from '../../lib/api';
 import { toast } from '../../lib/notifications';
 import { font, ease } from '../../styles/tokens';
@@ -39,6 +40,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
     state, error, elapsedSeconds, failedChunks, target, hasUnsavedTranscript,
     start, stop, retrySave, discard,
     systemAudio, setSystemAudio, systemAudioError, systemAudioAvailable,
+    farChunksHeard,
   } = useMeetingDictation();
   // Whether this build carries the capture helper at all. Checked rather than
   // assumed so the toggle is never offered where it cannot work.
@@ -46,6 +48,15 @@ export function MeetingRecorder({ open }: { open: boolean }) {
   useEffect(() => { void systemAudioAvailable().then(setCanCaptureSystem); }, [systemAudioAvailable]);
 
   const [pickerOpen, setPickerOpen] = useState(false);
+  // The native browser webview composites above ALL DOM (the corner-cede
+  // trap) — without this, the picker modal opens BEHIND an open web call.
+  const pushBrowserOverlay = useCommandCenter(s => s.pushBrowserOverlay);
+  const popBrowserOverlay = useCommandCenter(s => s.popBrowserOverlay);
+  useEffect(() => {
+    if (!pickerOpen) return;
+    pushBrowserOverlay();
+    return () => popBrowserOverlay();
+  }, [pickerOpen, pushBrowserOverlay, popBrowserOverlay]);
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -283,9 +294,22 @@ export function MeetingRecorder({ open }: { open: boolean }) {
 
           {state === 'recording' && (
             <div style={{ fontSize: 10, color: colors.textDim }}>
-              Own voice only · transcribed locally on this device
+              {systemAudio
+                ? farChunksHeard > 0
+                  ? 'Both sides — hearing the call ✓'
+                  : 'Both sides — waiting for call audio…'
+                : 'Own voice only'}
+              {' · transcribed locally on this device'}
               {failedChunks > 0 && ` · ${failedChunks} segment${failedChunks > 1 ? 's' : ''} failed to transcribe`}
             </div>
+          )}
+
+          {/* A far-side failure mid-recording (e.g. Screen Recording permission
+              missing) used to be set only where the closed picker would have
+              shown it — the user recorded a whole call believing both sides
+              were captured. Surface it here, where they are looking. */}
+          {state === 'recording' && systemAudioError && (
+            <div style={{ fontSize: 11, color: colors.danger, lineHeight: 1.4 }}>{systemAudioError}</div>
           )}
 
           {error && (

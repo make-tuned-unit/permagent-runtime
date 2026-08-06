@@ -128,6 +128,10 @@ export function useMeetingDictation() {
   // the same reason the mic queue does (one local Whisper, ordering matters).
   const [systemAudio, setSystemAudio] = useState(false);
   const [systemAudioError, setSystemAudioError] = useState<string | null>(null);
+  // Proof-of-capture: how many far-side chunks have actually arrived. The
+  // indicator uses this to say "hearing the call" instead of leaving the user
+  // guessing whether the other participants are really being recorded.
+  const [farChunksHeard, setFarChunksHeard] = useState(0);
   const farPartsRef = useRef<string[]>([]);
   const farQueueRef = useRef<Promise<void>>(Promise.resolve());
   const unlistenRef = useRef<Array<() => void>>([]);
@@ -174,6 +178,7 @@ export function useMeetingDictation() {
   const startSystemAudio = useCallback(async () => {
     if (!('__TAURI_INTERNALS__' in window)) return;
     setSystemAudioError(null);
+    setFarChunksHeard(0);
     farPartsRef.current = [];
     farQueueRef.current = Promise.resolve();
     try {
@@ -184,6 +189,7 @@ export function useMeetingDictation() {
         const path = e.payload;
         const slot = farPartsRef.current.length;
         farPartsRef.current.push('');
+        setFarChunksHeard(n => n + 1);
         farQueueRef.current = farQueueRef.current.then(async () => {
           try {
             const bytes = await invoke<number[]>('read_audio_chunk', { path });
@@ -394,5 +400,7 @@ export function useMeetingDictation() {
     setSystemAudio,
     systemAudioError,
     systemAudioAvailable,
+    /** Far-side chunks actually received this recording — proof of capture. */
+    farChunksHeard,
   };
 }
