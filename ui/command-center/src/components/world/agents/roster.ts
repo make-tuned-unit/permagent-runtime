@@ -98,6 +98,22 @@ export const ROSTER: AgentIdentity[] = [
     home: { x: -7.5, y: 0, z: -6.0 },
     weathering: 0.35,
   },
+  {
+    // Strix — the security agent (crate::strix + the daemon sweep loop). It
+    // probes the user's OWN projects and reports; it never remediates, and
+    // anything intrusive is proposed rather than performed. Unlike the
+    // Reader/Watcher/Steward it HAS a live wire: the sweep emits
+    // agent_state_changed, so its working pose is real, not sim-ambient.
+    // Home sits opposite the Steward, on the far +x/+z quadrant.
+    id: 'strix',
+    name: 'Strix',
+    role: 'agent',
+    trimColor: AGENT_TRIM.strix,
+    isHenry: false,
+    mezzanineLocked: false,
+    home: { x: 8.6, y: 0, z: 5.4 },
+    weathering: 0.3,
+  },
 ];
 
 export function getIdentity(id: string): AgentIdentity | undefined {

@@ -17,6 +17,7 @@ import { HenryHUD } from './HenryHUD';
 import { ReaderHUD } from './ReaderHUD';
 import { WatcherHUD } from './WatcherHUD';
 import { StewardHUD } from './StewardHUD';
+import { StrixHUD } from './StrixHUD';
 import { AgentPicker } from './AgentPicker';
 import { PerfSampler } from './shared/perf';
 import { useWorldVisibility } from './atmosphere/useWorldVisibility';
@@ -203,7 +204,9 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [hoveredStation, setHoveredStation] = useState<string | null>(null);
   const [showFps, setShowFps] = useState(false);
-  const [activeHud, setActiveHud] = useState<'henry' | 'librarian' | 'reader' | 'watcher' | 'steward' | null>(null);
+  const [activeHud, setActiveHud] = useState<
+    'henry' | 'librarian' | 'reader' | 'watcher' | 'steward' | 'strix' | null
+  >(null);
   const containerRef = useRef<HTMLDivElement>(null);
   // Perf (bible §8 item 2): pause the render loop whenever this view has no
   // layout box — i.e. its workspace tab is hidden (display:none) or the canvas
@@ -222,6 +225,8 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
       setActiveHud('watcher');
     } else if (id === 'steward') {
       setActiveHud('steward');
+    } else if (id === 'strix') {
+      setActiveHud('strix');
     } else {
       setActiveHud(null);
     }
@@ -460,6 +465,10 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
       />
       <StewardHUD
         visible={activeHud === 'steward'}
+        onClose={() => setActiveHud(null)}
+      />
+      <StrixHUD
+        visible={activeHud === 'strix'}
         onClose={() => setActiveHud(null)}
       />
       <AgentPicker
