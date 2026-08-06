@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { isVoiceWedged, isInterruptibleState, VOICE_WATCHDOG_MS, type VoiceState } from './useVoice';
+import {
+  isVoiceWedged,
+  isInterruptibleState,
+  routeWakeEvent,
+  VOICE_WATCHDOG_MS,
+  type VoiceState,
+} from './useVoice';
 
 describe('isVoiceWedged', () => {
   const base = {
@@ -59,5 +65,35 @@ describe('isInterruptibleState (barge-in routing)', () => {
     // Guards against the barge-in set drifting from the mic-locking set.
     const all: VoiceState[] = ['idle', 'connecting', 'ready', 'recording', 'processing', 'playing', 'error'];
     expect(all.filter(isInterruptibleState)).toEqual(['processing', 'playing']);
+  });
+});
+
+describe('routeWakeEvent (wake-word / spoken-stop routing)', () => {
+  const all: VoiceState[] = ['idle', 'connecting', 'ready', 'recording', 'processing', 'playing', 'error'];
+
+  it('a wake detection opens a turn only from ready', () => {
+    expect(routeWakeEvent('wake', 'ready')).toBe('start-turn');
+    for (const state of all.filter(s => s !== 'ready')) {
+      // Mid-turn (or with no live socket) there is nothing to open.
+      expect(routeWakeEvent('wake', state)).toBe('ignore');
+    }
+  });
+
+  it('a spoken stop halts a reply being produced or spoken', () => {
+    expect(routeWakeEvent('stop', 'playing')).toBe('halt-playback');
+    expect(routeWakeEvent('stop', 'processing')).toBe('halt-playback');
+  });
+
+  it('a spoken stop with nothing in flight is not a command', () => {
+    for (const state of all.filter(s => s !== 'playing' && s !== 'processing')) {
+      expect(routeWakeEvent('stop', state)).toBe('ignore');
+    }
+  });
+
+  it('unknown kinds are ignored in every state', () => {
+    for (const state of all) {
+      expect(routeWakeEvent('mystery', state)).toBe('ignore');
+      expect(routeWakeEvent('', state)).toBe('ignore');
+    }
   });
 });

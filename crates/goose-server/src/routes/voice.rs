@@ -5,12 +5,23 @@
 //!     Text: {"type":"start","sample_rate":16000}
 //!     Binary: [pcm_f32le audio chunks while push-to-talk held]
 //!     Text: {"type":"stop"}
+//!     Text: {"type":"wake_start","sample_rate":16000}   (hands-free: begin keyword spotting)
+//!     Text: {"type":"wake_stop"}
 //!   Server → Client:
 //!     Text: {"type":"transcript","text":"..."}
 //!     Text: {"type":"reply_start"}
 //!     Binary: [tts pcm_f32le audio]
 //!     Text: {"type":"reply_end","sample_rate":24000}
 //!     Text: {"type":"error","message":"..."}
+//!     Text: {"type":"wake_status","active":true,"phrase":"Hey Henry"}
+//!     Text: {"type":"wake","kind":"wake"|"stop"}        (keyword detected)
+//!     Text: {"type":"stopped"}                          (spoken stop cancelled the in-flight turn)
+//!
+//! Wake mode: while no recording is active, binary frames are mic MONITOR
+//! audio fed to the on-device keyword spotter (voice::kws) — never to STT,
+//! never off-machine. Detections come back as `wake` events; a stop phrase
+//! that lands while a reply is still being generated cancels the turn
+//! server-side and is announced with `stopped`.
 
 use crate::routes::errors::ErrorResponse;
 use crate::state::{build_kokoro_tts, AppState, SharedTts};
@@ -176,6 +187,8 @@ pub fn http_routes(state: Arc<AppState>) -> Router {
                 .delete(cancel_voice_models_download),
         )
         .route("/voice/synthesize", post(synthesize_voice))
+        .route("/voice/wake/models", get(wake_models_status))
+        .route("/voice/wake/models/download", post(download_wake_models))
         .route(
             "/voice/pronunciations",
             axum::routing::get(list_pronunciations).put(save_pronunciation_route),
@@ -302,6 +315,122 @@ async fn cancel_voice_models_download() -> Result<StatusCode, ErrorResponse> {
         .cancel_download(KOKORO_DOWNLOAD_ID)
         .map_err(|e| ErrorResponse::bad_request(e.to_string()))?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ── On-demand wake-word (KWS) model downloader ─────────────────────────────
+//
+// Same shape as the Kokoro flow, sized down: a single ~17MB pinned release
+// tarball, extracted next to the other voice models, then a live spotter is
+// hot-swapped into the shared slot — no restart. Also triggered implicitly by
+// a `wake_start` on the voice socket when the model isn't present, so the
+// first hands-free activation provisions itself.
+
+/// Snapshot of wake-word model availability.
+#[derive(Serialize)]
+pub struct WakeModelStatus {
+    pub models_present: bool,
+    pub spotter_loaded: bool,
+    pub downloading: bool,
+}
+
+async fn current_wake_status(state: &Arc<AppState>) -> WakeModelStatus {
+    let models_present = crate::voice::kws::WakeWordModelPaths::default_paths().models_exist();
+    let spotter_loaded = state.wake_spotter.read().await.is_some();
+    let downloading = get_download_manager()
+        .get_progress(crate::voice::kws::KWS_DOWNLOAD_ID)
+        .is_some_and(|p| p.status == DownloadStatus::Downloading);
+    WakeModelStatus {
+        models_present,
+        spotter_loaded,
+        downloading,
+    }
+}
+
+/// GET /voice/wake/models — is wake-word detection available?
+async fn wake_models_status(State(state): State<Arc<AppState>>) -> Json<WakeModelStatus> {
+    Json(current_wake_status(&state).await)
+}
+
+/// Start the KWS model download (idempotent: no-ops when the model is present,
+/// loading the spotter if needed; the DownloadManager dedupes an in-flight
+/// fetch by id). Shared by the HTTP endpoint and the `wake_start` auto-fetch.
+async fn start_wake_model_download(state: &Arc<AppState>) -> anyhow::Result<()> {
+    let paths = crate::voice::kws::WakeWordModelPaths::default_paths();
+
+    if paths.models_exist() {
+        if state.wake_spotter.read().await.is_none() {
+            let spotter = tokio::task::spawn_blocking(crate::state::build_wake_spotter).await?;
+            if let Some(spotter) = spotter {
+                *state.wake_spotter.write().await = Some(spotter);
+            }
+        }
+        return Ok(());
+    }
+
+    let files = vec![permagent::download_manager::DownloadFile::new(
+        crate::voice::kws::KWS_MODEL_URL,
+        paths.tarball_path(),
+        Some(crate::voice::kws::KWS_MODEL_SHA256.to_string()),
+    )];
+
+    let slot = state.wake_spotter.clone();
+    let on_complete: Box<dyn FnOnce() + Send + 'static> = Box::new(move || {
+        tokio::spawn(async move {
+            let loaded = tokio::task::spawn_blocking(move || {
+                let paths = crate::voice::kws::WakeWordModelPaths::default_paths();
+                crate::voice::kws::install_from_tarball(&paths)?;
+                anyhow::Ok(crate::state::build_wake_spotter())
+            })
+            .await;
+            match loaded {
+                Ok(Ok(Some(spotter))) => {
+                    *slot.write().await = Some(spotter);
+                    tracing::info!(
+                        target: "permagentd::voice",
+                        "Wake-word model installed and hot-loaded — say the wake phrase to talk"
+                    );
+                }
+                Ok(Ok(None)) => tracing::error!(
+                    target: "permagentd::voice",
+                    "Wake-word model installed but the spotter failed to load"
+                ),
+                Ok(Err(e)) => tracing::error!(
+                    target: "permagentd::voice",
+                    "Wake-word model install failed: {e}"
+                ),
+                Err(e) => tracing::error!(
+                    target: "permagentd::voice",
+                    "Wake-word model install task panicked: {e}"
+                ),
+            }
+        });
+    });
+
+    get_download_manager()
+        .download_model_sharded(
+            crate::voice::kws::KWS_DOWNLOAD_ID.to_string(),
+            files,
+            crate::voice::kws::KWS_MODEL_BYTES,
+            Some(on_complete),
+        )
+        .await?;
+    Ok(())
+}
+
+/// POST /voice/wake/models/download — fetch the wake-word model on demand.
+async fn download_wake_models(
+    State(state): State<Arc<AppState>>,
+) -> Result<(StatusCode, Json<WakeModelStatus>), ErrorResponse> {
+    start_wake_model_download(&state).await.map_err(|e| {
+        ErrorResponse::internal(format!("Wake model download failed to start: {e}"))
+    })?;
+    let status = current_wake_status(&state).await;
+    let code = if status.spotter_loaded {
+        StatusCode::OK
+    } else {
+        StatusCode::ACCEPTED
+    };
+    Ok((code, Json(status)))
 }
 
 // ── Standalone synth primitive ─────────────────────────────────────────────
@@ -506,6 +635,12 @@ enum ClientMessage {
     Start { sample_rate: Option<u32> },
     #[serde(rename = "stop")]
     Stop,
+    /// Enter wake-listening: subsequent binary frames (outside a recording)
+    /// feed the on-device keyword spotter.
+    #[serde(rename = "wake_start")]
+    WakeStart { sample_rate: Option<u32> },
+    #[serde(rename = "wake_stop")]
+    WakeStop,
 }
 
 #[derive(Serialize)]
@@ -535,6 +670,22 @@ enum ServerMessage {
     Error { message: String },
     #[serde(rename = "ready")]
     Ready,
+    /// Wake-listening state after a `wake_start`/`wake_stop`. `phrase` is the
+    /// human-readable wake phrase (e.g. "Hey Henry") for the UI hint; `reason`
+    /// explains inactivity ("downloading" while the model fetch runs).
+    #[serde(rename = "wake_status")]
+    WakeStatus {
+        active: bool,
+        phrase: Option<String>,
+        reason: Option<String>,
+    },
+    /// A keyword fired: kind "wake" (open a turn) or "stop" (halt playback).
+    #[serde(rename = "wake")]
+    Wake { kind: String },
+    /// A spoken stop cancelled the in-flight reply server-side — no more
+    /// audio is coming for this turn.
+    #[serde(rename = "stopped")]
+    Stopped,
 }
 
 /// RAII cleanup for navigation interception: guarantees the session's entry is
@@ -623,6 +774,12 @@ async fn handle_voice_socket(
     // Prevents a stale handler from holding the TTS mutex while a new handler
     // starts on a reconnected socket.
     let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // Wake-word session (spotter + per-connection stream): present after a
+    // `wake_start`, fed by monitor frames whenever no recording is active.
+    let mut wake: Option<(
+        Arc<crate::voice::kws::WakeWordSpotter>,
+        crate::voice::kws::WakeSession,
+    )> = None;
 
     tracing::info!(target: "permagentd::voice", "Entering message loop");
     while let Some(result) = socket.recv().await {
@@ -756,6 +913,8 @@ async fn handle_voice_socket(
                             pipeline_start,
                             stt_ms,
                             cancelled: cancelled.clone(),
+                            wake: wake.as_ref(),
+                            sample_rate: client_sample_rate,
                         };
                         let stream_result = stream_reply_with_tts(&reply_ctx, &mut socket).await;
 
@@ -768,6 +927,74 @@ async fn handle_voice_socket(
                         }
                     }
                     Ok(ClientMessage::Stop) => {} // Not recording, ignore
+                    Ok(ClientMessage::WakeStart { sample_rate }) => {
+                        if let Some(sr) = sample_rate {
+                            client_sample_rate = sr;
+                        }
+                        let mut spotter = state.wake_spotter.read().await.clone();
+                        if spotter.is_none() {
+                            // Auto-provision: the first hands-free activation
+                            // kicks off the (idempotent, pinned) model fetch.
+                            match start_wake_model_download(&state).await {
+                                // The model may have been present already, in
+                                // which case the spotter is loaded now.
+                                Ok(()) => spotter = state.wake_spotter.read().await.clone(),
+                                Err(e) => tracing::warn!(
+                                    target: "permagentd::voice",
+                                    "wake model auto-download failed to start: {e}"
+                                ),
+                            }
+                        }
+                        let response = match spotter {
+                            Some(sp) => {
+                                // The wake phrase follows the persona name.
+                                let name = {
+                                    let p = state.persona.read().await;
+                                    p.nickname
+                                        .clone()
+                                        .filter(|n| !n.trim().is_empty())
+                                        .unwrap_or_else(|| p.first_name.clone())
+                                };
+                                let phrases = vec![format!("hey {name}"), format!("okay {name}")];
+                                match sp.create_session(&phrases) {
+                                    Ok(sess) => {
+                                        tracing::info!(
+                                            target: "permagentd::voice",
+                                            "wake listening started (phrase: \"hey {name}\")"
+                                        );
+                                        wake = Some((sp, sess));
+                                        ServerMessage::WakeStatus {
+                                            active: true,
+                                            phrase: Some(format!("Hey {name}")),
+                                            reason: None,
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            target: "permagentd::voice",
+                                            "wake session failed: {e}"
+                                        );
+                                        ServerMessage::WakeStatus {
+                                            active: false,
+                                            phrase: None,
+                                            reason: Some("wake phrase not encodable".into()),
+                                        }
+                                    }
+                                }
+                            }
+                            None => ServerMessage::WakeStatus {
+                                active: false,
+                                phrase: None,
+                                reason: Some("downloading".into()),
+                            },
+                        };
+                        if socket.send(send_json(&response)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(ClientMessage::WakeStop) => {
+                        wake = None;
+                    }
                     Err(e) => {
                         tracing::warn!(target: "permagentd::voice", "Invalid voice message: {}", e);
                     }
@@ -786,6 +1013,31 @@ async fn handle_voice_socket(
                         audio_buffer.len(),
                         audio_buffer.len() as f32 / client_sample_rate as f32
                     );
+                }
+            }
+            Message::Binary(data) => {
+                // Monitor audio while idle: feed the keyword spotter. The int8
+                // 3.3M zipformer decodes a ≤128ms frame in low single-digit
+                // milliseconds — not worth a spawn_blocking round-trip.
+                if let Some((sp, sess)) = &wake {
+                    let chunk: Vec<f32> = data
+                        .chunks_exact(4)
+                        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                        .collect();
+                    let detection = sp.accept(sess, client_sample_rate, &chunk);
+                    let kind = match detection {
+                        Some(crate::voice::kws::Detection::Wake) => "wake",
+                        Some(crate::voice::kws::Detection::Stop) => "stop",
+                        None => continue,
+                    };
+                    tracing::info!(target: "permagentd::voice", "keyword detected: {kind}");
+                    if socket
+                        .send(send_json(&ServerMessage::Wake { kind: kind.into() }))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
                 }
             }
             Message::Close(frame) => {
@@ -822,6 +1074,61 @@ struct VoiceReplyCtx<'a> {
     pipeline_start: std::time::Instant,
     stt_ms: u128,
     cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Wake session for mid-reply spoken-stop detection (monitor frames keep
+    /// arriving while the reply streams; they queue on the socket and are
+    /// drained between events).
+    wake: Option<&'a (
+        Arc<crate::voice::kws::WakeWordSpotter>,
+        crate::voice::kws::WakeSession,
+    )>,
+    sample_rate: u32,
+}
+
+/// Outcome of a non-blocking drain of queued client messages mid-reply.
+enum DrainOutcome {
+    /// Nothing actionable — keep streaming.
+    Continue,
+    /// A spoken stop phrase landed — end the turn now.
+    SpokenStop,
+    /// The socket is gone — abandon the turn (cancelled flag already set).
+    Disconnected,
+}
+
+/// Drain any client messages already queued on the socket WITHOUT blocking,
+/// feeding monitor audio to the keyword spotter. This is what makes a spoken
+/// "stop" land while the reply is still being generated: the handler is deep
+/// in `stream_reply_with_tts` and its recv loop isn't running, so queued
+/// frames would otherwise sit unread until the turn finished.
+fn drain_client_messages(socket: &mut WebSocket, ctx: &VoiceReplyCtx<'_>) -> DrainOutcome {
+    use futures::FutureExt;
+    loop {
+        match socket.recv().now_or_never() {
+            // Nothing queued right now.
+            None => return DrainOutcome::Continue,
+            Some(None) | Some(Some(Err(_))) | Some(Some(Ok(Message::Close(_)))) => {
+                ctx.cancelled
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                return DrainOutcome::Disconnected;
+            }
+            Some(Some(Ok(Message::Binary(data)))) => {
+                if let Some((sp, sess)) = ctx.wake {
+                    let chunk: Vec<f32> = data
+                        .chunks_exact(4)
+                        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                        .collect();
+                    // A mid-reply "wake" has nothing to open; only stop acts.
+                    if sp.accept(sess, ctx.sample_rate, &chunk)
+                        == Some(crate::voice::kws::Detection::Stop)
+                    {
+                        return DrainOutcome::SpokenStop;
+                    }
+                }
+            }
+            // Text (a stray stop/start) and pings are ignored mid-turn, as
+            // they always have been while the handler streams a reply.
+            Some(Some(Ok(_))) => {}
+        }
+    }
 }
 
 /// Stream the LLM reply, synthesize each sentence as it completes, and send
@@ -950,9 +1257,20 @@ async fn stream_reply_with_tts(
     let mut total_tts_ms: u128 = 0;
     let mut first_audio_sent = false;
     let mut first_token_logged = false;
+    let mut spoken_stop = false;
     let stream_start = std::time::Instant::now();
 
-    while let Some(event) = stream.next().await {
+    'stream: while let Some(event) = stream.next().await {
+        // A spoken "stop" may be sitting in the socket queue as monitor audio
+        // — check between events so it ends the turn mid-generation.
+        match drain_client_messages(socket, ctx) {
+            DrainOutcome::Continue => {}
+            DrainOutcome::SpokenStop => {
+                spoken_stop = true;
+                break 'stream;
+            }
+            DrainOutcome::Disconnected => return Ok(()),
+        }
         if let Ok(AgentEvent::Message(msg)) = event {
             if msg.role != rmcp::model::Role::Assistant {
                 continue;
@@ -1024,6 +1342,18 @@ async fn stream_reply_with_tts(
                             return Ok(());
                         }
 
+                        // A stop phrase spoken during this sentence's synthesis
+                        // is queued by now — honor it before sending the audio,
+                        // so "stop" doesn't get another sentence talked over it.
+                        match drain_client_messages(socket, ctx) {
+                            DrainOutcome::Continue => {}
+                            DrainOutcome::SpokenStop => {
+                                spoken_stop = true;
+                                break 'stream;
+                            }
+                            DrainOutcome::Disconnected => return Ok(()),
+                        }
+
                         match audio {
                             Ok(Ok(audio)) => {
                                 let dur = audio.samples.len() as f32 / audio.sample_rate as f32;
@@ -1071,9 +1401,24 @@ async fn stream_reply_with_tts(
         }
     }
 
+    // A spoken stop ends the turn: skip the tail synthesis, tell the client no
+    // more audio is coming (it clears its playback queue), and fall through to
+    // the normal turn teardown so state/nav/persistence stay consistent.
+    if spoken_stop {
+        tracing::info!(
+            target: "permagentd::voice",
+            "spoken stop ended the turn after {} sentences",
+            sentence_num
+        );
+        let _ = socket.send(send_json(&ServerMessage::Stopped)).await;
+    }
+
     // Synthesize any remaining text after the stream ends
     let remainder = text_buf.trim().to_string();
-    if !remainder.is_empty() && !cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+    if !remainder.is_empty()
+        && !spoken_stop
+        && !cancelled.load(std::sync::atomic::Ordering::Relaxed)
+    {
         sentence_num += 1;
         let tts_ref = tts.clone();
         let cancel_flag = cancelled.clone();
@@ -1121,7 +1466,15 @@ async fn stream_reply_with_tts(
     // audio — they ride this ordered socket, so by the time the client sees them
     // every audio chunk is already queued. The client fires them only once the
     // audio queue drains, so the view switches when the agent stops speaking.
-    for nav in permagent::events::nav_intercept::take(&sid) {
+    // A spoken stop drops them: the user ended the turn, so yanking the view
+    // somewhere afterwards is exactly what they asked not to happen. (The
+    // guard's Drop clears the interceptor registry either way.)
+    let navs = if spoken_stop {
+        Vec::new()
+    } else {
+        permagent::events::nav_intercept::take(&sid)
+    };
+    for nav in navs {
         let _ = socket
             .send(send_json(&ServerMessage::Navigate {
                 tab: nav.tab,

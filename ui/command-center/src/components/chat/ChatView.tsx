@@ -83,6 +83,7 @@ export function ChatView() {
           getPlaybackAnalyser={voiceConversation.getPlaybackAnalyser}
           getMicAnalyser={voiceConversation.getMicAnalyser}
           onExit={voiceConversation.exit}
+          wakeHint={voiceConversation.wakeHint}
         />
       )}
     </div>

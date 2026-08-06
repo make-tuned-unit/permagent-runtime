@@ -19,7 +19,11 @@ const ALLOWED_HOSTS: &[&str] = &["huggingface.co"];
 /// github.com is not generally trusted — only these exact release-asset path
 /// prefixes are (third-party projects we intentionally pin, e.g. the
 /// kokoro-onnx voice model release).
-const ALLOWED_GITHUB_PATH_PREFIXES: &[&str] = &["/thewh1teagle/kokoro-onnx/releases/download/"];
+const ALLOWED_GITHUB_PATH_PREFIXES: &[&str] = &[
+    "/thewh1teagle/kokoro-onnx/releases/download/",
+    // sherpa-onnx pretrained-model releases (wake-word KWS zipformer).
+    "/k2-fsa/sherpa-onnx/releases/download/kws-models/",
+];
 
 /// Validate that `raw` is an HTTPS URL pointing at an allowlisted download
 /// host. Every URL handed to the DownloadManager must pass this check before
@@ -930,6 +934,14 @@ mod tests {
     fn allows_pinned_github_release_path() {
         assert!(validate_download_url(
             "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn allows_sherpa_kws_release_path() {
+        assert!(validate_download_url(
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2"
         )
         .is_ok());
     }
