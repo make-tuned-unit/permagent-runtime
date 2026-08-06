@@ -301,6 +301,27 @@ async fn run_one(index: usize, check: &CompletionCheck, working_dir: &Path) -> C
 
 type CheckOutcome = Result<(CheckStatus, CheckEvidence, bool), String>;
 
+/// The PATH completion checks run with. The daemon is launched by launchd,
+/// whose PATH omits every developer toolchain — `cargo check` exited 127 here
+/// and condemned finished goal work. Prepend the standard tool homes to
+/// whatever PATH the daemon inherited.
+fn check_path() -> String {
+    let inherited = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_string());
+    let home = std::env::var("HOME").unwrap_or_default();
+    let mut parts: Vec<String> = Vec::new();
+    for candidate in [
+        format!("{home}/.cargo/bin"),
+        "/opt/homebrew/bin".to_string(),
+        "/usr/local/bin".to_string(),
+    ] {
+        if !inherited.split(':').any(|p| p == candidate) && Path::new(&candidate).is_dir() {
+            parts.push(candidate);
+        }
+    }
+    parts.push(inherited);
+    parts.join(":")
+}
+
 async fn run_command_check(
     cmd: &str,
     cwd: Option<&str>,
@@ -331,6 +352,7 @@ async fn run_command_check(
         .arg(flag)
         .arg(cmd)
         .current_dir(&dir)
+        .env("PATH", check_path())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -348,6 +370,13 @@ async fn run_command_check(
     let exit_code = output.status.code();
     let status = if output.status.success() {
         CheckStatus::Pass
+    } else if exit_code == Some(127) {
+        // "command not found" is the CHECK ENVIRONMENT failing, not the work:
+        // this exact code (cargo absent from the daemon's launchd PATH) gave
+        // real, finished goal work a fail verdict and auto-cancelled it. An
+        // Error result parks the goal for human review instead of condemning
+        // the diff.
+        CheckStatus::Error
     } else {
         CheckStatus::Fail
     };

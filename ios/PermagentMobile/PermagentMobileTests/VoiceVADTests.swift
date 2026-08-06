@@ -130,6 +130,25 @@ final class VoiceVADTests: XCTestCase {
         XCTAssertEqual(vad.step(rms: 0.09, phase: .thinking, now: 2.17), .none)
     }
 
+    /// Barge-in must fire at ORDINARY speaking volume, not a raised voice.
+    /// The threshold was copied verbatim from the web (0.05) while onset was
+    /// lowered for iOS's AGC, leaving barge at 3.3× onset instead of the web's
+    /// 2× — interrupting took a shout.
+    func testBargeInFiresAtOrdinarySpeechLevel() {
+        var vad = VoiceVAD()
+        let ordinary: Float = 0.035   // just above conversational onset (0.015)
+        XCTAssertEqual(vad.step(rms: ordinary, phase: .speaking, now: 1), .none)
+        XCTAssertEqual(vad.step(rms: ordinary, phase: .speaking, now: 1.085), .interrupt)
+        // Residual TTS bleed below the barge floor still must not interrupt.
+        var quiet = VoiceVAD()
+        for i in 0..<6 {
+            XCTAssertEqual(
+                quiet.step(rms: 0.02, phase: .speaking, now: 1 + Double(i) * 0.085),
+                .none
+            )
+        }
+    }
+
     /// The listening cap is the required one minute.
     func testListeningCapIsSixtySeconds() {
         XCTAssertEqual(VoiceVAD.Config().maxTurnMs, 60_000)

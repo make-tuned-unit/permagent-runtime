@@ -1617,7 +1617,7 @@ mod tests {
             after.metadata_json[DUE_DATE_KEY],
             before.metadata_json[DUE_DATE_KEY]
         );
-        assert!(!after.archived_at.is_some());
+        assert!(after.archived_at.is_none());
     }
 
     #[tokio::test]

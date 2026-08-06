@@ -511,15 +511,36 @@ struct ChatView: View {
     @State private var sessionId: String?
     @State private var sessionError: String?
     @State private var showVoice = false
-    @State private var confirmEnd = false
+    @State private var showHistory = false
+    /// Owns the keyboard. Without this there was no way to put it away: it
+    /// covered the tab bar, so the user could neither leave chat nor reach the
+    /// send button's row — reported 2026-08-05.
+    @FocusState private var composerFocused: Bool
 
-    /// Drop the thread and the id behind it. The next send resolves a new
-    /// session, so this is the only place that has to forget anything.
-    private func endConversation() {
+    /// Start fresh. The old thread is NOT deleted — it stays on the hub and
+    /// is one tap away in Conversations, which is why this needs no
+    /// confirmation. The next send resolves a new session.
+    private func newConversation() {
         MobileSession.endConversation()
         sessionId = nil
         sessionError = nil
+        composerFocused = false
         withAnimation(Motion.ease) { messages = [] }
+    }
+
+    /// Open a past conversation: adopt its id and render its history. The hub
+    /// stays the source of truth — nothing is reconstructed on device.
+    private func openSession(_ id: String) async {
+        composerFocused = false
+        showHistory = false
+        do {
+            let loaded = try await MobileSession.adopt(id)
+            sessionId = id
+            sessionError = nil
+            withAnimation(Motion.spring) { messages = loaded }
+        } catch {
+            sessionError = Self.describeChatFailure(error)
+        }
     }
 
     /// The hub session for this chat, resolved once and reused.
@@ -591,6 +612,9 @@ struct ChatView: View {
                         }
                         .padding()
                     }
+                    // Drag the transcript down to put the keyboard away — the
+                    // native idiom, and the one people try first.
+                    .scrollDismissesKeyboard(.interactively)
                     .onChange(of: messages.count) { _, _ in
                         if let last = messages.last {
                             withAnimation(Motion.spring) { proxy.scrollTo(last.id, anchor: .bottom) }
@@ -607,14 +631,44 @@ struct ChatView: View {
                 // the app (reported 2026-08-04). Destructive-styled and
                 // confirmed, because it is the one action here that cannot be
                 // undone from the phone.
+                // Both one tap, the way every chat app does it: the list of
+                // conversations, and a new one. Burying them in a menu made
+                // the two most common actions cost two taps each.
                 ToolbarItem(placement: .topBarLeading) {
-                    Button(role: .destructive) { confirmEnd = true } label: {
-                        Image(systemName: "arrow.counterclockwise")
+                    Button {
+                        composerFocused = false
+                        showHistory = true
+                    } label: {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(Brand.textMuted)
+                    }
+                    .accessibilityLabel("Past conversations")
+                }
+                ToolbarItem(placement: .topBarLeading) {
+                    // No confirmation: starting a new conversation is fully
+                    // reversible now that past ones are one tap away, and the
+                    // old thread is never deleted — it stays on the hub. A
+                    // destructive-styled confirm here was overclaiming.
+                    Button {
+                        composerFocused = false
+                        newConversation()
+                    } label: {
+                        Image(systemName: "square.and.pencil")
                             .font(.body.weight(.semibold))
                             .foregroundStyle(Brand.textMuted)
                     }
                     .disabled(messages.isEmpty && sessionId == nil)
-                    .accessibilityLabel("End this conversation")
+                    .accessibilityLabel("New conversation")
+                }
+                // The escape hatch: with the keyboard up it covers the tab
+                // bar, so this is the only visible way back out to the rest
+                // of the app.
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { composerFocused = false }
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(Brand.cyan)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     // Straight in. No await before presenting: VoiceView resolves
@@ -639,15 +693,10 @@ struct ChatView: View {
             .fullScreenCover(isPresented: $showVoice) {
                 VoiceView(sessionId: sessionId)
             }
-            .confirmationDialog(
-                "End this conversation?",
-                isPresented: $confirmEnd,
-                titleVisibility: .visible
-            ) {
-                Button("End conversation", role: .destructive) { endConversation() }
-                Button("Keep talking", role: .cancel) { }
-            } message: {
-                Text("\(identity.nameCapitalized) starts fresh with no memory of this thread. The old one stays on your hub.")
+            .sheet(isPresented: $showHistory) {
+                ChatHistorySheet(currentSessionId: sessionId) { id in
+                    Task { await openSession(id) }
+                }
             }
             // Tactile: a light tap when you send.
             .sensoryFeedback(.impact(weight: .light), trigger: sentCount)
@@ -687,6 +736,8 @@ struct ChatView: View {
                 .background(Brand.surface)
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .foregroundStyle(Brand.text)
+                .focused($composerFocused)
+                .submitLabel(.send)
             Button {
                 send()
             } label: {

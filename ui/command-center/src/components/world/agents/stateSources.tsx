@@ -153,7 +153,12 @@ export function AgentStateSources() {
   // ── Sim agents — roster from /api/agents, activity from local sim ──
   useEffect(() => {
     let cancelled = false;
-    const simAgents = ROSTER.filter((a) => a.id !== 'henry' && a.id !== 'librarian');
+    // Strix is excluded alongside Henry and the Librarian because it too has a
+    // real wire: its sweep loop emits agent_state_changed. Leaving it in the
+    // ambient toggler would have sim state fighting daemon truth.
+    const simAgents = ROSTER.filter(
+      (a) => a.id !== 'henry' && a.id !== 'librarian' && a.id !== 'strix',
+    );
     const names = new Map(simAgents.map((a) => [a.id, a.name]));
 
     // Roster consumption: pick up display names from the daemon when present.

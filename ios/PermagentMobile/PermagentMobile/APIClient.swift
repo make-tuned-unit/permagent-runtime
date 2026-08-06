@@ -368,6 +368,29 @@ enum MobileSession {
     private struct SessionResponse: Decodable { let id: String }
     private struct CreateBody: Encodable { let workingDir: String }
 
+    /// Adopt an existing hub session as this install's conversation and return
+    /// its history as chat bubbles. Both voice and text follow the adopted id,
+    /// because they deliberately share one thread.
+    ///
+    /// Tool traffic is dropped: a resumed thread should read the way it read
+    /// when it was live — the user's words and the agent's answers — not a
+    /// transcript of every tool call underneath them.
+    static func adopt(_ id: String) async throws -> [ChatBubble] {
+        struct Content: Decodable { let type: String; let text: String?; let thinking: String? }
+        struct Message: Decodable { let role: String; let content: [Content] }
+        struct Session: Decodable { let conversation: [Message]? }
+
+        let session = try await APIClient.shared.get("/api/sessions/\(id)", as: Session.self)
+        UserDefaults.standard.set(id, forKey: key)
+        return (session.conversation ?? []).compactMap { m in
+            guard m.role == "user" || m.role == "assistant" else { return nil }
+            let text = m.content.compactMap(\.text).joined()
+            let thinking = m.content.compactMap(\.thinking).joined()
+            guard !text.isEmpty || !thinking.isEmpty else { return nil }
+            return ChatBubble(role: m.role, text: text, thinking: thinking)
+        }
+    }
+
     /// Forget the current conversation, so the next turn mints a fresh one.
     ///
     /// Voice and text share this id deliberately — a spoken turn lands in the
