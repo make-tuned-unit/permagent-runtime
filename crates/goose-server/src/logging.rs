@@ -119,6 +119,11 @@ fn default_env_filter() -> EnvFilter {
         // identical to a site with no traffic (#580, caught by the guard test
         // below rather than by anyone noticing missing events).
         .add_directive("analytics_drain=info".parse().unwrap())
+        // Coding sessions → Brain: the summary endpoint logs each remembered
+        // session under this target; without the directive the INFO line falls
+        // below the WARN floor (the #580 trap) and a silently-failing memory
+        // pipeline looks identical to nobody coding.
+        .add_directive("coding_session=info".parse().unwrap())
         .add_directive(LevelFilter::WARN.into())
 }
 
