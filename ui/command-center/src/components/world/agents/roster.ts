@@ -99,14 +99,15 @@ export const ROSTER: AgentIdentity[] = [
     weathering: 0.35,
   },
   {
-    // Strix — the security agent (crate::strix + the daemon sweep loop). It
+    // The Guard — the security agent, born of the Strix engine (crate::strix +
+    // the daemon sweep loop; the id/config keys keep the `strix` spelling). It
     // probes the user's OWN projects and reports; it never remediates, and
     // anything intrusive is proposed rather than performed. Unlike the
     // Reader/Watcher/Steward it HAS a live wire: the sweep emits
     // agent_state_changed, so its working pose is real, not sim-ambient.
     // Home sits opposite the Steward, on the far +x/+z quadrant.
     id: 'strix',
-    name: 'Strix',
+    name: 'The Guard',
     role: 'agent',
     trimColor: AGENT_TRIM.strix,
     isHenry: false,

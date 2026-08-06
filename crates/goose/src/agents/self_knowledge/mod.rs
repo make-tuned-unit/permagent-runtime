@@ -506,7 +506,7 @@ impl SelfKnowledgeBuilder {
                 "off (initiative_enabled=false)".to_string()
             }),
             "strix" => Some(if crate::strix::is_enabled() {
-                "on — sweeping your projects for security flaws".to_string()
+                "on — the Guard is sweeping your projects for security flaws".to_string()
             } else {
                 "off (strix_enabled=false)".to_string()
             }),

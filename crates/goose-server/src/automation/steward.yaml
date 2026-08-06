@@ -1,6 +1,6 @@
-version: "1.2.0"
+version: "1.3.0"
 title: "Git Steward"
-description: "Scheduled repo hygiene across every repository under the dev root — status, stale-branch and orphaned-worktree sweeps, CI-failure flagging, plus commit-message, PR-description and changelog drafts for the primary repo. Surfaces its findings as a single board card plus a recallable Brain memory. Read/propose only; destructive operations are routed to you for approval. Runs on the configured default model."
+description: "Scheduled repo hygiene across every repository under the dev root — status, stale-branch, gone-upstream and orphaned-worktree sweeps, open-PR hygiene, CI-failure flagging, plus commit-message, PR-description and changelog drafts for the primary repo. Surfaces its findings as a single board card plus a recallable Brain memory. Read/propose only; destructive operations are routed to you for approval. Runs on the configured default model."
 
 parameters:
   - key: repos_root
@@ -50,16 +50,27 @@ prompt: |
 
   2. For EACH discovered repo (call it $R), run:
        `git -C $R status --short --branch`
-       `git -C $R for-each-ref --sort=committerdate refs/heads/ --format='%(committerdate:short) %(refname:short) %(objectname:short)'`
+       `git -C $R for-each-ref --sort=committerdate refs/heads/ --format='%(committerdate:short) %(refname:short) %(objectname:short) %(upstream:track)'`
      and record: current branch, ahead/behind upstream, uncommitted/untracked
-     file count, stale candidates (no commits in {{ stale_days }} days), and
+     file count, stale candidates (no commits in {{ stale_days }} days),
      which stale candidates are merged (`git -C $R branch --merged main`, or
-     master if there is no main).
+     master if there is no main), and GONE-UPSTREAM branches — any branch whose
+     upstream track reads `[gone]` (its remote branch was deleted, usually a
+     merged PR). A gone-upstream branch that is also merged is a deletion
+     candidate for step 4; report the rest under Stale branches as
+     "<branch> (upstream gone)".
 
   3. CI CHECK per repo (best-effort, only if `gh` is available): if the repo has
      a GitHub origin, `gh run list --repo <origin> --limit 3 --json conclusion,displayTitle,headBranch`.
      A repo whose most recent run FAILED is an ATTENTION item — name the repo,
      branch and workflow in the report's attention list.
+
+  3b. OPEN-PR HYGIENE per repo (best-effort, only if `gh` is available):
+     `gh pr list --repo <origin> --state open --json number,title,isDraft,mergeable,updatedAt --limit 20`.
+     Flag: PRs with no update in 14+ days (stale), drafts with no update in
+     14+ days (draft rot), and PRs whose mergeable state is CONFLICTING.
+     One line each under an "Open PRs" section; conflicting PRs are ATTENTION
+     items. REPORT-ONLY — never comment on, close, or merge a PR.
 
   4. DESTRUCTIVE PROPOSALS (stale-branch deletion), in any repo:
      for each stale candidate that is MERGED and NOT protected
@@ -103,7 +114,8 @@ prompt: |
   **Attention** (red CI, heavily-diverged or long-uncommitted repos — the things
   the user should look at today) · **Fleet health** (one line per repo: branch,
   ahead/behind, uncommitted count, stale count) · **Commit message draft** ·
-  **PR description** · **Changelog** · **Stale branches** · **Approval cards
+  **PR description** · **Changelog** · **Stale branches** · **Open PRs**
+  (stale / draft-rot / conflicting, per repo) · **Approval cards
   created** · **Orphaned worktrees** · **CI investigation**
 
   Keep it tight and skimmable. Lead with Attention; an empty Attention section

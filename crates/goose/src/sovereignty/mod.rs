@@ -102,7 +102,7 @@ pub const GOVERNANCE_SURFACE_FEATURE: crate::agents::self_knowledge::FeatureDesc
              on/off data-boundary 'pull the cable' control plus the append-only egress audit \
              log — every cloud call that was allowed or blocked, when, and of what kind), the \
              Models section (the active primary model, the worker roster each role can dispatch \
-             to, and the Strix security-sweep toggle), and the Autonomy section (the \
+             to, and the Guard's security-sweep toggle), and the Autonomy section (the \
              pending-approvals strip and the tool-approval trust level itself)",
         why_it_matters:
             "This is where the user answers 'what is this costing me, what has left my machine, \

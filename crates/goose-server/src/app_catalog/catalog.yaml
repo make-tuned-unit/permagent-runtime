@@ -65,14 +65,14 @@ tabs:
       defaults are configured. It also hosts the Console pages (Sessions,
       Inbox, Activity/trace, Spend) and the sovereign controls — spend and
       budget, the sovereignty data boundary with its egress audit log, the
-      worker roster, and the Strix security-sweep toggle.
+      worker roster, and the Guard's security-sweep toggle.
     affords:
       - Configure AI provider (Anthropic, OpenAI, Ollama)
       - Adjust appearance / theme
       - Set Librarian schedule
       - Review spend per project/session and set budget caps (Spend section)
       - Toggle the data boundary and read the egress audit log (Sovereignty section)
-      - Enable or disable Strix security sweeps (Models section)
+      - Enable or disable the Guard's security sweeps (Models section)
     suggest_when:
       - User asks how to configure a provider, change model, or adjust the Librarian
       - User asks what something is costing, wants a spend cap, or worries about a bill

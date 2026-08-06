@@ -1,9 +1,9 @@
-//! Strix's sweep loop — the standing security agent.
+//! The Guard's sweep loop — the standing security agent (Strix engine).
 //!
 //! Every pass walks the user's own active projects, runs the Strix pentest
 //! engine over each in read-only posture, and turns its SARIF findings into a
 //! living fix checklist on that project's Overview. Nothing is remediated:
-//! Strix reports, and anything intrusive is proposed for the user rather than
+//! The Guard reports, and anything intrusive is proposed for the user rather than
 //! performed (`permagent::strix::classify`).
 //!
 //! Honesty laws, inherited from the Watcher's loop:
@@ -57,13 +57,13 @@ pub fn spawn(state: Arc<AppState>) {
     if strix::is_enabled() {
         tracing::info!(
             target: "permagentd::strix",
-            "Strix enabled — security sweeps every {}h, read-only posture",
+            "The Guard enabled — security sweeps every {}h, read-only posture",
             TICK.as_secs() / 3600
         );
     } else {
         tracing::info!(
             target: "permagentd::strix",
-            "Strix is off ({}=false) — sweep loop idle until enabled",
+            "The Guard is off ({}=false) — sweep loop idle until enabled",
             strix::STRIX_ENABLED_KEY
         );
     }
@@ -80,7 +80,7 @@ pub fn spawn(state: Arc<AppState>) {
     });
 }
 
-/// The World shows Strix working only while it genuinely is — the honesty
+/// The World shows the Guard working only while it genuinely is — the honesty
 /// clamp in `agentStatus.ts` refuses to animate a `sim` agent as busy, so this
 /// is what earns the amber pose and the work halo.
 fn announce(state_label: &str) {

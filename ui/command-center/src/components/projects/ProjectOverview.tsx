@@ -249,8 +249,8 @@ function WatcherInsightsPanel({ project }: { project: Project }) {
   );
 }
 
-// ── Strix findings ──────────────────────────────────────────────────────────
-// The security checklist Strix's sweep loop keeps on the project
+// ── The Guard's findings ─────────────────────────────────────────────────────
+// The security checklist the Guard's sweep loop keeps on the project
 // (daemon strix loop → metadata_json.strix_findings). Each item carries its
 // severity, CWE, location, and how to fix it. Renders nothing until the first
 // finding exists — a clean project shows no security section at all.
@@ -285,7 +285,7 @@ function StrixFindingsPanel({ project }: { project: Project }) {
     s === 'high' ? colors.danger : s === 'medium' ? colors.warning : colors.textDim;
   const shown = findings.slice(0, STRIX_SHOWN);
   return (
-    <Panel title="Security — from Strix">
+    <Panel title="Security — from the Guard">
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         {shown.map(f => (
           <div key={f.id} style={{ display: 'flex', gap: 10, alignItems: 'baseline' }}>

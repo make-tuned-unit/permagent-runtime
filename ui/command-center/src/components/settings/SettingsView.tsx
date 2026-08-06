@@ -824,15 +824,15 @@ function ModelsPanel({ goto }: PanelProps) {
         </Section>
       )}
 
-      {/* ── Strix security sweeps ────────────────────────────────── */}
+      {/* ── The Guard security sweeps ────────────────────────────── */}
       <Section
-        title="Security sweeps (Strix)"
-        sub="Strix probes your own projects for security flaws and files findings on each project's Overview. Requires the external `strix` scanner and Docker installed. Sweeps every 6 hours; a change here takes effect at the next tick — no restart needed."
+        title="Security sweeps (The Guard)"
+        sub="The Guard — born of the Strix pentest engine — probes your own projects for security flaws and files findings on each project's Overview. Requires the external `strix` scanner and Docker installed. Sweeps every 6 hours; a change here takes effect at the next tick — no restart needed."
       >
         {strixError && (
           <div style={{ fontSize: 12, color: colors.danger, padding: '4px 0 8px' }}>{strixError}</div>
         )}
-        <Row label="Enable Strix" hint="Off by default — a scanner that runs live exploit tooling is switched on deliberately, never by upgrade.">
+        <Row label="Enable the Guard" hint="Off by default — a scanner that runs live exploit tooling is switched on deliberately, never by upgrade.">
           {strix === null ? (
             <span style={{ fontSize: 12, color: colors.textDim }}>Loading…</span>
           ) : (

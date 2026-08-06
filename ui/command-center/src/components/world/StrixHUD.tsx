@@ -5,8 +5,10 @@ import { useAgentRuntimeStates } from './shared/agentStatus';
 import { HudShell, Section } from './HudShell';
 import { api } from '../../lib/api';
 
-// Strix — the security agent (crate::strix + the daemon sweep loop). It probes
-// the user's OWN projects for flaws and keeps a living fix checklist.
+// The Guard — the security agent, born of the Strix pentest engine
+// (crate::strix + the daemon sweep loop; ids/config keys keep the `strix`
+// spelling). It probes the user's OWN projects for flaws and keeps a living
+// fix checklist.
 //
 // Unlike the Reader/Watcher/Steward panels, this one CAN show live state: the
 // sweep emits agent_state_changed, so the pill below reports what the daemon
@@ -68,12 +70,12 @@ export function StrixHUD({ visible, onClose }: StrixHUDProps) {
   );
 
   return (
-    <HudShell visible={visible} onClose={onClose} title="STRIX" statusPill={statusPill}>
+    <HudShell visible={visible} onClose={onClose} title="THE GUARD" statusPill={statusPill}>
       <div style={{ padding: '4px 14px 8px' }}>
         <span style={{ fontSize: 11, color: '#9CA3AF', lineHeight: 1.5 }}>
           {enabled === false
-            ? 'Standing by — sweeps disabled; enable in Settings → Models. When on, Strix probes your own projects the way an attacker would, on its own cadence.'
-            : 'Your own projects, probed the way an attacker would — on its own cadence, so security review happens without anyone remembering to ask. It reports; it never fixes.'}
+            ? 'Standing by — sweeps disabled; enable in Settings → Models. When on, the Guard probes your own projects the way an attacker would, on its own cadence. Born of the Strix pentest engine.'
+            : 'Your own projects, probed the way an attacker would — on its own cadence, so security review happens without anyone remembering to ask. It reports; it never fixes. Born of the Strix pentest engine.'}
         </span>
       </div>
 

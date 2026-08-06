@@ -1,10 +1,12 @@
-//! Strix — the security character agent.
+//! The Guard — the security character agent, born of Strix.
 //!
-//! Strix continuously probes the user's OWN projects for security flaws and
-//! keeps a living fix checklist. It wraps the Strix pentest engine
+//! The Guard continuously probes the user's OWN projects for security flaws
+//! and keeps a living fix checklist. It wraps the Strix pentest engine
 //! (github.com/usestrix/strix, Apache-2.0) as an external scanner and ingests
 //! its SARIF output; the agent layer here is the standing character: the
-//! enable flag, the scope guard, and the identity Henry can describe.
+//! enable flag, the scope guard, and the identity Henry can describe. All
+//! internal ids, config keys and log targets keep the `strix` spelling — only
+//! the display name is "The Guard".
 //!
 //! Two rules are in CODE, not in a prompt, because a security agent that runs
 //! live exploit tooling must not be able to talk itself out of them:
@@ -12,7 +14,7 @@
 //! 1. **Scope.** Only paths inside the user's own registered project roots are
 //!    scannable. Anything else — a URL, a neighbour's checkout, a system
 //!    directory — is refused before the scanner is invoked.
-//! 2. **Reporting, not remediation.** Strix files findings. It never edits code
+//! 2. **Reporting, not remediation.** The Guard files findings. It never edits code
 //!    to "fix" what it found, and anything intrusive routes to the Decision
 //!    Inbox for the user rather than executing.
 
@@ -25,8 +27,9 @@ use crate::config::Config;
 pub const STRIX_ENABLED_KEY: &str = "strix_enabled";
 /// Self-knowledge id (also the World roster id and the agent.yaml worker key).
 pub const STRIX_FEATURE_ID: &str = "strix";
-/// The character's name.
-pub const STRIX_NAME: &str = "Strix";
+/// The character's name. The engine underneath stays Strix; the character the
+/// user meets is The Guard.
+pub const STRIX_NAME: &str = "The Guard";
 
 pub fn is_enabled() -> bool {
     Config::global()
@@ -90,20 +93,20 @@ pub fn check_scope(target: &str, roots: &[PathBuf]) -> Result<PathBuf, ScopeRefu
 
 /// Self-knowledge descriptor. Rendered into `<permagent_self>` only while the
 /// flag is on (see `self_knowledge::worker_descriptor_visible`), so the brief —
-/// and its snapshots — are byte-identical until Strix is deliberately enabled.
+/// and its snapshots — are byte-identical until the Guard is deliberately enabled.
 pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
     crate::agents::self_knowledge::FeatureDescriptor {
         id: STRIX_FEATURE_ID,
-        display_name: "Strix",
+        display_name: "The Guard",
         category: crate::agents::self_knowledge::FeatureCategory::Worker,
         what_it_does:
             "Continuously probes the user's own projects for security flaws — exposed secrets, \
              vulnerable dependencies, injection and access-control weaknesses, risky \
              configuration — and keeps a living checklist of what to fix, each item carrying \
-             its severity, CWE, location, and remediation",
+             its severity, CWE, location, and remediation. Powered by the Strix pentest engine",
         why_it_matters:
             "Security review that happens on its own cadence instead of when someone remembers \
-             to ask. When the user asks what is wrong with a project, Strix's findings are the \
+             to ask. When the user asks what is wrong with a project, the Guard's findings are the \
              standing answer — and it only ever reports: it never edits code to fix what it \
              found, and anything intrusive is proposed for approval rather than performed",
         state_source: crate::agents::self_knowledge::StateSource::Queryable,
@@ -134,7 +137,7 @@ mod tests {
         assert!(check_scope(root.to_str().unwrap(), &roots).is_ok());
         assert!(check_scope(root.join("src").to_str().unwrap(), &roots).is_ok());
 
-        // Refused: remote targets — Strix scans the user's own code, not hosts.
+        // Refused: remote targets — the Guard scans the user's own code, not hosts.
         assert_eq!(
             check_scope("https://example.com", &roots),
             Err(ScopeRefusal::NotAPath)
