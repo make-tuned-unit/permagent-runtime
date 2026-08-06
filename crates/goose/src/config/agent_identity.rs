@@ -114,7 +114,51 @@ pub const WEB_SEARCH_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
             "Fresh information beyond your training data. Check your live tool list before \
              claiming you can or cannot search — the truth is whatever tools are present",
         state_source: crate::agents::self_knowledge::StateSource::Static,
-        teaching: &[],
+        // The guided-setup lesson: assume the user has never made an API key.
+        // Open pages FOR them (a Markdown link opens in the in-app browser),
+        // watch where they are via read_browser_content, and never claim
+        // success without the tools actually appearing.
+        teaching: &[
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Pick a provider",
+                body: "Offer the two choices plainly: Tavily (easiest — sign in with Google or \
+                       GitHub, no card, free tier) or Brave Search (free tier, asks for a card \
+                       but does not charge it). Recommend Tavily for a fastest start. Wait for \
+                       their pick.",
+                open_surface: None,
+                confirm: None,
+            },
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Open the key page for them",
+                body: "Post the provider's key page as a Markdown link — it opens right in the \
+                       app's browser: Tavily https://app.tavily.com/ or Brave \
+                       https://api-dashboard.search.brave.com/app/keys. Tell them the goal in \
+                       one sentence: sign in, create a key, copy it.",
+                open_surface: None,
+                confirm: None,
+            },
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Guide them from where they actually are",
+                body: "Use read_browser_content to see the page they are on and narrate the next \
+                       click from there — sign-up form, plan picker, key list — one step at a \
+                       time, until they have copied a key. Never recite steps for a page they \
+                       are not looking at.",
+                open_surface: None,
+                confirm: None,
+            },
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Paste it in Settings and prove it works",
+                body: "Bring them to the Search & tools section, tell them to paste the key next \
+                       to their provider and press Save, then press Test. Only a passing test — \
+                       or the search tools appearing in your own tool list — counts as done; a \
+                       saved key alone proves nothing.",
+                open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                    tab: "Settings",
+                    section: Some("search"),
+                }),
+                confirm: None,
+            },
+        ],
     };
 
 /// Primary agent persona configuration.
@@ -468,7 +512,7 @@ pub fn default_roster() -> HashMap<String, WorkerPersona> {
     roster.insert(
         "strix".to_string(),
         WorkerPersona {
-            first_name: "Strix".to_string(),
+            first_name: "The Guard".to_string(),
             role: "Security review — continuously probes the user's own projects for \
                    exposed secrets, vulnerable dependencies, injection and access-control \
                    weaknesses, and risky configuration; REPORTS findings and PROPOSES \

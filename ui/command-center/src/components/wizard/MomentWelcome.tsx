@@ -15,6 +15,59 @@ const PROVIDERS: SelectOption[] = [
   { value: 'ollama', label: 'Ollama (Local)', dot: '#8A94A6', note: 'Free' },
 ];
 
+// Per-provider key-page guidance. The wizard overlays the app, so the page
+// opens in the system browser and these numbered steps sit beside the paste
+// field — written for someone who has never made an API key before.
+const KEY_HELP: Record<string, { url: string; label: string; steps: string[] }> = {
+  anthropic: {
+    url: 'https://console.anthropic.com/settings/keys',
+    label: 'Anthropic Console',
+    steps: [
+      'Sign in, or create an account (email or Google).',
+      'You land on the API Keys page — click "Create Key".',
+      'Give it any name (e.g. "Permagent") and click Create.',
+      'Click the copy button — the key is only shown once — then come back and paste it.',
+    ],
+  },
+  openai: {
+    url: 'https://platform.openai.com/api-keys',
+    label: 'OpenAI Platform',
+    steps: [
+      'Sign in, or create an account.',
+      'On the API keys page, click "Create new secret key".',
+      'Name it anything (e.g. "Permagent") and click Create.',
+      'Copy the key — it is only shown once — then come back and paste it.',
+    ],
+  },
+  moonshot: {
+    url: 'https://platform.moonshot.ai/console/api-keys',
+    label: 'Moonshot Console',
+    steps: [
+      'Sign in, or create an account.',
+      'Open the API Keys page and click "Create API Key".',
+      'Copy the new key, then come back and paste it.',
+    ],
+  },
+  google: {
+    url: 'https://aistudio.google.com/apikey',
+    label: 'Google AI Studio',
+    steps: [
+      'Sign in with your Google account.',
+      'Click "Create API key" (free — no card needed).',
+      'Copy the key, then come back and paste it.',
+    ],
+  },
+  groq: {
+    url: 'https://console.groq.com/keys',
+    label: 'Groq Console',
+    steps: [
+      'Sign in, or create a free account.',
+      'On the API Keys page, click "Create API Key".',
+      'Name it anything, copy the key, then come back and paste it.',
+    ],
+  },
+};
+
 interface Props {
   onAdvance: (provider: string, apiKey: string) => void;
 }
@@ -107,30 +160,33 @@ export function MomentWelcome({ onAdvance }: Props) {
         <PrimaryButton onClick={handleSubmit} disabled={!canContinue || validating} full>
           {validating ? 'Saving...' : 'Continue'}
         </PrimaryButton>
-        {!isLocal && (
+        {!isLocal && !showHelp && KEY_HELP[provider] && (
           <GhostLink onClick={() => setShowHelp(true)} style={{ textAlign: 'center' }}>
-            Where do I find my API key?
+            I don't have a key — help me get one
           </GhostLink>
         )}
-      </div>
-
-      {showHelp && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }}
-          onClick={() => setShowHelp(false)}>
-          <Glass r={16} padding={28} style={{ maxWidth: 420, width: '90%' }}>
-            <h3 style={{ fontFamily: font.display, fontSize: 18, color: colors.text, margin: '0 0 12px' }}>Finding your API key</h3>
-            <p style={{ fontFamily: font.body, fontSize: 13, color: colors.textMuted, lineHeight: 1.6 }}>
-              Visit your provider's dashboard to create an API key:
-            </p>
-            <ul style={{ fontFamily: font.mono, fontSize: 12, color: colors.cyan, lineHeight: 2, paddingLeft: 18 }}>
-              <li>Anthropic: console.anthropic.com</li>
-              <li>OpenAI: platform.openai.com</li>
-              <li>Moonshot: platform.moonshot.ai</li>
-            </ul>
-            <GhostLink onClick={() => setShowHelp(false)} style={{ marginTop: 8 }}>Got it</GhostLink>
+        {!isLocal && showHelp && KEY_HELP[provider] && (
+          <Glass r={12} padding={14}>
+            <div style={{ fontFamily: font.body, fontSize: 12, fontWeight: 600, color: colors.text, marginBottom: 8 }}>
+              Getting a {KEY_HELP[provider].label} key
+            </div>
+            <PrimaryButton
+              onClick={() => window.open(KEY_HELP[provider].url, '_blank', 'noopener,noreferrer')}
+              full
+              style={{ height: 36, fontSize: 13, marginBottom: 10 }}
+            >
+              Open {KEY_HELP[provider].label} ↗
+            </PrimaryButton>
+            {KEY_HELP[provider].steps.map((s, i) => (
+              <div key={i} style={{ display: 'flex', gap: 8, fontFamily: font.body, fontSize: 12, color: colors.textMuted, lineHeight: 1.7 }}>
+                <span style={{ color: colors.cyan, fontWeight: 600, flexShrink: 0 }}>{i + 1}.</span>
+                <span>{s}</span>
+              </div>
+            ))}
+            <GhostLink onClick={() => setShowHelp(false)} style={{ marginTop: 8, fontSize: 12 }}>Hide steps</GhostLink>
           </Glass>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

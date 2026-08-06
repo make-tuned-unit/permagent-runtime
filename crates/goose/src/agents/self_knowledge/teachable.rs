@@ -123,7 +123,9 @@ pub static TEACHABLE: &[TeachableFeature] = &[
         id: "web_search",
         surface: SurfaceRef {
             tab: "Settings",
-            section: None,
+            // The "Search & tools" section key (SettingsView SECTIONS) — landing
+            // on bare Settings left the user hunting for the right panel.
+            section: Some("search"),
         },
     },
     TeachableFeature {
