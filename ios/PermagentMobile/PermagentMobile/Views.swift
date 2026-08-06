@@ -22,36 +22,39 @@ struct PairingView: View {
         ScrollView {
             VStack(spacing: 20) {
             Spacer(minLength: 28)
+            // The wordmark stays deliberately branded (the ribbon is the mark);
+            // the heading below is the chat page's quiet serif opening.
             Text("PERMAGENT")
                 .font(.system(.title2, design: .monospaced).weight(.bold))
                 .foregroundStyle(Brand.ribbon)
             Text("Pair with your hub")
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(Brand.text)
+                .font(.chatGreeting)
+                .foregroundStyle(ChatSurface.text.opacity(0.9))
             Text("On your Mac, open Settings → Devices and create a pairing link. Scan its QR code here. Both devices must be on your tailnet.")
-                .font(.footnote)
-                .foregroundStyle(Brand.textMuted)
+                .font(.brandCaption)
+                .foregroundStyle(ChatSurface.muted)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
 
             cameraContent
 
             HStack(spacing: 12) {
-                Rectangle().fill(Brand.borderHi).frame(height: 1)
+                Rectangle().fill(ChatSurface.border).frame(height: 1)
                 Text("OR PASTE THE LINK")
-                    .font(.system(.caption2, design: .monospaced).weight(.semibold))
-                    .foregroundStyle(Brand.textDim)
+                    .font(.brandLabel).tracking(0.88)
+                    .foregroundStyle(ChatSurface.dim)
                     .fixedSize()
-                Rectangle().fill(Brand.borderHi).frame(height: 1)
+                Rectangle().fill(ChatSurface.border).frame(height: 1)
             }
             .padding(.horizontal, 32)
 
-            GlassCard {
+            RaisedCard {
                 TextField("http://your-mac.tailnet.ts.net/ui/#claim=…", text: $url)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .font(.system(.footnote, design: .monospaced))
-                    .foregroundStyle(Brand.text)
+                    .foregroundStyle(ChatSurface.text)
+                    .tint(ChatSurface.spark)
             }
             .padding(.horizontal, 24)
             if let errorMessage {
@@ -61,22 +64,18 @@ struct PairingView: View {
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 32)
             }
-            Button {
+            SparkCTA(
+                title: isPairing ? "Connecting…" : "Connect with pasted link",
+                enabled: !(isPairing || url.trimmingCharacters(in: .whitespaces).isEmpty)
+            ) {
                 Task { await pair(using: url) }
-            } label: {
-                Text(isPairing ? "Connecting…" : "Connect with pasted link")
-                    .font(.body.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .background(Brand.ribbon)
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .foregroundStyle(Brand.onAccent)
             }
             .padding(.horizontal, 24)
-            .disabled(isPairing || url.trimmingCharacters(in: .whitespaces).isEmpty)
             Spacer(minLength: 28)
             }
+            .frame(maxWidth: .infinity)
         }
+        .background(ChatSurface.bg.ignoresSafeArea())
         .task { await prepareCamera() }
     }
 
@@ -85,7 +84,8 @@ struct PairingView: View {
         switch cameraState {
         case .checking:
             ProgressView("Checking camera access…")
-                .foregroundStyle(Brand.textMuted)
+                .foregroundStyle(ChatSurface.muted)
+                .tint(ChatSurface.spark)
                 .frame(height: 210)
         case .ready:
             ZStack(alignment: .bottom) {
@@ -100,7 +100,7 @@ struct PairingView: View {
                 .frame(height: 230)
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(Brand.cyan, lineWidth: 2)
+                    .stroke(ChatSurface.spark, lineWidth: 2)
                     .frame(width: 170, height: 170)
                     .padding(.bottom, 30)
                 Text(isPairing ? "Pairing…" : "Point the camera at the QR code")
@@ -119,6 +119,7 @@ struct PairingView: View {
                     scannerID = UUID()
                 }
                 .font(.caption.weight(.semibold))
+                .foregroundStyle(ChatSurface.spark)
             }
         case .denied:
             cameraNotice(
@@ -134,12 +135,12 @@ struct PairingView: View {
     }
 
     private func cameraNotice(icon: String, text: String) -> some View {
-        GlassCard {
+        RaisedCard {
             VStack(spacing: 10) {
-                Image(systemName: icon).font(.title2).foregroundStyle(Brand.textMuted)
+                Image(systemName: icon).font(.title2).foregroundStyle(ChatSurface.muted)
                 Text(text)
                     .font(.caption)
-                    .foregroundStyle(Brand.textMuted)
+                    .foregroundStyle(ChatSurface.muted)
                     .multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity)
@@ -302,44 +303,46 @@ struct InboxView: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                if let errorText {
-                    Text(errorText).font(.brandCaption).foregroundStyle(Brand.danger)
-                        .listRowBackground(Color.clear).listRowSeparator(.hidden)
-                }
-                if items.isEmpty {
-                    Text("Nothing needs you right now. \(identity.nameCapitalized) surfaces risk gates, reviews, and unblock requests here — approve or send back with a tap.")
-                        .font(.brandCaption).foregroundStyle(Brand.textMuted)
-                        .listRowBackground(Color.clear).listRowSeparator(.hidden)
-                }
-                ForEach(items) { d in
-                    GlassCard {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(d.kind.replacingOccurrences(of: "_", with: " ").uppercased())
-                                .font(.brandLabel)
-                                .foregroundStyle(Brand.cyanInk)
-                            Text(d.headline ?? "Decision")
-                                .font(.brandHeadline)
-                                .foregroundStyle(Brand.text)
-                            if let detail = d.detail, !detail.isEmpty {
-                                Text(detail).font(.brandCaption).foregroundStyle(Brand.textMuted).lineLimit(4)
+            ScrollView {
+                VStack(spacing: 14) {
+                    if let errorText {
+                        Text(errorText).font(.brandCaption).foregroundStyle(Brand.danger)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if items.isEmpty {
+                        SparkEmptyState(
+                            line: "Nothing needs you right now.",
+                            caption: "\(identity.nameCapitalized) surfaces risk gates, reviews, and unblock requests here — approve or send back with a tap."
+                        )
+                        .padding(.top, 110)
+                    }
+                    ForEach(items) { d in
+                        RaisedCard {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(d.kind.replacingOccurrences(of: "_", with: " ").uppercased())
+                                    .font(.brandLabel).tracking(0.88)
+                                    .foregroundStyle(ChatSurface.spark)
+                                Text(d.headline ?? "Decision")
+                                    .font(.brandHeadline)
+                                    .foregroundStyle(ChatSurface.text)
+                                if let detail = d.detail, !detail.isEmpty {
+                                    Text(detail).font(.brandCaption).foregroundStyle(ChatSurface.muted).lineLimit(4)
+                                }
+                                if let goal = d.goal_title, !goal.isEmpty {
+                                    Text("Goal: \(goal)")
+                                        .font(.brandLabel)
+                                        .foregroundStyle(ChatSurface.dim)
+                                }
+                                actions(for: d)
                             }
-                            if let goal = d.goal_title, !goal.isEmpty {
-                                Text("Goal: \(goal)")
-                                    .font(.brandLabel)
-                                    .foregroundStyle(Brand.textDim)
-                            }
-                            actions(for: d)
                         }
                     }
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
                 }
+                .padding()
             }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
-            .background(Brand.shell)
-            .navigationTitle("Decisions")
+            .background(ChatSurface.bg.ignoresSafeArea())
+            .toolbar(.hidden, for: .navigationBar)
+            .safeAreaInset(edge: .top, spacing: 0) { pageHeader }
             .refreshable { await load() }
             .task { await load() }
             // Tactile: a success tap when you clear a decision.
@@ -347,17 +350,31 @@ struct InboxView: View {
         }
     }
 
+    /// In-page title — the tab hides the system bar in favor of this.
+    private var pageHeader: some View {
+        HStack {
+            Text("Decisions")
+                .font(.brandTitle)
+                .foregroundStyle(ChatSurface.text)
+            Spacer()
+        }
+        .padding(.horizontal, 18)
+        .padding(.top, 6)
+        .padding(.bottom, 8)
+        .background(ChatSurface.bg)
+    }
+
     @ViewBuilder
     private func actions(for d: OpenDecision) -> some View {
         if d.isBinary {
             HStack(spacing: 10) {
-                answerButton(d, verb: "reject", label: "Send back", tint: Brand.textMuted, fill: Brand.surface)
-                answerButton(d, verb: "approve", label: "Approve", tint: Brand.onAccent, fill: Brand.cyan)
+                answerButton(d, verb: "reject", label: "Send back", tint: ChatSurface.text, fill: ChatSurface.control)
+                answerButton(d, verb: "approve", label: "Approve", tint: ChatSurface.onSpark, fill: ChatSurface.spark)
             }
             .padding(.top, 2)
         } else {
             Text("Open on your desktop to answer this one.")
-                .font(.caption2).foregroundStyle(Brand.textDim).padding(.top, 2)
+                .font(.caption2).foregroundStyle(ChatSurface.dim).padding(.top, 2)
         }
     }
 
@@ -415,25 +432,54 @@ struct GoalsView: View {
     @State private var goals: [ActiveGoal] = []
     var body: some View {
         NavigationStack {
-            List(goals) { g in
-                HStack(spacing: 10) {
-                    Circle()
-                        .fill(g.state == "in_progress" ? Brand.cyan : Brand.textDim)
-                        .frame(width: 7, height: 7)
-                    Text(g.title).font(.subheadline).foregroundStyle(Brand.text)
-                    Spacer()
-                    Text(g.state).font(.system(.caption2, design: .monospaced)).foregroundStyle(Brand.textMuted)
+            ScrollView {
+                VStack(spacing: 14) {
+                    if goals.isEmpty {
+                        SparkEmptyState(
+                            line: "Nothing in flight.",
+                            caption: "Dispatched goals appear here the moment they start running on the hub."
+                        )
+                        .padding(.top, 110)
+                    }
+                    ForEach(goals) { g in
+                        RaisedCard {
+                            HStack(spacing: 10) {
+                                Circle()
+                                    .fill(g.state == "in_progress" ? ChatSurface.spark : ChatSurface.dim)
+                                    .frame(width: 7, height: 7)
+                                Text(g.title).font(.brandHeading).foregroundStyle(ChatSurface.text)
+                                Spacer()
+                                Text(g.state.replacingOccurrences(of: "_", with: " ").uppercased())
+                                    .font(.brandLabel).tracking(0.88)
+                                    .foregroundStyle(ChatSurface.dim)
+                            }
+                        }
+                    }
                 }
-                .listRowBackground(Color.clear)
+                .padding()
             }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
-            .background(Brand.shell)
-            .navigationTitle("In Flight")
+            .background(ChatSurface.bg.ignoresSafeArea())
+            .toolbar(.hidden, for: .navigationBar)
+            .safeAreaInset(edge: .top, spacing: 0) { pageHeader }
             .refreshable { await load() }
             .task { await load() }
         }
     }
+
+    /// In-page title — the tab hides the system bar in favor of this.
+    private var pageHeader: some View {
+        HStack {
+            Text("In Flight")
+                .font(.brandTitle)
+                .foregroundStyle(ChatSurface.text)
+            Spacer()
+        }
+        .padding(.horizontal, 18)
+        .padding(.top, 6)
+        .padding(.bottom, 8)
+        .background(ChatSurface.bg)
+    }
+
     func load() async {
         struct Resp: Decodable { let goals: [ActiveGoal] }
         if let resp = try? await APIClient.shared.get("/api/goals/active", as: Resp.self) {
@@ -723,17 +769,8 @@ struct ChatView: View {
 
     /// Centered spark + a quiet serif greeting, sized to the hour.
     private var emptyState: some View {
-        VStack(spacing: 22) {
-            Text("✻")
-                .font(.system(size: 40))
-                .foregroundStyle(ChatSurface.spark)
-            Text(ChatGreeting.forHour(Calendar.current.component(.hour, from: Date())))
-                .font(.chatGreeting)
-                .foregroundStyle(ChatSurface.text.opacity(0.9))
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 150)
+        SparkEmptyState(line: ChatGreeting.forHour(Calendar.current.component(.hour, from: Date())))
+            .padding(.top, 150)
     }
 
     /// Shown while a reply is finishing on the hub without a live stream here.

@@ -83,33 +83,22 @@ struct TodosView: View {
                 if let error {
                     HubErrorCard(text: error) { await load() }
                 } else if loaded && items.isEmpty {
-                    GlassCard {
-                        VStack(spacing: 6) {
-                            Text("✦")
-                                .font(.title2)
-                                .foregroundStyle(Brand.cyan)
-                            Text("Nothing due")
-                                .font(.brandHeadline)
-                                .foregroundStyle(Brand.text)
-                            Text("Clear runway. Dated cards from any project board land here the moment they exist.")
-                                .font(.brandCaption)
-                                .foregroundStyle(Brand.textMuted)
-                                .multilineTextAlignment(.center)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                    }
+                    SparkEmptyState(
+                        line: "Nothing due.",
+                        caption: "Clear runway. Dated cards from any project board land here the moment they exist."
+                    )
+                    .padding(.top, 60)
                 } else {
                     ForEach(grouped, id: \.0) { bucket, rows in
-                        GlassCard {
+                        RaisedCard {
                             VStack(alignment: .leading, spacing: 10) {
                                 HStack(spacing: 6) {
                                     Text(bucket.rawValue)
-                                        .font(.brandLabel)
+                                        .font(.brandLabel).tracking(0.88)
                                         .foregroundStyle(bucket.accent)
                                     Text("\(rows.count)")
                                         .font(.system(.caption2, design: .monospaced))
-                                        .foregroundStyle(Brand.textDim)
+                                        .foregroundStyle(ChatSurface.dim)
                                 }
                                 ForEach(rows) { row in
                                     todoRow(row, accent: bucket.accent)
@@ -121,7 +110,7 @@ struct TodosView: View {
             }
             .padding()
         }
-        .background(Brand.shell)
+        .background(ChatSurface.bg.ignoresSafeArea())
         .navigationTitle("To-dos")
         .refreshable { await load() }
         .task { await load() }
@@ -138,7 +127,7 @@ struct TodosView: View {
             } label: {
                 Image(systemName: "circle")
                     .font(.body)
-                    .foregroundStyle(accent.opacity(0.8))
+                    .foregroundStyle(ChatSurface.spark)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Dismiss \(row.title) from to-dos")
@@ -146,12 +135,12 @@ struct TodosView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(row.title)
                     .font(.brandCaption)
-                    .foregroundStyle(Brand.text)
+                    .foregroundStyle(ChatSurface.text)
                     .lineLimit(2)
                 HStack(spacing: 6) {
                     Text(row.projectName)
                         .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(Brand.textDim)
+                        .foregroundStyle(ChatSurface.dim)
                         .lineLimit(1)
                     Text(dueLabel(row.dueDate))
                         .font(.caption2.weight(.semibold))

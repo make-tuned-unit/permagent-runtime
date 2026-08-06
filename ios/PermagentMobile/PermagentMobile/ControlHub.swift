@@ -15,14 +15,14 @@ struct ControlHubView: View {
                 VStack(spacing: 14) {
                     Text("Direct control of your hub — glance and act, no chat required. Everything here runs on your Mac and shows live on your desktop.")
                         .font(.brandCaption)
-                        .foregroundStyle(Brand.textMuted)
+                        .foregroundStyle(ChatSurface.muted)
                         .frame(maxWidth: .infinity, alignment: .leading)
 
                     hubLink(destination: AgentsView(),
                             icon: "person.2.fill",
                             title: "Agents at work",
                             subtitle: "Your background agents + what's running now",
-                            accent: Brand.cyan)
+                            accent: ChatSurface.spark)
 
                     hubLink(destination: SchedulesView(),
                             icon: "clock.arrow.circlepath",
@@ -33,9 +33,24 @@ struct ControlHubView: View {
                 }
                 .padding()
             }
-            .background(Brand.shell)
-            .navigationTitle("Control")
+            .background(ChatSurface.bg.ignoresSafeArea())
+            .toolbar(.hidden, for: .navigationBar)
+            .safeAreaInset(edge: .top, spacing: 0) { pageHeader }
         }
+    }
+
+    /// In-page title — the tab hides the system bar in favor of this.
+    private var pageHeader: some View {
+        HStack {
+            Text("Control")
+                .font(.brandTitle)
+                .foregroundStyle(ChatSurface.text)
+            Spacer()
+        }
+        .padding(.horizontal, 18)
+        .padding(.top, 6)
+        .padding(.bottom, 8)
+        .background(ChatSurface.bg)
     }
 
     private func hubLink<D: View>(
@@ -44,24 +59,25 @@ struct ControlHubView: View {
         NavigationLink {
             destination
         } label: {
-            GlassCard {
+            RaisedCard {
                 HStack(spacing: 14) {
                     Image(systemName: icon)
-                        .font(.title2)
+                        .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(accent)
-                        .frame(width: 30)
+                        .frame(width: 36, height: 36)
+                        .background(ChatSurface.control, in: Circle())
                     VStack(alignment: .leading, spacing: 3) {
                         Text(title)
                             .font(.brandHeadline)
-                            .foregroundStyle(Brand.text)
+                            .foregroundStyle(ChatSurface.text)
                         Text(subtitle)
                             .font(.brandCaption)
-                            .foregroundStyle(Brand.textMuted)
+                            .foregroundStyle(ChatSurface.muted)
                     }
                     Spacer()
                     Image(systemName: "chevron.right")
                         .font(.caption)
-                        .foregroundStyle(Brand.textDim)
+                        .foregroundStyle(ChatSurface.dim)
                 }
             }
         }
@@ -99,7 +115,7 @@ struct HubErrorCard: View {
     let retry: () async -> Void
 
     var body: some View {
-        GlassCard {
+        RaisedCard {
             VStack(alignment: .leading, spacing: 10) {
                 Text(text)
                     .font(.brandCaption)
@@ -111,9 +127,9 @@ struct HubErrorCard: View {
                         .font(.caption.weight(.semibold))
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
-                        .background(Brand.cyanSoft)
-                        .foregroundStyle(Brand.cyanInk)
-                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .background(ChatSurface.control)
+                        .foregroundStyle(ChatSurface.text)
+                        .clipShape(Capsule())
                 }
                 .buttonStyle(.plain)
             }

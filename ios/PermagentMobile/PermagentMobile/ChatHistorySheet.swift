@@ -99,19 +99,19 @@ struct ChatHistorySheet: View {
                 if let error {
                     ScrollView { HubErrorCard(text: error) { await load() }.padding() }
                 } else if !loaded {
-                    ProgressView().tint(Brand.cyan).frame(maxWidth: .infinity, maxHeight: .infinity)
+                    ProgressView().tint(ChatSurface.spark).frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if sessions.isEmpty {
-                    emptyState("No conversations yet",
+                    emptyState("No conversations yet.",
                                "Threads you start will be listed here for you to return to.")
                 } else if filtered.isEmpty {
-                    emptyState("No matches", "Nothing here matches “\(query)”.")
+                    emptyState("No matches.", "Nothing here matches “\(query)”.")
                 } else {
                     List {
                         ForEach(grouped, id: \.0) { age, rows in
                             Section {
                                 ForEach(rows) { s in
                                     Button { onPick(s.id) } label: { row(s) }
-                                        .listRowBackground(Brand.surface)
+                                        .listRowBackground(ChatSurface.raised)
                                         .swipeActions(edge: .trailing) {
                                             Button(role: .destructive) {
                                                 Task { await delete(s) }
@@ -120,8 +120,8 @@ struct ChatHistorySheet: View {
                                 }
                             } header: {
                                 Text(age.rawValue)
-                                    .font(.brandLabel)
-                                    .foregroundStyle(Brand.textDim)
+                                    .font(.brandLabel).tracking(0.88)
+                                    .foregroundStyle(ChatSurface.dim)
                             }
                         }
                     }
@@ -130,7 +130,7 @@ struct ChatHistorySheet: View {
                     .refreshable { await load() }
                 }
             }
-            .background(Brand.shell)
+            .background(ChatSurface.bg.ignoresSafeArea())
             .navigationTitle("Conversations")
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $query, prompt: "Search conversations")
@@ -141,18 +141,13 @@ struct ChatHistorySheet: View {
             }
             .task { await load() }
         }
+        .presentationBackground(ChatSurface.bg)
     }
 
     private func emptyState(_ title: String, _ body: String) -> some View {
-        VStack(spacing: 8) {
-            Text(title).font(.brandHeadline).foregroundStyle(Brand.text)
-            Text(body)
-                .font(.brandCaption)
-                .foregroundStyle(Brand.textMuted)
-                .multilineTextAlignment(.center)
-        }
-        .padding(32)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        SparkEmptyState(line: title, caption: body)
+            .padding(32)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func row(_ s: SessionSummary) -> some View {
@@ -160,28 +155,32 @@ struct ChatHistorySheet: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(s.displayTitle)
                     .font(.brandCaption)
-                    .foregroundStyle(Brand.text)
+                    .foregroundStyle(ChatSurface.text)
                     .lineLimit(1)
                 HStack(spacing: 6) {
                     if let when = RelativeTime.string(from: s.updatedAt) {
                         Text(when)
                             .font(.system(.caption2, design: .monospaced))
-                            .foregroundStyle(Brand.textDim)
+                            .foregroundStyle(ChatSurface.dim)
                     }
                     if let n = s.messageCount, n > 0 {
                         Text("\(n) message\(n == 1 ? "" : "s")")
                             .font(.caption2)
-                            .foregroundStyle(Brand.textDim)
+                            .foregroundStyle(ChatSurface.dim)
                     }
                 }
             }
             Spacer(minLength: 0)
             if s.id == currentSessionId {
-                Text("CURRENT").font(.brandLabel).foregroundStyle(Brand.cyan)
+                // The spark marks the conversation you are in.
+                Text("✻")
+                    .font(.system(size: 15))
+                    .foregroundStyle(ChatSurface.spark)
+                    .accessibilityLabel("Current conversation")
             } else {
                 Image(systemName: "chevron.right")
                     .font(.caption2)
-                    .foregroundStyle(Brand.textDim)
+                    .foregroundStyle(ChatSurface.dim)
             }
         }
         .contentShape(Rectangle())

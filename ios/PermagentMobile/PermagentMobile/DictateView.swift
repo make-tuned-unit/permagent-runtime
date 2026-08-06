@@ -246,17 +246,10 @@ struct DictateView: View {
                 }
                 .transition(.opacity)
             default:
-                VStack(spacing: 22) {
-                    Text("✻")
-                        .font(.system(size: 40))
-                        .foregroundStyle(ChatSurface.spark)
-                    Text("Something on your mind?")
-                        .font(.chatGreeting)
-                        .foregroundStyle(ChatSurface.text.opacity(0.9))
-                    Text("Speak it; it lands as a note on a project you choose. Say \u{201C}I need to\u{2026}\u{201D} and \(identity.name) proposes it as a to-do.")
-                        .font(.brandCaption).foregroundStyle(ChatSurface.muted)
-                        .multilineTextAlignment(.center).padding(.horizontal, 44)
-                }
+                SparkEmptyState(
+                    line: "Something on your mind?",
+                    caption: "Speak it; it lands as a note on a project you choose. Say \u{201C}I need to\u{2026}\u{201D} and \(identity.name) proposes it as a to-do."
+                )
                 .transition(.opacity)
             }
 
@@ -363,26 +356,14 @@ struct DictateView: View {
     }
 
     // ── Stage 2: review + confirm ────────────────────────────────────────────
-
-    /// A raised card in the chat composer's shape — the review stage is built
-    /// from these the way the chat is built from its input card.
-    private func raisedCard<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 10, content: content)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(16)
-            .background(ChatSurface.raised, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .strokeBorder(ChatSurface.border, lineWidth: 1)
-            )
-    }
+    // Built from RaisedCard (Theme.swift) — the shared chat-surface card.
 
     private var reviewStage: some View {
         ScrollView {
             VStack(spacing: 14) {
                 // The transcript reads like the page it will become: serif
                 // prose, editable in place.
-                raisedCard {
+                RaisedCard {
                     Text("YOUR NOTE")
                         .font(.brandLabel).tracking(0.88)
                         .foregroundStyle(ChatSurface.dim)
@@ -397,7 +378,7 @@ struct DictateView: View {
                 }
 
                 if !todos.isEmpty {
-                    raisedCard {
+                    RaisedCard {
                         Text("HEARD AS TO-DOS")
                             .font(.brandLabel).tracking(0.88)
                             .foregroundStyle(ChatSurface.spark)
@@ -425,7 +406,7 @@ struct DictateView: View {
 
                 // Confirm-first: the note is written nowhere until a project is
                 // chosen and Save is tapped.
-                raisedCard {
+                RaisedCard {
                     Button { pickingProject = true } label: {
                         HStack(spacing: 12) {
                             Image(systemName: "folder")
@@ -453,7 +434,7 @@ struct DictateView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                sparkCTA(
+                SparkCTA(
                     title: phase == .saving ? "Saving…" : saveTitle,
                     systemImage: phase == .saving ? nil : "arrow.up",
                     enabled: canSave
@@ -467,31 +448,6 @@ struct DictateView: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .sheet(isPresented: $pickingProject) { projectPicker }
-    }
-
-    /// The chat's send-button language grown to a full-width action: spark
-    /// fill, dark ink, composer-card radius.
-    private func sparkCTA(
-        title: String, systemImage: String?, enabled: Bool, action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            HStack(spacing: 7) {
-                if let systemImage {
-                    Image(systemName: systemImage).font(.subheadline.weight(.semibold))
-                }
-                Text(title).font(.body.weight(.semibold))
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 15)
-            .foregroundStyle(ChatSurface.onSpark.opacity(enabled ? 1 : 0.6))
-            .background(
-                ChatSurface.spark.opacity(enabled ? 1 : 0.3),
-                in: RoundedRectangle(cornerRadius: 18, style: .continuous)
-            )
-        }
-        .buttonStyle(.plain)
-        .disabled(!enabled)
-        .animation(Motion.ease, value: enabled)
     }
 
     private var saveTitle: String {
@@ -574,7 +530,7 @@ struct DictateView: View {
             }
             .font(.brandCaption).foregroundStyle(ChatSurface.muted)
             .multilineTextAlignment(.center).padding(.horizontal, 40)
-            sparkCTA(title: "Dictate another", systemImage: "mic", enabled: true) { reset() }
+            SparkCTA(title: "Dictate another", systemImage: "mic") { reset() }
                 .padding(.horizontal, 24).padding(.top, 8)
             Spacer()
             Spacer()

@@ -20,7 +20,9 @@ struct SplashView: View {
             // is painted behind it yet, but on iOS the splash sits over live UI
             // and the pairing screen showed straight through the logo
             // (simulator capture, 2026-08-04). Void underneath, breath on top.
-            Brand.deepVoid.ignoresSafeArea()
+            // ChatSurface.bg IS the brand void/pearl — the same page every
+            // screen now opens on.
+            ChatSurface.bg.ignoresSafeArea()
             RadialGradient(
                 colors: [Brand.cyan.opacity(0.05), .clear],
                 center: .init(x: 0.5, y: 0.45),

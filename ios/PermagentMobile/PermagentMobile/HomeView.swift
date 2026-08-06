@@ -44,21 +44,21 @@ struct HomeView: View {
             ScrollView {
                 VStack(spacing: 14) {
                     // Hub health — the always-on machine, at a glance.
-                    GlassCard {
+                    RaisedCard {
                         HStack(spacing: 10) {
                             Circle()
-                                .fill(snap.healthy == false ? Brand.danger : Brand.cyan)
+                                .fill(snap.healthy == false ? Brand.danger : ChatSurface.spark)
                                 .frame(width: 9, height: 9)
                                 .shadow(color: Brand.cyanGlow, radius: snap.healthy == false ? 0 : 6)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(snap.healthy == false ? "Hub unreachable" : "Hub online")
                                     .font(.brandHeadline)
-                                    .foregroundStyle(Brand.text)
+                                    .foregroundStyle(ChatSurface.text)
                                 Text(snap.healthy == false
                                      ? "Check that your Mac is awake and on the tailnet."
                                      : "Your Mac is holding the fort — Brain, models, and memory all live.")
                                     .font(.brandCaption)
-                                    .foregroundStyle(Brand.textMuted)
+                                    .foregroundStyle(ChatSurface.muted)
                             }
                             Spacer()
                         }
@@ -68,7 +68,7 @@ struct HomeView: View {
                     HStack(spacing: 14) {
                         statTile("Decisions", value: snap.decisionsPending, accent: Brand.violet,
                                  hint: "waiting for you", destination: .decisions)
-                        statTile("In flight", value: snap.goalsActive, accent: Brand.cyan,
+                        statTile("In flight", value: snap.goalsActive, accent: ChatSurface.spark,
                                  hint: "goals running", destination: .goals)
                     }
 
@@ -76,27 +76,27 @@ struct HomeView: View {
                     NavigationLink {
                         TodosView()
                     } label: {
-                        GlassCard {
+                        RaisedCard {
                             VStack(alignment: .leading, spacing: 10) {
                                 HStack {
                                     Text("TO-DOS")
-                                        .font(.brandLabel)
-                                        .foregroundStyle(Brand.textDim)
+                                        .font(.brandLabel).tracking(0.88)
+                                        .foregroundStyle(ChatSurface.dim)
                                     Spacer()
                                     if !snap.todos.isEmpty {
                                         Text("\(snap.todos.count)")
                                             .font(.system(.caption, design: .monospaced).weight(.semibold))
-                                            .foregroundStyle(Brand.cyan)
+                                            .foregroundStyle(ChatSurface.spark)
                                             .contentTransition(.numericText())
                                     }
                                     Image(systemName: "chevron.right")
                                         .font(.caption2)
-                                        .foregroundStyle(Brand.textDim)
+                                        .foregroundStyle(ChatSurface.dim)
                                 }
                                 if snap.todos.isEmpty {
                                     Text("Nothing due. Dated cards from any project land here.")
                                         .font(.brandCaption)
-                                        .foregroundStyle(Brand.textMuted)
+                                        .foregroundStyle(ChatSurface.muted)
                                 } else {
                                     ForEach(snap.todos.prefix(3)) { todo in
                                         HStack(spacing: 8) {
@@ -105,7 +105,7 @@ struct HomeView: View {
                                                 .frame(width: 5, height: 5)
                                             Text(todo.title)
                                                 .font(.brandCaption)
-                                                .foregroundStyle(Brand.text)
+                                                .foregroundStyle(ChatSurface.text)
                                                 .lineLimit(1)
                                             Spacer(minLength: 6)
                                             Text(dueLabel(todo.dueDate))
@@ -121,15 +121,15 @@ struct HomeView: View {
 
                     // Recent activity (the hub's durable journal). Rows land
                     // where the event lives.
-                    GlassCard {
+                    RaisedCard {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("RECENT ACTIVITY")
-                                .font(.brandLabel)
-                                .foregroundStyle(Brand.textDim)
+                                .font(.brandLabel).tracking(0.88)
+                                .foregroundStyle(ChatSurface.dim)
                             if snap.activity.isEmpty {
                                 Text("All quiet. \(identity.nameCapitalized) will note goal moves, decisions, and Librarian passes here.")
                                     .font(.brandCaption)
-                                    .foregroundStyle(Brand.textMuted)
+                                    .foregroundStyle(ChatSurface.muted)
                             } else {
                                 ForEach(snap.activity.prefix(8)) { row in
                                     activityRow(row)
@@ -143,14 +143,14 @@ struct HomeView: View {
                         taps += 1
                         tab = .chat
                     } label: {
-                        GlassCard {
+                        RaisedCard {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("REMOTE HANDS")
-                                    .font(.brandLabel)
-                                    .foregroundStyle(Brand.textDim)
+                                    .font(.brandLabel).tracking(0.88)
+                                    .foregroundStyle(ChatSurface.dim)
                                 Text("Anything you ask \(identity.name) here happens on the hub — open a site in the desktop browser, launch a project terminal, dispatch a goal. Your desktop shows it live.")
                                     .font(.brandCaption)
-                                    .foregroundStyle(Brand.textMuted)
+                                    .foregroundStyle(ChatSurface.muted)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
@@ -159,13 +159,28 @@ struct HomeView: View {
                 }
                 .padding()
             }
-            .background(Brand.shell)
-            .navigationTitle("Permagent")
+            .background(ChatSurface.bg.ignoresSafeArea())
+            .toolbar(.hidden, for: .navigationBar)
+            .safeAreaInset(edge: .top, spacing: 0) { pageHeader }
             .refreshable { await load() }
             .task { await load() }
             // Tactile: navigation taps land with a light tap.
             .sensoryFeedback(.impact(weight: .light), trigger: taps)
         }
+    }
+
+    /// In-page title — the tab hides the system bar in favor of this.
+    private var pageHeader: some View {
+        HStack {
+            Text("Permagent")
+                .font(.brandTitle)
+                .foregroundStyle(ChatSurface.text)
+            Spacer()
+        }
+        .padding(.horizontal, 18)
+        .padding(.top, 6)
+        .padding(.bottom, 8)
+        .background(ChatSurface.bg)
     }
 
     private func statTile(_ label: String, value: Int?, accent: Color, hint: String,
@@ -174,7 +189,7 @@ struct HomeView: View {
             taps += 1
             tab = destination
         } label: {
-            GlassCard {
+            RaisedCard {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(value.map(String.init) ?? "–")
                         .font(.brandDisplay)
@@ -182,15 +197,15 @@ struct HomeView: View {
                         .contentTransition(.numericText()) // roll the digit when it changes
                         .foregroundStyle(accent)
                     Text(label.uppercased())
-                        .font(.brandLabel)
-                        .foregroundStyle(Brand.text)
+                        .font(.brandLabel).tracking(0.88)
+                        .foregroundStyle(ChatSurface.text)
                     HStack(spacing: 3) {
                         Text(hint)
                             .font(.caption2)
-                            .foregroundStyle(Brand.textDim)
+                            .foregroundStyle(ChatSurface.dim)
                         Image(systemName: "chevron.right")
                             .font(.system(size: 8, weight: .semibold))
-                            .foregroundStyle(Brand.textDim)
+                            .foregroundStyle(ChatSurface.dim)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -217,17 +232,17 @@ struct HomeView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(row.title)
                     .font(.brandCaption)
-                    .foregroundStyle(Brand.text)
+                    .foregroundStyle(ChatSurface.text)
                     .lineLimit(2)
                 Text(row.kind.replacingOccurrences(of: "_", with: " "))
                     .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(Brand.textDim)
+                    .foregroundStyle(ChatSurface.dim)
             }
             Spacer(minLength: 0)
             if dest != nil {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(Brand.textDim)
+                    .foregroundStyle(ChatSurface.dim)
             }
         }
         .contentShape(Rectangle())

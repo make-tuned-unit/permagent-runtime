@@ -352,6 +352,87 @@ extension View {
     }
 }
 
+// ── Chat-surface shared components ───────────────────────────────────────────
+// The design language established by ChatView + DictateView, extracted so every
+// screen shares one implementation: the raised card, the full-width spark
+// action, and the spark empty state.
+
+/// A raised card in the chat composer's shape: solid raised fill, 24pt
+/// continuous corners, 1px hairline. Screens are built from these the way the
+/// chat is built from its input card.
+struct RaisedCard<Content: View>: View {
+    private let content: () -> Content
+    init(@ViewBuilder content: @escaping () -> Content) { self.content = content }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10, content: content)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(16)
+            .background(ChatSurface.raised, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .strokeBorder(ChatSurface.border, lineWidth: 1)
+            )
+    }
+}
+
+/// The chat's send-button language grown to a full-width action: spark fill,
+/// dark ink, composer-card radius. One shape for every primary "do the thing"
+/// action on the chat-surface screens.
+struct SparkCTA: View {
+    let title: String
+    var systemImage: String? = nil
+    var enabled: Bool = true
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 7) {
+                if let systemImage {
+                    Image(systemName: systemImage).font(.subheadline.weight(.semibold))
+                }
+                Text(title).font(.body.weight(.semibold))
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 15)
+            .foregroundStyle(ChatSurface.onSpark.opacity(enabled ? 1 : 0.6))
+            .background(
+                ChatSurface.spark.opacity(enabled ? 1 : 0.3),
+                in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .animation(Motion.ease, value: enabled)
+    }
+}
+
+/// The quiet empty moment: the cyan spark, one serif line, and an optional
+/// muted caption — exactly the chat page's empty state.
+struct SparkEmptyState: View {
+    let line: String
+    var caption: String? = nil
+
+    var body: some View {
+        VStack(spacing: 22) {
+            Text("✻")
+                .font(.system(size: 40))
+                .foregroundStyle(ChatSurface.spark)
+            Text(line)
+                .font(.chatGreeting)
+                .foregroundStyle(ChatSurface.text.opacity(0.9))
+                .multilineTextAlignment(.center)
+            if let caption {
+                Text(caption)
+                    .font(.brandCaption)
+                    .foregroundStyle(ChatSurface.muted)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 44)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
 // ── Agent presence: the "Henry is thinking" indicator ────────────────────────
 // Premium agentic UX masks latency with a living cue, not a dead spinner. Three
 // dots breathe in sequence while we await the first streamed token. Honors

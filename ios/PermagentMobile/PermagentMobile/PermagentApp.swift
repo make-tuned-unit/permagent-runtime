@@ -13,7 +13,7 @@ struct PermagentApp: App {
     var body: some Scene {
         WindowGroup {
             ZStack {
-                Brand.shell.ignoresSafeArea()
+                ChatSurface.bg.ignoresSafeArea()
                 if session.isPaired {
                     MainTabs().environmentObject(session)
                 } else {
@@ -31,8 +31,9 @@ struct PermagentApp: App {
             // No `.preferredColorScheme` — the app follows the system
             // appearance, as the desktop app does with its `system` theme
             // preference. Brand tokens are dynamic colors (Theme.swift), so
-            // both palettes are already in place.
-            .tint(Brand.cyan)
+            // both palettes are already in place. The tab bar (and every
+            // stock control) tints to the spark accent.
+            .tint(ChatSurface.spark)
             .task { await session.bootstrap() }
         }
     }
