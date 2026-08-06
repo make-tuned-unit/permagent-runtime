@@ -457,6 +457,7 @@ mod tests {
             cursor: None,
             last_drain_at: None,
             last_error: None,
+            relay_latest_id: None,
         };
         let url = format!("{}/api/permagent-analytics/drain", server.uri());
 
@@ -522,6 +523,7 @@ mod tests {
             cursor: None,
             last_drain_at: None,
             last_error: None,
+            relay_latest_id: None,
         };
         let err = drain_project(&pool, "p1", &server.uri(), "WRONG", &mut state)
             .await
