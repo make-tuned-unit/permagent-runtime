@@ -101,6 +101,20 @@ async fn coding_session_summary(
             summary: None,
         }));
     }
+    // Detach from the request's lifetime (the run_now lesson): the terminal
+    // that posts this often closes moments later, and axum drops the handler
+    // future on disconnect — which aborted the summary + Brain write mid-
+    // flight. The spawned task survives; a client that waits gets the same
+    // response.
+    let task = tokio::spawn(async move { summarize_and_store(state, req).await });
+    task.await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+}
+
+async fn summarize_and_store(
+    state: Arc<AppState>,
+    req: CodingSessionReq,
+) -> Result<Json<CodingSessionResp>, (StatusCode, String)> {
     let brain = state.brain.as_ref().ok_or((
         StatusCode::SERVICE_UNAVAILABLE,
         "Brain is not available".to_string(),

@@ -81,6 +81,12 @@ pub struct FirstPartyConfig {
     /// a quiet traffic day.
     #[serde(default)]
     pub last_error: Option<String>,
+    /// Newest event id the relay reported holding at the last drain (optional
+    /// `latest_id` in the drain response, spec v41). Against `cursor` this
+    /// makes drain lag VISIBLE — "37 events behind" — instead of a healthy
+    /// cursor and a backlog looking identical. Absent from pre-v41 relays.
+    #[serde(default)]
+    pub relay_latest_id: Option<String>,
 }
 
 /// Keyring key for a project's visitor-hash salt.

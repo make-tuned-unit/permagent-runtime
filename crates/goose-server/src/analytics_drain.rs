@@ -111,6 +111,10 @@ fn id_as_string<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Err
 struct DrainResponse {
     #[serde(default)]
     events: Vec<DrainEvent>,
+    /// Newest event id the relay currently holds (spec v41, optional). Lets
+    /// the daemon report drain lag rather than infer health from silence.
+    #[serde(default)]
+    latest_id: Option<String>,
 }
 
 pub fn spawn(state: Arc<AppState>) {
@@ -238,6 +242,12 @@ async fn drain_project(
             config.last_error = Some(msg.clone());
             msg
         })?;
+
+        // Record what the relay says it holds, every page (last wins). Set
+        // even on an empty page: "cursor == latest" is the proof of caught-up.
+        if parsed.latest_id.is_some() {
+            config.relay_latest_id = parsed.latest_id.clone();
+        }
 
         let batch = parsed.events.len();
         if batch == 0 {

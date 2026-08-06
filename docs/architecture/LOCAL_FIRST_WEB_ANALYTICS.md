@@ -101,6 +101,14 @@ built SPA, Knex migrations run automatically at boot (`db.migrate.latest()` in
    fail-closed when unset) — mirror `cityRequests.ts:120`. Returns rows with
    `id > since` ordered ascending, so the cursor is exact.
 
+   **Spec v41 — drain-lag visibility.** Alongside `events`, the response
+   SHOULD include `"latest_id"`: the site's newest buffered event id
+   (`select max(id)`), sent on every page **including empty ones**. The
+   daemon stores it beside its cursor, which turns lag into a number
+   ("37 events behind") and makes caught-up provable (`cursor ==
+   latest_id`) — without it, a healthy cursor and a growing backlog are
+   indistinguishable. Optional: pre-v41 relays keep working unchanged.
+
 #### Gotchas the research surfaced — each one silently breaks collection
 
 - **`sendBeacon` posts `text/plain`.** `express.json()` will not parse it. Mount
