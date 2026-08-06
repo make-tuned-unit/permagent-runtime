@@ -1939,7 +1939,7 @@ async fn execute_job(
         }
     });
 
-    let prompt_text = recipe
+    let raw_prompt = recipe
         .prompt
         .as_deref()
         .filter(|s| !s.trim().is_empty())
@@ -1952,6 +1952,45 @@ async fn execute_job(
         .ok_or_else(|| {
             anyhow!("Recipe must specify at least one of `instructions` or `prompt`.")
         })?;
+
+    // A scheduled run has nobody to fill parameters interactively, so declared
+    // parameter defaults must be rendered into the prompt here. Without this,
+    // `{{ repo_path }}` reached the model verbatim and the git-steward spent
+    // eight consecutive mornings asking an empty room which repository to
+    // steward — every run "ok", ~22k tokens, zero output.
+    let prompt_text: String = {
+        let mut params: HashMap<String, String> = HashMap::new();
+        for p in recipe.parameters.as_deref().unwrap_or_default() {
+            let value = p.default.clone().unwrap_or_default();
+            if p.default.is_none() {
+                tracing::warn!(
+                    "Scheduled job '{}': parameter '{}' has no default; rendering as empty",
+                    job.id,
+                    p.key
+                );
+            }
+            params.insert(p.key.clone(), value);
+        }
+        if params.is_empty() {
+            raw_prompt.to_string()
+        } else {
+            match crate::recipe::template_recipe::render_recipe_content_with_params(
+                raw_prompt, &params,
+            ) {
+                Ok(rendered) => rendered,
+                Err(e) => {
+                    // A template the renderer cannot handle must not kill the
+                    // job — fall back to the raw prompt and say so.
+                    tracing::warn!(
+                        "Scheduled job '{}': parameter rendering failed ({e}); using raw prompt",
+                        job.id
+                    );
+                    raw_prompt.to_string()
+                }
+            }
+        }
+    };
+    let prompt_text = prompt_text.as_str();
 
     let user_message = Message::user().with_text(prompt_text);
     let mut conversation = Conversation::new_unvalidated(vec![user_message.clone()]);
