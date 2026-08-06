@@ -200,38 +200,78 @@ enum ChatSurface {
 // than reverting these to text styles — that keeps the ratios while restoring
 // scaling, whereas text styles reintroduce the drift.
 //
-// Typeface stays SF Pro: the web's Manrope/Inter are not bundled here, and a
-// downloaded webfont on iOS would cost launch time and a licence review. SF at
-// the web's metrics is the closer match of the two available options.
+// TYPEFACES ARE NOW THE REAL BRAND FONTS, bundled in PermagentMobile/Fonts/
+// and registered via UIAppFonts in project.yml (Info.plist is generated —
+// never hand-edit it). This replaces the earlier "SF Pro at the web's
+// metrics" compromise: Manrope carries display/titles, Inter carries prose,
+// JetBrains Mono carries code — exactly the desktop's font.display /
+// font.body / font.mono in tokens.ts. Bundled files (all OFL-licensed,
+// license texts alongside in Fonts/):
+//   Inter-Regular.otf / Inter-Medium.otf / Inter-SemiBold.otf / Inter-Bold.otf
+//   Manrope-SemiBold.ttf / Manrope-Bold.ttf / Manrope-ExtraBold.ttf
+//   JetBrainsMono-Regular.ttf / JetBrainsMono-Medium.ttf
+// The serif (New York) chat voice is gone deliberately — that was borrowed
+// from another product's look; Permagent's long-form voice is Inter.
 extension Font {
-    /// tokens.ts type.display — 32/600. Hero numerals, stat tiles.
-    static let brandDisplay = Font.system(size: 32, weight: .semibold)
-    /// tokens.ts type.title — 20/600. Section / screen titles.
-    static let brandTitle = Font.system(size: 20, weight: .semibold)
-    /// tokens.ts type.heading — 16/600. Card headlines, primary rows.
-    static let brandHeading = Font.system(size: 16, weight: .semibold)
-    /// tokens.ts type.heading — retained name for existing call sites.
-    static let brandHeadline = Font.system(size: 16, weight: .semibold)
-    /// tokens.ts type.body — 14/400.
-    static let brandBody = Font.system(size: 14, weight: .regular)
-    /// tokens.ts type.small — 13/400.
-    static let brandSmall = Font.system(size: 13, weight: .regular)
-    /// tokens.ts type.caption — 12/400.
-    static let brandCaption = Font.system(size: 12, weight: .regular)
-    /// tokens.ts type.micro — 11/500.
-    static let brandMicro = Font.system(size: 11, weight: .medium)
-    /// tokens.ts type.label — 11/600, 0.08em tracking, UPPERCASE. The tracking
-    /// and casing are not carried by the font: apply `.tracking(0.88)` and
-    /// `.textCase(.uppercase)` at the call site, as the web token does.
-    static let brandLabel = Font.system(size: 11, weight: .semibold)
+    // PostScript names, verified with fontTools nameID 6 against the bundled
+    // files (SwiftUI silently falls back to SF on a wrong name — keep exact):
+    //   Manrope-SemiBold / Manrope-Bold / Manrope-ExtraBold
+    //   Inter-Regular / Inter-Medium / Inter-SemiBold / Inter-Bold
+    //   JetBrainsMono-Regular / JetBrainsMono-Medium
+    /// Display face — tokens.ts font.display (Manrope 600/700/800).
+    static func manrope(_ size: CGFloat, weight: Font.Weight = .semibold) -> Font {
+        switch weight {
+        case .bold: return .custom("Manrope-Bold", fixedSize: size)
+        case .heavy, .black: return .custom("Manrope-ExtraBold", fixedSize: size)
+        default: return .custom("Manrope-SemiBold", fixedSize: size)
+        }
+    }
+    /// Body face — tokens.ts font.body (Inter 400/500/600/700).
+    static func inter(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        switch weight {
+        case .medium: return .custom("Inter-Medium", fixedSize: size)
+        case .semibold: return .custom("Inter-SemiBold", fixedSize: size)
+        case .bold, .heavy, .black: return .custom("Inter-Bold", fixedSize: size)
+        default: return .custom("Inter-Regular", fixedSize: size)
+        }
+    }
+    /// Mono face — tokens.ts font.mono (JetBrains Mono 400/500). Model ids,
+    /// paths, keys — mirror the desktop's mono usage.
+    static func jetbrainsMono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        switch weight {
+        case .medium, .semibold, .bold: return .custom("JetBrainsMono-Medium", fixedSize: size)
+        default: return .custom("JetBrainsMono-Regular", fixedSize: size)
+        }
+    }
 
-    /// Chat prose — the assistant's answers read in a serif (New York), the
-    /// way long-form reading surfaces set them; UI chrome stays SF.
-    static let chatProse = Font.system(size: 16.5, weight: .regular, design: .serif)
-    /// The empty-state greeting — large, serif, quiet.
-    static let chatGreeting = Font.system(size: 28, weight: .regular, design: .serif)
-    /// User messages — the sender's own words stay sans, slightly smaller.
-    static let chatUser = Font.system(size: 15.5, weight: .regular)
+    /// tokens.ts type.display — 32/600 Manrope (-0.02em tracking is applied at
+    /// call sites via `.tracking(-0.64)` where trivial).
+    static let brandDisplay = Font.manrope(32)
+    /// tokens.ts type.title — 20/600 Manrope. Section / screen titles.
+    static let brandTitle = Font.manrope(20)
+    /// tokens.ts type.heading — 16/600 Manrope. Card headlines, primary rows.
+    static let brandHeading = Font.manrope(16)
+    /// tokens.ts type.heading — retained name for existing call sites.
+    static let brandHeadline = Font.manrope(16)
+    /// tokens.ts type.body — 14/400 Inter.
+    static let brandBody = Font.inter(14)
+    /// tokens.ts type.small — 13/400 Inter.
+    static let brandSmall = Font.inter(13)
+    /// tokens.ts type.caption — 12/400 Inter.
+    static let brandCaption = Font.inter(12)
+    /// tokens.ts type.micro — 11/500 Inter.
+    static let brandMicro = Font.inter(11, weight: .medium)
+    /// tokens.ts type.label — 11/600 Inter, 0.08em tracking, UPPERCASE. The
+    /// tracking and casing are not carried by the font: apply `.tracking(0.88)`
+    /// and `.textCase(.uppercase)` at the call site, as the web token does.
+    static let brandLabel = Font.inter(11, weight: .semibold)
+
+    /// Chat prose — the assistant's answers in the brand body face.
+    static let chatProse = Font.inter(16.5)
+    /// The empty-state greeting — large, display face, quiet.
+    static let chatGreeting = Font.manrope(28)
+    /// User messages — the sender's own words, slightly smaller.
+    static let chatUser = Font.inter(15.5)
 }
 
 /// Tabular figures — the iOS mirror of `tabularNums` in tokens.ts. Digits stop

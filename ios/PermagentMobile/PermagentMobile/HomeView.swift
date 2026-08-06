@@ -85,7 +85,8 @@ struct HomeView: View {
                                     Spacer()
                                     if !snap.todos.isEmpty {
                                         Text("\(snap.todos.count)")
-                                            .font(.system(.caption, design: .monospaced).weight(.semibold))
+                                            .font(.manrope(12))
+                                            .monospacedDigit()
                                             .foregroundStyle(ChatSurface.spark)
                                             .contentTransition(.numericText())
                                     }
@@ -109,7 +110,7 @@ struct HomeView: View {
                                                 .lineLimit(1)
                                             Spacer(minLength: 6)
                                             Text(dueLabel(todo.dueDate))
-                                                .font(.caption2.weight(.semibold))
+                                                .font(.inter(11, weight: .semibold))
                                                 .foregroundStyle(dueBucket(todo.dueDate).accent)
                                         }
                                     }
@@ -193,6 +194,7 @@ struct HomeView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(value.map(String.init) ?? "–")
                         .font(.brandDisplay)
+                        .tracking(-0.64)                 // tokens.ts display -0.02em at 32pt
                         .monospacedDigit()               // tabular figures — counts don't jitter on refresh
                         .contentTransition(.numericText()) // roll the digit when it changes
                         .foregroundStyle(accent)
@@ -201,7 +203,7 @@ struct HomeView: View {
                         .foregroundStyle(ChatSurface.text)
                     HStack(spacing: 3) {
                         Text(hint)
-                            .font(.caption2)
+                            .font(.brandMicro)
                             .foregroundStyle(ChatSurface.dim)
                         Image(systemName: "chevron.right")
                             .font(.system(size: 8, weight: .semibold))
@@ -227,15 +229,19 @@ struct HomeView: View {
     @ViewBuilder
     private func activityRow(_ row: ActivityRow) -> some View {
         let dest = destination(for: row.kind)
+        let icon = icon(for: row.kind)
         let content = HStack(alignment: .top, spacing: 8) {
-            Text(icon(for: row.kind))
+            Image(systemName: icon.symbol)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(icon.tint)
+                .frame(width: 16, height: 16)
             VStack(alignment: .leading, spacing: 1) {
                 Text(row.title)
                     .font(.brandCaption)
                     .foregroundStyle(ChatSurface.text)
                     .lineLimit(2)
                 Text(row.kind.replacingOccurrences(of: "_", with: " "))
-                    .font(.system(.caption2, design: .monospaced))
+                    .font(.jetbrainsMono(11))
                     .foregroundStyle(ChatSurface.dim)
             }
             Spacer(minLength: 0)
@@ -258,13 +264,16 @@ struct HomeView: View {
         }
     }
 
-    private func icon(for kind: String) -> String {
+    /// Activity glyphs speak the brand accents: violet for decisions (the
+    /// established Decisions color), spark for goal motion, danger for
+    /// failures — SF Symbols, not emoji, matching the desktop's icon voice.
+    private func icon(for kind: String) -> (symbol: String, tint: Color) {
         switch kind {
-        case let k where k.contains("decision"): return "🔔"
-        case let k where k.contains("goal"): return "⚒️"
-        case let k where k.contains("librarian"): return "📚"
-        case let k where k.contains("fail"): return "⚠️"
-        default: return "·"
+        case let k where k.contains("decision"): return ("bell.fill", Brand.violet)
+        case let k where k.contains("goal") || k.contains("dispatch"): return ("hammer.fill", ChatSurface.spark)
+        case let k where k.contains("librarian"): return ("books.vertical.fill", ChatSurface.muted)
+        case let k where k.contains("fail") || k.contains("error"): return ("exclamationmark.triangle.fill", Brand.danger)
+        default: return ("circle.fill", ChatSurface.dim)
         }
     }
 

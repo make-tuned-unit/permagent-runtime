@@ -119,6 +119,20 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         UIBackgroundModes:
           - audio
+        # Brand fonts (PermagentMobile/Fonts/, bundled as resources via the
+        # sources path above). Filenames, not paths — resources copy flat into
+        # the bundle. Mirrors the desktop ramp: Manrope display, Inter body,
+        # JetBrains Mono code. OFL license texts ship alongside in Fonts/.
+        UIAppFonts:
+          - Inter-Regular.otf
+          - Inter-Medium.otf
+          - Inter-SemiBold.otf
+          - Inter-Bold.otf
+          - Manrope-SemiBold.ttf
+          - Manrope-Bold.ttf
+          - Manrope-ExtraBold.ttf
+          - JetBrainsMono-Regular.ttf
+          - JetBrainsMono-Medium.ttf
   # Hosted-app-free logic tests (currently the VoiceVAD turn machine). The
   # target compiles the files under test directly instead of depending on the
   # app target, so `xcodebuild test` needs no signing and no app install —

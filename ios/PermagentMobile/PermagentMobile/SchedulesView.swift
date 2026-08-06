@@ -113,12 +113,12 @@ struct SchedulesView: View {
 
                 HStack(spacing: 10) {
                     Label(job.cron, systemImage: "calendar")
-                        .font(.system(.caption2, design: .monospaced))
+                        .font(.jetbrainsMono(11))
                         .foregroundStyle(ChatSurface.dim)
                         .lineLimit(1)
                     if let persona = job.worker_persona, !persona.isEmpty {
                         Label(persona, systemImage: "person.fill")
-                            .font(.system(.caption2, design: .monospaced))
+                            .font(.brandMicro)
                             .foregroundStyle(ChatSurface.dim)
                     }
                 }

@@ -166,7 +166,7 @@ struct AgentsView: View {
             }
             Spacer()
             Text(w.engineLabel)
-                .font(.system(.caption2, design: .monospaced))
+                .font(.jetbrainsMono(11))
                 .foregroundStyle(ChatSurface.dim)
         }
     }

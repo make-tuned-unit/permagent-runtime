@@ -160,7 +160,7 @@ struct ChatHistorySheet: View {
                 HStack(spacing: 6) {
                     if let when = RelativeTime.string(from: s.updatedAt) {
                         Text(when)
-                            .font(.system(.caption2, design: .monospaced))
+                            .font(.brandMicro)
                             .foregroundStyle(ChatSurface.dim)
                     }
                     if let n = s.messageCount, n > 0 {

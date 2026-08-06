@@ -35,7 +35,7 @@ struct ModelPickerView: View {
                         HStack(spacing: 10) {
                             Text("✻").foregroundStyle(ChatSurface.spark)
                             Text(currentModel)
-                                .font(.system(.subheadline, design: .monospaced).weight(.semibold))
+                                .font(.jetbrainsMono(15, weight: .medium))
                                 .foregroundStyle(ChatSurface.text)
                         }
                         Text("via \(currentProvider)")
@@ -69,7 +69,7 @@ struct ModelPickerView: View {
                                 } label: {
                                     HStack(spacing: 10) {
                                         Text(model)
-                                            .font(.system(.footnote, design: .monospaced))
+                                            .font(.jetbrainsMono(13))
                                             .foregroundStyle(isCurrent(provider.id, model) ? ChatSurface.text : ChatSurface.muted)
                                             .multilineTextAlignment(.leading)
                                         Spacer()

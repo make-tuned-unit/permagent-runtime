@@ -97,7 +97,8 @@ struct TodosView: View {
                                         .font(.brandLabel).tracking(0.88)
                                         .foregroundStyle(bucket.accent)
                                     Text("\(rows.count)")
-                                        .font(.system(.caption2, design: .monospaced))
+                                        .font(.manrope(11))
+                                        .monospacedDigit()
                                         .foregroundStyle(ChatSurface.dim)
                                 }
                                 ForEach(rows) { row in
@@ -139,11 +140,11 @@ struct TodosView: View {
                     .lineLimit(2)
                 HStack(spacing: 6) {
                     Text(row.projectName)
-                        .font(.system(.caption2, design: .monospaced))
+                        .font(.jetbrainsMono(11))
                         .foregroundStyle(ChatSurface.dim)
                         .lineLimit(1)
                     Text(dueLabel(row.dueDate))
-                        .font(.caption2.weight(.semibold))
+                        .font(.inter(11, weight: .semibold))
                         .foregroundStyle(accent)
                 }
             }

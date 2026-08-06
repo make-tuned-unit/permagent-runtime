@@ -22,10 +22,11 @@ struct PairingView: View {
         ScrollView {
             VStack(spacing: 20) {
             Spacer(minLength: 28)
-            // The wordmark stays deliberately branded (the ribbon is the mark);
-            // the heading below is the chat page's quiet serif opening.
+            // The wordmark: Manrope ExtraBold with wide tracking over the
+            // ribbon — the marketing site's mark, not a terminal readout.
             Text("PERMAGENT")
-                .font(.system(.title2, design: .monospaced).weight(.bold))
+                .font(.manrope(22, weight: .heavy))
+                .tracking(3)
                 .foregroundStyle(Brand.ribbon)
             Text("Pair with your hub")
                 .font(.chatGreeting)
@@ -52,7 +53,7 @@ struct PairingView: View {
                 TextField("http://your-mac.tailnet.ts.net/ui/#claim=…", text: $url)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                    .font(.system(.footnote, design: .monospaced))
+                    .font(.jetbrainsMono(13))
                     .foregroundStyle(ChatSurface.text)
                     .tint(ChatSurface.spark)
             }
@@ -517,7 +518,7 @@ struct ReasoningDisclosure: View {
                 HStack(spacing: 5) {
                     Text("✦").foregroundStyle(Brand.cyanInk).opacity(hasAnswer ? 0.65 : 1)
                     Text(hasAnswer ? "Reasoning" : "Thinking…")
-                        .font(.system(.caption2, design: .monospaced))
+                        .font(.jetbrainsMono(11))
                         .foregroundStyle(Brand.textDim)
                     Image(systemName: "chevron.right")
                         .font(.system(size: 8, weight: .semibold))

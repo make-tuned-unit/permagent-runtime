@@ -218,13 +218,13 @@ struct DictateView: View {
         VStack(spacing: 26) {
             Spacer()
 
-            // The chat page's quiet opening, in this room: spark, then a serif
-            // heading — the page speaks softly until you do.
+            // The chat page's quiet opening, in this room: spark, then a
+            // display heading — the page speaks softly until you do.
             switch phase {
             case .recording:
                 VStack(spacing: 10) {
                     Text(timeString(recorder.elapsed))
-                        .font(.system(size: 44, weight: .regular, design: .serif))
+                        .font(.manrope(44))
                         .monospacedDigit()
                         .contentTransition(.numericText())
                         .foregroundStyle(ChatSurface.text)
