@@ -235,15 +235,13 @@ impl AppState {
                     .data_dir(&brain_dir)
                     .ontology_path(&ontology_path)
                     .device_id(spectral::DeviceId::from_descriptor(&device_id_str));
-                if !project_wing_rules.is_empty() {
-                    tracing::info!(
-                        target: "permagentd::brain",
-                        rules = project_wing_rules.len(),
-                        "Opening Brain with per-project wing rules"
-                    );
-                    builder = builder.wing_rules(project_wing_rules);
-                }
-                let raw_brain = match builder.build() {
+                tracing::info!(
+                    target: "permagentd::brain",
+                    rules = project_wing_rules.len(),
+                    "Opening Brain with per-project wing rules"
+                );
+                builder = builder.wing_rules(project_wing_rules);
+                let mut raw_brain = match builder.build() {
                     Ok(b) => {
                         tracing::info!(
                             target: "permagentd::brain",
@@ -262,6 +260,10 @@ impl AppState {
                         return None;
                     }
                 };
+
+                // Delivery exposure may be deferred, but outcome/void commits
+                // await their own delivery and therefore remain durable.
+                raw_brain.set_async_turn_delivery(true);
 
                 // Startup health check: verify brain is queryable (still raw, pre-wrap)
                 match raw_brain.recall("permagent", spectral::Visibility::Private) {

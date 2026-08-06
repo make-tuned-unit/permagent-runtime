@@ -785,6 +785,7 @@ pub async fn session_reply(
             }
         };
 
+        let mut reply_completed = false;
         loop {
             tokio::select! {
                 _ = task_cancel.cancelled() => {
@@ -859,6 +860,7 @@ pub async fn session_reply(
                             break;
                         }
                         Ok(None) => {
+                            reply_completed = true;
                             break;
                         }
                         Err(_) => {
@@ -882,7 +884,9 @@ pub async fn session_reply(
             .rev()
             .collect::<Vec<_>>()
             .join("\n");
-        recall_trace.finish(traced_assistant_reply);
+        if reply_completed {
+            recall_trace.finish(traced_assistant_reply);
+        }
 
         // ── Phase 4: Remember turn after response completes ──
         if let Some(brain) = task_state.brain.as_ref() {

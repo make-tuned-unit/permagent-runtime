@@ -32,6 +32,56 @@ pub fn filter_recall_hits(
 pub struct RecallInjection {
     pub count: usize,
     pending: Option<permagent::recognition::PendingRecognition>,
+    /// Open `Brain::turn` receipt for a SAMPLED turn, awaiting its outcome
+    /// report. `None` on the overwhelming majority of turns — see
+    /// `permagent::turn_sampling` for why this path is not the default.
+    turn: Option<PendingTurn>,
+}
+
+/// A sampled `turn` awaiting outcome attribution at end of turn.
+struct PendingTurn {
+    brain: permagent::brain_handle::SafeBrain,
+    receipt: Option<spectral::TurnReceipt>,
+    /// The delivered set, in the shape the citation rule consumes.
+    delivered: Vec<permagent::recognition::InjectedMemory>,
+}
+
+impl PendingTurn {
+    fn take_parts(
+        &mut self,
+    ) -> Option<(
+        permagent::brain_handle::SafeBrain,
+        spectral::TurnReceipt,
+        Vec<permagent::recognition::InjectedMemory>,
+    )> {
+        self.receipt.take().map(|receipt| {
+            (
+                self.brain.clone(),
+                receipt,
+                std::mem::take(&mut self.delivered),
+            )
+        })
+    }
+}
+
+impl Drop for PendingTurn {
+    fn drop(&mut self) {
+        let Some((brain, receipt, _)) = self.take_parts() else {
+            return;
+        };
+        let turn_id = receipt.id.clone();
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            tracing::warn!(target: "permagentd::turn", %turn_id, "Cannot void abandoned turn outside a Tokio runtime");
+            return;
+        };
+        runtime.spawn(async move {
+            match brain.void_turn(receipt).await {
+                Ok(true) => tracing::debug!(target: "permagentd::turn", %turn_id, "voided abandoned turn"),
+                Ok(false) => tracing::debug!(target: "permagentd::turn", %turn_id, "abandoned turn was already voided"),
+                Err(e) => tracing::warn!(target: "permagentd::turn", %turn_id, error = %e, "Failed to void abandoned turn"),
+            }
+        });
+    }
 }
 
 impl RecallInjection {
@@ -39,9 +89,68 @@ impl RecallInjection {
     /// detached/best-effort inside the recognition module.
     pub fn finish(self, assistant_reply: String) {
         if let Some(pending) = self.pending {
-            pending.spawn_record_reply_usage(assistant_reply);
+            pending.spawn_record_reply_usage(assistant_reply.clone());
+        }
+        if let Some(turn) = self.turn {
+            spawn_record_turn_outcome(turn, assistant_reply);
         }
     }
+}
+
+/// Report which delivered memories the reply actually used.
+///
+/// Detached and best-effort like the recognition write-back: a turn is
+/// instrumentation, and instrumentation must never delay or fail a reply. But
+/// it MUST happen — an unreported turn leaves memory state unchanged and
+/// yields no learning signal, which is the whole reason `turn` exists.
+fn spawn_record_turn_outcome(mut turn: PendingTurn, assistant_reply: String) {
+    tokio::spawn(async move {
+        // Same citation rule as the recognition path, deliberately: two
+        // definitions of "used" would make the corpora incomparable.
+        let cited = permagent::recognition::cited_memories_by_content_overlap(
+            &turn.delivered,
+            &assistant_reply,
+        );
+        let cited: std::collections::HashSet<&str> = cited.iter().map(String::as_str).collect();
+
+        // Report EVERY delivered hit, not just the used ones. Silence about a
+        // delivered-but-unused memory is indistinguishable from a memory that
+        // was never delivered, and the negative examples are half the signal.
+        let outcomes: Vec<(String, spectral::MemoryOutcome)> = turn
+            .delivered
+            .iter()
+            .map(|hit| {
+                let outcome = if cited.contains(hit.id.as_str()) {
+                    spectral::MemoryOutcome::Used
+                } else {
+                    // `Ignored` = delivered but not used. NOT `Wrong` — that
+                    // is negative evidence meaning "actively misleading", and
+                    // content overlap cannot distinguish unhelpful from unused.
+                    // Overstating it would poison the corpus.
+                    spectral::MemoryOutcome::Ignored
+                };
+                (hit.id.clone(), outcome)
+            })
+            .collect();
+
+        let used = outcomes
+            .iter()
+            .filter(|(_, o)| matches!(o, spectral::MemoryOutcome::Used))
+            .count();
+        let Some((brain, receipt, _)) = turn.take_parts() else {
+            return;
+        };
+        match brain.record_turn_outcome(receipt, outcomes).await {
+            Ok(_) => tracing::debug!(
+                target: "permagentd::turn",
+                used, "recorded turn outcome"
+            ),
+            Err(e) => tracing::warn!(
+                target: "permagentd::turn",
+                "Failed to record turn outcome: {e}"
+            ),
+        }
+    });
 }
 
 // ── Recall injection ─────────────────────────────────────────────────────
@@ -62,8 +171,92 @@ pub async fn inject_recall(
     }
 
     let query_for_log = user_query.chars().take(80).collect::<String>();
+
+    // Sampled `Brain::turn`, in SHADOW: the reply is still built from
+    // recall_cascade below, so a sampled turn cannot change what the user sees
+    // — it only contributes a labelled (query, delivered-set, outcome) row to
+    // the corpus Spectral needs. Shadowing costs a second retrieval, which is
+    // affordable precisely because it is sampled and off by default.
+    //
+    // Failures are swallowed to None: instrumentation must never break a reply.
+    let turn = if permagent::turn_sampling::should_sample_turn() {
+        match brain
+            .turn(
+                user_query,
+                spectral::Visibility::Private,
+                recognition_ctx.clone(),
+            )
+            .await
+        {
+            Ok(result) => {
+                // Content lives on `hits`; the receipt's `delivered` carries
+                // the KEY that outcomes must be reported against. They are both
+                // in rank order, so zip them — and key the InjectedMemory by
+                // `key`, not `id`: record_turn_outcome rejects outcomes for
+                // keys it did not deliver, and id != key here.
+                let delivered: Vec<permagent::recognition::InjectedMemory> = result
+                    .receipt
+                    .delivered
+                    .iter()
+                    .zip(result.hits.iter())
+                    .map(|(d, hit)| permagent::recognition::InjectedMemory {
+                        id: d.key.clone(),
+                        content: hit.content.clone(),
+                    })
+                    .collect();
+                tracing::debug!(
+                    target: "permagentd::turn",
+                    delivered = delivered.len(),
+                    "sampled turn opened"
+                );
+                Some(PendingTurn {
+                    brain: brain.clone(),
+                    receipt: Some(result.receipt),
+                    delivered,
+                })
+            }
+            Err(e) => {
+                tracing::warn!(target: "permagentd::turn", "sampled turn failed: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     match brain.recall_cascade(user_query, &recognition_ctx).await {
         Ok(result) => {
+            if let Some(sampled) = turn.as_ref() {
+                if let Some(receipt) = sampled.receipt.as_ref() {
+                    let cascade_set: std::collections::HashSet<&str> = result
+                        .merged_hits
+                        .iter()
+                        .map(|hit| hit.id.as_str())
+                        .collect();
+                    let turn_set: std::collections::HashSet<&str> = receipt
+                        .delivered
+                        .iter()
+                        .map(|hit| hit.id.as_str())
+                        .collect();
+                    let intersection_size = cascade_set.intersection(&turn_set).count();
+                    let cascade_size = cascade_set.len();
+                    let turn_size = turn_set.len();
+                    let cascade_overlap_ratio = if cascade_size == 0 {
+                        0.0
+                    } else {
+                        intersection_size as f64 / cascade_size as f64
+                    };
+                    tracing::info!(
+                        target: "permagentd::turn_divergence",
+                        turn_id = %receipt.id,
+                        cascade_size,
+                        turn_size,
+                        intersection_size,
+                        cascade_overlap_ratio,
+                        "sampled cascade/turn delivery overlap"
+                    );
+                }
+            }
             let top_hits = filter_recall_hits(&result.merged_hits);
             let count = top_hits.len();
             let prefix = if top_hits.is_empty() {
@@ -129,7 +322,11 @@ pub async fn inject_recall(
                     RECALL_SCORE_FLOOR,
                     query_for_log
                 );
-                return RecallInjection { count: 0, pending };
+                return RecallInjection {
+                    count: 0,
+                    pending,
+                    turn,
+                };
             };
 
             tracing::info!(
@@ -142,7 +339,11 @@ pub async fn inject_recall(
             agent
                 .extend_system_prompt("memory_recall".to_string(), prefix)
                 .await;
-            RecallInjection { count, pending }
+            RecallInjection {
+                count,
+                pending,
+                turn,
+            }
         }
         Err(e) => {
             tracing::warn!(
@@ -289,4 +490,57 @@ pub fn read_only_brain_conn() -> Result<rusqlite::Connection, rusqlite::Error> {
         &db_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PendingTurn;
+    use rusqlite::OptionalExtension;
+
+    #[tokio::test]
+    async fn dropping_pending_turn_voids_its_receipt() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut raw = spectral::Brain::open(dir.path()).expect("open brain");
+        raw.set_async_turn_delivery(true);
+        raw.remember(
+            "drop-guard-note",
+            "the staging deploy runbook lists rollback steps",
+            spectral::Visibility::Private,
+        )
+        .expect("remember");
+        let result = raw
+            .turn(&spectral::TurnRequest::query(
+                "staging deploy rollback",
+                spectral::Visibility::Private,
+            ))
+            .expect("turn");
+        let turn_id = result.receipt.id.clone();
+        let pending = PendingTurn {
+            brain: permagent::brain_handle::SafeBrain::new(raw),
+            receipt: Some(result.receipt),
+            delivered: Vec::new(),
+        };
+
+        drop(pending);
+
+        for _ in 0..100 {
+            let conn =
+                rusqlite::Connection::open(dir.path().join("memory.db")).expect("open ledger");
+            let voided_at: Option<String> = conn
+                .query_row(
+                    "SELECT voided_at FROM turn_events WHERE occurrence_id = ?1",
+                    [&turn_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .expect("query void state")
+                .flatten();
+            if voided_at.is_some() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        panic!("PendingTurn Drop guard did not void turn {turn_id}");
+    }
 }

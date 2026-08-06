@@ -238,6 +238,12 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
         .await?;
     }
 
+    if let Some(brain) = app_state.brain.as_ref() {
+        if let Err(e) = brain.flush_turn_deliveries().await {
+            tracing::warn!(error = %e, "Failed to flush deferred Brain turn deliveries");
+        }
+    }
+
     #[cfg(feature = "otel")]
     if permagent::otel::otlp::is_otlp_initialized() {
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;

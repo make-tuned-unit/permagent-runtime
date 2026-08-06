@@ -387,6 +387,76 @@ impl SafeBrain {
         })
     }
 
+    /// Read-only retrieval that returns a receipt (`Brain::turn`).
+    ///
+    /// Unlike [`recall_cascade`](Self::recall_cascade), this reinforces NOTHING
+    /// at retrieval time — the whole point. `recall_*` auto-reinforces every
+    /// hit, which credits exposure rather than usefulness; `turn` writes only a
+    /// delivery record and waits to be told what was actually used, via
+    /// [`record_turn_outcome`](Self::record_turn_outcome).
+    ///
+    /// **Not the default recall path.** The daemon runs this on a sampled,
+    /// shadowed fraction of turns so it can compare the delivered set with the
+    /// user-facing cascade without changing reply context.
+    pub async fn turn(
+        &self,
+        query: &str,
+        visibility: spectral::Visibility,
+        context: spectral::graph::RecognitionContext,
+    ) -> anyhow::Result<spectral::TurnResult> {
+        let brain = self.inner.clone();
+        let query = query.to_string();
+        tokio::task::spawn_blocking(move || {
+            let request = spectral::TurnRequest::query(&query, visibility).with_context(context);
+            brain.turn(&request)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("brain task panicked: turn: {e}"))?
+        .map_err(anyhow::Error::from)
+    }
+
+    /// Report which delivered memories were actually used, closing the loop a
+    /// [`turn`](Self::turn) opened.
+    ///
+    /// A turn that is never reported leaves memory state completely unchanged
+    /// and produces NO learning signal — the retrieval was then pure overhead.
+    /// Treat this as mandatory, not optional.
+    pub async fn record_turn_outcome(
+        &self,
+        receipt: spectral::TurnReceipt,
+        outcomes: Vec<(String, spectral::MemoryOutcome)>,
+    ) -> anyhow::Result<spectral::OutcomeReceipt> {
+        let brain = self.inner.clone();
+        tokio::task::spawn_blocking(move || {
+            let borrowed: Vec<(&str, spectral::MemoryOutcome)> = outcomes
+                .iter()
+                .map(|(key, outcome)| (key.as_str(), *outcome))
+                .collect();
+            brain.record_turn_outcome(&receipt, &borrowed)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("brain task panicked: record_turn_outcome: {e}"))?
+        .map_err(anyhow::Error::from)
+    }
+
+    /// Retract a sampled turn that ended before it could be adjudicated.
+    pub async fn void_turn(&self, receipt: spectral::TurnReceipt) -> anyhow::Result<bool> {
+        let brain = self.inner.clone();
+        tokio::task::spawn_blocking(move || brain.void_turn(&receipt))
+            .await
+            .map_err(|e| anyhow::anyhow!("brain task panicked: void_turn: {e}"))?
+            .map_err(anyhow::Error::from)
+    }
+
+    /// Await all deferred turn-delivery writes before daemon shutdown.
+    pub async fn flush_turn_deliveries(&self) -> anyhow::Result<()> {
+        let brain = self.inner.clone();
+        tokio::task::spawn_blocking(move || brain.flush_turn_deliveries())
+            .await
+            .map_err(|e| anyhow::anyhow!("brain task panicked: flush_turn_deliveries: {e}"))?
+            .map_err(anyhow::Error::from)
+    }
+
     pub async fn remember_with(
         &self,
         key: &str,
