@@ -56,6 +56,22 @@ actor APIClient {
         guard (200..<300).contains(http.statusCode) else { throw APIError.badStatus(http.statusCode) }
     }
 
+    /// `send` with a JSON body, for endpoints whose response body we don't
+    /// need (set_provider answers a shape that varies by daemon version —
+    /// only the status matters here).
+    func send<B: Encodable>(_ path: String, method: String = "POST", body: B) async throws {
+        guard let config else { throw APIError.notPaired }
+        var req = URLRequest(url: config.baseURL.appendingPathComponent(path))
+        req.httpMethod = method
+        req.setValue("Bearer \(config.token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONEncoder().encode(body)
+        let (_, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse else { throw APIError.badStatus(0) }
+        if http.statusCode == 401 { throw APIError.unauthorized }
+        guard (200..<300).contains(http.statusCode) else { throw APIError.badStatus(http.statusCode) }
+    }
+
     /// Multipart upload of a recorded clip to the local dictation model
     /// (POST /api/dictation/transcribe → `{ text }`). The daemon reads the first
     /// multipart field regardless of name; we send it as `audio`. A 503 surfaces

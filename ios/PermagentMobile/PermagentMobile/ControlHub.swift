@@ -30,6 +30,12 @@ struct ControlHubView: View {
                             subtitle: "Scheduled jobs — run now, pause, or stop",
                             accent: Brand.violet)
 
+                    hubLink(destination: ModelPickerView(),
+                            icon: "cpu",
+                            title: "Model",
+                            subtitle: "Switch the chat model — any provider with a saved key",
+                            accent: ChatSurface.spark)
+
                 }
                 .padding()
             }
