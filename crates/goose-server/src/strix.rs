@@ -26,6 +26,9 @@ use std::time::Duration;
 /// Findings ride `projects.metadata_json.strix_findings` — same
 /// no-migration storage the Watcher's insights use.
 const METADATA_KEY: &str = "strix_findings";
+/// When this project was last scanned (ISO-8601), for the one-per-sweep
+/// rotation: the least-recently-scanned active project goes next.
+const LAST_SCAN_KEY: &str = "strix_last_scan";
 /// Keep the most recent findings per project; older ones age out.
 const MAX_KEPT: usize = 40;
 /// How often the loop wakes to check the flag and whether a sweep is due.
@@ -124,75 +127,212 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
         return Ok(());
     }
 
+    // ONE project per sweep, rotating least-recently-scanned first (Jesse,
+    // 2026-08-06): a whole-fleet pass four times a day was the wrong shape —
+    // one focused scan per interval spreads cost evenly and gives each
+    // project a fresh report on a predictable cycle. A never-scanned project
+    // sorts first (empty stamp).
+    let mut candidates: Vec<&Project> = projects
+        .iter()
+        .filter(|p| p.id != PERSONAL_PROJECT_ID && p.root_path.is_some())
+        .collect();
+    candidates.sort_by_key(|p| last_scan_stamp(p));
+    let Some(project) = candidates.first().copied() else {
+        return Ok(());
+    };
+    let root = project.root_path.clone().unwrap_or_default();
+
+    // The scope guard runs even though the target came from our own
+    // project table: a malformed row must not become a scan of `/`.
+    let target = match strix::check_scope(&root, &roots) {
+        Ok(p) => p,
+        Err(refusal) => {
+            tracing::warn!(
+                target: "permagentd::strix",
+                project = %project.name,
+                root = %root,
+                "refused out-of-scope scan target: {refusal:?}"
+            );
+            // Stamp anyway so an unresolvable root cannot pin the rotation.
+            let _ = stamp_last_scan(&pool, project).await;
+            return Ok(());
+        }
+    };
+
     announce("working");
-    let mut swept = 0usize;
-    let mut attempted = 0usize;
-    let mut scan_errors = 0usize;
-    for project in projects {
-        if project.id == PERSONAL_PROJECT_ID {
-            continue;
-        }
-        let Some(root) = project.root_path.clone() else {
-            continue;
-        };
-        // The scope guard runs even though the target came from our own
-        // project table: a malformed row must not become a scan of `/`.
-        let target = match strix::check_scope(&root, &roots) {
-            Ok(p) => p,
-            Err(refusal) => {
-                tracing::warn!(
-                    target: "permagentd::strix",
-                    project = %project.name,
-                    root = %root,
-                    "refused out-of-scope scan target: {refusal:?}"
-                );
-                continue;
-            }
-        };
-        attempted += 1;
-        match scan_project(&target).await {
-            Ok(findings) if findings.is_empty() => {
-                tracing::info!(
-                    target: "permagentd::strix",
-                    project = %project.name,
-                    "clean — no findings"
-                );
-            }
-            Ok(findings) => {
-                match record_findings(&pool, &project, findings).await {
-                    Ok(fresh) => brief_new_findings(&pool, &project, &fresh).await,
-                    Err(e) => tracing::warn!(
-                        target: "permagentd::strix",
-                        project = %project.name,
-                        "findings not recorded: {e}"
-                    ),
-                }
-                swept += 1;
-            }
-            Err(e) => {
-                // A missing scanner is a stated fact, not a silent skip — but
-                // one broken project must not end the sweep for the rest.
-                tracing::warn!(
-                    target: "permagentd::strix",
-                    project = %project.name,
-                    "scan did not run: {e}"
-                );
-                scan_errors += 1;
-            }
-        }
+    let outcome = scan_project(&target).await;
+    // The rotation advances on every attempt — success, clean, or error —
+    // so one broken project can never starve the rest of the cycle.
+    if let Err(e) = stamp_last_scan(&pool, project).await {
+        tracing::warn!(target: "permagentd::strix", "last-scan stamp failed: {e}");
     }
-    // SCAN BLOCKED only when nothing could run at all (scanner absent);
-    // otherwise the World returns to idle so a one-off failure cannot latch.
-    if attempted > 0 && scan_errors == attempted {
-        announce("error");
-    } else {
-        announce("available");
+    match outcome {
+        Ok(findings) if findings.is_empty() => {
+            tracing::info!(
+                target: "permagentd::strix",
+                project = %project.name,
+                "clean — no findings"
+            );
+            announce("available");
+        }
+        Ok(findings) => {
+            match record_findings(&pool, project, findings).await {
+                Ok(fresh) => {
+                    // The deliverable: a security report note on the project,
+                    // findings plus an ordered fix plan. Notes index into the
+                    // Brain, so "ask Henry to read the Guard's report and
+                    // dispatch a fix goal" works with no extra plumbing.
+                    let current: Vec<Finding> = current_findings(&pool, &project.id).await;
+                    let body = security_report_markdown(&project.name, &current, &fresh);
+                    let title = format!(
+                        "Security report — {} — {}",
+                        project.name,
+                        chrono::Utc::now().format("%Y-%m-%d")
+                    );
+                    if let Err(e) = permagent::project_notes::create_note_indexed(
+                        &pool,
+                        state.brain.as_ref(),
+                        &project.id,
+                        Some(&title),
+                        &body,
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            target: "permagentd::strix",
+                            project = %project.name,
+                            "report note not saved: {e}"
+                        );
+                    }
+                    brief_new_findings(&pool, project, &fresh).await;
+                }
+                Err(e) => tracing::warn!(
+                    target: "permagentd::strix",
+                    project = %project.name,
+                    "findings not recorded: {e}"
+                ),
+            }
+            announce("available");
+        }
+        Err(e) => {
+            // A missing scanner is a stated fact, not a silent skip.
+            tracing::warn!(
+                target: "permagentd::strix",
+                project = %project.name,
+                "scan did not run: {e}"
+            );
+            announce("error");
+        }
     }
     tracing::info!(
         target: "permagentd::strix",
-        "sweep complete — {swept} project(s) with findings, {scan_errors} scan error(s)"
+        project = %project.name,
+        "sweep complete — next sweep takes the next least-recently-scanned project"
     );
     Ok(())
+}
+
+/// The project's last-scan stamp, empty if never scanned (sorts first).
+fn last_scan_stamp(project: &Project) -> String {
+    project
+        .metadata_json
+        .as_object()
+        .and_then(|m| m.get(LAST_SCAN_KEY))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// Advance the rotation: write the last-scan stamp without touching findings.
+async fn stamp_last_scan(pool: &Pool<Sqlite>, project: &Project) -> Result<(), String> {
+    let mut meta = project
+        .metadata_json
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    meta.insert(
+        LAST_SCAN_KEY.to_string(),
+        serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
+    );
+    projects::update_project(
+        pool,
+        &project.id,
+        UpdateProject {
+            metadata_json: Some(serde_json::Value::Object(meta)),
+            ..Default::default()
+        },
+    )
+    .await
+    .map(|_| ())
+}
+
+/// Re-read the project's current (merged) findings after recording.
+async fn current_findings(pool: &Pool<Sqlite>, project_id: &str) -> Vec<Finding> {
+    match projects::get_project_by_id_or_slug(pool, project_id).await {
+        Ok(Some(p)) => p
+            .metadata_json
+            .as_object()
+            .and_then(|m| m.get(METADATA_KEY))
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+/// The report note: what was found, then a fix plan ordered by severity —
+/// written so Henry can turn it into a dispatchable goal verbatim.
+fn security_report_markdown(project_name: &str, current: &[Finding], fresh: &[Finding]) -> String {
+    let sev_rank = |s: &str| match s {
+        "critical" => 0,
+        "high" => 1,
+        "medium" => 2,
+        _ => 3,
+    };
+    let mut ordered: Vec<&Finding> = current.iter().collect();
+    ordered.sort_by_key(|f| sev_rank(&f.severity));
+
+    let mut out = format!(
+        "The Guard scanned **{project_name}** and found {} open finding{} ({} new this scan).\n\n## Findings\n\n",
+        current.len(),
+        if current.len() == 1 { "" } else { "s" },
+        fresh.len(),
+    );
+    for f in &ordered {
+        let new_tag = if fresh.iter().any(|n| n.id == f.id) {
+            " · NEW"
+        } else {
+            ""
+        };
+        out.push_str(&format!(
+            "- **[{}]{}** {}{}\n",
+            f.severity.to_uppercase(),
+            new_tag,
+            f.title,
+            f.location
+                .as_deref()
+                .map(|l| format!(" — `{l}`"))
+                .unwrap_or_default(),
+        ));
+        if let Some(cwe) = f.cwe.as_deref() {
+            out.push_str(&format!("  - {cwe}\n"));
+        }
+    }
+    out.push_str("\n## Fix plan\n\n");
+    for (i, f) in ordered.iter().enumerate() {
+        out.push_str(&format!(
+            "{}. {}: {}\n",
+            i + 1,
+            f.title,
+            f.remediation
+                .as_deref()
+                .unwrap_or("review the finding location and remove the exposure"),
+        ));
+    }
+    out.push_str(
+        "\nTo act on this: ask Henry to read this report and dispatch a fix goal \
+         (Claude Code or Codex) for the plan above.\n",
+    );
+    out
 }
 
 /// Run the scanner over one project and parse its SARIF. Strix (the engine)

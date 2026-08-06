@@ -850,7 +850,7 @@ function ModelsPanel({ goto }: PanelProps) {
       {/* ── The Guard security sweeps ────────────────────────────── */}
       <Section
         title="Security sweeps (The Guard)"
-        sub="The Guard — born of the Strix pentest engine — probes your own projects for security flaws and files findings on each project's Overview. Requires the external `strix` scanner and Docker installed. Each sweep runs a real AI scan of every active project on your API credits, so the cadence below is a cost dial. Changes apply within ~15 minutes — no restart needed."
+        sub="The Guard — born of the Strix pentest engine — probes your own projects for security flaws. Each sweep scans ONE active project (rotating through them, least-recently-scanned first) and files a security report with a fix plan as a note on that project, plus a findings checklist on its Overview. Requires the external `strix` scanner and Docker installed. Scans run on your API credits, so the cadence below is a cost dial. Changes apply within ~15 minutes — no restart needed."
       >
         {strixError && (
           <div style={{ fontSize: 12, color: colors.danger, padding: '4px 0 8px' }}>{strixError}</div>
@@ -862,7 +862,7 @@ function ModelsPanel({ goto }: PanelProps) {
             <Toggle on={strix} onChange={saveStrix} />
           )}
         </Row>
-        <Row label="Sweep every" hint="How often the Guard re-scans. Daily is the cost-effective default; a security posture rarely changes faster.">
+        <Row label="Sweep every" hint="How often the Guard scans the next project in the rotation. Daily is the cost-effective default.">
           <select
             value={strixHours}
             onChange={e => saveStrixHours(Number(e.target.value))}

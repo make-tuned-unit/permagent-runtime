@@ -136,11 +136,14 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
             },
             crate::agents::self_knowledge::TeachingStep {
                 title: "Costs, stated plainly",
-                body: "Tell them: each sweep is a real AI scan of every active project on their \
-                       API credits. It defaults to a small fast model (Haiku) on the key they \
-                       already stored, once a day. The cadence has a 'Sweep every' picker in \
-                       Settings; the model can be changed for them via the strix_llm entry in \
-                       ~/.permagent/config.yaml. Never imply it is free.",
+                body: "Tell them: each sweep is a real AI scan of ONE active project (rotating, \
+                       least-recently-scanned first) on their API credits, defaulting to a \
+                       small fast model (Haiku) on the key they already stored, once a day. \
+                       Each scan files a security report with a fix plan as a note on that \
+                       project — they can ask you to read it and dispatch a fix goal. The \
+                       cadence has a 'Sweep every' picker in Settings; the model can be \
+                       changed for them via the strix_llm entry in ~/.permagent/config.yaml. \
+                       Never imply it is free.",
                 open_surface: None,
                 confirm: None,
             },

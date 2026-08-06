@@ -375,7 +375,17 @@ async fn run_now_handler(
         "Recipe execution started"
     );
 
-    match scheduler.run_now(&id).await {
+    // Detach the run from this request's lifetime. Axum drops the handler
+    // future when the client disconnects, and `run_now` used to be that
+    // future — a closed tab or a client timeout aborted the run mid-flight
+    // with no cleanup, leaving the schedule wedged as "running" with no
+    // session (observed live 2026-08-06; the disk-cleanup automation wedge).
+    // Spawning makes the run's execution and cleanup unconditional; awaiting
+    // the JoinHandle keeps the response identical for clients that stay.
+    let run = tokio::spawn(async move { scheduler.run_now(&id).await });
+    match run.await.map_err(|e| {
+        ErrorResponse::internal(format!("Schedule run task failed to complete: {e}"))
+    })? {
         Ok(session_id) => Ok(Json(RunNowResponse { session_id })),
         Err(e) => match e {
             permagent::scheduler::SchedulerError::JobNotFound(msg) => Err(
