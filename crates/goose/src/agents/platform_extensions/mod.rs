@@ -15,6 +15,7 @@ pub mod ext_manager;
 pub mod file_to_project;
 pub mod gate_classifier;
 pub mod goal_engine;
+pub mod inbox_tools;
 pub mod librarian;
 pub mod librarian_adjudicator;
 pub mod librarian_atoms;
@@ -254,6 +255,37 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                     confirm: None,
                 }],
                 client_factory: |ctx| Box::new(dashboard::DashboardClient::new(ctx).unwrap()),
+            },
+        );
+
+        map.insert(
+            inbox_tools::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: inbox_tools::EXTENSION_NAME,
+                display_name: "Decision Inbox",
+                description: "Surface and settle the user's Decision Inbox from chat: read what \
+                              is waiting on them (list_pending_decisions) and apply the verdict \
+                              they state in conversation (answer_decisions), bundling related \
+                              items — five finished goal cards, one approval",
+                default_enabled: true,
+                unprefixed_tools: true,
+                hidden: false,
+                why_it_matters:
+                    "Approvals the user must chase across the app do not get answered. When they \
+                     ask what needs them — or when pending decisions are the obvious blocker — \
+                     bring the Inbox to them, grouped into bundles they can settle in one \
+                     breath. The verdict is ALWAYS the user's words from this conversation; \
+                     never answer a decision on your own judgment, and read the bundle back \
+                     before applying it",
+                teaching: &[crate::agents::self_knowledge::TeachingStep {
+                    title: "Settle what is waiting",
+                    body: "Read the user their open decisions grouped into bundles ('five \
+                           reviews of goals we already finished'), let them say the word, and \
+                           apply exactly what they said — then confirm what changed.",
+                    open_surface: None,
+                    confirm: None,
+                }],
+                client_factory: |ctx| Box::new(inbox_tools::InboxClient::new(ctx).unwrap()),
             },
         );
 
