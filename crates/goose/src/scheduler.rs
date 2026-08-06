@@ -1651,6 +1651,14 @@ impl Scheduler {
         persist_jobs(&self.storage_path, &self.jobs).await
     }
 
+    /// How long a cancelled run gets to observe its token and clean up before
+    /// Stop force-clears the schedule state. Short in tests so the watchdog is
+    /// testable without a 15-second sleep.
+    #[cfg(not(test))]
+    const KILL_FORCE_CLEAR_GRACE: std::time::Duration = std::time::Duration::from_secs(15);
+    #[cfg(test)]
+    const KILL_FORCE_CLEAR_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
+
     pub async fn kill_running_job(&self, sched_id: &str) -> Result<(), SchedulerError> {
         {
             let jobs_guard = self.jobs.lock().await;
@@ -1700,6 +1708,52 @@ impl Scheduler {
                 }
             }
             persist_jobs(&self.storage_path, &self.jobs).await?;
+        } else {
+            // A cancelled run normally observes its token between steps and
+            // cleans up within moments. A run parked inside an await that
+            // never checks the token — a hung provider call, observed live
+            // 2026-08-06 after 40 stalled minutes — never does, and Stop
+            // reported success while the schedule stayed "running" forever.
+            // Watchdog: after a grace period, force-clear so Stop always
+            // converges to stopped. If the zombie ever wakes, its own teardown
+            // re-clears idempotently (the small overwrite window for a
+            // freshly-started next run is the same one slow teardowns always
+            // had — see the claim guard in create_job_task).
+            let jobs = self.jobs.clone();
+            let tasks = self.running_tasks.clone();
+            let storage_path = self.storage_path.clone();
+            let id = sched_id.to_string();
+            tokio::spawn(async move {
+                tokio::time::sleep(Self::KILL_FORCE_CLEAR_GRACE).await;
+                let still_running = {
+                    let g = jobs.lock().await;
+                    g.get(&id)
+                        .map(|(_, j)| j.currently_running)
+                        .unwrap_or(false)
+                };
+                if !still_running {
+                    return;
+                }
+                tracing::warn!(
+                    "schedule '{}' did not observe cancellation within {:?} — force-clearing \
+                     the wedged run",
+                    id,
+                    Self::KILL_FORCE_CLEAR_GRACE
+                );
+                tasks.lock().await.remove(&id);
+                {
+                    let mut g = jobs.lock().await;
+                    if let Some((_, job)) = g.get_mut(&id) {
+                        job.currently_running = false;
+                        job.current_session_id = None;
+                        job.process_start_time = None;
+                        job.last_status = Some(ScheduleRunStatus::Error);
+                        job.last_error =
+                            Some("run ignored cancellation; force-cleared by Stop".to_string());
+                    }
+                }
+                let _ = persist_jobs(&storage_path, &jobs).await;
+            });
         }
 
         Ok(())
@@ -2824,6 +2878,63 @@ mod tests {
 
         // And a second Stop now reports the truth: nothing is running.
         assert!(scheduler.kill_running_job("wedged_job").await.is_err());
+    }
+
+    /// The live-but-deaf wedge (2026-08-06, observed in production): the run
+    /// task exists and its token is cancelled, but it is parked inside an
+    /// await that never checks the token (a hung provider call), so its own
+    /// teardown never runs. Stop must force-clear after the grace period.
+    #[tokio::test]
+    async fn kill_force_clears_a_run_that_ignores_cancellation() {
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let recipe_path = create_test_recipe(temp_dir.path(), "deaf_job");
+        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let scheduler = Scheduler::new(storage_path, session_manager).await.unwrap();
+
+        let job = ScheduledJob {
+            id: "deaf_job".to_string(),
+            source: recipe_path.to_string_lossy().to_string(),
+            cron: "0 0 0 1 1 *".to_string(),
+            paused: true,
+            ..Default::default()
+        };
+        scheduler.add_scheduled_job(job, true).await.unwrap();
+
+        // Simulate a live run that will never observe cancellation: running
+        // per the job record, with a real token in running_tasks and no task
+        // watching it.
+        {
+            let mut jobs_guard = scheduler.jobs.lock().await;
+            jobs_guard.get_mut("deaf_job").unwrap().1.currently_running = true;
+        }
+        scheduler
+            .running_tasks
+            .lock()
+            .await
+            .insert("deaf_job".to_string(), CancellationToken::new());
+
+        scheduler.kill_running_job("deaf_job").await.unwrap();
+
+        // Immediately after Stop the run may legitimately still be winding
+        // down — force-clear only fires after the grace period (200ms in
+        // tests).
+        sleep(Duration::from_millis(600)).await;
+
+        let jobs = scheduler.list_scheduled_jobs().await;
+        let job = jobs.iter().find(|j| j.id == "deaf_job").unwrap();
+        assert!(
+            !job.currently_running,
+            "Stop must force-clear a run that ignores cancellation"
+        );
+        assert!(
+            !scheduler
+                .running_tasks
+                .lock()
+                .await
+                .contains_key("deaf_job"),
+            "the orphaned token must be removed"
+        );
     }
 
     #[tokio::test]
