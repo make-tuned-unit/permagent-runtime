@@ -1379,7 +1379,12 @@ impl Scheduler {
         let brain_snapshot = self.brain.read().await.clone();
         let persona_snapshot = self.persona.read().await.clone();
         let ac_snapshot = self.agent_config.read().await.clone();
-        let result = execute_job(
+        // Contain a panic exactly like the cron path does: an unwinding
+        // execute_job used to skip everything below — the token stayed in
+        // running_tasks and `currently_running` stayed true, wedging the
+        // schedule as "running" with a Stop button that cancelled a token
+        // nobody was watching.
+        let result = std::panic::AssertUnwindSafe(execute_job(
             job_to_run,
             self.jobs.clone(),
             sched_id.to_string(),
@@ -1387,8 +1392,22 @@ impl Scheduler {
             brain_snapshot,
             persona_snapshot,
             ac_snapshot,
-        )
-        .await;
+        ))
+        .catch_unwind()
+        .await
+        .unwrap_or_else(|panic| {
+            let msg = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "<non-string panic payload>".to_string());
+            tracing::error!(
+                target: "durability",
+                job = %sched_id,
+                "run_now job panicked (contained, cleanup still runs): {msg}"
+            );
+            Err(anyhow!("job '{}' panicked: {}", sched_id, msg))
+        });
 
         {
             let mut tasks = self.running_tasks.lock().await;
@@ -1647,11 +1666,40 @@ impl Scheduler {
             }
         }
 
-        {
+        let cancelled_live_token = {
             let tasks = self.running_tasks.lock().await;
-            if let Some(token) = tasks.get(sched_id) {
-                token.cancel();
+            match tasks.get(sched_id) {
+                Some(token) => {
+                    token.cancel();
+                    true
+                }
+                None => false,
             }
+        };
+
+        // `currently_running` with no cancel token means the run is DEAD — it
+        // died without reaching its cleanup (e.g. a process restart mid-run
+        // before boot reconciliation existed). Returning Ok while clearing
+        // nothing left the schedule wedged as "running" forever, with Stop and
+        // Delete both bouncing off it. Clear the run state here so Stop always
+        // means stopped; a live run's own teardown path is untouched.
+        if !cancelled_live_token {
+            tracing::warn!(
+                "Stop requested for schedule '{}' but no live run exists — clearing wedged \
+                 running state",
+                sched_id
+            );
+            {
+                let mut jobs_guard = self.jobs.lock().await;
+                if let Some((_, job)) = jobs_guard.get_mut(sched_id) {
+                    job.currently_running = false;
+                    job.current_session_id = None;
+                    job.process_start_time = None;
+                    job.last_status = Some(ScheduleRunStatus::Error);
+                    job.last_error = Some("run died without cleanup; cleared by Stop".to_string());
+                }
+            }
+            persist_jobs(&self.storage_path, &self.jobs).await?;
         }
 
         Ok(())
@@ -2728,6 +2776,54 @@ mod tests {
             "detail names the job: {}",
             open[0].decision.detail
         );
+    }
+
+    /// The Automate Stop wedge (2026-08-06): a run that died without cleanup
+    /// leaves `currently_running=true` with no cancel token. Stop used to
+    /// return Ok while clearing nothing — the schedule stayed "running"
+    /// forever. Stop must clear the wedged state so the job is re-runnable.
+    #[tokio::test]
+    async fn kill_clears_wedged_running_state_when_no_live_run_exists() {
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let recipe_path = create_test_recipe(temp_dir.path(), "wedged_job");
+        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let scheduler = Scheduler::new(storage_path, session_manager).await.unwrap();
+
+        let job = ScheduledJob {
+            id: "wedged_job".to_string(),
+            source: recipe_path.to_string_lossy().to_string(),
+            cron: "0 0 0 1 1 *".to_string(),
+            paused: true,
+            ..Default::default()
+        };
+        scheduler.add_scheduled_job(job, true).await.unwrap();
+
+        // Wedge it the way a dead run does: running per the job record, but no
+        // entry in running_tasks.
+        {
+            let mut jobs_guard = scheduler.jobs.lock().await;
+            let (_, job) = jobs_guard.get_mut("wedged_job").unwrap();
+            job.currently_running = true;
+            job.current_session_id = None;
+            job.process_start_time = Some(Utc::now());
+        }
+
+        scheduler
+            .kill_running_job("wedged_job")
+            .await
+            .expect("Stop on a wedged schedule must succeed");
+
+        let jobs = scheduler.list_scheduled_jobs().await;
+        let job = jobs.iter().find(|j| j.id == "wedged_job").unwrap();
+        assert!(
+            !job.currently_running,
+            "Stop must clear the wedged running flag"
+        );
+        assert!(job.process_start_time.is_none());
+
+        // And a second Stop now reports the truth: nothing is running.
+        assert!(scheduler.kill_running_job("wedged_job").await.is_err());
     }
 
     #[tokio::test]
