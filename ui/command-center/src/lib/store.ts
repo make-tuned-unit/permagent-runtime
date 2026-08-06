@@ -108,7 +108,11 @@ export type PermagentEventType =
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 
-export type ActivePanel = 'chat' | 'skills' | 'events' | 'settings' | 'sessions' | 'terminal' | 'browser' | 'inbox' | 'trace' | 'governance';
+// 'chat' means "no overlay — show the active workspace". The old Console
+// overlay values ('sessions' | 'inbox' | 'trace' | 'governance') and the
+// never-used 'events' are gone (2026-08 ruling): those pages live inside
+// Settings and deep-link via pendingSettingsSection.
+export type ActivePanel = 'chat' | 'skills' | 'settings' | 'terminal' | 'browser';
 
 // ── Workspace types ──
 

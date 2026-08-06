@@ -8,9 +8,12 @@
 // so every deep-link landed on the default).
 
 export const SETTINGS_SECTION_KEYS = [
-  'agent', 'profile', 'preferences', 'memory', 'autonomy', 'tools',
+  'agent', 'preferences', 'memory', 'autonomy', 'tools',
   'models', 'keys', 'devices', 'search', 'appearance', 'shortcuts', 'data',
   'sovereignty',
+  // Console pages folded into Settings (2026-08 ruling): Sessions history,
+  // Downloads inbox, the Execution trace ('activity'), and Spend.
+  'sessions', 'inbox', 'activity', 'spend',
 ] as const;
 
 export type SettingsSectionKey = (typeof SETTINGS_SECTION_KEYS)[number];

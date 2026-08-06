@@ -10,13 +10,6 @@ import { MeetingRecorder } from '../voice/MeetingRecorder';
 
 const SETTINGS_ICON = 'M12 9a3 3 0 100 6 3 3 0 000-6zM19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 008 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 004.6 15a1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 4.6a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0019.4 9c.16.55.62.96 1.18 1H21a2 2 0 110 4h-.09c-.6.04-1.06.45-1.51 1z';
 
-// "History" glyph (clock + counter-clockwise arrow) — opens the Sessions
-// overlay to return to a past conversation.
-/** Console — terminal prompt (`>_`): the ops surface for Sessions / Inbox /
- *  Trace / Governance. The row previously reused the Sessions history-clock
- *  icon, which stopped being contextually right after the consolidation. */
-const CONSOLE_ICON = 'M4 17l6-5-6-5M12 19h8';
-
 const BELL_ICON = 'M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 01-3.4 0';
 
 /** Notifications row — a standard sidebar row (above Settings) that toggles
@@ -158,8 +151,7 @@ export function Sidebar() {
   const { target: tooltipTarget, show: showTooltip, hide: hideTooltip } = useSidebarTooltip();
 
   const isSettingsOpen = activePanel === 'settings';
-  const isConsoleOpen = ['sessions', 'inbox', 'trace', 'governance'].includes(activePanel);
-  // Any non-chat panel (settings, inbox, skills, sessions) is a full-screen overlay. It
+  // Any non-chat panel (settings, skills) is a full-screen overlay. It
   // must be dismissed when the user picks a workspace, or the overlay stays
   // stuck over the tab they just selected.
   const overlayOpen = activePanel !== 'chat';
@@ -244,18 +236,8 @@ export function Sidebar() {
           was not there. */}
       <MeetingRecorder open={open} />
 
-      {/* Console — Sessions, Inbox, Trace, and Governance as tabs of one
-          overlay (2026-07-27 consolidation). Toggles closed when any console
-          tab is open; opens on Sessions otherwise. */}
-      <SidebarRow
-        icon={CONSOLE_ICON}
-        label="Console"
-        active={isConsoleOpen}
-        open={open}
-        onClick={() => setActivePanel(isConsoleOpen ? 'chat' : 'sessions')}
-        onHover={showTooltip}
-        onLeave={hideTooltip}
-      />
+      {/* The Console row is gone (2026-08 ruling): Sessions, Inbox, Activity
+          (Trace), and Spend live inside Settings now. */}
 
       {/* Notifications — bell row with unread badge, tray anchors beside it. */}
       <NotificationBellRow open={open} onHover={showTooltip} onLeave={hideTooltip} />
