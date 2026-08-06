@@ -159,30 +159,32 @@ extension Color {
 }
 
 // ── Chat surface palette ─────────────────────────────────────────────────────
-// The conversation screen deliberately leaves the neon-cyan shell for a warm,
-// paper-like reading surface (requested 2026-08-06: "redesign chat to look
-// like Claude"). Assistant prose sits directly on the background — no bubble —
-// so the reading surface IS the page; only the user's messages get a card.
-// Everything else in the app keeps the Brand palette.
+// The conversation screen borrows the ERGONOMICS of the familiar chat apps —
+// prose on the page, one composer card, controls where thumbs expect them —
+// but stays in Permagent's own palette (ruled 2026-08-06: "keep permagent
+// colors… uniquely permagent but with a design UI people feel comfortable
+// navigating"). Every value below is a Brand token or a solid derivative of
+// one; nothing here introduces a second brand.
 enum ChatSurface {
-    /// The page. Warm near-black / warm paper.
-    static let bg = Color.brand(dark: 0x262624, light: 0xFAF9F5)
-    /// Composer card and user-message bubble — one step off the page.
-    static let raised = Color.brand(dark: 0x30302E, light: 0xF0EEE6)
-    /// Controls that sit on the raised card (the model pill, the plus button).
-    static let control = Color.brand(dark: 0x3D3D3B, light: 0xE4E1D7)
+    /// The page — the brand void / pearl.
+    static let bg = Brand.deepVoid
+    /// Composer card and user-message bubble — one step off the page. Solid
+    /// (not the translucent Brand.surface): the card must occlude transcript
+    /// text scrolling beneath it.
+    static let raised = Color.brand(dark: 0x1E2433, light: 0xFFFFFF)
+    /// Controls that sit on the raised card (the agent pill, the plus button).
+    static let control = Color.brand(dark: 0x262D3F, light: 0xEEF2F7)
     /// Primary prose.
-    static let text = Color.brand(dark: 0xF0EEE5, light: 0x1F1E1D)
+    static let text = Brand.text
     /// Secondary — placeholders, timestamps, the greeting.
-    static let muted = Color.brand(dark: 0xA6A39A, light: 0x6E6C66)
-    static let dim = Color.brand(dark: 0x716F68, light: 0x9B988E)
-    /// The terracotta spark — accent for the empty-state mark and send button.
-    static let spark = Color.brand(dark: 0xD97757, light: 0xC96442)
-    /// Ink on a spark fill.
-    static let onSpark = Color(hex: 0xFFFFFF)
+    static let muted = Brand.textMuted
+    static let dim = Brand.textDim
+    /// The accent — empty-state spark, send button, caret. Brand cyan.
+    static let spark = Brand.cyan
+    /// Ink on a spark fill (cyan is bright in both appearances).
+    static let onSpark = Brand.onAccent
     /// Hairlines on the raised card.
-    static let border = Color.brand(dark: 0xFFFFFF, darkAlpha: 0.06,
-                                    light: 0x1F1E1D, lightAlpha: 0.08)
+    static let border = Brand.border
 }
 
 // ── Typography ───────────────────────────────────────────────────────────────

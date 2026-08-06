@@ -520,6 +520,9 @@ struct ChatView: View {
     @State private var hubTurnLive = false
     /// Grace window so a short lock doesn't kill the stream immediately.
     @State private var bgTask: UIBackgroundTaskIdentifier = .invalid
+    /// Dictation into the composer — records here, transcribes on the hub.
+    @StateObject private var dictation = DictationRecorder()
+    @State private var transcribing = false
     /// Owns the keyboard. Without this there was no way to put it away: it
     /// covered the tab bar, so the user could neither leave chat nor reach the
     /// send button's row — reported 2026-08-05.
@@ -681,49 +684,41 @@ struct ChatView: View {
 
     // ── Chrome ──────────────────────────────────────────────────────────────
 
-    /// The two-cluster header: conversations on the left, voice on the right.
+    /// The header people already know how to use: hamburger top-left opens
+    /// the conversation list; compose top-right starts a new one.
     private var header: some View {
         HStack {
-            HStack(spacing: 0) {
-                Button {
-                    composerFocused = false
-                    showHistory = true
-                } label: {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(ChatSurface.muted)
-                        .frame(width: 40, height: 36)
-                }
-                .accessibilityLabel("Past conversations")
-                // No confirmation: starting a new conversation is fully
-                // reversible now that past ones are one tap away, and the old
-                // thread is never deleted — it stays on the hub.
-                Button {
-                    composerFocused = false
-                    newConversation()
-                } label: {
-                    Image(systemName: "square.and.pencil")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(ChatSurface.muted)
-                        .frame(width: 40, height: 36)
-                }
-                .disabled(messages.isEmpty && sessionId == nil)
-                .accessibilityLabel("New conversation")
-            }
-            .background(ChatSurface.raised, in: Capsule())
-            .overlay(Capsule().strokeBorder(ChatSurface.border, lineWidth: 1))
-
-            Spacer()
-
-            Button { showVoice = true } label: {
-                Image(systemName: "waveform")
-                    .font(.system(size: 15, weight: .semibold))
+            Button {
+                composerFocused = false
+                showHistory = true
+            } label: {
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(ChatSurface.text)
                     .frame(width: 38, height: 38)
                     .background(ChatSurface.raised, in: Circle())
                     .overlay(Circle().strokeBorder(ChatSurface.border, lineWidth: 1))
             }
-            .accessibilityLabel("Talk with \(identity.name)")
+            .accessibilityLabel("Past conversations")
+
+            Spacer()
+
+            // No confirmation: starting a new conversation is fully
+            // reversible now that past ones are one tap away, and the old
+            // thread is never deleted — it stays on the hub.
+            Button {
+                composerFocused = false
+                newConversation()
+            } label: {
+                Image(systemName: "square.and.pencil")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(ChatSurface.text)
+                    .frame(width: 38, height: 38)
+                    .background(ChatSurface.raised, in: Circle())
+                    .overlay(Circle().strokeBorder(ChatSurface.border, lineWidth: 1))
+            }
+            .disabled(messages.isEmpty && sessionId == nil)
+            .accessibilityLabel("New conversation")
         }
         .padding(.horizontal, 16)
         .padding(.top, 6)
@@ -808,9 +803,10 @@ struct ChatView: View {
 
     // ── Composer ────────────────────────────────────────────────────────────
 
-    /// One rounded card: the field on top, controls beneath — plus-menu on the
-    /// left, voice / send on the right. Send replaces voice the moment there
-    /// is something to send.
+    /// One rounded card: the field on top, controls beneath. Send lives on
+    /// the LEFT (beside the plus), appearing when there is something to send;
+    /// dictate and voice hold the far right, always — the thumb geography the
+    /// familiar chat apps trained everyone on.
     private var composer: some View {
         VStack(spacing: 10) {
             TextField("Chat with \(identity.nameCapitalized)", text: $draft, axis: .vertical)
@@ -840,13 +836,6 @@ struct ChatView: View {
                         .frame(width: 34, height: 34)
                         .background(ChatSurface.control, in: Circle())
                 }
-                Text(identity.nameCapitalized)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(ChatSurface.muted)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
-                    .background(ChatSurface.control, in: Capsule())
-                Spacer()
                 if canSend {
                     Button { send() } label: {
                         Image(systemName: "arrow.up")
@@ -855,18 +844,26 @@ struct ChatView: View {
                             .frame(width: 34, height: 34)
                             .background(ChatSurface.spark, in: Circle())
                     }
-                    .transition(.scale.combined(with: .opacity))
-                } else {
-                    Button { showVoice = true } label: {
-                        Image(systemName: "waveform")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(Color.black)
-                            .frame(width: 34, height: 34)
-                            .background(Color.white, in: Circle())
-                    }
-                    .accessibilityLabel("Talk with \(identity.name)")
+                    .accessibilityLabel("Send")
                     .transition(.scale.combined(with: .opacity))
                 }
+                Text(identity.nameCapitalized)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(ChatSurface.muted)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(ChatSurface.control, in: Capsule())
+                Spacer()
+                dictateButton
+                Button { showVoice = true } label: {
+                    Image(systemName: "waveform")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(ChatSurface.onSpark)
+                        .frame(width: 34, height: 34)
+                        .background(ChatSurface.spark, in: Circle())
+                }
+                .disabled(dictation.isRecording)
+                .accessibilityLabel("Talk with \(identity.name)")
             }
         }
         .animation(Motion.ease, value: canSend)
@@ -879,6 +876,52 @@ struct ChatView: View {
         )
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
+    }
+
+    /// Dictation into the draft: tap to record, tap to stop; the hub's local
+    /// Whisper transcribes (same path the Notes composer uses — no cloud STT).
+    @ViewBuilder
+    private var dictateButton: some View {
+        Button { toggleDictation() } label: {
+            Group {
+                if transcribing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(ChatSurface.muted)
+                } else {
+                    Image(systemName: dictation.isRecording ? "stop.fill" : "mic")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(dictation.isRecording ? Brand.onDanger : ChatSurface.text)
+                }
+            }
+            .frame(width: 34, height: 34)
+            .background(dictation.isRecording ? AnyShapeStyle(Brand.danger) : AnyShapeStyle(ChatSurface.control), in: Circle())
+        }
+        .disabled(transcribing)
+        .accessibilityLabel(dictation.isRecording ? "Stop dictating" : "Dictate")
+    }
+
+    private func toggleDictation() {
+        if dictation.isRecording {
+            dictation.stop()
+            return
+        }
+        Task {
+            guard await dictation.requestPermission() == .granted else { return }
+            dictation.onFinish = { url in
+                guard let url, let wav = try? Data(contentsOf: url) else { return }
+                Task { @MainActor in
+                    transcribing = true
+                    let text = try? await APIClient.shared.transcribe(wav: wav)
+                    transcribing = false
+                    if let text, !text.isEmpty {
+                        draft = draft.isEmpty ? text : draft + " " + text
+                    }
+                    try? FileManager.default.removeItem(at: url)
+                }
+            }
+            try? dictation.start()
+        }
     }
 
     private var canSend: Bool {
@@ -960,11 +1003,15 @@ struct ChatView: View {
     }
 
     /// The network failures that mean "this device stopped watching", not
-    /// "the hub failed".
+    /// "the hub failed". Locking the phone or switching apps mid-stream
+    /// surfaces as any of these depending on how iOS tore the socket down —
+    /// all of them get the quiet catch-up path, never a scary error.
     private static func isConnectionLoss(_ error: Error) -> Bool {
         guard let urlError = error as? URLError else { return false }
         switch urlError.code {
-        case .networkConnectionLost, .notConnectedToInternet, .timedOut, .cancelled:
+        case .networkConnectionLost, .notConnectedToInternet, .timedOut, .cancelled,
+             .backgroundSessionWasDisconnected, .dataNotAllowed, .internationalRoamingOff,
+             .callIsActive:
             return true
         default:
             return false
