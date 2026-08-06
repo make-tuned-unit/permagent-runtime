@@ -274,6 +274,10 @@ pub async fn surface_destructive_proposal(
             // the future decision-inbox swap will consume.
             let metadata_json = serde_json::json!({
                 "steward": true,
+                // The board's attribution key: `created_by` below must stay
+                // "henry" (DB CHECK), so this is how a renderer shows the
+                // Steward as the true author.
+                "created_by_agent": "steward",
                 "op_kind": proposal.kind.as_str(),
                 "branch": proposal.branch,
                 "command": proposal.command,
@@ -460,6 +464,9 @@ pub async fn surface_repo_health_report(
 
     let metadata_json = serde_json::json!({
         "steward_report": true,
+        // Same attribution key as destructive proposals: `created_by` is
+        // CHECK-constrained to "henry", this names the real author.
+        "created_by_agent": "steward",
         "repo_path": report.repo_path,
         "summary": report.summary,
         "stale_merged_branches": report.stale_merged_branches,

@@ -271,7 +271,14 @@ function torsoLathe(): THREE.BufferGeometry {
 }
 
 /** Rig body variant — each real agent gets a signature silhouette. */
-export type RigVariant = 'henry' | 'librarian' | 'reader' | 'watcher' | 'steward' | null;
+export type RigVariant =
+  | 'henry'
+  | 'librarian'
+  | 'reader'
+  | 'watcher'
+  | 'steward'
+  | 'strix'
+  | null;
 
 /**
  * Signature gear per agent (visual overhaul 2026-07-28): every agent shared an
@@ -374,6 +381,28 @@ function gearChunks(
         { geo: box(0.02, 0.2, 0.015), p: [-0.22, 0.72, -0.05], r: [0, 0, -0.5], bone: 'spine', color: DARK },
       );
       trim.push({ geo: torus(0.03, 0.007, 4, 10), p: [0.21, 0.7, 0.12], r: [0, 0.4, 0], bone: 'spine' });
+      break;
+    }
+    case 'strix': {
+      // The owl: a hooded brow over the visor, a scanning lens on the left
+      // forearm, and a pair of probe picks at the hip. The lens goes on the
+      // STATE channel so it glows with the HUD state — dark while idle, lit
+      // amber while a sweep is actually running.
+      metal.push(
+        // Hood brow, swept back over the head.
+        { geo: box(0.34, 0.05, 0.2), p: [0, 1.86, -0.02], r: [0.22, 0, 0], bone: 'head', color: DARK },
+        { geo: box(0.08, 0.05, 0.16), p: [-0.15, 1.82, 0.02], r: [0.18, 0, -0.35], bone: 'head', color: DARK },
+        { geo: box(0.08, 0.05, 0.16), p: [0.15, 1.82, 0.02], r: [0.18, 0, 0.35], bone: 'head', color: DARK },
+        // Forearm scanner housing.
+        { geo: box(0.1, 0.07, 0.14), p: [0, -0.28, 0.04], bone: 'armL', color: GUN },
+        // Probe picks at the right hip.
+        { geo: cyl(0.008, 0.008, 0.22, 6), p: [0.2, 0.68, -0.06], r: [0, 0, 0.28], bone: 'spine', color: GUN },
+        { geo: cyl(0.008, 0.008, 0.2, 6), p: [0.23, 0.68, -0.06], r: [0, 0, 0.16], bone: 'spine', color: BRONZE },
+      );
+      // Identity trim: a torc at the throat, the owl's collar.
+      trim.push({ geo: torus(0.11, 0.012, 5, 16), p: [0, 1.5, 0], r: [1.57, 0, 0], bone: 'spine' });
+      // The scanning lens — emissive, driven by state.
+      state.push({ geo: sphere(0.035, 8, 6), p: [0, -0.28, 0.11], bone: 'armL' });
       break;
     }
   }

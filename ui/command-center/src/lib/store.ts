@@ -226,6 +226,12 @@ interface CommandCenterStore {
    *  history fetch races the identity fetch and the greeting fired over an
    *  existing conversation every time. */
   chatHistoryLoaded: boolean;
+  /** Files dropped on the app shell, awaiting the dock chat's composer. The
+   *  shell drop handler queues here when the DOCK is the open chat surface —
+   *  popping a whole window out over the app was the old (wrong) behavior. */
+  pendingChatFiles: File[] | null;
+  queueChatFiles: (files: File[]) => void;
+  takeChatFiles: () => File[] | null;
   addChatMessage: (msg: ChatMessage) => void;
   _streamingMessageId: string | null;
   /** request_id of the in-flight reply turn (client-generated in api.sendReply,
@@ -837,6 +843,13 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   })(),
   sessionLoadError: null,
   chatHistoryLoaded: true,
+  pendingChatFiles: null,
+  queueChatFiles: (files) => set({ pendingChatFiles: files }),
+  takeChatFiles: () => {
+    const files = get().pendingChatFiles;
+    if (files) set({ pendingChatFiles: null });
+    return files;
+  },
   _streamingMessageId: null,
   _pendingContext: null,
   discussSeedDecisionId: null,

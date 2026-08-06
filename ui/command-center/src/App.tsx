@@ -257,6 +257,21 @@ function App() {
     const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
     const { emit, once } = await import('@tauri-apps/api/event');
 
+    // The DOCK is a chat surface too: with it open, hand the files straight to
+    // its composer instead of popping a whole chat window out over the app —
+    // that pop-out was the reported bug ("the drop goes over the main app").
+    // With the dock closed, open it and queue; the window path below stays the
+    // route only when a detached window already exists.
+    {
+      const { chatWindowOpen, chatDockOpen, queueChatFiles, openChatDock } =
+        useCommandCenter.getState();
+      if (!chatWindowOpen) {
+        queueChatFiles(files);
+        if (!chatDockOpen) openChatDock();
+        return;
+      }
+    }
+
     const payload = await Promise.all(
       files.map(async (f) => ({ name: f.name, mime_type: f.type, data_b64: await fileToBase64(f) }))
     );

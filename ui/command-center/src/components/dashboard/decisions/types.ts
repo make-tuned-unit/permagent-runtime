@@ -268,7 +268,7 @@ export function draftText(d: Decision): string | null {
  * from the answer enum only (approve|reject|choice|input — decisions.rs:27);
  * free text (note, option labels, input) is appended verbatim.
  */
-export function resolutionText(d: Decision, agentName = 'Aria'): string {
+export function resolutionText(d: Decision, agentName = 'your agent'): string {
   const verb =
     d.answer === 'approve' ? 'Approved'
     : d.answer === 'reject' ? 'Rejected'

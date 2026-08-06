@@ -293,6 +293,22 @@ fn looks_like_real_secret(raw: &str) -> bool {
     if RE_PLACEHOLDER.is_match(v) {
         return false;
     }
+    // Code, not a credential: type annotations and expressions
+    // (`token: Option<String>`, `token = CancellationToken::new()`) are single
+    // long tokens but carry code punctuation no real secret value contains.
+    // This false-positive blocked a whole goal on 2026-08-05: voice.rs's
+    // pre-existing `token: Option<String>` field read as a credential the
+    // moment a worker's commit set happened to include the file.
+    if v.contains('(')
+        || v.contains(')')
+        || v.contains('<')
+        || v.contains('>')
+        || v.contains("::")
+        || v.contains('{')
+        || v.contains('}')
+    {
+        return false;
+    }
     // All-identical characters (e.g. "xxxxxxxx", "00000000") are not secrets.
     if let Some(first) = v.chars().next() {
         if v.chars().all(|c| c == first) {
@@ -486,6 +502,22 @@ mod tests {
         ] {
             assert_eq!(scan_content(s), None, "no inline password: {s}");
         }
+    }
+
+    #[test]
+    fn ignores_code_shaped_values() {
+        // Type annotations and expressions after a credential-named identifier
+        // are code, not values — the 2026-08-05 goal-blocking false positive.
+        for s in [
+            "token: Option<String>,",
+            "let cancel_token = CancellationToken::new();",
+            "auth_token: Arc<Mutex<Option<String>>>,",
+            "api_key = config.get_key(profile)",
+        ] {
+            assert_eq!(scan_content(s), None, "code-shaped value: {s}");
+        }
+        // A real quoted literal after the same names still fires.
+        assert!(scan_content(r#"token = "gAXcv92mfkq3PZlwn84Rt7Jd""#).is_some());
     }
 
     #[test]

@@ -191,23 +191,22 @@ final class VoiceEngine: ObservableObject {
         defer { starting = false }
         state = .connecting
 
-        let resolved: String
-        if let provided {
-            resolved = provided
-        } else {
-            do {
-                resolved = try await MobileSession.chatSessionId()
-            } catch {
-                state = .failed("Couldn't open a conversation on your hub — \(error.localizedDescription)")
-                return
-            }
-        }
-        self.sessionId = resolved
-        active = true
+        // Startup used to be strictly serial — session round trip, THEN the
+        // permission prompt, THEN the audio engine, THEN the socket — so the
+        // orb sat on "connecting" for the SUM of a network call and CoreAudio
+        // bring-up. The two are independent: the mic does not need a session
+        // id, and the session does not need a microphone. Run them together
+        // and the wait becomes the slower of the two rather than the total.
+        async let sessionTask: String? = {
+            if let provided { return provided }
+            return try? await MobileSession.chatSessionId()
+        }()
+        async let micGranted = AVAudioApplication.requestRecordPermission()
 
-        guard await AVAudioApplication.requestRecordPermission() else {
+        // Audio first once permission lands: it is the piece that must be
+        // live before the user speaks.
+        guard await micGranted else {
             state = .failed("Microphone access is off for Permagent — enable it in Settings to talk with \(AgentIdentity.shared.name).")
-            active = false
             return
         }
         do {
@@ -217,9 +216,16 @@ final class VoiceEngine: ObservableObject {
             // hunting a missing on-device voice model that does not exist —
             // STT/TTS both run on the hub, over the /voice socket.
             state = .failed("Couldn't start audio — \(error.localizedDescription)")
-            active = false
             return
         }
+
+        guard let resolved = await sessionTask else {
+            state = .failed("Couldn't open a conversation on your hub.")
+            stop()
+            return
+        }
+        self.sessionId = resolved
+        active = true
         await connect()
     }
 
@@ -230,6 +236,7 @@ final class VoiceEngine: ObservableObject {
         wsTask = nil
         playerNode?.stop()
         engine?.inputNode.removeTap(onBus: 0)
+        playerNode?.removeTap(onBus: 0)
         engine?.stop()
         engine = nil
         playerNode = nil
@@ -319,17 +326,71 @@ final class VoiceEngine: ObservableObject {
             guard !data.isEmpty else { return }
             Task { @MainActor in self.handleMicFrame(data, rms: rms) }
         }
+        // Playback tap — the orb's TRUTH while the agent speaks. The level used
+        // to be pulsed once per delivered TTS chunk, but the daemon synthesizes
+        // far faster than real time, so every chunk of a 30s answer lands in
+        // the first ~10s: the orb animated to the DELIVERY schedule, not the
+        // voice. Tapping the player node reads the audio actually being
+        // rendered, so the orb moves with his syllables.
+        //
+        // @Sendable is load-bearing here for exactly the reason spelled out
+        // above the input tap — this block runs on CoreAudio's realtime thread.
+        player.installTap(onBus: 0, bufferSize: 1024, format: playbackFormat) {
+            @Sendable [weak self] buffer, _ in
+            guard let self, let ch = buffer.floatChannelData else { return }
+            let n = Int(buffer.frameLength)
+            guard n > 0 else { return }
+            var sum: Float = 0
+            let stride = max(1, n / 256)
+            var count = 0
+            var i = 0
+            while i < n {
+                sum += ch[0][i] * ch[0][i]
+                count += 1
+                i += stride
+            }
+            let rms = (sum / Float(max(1, count))).squareRoot()
+            guard rms.isFinite else { return }
+            // Same 6× gain the per-chunk pulse used, so the orb's dynamics are
+            // unchanged — only its clock is.
+            let lvl = min(1, rms * 6)
+            Task { @MainActor in self.handlePlaybackLevel(lvl) }
+        }
         engine.prepare()
         try engine.start()
         self.engine = engine
         self.playerNode = player
     }
 
+    /// Publish a playback level for the orb. Ignored unless the agent is
+    /// actually speaking, so a trailing tap callback can't light the orb after
+    /// a barge-in.
+    private func handlePlaybackLevel(_ lvl: Float) {
+        guard state == .speaking else { return }
+        level = lvl
+    }
+
+    /// Rolling pre-roll of the most recent mic frames, kept while NOT
+    /// streaming. Speech is only detected once it crosses the VAD's onset
+    /// threshold — by which point the first syllable is already spoken and,
+    /// before this buffer, thrown away ("it misses the first words I say").
+    /// When a turn opens these frames are flushed ahead of the live audio, so
+    /// the hub transcribes the word from its actual beginning.
+    private var preRoll: [Data] = []
+    /// ~85 ms per frame; 6 frames ≈ half a second of lead-in, which covers a
+    /// word begun before onset without adding meaningful latency.
+    private static let preRollFrames = 6
+
     private func handleMicFrame(_ data: Data, rms: Float) {
         if state == .listening {
             level = min(1, rms * 8)
             wsTask?.send(.data(data)) { _ in }
-        } else if state != .speaking {
+        } else if state == .ready {
+            // Only while idle-and-armed: keep the tail of what was just heard.
+            preRoll.append(data)
+            if preRoll.count > Self.preRollFrames { preRoll.removeFirst() }
+        }
+        if state != .listening && state != .speaking {
             // NOT while speaking: level is pulsed per delivered TTS chunk, and
             // delivery finishes ~10-15s into a long answer (TTS runs ahead of
             // playback). Letting the mic tap decay it afterwards flattened the
@@ -378,6 +439,15 @@ final class VoiceEngine: ObservableObject {
         reply = ""
         notice = nil
         sendText(#"{"type":"start","sample_rate":16000}"#)
+        // Flush the lead-in BEFORE any live frame, so the hub hears the word
+        // from its beginning rather than from the moment it got loud enough
+        // to notice. Ordering matters: these are older than everything the
+        // tap will deliver next.
+        let lead = preRoll
+        preRoll.removeAll(keepingCapacity: true)
+        for frame in lead {
+            wsTask?.send(.data(frame)) { _ in }
+        }
         state = .listening
     }
 
@@ -572,16 +642,9 @@ final class VoiceEngine: ObservableObject {
             guard let base = raw.baseAddress else { return }
             memcpy(channels[0], base, n * MemoryLayout<Float>.size)
         }
-        // A pulse per sentence for the orb.
-        var sum: Float = 0
-        let ch = channels[0]
-        let stride = max(1, n / 512)
-        var count = 0
-        var i = 0
-        while i < n { sum += ch[i] * ch[i]; count += 1; i += stride }
-        let computed = (sum / Float(max(1, count))).squareRoot() * 6
-        level = computed.isFinite ? min(1, computed) : 0
-
+        // No per-chunk level pulse here: chunks arrive far ahead of playback,
+        // so they are the wrong clock for the orb. The player tap installed in
+        // startAudio() drives `level` from the audio actually being heard.
         pendingBuffers += 1
         state = .speaking
         // Same inherited-isolation trap as the mic tap above: this completion

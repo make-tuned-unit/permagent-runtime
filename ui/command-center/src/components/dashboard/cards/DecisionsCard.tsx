@@ -25,7 +25,7 @@ export function DecisionsCard({ activeCount }: Props = {}) {
   const inbox = useDecisions();
   const { data } = inbox;
   const { data: persona } = usePersona();
-  const agentName = persona?.display_name ?? 'Aria';
+  const agentName = persona?.display_name ?? 'your agent';
   const [open, setOpen] = useState(false);
   const [hover, setHover] = useState(false);
 

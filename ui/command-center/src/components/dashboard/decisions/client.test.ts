@@ -308,7 +308,7 @@ describe('payload helpers', () => {
 
   it('resolutionText maps the answer enum without inventing content', () => {
     expect(resolutionText({ ...wireDecision, answer: 'approve', acted_by: 'henry-policy' } as Decision))
-      .toBe('Approved by Aria');
+      .toBe('Approved by your agent');
     expect(resolutionText({ ...wireDecision, answer: 'reject', acted_by: 'jesse', answer_note: 'not yet' } as Decision))
       .toBe('Rejected — note: not yet');
     expect(resolutionText({ ...wireDecision, answer: 'edit', acted_by: 'jesse' } as Decision))

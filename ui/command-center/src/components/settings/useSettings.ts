@@ -43,15 +43,23 @@ export function buildIdentityPayload(
   };
 }
 
+/** Last identity this window fetched, shared across every usePersona mount.
+ *  Each mount used to start from null and refetch — so copy rendered before
+ *  that component's own fetch resolved fell back to a hardcoded name ("Aria
+ *  will file this" while the agent is Henry). New mounts now start from the
+ *  cache and refresh in the background. */
+let personaCache: PersonaData | null = null;
+
 export function usePersona() {
-  const [data, setData] = useState<PersonaData | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [data, setData] = useState<PersonaData | null>(personaCache);
+  const [loading, setLoading] = useState(personaCache === null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
       const res = await api.getIdentity();
+      personaCache = res as PersonaData;
       setData(res as PersonaData);
       setError(null);
     } catch {
@@ -90,6 +98,7 @@ export function usePersona() {
     }
     try {
       const saved = await api.putIdentity(payload);
+      personaCache = saved as PersonaData;
       setData(saved as PersonaData);
       // The user configured their agent's identity — genuine engagement with
       // the persona feature, so the coach stops offering to teach it.

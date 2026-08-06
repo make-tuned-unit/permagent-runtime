@@ -729,7 +729,10 @@ mod tests {
         for m in &manifests {
             assert!(seen.insert(m.card_type.clone()), "dup type {}", m.card_type);
             assert!(
-                matches!(m.layout.as_str(), "stat-grid" | "list" | "key-value"),
+                matches!(
+                    m.layout.as_str(),
+                    "stat-grid" | "list" | "key-value" | "compact"
+                ),
                 "invalid layout {} on {}",
                 m.layout,
                 m.card_type
