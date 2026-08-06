@@ -38,16 +38,13 @@ pub struct CodingSessionResp {
 const MAX_TRANSCRIPT_CHARS: usize = 24_000;
 
 fn tail_chars(s: &str, max: usize) -> &str {
-    if s.chars().count() <= max {
-        return s;
+    // nth(max-1) from the back is the byte offset of the max-th-from-last
+    // char; None means the string is already short enough. `get` keeps the
+    // slice lint-provably on a char boundary.
+    match s.char_indices().rev().nth(max.saturating_sub(1)) {
+        Some((i, _)) => s.get(i..).unwrap_or(s),
+        None => s,
     }
-    let start = s
-        .char_indices()
-        .rev()
-        .nth(max - 1)
-        .map(|(i, _)| i)
-        .unwrap_or(0);
-    &s[start..]
 }
 
 async fn summarize(req: &CodingSessionReq) -> Option<String> {
