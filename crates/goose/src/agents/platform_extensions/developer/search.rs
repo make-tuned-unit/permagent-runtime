@@ -76,22 +76,7 @@ impl SearchTool {
 
         // ripgrep is the engine: it respects .gitignore, resolves the regex, and
         // emits one JSON event per line so paths/line numbers parse unambiguously.
-        let mut command = tokio::process::Command::new("rg");
-        command.arg("--json").arg("-e").arg(&params.pattern);
-        if let Some(glob) = &params.glob {
-            command.arg("--glob").arg(glob);
-        }
-        if let Some(file_type) = &params.file_type {
-            command.arg("--type").arg(file_type);
-        }
-        // End of flags, then the optional search target. Omitting the target
-        // lets ripgrep default to the working directory with clean relative paths.
-        command.arg("--");
-        if let Some(path) = &params.path {
-            command.arg(path);
-        }
-        command.current_dir(&base_dir);
-        command.stdin(Stdio::null());
+        let mut command = rg_command(&params, &base_dir, &["--json"], true, true);
 
         let output = match command.output().await {
             Ok(output) => output,
@@ -115,14 +100,190 @@ impl SearchTool {
             } else {
                 detail
             };
-            return error_result(&format!("Search failed: {detail}"));
+            return error_result(&format!(
+                "Search failed: {detail}\n(searched from {})",
+                base_dir.display()
+            ));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let records = parse_rg_json(&stdout);
+        if records.is_empty() {
+            let message = zero_match_message(&params, &base_dir).await;
+            return CallToolResult::success(vec![Content::text(message).with_priority(0.0)]);
+        }
         let summary = summarize_matches(&records, &opts, &params.pattern);
         CallToolResult::success(vec![Content::text(summary).with_priority(0.0)])
     }
+}
+
+/// Build a ripgrep invocation for the given search parameters. `extra_flags`
+/// come first (e.g. `--json`, `--count-matches`, `-i`); `with_glob` /
+/// `with_type` let the zero-match probes drop the caller's filters.
+fn rg_command(
+    params: &SearchParams,
+    base_dir: &Path,
+    extra_flags: &[&str],
+    with_glob: bool,
+    with_type: bool,
+) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new("rg");
+    for flag in extra_flags {
+        command.arg(flag);
+    }
+    command.arg("-e").arg(&params.pattern);
+    if with_glob {
+        if let Some(glob) = &params.glob {
+            command.arg("--glob").arg(glob);
+        }
+    }
+    if with_type {
+        if let Some(file_type) = &params.file_type {
+            command.arg("--type").arg(file_type);
+        }
+    }
+    // End of flags, then the optional search target. Omitting the target
+    // lets ripgrep default to the working directory with clean relative paths.
+    command.arg("--");
+    if let Some(path) = &params.path {
+        command.arg(path);
+    }
+    command.current_dir(base_dir);
+    command.stdin(Stdio::null());
+    command
+}
+
+/// Run a `--count-matches` probe and sum the per-file counts. Any failure
+/// (spawn error, rg error, unparseable output) counts as zero — probes only
+/// ever add suggestions, never errors.
+async fn probe_match_count(mut command: tokio::process::Command) -> usize {
+    match command.output().await {
+        Ok(output) if output.status.code() == Some(0) => {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                // Lines are `path:count` (or a bare count for a single-file
+                // target); the count is always the segment after the last colon.
+                .filter_map(|line| line.rsplit(':').next()?.trim().parse::<usize>().ok())
+                .sum()
+        }
+        _ => 0,
+    }
+}
+
+/// Regex metacharacters whose presence suggests the pattern may have been
+/// meant literally.
+fn has_regex_metachars(pattern: &str) -> bool {
+    pattern.chars().any(|c| r"\.+*?()|[]{}^$".contains(c))
+}
+
+/// A zero-match result with nothing else to say leaves the model guessing.
+/// Probe a few concrete relaxations (case-insensitive, literal, unfiltered,
+/// ignored files) and report which of them WOULD have matched, so the next
+/// call can be a fix instead of a stab in the dark. Probes only run on the
+/// zero-match path, so the extra subprocess cost is bounded and rare.
+async fn zero_match_message(params: &SearchParams, base_dir: &Path) -> String {
+    let scope = match &params.path {
+        Some(path) => format!(" under `{path}`"),
+        None => String::new(),
+    };
+    let mut message = format!("No matches for `{}`{}.", params.pattern, scope);
+
+    let mut suggestions: Vec<String> = Vec::new();
+
+    if params.pattern.chars().any(|c| c.is_alphabetic()) {
+        let count = probe_match_count(rg_command(
+            params,
+            base_dir,
+            &["--count-matches", "-i"],
+            true,
+            true,
+        ))
+        .await;
+        if count > 0 {
+            suggestions.push(format!(
+                "Case-insensitive search finds {count} {} — retry with a `(?i)` prefix, e.g. \
+                 `(?i){}`.",
+                plural(count, "match", "matches"),
+                params.pattern
+            ));
+        }
+    }
+
+    if has_regex_metachars(&params.pattern) {
+        let count = probe_match_count(rg_command(
+            params,
+            base_dir,
+            &["--count-matches", "--fixed-strings"],
+            true,
+            true,
+        ))
+        .await;
+        if count > 0 {
+            suggestions.push(format!(
+                "The pattern contains regex metacharacters, but searching for it as a literal \
+                 string finds {count} {} — escape the special characters (e.g. `\\(`, `\\.`).",
+                plural(count, "match", "matches"),
+            ));
+        }
+    }
+
+    if params.glob.is_some() || params.file_type.is_some() {
+        let count = probe_match_count(rg_command(
+            params,
+            base_dir,
+            &["--count-matches"],
+            false,
+            false,
+        ))
+        .await;
+        if count > 0 {
+            let filters: Vec<String> = [
+                params.glob.as_ref().map(|g| format!("glob=`{g}`")),
+                params
+                    .file_type
+                    .as_ref()
+                    .map(|t| format!("file_type=`{t}`")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            suggestions.push(format!(
+                "{count} {} exist outside your {} filter — retry without it.",
+                plural(count, "match", "matches"),
+                filters.join(" and "),
+            ));
+        }
+    }
+
+    let count = probe_match_count(rg_command(
+        params,
+        base_dir,
+        &["--count-matches", "--no-ignore", "--hidden"],
+        true,
+        true,
+    ))
+    .await;
+    if count > 0 {
+        suggestions.push(format!(
+            "{count} {} exist in gitignored or hidden files — rerun via the shell tool with \
+             `rg --no-ignore --hidden` if those are relevant.",
+            plural(count, "match", "matches"),
+        ));
+    }
+
+    if suggestions.is_empty() {
+        message.push_str(
+            "\nAutomatic fallbacks (case-insensitive, literal, unfiltered, ignored files) also \
+             found nothing here. Try a shorter or broader pattern (e.g. one distinctive word), \
+             or search from a higher-level directory.",
+        );
+    } else {
+        message.push_str("\nSuggestions:");
+        for suggestion in &suggestions {
+            message.push_str(&format!("\n- {suggestion}"));
+        }
+    }
+    message
 }
 
 impl Default for SearchTool {
@@ -566,6 +727,156 @@ mod tests {
             .await;
 
         assert_eq!(result.is_error, Some(false));
-        assert_eq!(extract_text(&result), "No matches for `zzzznotpresent`.");
+        let text = extract_text(&result);
+        assert!(
+            text.starts_with("No matches for `zzzznotpresent`."),
+            "got: {text}"
+        );
+        // A total miss must still coach the next attempt, not dead-end.
+        assert!(
+            text.contains("broader pattern") || text.contains("Suggestions:"),
+            "zero-match must carry recovery guidance, got: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn zero_match_suggests_case_insensitive_retry() {
+        if which::which("rg").is_err() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "fn HandleRequest() {}\n").unwrap();
+
+        let tool = SearchTool::new();
+        let result = tool
+            .search_with_cwd(
+                SearchParams {
+                    pattern: "handlerequest".to_string(),
+                    path: None,
+                    glob: None,
+                    file_type: None,
+                    max_per_file: None,
+                    max_files: None,
+                },
+                Some(dir.path()),
+            )
+            .await;
+
+        assert_eq!(result.is_error, Some(false));
+        let text = extract_text(&result);
+        assert!(text.contains("Case-insensitive"), "got: {text}");
+        assert!(text.contains("(?i)"), "got: {text}");
+    }
+
+    #[tokio::test]
+    async fn zero_match_suggests_dropping_filters() {
+        if which::which("rg").is_err() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("notes.md"), "unique_needle here\n").unwrap();
+
+        let tool = SearchTool::new();
+        let result = tool
+            .search_with_cwd(
+                SearchParams {
+                    pattern: "unique_needle".to_string(),
+                    path: None,
+                    glob: Some("*.rs".to_string()),
+                    file_type: None,
+                    max_per_file: None,
+                    max_files: None,
+                },
+                Some(dir.path()),
+            )
+            .await;
+
+        assert_eq!(result.is_error, Some(false));
+        let text = extract_text(&result);
+        assert!(
+            text.contains("outside your glob=`*.rs` filter"),
+            "got: {text}"
+        );
+        assert!(text.contains("retry without it"), "got: {text}");
+    }
+
+    #[tokio::test]
+    async fn zero_match_suggests_literal_search_for_metachar_patterns() {
+        if which::which("rg").is_err() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        // "foo(bar)" as a regex means "foo" with a capture group — it does NOT
+        // match the literal text "foo(bar)".
+        std::fs::write(dir.path().join("a.txt"), "call site: zzqx(bar) done\n").unwrap();
+
+        let tool = SearchTool::new();
+        let result = tool
+            .search_with_cwd(
+                SearchParams {
+                    pattern: "zzqx(qux)".to_string(),
+                    path: None,
+                    glob: None,
+                    file_type: None,
+                    max_per_file: None,
+                    max_files: None,
+                },
+                Some(dir.path()),
+            )
+            .await;
+
+        assert_eq!(result.is_error, Some(false));
+        // The literal probe for "zzqx(qux)" also misses (file has "zzqx(bar)"),
+        // so this lands on the generic guidance path.
+        let text = extract_text(&result);
+        assert!(text.starts_with("No matches"), "got: {text}");
+        assert!(
+            text.contains("broader pattern") || text.contains("Suggestions:"),
+            "got: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn zero_match_literal_probe_suggests_escaping() {
+        if which::which("rg").is_err() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        // As a regex, "zzqx(bar)" matches the text "zzqxbar" (capture group),
+        // which is absent — but the literal string "zzqx(bar)" IS in the file.
+        std::fs::write(dir.path().join("a.txt"), "value: zzqx(bar) done\n").unwrap();
+
+        let tool = SearchTool::new();
+        let result = tool
+            .search_with_cwd(
+                SearchParams {
+                    pattern: "zzqx(bar)".to_string(),
+                    path: None,
+                    glob: None,
+                    file_type: None,
+                    max_per_file: None,
+                    max_files: None,
+                },
+                Some(dir.path()),
+            )
+            .await;
+
+        assert_eq!(result.is_error, Some(false));
+        let text = extract_text(&result);
+        assert!(text.starts_with("No matches"), "got: {text}");
+        assert!(text.contains("literal string finds 1 match"), "got: {text}");
+        assert!(
+            text.contains("escape the special characters"),
+            "got: {text}"
+        );
+    }
+
+    #[test]
+    fn has_regex_metachars_classifies() {
+        assert!(has_regex_metachars("foo(bar)"));
+        assert!(has_regex_metachars("a.b"));
+        assert!(has_regex_metachars("x{2}"));
+        assert!(!has_regex_metachars("plain_word"));
+        assert!(!has_regex_metachars("snake_case name"));
     }
 }
