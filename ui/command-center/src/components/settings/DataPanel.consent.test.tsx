@@ -1,16 +1,19 @@
 /**
  * @vitest-environment jsdom
  *
- * Crash-report / diagnostics consent wiring (#845).
+ * Product-analytics consent wiring (#845, narrowed by the 2026-08
+ * finish-the-settings ruling).
  *
- * The "Share anonymous diagnostics" toggle used to be `useState(true)` — it
- * defaulted ON and never read the backend, misrepresenting a privacy choice
- * (the crash-capture consent gate is default-OFF, explicit opt-in). These tests
- * pin the corrected contract:
+ * The panel now carries exactly ONE consent toggle — "Share product
+ * analytics" — because the others were fake: "Share anonymous diagnostics"
+ * persisted crash_reports_consent that nothing reads, and "Share prompts to
+ * improve models" flipped this SAME analytics gate with no prompt-sharing
+ * pipeline behind it. These tests pin the surviving contract:
  *   1. the toggle renders from the backend value on load (reflects, never a
  *      hardcoded ON),
  *   2. before the backend answers it is OFF (can't flash consent it doesn't have),
- *   3. flipping it round-trips to the backend consent gate (real, not dead).
+ *   3. flipping it round-trips to the backend consent gate (real, not dead),
+ *   4. the removed toggles stay removed.
  *
  * `../../lib/api` is mocked (the GrowView.consume test pattern) so mounting
  * touches no network; the toggle's on/off is observed through the knob transform
@@ -63,18 +66,9 @@ function toggleByLabel(text: string): HTMLButtonElement {
   return btn as HTMLButtonElement;
 }
 
-/** The diagnostics (crash-report) Toggle. */
-function diagnosticsToggle(): HTMLButtonElement {
-  return toggleByLabel('Share anonymous diagnostics');
-}
-
 /** The product-analytics Toggle. */
 function analyticsToggle(): HTMLButtonElement {
   return toggleByLabel('Share product analytics');
-}
-
-function sharePromptsToggle(): HTMLButtonElement {
-  return toggleByLabel('Share prompts to improve models');
 }
 
 /** The "Export redacted crash report" button (found by its label text). */
@@ -115,62 +109,28 @@ afterEach(() => {
   container.remove();
 });
 
-describe('DataPanel diagnostics consent wiring', () => {
-  it('renders the toggle ON when the backend reports consent', async () => {
-    getConsentMock.mockResolvedValue({ crashReportsConsented: true, analyticsConsented: false });
+describe('DataPanel analytics consent wiring', () => {
+  it('renders the toggle from the backend value (ON when consented)', async () => {
+    getConsentMock.mockResolvedValue({ crashReportsConsented: false, analyticsConsented: true });
     await mount();
     expect(getConsentMock).toHaveBeenCalledTimes(1);
-    expect(isOn(diagnosticsToggle())).toBe(true);
+    expect(isOn(analyticsToggle())).toBe(true);
   });
 
-  it('renders the toggle OFF when the backend reports no consent (default)', async () => {
+  it('renders OFF when the backend reports no consent (default)', async () => {
     getConsentMock.mockResolvedValue({ crashReportsConsented: false, analyticsConsented: false });
     await mount();
-    expect(isOn(diagnosticsToggle())).toBe(false);
+    expect(isOn(analyticsToggle())).toBe(false);
   });
 
   it('is OFF before the backend responds — never a hardcoded ON', async () => {
     // Never-resolving fetch: the toggle must not assume consent while loading.
     getConsentMock.mockReturnValue(new Promise(() => {}));
     await act(async () => { root.render(<DataPanel />); });
-    expect(isOn(diagnosticsToggle())).toBe(false);
+    expect(isOn(analyticsToggle())).toBe(false);
   });
 
-  it('persists to the backend consent gate when toggled on', async () => {
-    getConsentMock.mockResolvedValue({ crashReportsConsented: false, analyticsConsented: false });
-    setConsentMock.mockResolvedValue({ crashReportsConsented: true, analyticsConsented: false });
-    await mount();
-
-    await act(async () => { diagnosticsToggle().click(); });
-    expect(setConsentMock).toHaveBeenCalledTimes(1);
-    expect(setConsentMock).toHaveBeenCalledWith(true);
-
-    await act(async () => { await Promise.resolve(); });
-    expect(isOn(diagnosticsToggle())).toBe(true);
-  });
-
-  it('rolls back the toggle if the persist call fails', async () => {
-    getConsentMock.mockResolvedValue({ crashReportsConsented: false, analyticsConsented: false });
-    setConsentMock.mockRejectedValue(new Error('boom'));
-    await mount();
-
-    await act(async () => { diagnosticsToggle().click(); });
-    await act(async () => { await Promise.resolve(); });
-    // Failed write must not leave the UI claiming consent we never stored.
-    expect(isOn(diagnosticsToggle())).toBe(false);
-  });
-});
-
-describe('DataPanel split analytics consent (#327)', () => {
-  it('renders the analytics toggle independently from the crash toggle', async () => {
-    getConsentMock.mockResolvedValue({ crashReportsConsented: false, analyticsConsented: true });
-    await mount();
-    // Crash off, analytics on — proves they are separate gates, not one value.
-    expect(isOn(diagnosticsToggle())).toBe(false);
-    expect(isOn(analyticsToggle())).toBe(true);
-  });
-
-  it('persists analytics consent via setAnalyticsConsent (not the crash gate)', async () => {
+  it('persists analytics consent via setAnalyticsConsent (never the crash gate)', async () => {
     getConsentMock.mockResolvedValue({ crashReportsConsented: false, analyticsConsented: false });
     setAnalyticsMock.mockResolvedValue({ crashReportsConsented: false, analyticsConsented: true });
     await mount();
@@ -178,21 +138,28 @@ describe('DataPanel split analytics consent (#327)', () => {
     await act(async () => { analyticsToggle().click(); });
     expect(setAnalyticsMock).toHaveBeenCalledTimes(1);
     expect(setAnalyticsMock).toHaveBeenCalledWith(true);
-    expect(setConsentMock).not.toHaveBeenCalled(); // crash gate untouched
+    expect(setConsentMock).not.toHaveBeenCalled();
     await act(async () => { await Promise.resolve(); });
     expect(isOn(analyticsToggle())).toBe(true);
-    expect(isOn(diagnosticsToggle())).toBe(false);
   });
 
-  it('wires Share prompts to analytics consent and rolls back on failure', async () => {
+  it('rolls back the toggle if the persist call fails', async () => {
     getConsentMock.mockResolvedValue({ crashReportsConsented: false, analyticsConsented: false });
     setAnalyticsMock.mockRejectedValue(new Error('boom'));
     await mount();
 
-    await act(async () => { sharePromptsToggle().click(); });
-    expect(setAnalyticsMock).toHaveBeenCalledWith(true);
+    await act(async () => { analyticsToggle().click(); });
     await act(async () => { await Promise.resolve(); });
-    expect(isOn(sharePromptsToggle())).toBe(false);
+    // Failed write must not leave the UI claiming consent we never stored.
+    expect(isOn(analyticsToggle())).toBe(false);
+  });
+
+  it('keeps the removed fake toggles removed', async () => {
+    getConsentMock.mockResolvedValue({ crashReportsConsented: false, analyticsConsented: false });
+    await mount();
+    expect(container.textContent).not.toContain('Share anonymous diagnostics');
+    expect(container.textContent).not.toContain('Share prompts to improve models');
+    expect(setConsentMock).not.toHaveBeenCalled();
   });
 });
 

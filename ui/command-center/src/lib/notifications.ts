@@ -306,7 +306,10 @@ async function connect(): Promise<void> {
 }
 
 /** Imperative toast for app code (#45's primitive): surfaces in the tray and
- *  as a transient toast, no daemon event required. */
+ *  as a transient toast, no daemon event required. Honors the Settings
+ *  "System messages" preference — before this guard the toggle persisted
+ *  prefs.system while every toast ignored it. */
 export function toast(title: string, body = ''): void {
+  if (!getNotificationPrefs().system) return;
   push({ kind: 'system', title, body });
 }

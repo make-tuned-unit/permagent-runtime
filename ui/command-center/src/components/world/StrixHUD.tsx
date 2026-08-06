@@ -1,7 +1,9 @@
+import { useEffect, useState } from 'react';
 import { COLORS } from './constants';
 import { AGENT_TRIM } from './shared/palette';
 import { useAgentRuntimeStates } from './shared/agentStatus';
 import { HudShell, Section } from './HudShell';
+import { api } from '../../lib/api';
 
 // Strix — the security agent (crate::strix + the daemon sweep loop). It probes
 // the user's OWN projects for flaws and keeps a living fix checklist.
@@ -21,18 +23,33 @@ interface StrixHUDProps {
 
 export function StrixHUD({ visible, onClose }: StrixHUDProps) {
   const runtime = useAgentRuntimeStates();
+
+  // Honesty gate: the sweep loop no-ops while `strix_enabled` is false, so the
+  // HUD must not imply an active watch. `null` = unknown (still loading).
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!visible) return;
+    let active = true;
+    api.readConfig('strix_enabled')
+      .then(r => { if (active) setEnabled(!!(r && (r as { value?: unknown }).value === true)); })
+      .catch(() => { /* unknown stays unknown — never claim OFF on a failed read */ });
+    return () => { active = false; };
+  }, [visible]);
+
   if (!visible) return null;
 
   const live = runtime.find(a => a.id === 'strix');
   const isDaemon = live?.source === 'daemon';
-  const label = !isDaemon
-    ? 'STANDING BY'
-    : live?.hudState === 'working'
-      ? 'SWEEPING'
-      : live?.hudState === 'error'
-        ? 'SCAN BLOCKED'
-        : 'ON WATCH';
-  const pillColor = isDaemon && live?.hudState === 'error' ? '#FF5D5D' : STRIX_TRIM;
+  const label = enabled === false
+    ? 'OFF'
+    : !isDaemon
+      ? 'STANDING BY'
+      : live?.hudState === 'working'
+        ? 'SWEEPING'
+        : live?.hudState === 'error'
+          ? 'SCAN BLOCKED'
+          : 'ON WATCH';
+  const pillColor = enabled !== false && isDaemon && live?.hudState === 'error' ? '#FF5D5D' : STRIX_TRIM;
 
   const statusPill = (
     <div style={{
@@ -54,9 +71,9 @@ export function StrixHUD({ visible, onClose }: StrixHUDProps) {
     <HudShell visible={visible} onClose={onClose} title="STRIX" statusPill={statusPill}>
       <div style={{ padding: '4px 14px 8px' }}>
         <span style={{ fontSize: 11, color: '#9CA3AF', lineHeight: 1.5 }}>
-          Your own projects, probed the way an attacker would — on its own
-          cadence, so security review happens without anyone remembering to
-          ask. It reports; it never fixes.
+          {enabled === false
+            ? 'Standing by — sweeps disabled; enable in Settings → Models. When on, Strix probes your own projects the way an attacker would, on its own cadence.'
+            : 'Your own projects, probed the way an attacker would — on its own cadence, so security review happens without anyone remembering to ask. It reports; it never fixes.'}
         </span>
       </div>
 

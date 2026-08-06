@@ -120,6 +120,16 @@ const VALID_TOOL_TYPES = new Set<string>([
   'chat', 'skills', 'world', 'terminal', 'browser', 'memory', 'dashboard', 'build', 'automate', 'projects', 'grow',
 ]);
 
+/** Legacy Console overlay tool_types → the Settings section that replaced
+ *  each (2026-08 Console consolidation). Governance's flagship view was
+ *  Spend; its other panels merged into Sovereignty / Models / Autonomy. */
+const LEGACY_OVERLAY_SECTIONS: Record<string, string> = {
+  sessions: 'sessions',
+  inbox: 'inbox',
+  trace: 'activity',
+  governance: 'spend',
+};
+
 /**
  * Record a global `/events` frame into the trace buffer (`store.events`) with
  * its real wire type — the ExecutionTrace's global-bus feed. Before this seam
@@ -265,11 +275,23 @@ export function useAppNavigate() {
     if (!tool_type) return;
 
     if (panel_type === 'overlay') {
-      // Deep-link into a sub-section (e.g. Settings → Devices). The target
-      // overlay reads pendingSettingsSection on mount. Without this the daemon-
-      // forwarded `section` was dropped and every deep-link fell to the default.
-      if (section) setPendingSettingsSectionRef.current(section);
-      setActivePanelRef.current(tool_type as ActivePanel);
+      // Console-consolidation compatibility (2026-08): the old standalone
+      // overlays are Settings sections now. A current daemon's catalog already
+      // sends tool_type:'settings' + the section, but an older daemon (or a
+      // stale replay) may still say 'sessions'/'inbox'/'trace'/'governance' —
+      // map those to their Settings home instead of setting a dead panel.
+      const legacySection = LEGACY_OVERLAY_SECTIONS[tool_type];
+      if (legacySection) {
+        setPendingSettingsSectionRef.current(section ?? legacySection);
+        setActivePanelRef.current('settings');
+      } else {
+        // Deep-link into a sub-section (e.g. Settings → Devices). The target
+        // overlay reads pendingSettingsSection on mount. Without this the
+        // daemon-forwarded `section` was dropped and every deep-link fell to
+        // the default.
+        if (section) setPendingSettingsSectionRef.current(section);
+        setActivePanelRef.current(tool_type as ActivePanel);
+      }
     } else if (VALID_TOOL_TYPES.has(tool_type)) {
       // Find workspace containing this tool type
       const ws = workspacesRef.current.find(w => hasToolType(w.layoutJson, tool_type));
