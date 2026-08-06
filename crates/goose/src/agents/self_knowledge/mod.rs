@@ -1630,7 +1630,9 @@ mod tests {
     ///   authoring FIELDS on the `Recipe`/`ScheduledJob`, named in the
     ///   descriptor prose so the agent knows the richer recipe surface exists.
     ///   They are recipe schema keys, not callable tools.
-    const NON_TOOL_PROSE_TOKENS: &[&str] = &["sub_recipes", "worker_persona"];
+    // `strix_llm` is a config.yaml key (the Guard's scanner model), named in
+    // the Guard's cost teaching step — a setting, not a tool.
+    const NON_TOOL_PROSE_TOKENS: &[&str] = &["sub_recipes", "worker_persona", "strix_llm"];
 
     /// Every tool name that exists in the runtime: the statically-derived
     /// per-extension inventories, hidden-but-real extensions (Git Steward),

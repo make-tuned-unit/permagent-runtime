@@ -110,7 +110,53 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
              standing answer — and it only ever reports: it never edits code to fix what it \
              found, and anything intrusive is proposed for approval rather than performed",
         state_source: crate::agents::self_knowledge::StateSource::Queryable,
-        teaching: &[],
+        // The setup lesson: run it FOR the user through the shell — nobody
+        // should have to visit a website or edit a plist to arm the Guard.
+        // The scanner's model and API key come from Permagent's own config
+        // (strix_llm, default Haiku on the provider key already stored), so
+        // install + enable is genuinely the whole job.
+        teaching: &[
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Check the ground",
+                body: "Run `docker info` and `python3 --version` in the shell. Docker must be \
+                       installed AND running (if absent, send them to docker.com/products/\
+                       docker-desktop — the one download this needs); Python must be 3.12+. \
+                       Report what you found in one plain sentence before going further.",
+                open_surface: None,
+                confirm: None,
+            },
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Install the scanner for them",
+                body: "Run `pipx install strix-agent` (if pipx is missing, `brew install pipx && \
+                       pipx ensurepath` first). Verify with `~/.local/bin/strix --help`. The \
+                       daemon already looks in pipx's and Homebrew's directories — no PATH \
+                       editing.",
+                open_surface: None,
+                confirm: None,
+            },
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Costs, stated plainly",
+                body: "Tell them: each sweep is a real AI scan of every active project on their \
+                       API credits. It defaults to a small fast model (Haiku) on the key they \
+                       already stored, once a day. The cadence has a 'Sweep every' picker in \
+                       Settings; the model can be changed for them via the strix_llm entry in \
+                       ~/.permagent/config.yaml. Never imply it is free.",
+                open_surface: None,
+                confirm: None,
+            },
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Arm the Guard",
+                body: "Bring them to Settings → Models and have them flip 'Enable the Guard' \
+                       themselves — a scanner that runs exploit tooling is switched on by the \
+                       user, never by you. The first sweep starts within about 15 minutes; \
+                       findings land on each project's Overview.",
+                open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                    tab: "Settings",
+                    section: Some("models"),
+                }),
+                confirm: None,
+            },
+        ],
     };
 
 #[cfg(test)]

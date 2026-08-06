@@ -198,6 +198,44 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
 /// Run the scanner over one project and parse its SARIF. Strix (the engine)
 /// writes `findings.sarif` per run; SARIF is preferred over its bespoke JSON
 /// because it is schema-validated and dedupes on CWE.
+/// The scanner's model, as a LiteLLM model string (`strix_llm` in config).
+/// Defaults to Haiku: sweeps recur on the user's credits, and finding exposed
+/// secrets and vulnerable dependencies does not need a frontier model.
+const STRIX_LLM_KEY: &str = "strix_llm";
+const DEFAULT_STRIX_LLM: &str = "anthropic/claude-haiku-4-5-20251001";
+
+/// Build the scanner's LLM environment from Permagent's own config/keychain,
+/// so Guard setup never touches the launchd plist: the model rides
+/// `strix_llm`, and the API key is the SAME provider secret the user already
+/// stored for chat (looked up by the model string's provider prefix). If the
+/// user exported STRIX_LLM/LLM_API_KEY themselves, those win — we only fill
+/// what is absent.
+fn scanner_env() -> Vec<(&'static str, String)> {
+    let mut env = Vec::new();
+    let config = permagent::config::Config::global();
+    let model = config
+        .get_param::<String>(STRIX_LLM_KEY)
+        .unwrap_or_else(|_| DEFAULT_STRIX_LLM.to_string());
+    if std::env::var("STRIX_LLM").is_err() {
+        env.push(("STRIX_LLM", model.clone()));
+    }
+    if std::env::var("LLM_API_KEY").is_err() {
+        let secret_key = match model.split('/').next().unwrap_or_default() {
+            "anthropic" => Some("ANTHROPIC_API_KEY"),
+            "openai" => Some("OPENAI_API_KEY"),
+            "groq" => Some("GROQ_API_KEY"),
+            "gemini" | "google" => Some("GOOGLE_API_KEY"),
+            _ => None,
+        };
+        if let Some(name) = secret_key {
+            if let Ok(key) = config.get_secret::<String>(name) {
+                env.push(("LLM_API_KEY", key));
+            }
+        }
+    }
+    env
+}
+
 /// Locate the `strix` CLI. The daemon runs under launchd with a bare PATH, so
 /// a plain `Command::new("strix")` misses the places users actually install it
 /// (pipx → ~/.local/bin, Homebrew → /opt/homebrew/bin). Falling back to those
@@ -218,6 +256,9 @@ fn resolve_strix_bin() -> PathBuf {
 
 async fn scan_project(target: &std::path::Path) -> Result<Vec<Finding>, String> {
     let mut cmd = tokio::process::Command::new(resolve_strix_bin());
+    for (k, v) in scanner_env() {
+        cmd.env(k, v);
+    }
     // Posture: the scope guard is code; the read-only posture rides the
     // engine's instruction channel because the external CLI has no passive
     // flag — its --scan-mode is depth (quick/standard/deep), not intrusiveness.
