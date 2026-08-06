@@ -825,6 +825,16 @@ enum Command {
         agent_name: Option<String>,
     },
 
+    /// Import an existing Claude Code or Codex setup
+    #[command(
+        name = "import-agent",
+        about = "Import MCP servers, instructions, skills, commands, and model settings"
+    )]
+    ImportAgent {
+        #[command(flatten)]
+        options: crate::commands::import_agent::ImportAgentArgs,
+    },
+
     /// Display goose configuration information
     #[command(about = "Display Permagent information")]
     Info {
@@ -1177,6 +1187,7 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::Packs { .. }) => "packs",
         Some(Command::Configure {}) => "configure",
         Some(Command::Setup { .. }) => "setup",
+        Some(Command::ImportAgent { .. }) => "import-agent",
         Some(Command::Doctor { .. }) => "doctor",
         Some(Command::Info { .. }) => "info",
         Some(Command::Mcp { .. }) => "mcp",
@@ -1944,6 +1955,9 @@ pub async fn cli() -> anyhow::Result<()> {
             } else {
                 handle_setup_interactive().await
             }
+        }
+        Some(Command::ImportAgent { options }) => {
+            crate::commands::import_agent::handle_import_agent(options)
         }
         Some(Command::Doctor { json, interactive }) => {
             crate::commands::doctor::handle_doctor(json, interactive).await
