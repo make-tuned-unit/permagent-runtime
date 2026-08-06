@@ -62,13 +62,21 @@ tabs:
     panel_type: overlay
     description: >-
       The Settings tab is where providers, models, appearance, and scheduling
-      defaults are configured.
+      defaults are configured. It also hosts the Console pages (Sessions,
+      Inbox, Activity/trace, Spend) and the sovereign controls — spend and
+      budget, the sovereignty data boundary with its egress audit log, the
+      worker roster, and the Strix security-sweep toggle.
     affords:
       - Configure AI provider (Anthropic, OpenAI, Ollama)
       - Adjust appearance / theme
       - Set Librarian schedule
+      - Review spend per project/session and set budget caps (Spend section)
+      - Toggle the data boundary and read the egress audit log (Sovereignty section)
+      - Enable or disable Strix security sweeps (Models section)
     suggest_when:
       - User asks how to configure a provider, change model, or adjust the Librarian
+      - User asks what something is costing, wants a spend cap, or worries about a bill
+      - User asks what data has left the machine or wants to audit egress
     customizable_layout: false
 
   - name: Projects
@@ -116,12 +124,13 @@ tabs:
     customizable_layout: false
 
   - name: Inbox
-    tool_type: inbox
+    tool_type: settings
     panel_type: overlay
+    section: inbox
     description: >-
-      The Downloads inbox lists files that landed in Permagent's intake folder
-      (~/.permagent/inbox) via the in-app browser download flow — filename,
-      source, size, and when each arrived.
+      The Downloads inbox (a Settings page) lists files that landed in
+      Permagent's intake folder (~/.permagent/inbox) via the in-app browser
+      download flow — filename, source, size, and when each arrived.
     affords:
       - Review files downloaded into Permagent
       - See where each file came from and when it arrived
@@ -148,12 +157,14 @@ tabs:
     customizable_layout: false
 
   - name: Sessions
-    tool_type: sessions
+    tool_type: settings
     panel_type: overlay
+    section: sessions
     description: >-
-      The Sessions history lists the user's past conversations — each with its
-      title and when it was last active — so they can reopen an earlier chat and
-      pick up where they left off, or rename and delete old ones.
+      The Sessions history (a Settings page) lists the user's past
+      conversations — each with its title and when it was last active — so they
+      can reopen an earlier chat and pick up where they left off, or rename and
+      delete old ones.
     affords:
       - Browse past conversations by recency
       - Reopen a past session back into the chat dock
@@ -164,36 +175,18 @@ tabs:
     customizable_layout: false
 
   - name: Trace
-    tool_type: trace
+    tool_type: settings
     panel_type: overlay
+    section: activity
     description: >-
-      The Execution trace shows the runtime's most recent events live from the
-      running system's event streams — timestamped tool calls, worker activity,
-      navigations, and lifecycle signals as they happen.
+      The Execution trace (the Activity page in Settings) shows the runtime's
+      most recent events live from the running system's event streams —
+      timestamped tool calls, worker activity, navigations, and lifecycle
+      signals as they happen.
     affords:
       - Watch recent runtime events in real time
       - Inspect what the system just did under the hood
     suggest_when:
       - User wants to see the raw event stream or debug what just happened
       - User asks what the system is doing right now at a low level
-    customizable_layout: false
-
-  - name: Governance
-    tool_type: governance
-    panel_type: overlay
-    description: >-
-      The Governance surface is the user's single sovereign control view over
-      their own machine — the active model per role, per-session and per-project
-      spend with an optional budget, the sovereignty toggle plus the egress
-      audit log of everything that left the machine, and a summary of pending
-      approvals. Enforced locally, not by a cloud admin.
-    affords:
-      - See the active model per role and how to change it
-      - Review token and dollar spend per session and project, and set a budget
-      - Toggle the data boundary and read the egress audit log
-      - See pending approvals and the current tool-approval posture
-    suggest_when:
-      - User asks what something is costing, wants a spend cap, or worries about a bill
-      - User asks what data has left the machine or wants to audit egress
-      - User asks which model a role uses or what needs their approval
     customizable_layout: false

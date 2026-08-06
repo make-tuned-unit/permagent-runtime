@@ -124,8 +124,8 @@ describe('worldNavAllowed — synchronous store truth for the fire-time check', 
   });
 
   it('vetoes when an overlay covers the workspace (navigateToTool would close it)', () => {
-    expect(worldNavAllowed({ activePanel: 'trace', workspaces: [worldWs], activeWorkspaceId: 'w1' })).toBe(false);
-    expect(worldNavAllowed({ activePanel: 'sessions', workspaces: [worldWs], activeWorkspaceId: 'w1' })).toBe(false);
+    expect(worldNavAllowed({ activePanel: 'settings', workspaces: [worldWs], activeWorkspaceId: 'w1' })).toBe(false);
+    expect(worldNavAllowed({ activePanel: 'skills', workspaces: [worldWs], activeWorkspaceId: 'w1' })).toBe(false);
   });
 
   it('vetoes when no workspace is active', () => {

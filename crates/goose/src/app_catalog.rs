@@ -31,6 +31,13 @@ pub struct CatalogEntry {
     pub name: String,
     pub tool_type: String,
     pub panel_type: String,
+    /// Fixed sub-section within the target surface. Set on entries whose page
+    /// lives inside another surface (the 2026-08 Console consolidation:
+    /// Sessions/Trace/Inbox are Settings sections now) so `navigate_app` still
+    /// resolves by the stable name and lands on the right pane. An explicit
+    /// `section` argument from the agent overrides this default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub section: Option<String>,
     pub description: String,
     pub affords: Vec<String>,
     pub suggest_when: Vec<String>,

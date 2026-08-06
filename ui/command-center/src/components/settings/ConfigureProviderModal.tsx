@@ -236,12 +236,16 @@ export function ConfigureProviderModal({ provider, onClose }: Props) {
 
           <div>
             <label htmlFor={`${titleId}-model`} className="block text-xs mb-1.5" style={{ fontFamily: font.body, color: colors.textMuted }}>Model</label>
+            {/* The model choice only takes effect through setDefaultProvider,
+                which runs when "Set as default provider" is checked — with it
+                unchecked this select silently did nothing, so it disables and
+                says why instead. */}
             <select
               id={`${titleId}-model`}
               ref={secretKey ? undefined : (firstFieldRef as React.RefObject<HTMLSelectElement>)}
               value={selectedModel}
               onChange={e => setSelectedModel(e.target.value)}
-              disabled={modelsLoading && models.length === 0}
+              disabled={!setAsDefault || (modelsLoading && models.length === 0)}
               className="w-full px-3 py-2 rounded text-sm focus:outline-none disabled:opacity-60"
               style={{ backgroundColor: colors.inputBg, border: `1px solid ${colors.border}`, color: colors.text }}
               onFocus={e => { e.currentTarget.style.borderColor = `${colors.cyan}80`; }}
@@ -274,6 +278,11 @@ export function ConfigureProviderModal({ provider, onClose }: Props) {
             {!modelsLoading && !modelsError && models.length === 0 && (
               <div className="text-[11px] mt-1.5" style={{ fontFamily: font.body, color: colors.textMuted }}>
                 No models available. Add a key and save to load this provider's models.
+              </div>
+            )}
+            {!setAsDefault && (
+              <div className="text-[11px] mt-1.5" style={{ fontFamily: font.body, color: colors.textMuted }}>
+                Model choice applies only when "Set as default provider" is checked below.
               </div>
             )}
           </div>
