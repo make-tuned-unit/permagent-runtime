@@ -12,6 +12,7 @@ pub mod browser_act;
 pub mod browser_content;
 pub mod browser_state;
 pub mod cards;
+pub mod coding_session;
 pub mod config_management;
 pub mod dashboard;
 pub mod dashboard_cards;
@@ -147,6 +148,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(action_required::routes(state.clone()))
         .merge(agent::routes(state.clone()))
         .merge(config_management::routes(state.clone()))
+        .merge(coding_session::routes(state.clone()))
         .merge(security::routes(state.clone()))
         .merge(prompts::routes())
         .merge(recipe::routes(state.clone()))

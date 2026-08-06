@@ -1147,6 +1147,15 @@ export const api = {
   reloadConfig: () =>
     apiFetch<{ provider: string; keyTail: string }>('/config/reload', { method: 'POST' }),
 
+  /** Ship a finished coding-harness session's transcript tail; the daemon
+   *  summarizes it and the Brain remembers what the user was building. */
+  codingSessionSummary: (payload: {
+    transcript: string; cwd?: string; command?: string; duration_secs?: number;
+  }) =>
+    apiFetch<{ stored: boolean; summary: string | null }>('/api/coding-sessions/summary', {
+      method: 'POST', body: JSON.stringify(payload),
+    }),
+
   setProvider: async (provider: string, model: string): Promise<void> => {
     const url = `${API_BASE_URL}/config/set_provider`;
     const response = await fetch(url, {

@@ -8,6 +8,8 @@ import { useTheme } from '../../styles/useTheme';
 import { getXtermTheme } from './xtermTheme';
 import { onRepaintRegain } from '../../lib/repaintOnRegain';
 import { handlePtyData, type PtyDataPayload, type PtyStreamSink } from './ptyStream';
+import { api as daemonApi } from '../../lib/api';
+import { buildCodingSessionPayload, isHarnessCommand } from './codingSession';
 
 // ── Tauri API loader (cached, no module-level mutation) ──
 
@@ -90,6 +92,11 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
 
     (async () => {
       if (!containerRef.current) return;
+
+      // Captured BEFORE the spawn block consumes initialCommandRef (it clears
+      // the ref to fire-once) — the coding-session capture below needs to
+      // know a harness was launched here.
+      const launchCommand = initialCommandRef.current ?? null;
 
       const api = await getTauriApi();
       if (cancelled) return;
@@ -342,6 +349,38 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
       // is in flight — the mark also fires on bare prompts, which are ignored.
       let pendingCommand: string | null = null;
 
+      // ── Coding-session memory (#reported 2026-08-06) ──────────────────────
+      // When a harness (claude/codex/permagent) finishes, ship the transcript
+      // tail to the daemon → summarized → remembered in the Brain. Typed
+      // launches are caught by the Enter sniffer; project-tab launches are
+      // injected (never typed), so the pending launch command stands in for
+      // the first completion mark that arrives after a real session length.
+      const spawnedAt = Date.now();
+      let pendingLaunchHarness: string | null =
+        isHarnessCommand(launchCommand) ? launchCommand : null;
+      const captureCodingSession = (command: string) => {
+        void (async () => {
+          try {
+            if (!api || !sessionIdRef.current) return;
+            const replay = (await api.invoke('get_pty_output', {
+              sessionId: sessionIdRef.current,
+            })) as { data: string } | null;
+            const payload = buildCodingSessionPayload({
+              rawTranscript: replay?.data ?? '',
+              cwd: cwdRef.current,
+              command,
+              spawnedAtMs: spawnedAt,
+              nowMs: Date.now(),
+            });
+            if (!payload) return;
+            await daemonApi.codingSessionSummary(payload);
+          } catch (err) {
+            // Memory is best-effort; the terminal itself must never care.
+            console.debug('[terminal] coding-session summary failed:', err);
+          }
+        })();
+      };
+
       // OSC 133;D;<exit> — pair the completion mark with the sniffed command
       // and emit terminal_command_completed (the initiative layer's #360
       // signal). Same transitional frontend-emission caveat as onData below.
@@ -349,6 +388,19 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         if (!data.startsWith('D')) return false;
         const command = pendingCommand;
         pendingCommand = null;
+        // Coding-session memory: a completed harness command ends a session.
+        // Typed commands arrive via the sniffer; an injected project-tab
+        // launch was never typed, so the first completion mark after a real
+        // session length (>5s — the instant at-spawn prompt mark is not a
+        // session) stands in for it.
+        let sessionCommand = command;
+        if (!sessionCommand && pendingLaunchHarness && Date.now() - spawnedAt > 5_000) {
+          sessionCommand = pendingLaunchHarness;
+          pendingLaunchHarness = null;
+        }
+        if (sessionCommand && isHarnessCommand(sessionCommand)) {
+          captureCodingSession(sessionCommand);
+        }
         if (command && api) {
           const exitCode = Number(data.split(';')[1]);
           api.invoke('emit_activity', {
