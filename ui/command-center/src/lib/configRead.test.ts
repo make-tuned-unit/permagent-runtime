@@ -24,7 +24,7 @@ beforeEach(() => {
     removeItem: () => undefined,
   });
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.unstubAllGlobals(); });
 
 function respond(body: unknown) {
   fetchMock.mockResolvedValue({
@@ -38,7 +38,10 @@ function respond(body: unknown) {
 
 /** The body the client POSTed on its most recent call. */
 function sentBody(): Record<string, unknown> {
-  const init = fetchMock.mock.calls.at(-1)?.[1] as RequestInit;
+  const calls = fetchMock.mock.calls;
+  // Indexed rather than `.at(-1)`: the typecheck runs against a lib target
+  // older than es2022, where `Array.prototype.at` does not exist.
+  const init = calls[calls.length - 1][1] as RequestInit;
   return JSON.parse(String(init.body));
 }
 
