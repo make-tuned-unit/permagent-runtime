@@ -17,6 +17,7 @@ pub mod config_management;
 pub mod dashboard;
 pub mod dashboard_cards;
 pub mod decisions;
+pub mod desktop_control;
 pub mod devices;
 pub mod dictation;
 pub mod errors;
@@ -87,6 +88,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         // Browser content bridge: unauthenticated, localhost-only.
         // Called by the in-process MCP tool (no access to daemon token).
         .merge(browser_content::routes(state.clone()))
+        .merge(desktop_control::routes(state.clone()))
         // Act-on-page bridge (#649): snapshot + click/type/select. Same rail.
         .merge(browser_act::routes(state.clone()))
         // Voice WebSocket: does its own token validation via query param

@@ -36,6 +36,15 @@ pub static EXTENSION_NAME: &str = "inbox";
 /// append-only audit can distinguish a chat-relayed answer from the Inbox UI.
 const CHAT_PRINCIPAL: &str = "henry-chat";
 
+/// The highest tier answerable from chat. Tier 2 is the human-only tier —
+/// irreversible or high-blast-radius actions (goal deletion, merge/push to
+/// main, secrets access, spend, policy edits). Those are gated in code on
+/// `acted_by == ACTOR_JESSE`, and a tool call is the model's word, not the
+/// user's hand: relaying one as Jesse would let model output satisfy the exact
+/// checkpoint that exists to require a human. Chat answers act as Henry and
+/// stop here.
+const MAX_TIER_FROM_CHAT: i64 = 1;
+
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct AnswerDecisionsParams {
     /// The decision ids to answer, exactly as returned by
@@ -150,13 +159,21 @@ impl InboxClient {
         for id in &params.decision_ids {
             // Live-channel kinds are refused BEFORE answering: their effect
             // cannot ride the outbox, so answering here would strand them.
-            let kind = match decisions::get_decision(&pool, id).await? {
-                Some(d) => d.kind,
+            let (kind, tier) = match decisions::get_decision(&pool, id).await? {
+                Some(d) => (d.kind, d.tier),
                 None => {
                     refused.push(format!("{id}: not found"));
                     continue;
                 }
             };
+            // Refuse the human-only tier explicitly, so the reason is legible
+            // rather than surfacing as an opaque Forbidden from the tier gate.
+            if tier > MAX_TIER_FROM_CHAT {
+                refused.push(format!(
+                    "{id}: tier {tier} needs your own hand — open the Inbox and answer it there"
+                ));
+                continue;
+            }
             if decisions::effect_outbox_claim_key(id, &kind).is_none() {
                 refused.push(format!(
                     "{id}: kind '{kind}' needs a live channel — answer it from the Inbox"
@@ -173,7 +190,8 @@ impl InboxClient {
                 &pool,
                 id,
                 &answer,
-                decisions::ACTOR_JESSE,
+                // NEVER ACTOR_JESSE: see MAX_TIER_FROM_CHAT.
+                decisions::ACTOR_HENRY,
                 CHAT_PRINCIPAL,
             )
             .await
@@ -241,7 +259,9 @@ impl InboxClient {
                 "Apply the user's explicit approve/reject — stated in THIS conversation — to one \
                  or more decisions by id. Bundle what they approved together into one call, and \
                  read the list back to them first. NEVER call this on your own judgment; the \
-                 verdict must be the user's words."
+                 verdict must be the user's words. High-tier decisions (deletions, merges, \
+                 spend, secrets) are refused here by design — send the user to the Inbox for \
+                 those, and say why."
                     .to_string(),
                 answer_schema,
             ),

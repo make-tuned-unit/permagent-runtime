@@ -211,6 +211,18 @@ async fn navigate(Json(req): Json<NavigateRequest>) -> StatusCode {
     if permagent::agents::platform_extensions::browser::reject_control_plane(url).is_err() {
         return StatusCode::UNPROCESSABLE_ENTITY;
     }
+    // No UI attached = nobody to open the page. The event bus drops silently
+    // in that case, so without this the agent would report "opened it" to a
+    // phone user whose Mac has the app closed. 503 lets the caller say the
+    // true thing instead.
+    if !permagent::events::has_listeners() {
+        tracing::info!(
+            target: "permagentd::browser",
+            %url,
+            "navigate refused: no desktop UI attached"
+        );
+        return StatusCode::SERVICE_UNAVAILABLE;
+    }
     tracing::info!(target: "permagentd::browser", %url, "agent navigate request");
     permagent::events::emit(permagent::events::PermagentEvent::new(
         permagent::events::PermagentEventType::BrowserNavigateRequested,

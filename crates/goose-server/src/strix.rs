@@ -112,6 +112,17 @@ fn announce(state_label: &str) {
 }
 
 async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
+    // The scanner drives its OWN cloud LLM over the user's source. That is
+    // outbound egress the audited path never sees, so sovereign mode has to be
+    // enforced here or the data boundary leaks silently (same contract as
+    // analytics_drain::run_once).
+    if permagent::sovereignty::global_sovereign_mode() {
+        tracing::info!(
+            target: "permagentd::strix",
+            "sweep skipped: sovereign mode is on and the scanner reaches a cloud model"
+        );
+        return Ok(());
+    }
     let pool = state
         .session_manager()
         .pool_clone()
@@ -566,7 +577,16 @@ async fn record_findings(
     project: &Project,
     findings: Vec<Finding>,
 ) -> Result<Vec<Finding>, String> {
-    let mut meta = project
+    // Re-read: `project` was captured BEFORE the last-scan stamp was written,
+    // so writing its metadata back would erase the stamp and pin the rotation
+    // to this project forever — it would be least-recently-scanned every tick.
+    let fresh = projects::get_project_by_id_or_slug(pool, &project.id)
+        .await
+        .ok()
+        .flatten();
+    let mut meta = fresh
+        .as_ref()
+        .unwrap_or(project)
         .metadata_json
         .as_object()
         .cloned()

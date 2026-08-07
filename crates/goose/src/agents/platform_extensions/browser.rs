@@ -566,6 +566,16 @@ impl BrowserClient {
             .send()
             .await
             .map_err(|e| format!("Failed to reach the browser bridge: {e}"))?;
+        if resp.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+            // The daemon is up (it answered) but no desktop UI is attached —
+            // the Mac's app is closed, which is normal for a phone-only
+            // session since the daemon runs under launchd independently.
+            return Err(format!(
+                "The Permagent desktop app is not open on your Mac, so there is no browser to \
+                 open {url} in. Ask me to open the app (I can launch it remotely), or use \
+                 read_webpage instead — it fetches the page server-side and needs no app."
+            ));
+        }
         if !resp.status().is_success() {
             return Err(format!("Browser navigate rejected: {}", resp.status()));
         }
@@ -580,6 +590,28 @@ impl BrowserClient {
         Ok(vec![Content::text(format!(
             "Opened {url} in the Permagent browser (Build tab). {hint}"
         ))])
+    }
+
+    /// Wake the desktop app so UI-dependent tools become usable. The daemon
+    /// answers regardless of the app, so this is the recovery path for a phone
+    /// session that hit a browser/terminal refusal.
+    async fn handle_wake_desktop(&self) -> Result<Vec<Content>, String> {
+        let client = reqwest::Client::new();
+        let resp = client
+            .post("http://127.0.0.1:3001/api/desktop/launch")
+            .timeout(std::time::Duration::from_secs(15))
+            .send()
+            .await
+            .map_err(|e| format!("Couldn't reach the desktop control endpoint: {e}"))?;
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Malformed desktop launch response: {e}"))?;
+        let message = body
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("Desktop launch attempted.");
+        Ok(vec![Content::text(message.to_string())])
     }
 
     /// Fetch a public web page server-side and return its readable text —
@@ -869,6 +901,16 @@ impl BrowserClient {
                 url_schema.clone(),
             ),
             Tool::new(
+                "wake_desktop_app".to_string(),
+                "Open the Permagent desktop app on the user's Mac, and report whether a \
+                 desktop UI is currently attached. USE THIS when a browser or terminal action \
+                 failed because the app is closed (typically a phone session — the daemon \
+                 runs independently, so chat, voice, notes and automations work regardless). \
+                 Requires the Mac to be awake; it cannot wake a sleeping machine."
+                    .to_string(),
+                schema.clone(),
+            ),
+            Tool::new(
                 "read_webpage".to_string(),
                 "Fetch a public web page and return its readable text — the reliable way to \
                  read a site to the user (e.g. 'read me the BBC homepage'). Works without any \
@@ -930,6 +972,10 @@ impl McpClientTrait for BrowserClient {
         };
         match name {
             "open_website" => match self.handle_open_website(&url_arg()).await {
+                Ok(content) => Ok(CallToolResult::success(content)),
+                Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
+            },
+            "wake_desktop_app" => match self.handle_wake_desktop().await {
                 Ok(content) => Ok(CallToolResult::success(content)),
                 Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
             },

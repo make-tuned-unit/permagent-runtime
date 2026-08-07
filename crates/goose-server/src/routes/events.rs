@@ -52,6 +52,10 @@ async fn ws_handler(
 }
 
 async fn handle_socket(socket: WebSocket) {
+    // Marks a real UI as attached for as long as this socket lives, so the
+    // browser/terminal bridges can refuse honestly when nothing is listening.
+    // Dropped on every exit path, including a lost connection.
+    let _ui_client = permagent::events::UiClientGuard::register();
     let (mut sender, mut receiver) = socket.split();
 
     debug!("WebSocket client connected to /events");

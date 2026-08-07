@@ -1723,13 +1723,24 @@ impl Scheduler {
             let tasks = self.running_tasks.clone();
             let storage_path = self.storage_path.clone();
             let id = sched_id.to_string();
+            // Identity of the run being stopped. Without it the watchdog clears
+            // whatever is running when it fires — including a DIFFERENT, healthy
+            // run started during the grace window (a cron fire, or the user
+            // pressing Run now). Killing that one and recording "ignored
+            // cancellation" would be a lie about the wrong run.
+            let stopping = {
+                let g = self.jobs.lock().await;
+                g.get(sched_id).and_then(|(_, j)| j.process_start_time)
+            };
             tokio::spawn(async move {
                 tokio::time::sleep(Self::KILL_FORCE_CLEAR_GRACE).await;
                 let still_running = {
                     let g = jobs.lock().await;
-                    g.get(&id)
-                        .map(|(_, j)| j.currently_running)
-                        .unwrap_or(false)
+                    match g.get(&id) {
+                        // Ours to clear only if the SAME run is still in flight.
+                        Some((_, j)) => j.currently_running && j.process_start_time == stopping,
+                        None => false,
+                    }
                 };
                 if !still_running {
                     return;

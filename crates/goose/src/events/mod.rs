@@ -88,6 +88,44 @@ pub fn subscribe() -> broadcast::Receiver<PermagentEvent> {
     EVENT_BUS.tx.subscribe()
 }
 
+/// Is anything listening to the event stream right now?
+///
+/// `emit` silently drops when there are no receivers, which is correct for
+/// fire-and-forget notifications but a LIE for the request/response bridges
+/// that ride this bus (open a website, read the page, drive a terminal): with
+/// the desktop app closed — a phone-only session, the daemon being launchd-
+/// managed and independent — those requests vanish and the agent still reports
+/// success. Callers that need a UI must check this first and say so plainly.
+pub fn has_listeners() -> bool {
+    UI_CLIENTS.load(std::sync::atomic::Ordering::Relaxed) > 0
+}
+
+/// Connected UI clients on the `/events` WebSocket.
+///
+/// NOT `tx.receiver_count()`: the daemon itself holds permanent subscribers
+/// (the notification router, the state-sync loops), so that count is always
+/// non-zero and answered "yes, a UI is attached" even with every window shut.
+/// Only a real websocket client counts.
+static UI_CLIENTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// RAII guard: the `/events` handler holds one for the life of a connection,
+/// so a dropped socket — closed, crashed, or network-lost — decrements without
+/// the handler having to remember an unregister on every exit path.
+pub struct UiClientGuard;
+
+impl UiClientGuard {
+    pub fn register() -> Self {
+        UI_CLIENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self
+    }
+}
+
+impl Drop for UiClientGuard {
+    fn drop(&mut self) {
+        UI_CLIENTS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// Get a snapshot of buffered events (up to last 1000).
 pub fn buffered_events() -> Vec<PermagentEvent> {
     EVENT_BUS
