@@ -993,13 +993,28 @@ export const api = {
   // Config
   getConfig: () => apiFetch<PermagentConfig>('/config'),
 
-  /** Read a config value. For `isSecret` the daemon answers with the masked
-   *  secret — `{"maskedValue": "…"}`, camelCase on the wire (`MaskedSecret` is
-   *  `rename_all = "camelCase"`). An unset key answers a bare `null`, so callers
-   *  must treat the response as possibly null. */
-  readConfig: (key: string, isSecret?: boolean) =>
-    apiFetch<{ value?: unknown; maskedValue?: string } | null>('/config/read', {
-      method: 'POST', body: JSON.stringify({ key, is_secret: isSecret ?? false }),
+  /**
+   * Read a NON-SECRET config value. The daemon answers with the **bare JSON
+   * value** — `true`, `24`, `"anthropic"` — or `null` when the key is unset.
+   *
+   * There is no envelope. `ConfigValueResponse` is an untagged enum, so the
+   * only shape carrying a `value` key is one nobody sends. Every call site that
+   * reached for `.value` read `undefined`: that is why the Guard toggle saved
+   * correctly and then read back as OFF forever, whatever the config said.
+   * Secrets answer differently and have their own reader below — the two
+   * shapes are separate functions precisely so this cannot be confused again.
+   */
+  readConfig: (key: string) =>
+    apiFetch<unknown>('/config/read', {
+      method: 'POST', body: JSON.stringify({ key, is_secret: false }),
+    }),
+
+  /** Read a SECRET config key. Answers `{"maskedValue": "…"}` — camelCase on
+   *  the wire (`MaskedSecret` is `rename_all = "camelCase"`) — or `null` when
+   *  unset. Never returns the secret itself. */
+  readSecretConfig: (key: string) =>
+    apiFetch<{ maskedValue?: string } | null>('/config/read', {
+      method: 'POST', body: JSON.stringify({ key, is_secret: true }),
     }),
 
   // Extensions / MCP tools

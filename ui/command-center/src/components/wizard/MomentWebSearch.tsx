@@ -50,8 +50,8 @@ export function MomentWebSearch({ personaName, onAdvance, onBack }: Props) {
     (async () => {
       await Promise.all(SEARCH_PROVIDERS.map(async p => {
         try {
-          const r = await api.readConfig(p.keyName, true);
-          if (alive && (r?.maskedValue || r?.value)) patch(p.id, { saved: true });
+          const r = await api.readSecretConfig(p.keyName);
+          if (alive && r?.maskedValue) patch(p.id, { saved: true });
         } catch { /* key not set */ }
       }));
     })();

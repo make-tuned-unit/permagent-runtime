@@ -33,7 +33,7 @@ export function StrixHUD({ visible, onClose }: StrixHUDProps) {
     if (!visible) return;
     let active = true;
     api.readConfig('strix_enabled')
-      .then(r => { if (active) setEnabled(!!(r && (r as { value?: unknown }).value === true)); })
+      .then(r => { if (active) setEnabled(r === true); })
       .catch(() => { /* unknown stays unknown — never claim OFF on a failed read */ });
     return () => { active = false; };
   }, [visible]);

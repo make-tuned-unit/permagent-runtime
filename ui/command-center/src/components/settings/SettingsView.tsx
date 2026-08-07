@@ -599,7 +599,7 @@ function ModelsPanel({ goto }: PanelProps) {
   useEffect(() => {
     let active = true;
     api.readConfig('strix_enabled')
-      .then(r => { if (active) setStrix(!!(r && (r as { value?: unknown }).value === true)); })
+      .then(r => { if (active) setStrix(r === true); })
       .catch(() => { if (active) setStrix(false); });
     return () => { active = false; };
   }, []);
@@ -620,7 +620,7 @@ function ModelsPanel({ goto }: PanelProps) {
     let active = true;
     api.readConfig('strix_sweep_hours')
       .then(r => {
-        const v = Number((r as { value?: unknown })?.value);
+        const v = Number(r);
         if (active && Number.isFinite(v) && v > 0) setStrixHours(v);
       })
       .catch(() => { /* unset — daemon default (24h) applies */ });
