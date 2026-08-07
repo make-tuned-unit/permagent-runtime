@@ -1,27 +1,32 @@
 /**
  * MeetingRecorder — the sidebar "Record" button + confirm-first project picker
- * + always-visible recording indicator (call-notes MVP 1A).
+ * + always-visible recording panel (call-notes MVP 1A).
  *
  * Flow (ratified rulings baked into the UI):
  *  1. Toolbar button (NOT push-to-talk — spacebar PTT dies when the embedded
  *     webview holds focus; a click-to-toggle toolbar button does not).
  *  2. Confirm-first: clicking Record opens a project picker; nothing records
  *     until the user picks a project and explicitly starts. The modal states
- *     plainly what will happen: own voice only (this machine's mic — never the
- *     other side of a call), transcribed LOCALLY by the on-device Whisper
- *     model, saved as a note on the chosen project when stopped.
- *  3. While recording, a fixed indicator pill stays visible (pulsing dot +
- *     elapsed time + project) with Stop & save and a two-step Discard.
+ *     plainly what will happen: which sides are captured, that transcription is
+ *     LOCAL, and that the result lands as a note on the chosen project.
+ *  3. While recording, a fixed panel stays visible — elapsed time, live proof
+ *     that each side is actually being heard, the notepad, and Stop & save with
+ *     a two-step Discard.
  *  4. Stop → useMeetingDictation flushes, transcribes the tail, and saves the
  *     note via the existing notes path; success lands as a toast. A failed
  *     save keeps the transcript and offers Retry — words are never dropped.
  *
+ * The notepad is the surface the user actually looks at during a call, so it
+ * gets room to write in: the panel expands to a real editor and remembers that
+ * choice for the session. Granola's insight is that what the user types STEERS
+ * the summary — a three-line box in the corner quietly says "don't bother".
+ *
  * Lives inside the Sidebar (which never unmounts in the main window), so a
- * recording survives workspace/overlay switches. Modal + indicator render
- * through portals so the collapsed sidebar never clips them.
+ * recording survives workspace/overlay switches. Modal + panel render through
+ * portals so the collapsed sidebar never clips them.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useCommandCenter } from '../../lib/store';
 import { apiFetch } from '../../lib/api';
@@ -33,6 +38,12 @@ import type { Project } from '../projects/types';
 
 /** Mic glyph (same stroke style as the sidebar's other icons). */
 const MIC_ICON = 'M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3zM19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8';
+/** Chevron for the panel's expand/collapse affordance. */
+const CHEVRON = 'M6 9l6 6 6-6';
+
+/** Above this many projects the picker gets a filter field — scrolling a long
+ *  list to start a recording is friction at exactly the wrong moment. */
+const FILTER_THRESHOLD = 6;
 
 export function MeetingRecorder({ open }: { open: boolean }) {
   const { colors, gradient } = useTheme();
@@ -40,11 +51,11 @@ export function MeetingRecorder({ open }: { open: boolean }) {
     state, error, elapsedSeconds, failedChunks, target, hasUnsavedTranscript,
     start, stop, retrySave, discard,
     systemAudio, setSystemAudio, systemAudioError, systemAudioAvailable,
-    farChunksHeard,
-    recoveredDraft, recoverDraft, dismissDraft,
+    farChunksHeard, nearChunksHeard,
+    recoveredDrafts, recoverDraft, dismissDraft,
     userNotes, setUserNotes,
   } = useMeetingDictation();
-  const [recovering, setRecovering] = useState(false);
+  const [recovering, setRecovering] = useState<string | null>(null);
   // Whether this build carries the capture helper at all. Checked rather than
   // assumed so the toggle is never offered where it cannot work.
   const [canCaptureSystem, setCanCaptureSystem] = useState(false);
@@ -63,7 +74,12 @@ export function MeetingRecorder({ open }: { open: boolean }) {
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [filter, setFilter] = useState('');
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  /** The notepad given room to write in. Sticky for the session. */
+  const [expanded, setExpanded] = useState(false);
+  const notepadRef = useRef<HTMLTextAreaElement | null>(null);
+  const filterRef = useRef<HTMLInputElement | null>(null);
 
   const busy = state === 'recording' || state === 'finishing';
 
@@ -77,23 +93,56 @@ export function MeetingRecorder({ open }: { open: boolean }) {
   useEffect(() => { if (pickerOpen) loadProjects(); }, [pickerOpen, loadProjects]);
   useEffect(() => { if (state !== 'recording') setConfirmDiscard(false); }, [state]);
 
+  const visibleProjects = useMemo(() => {
+    if (!projects) return [];
+    const needle = filter.trim().toLowerCase();
+    return needle ? projects.filter(p => p.name.toLowerCase().includes(needle)) : projects;
+  }, [projects, filter]);
+
+  const handleStart = useCallback(async () => {
+    const project = visibleProjects.find(p => p.id === selectedId);
+    if (!project) return;
+    setPickerOpen(false);
+    setFilter('');
+    await start({ projectId: project.id, projectName: project.name });
+    // The notepad is the point of the panel — put the cursor in it.
+    requestAnimationFrame(() => notepadRef.current?.focus());
+  }, [visibleProjects, selectedId, start]);
+
+  // Escape closes the picker and Enter starts with the current selection: a
+  // modal you can only leave with the mouse is the one that feels stuck.
+  useEffect(() => {
+    if (!pickerOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.stopPropagation(); setPickerOpen(false); setFilter(''); }
+      if (e.key === 'Enter' && selectedId) { e.preventDefault(); void handleStart(); }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [pickerOpen, selectedId, handleStart]);
+
+  // A single match after filtering is unambiguous — preselect it so Enter works.
+  useEffect(() => {
+    if (visibleProjects.length === 1) setSelectedId(visibleProjects[0].id);
+    else if (selectedId && !visibleProjects.some(p => p.id === selectedId)) setSelectedId(null);
+  }, [visibleProjects, selectedId]);
+
+  useEffect(() => {
+    if (pickerOpen && projects && projects.length > FILTER_THRESHOLD) filterRef.current?.focus();
+  }, [pickerOpen, projects]);
+
   const onButton = () => {
     if (state === 'recording') { void handleStop(); return; }
     if (state === 'finishing') return; // saving — let it finish
     setPickerOpen(true);
   };
 
-  const handleStart = async () => {
-    const project = projects?.find(p => p.id === selectedId);
-    if (!project) return;
-    setPickerOpen(false);
-    await start({ projectId: project.id, projectName: project.name });
-  };
-
   const handleStop = async () => {
     const name = target?.projectName;
     const ok = await stop();
-    if (ok && name) toast('Meeting note saved', `The transcript was saved as a note on "${name}".`);
+    if (ok && name) {
+      toast('Meeting note saved', `Writing up the notes for "${name}" now — they'll appear on the project in a moment.`);
+    }
   };
 
   const handleRetry = async () => {
@@ -103,6 +152,40 @@ export function MeetingRecorder({ open }: { open: boolean }) {
   };
 
   const active = busy || state === 'error';
+  const panelWidth = expanded ? 520 : 360;
+
+  /** Shared button styling — the panel had five near-identical inline copies. */
+  const btn = (kind: 'primary' | 'quiet' | 'danger') => ({
+    fontSize: 11,
+    fontWeight: kind === 'primary' ? 600 : 400,
+    padding: '5px 12px',
+    borderRadius: 7,
+    cursor: 'pointer',
+    fontFamily: font.body,
+    background: kind === 'primary' ? colors.cyanSoft : kind === 'danger' ? colors.danger + '24' : 'transparent',
+    border: `1px solid ${kind === 'primary' ? colors.borderHi : kind === 'danger' ? colors.danger : colors.border}`,
+    color: kind === 'primary' ? colors.cyan : kind === 'danger' ? colors.danger : colors.textMuted,
+  } as const);
+
+  /** The floating card both the recovery prompt and the live panel sit in. */
+  const cardStyle = (accent: string) => ({
+    position: 'fixed' as const, right: 16, bottom: 16, zIndex: 999,
+    background: gradient.dropdown, backdropFilter: 'blur(16px)',
+    border: `1px solid ${accent}`, borderRadius: 12,
+    boxShadow: '0 12px 40px rgba(0,0,0,0.6)',
+    padding: '10px 14px', fontFamily: font.body,
+    display: 'flex', flexDirection: 'column' as const, gap: 8,
+  });
+
+  /** What the panel can honestly claim about capture right now. */
+  const captureLine = () => {
+    const near = nearChunksHeard > 0 ? 'hearing you ✓' : 'listening…';
+    if (!systemAudio) return `Your voice — ${near}`;
+    const far = farChunksHeard > 0 ? 'hearing the call ✓' : 'waiting for call audio…';
+    return `Both sides — you: ${near} · call: ${far}`;
+  };
+
+  const newestDraft = recoveredDrafts[0];
 
   return (
     <>
@@ -147,21 +230,26 @@ export function MeetingRecorder({ open }: { open: boolean }) {
       {/* Confirm-first project picker. */}
       {pickerOpen && createPortal(
         <div
-          onMouseDown={e => { if (e.target === e.currentTarget) setPickerOpen(false); }}
+          onMouseDown={e => { if (e.target === e.currentTarget) { setPickerOpen(false); setFilter(''); } }}
           style={{
             position: 'fixed', inset: 0, zIndex: 1000,
             background: 'rgba(0,0,0,0.45)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}
         >
-          <div style={{
-            width: 380, maxWidth: 'calc(100vw - 48px)', maxHeight: '70vh',
-            display: 'flex', flexDirection: 'column',
-            background: gradient.dropdown, backdropFilter: 'blur(16px)',
-            border: `1px solid ${colors.borderHi}`, borderRadius: 12,
-            boxShadow: '0 12px 40px rgba(0,0,0,0.6)',
-            padding: 16, fontFamily: font.body,
-          }}>
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Record a meeting"
+            style={{
+              width: 380, maxWidth: 'calc(100vw - 48px)', maxHeight: '70vh',
+              display: 'flex', flexDirection: 'column',
+              background: gradient.dropdown, backdropFilter: 'blur(16px)',
+              border: `1px solid ${colors.borderHi}`, borderRadius: 12,
+              boxShadow: '0 12px 40px rgba(0,0,0,0.6)',
+              padding: 16, fontFamily: font.body,
+            }}
+          >
             <div style={{ fontSize: 14, fontWeight: 600, color: colors.text, marginBottom: 4 }}>
               Record a meeting
             </div>
@@ -215,21 +303,44 @@ export function MeetingRecorder({ open }: { open: boolean }) {
             {!loadError && projects === null && (
               <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 8 }}>Loading projects…</div>
             )}
+
+            {projects !== null && projects.length > FILTER_THRESHOLD && (
+              <input
+                ref={filterRef}
+                value={filter}
+                onChange={e => setFilter(e.target.value)}
+                placeholder="Filter projects…"
+                aria-label="Filter projects"
+                style={{
+                  marginBottom: 8, padding: '6px 8px', borderRadius: 7,
+                  background: colors.inputBg, color: colors.text,
+                  border: `1px solid ${colors.border}`, outline: 'none',
+                  fontFamily: font.body, fontSize: 12,
+                }}
+              />
+            )}
+
             {projects !== null && (
               <div style={{ overflow: 'auto', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 12 }}>
-                {projects.length === 0 && (
-                  <div style={{ fontSize: 11, color: colors.textDim }}>No projects available.</div>
+                {visibleProjects.length === 0 && (
+                  <div style={{ fontSize: 11, color: colors.textDim }}>
+                    {projects.length === 0 ? 'No projects available.' : 'No project matches that.'}
+                  </div>
                 )}
-                {projects.map(p => (
+                {visibleProjects.map(p => (
                   <button
                     key={p.id}
                     onClick={() => setSelectedId(p.id)}
+                    onDoubleClick={() => { setSelectedId(p.id); void handleStart(); }}
+                    aria-pressed={selectedId === p.id}
                     style={{
                       textAlign: 'left', padding: '8px 10px', borderRadius: 8,
                       background: selectedId === p.id ? colors.cyanSoft : 'transparent',
                       border: `1px solid ${selectedId === p.id ? colors.borderHi : colors.border}`,
                       color: selectedId === p.id ? colors.cyan : colors.text,
-                      fontSize: 12, fontFamily: font.body, cursor: 'pointer', fontWeight: selectedId === p.id ? 600 : 400,
+                      fontSize: 12, fontFamily: font.body, cursor: 'pointer',
+                      fontWeight: selectedId === p.id ? 600 : 400,
+                      transition: `background 140ms ${ease.out}`,
                     }}
                   >
                     {p.name}
@@ -238,8 +349,11 @@ export function MeetingRecorder({ open }: { open: boolean }) {
               </div>
             )}
 
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button onClick={() => setPickerOpen(false)} style={{
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center' }}>
+              <span style={{ fontSize: 10, color: colors.textDim, marginRight: 'auto' }}>
+                Esc to cancel · Enter to start
+              </span>
+              <button onClick={() => { setPickerOpen(false); setFilter(''); }} style={{
                 fontSize: 12, padding: '7px 14px', borderRadius: 7, cursor: 'pointer',
                 background: 'transparent', border: `1px solid ${colors.border}`,
                 color: colors.textMuted, fontFamily: font.body,
@@ -265,46 +379,46 @@ export function MeetingRecorder({ open }: { open: boolean }) {
       )}
 
       {/* A transcript stranded by a crash/quit mid-recording: offer it back
-          before it can be forgotten. Renders only while idle so it never
-          competes with a live recording's indicator. */}
-      {recoveredDraft && state === 'idle' && createPortal(
-        <div style={{
-          position: 'fixed', right: 16, bottom: 16, zIndex: 999, maxWidth: 340,
-          background: gradient.dropdown, backdropFilter: 'blur(16px)',
-          border: `1px solid ${colors.borderHi}`, borderRadius: 12,
-          boxShadow: '0 12px 40px rgba(0,0,0,0.6)', padding: '10px 14px',
-          fontFamily: font.body, display: 'flex', flexDirection: 'column', gap: 8,
-        }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: colors.text }}>
-            Interrupted recording recovered
+          before it can be forgotten. One card at a time, newest first, so a
+          stack of interrupted meetings is worked through rather than buried.
+          Renders only while idle so it never competes with a live recording. */}
+      {newestDraft && state === 'idle' && createPortal(
+        <div style={{ ...cardStyle(colors.borderHi), maxWidth: 340 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: colors.text }}>
+              Interrupted recording recovered
+            </div>
+            {recoveredDrafts.length > 1 && (
+              <span style={{ fontSize: 10, color: colors.textDim }}>
+                1 of {recoveredDrafts.length}
+              </span>
+            )}
           </div>
           <div style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>
-            A recording for "{recoveredDraft.projectName}" was cut off before it
-            was saved. The transcribed part survived — save it as the meeting
-            note, or let it go.
+            A recording for "{newestDraft.projectName}" was cut off before it was
+            saved. The transcribed part survived — save it as the meeting note,
+            or let it go.
           </div>
+          {/* A failed recovery save used to set an error that nothing on screen
+              could render: the button simply sprang back to "Save the
+              transcript" and the user had no idea why. */}
+          {error && (
+            <div style={{ fontSize: 11, color: colors.danger, lineHeight: 1.4 }}>{error}</div>
+          )}
           <div style={{ display: 'flex', gap: 8 }}>
             <button
               onClick={async () => {
-                setRecovering(true);
-                const ok = await recoverDraft();
-                setRecovering(false);
-                if (ok) toast('Meeting note saved', `The recovered transcript was saved as a note on "${recoveredDraft.projectName}".`);
+                setRecovering(newestDraft.startedAt);
+                const ok = await recoverDraft(newestDraft);
+                setRecovering(null);
+                if (ok) toast('Meeting note saved', `The recovered transcript was saved as a note on "${newestDraft.projectName}".`);
               }}
-              disabled={recovering}
-              style={{
-                fontSize: 11, fontWeight: 600, padding: '5px 12px', borderRadius: 7,
-                cursor: recovering ? 'default' : 'pointer',
-                background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
-                color: colors.cyan, fontFamily: font.body,
-              }}>
-              {recovering ? 'Saving…' : 'Save the transcript'}
+              disabled={recovering === newestDraft.startedAt}
+              style={{ ...btn('primary'), cursor: recovering ? 'default' : 'pointer' }}
+            >
+              {recovering === newestDraft.startedAt ? 'Saving…' : 'Save the transcript'}
             </button>
-            <button onClick={dismissDraft} style={{
-              fontSize: 11, padding: '5px 12px', borderRadius: 7, cursor: 'pointer',
-              background: 'transparent', border: `1px solid ${colors.border}`,
-              color: colors.textMuted, fontFamily: font.body,
-            }}>
+            <button onClick={() => dismissDraft(newestDraft)} style={btn('quiet')}>
               Discard
             </button>
           </div>
@@ -312,28 +426,28 @@ export function MeetingRecorder({ open }: { open: boolean }) {
         document.body,
       )}
 
-      {/* Always-visible recording / saving / error indicator. */}
+      {/* Always-visible recording / saving / error panel. */}
       {(busy || state === 'error') && createPortal(
         <div style={{
-          position: 'fixed', right: 16, bottom: 16, zIndex: 999,
-          maxWidth: 340,
-          background: gradient.dropdown, backdropFilter: 'blur(16px)',
-          border: `1px solid ${state === 'recording' ? colors.danger : colors.borderHi}`,
-          borderRadius: 12, boxShadow: '0 12px 40px rgba(0,0,0,0.6)',
-          padding: '10px 14px', fontFamily: font.body,
-          display: 'flex', flexDirection: 'column', gap: 6,
+          ...cardStyle(state === 'recording' ? colors.danger : colors.borderHi),
+          width: state === 'recording' ? panelWidth : 340,
+          maxWidth: 'calc(100vw - 32px)',
+          transition: `width 220ms ${ease.out}`,
         }}>
-          <style>{'@keyframes pa-rec-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }'}</style>
+          <style>{
+            '@keyframes pa-rec-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }' +
+            '@media (prefers-reduced-motion: reduce) { .pa-rec-dot { animation: none !important; } }'
+          }</style>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {state === 'recording' && (
-              <span style={{
+              <span className="pa-rec-dot" style={{
                 width: 9, height: 9, borderRadius: '50%', background: colors.danger,
                 animation: 'pa-rec-pulse 1.4s ease-in-out infinite', flexShrink: 0,
               }} />
             )}
             <span style={{ fontSize: 12, fontWeight: 600, color: state === 'error' ? colors.danger : colors.text }}>
               {state === 'recording' && `Recording ${formatElapsed(elapsedSeconds)}`}
-              {state === 'finishing' && 'Transcribing & saving…'}
+              {state === 'finishing' && 'Transcribing & writing your notes…'}
               {state === 'error' && 'Meeting dictation'}
             </span>
             {target && (
@@ -341,44 +455,67 @@ export function MeetingRecorder({ open }: { open: boolean }) {
                 → {target.projectName}
               </span>
             )}
+            {state === 'recording' && (
+              <button
+                onClick={() => setExpanded(v => !v)}
+                aria-label={expanded ? 'Collapse the notepad' : 'Expand the notepad'}
+                title={expanded ? 'Collapse the notepad' : 'Give the notepad more room'}
+                style={{
+                  marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer',
+                  color: colors.textMuted, padding: 2, display: 'flex',
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                  strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"
+                  style={{ transform: expanded ? 'rotate(180deg)' : 'none', transition: `transform 200ms ${ease.out}` }}>
+                  <path d={CHEVRON} />
+                </svg>
+              </button>
+            )}
           </div>
 
           {state === 'recording' && (
             <div style={{ fontSize: 10, color: colors.textDim }}>
-              {systemAudio
-                ? farChunksHeard > 0
-                  ? 'Both sides — hearing the call ✓'
-                  : 'Both sides — waiting for call audio…'
-                : 'Own voice only'}
+              {captureLine()}
               {' · transcribed locally on this device'}
               {failedChunks > 0 && ` · ${failedChunks} segment${failedChunks > 1 ? 's' : ''} failed to transcribe`}
             </div>
+          )}
+
+          {/* The notepad. Granola's core insight: while the meeting runs the
+              surface is the user's own cursor, not the machine's output — and
+              what they jot STEERS the summary rather than merely bookmarking
+              it. Sparse by design; empty is fine and changes nothing. */}
+          {state === 'recording' && (
+            <>
+              <textarea
+                ref={notepadRef}
+                value={userNotes}
+                onChange={e => setUserNotes(e.target.value)}
+                placeholder="Jot what matters — I'll build the notes around it"
+                aria-label="Meeting notepad"
+                style={{
+                  width: '100%', resize: 'vertical',
+                  height: expanded ? 260 : 96,
+                  background: colors.inputBg, color: colors.text,
+                  border: `1px solid ${colors.border}`, borderRadius: 8,
+                  padding: '8px 10px', fontFamily: font.body, fontSize: 12,
+                  lineHeight: 1.6, outline: 'none',
+                  transition: `height 220ms ${ease.out}`,
+                }}
+              />
+              <div style={{ fontSize: 10, color: colors.textDim }}>
+                {userNotes.trim()
+                  ? 'Your notes stay verbatim and steer the write-up · saved as you type'
+                  : 'Optional — the transcript is captured either way'}
+              </div>
+            </>
           )}
 
           {/* A far-side failure mid-recording (e.g. Screen Recording permission
               missing) used to be set only where the closed picker would have
               shown it — the user recorded a whole call believing both sides
               were captured. Surface it here, where they are looking. */}
-          {/* The notepad. Granola's core insight: while the meeting runs the
-              surface is the user's own cursor, not the machine's output — and
-              what they jot STEERS the summary rather than merely bookmarking
-              it. Sparse by design; empty is fine and changes nothing. */}
-          {state === 'recording' && (
-            <textarea
-              value={userNotes}
-              onChange={e => setUserNotes(e.target.value)}
-              placeholder="Jot what matters — I'll build the notes around it"
-              rows={3}
-              style={{
-                width: '100%', resize: 'vertical', minHeight: 54,
-                background: colors.inputBg, color: colors.text,
-                border: `1px solid ${colors.border}`, borderRadius: 8,
-                padding: '6px 8px', fontFamily: font.body, fontSize: 11,
-                lineHeight: 1.5, outline: 'none',
-              }}
-            />
-          )}
-
           {state === 'recording' && systemAudioError && (
             <div style={{ fontSize: 11, color: colors.danger, lineHeight: 1.4 }}>{systemAudioError}</div>
           )}
@@ -390,19 +527,11 @@ export function MeetingRecorder({ open }: { open: boolean }) {
           <div style={{ display: 'flex', gap: 8 }}>
             {state === 'recording' && (
               <>
-                <button onClick={handleStop} style={{
-                  fontSize: 11, fontWeight: 600, padding: '5px 12px', borderRadius: 7, cursor: 'pointer',
-                  background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
-                  color: colors.cyan, fontFamily: font.body,
-                }}>
-                  Stop & save
-                </button>
-                <button onClick={() => (confirmDiscard ? discard() : setConfirmDiscard(true))} style={{
-                  fontSize: 11, padding: '5px 12px', borderRadius: 7, cursor: 'pointer',
-                  background: confirmDiscard ? colors.danger + '24' : 'transparent',
-                  border: `1px solid ${confirmDiscard ? colors.danger : colors.border}`,
-                  color: confirmDiscard ? colors.danger : colors.textMuted, fontFamily: font.body,
-                }}>
+                <button onClick={handleStop} style={btn('primary')}>Stop &amp; save</button>
+                <button
+                  onClick={() => (confirmDiscard ? discard() : setConfirmDiscard(true))}
+                  style={confirmDiscard ? btn('danger') : btn('quiet')}
+                >
                   {confirmDiscard ? 'Discard — sure?' : 'Discard'}
                 </button>
               </>
@@ -410,21 +539,9 @@ export function MeetingRecorder({ open }: { open: boolean }) {
             {state === 'error' && (
               <>
                 {hasUnsavedTranscript && (
-                  <button onClick={handleRetry} style={{
-                    fontSize: 11, fontWeight: 600, padding: '5px 12px', borderRadius: 7, cursor: 'pointer',
-                    background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
-                    color: colors.cyan, fontFamily: font.body,
-                  }}>
-                    Retry save
-                  </button>
+                  <button onClick={handleRetry} style={btn('primary')}>Retry save</button>
                 )}
-                <button onClick={discard} style={{
-                  fontSize: 11, padding: '5px 12px', borderRadius: 7, cursor: 'pointer',
-                  background: 'transparent', border: `1px solid ${colors.border}`,
-                  color: colors.textMuted, fontFamily: font.body,
-                }}>
-                  Dismiss
-                </button>
+                <button onClick={discard} style={btn('quiet')}>Dismiss</button>
               </>
             )}
           </div>

@@ -120,6 +120,16 @@ pub static TEACHABLE: &[TeachableFeature] = &[
         },
     },
     TeachableFeature {
+        id: "meeting_dictation",
+        surface: SurfaceRef {
+            // The Record button lives in the sidebar and is reachable from
+            // anywhere; Projects is where the note it produces lands, which is
+            // the half of the loop a user has to see to believe the other half.
+            tab: "Projects",
+            section: None,
+        },
+    },
+    TeachableFeature {
         id: "web_search",
         surface: SurfaceRef {
             tab: "Settings",
