@@ -417,6 +417,194 @@ mod tests {
             }
         }
 
+        /// A provider whose reply depends on the CONVERSATION rather than a
+        /// call index: the agent makes provider calls the test cannot see
+        /// (summarisation, compaction), so a positional script silently
+        /// desynchronises. `MockToolProvider` is stateless and cannot express
+        /// "a malformed turn, then a good one" at all — which is the whole
+        /// shape of parse recovery.
+        struct ReactiveProvider {
+            reply: Box<dyn Fn(&[Message]) -> Message + Send + Sync>,
+        }
+
+        /// Recovery observations already in the conversation — how many times
+        /// the agent has handed a parse failure back to be corrected.
+        fn recoveries_so_far(messages: &[Message]) -> usize {
+            messages
+                .iter()
+                .filter(|m| {
+                    m.as_concat_text()
+                        .contains("Your last tool call could not be parsed")
+                })
+                .count()
+        }
+
+        /// Turns that parsed — how many times the model has recovered.
+        fn parsed_calls_so_far(messages: &[Message]) -> usize {
+            messages
+                .iter()
+                .flat_map(|m| m.content.iter())
+                .filter(|c| matches!(c, MessageContent::ToolRequest(r) if r.id == "call_ok"))
+                .count()
+        }
+
+        /// One tool call the agent cannot parse — the weak-model failure this
+        /// guard exists for.
+        fn malformed_turn() -> Message {
+            Message::assistant().with_tool_request(
+                "call_malformed",
+                Err(rmcp::model::ErrorData {
+                    code: rmcp::model::ErrorCode::INVALID_PARAMS,
+                    message: std::borrow::Cow::from(
+                        "Could not interpret tool use parameters for id call_malformed: EOF \
+                         while parsing a string. Raw arguments: '{\"param\": \"val",
+                    ),
+                    data: None,
+                }),
+            )
+        }
+
+        /// A turn that actually calls a tool — what "the model recovered"
+        /// looks like, and the only shape that keeps the reply loop running
+        /// (a text-only turn ends it).
+        fn parsed_turn() -> Message {
+            Message::assistant().with_tool_request(
+                "call_ok",
+                Ok(CallToolRequestParams::new("test_tool")
+                    .with_arguments(object!({"param": "value"}))),
+            )
+        }
+
+        #[async_trait]
+        impl Provider for ReactiveProvider {
+            async fn stream(
+                &self,
+                _model_config: &ModelConfig,
+                _session_id: &str,
+                _system_prompt: &str,
+                messages: &[Message],
+                _tools: &[Tool],
+            ) -> Result<MessageStream, ProviderError> {
+                let usage = ProviderUsage::new(
+                    "mock-model".to_string(),
+                    Usage::new(Some(10), Some(5), Some(15)),
+                );
+                Ok(stream_from_single_message((self.reply)(messages), usage))
+            }
+
+            fn get_model_config(&self) -> ModelConfig {
+                ModelConfig::new("mock-model").unwrap()
+            }
+
+            fn get_name(&self) -> &str {
+                "reactive-test"
+            }
+        }
+
+        /// Drive a reply to completion, auto-approving tool confirmations, and
+        /// return every assistant text that came back.
+        async fn run_reactive(
+            reply: impl Fn(&[Message]) -> Message + Send + Sync + 'static,
+        ) -> Result<String> {
+            let agent = Agent::new();
+            let provider = Arc::new(ReactiveProvider {
+                reply: Box::new(reply),
+            });
+            let session = agent
+                .config
+                .session_manager
+                .create_session(
+                    PathBuf::default(),
+                    "parse-recovery-test".to_string(),
+                    SessionType::Hidden,
+                    GooseMode::default(),
+                )
+                .await?;
+            agent.update_provider(provider, &session.id).await?;
+
+            let session_config = SessionConfig {
+                id: session.id,
+                schedule_id: None,
+                // Well above the parse bound, so anything that stops the run
+                // stopped it for the reason under test.
+                max_turns: Some(12),
+                retry_config: None,
+            };
+
+            let reply_stream = agent
+                .reply(Message::user().with_text("Hello"), session_config, None)
+                .await?;
+            tokio::pin!(reply_stream);
+
+            let mut texts = Vec::new();
+            while let Some(event) = reply_stream.next().await {
+                if let Ok(AgentEvent::Message(response)) = event {
+                    if let Some(MessageContent::ActionRequired(action)) = response.content.first() {
+                        if let permagent::conversation::message::ActionRequiredData::ToolConfirmation { id, .. } = &action.data {
+                            agent.handle_confirmation(
+                                id.clone(),
+                                permagent::permission::PermissionConfirmation {
+                                    principal_type: permagent::permission::permission_confirmation::PrincipalType::Tool,
+                                    permission: permagent::permission::Permission::AllowOnce,
+                                }
+                            ).await;
+                        }
+                    }
+                    texts.push(response.as_concat_text());
+                }
+            }
+            Ok(texts.join("\n"))
+        }
+
+        const GAVE_UP: &str = "A tool call could not be parsed";
+
+        /// The strike count is CONSECUTIVE. A malformed call the model then
+        /// recovers from must not be held against it for the rest of the run:
+        /// the counter had no reset at all, so two unrelated malformed calls
+        /// — however far apart — ended the session.
+        #[tokio::test]
+        async fn parse_failures_do_not_accumulate_across_a_recovered_run() -> Result<()> {
+            // A malformed call, a turn that parses (the model recovered),
+            // then a second and unrelated malformed call, then done.
+            let joined = run_reactive(|messages| {
+                match (recoveries_so_far(messages), parsed_calls_so_far(messages)) {
+                    (0, _) => malformed_turn(),
+                    (1, 0) => parsed_turn(),
+                    (1, _) => malformed_turn(),
+                    _ => Message::assistant().with_text("recovered twice"),
+                }
+            })
+            .await?;
+            assert!(
+                !joined.contains(GAVE_UP),
+                "a recovered run was killed by an unrelated earlier failure:\n{joined}"
+            );
+            assert!(
+                joined.contains("recovered twice"),
+                "the run did not reach the end:\n{joined}"
+            );
+            Ok(())
+        }
+
+        /// ...and it still stops a model that cannot recover. Two malformed
+        /// turns back to back is the bound.
+        #[tokio::test]
+        async fn two_consecutive_parse_failures_still_end_the_run() -> Result<()> {
+            let joined = run_reactive(|_| malformed_turn()).await?;
+            assert!(
+                joined.contains(GAVE_UP),
+                "the bound never tripped:\n{joined}"
+            );
+            assert_eq!(
+                joined
+                    .matches("Your last tool call could not be parsed")
+                    .count(),
+                1,
+                "one strike is one recovery observation:\n{joined}"
+            );
+            Ok(())
+        }
+
         #[tokio::test]
         async fn test_max_turns_limit() -> Result<()> {
             let agent = Agent::new();
