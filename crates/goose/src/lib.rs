@@ -43,6 +43,7 @@ pub mod initiative;
 pub mod instance_id;
 pub mod lessons;
 pub mod logging;
+pub mod market_data;
 pub mod mcp_utils;
 pub mod mesh;
 pub mod model;
@@ -54,6 +55,7 @@ pub mod people_bridge;
 pub mod people_create;
 pub mod people_provenance;
 pub mod permission;
+pub mod picker;
 pub mod playbook;
 #[cfg(feature = "telemetry")]
 pub mod posthog;

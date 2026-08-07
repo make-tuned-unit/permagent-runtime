@@ -13,6 +13,7 @@ pub mod developer;
 pub mod execution_receipt;
 pub mod ext_manager;
 pub mod file_to_project;
+pub mod finance;
 pub mod gate_classifier;
 pub mod goal_engine;
 pub mod inbox_tools;
@@ -682,6 +683,23 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 client_factory: |ctx| {
                     Box::new(model_manager::ModelManagerClient::new(ctx).unwrap())
                 },
+            },
+        );
+
+        map.insert(
+            finance::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: finance::EXTENSION_NAME,
+                display_name: "The Financier",
+                description:
+                    "Market research and the user's own finance tooling. research_ticker reads live prices, day and 52-week ranges and volume for any symbol — no setup, no key. If the user runs their own stock scanner, picker_status/picker_start/picker_scan/picker_top_picks drive it and record_trade/list_trades keep their trade history. Reports numbers; never sizes a position and cannot place an order",
+                default_enabled: false,
+                unprefixed_tools: true,
+                hidden: false,
+                why_it_matters:
+                    "Ground any claim about a price in a real, timestamped number instead of memory — and, for a user who runs their own picking algorithm, run it and keep the record their performance is measured against.",
+                teaching: &[],
+                client_factory: |ctx| Box::new(finance::FinanceClient::new(ctx).unwrap()),
             },
         );
 

@@ -914,12 +914,17 @@ mod tests {
 
     // ── system stats parsers ────────────────────────────────────────────────
 
+    // The cap this test pinned (`cpu_load_percent(20.0, 8) == 100`) was
+    // REMOVED deliberately: saturating an over-subscribed machine to 100%
+    // reported the same number as one that was merely busy. The replacement is
+    // `cpu_load_is_not_clamped_at_one_hundred` below, which asserts the
+    // uncapped value; normalisation and the divide-by-zero guard live there
+    // too, so nothing this test covered went uncovered.
+
     #[test]
-    fn cpu_load_percent_normalizes_and_caps() {
+    fn cpu_load_percent_normalizes_against_core_count() {
         assert_eq!(cpu_load_percent(2.0, 8), 25);
-        assert_eq!(cpu_load_percent(8.0, 8), 100);
-        assert_eq!(cpu_load_percent(20.0, 8), 100); // capped
-        assert_eq!(cpu_load_percent(1.0, 0), 0); // guard div-by-zero
+        assert_eq!(cpu_load_percent(2.0, 4), 50, "same load, fewer cores");
     }
 
     #[test]
