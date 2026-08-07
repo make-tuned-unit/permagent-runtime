@@ -350,13 +350,18 @@ async fn insert_event(
     // knowing its own host reliably; the daemon does, from the drain URL. Fixed
     // here rather than in each query so every downstream aggregate inherits it.
     // (Reported against reckonize.org, 2026-08-06.)
-    let referrer =
-        ev.referrer
-            .as_deref()
-            .filter(|r| match (classify::referrer_host(r), site_host) {
-                (Some(h), Some(own)) => h != own,
-                _ => true,
-            });
+    // Normalize BOTH sides through referrer_host: it lowercases and strips
+    // `www.`, so comparing a normalized host against a raw one silently never
+    // matches (caught by CI — "www.reckonize.org" vs "reckonize.org"). Running
+    // the site host through it too makes this correct whether the caller hands
+    // us a bare host or a full URL, instead of resting on an implicit contract.
+    let own_host = site_host.and_then(classify::referrer_host);
+    let referrer = ev.referrer.as_deref().filter(|r| {
+        match (classify::referrer_host(r), own_host.as_deref()) {
+            (Some(h), Some(own)) => h != own,
+            _ => true,
+        }
+    });
 
     // INSERT OR IGNORE against UNIQUE(project_id, source_event_id): re-draining
     // the same window is a no-op instead of inflating every count.
