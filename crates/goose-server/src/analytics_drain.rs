@@ -115,6 +115,12 @@ struct DrainResponse {
     /// the daemon report drain lag rather than infer health from silence.
     #[serde(default)]
     latest_id: Option<String>,
+    /// OLDEST event id the relay still holds (spec v41, optional). When this is
+    /// greater than our cursor, the site's retention pruned rows the daemon
+    /// never fetched — it slept past the window — and the resulting hole is
+    /// otherwise INVISIBLE: the drain just resumes and under-reports forever.
+    #[serde(default)]
+    first_available_id: Option<String>,
 }
 
 pub fn spawn(state: Arc<AppState>) {
@@ -210,6 +216,9 @@ async fn drain_project(
     config: &mut crate::routes::first_party_analytics::DrainState,
 ) -> Result<usize, String> {
     let mut total = 0usize;
+    // The site's own host, for the self-referral drop in insert_event. The
+    // drain URL IS the site's origin, so no extra configuration is needed.
+    let site_host = classify::referrer_host(drain_url);
     for _ in 0..MAX_PAGES_PER_TICK {
         let since = config.cursor.clone().unwrap_or_else(|| "0".to_string());
         let sep = if drain_url.contains('?') { '&' } else { '?' };
@@ -249,12 +258,31 @@ async fn drain_project(
             config.relay_latest_id = parsed.latest_id.clone();
         }
 
+        // Retention hole: the relay's oldest surviving row is newer than where
+        // we left off, so events were pruned before we ever fetched them. Say
+        // so loudly and durably — a silent under-report is indistinguishable
+        // from a quiet traffic week, which is exactly how this stays unnoticed.
+        if let (Some(first), Some(cursor)) = (&parsed.first_available_id, &config.cursor) {
+            if numeric_id_gt(first, cursor) {
+                let msg = format!(
+                    "retention gap: the site's oldest kept event is {first} but this hub last \
+                     drained {cursor} — events in between were pruned before they were \
+                     collected and cannot be recovered"
+                );
+                tracing::warn!(target: "analytics_drain", "{msg}");
+                config.last_error = Some(msg);
+                // Skip forward: staying behind the retention floor would refetch
+                // nothing forever while the backlog silently grew.
+                config.cursor = Some(first.clone());
+            }
+        }
+
         let batch = parsed.events.len();
         if batch == 0 {
             break;
         }
         for ev in &parsed.events {
-            insert_event(pool, project_id, ev).await?;
+            insert_event(pool, project_id, ev, site_host.as_deref()).await?;
             config.cursor = Some(ev.id.clone());
         }
         total += batch;
@@ -267,10 +295,23 @@ async fn drain_project(
     Ok(total)
 }
 
+/// Compare two drain ids numerically when both parse as integers, else
+/// lexically. Relay ids are `bigIncrements` in the reference implementation,
+/// but a string-id relay must not make this comparison nonsense.
+fn numeric_id_gt(a: &str, b: &str) -> bool {
+    match (a.parse::<u64>(), b.parse::<u64>()) {
+        (Ok(x), Ok(y)) => x > y,
+        _ => a > b,
+    }
+}
+
 async fn insert_event(
     pool: &Pool<Sqlite>,
     project_id: &str,
     ev: &DrainEvent,
+    // The site's own host, derived from the drain URL. Used to drop
+    // self-referrals; `None` disables the check rather than guessing.
+    site_host: Option<&str>,
 ) -> Result<(), String> {
     let kind = match ev.kind.as_deref() {
         Some("event") | Some("ev") => "event",
@@ -302,6 +343,20 @@ async fn insert_event(
         .properties
         .as_ref()
         .and_then(classify::sanitize_properties);
+    // Drop self-referrals at ingest. `document.referrer` is the site's own URL
+    // on every hard internal load — a reload, an open-in-new-tab, or crossing a
+    // locale boundary that is a full navigation — so storing it raw makes the
+    // site the top "referrer" of itself. The snippet cannot fix this without
+    // knowing its own host reliably; the daemon does, from the drain URL. Fixed
+    // here rather than in each query so every downstream aggregate inherits it.
+    // (Reported against reckonize.org, 2026-08-06.)
+    let referrer =
+        ev.referrer
+            .as_deref()
+            .filter(|r| match (classify::referrer_host(r), site_host) {
+                (Some(h), Some(own)) => h != own,
+                _ => true,
+            });
 
     // INSERT OR IGNORE against UNIQUE(project_id, source_event_id): re-draining
     // the same window is a no-op instead of inflating every count.
@@ -314,7 +369,7 @@ async fn insert_event(
     .bind(project_id)
     .bind(kind)
     .bind(&stored_path)
-    .bind(ev.referrer.as_deref())
+    .bind(referrer)
     .bind(ev.name.as_deref())
     .bind(ev.visitor_hash.as_deref())
     .bind(created_at)
@@ -371,13 +426,43 @@ mod tests {
     async fn redraining_the_same_events_is_a_no_op() {
         let pool = mem_pool().await;
         let e = ev("42", "2026-07-01T10:00:00Z");
-        insert_event(&pool, "p1", &e).await.unwrap();
-        insert_event(&pool, "p1", &e).await.unwrap();
+        insert_event(&pool, "p1", &e, None).await.unwrap();
+        insert_event(&pool, "p1", &e, None).await.unwrap();
         let n: i64 = sqlx::query_scalar("SELECT count(*) FROM analytics_events")
             .fetch_one(&pool)
             .await
             .unwrap();
         assert_eq!(n, 1, "same source id must insert once");
+    }
+
+    /// Self-referrals must not be stored. `document.referrer` is the site's own
+    /// URL on every hard internal load (reload, new tab, locale switch), so
+    /// storing it raw makes the site its own top referrer — reported live
+    /// against reckonize.org, 2026-08-06.
+    #[tokio::test]
+    async fn same_host_referrer_is_dropped_but_foreign_referrers_are_kept() {
+        let pool = mem_pool().await;
+        let site = Some("www.reckonize.org");
+
+        let mut own = ev("1", "2026-07-01T10:00:00Z");
+        own.referrer = Some("https://www.reckonize.org/en/pricing".into());
+        insert_event(&pool, "p1", &own, site).await.unwrap();
+
+        let mut foreign = ev("2", "2026-07-01T10:00:00Z");
+        foreign.referrer = Some("https://news.ycombinator.com/".into());
+        insert_event(&pool, "p1", &foreign, site).await.unwrap();
+
+        let stored: Vec<Option<String>> =
+            sqlx::query_scalar("SELECT referrer FROM analytics_events ORDER BY source_event_id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stored[0], None, "a self-referral must not be stored");
+        assert_eq!(
+            stored[1].as_deref(),
+            Some("https://news.ycombinator.com/"),
+            "a genuine referrer must survive"
+        );
     }
 
     /// The source's timestamp must be preserved. Letting created_at default to
@@ -386,7 +471,7 @@ mod tests {
     #[tokio::test]
     async fn event_time_is_preserved_not_ingest_time() {
         let pool = mem_pool().await;
-        insert_event(&pool, "p1", &ev("1", "2026-07-01T10:00:00Z"))
+        insert_event(&pool, "p1", &ev("1", "2026-07-01T10:00:00Z"), None)
             .await
             .unwrap();
         let at: String = sqlx::query_scalar("SELECT created_at FROM analytics_events")
@@ -401,10 +486,10 @@ mod tests {
     #[tokio::test]
     async fn same_id_in_two_projects_both_land() {
         let pool = mem_pool().await;
-        insert_event(&pool, "p1", &ev("7", "2026-07-01T10:00:00Z"))
+        insert_event(&pool, "p1", &ev("7", "2026-07-01T10:00:00Z"), None)
             .await
             .unwrap();
-        insert_event(&pool, "p2", &ev("7", "2026-07-01T10:00:00Z"))
+        insert_event(&pool, "p2", &ev("7", "2026-07-01T10:00:00Z"), None)
             .await
             .unwrap();
         let n: i64 = sqlx::query_scalar("SELECT count(*) FROM analytics_events")
