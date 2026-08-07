@@ -18,6 +18,13 @@ export interface CardCell {
   sub?: string;
   /** Small trailing delta badge. */
   delta?: string;
+  /**
+   * Grouping hint from the data source, e.g. `'forecast'`. The source names
+   * the meaning; this component decides the drawing. Cells with no group get
+   * the dense inline treatment, which is right for a humidity reading and
+   * useless for four days of weather — those need their day labels.
+   */
+  group?: string;
   /** Render the value in the accent colour. */
   accent?: boolean;
   /** Glyph name from the daemon (see cardIcons.tsx). */
@@ -216,7 +223,12 @@ export function ManifestCard({ manifest }: Props) {
     //  2. An icon carries the meaning faster than the words do — you read
     //     "rain" from the glyph before parsing "Drizzle".
     //  3. Supporting values sit on ONE dense row, not one row each.
+    //  4. A group the source named gets its own treatment. The forecast is
+    //     labelled days, not more supporting values — dropped into the inline
+    //     row it renders as three anonymous temperature pairs.
     const [hero, ...rest] = cells;
+    const inline = rest.filter(c => c.group !== 'forecast');
+    const forecast = rest.filter(c => c.group === 'forecast');
     return shell(
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minHeight: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: colors.textDim }}>
@@ -239,12 +251,12 @@ export function ManifestCard({ manifest }: Props) {
           {hero.value}
         </div>
 
-        {rest.length > 0 && (
+        {inline.length > 0 && (
           <div style={{
             display: 'flex', flexWrap: 'wrap', gap: '3px 10px',
             fontFamily: font.body, fontSize: 10.5, lineHeight: 1.45, minWidth: 0,
           }}>
-            {rest.map((c, i) => (
+            {inline.map((c, i) => (
               <span
                 key={i}
                 title={`${c.label}: ${c.value}`}
@@ -256,6 +268,42 @@ export function ManifestCard({ manifest }: Props) {
                   fontVariantNumeric: 'tabular-nums',
                 }}>{c.value}</span>
               </span>
+            ))}
+          </div>
+        )}
+
+        {forecast.length > 0 && (
+          <div
+            role="list"
+            aria-label="Forecast"
+            style={{
+              display: 'flex', gap: 4, marginTop: 2, minWidth: 0,
+              borderTop: `1px solid ${colors.border}`, paddingTop: 7,
+            }}
+          >
+            {forecast.map((c, i) => (
+              <div
+                key={i}
+                role="listitem"
+                title={c.sub ? `${c.label}: ${c.value} · ${c.sub}` : `${c.label}: ${c.value}`}
+                style={{
+                  flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column',
+                  alignItems: 'center', gap: 2, fontFamily: font.body,
+                }}
+              >
+                <span style={{
+                  fontSize: 9.5, fontWeight: 600, letterSpacing: '0.06em',
+                  textTransform: 'uppercase', color: colors.textDim,
+                }}>{c.label}</span>
+                <CardIcon name={c.icon} size={13} />
+                <span style={{
+                  fontSize: 10.5, color: colors.textMuted, fontVariantNumeric: 'tabular-nums',
+                  whiteSpace: 'nowrap',
+                }}>{c.value}</span>
+                {c.sub && (
+                  <span style={{ fontSize: 9, color: colors.textDim, whiteSpace: 'nowrap' }}>{c.sub}</span>
+                )}
+              </div>
             ))}
           </div>
         )}

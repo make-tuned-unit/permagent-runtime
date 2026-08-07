@@ -111,6 +111,50 @@ describe('ManifestCard — data + layout', () => {
   });
 });
 
+describe('ManifestCard — compact tile grouping', () => {
+  const compact: CardManifest = { ...weatherManifest, layout: 'compact', configure: undefined };
+
+  it('draws grouped forecast cells with their day labels, not as anonymous values', async () => {
+    // The inline treatment renders icon + value only, which is right for a
+    // humidity reading and useless for four days of weather.
+    apiFetch.mockResolvedValueOnce({
+      cells: [
+        { label: 'Halifax', value: '26° Clear', accent: true, icon: 'sun' },
+        { label: 'Humidity', value: '77%', icon: 'droplet' },
+        { label: 'Sat', value: '24° / 17°', sub: '80% rain', icon: 'rain', group: 'forecast' },
+        { label: 'Sun', value: '21° / 15°', icon: 'cloud', group: 'forecast' },
+      ],
+    });
+    await act(async () => { root.render(<ManifestCard manifest={compact} />); });
+    await flush();
+
+    const strip = container.querySelector('[aria-label="Forecast"]');
+    expect(strip).toBeTruthy();
+    expect(strip!.textContent).toContain('Sat');
+    expect(strip!.textContent).toContain('24° / 17°');
+    expect(strip!.textContent).toContain('80% rain');
+    expect(strip!.querySelectorAll('[role="listitem"]')).toHaveLength(2);
+
+    // The ungrouped supporting cell stays out of the strip.
+    expect(strip!.textContent).not.toContain('77%');
+    expect(container.textContent).toContain('77%');
+  });
+
+  it('has no forecast strip when nothing is grouped', async () => {
+    apiFetch.mockResolvedValueOnce({
+      cells: [
+        { label: 'CPU load', value: '1231%', accent: true, icon: 'cpu' },
+        { label: 'Disk', value: '31.4 GB free · 93% used', icon: 'disk' },
+      ],
+    });
+    await act(async () => { root.render(<ManifestCard manifest={compact} />); });
+    await flush();
+
+    expect(container.querySelector('[aria-label="Forecast"]')).toBeNull();
+    expect(container.textContent).toContain('31.4 GB free · 93% used');
+  });
+});
+
 describe('ManifestCard — configure flow', () => {
   it('renders the setup affordance when the endpoint reports unconfigured, then PUTs and refetches', async () => {
     // 1st fetch: not configured. PUT resolves. 2nd fetch: configured with data.
