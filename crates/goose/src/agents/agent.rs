@@ -72,6 +72,10 @@ use tracing::{debug, error, info, instrument, warn};
 // this cap is the floor. Overridable per-session (`max_turns`) or via
 // `GOOSE_MAX_TURNS` for the rare legitimately-long autonomous run.
 const DEFAULT_MAX_TURNS: u32 = 50;
+/// Unparseable tool calls tolerated within one turn before giving up.
+/// Two: one retry with the error echoed back fixes the ordinary malformed
+/// call; a model that cannot recover twice will not recover on the third.
+const MAX_PARSE_FAILURES_PER_TURN: u32 = 2;
 const COMPACTION_THINKING_TEXT: &str = "goose is compacting the conversation...";
 
 fn redacted_tool_input_summary(
@@ -1535,6 +1539,12 @@ impl Agent {
             let mut prev_monologue_text = String::new();
             let mut consecutive_monologue_turns = 0u32;
             let mut monologue_nudged = false;
+            // Unparseable tool calls seen this turn. A malformed call
+            // used to END the session — the single most common weak-model
+            // failure mode, terminating instead of being corrected. It is now
+            // an observation the model can retry against, bounded here so a
+            // model that cannot recover still stops (mirrors compaction_attempts).
+            let mut parse_failures_this_turn = 0u32;
 
             loop {
                 if is_token_cancelled(&cancel_token) {
@@ -1888,17 +1898,37 @@ impl Agent {
                                         yield AgentEvent::Message(final_response.clone());
                                         messages_to_add.push(final_response);
                                     } else {
-                                        error!(
-                                            "Tool call could not be parsed: {}",
-                                            request.tool_call.as_ref().unwrap_err(),
-                                        );
-                                        yield AgentEvent::Message(
-                                            Message::assistant().with_text(
-                                                "A tool call could not be parsed — the response may have been truncated. Try breaking the task into smaller steps or resending your message."
-                                            )
-                                        );
-                                        exit_chat = true;
-                                        break;
+                                        let parse_err = request
+                                            .tool_call
+                                            .as_ref()
+                                            .err()
+                                            .map(|e| e.to_string())
+                                            .unwrap_or_default();
+                                        error!("Tool call could not be parsed: {}", parse_err);
+                                        parse_failures_this_turn += 1;
+                                        if parse_failures_this_turn >= MAX_PARSE_FAILURES_PER_TURN {
+                                            yield AgentEvent::Message(
+                                                Message::assistant().with_text(
+                                                    "A tool call could not be parsed — the response may have been truncated. Try breaking the task into smaller steps or resending your message."
+                                                )
+                                            );
+                                            exit_chat = true;
+                                            break;
+                                        }
+                                        // Hand the failure back as an observation: what
+                                        // broke, verbatim, so the model can correct the
+                                        // ONE malformed argument rather than losing the
+                                        // session. Echoing the received call is what
+                                        // makes a retry land.
+                                        let recovery = Message::user().with_text(format!(
+                                            "Your last tool call could not be parsed and did not run.\n\n                                             Parse error: {parse_err}\n\n                                             Nothing was executed. Re-issue exactly one tool call, \
+                                             with valid JSON arguments matching the tool's schema. \
+                                             If the arguments were long, shorten them or split the \
+                                             work into smaller calls."
+                                        ));
+                                        yield AgentEvent::Message(recovery.clone());
+                                        messages_to_add.push(recovery);
+                                        continue;
                                     }
                                 }
 

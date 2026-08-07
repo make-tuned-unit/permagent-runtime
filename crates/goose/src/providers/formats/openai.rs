@@ -256,6 +256,20 @@ pub fn format_messages(messages: &[Message], image_format: &ImageFormat) -> Vec<
                                 .collect::<Vec<String>>()
                                 .join(" "));
 
+                            // A tool that FAILED reports it via CallToolResult::error
+                            // (is_error = true) and still arrives on this Ok arm.
+                            // OpenAI's `role: tool` message has no is_error field, so
+                            // the content IS the only channel — mark it the same way
+                            // the transport-error arm below does, rather than letting
+                            // an ordinary tool failure read as a success.
+                            let tool_response_content = if result.is_error.unwrap_or(false) {
+                                json!(format!(
+                                    "The tool call returned the following error:\n{}",
+                                    tool_response_content.as_str().unwrap_or_default()
+                                ))
+                            } else {
+                                tool_response_content
+                            };
                             // First add the tool response with all content
                             output.push(json!({
                                 "role": "tool",
