@@ -119,6 +119,57 @@ pub async fn create_note_indexed_with_id(
     insert_note(pool, note_id, project_id, title, body, stored_memory_key).await
 }
 
+/// Replace a note's body in place and re-index it into the Brain under the
+/// SAME memory key, so the enriched text supersedes the original rather than
+/// accumulating a second memory for the same note.
+///
+/// Exists for the meeting-note enhancement pass: the raw transcript is saved
+/// immediately (words are never dropped, even if the model call fails), then a
+/// background pass rewrites the body into structured notes. Best-effort on the
+/// Brain half, like the create path — the row is the durable record.
+pub async fn update_note_body(
+    pool: &Pool<Sqlite>,
+    brain: Option<&crate::brain_handle::SafeBrain>,
+    note_id: &str,
+    project_id: &str,
+    body: &str,
+) -> Result<(), String> {
+    let body = body.trim();
+    if body.is_empty() {
+        return Err("note body is empty".to_string());
+    }
+    let existing = get_note(pool, project_id, note_id).await?;
+    let title = existing.as_ref().and_then(|n| n.title.clone());
+
+    sqlx::query(
+        "UPDATE project_notes SET body = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') \
+         WHERE id = ? AND project_id = ?",
+    )
+    .bind(body)
+    .bind(note_id)
+    .bind(project_id)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if let Some(brain) = brain {
+        let memory_key = format!("note:{}:{}", project_id, note_id);
+        let content = note_memory_content(title.as_deref(), body);
+        let opts = spectral::RememberOpts {
+            source: Some(NOTE_SOURCE.to_string()),
+            visibility: spectral::Visibility::Private,
+            ..Default::default()
+        };
+        if let Err(e) = brain.remember_with(&memory_key, &content, opts).await {
+            tracing::warn!(
+                project = %project_id, note = %note_id, error = %e,
+                "note body updated but its brain re-index failed"
+            );
+        }
+    }
+    Ok(())
+}
+
 /// One project note: the DB row. `memory_key` is the Brain key the note's text
 /// was indexed under (`None` if the Brain write was skipped/failed — the row is
 /// still the durable record of the note).

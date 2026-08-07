@@ -1159,8 +1159,16 @@ async fn create_project_note_handler(
         let project_bg = project.clone();
         let note_body = req.body.clone();
         let note_id = note.id.clone();
+        let brain_bg = state.brain.clone();
         tokio::spawn(async move {
-            extract_meeting_todos(&pool_bg, &project_bg, &note_id, &note_body).await;
+            extract_meeting_todos(
+                &pool_bg,
+                brain_bg.as_ref(),
+                &project_bg,
+                &note_id,
+                &note_body,
+            )
+            .await;
         });
     }
 
@@ -1172,8 +1180,38 @@ async fn create_project_note_handler(
 /// surfaced to the note-save path. Cards are attributed `created_by: "henry"`
 /// (the DB CHECK allows no other agent author) with the true origin in
 /// metadata, and each cites the source note so the card can be traced back.
+/// Split a saved meeting body into (the user's own notes, the transcript).
+/// The recorder writes its notepad content under a `## Your notes` heading
+/// ahead of the transcript; a body without that heading is all transcript.
+fn split_meeting_body(body: &str) -> (Option<String>, String) {
+    const MARKER: &str = "## Your notes";
+    const TRANSCRIPT: &str = "## Transcript";
+    let Some(start) = body.find(MARKER) else {
+        return (None, body.to_string());
+    };
+    let after = &body[start + MARKER.len()..];
+    match after.find(TRANSCRIPT) {
+        Some(end) => {
+            let notes = after[..end].trim();
+            let rest = after[end + TRANSCRIPT.len()..].trim();
+            (
+                (!notes.is_empty()).then(|| notes.to_string()),
+                rest.to_string(),
+            )
+        }
+        None => {
+            let notes = after.trim();
+            (
+                (!notes.is_empty()).then(|| notes.to_string()),
+                String::new(),
+            )
+        }
+    }
+}
+
 async fn extract_meeting_todos(
     pool: &sqlx::Pool<sqlx::Sqlite>,
+    state_brain: Option<&permagent::brain_handle::SafeBrain>,
     project: &projects::Project,
     note_id: &str,
     transcript: &str,
@@ -1199,16 +1237,37 @@ async fn extract_meeting_todos(
         }
     };
 
-    let system = "You extract ACTION ITEMS from a meeting transcript for a kanban board. \
-                  Only include real commitments or tasks stated in the meeting — never invent, \
-                  never include vague aspirations. Each item: a short imperative title (max 10 \
-                  words) and one sentence of context from the transcript. Reply ONLY as JSON: \
-                  {\"todos\": [{\"title\": \"...\", \"context\": \"...\"}]} — an empty list if \
-                  the meeting produced no action items.";
+    // The user's own notes, if they typed any while recording. These STEER the
+    // summary (Granola's core insight): a fragment the user bothered to type is
+    // a statement about what mattered, so the summary must cover it — not merely
+    // mark where to look.
+    let (user_notes, transcript_only) = split_meeting_body(transcript);
+
+    let system = "You turn a meeting transcript into structured notes for the user's project, \
+                  and extract the action items.\n\n\
+                  If the user typed their own notes during the meeting, treat each fragment as a \
+                  statement of what mattered: every one of their points MUST be covered and \
+                  expanded using detail from the transcript. Their shorthand and typos are \
+                  intentional — interpret them generously.\n\n\
+                  Ground every claim in the transcript. Never invent a decision, a number, or a \
+                  commitment. If the transcript is too thin to say something, omit it rather \
+                  than padding.\n\n\
+                  Reply ONLY as JSON:\n\
+                  {\"summary_markdown\": \"<the structured notes>\", \
+                  \"todos\": [{\"title\": \"...\", \"context\": \"...\"}]}\n\n\
+                  `summary_markdown` uses `## ` section headings chosen to fit THIS meeting \
+                  (typical: Key points, Decisions, Open questions) with bullets under each — no \
+                  title heading, no action-items section (those ride in `todos`). \
+                  `todos` holds only real commitments or tasks actually stated; an empty list is \
+                  correct when there were none.";
     let user = permagent::conversation::message::Message::user().with_text(format!(
-        "Project: {}\nMeeting transcript:\n{}",
+        "Project: {}\n\n{}Transcript:\n{}",
         project.name,
-        &transcript.chars().take(24_000).collect::<String>(),
+        user_notes
+            .as_deref()
+            .map(|n| format!("The user's own notes taken during the meeting:\n{n}\n\n"))
+            .unwrap_or_default(),
+        &transcript_only.chars().take(24_000).collect::<String>(),
     ));
     let Ok((response, _usage)) = provider
         .complete_fast("meeting-todo-extraction", system, &[user], &[])
@@ -1218,9 +1277,47 @@ async fn extract_meeting_todos(
         return;
     };
     let text = response.as_concat_text();
-    let todos: Vec<(String, String)> = (|| {
+    let parsed: Option<serde_json::Value> = (|| {
         let (start, end) = (text.find('{')?, text.rfind('}')?);
-        let v: serde_json::Value = serde_json::from_str(text.get(start..=end)?).ok()?;
+        serde_json::from_str(text.get(start..=end)?).ok()
+    })();
+
+    // Rewrite the note into structured form. The raw transcript is preserved
+    // BELOW the summary — provenance by structure, the markdown equivalent of
+    // Granola's black-vs-gray: the reader can always see what was actually
+    // said, and the user's own words stay verbatim in their own section.
+    if let Some(summary) = parsed
+        .as_ref()
+        .and_then(|v| v.get("summary_markdown"))
+        .and_then(|s| s.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let mut body = summary.to_string();
+        if let Some(notes) = user_notes.as_deref() {
+            body.push_str("\n\n## Your notes\n\n");
+            body.push_str(notes);
+        }
+        body.push_str("\n\n## Transcript\n\n");
+        body.push_str(&transcript_only);
+        if let Err(e) = permagent::project_notes::update_note_body(
+            pool,
+            state_brain,
+            note_id,
+            &project.id,
+            &body,
+        )
+        .await
+        {
+            tracing::warn!(
+                project = %project.id,
+                "meeting note enhancement not saved (raw transcript stands): {e}"
+            );
+        }
+    }
+
+    let todos: Vec<(String, String)> = (|| {
+        let v = parsed.as_ref()?;
         Some(
             v.get("todos")?
                 .as_array()?
@@ -1977,5 +2074,35 @@ mod tests {
                 .await
                 .unwrap();
         assert!(!exists);
+    }
+
+    /// The daemon's split must invert the UI's compose exactly. These two
+    /// literals are a cross-language contract (composeMeetingBody in
+    /// useMeetingDictation.ts); drift silently orphans the user's notes from
+    /// the summary that is supposed to be steered by them.
+    #[test]
+    fn split_meeting_body_inverts_the_ui_compose() {
+        let body = "## Your notes\n\npricing objections\n\n## Transcript\n\nthey said 2000";
+        let (notes, transcript) = split_meeting_body(body);
+        assert_eq!(notes.as_deref(), Some("pricing objections"));
+        assert_eq!(transcript, "they said 2000");
+    }
+
+    /// A transcript-only body (the user typed nothing) is all transcript —
+    /// never mistaken for notes.
+    #[test]
+    fn split_meeting_body_without_notes_is_all_transcript() {
+        let (notes, transcript) = split_meeting_body("just the words that were said");
+        assert!(notes.is_none());
+        assert_eq!(transcript, "just the words that were said");
+    }
+
+    /// Multi-line shorthand survives intact — the model is told to read it
+    /// generously, so losing lines here would silently drop the user's intent.
+    #[test]
+    fn split_meeting_body_keeps_multiline_notes() {
+        let body = "## Your notes\n\n- a\n- b??\n- c\n\n## Transcript\n\nx";
+        let (notes, _) = split_meeting_body(body);
+        assert_eq!(notes.as_deref(), Some("- a\n- b??\n- c"));
     }
 }

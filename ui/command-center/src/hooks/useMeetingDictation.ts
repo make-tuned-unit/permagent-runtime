@@ -128,6 +128,23 @@ interface MeetingDraft {
   startedAt: string; // ISO
   parts: string[];
   farParts: string[];
+  /** What the user typed in the notepad while recording. */
+  userNotes?: string;
+}
+
+/** Assemble the saved body: the user's own notes (verbatim, in their own
+ *  section) ahead of the transcript. The daemon's enhancement pass splits on
+ *  these exact headings, and the structure IS the provenance — a reader can
+ *  always tell the user's words from the machine's. */
+export function composeMeetingBody(transcript: string, userNotes: string): string {
+  const notes = userNotes.trim();
+  if (!notes) return transcript;
+  return `## Your notes\n\n${notes}\n\n## Transcript\n\n${transcript}`;
+}
+
+/** A draft's full body, notes included — used by the recovery path. */
+function draftBody(d: MeetingDraft): string {
+  return composeMeetingBody(composeDraftBody(d), d.userNotes ?? '');
 }
 
 function readDraft(): MeetingDraft | null {
@@ -174,6 +191,13 @@ export function useMeetingDictation() {
     return d && composeDraftBody(d).length > 0 ? d : null;
   });
 
+  /** The notepad: what the user types while the meeting runs. Sparse by
+   *  design — these fragments steer what the summary argues, they are not
+   *  bookmarks. Stashed with every chunk so a crash cannot lose them. */
+  const [userNotes, setUserNotes] = useState('');
+  const userNotesRef = useRef('');
+  userNotesRef.current = userNotes;
+
   const ctxRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const procRef = useRef<ScriptProcessorNode | null>(null);
@@ -213,6 +237,7 @@ export function useMeetingDictation() {
         startedAt: startedAtRef.current.toISOString(),
         parts: partsRef.current,
         farParts: farPartsRef.current,
+        userNotes: userNotesRef.current,
       } satisfies MeetingDraft));
     } catch { /* quota/serialization — the live path is unaffected */ }
   }, []);
@@ -326,6 +351,8 @@ export function useMeetingDictation() {
     setElapsedSeconds(0);
     partsRef.current = [];
     queueRef.current = Promise.resolve();
+    setUserNotes('');
+    userNotesRef.current = '';
     if (systemAudio) await startSystemAudio();
     unsavedRef.current = null;
     setTarget(nextTarget);
@@ -405,11 +432,12 @@ export function useMeetingDictation() {
       return false;
     }
     const title = meetingNoteTitle(startedAtRef.current);
-    unsavedRef.current = { title, body };
+    const composed = composeMeetingBody(body, userNotesRef.current);
+    unsavedRef.current = { title, body: composed };
     try {
-      await saveNote(target.projectId, title, body);
+      await saveNote(target.projectId, title, composed);
       // Usage-only signal (no transcript in the payload) — mirrors useDictation.
-      emitActivity('dictation_completed', 'voice', { char_count: body.length });
+      emitActivity('dictation_completed', 'voice', { char_count: composed.length });
       setState('idle');
       setTarget(null);
       return true;
@@ -445,6 +473,7 @@ export function useMeetingDictation() {
     bufferedRef.current = 0;
     partsRef.current = [];
     unsavedRef.current = null;
+    setUserNotes('');
     clearDraft();
     setTarget(null);
     setError(null);
@@ -456,7 +485,7 @@ export function useMeetingDictation() {
   const recoverDraft = useCallback(async (): Promise<boolean> => {
     const d = recoveredDraft;
     if (!d) return false;
-    const body = composeDraftBody(d);
+    const body = draftBody(d);
     const title = `${meetingNoteTitle(new Date(d.startedAt))} (recovered)`;
     try {
       await api.createProjectNote(d.projectId, { title, body, kind: 'meeting' });
@@ -499,6 +528,9 @@ export function useMeetingDictation() {
     systemAudioAvailable,
     /** Far-side chunks actually received this recording — proof of capture. */
     farChunksHeard,
+    /** The notepad the user types into while recording. */
+    userNotes,
+    setUserNotes,
     /** A transcript stranded by a crash/quit, awaiting save or dismissal. */
     recoveredDraft,
     recoverDraft,

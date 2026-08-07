@@ -7,6 +7,7 @@ import {
   meetingNoteTitle,
   shouldFlushChunk,
   composeMeetingTranscript,
+  composeMeetingBody,
 } from './useMeetingDictation';
 
 describe('shouldFlushChunk', () => {
@@ -95,5 +96,34 @@ describe('composeMeetingTranscript', () => {
 
   it('is empty when neither side produced text', () => {
     expect(composeMeetingTranscript(['', ''], ['', ''])).toBe('');
+  });
+});
+
+
+describe('composeMeetingBody', () => {
+  it('returns the transcript unchanged when the user typed nothing', () => {
+    expect(composeMeetingBody('we discussed pricing', '')).toBe('we discussed pricing');
+    expect(composeMeetingBody('we discussed pricing', '   ')).toBe('we discussed pricing');
+  });
+
+  it('puts the user notes verbatim in their own section ahead of the transcript', () => {
+    const out = composeMeetingBody('they said the quota is 2000', 'pricing objections');
+    expect(out).toBe(
+      '## Your notes\n\npricing objections\n\n## Transcript\n\nthey said the quota is 2000',
+    );
+  });
+
+  it('keeps the exact headings the daemon splits on', () => {
+    // The enhancement pass in projects.rs finds these two literals; changing
+    // either here silently orphans the user's notes from the summary.
+    const out = composeMeetingBody('t', 'n');
+    expect(out).toContain('## Your notes');
+    expect(out).toContain('## Transcript');
+    expect(out.indexOf('## Your notes')).toBeLessThan(out.indexOf('## Transcript'));
+  });
+
+  it('preserves multi-line shorthand exactly as typed', () => {
+    const notes = '- pricing\n- renewal date??\n- ask re: SOC2';
+    expect(composeMeetingBody('x', notes)).toContain(notes);
   });
 });

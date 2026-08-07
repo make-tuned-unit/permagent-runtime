@@ -42,6 +42,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
     systemAudio, setSystemAudio, systemAudioError, systemAudioAvailable,
     farChunksHeard,
     recoveredDraft, recoverDraft, dismissDraft,
+    userNotes, setUserNotes,
   } = useMeetingDictation();
   const [recovering, setRecovering] = useState(false);
   // Whether this build carries the capture helper at all. Checked rather than
@@ -358,6 +359,26 @@ export function MeetingRecorder({ open }: { open: boolean }) {
               missing) used to be set only where the closed picker would have
               shown it — the user recorded a whole call believing both sides
               were captured. Surface it here, where they are looking. */}
+          {/* The notepad. Granola's core insight: while the meeting runs the
+              surface is the user's own cursor, not the machine's output — and
+              what they jot STEERS the summary rather than merely bookmarking
+              it. Sparse by design; empty is fine and changes nothing. */}
+          {state === 'recording' && (
+            <textarea
+              value={userNotes}
+              onChange={e => setUserNotes(e.target.value)}
+              placeholder="Jot what matters — I'll build the notes around it"
+              rows={3}
+              style={{
+                width: '100%', resize: 'vertical', minHeight: 54,
+                background: colors.inputBg, color: colors.text,
+                border: `1px solid ${colors.border}`, borderRadius: 8,
+                padding: '6px 8px', fontFamily: font.body, fontSize: 11,
+                lineHeight: 1.5, outline: 'none',
+              }}
+            />
+          )}
+
           {state === 'recording' && systemAudioError && (
             <div style={{ fontSize: 11, color: colors.danger, lineHeight: 1.4 }}>{systemAudioError}</div>
           )}
