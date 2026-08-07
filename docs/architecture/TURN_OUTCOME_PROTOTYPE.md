@@ -79,7 +79,52 @@ If `turn_events` grows but `turn_members` outcomes stay empty, the retrieval is
 happening and the reporting is not — that is the failure mode that produces
 pure overhead and no signal, and it should be treated as a bug.
 
+## Corpus eras — the pre-void boundary
+
+Spectral's queued pin bump adds `voided_at TEXT DEFAULT NULL` to `turn_events`,
+which gives the corpus a verb for *abandoned* as distinct from *ignored*. It
+also, on the day it lands, stamps every pre-existing row with `voided_at = NULL`
+— byte-identical to a post-bump turn that ran to completion and simply was not
+voided. From that moment the corpus cannot describe its own eras, and a later
+"what fraction of turns were abandoned?" query sweeps the old aborts in as
+`unreported`, re-creating the exact conflation the void verb exists to remove
+(Spectral dispatch `2026-08-06v`). It costs one timestamp now and is
+unrecoverable afterwards.
+
+**Census taken 2026-08-07, before the bump** (`scripts/turn_corpus_era.sh`):
+
+```
+voided_at:    absent — bump not landed
+rows:         19 total, 4 committed, 15 uncommitted, all policy v1
+delivered_at: 2026-08-04T19:16:47.580410+00:00 .. 2026-08-06T21:36:53.649053+00:00
+```
+
+**The boundary is the `delivered_at` of the first turn served by a bumped
+daemon.** Below it, `voided_at IS NULL` means *voiding was impossible here* —
+never *this turn was not voided*. Above it the NULL is meaningful. Any row
+delivered between the census above and the install is still pre-void, which is
+why the boundary is defined by the first post-bump row rather than by the census
+timestamp.
+
+Finalizing it is step 8 of the bump: run `scripts/turn_corpus_era.sh` once the
+bumped daemon has served a turn, and record the boundary here.
+
+> **Boundary:** _not yet fixed — the bump has not landed._
+
+`voided_at` appearing in the live brain is also the agreed definition of "the
+bump landed": it proves both the dependency rev *and* that the daemon opened the
+brain with it, which an install date cannot (dispatch `2026-08-06u`).
+
 ## Pin
 
 Requires Spectral `c2c8381` or later (`crates/spectral/src/turn.rs`). The
 previous pin `486459c` had no `turn` API at all.
+
+The sampler is **deterministic by contract** (`decide()` in
+`crates/goose/src/turn_sampling.rs`): rate `0.1` fires on exactly 10 turns in
+100, pinned by `one_in_ten_fires_ten_times_per_hundred`. At rate `1.0` a counter
+and a coin are indistinguishable, so a probabilistic reconstruction would pass
+every check runnable today and only bite if the rate is ever dialled back. When
+the pin-bump branch is ported onto main, **exactly one sampler must survive and
+it must be this one** — delete the loser deliberately rather than letting a
+merge choose.
