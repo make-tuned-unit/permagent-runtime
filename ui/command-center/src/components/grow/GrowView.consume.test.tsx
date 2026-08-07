@@ -86,6 +86,13 @@ afterEach(() => {
   container.remove();
 });
 
+/** A project change fades the panel out BEFORE it applies, so the swap and its
+ *  loading states happen while nothing is visible. Anything asserting on the
+ *  newly selected project has to let that fade elapse first. */
+async function settleSwap() {
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 250)); });
+}
+
 /** Mount GrowView and flush the load → select → sub-resource fetch cascade. */
 async function renderGrow() {
   await act(async () => {
@@ -96,6 +103,8 @@ async function renderGrow() {
   await act(async () => {
     await Promise.resolve();
   });
+  // A deep link arrives as a project switch, which is faded like any other.
+  await settleSwap();
 }
 
 describe('Grow deep-link is consumed exactly once', () => {
@@ -151,6 +160,7 @@ describe('Grow project request ordering', () => {
       select.value = 'p42';
       select.dispatchEvent(new Event('change', { bubbles: true }));
     });
+    await settleSwap();
     await act(async () => { secondPosts.resolve([{ id: 'b', title: 'Target post', description: '' }]); });
 
     const calendar = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'calendar')!;
@@ -160,5 +170,30 @@ describe('Grow project request ordering', () => {
     await act(async () => { firstPosts.resolve([{ id: 'a', title: 'Stale first post', description: '' }]); });
     expect(container.textContent).toContain('Target post');
     expect(container.textContent).not.toContain('Stale first post');
+  });
+
+  /// Switching used to be a hard cut: every panel dropped to its loading state
+  /// in one frame and sprang back when the slowest request landed. The panel
+  /// now fades out first, so the swap happens unseen.
+  it('fades the panel out before the project changes, and back in after', async () => {
+    await renderGrow();
+    const panel = () => container.querySelector<HTMLDivElement>('[role="tabpanel"]')!;
+    expect(panel().getAttribute('aria-busy')).toBe('false');
+
+    const select = container.querySelector<HTMLSelectElement>('select[aria-label="Select project"]')!;
+    await act(async () => {
+      select.value = 'p42';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+
+    // Mid-swap: invisible and announced as busy, so the loading states the new
+    // project is about to show are never seen.
+    expect(panel().getAttribute('aria-busy')).toBe('true');
+    expect(panel().style.opacity).toBe('0');
+    expect(panel().style.transition).toContain('opacity');
+
+    await settleSwap();
+    expect(panel().getAttribute('aria-busy')).toBe('false');
+    expect(panel().style.opacity).toBe('1');
   });
 });

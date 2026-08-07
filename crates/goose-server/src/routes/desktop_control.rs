@@ -69,33 +69,33 @@ async fn desktop_launch() -> Json<serde_json::Value> {
         {
             Ok(status) if status.success() => {
                 tracing::info!(target: "permagentd::desktop", "desktop app launched remotely");
-                return Json(serde_json::json!({
+                Json(serde_json::json!({
                     "launched": true,
                     "already_running": false,
                     // The UI takes a moment to boot and attach to the event
                     // bus; the caller should poll status rather than assume.
                     "message": "Launching the desktop app — give it a few seconds to come up."
-                }));
+                }))
             }
             Ok(status) => {
                 tracing::warn!(
                     target: "permagentd::desktop",
                     "desktop launch failed: open exited {status}"
                 );
-                return Json(serde_json::json!({
+                Json(serde_json::json!({
                     "launched": false,
                     "already_running": false,
                     "message": "Couldn't launch the app — is the Mac awake and Permagent \
                                 installed in /Applications?"
-                }));
+                }))
             }
             Err(e) => {
                 tracing::warn!(target: "permagentd::desktop", "desktop launch error: {e}");
-                return Json(serde_json::json!({
+                Json(serde_json::json!({
                     "launched": false,
                     "already_running": false,
                     "message": format!("Couldn't launch the app: {e}")
-                }));
+                }))
             }
         }
     }

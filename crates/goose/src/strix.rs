@@ -73,15 +73,23 @@ pub enum ScopeRefusal {
 /// Canonicalizes before comparing so `..` traversal cannot escape a root, and
 /// requires a genuine path-component boundary so `/work/app-evil` does not pass
 /// as a child of `/work/app`.
+///
+/// A target that will not canonicalize is REFUSED, never approximated. The
+/// fallback to the raw path was the whole guarantee undone: `starts_with` is
+/// purely lexical over components and does not resolve `..`, so
+/// `/work/app/../../../etc/nope` — which does not exist, so does not resolve —
+/// "started with" `/work/app` and was handed back as an approved scan root. A
+/// path the Guard cannot resolve is not a path it may scan, and a directory
+/// that is not there is no use to the scanner regardless.
 pub fn check_scope(target: &str, roots: &[PathBuf]) -> Result<PathBuf, ScopeRefusal> {
     let raw = target.trim();
     if raw.is_empty() || raw.contains("://") {
         return Err(ScopeRefusal::NotAPath);
     }
     let candidate = Path::new(raw);
-    let resolved = candidate
-        .canonicalize()
-        .unwrap_or_else(|_| candidate.to_path_buf());
+    let Ok(resolved) = candidate.canonicalize() else {
+        return Err(ScopeRefusal::NotAPath);
+    };
     for root in roots {
         let root_resolved = root.canonicalize().unwrap_or_else(|_| root.clone());
         if resolved == root_resolved || resolved.starts_with(&root_resolved) {
@@ -209,6 +217,20 @@ mod tests {
         assert_eq!(
             check_scope(escape.to_str().unwrap(), &roots),
             Err(ScopeRefusal::OutsideProjectRoots)
+        );
+        // Refused: traversal that does NOT exist on disk. This is the case the
+        // guard used to approve — `starts_with` is lexical, so an unresolvable
+        // `<root>/../../..` still "started with" the root and came back as an
+        // approved scan target.
+        let phantom = root.join("..").join("..").join("nowhere-at-all");
+        assert_eq!(
+            check_scope(phantom.to_str().unwrap(), &roots),
+            Err(ScopeRefusal::NotAPath)
+        );
+        // Refused: a plain path inside the root that is simply not there.
+        assert_eq!(
+            check_scope(root.join("no-such-dir").to_str().unwrap(), &roots),
+            Err(ScopeRefusal::NotAPath)
         );
     }
 }

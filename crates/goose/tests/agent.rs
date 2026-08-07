@@ -423,8 +423,11 @@ mod tests {
         /// desynchronises. `MockToolProvider` is stateless and cannot express
         /// "a malformed turn, then a good one" at all — which is the whole
         /// shape of parse recovery.
+        /// What the provider answers with, given the conversation so far.
+        type ReplyFn = Box<dyn Fn(&[Message]) -> Message + Send + Sync>;
+
         struct ReactiveProvider {
-            reply: Box<dyn Fn(&[Message]) -> Message + Send + Sync>,
+            reply: ReplyFn,
         }
 
         /// Recovery observations already in the conversation — how many times

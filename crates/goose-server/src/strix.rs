@@ -256,7 +256,19 @@ fn last_scan_stamp(project: &Project) -> String {
 
 /// Advance the rotation: write the last-scan stamp without touching findings.
 async fn stamp_last_scan(pool: &Pool<Sqlite>, project: &Project) -> Result<(), String> {
-    let mut meta = project
+    // Re-read for the same reason `record_findings` does: `project` was
+    // snapshotted before a scan that can run for twenty minutes, and
+    // `update_project` replaces `metadata_json` wholesale. Writing the stale
+    // snapshot back silently reverts every metadata change anything else made
+    // to this project during the scan — analytics config, notes state, another
+    // agent's edit. The window shrinks to one read-modify-write.
+    let fresh = projects::get_project_by_id_or_slug(pool, &project.id)
+        .await
+        .ok()
+        .flatten();
+    let mut meta = fresh
+        .as_ref()
+        .unwrap_or(project)
         .metadata_json
         .as_object()
         .cloned()
@@ -405,6 +417,25 @@ fn resolve_strix_bin() -> PathBuf {
     PathBuf::from("strix")
 }
 
+/// Kill a timed-out scan and everything it started.
+///
+/// SIGTERM first — deliberately unlike the goal engine's straight SIGKILL —
+/// because strix owns Docker containers that only its own handler can remove;
+/// a SIGKILLed scanner leaves them running. Then SIGKILL the whole group so a
+/// scanner that ignores the term still goes, along with its tool subprocesses.
+#[cfg(unix)]
+async fn kill_scan_tree(pid: u32) {
+    let group = -(pid as i32);
+    // SAFETY: signalling a process group by pid; an already-dead group is a
+    // harmless ESRCH.
+    unsafe { libc::kill(group, libc::SIGTERM) };
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    unsafe { libc::kill(group, libc::SIGKILL) };
+}
+
+#[cfg(not(unix))]
+async fn kill_scan_tree(_pid: u32) {}
+
 async fn scan_project(target: &std::path::Path) -> Result<Vec<Finding>, String> {
     let mut cmd = tokio::process::Command::new(resolve_strix_bin());
     for (k, v) in scanner_env() {
@@ -431,19 +462,34 @@ async fn scan_project(target: &std::path::Path) -> Result<Vec<Finding>, String> 
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // The scanner is an agentic CLI that drives a cloud model on the user's own
+    // key and starts Docker sandboxes. Tokio does NOT kill a spawned process
+    // when its handle drops, and `wait_with_output` consumes the handle — so a
+    // timeout used to leave a process nobody owned, still spending, still
+    // egressing, outliving the daemon that started it and deaf to the
+    // sovereignty toggle. Its own process group so the kill reaches the tools
+    // it spawned, and `kill_on_drop` as the backstop for any other drop path.
+    cmd.kill_on_drop(true);
+    permagent::subprocess::configure_subprocess(&mut cmd);
 
     let child = cmd.spawn().map_err(|e| {
         format!("`strix` is not runnable ({e}) — install it and Docker to enable sweeps")
     })?;
-    let output = tokio::time::timeout(SCAN_TIMEOUT, child.wait_with_output())
-        .await
-        .map_err(|_| {
-            format!(
-                "scan exceeded its {}-minute bound",
+    // Copied before the handle moves into `wait_with_output`.
+    let pid = child.id();
+    let output = match tokio::time::timeout(SCAN_TIMEOUT, child.wait_with_output()).await {
+        Ok(result) => result.map_err(|e| e.to_string())?,
+        Err(_) => {
+            if let Some(pid) = pid {
+                kill_scan_tree(pid).await;
+            }
+            return Err(format!(
+                "scan exceeded its {}-minute bound (scanner killed; a Docker container it \
+                 started may need `docker ps` cleanup)",
                 SCAN_TIMEOUT.as_secs() / 60
-            )
-        })?
-        .map_err(|e| e.to_string())?;
+            ));
+        }
+    };
     if !output.status.success() {
         return Err(format!(
             "scanner exited {}: {}",
@@ -714,5 +760,52 @@ mod tests {
         assert_eq!(fresh[0].id, "CWE-79:src/ui.rs");
         // An unchanged set is entirely stale — this is the re-brief suppressor.
         assert!(fresh_findings(&existing, &existing).is_empty());
+    }
+
+    /// A timed-out scan must take its whole tree with it. Tokio keeps a spawned
+    /// process alive when its handle drops, and `wait_with_output` consumes the
+    /// handle — so before this the timeout left an agentic scanner running on
+    /// the user's own API key, spending and egressing, owned by nobody.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_timed_out_scan_takes_its_subprocesses_with_it() {
+        use tokio::process::Command;
+
+        // A leader that outlives a naive kill plus a grandchild in its group —
+        // the tool subprocesses a real scan spawns.
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c")
+            .arg("sleep 300 & echo $! > /dev/null; sleep 300")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        cmd.kill_on_drop(true);
+        permagent::subprocess::configure_subprocess(&mut cmd);
+
+        let mut child = cmd.spawn().expect("/bin/sh spawns");
+        let pid = child.id().expect("a freshly spawned child has a pid");
+
+        // The flag the kill depends on: its own group, so the signal reaches
+        // everything the scanner started rather than only the leader.
+        // SAFETY: reading the process group of a live child.
+        assert_eq!(
+            unsafe { libc::getpgid(pid as i32) },
+            pid as i32,
+            "the scanner must lead its own process group"
+        );
+
+        kill_scan_tree(pid).await;
+
+        // Assert through `wait` rather than `kill(pid, 0)`: a SIGKILLed leader
+        // is still a group member until it is reaped, so a liveness probe
+        // would flake.
+        let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+            .await
+            .expect("the killed scanner is reaped well inside its 300s sleep")
+            .expect("wait succeeds");
+        assert!(
+            !status.success(),
+            "the scanner was signalled, not left to finish"
+        );
     }
 }

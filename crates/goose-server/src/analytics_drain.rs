@@ -219,6 +219,12 @@ async fn drain_project(
     // The site's own host, for the self-referral drop in insert_event. The
     // drain URL IS the site's origin, so no extra configuration is needed.
     let site_host = classify::referrer_host(drain_url);
+    // A retention gap is not an error — the drain succeeds, it just succeeds
+    // over a hole. It therefore reached the success path at the bottom, which
+    // clears `last_error`, and the one durable record that data was lost was
+    // erased before the caller ever persisted it. Carried out of the loop so
+    // the success path can keep it.
+    let mut retention_warning: Option<String> = None;
     for _ in 0..MAX_PAGES_PER_TICK {
         let since = config.cursor.clone().unwrap_or_else(|| "0".to_string());
         let sep = if drain_url.contains('?') { '&' } else { '?' };
@@ -270,6 +276,9 @@ async fn drain_project(
                      collected and cannot be recovered"
                 );
                 tracing::warn!(target: "analytics_drain", "{msg}");
+                retention_warning = Some(msg.clone());
+                // Also set now, so an early `?` return from ingest below still
+                // carries the explanation out with it.
                 config.last_error = Some(msg);
                 // Skip forward: staying behind the retention floor would refetch
                 // nothing forever while the backlog silently grew.
@@ -290,7 +299,9 @@ async fn drain_project(
             break; // drained to the tip
         }
     }
-    config.last_error = None;
+    // A clean pass clears a stale error; a pass that found a hole keeps saying
+    // so, next to the cursor that skipped over it.
+    config.last_error = retention_warning;
     config.last_drain_at = Some(chrono::Utc::now().to_rfc3339());
     Ok(total)
 }
@@ -502,6 +513,66 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(n, 2);
+    }
+
+    /// A retention gap is not an `Err`, so it reached the success path that
+    /// clears `last_error` — and the one durable record that events were
+    /// pruned before we collected them was erased before the caller persisted
+    /// the state. A silent under-report is indistinguishable from a quiet
+    /// traffic week, which is exactly how this would stay unnoticed.
+    #[tokio::test]
+    async fn a_retention_gap_survives_into_the_persisted_state() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // We left off at 1200; the relay's oldest surviving row is 5000.
+        Mock::given(method("GET"))
+            .and(path("/api/permagent-analytics/drain"))
+            .and(query_param("since", "1200"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "events": [
+                    { "id": 5001, "kind": "pageview", "path": "/", "referrer": null,
+                      "name": null, "visitorHash": "aa11", "at": "2026-08-06T09:00:00.000Z" }
+                ],
+                "latestId": "5001",
+                "firstAvailableId": "5000"
+            })))
+            .mount(&server)
+            .await;
+
+        let pool = mem_pool().await;
+        let mut state = crate::routes::first_party_analytics::DrainState {
+            site_key: "k".into(),
+            ingest_base: None,
+            drain_url: None,
+            cursor: Some("1200".into()),
+            last_drain_at: None,
+            last_error: None,
+            relay_latest_id: None,
+        };
+        let url = format!("{}/api/permagent-analytics/drain", server.uri());
+
+        let n = drain_project(&pool, "p1", &url, "SECRET123", &mut state)
+            .await
+            .expect("a gap is not a failure — the drain still succeeds");
+
+        assert_eq!(n, 1, "the surviving event was still ingested");
+        assert!(
+            state
+                .last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("retention gap"),
+            "the gap was erased before it could be persisted: {:?}",
+            state.last_error
+        );
+        assert_eq!(
+            state.cursor.as_deref(),
+            Some("5001"),
+            "skipped forward over the hole and then advanced normally"
+        );
+        assert!(state.last_drain_at.is_some(), "freshness still recorded");
     }
 
     /// END-TO-END CONTRACT TEST. Stands up a mock site speaking exactly the
