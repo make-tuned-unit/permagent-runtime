@@ -46,6 +46,13 @@ enum Brand {
                                       light: 0x00BFEF, lightAlpha: 0.10)
     static let purpleSoft = Color.brand(dark: 0x8D44AE, darkAlpha: 0.18, // color.purpleSoft
                                         light: 0x8B5CFF, lightAlpha: 0.10)
+    /// The Mobius magenta — the second brand accent, tokens.ts `purple` /
+    /// `purpleBright`. The strip runs cyan into magenta, so anything that
+    /// stands in FOR the strip (its glow, the spark, the primary action) reads
+    /// as brand only when both are present. Used as a partner to cyan, never
+    /// as a replacement: cyan stays the interactive colour.
+    static let purple = Color.brand(dark: 0x8D44AE, light: 0x7B3A99)
+    static let purpleBright = Color.brand(dark: 0xA855CC, light: 0x9147B8)
 
     /// Ink for text and glyphs sitting ON an accent fill — cyan, the ribbon, a
     /// danger chip. tokens.ts `textOnCyan`, and deliberately NOT adaptive: the
@@ -181,6 +188,15 @@ enum ChatSurface {
     static let dim = Brand.textDim
     /// The accent — empty-state spark, send button, caret. Brand cyan.
     static let spark = Brand.cyan
+    /// The Mobius magenta, cyan's partner. Touches only: the far end of an
+    /// accent gradient, a glow's second stop, the spark glyph's tail.
+    static let ember = Brand.purpleBright
+    /// Cyan → magenta, the strip's own run. The one gradient that says
+    /// "Permagent" without a wordmark.
+    static var ribbon: LinearGradient {
+        LinearGradient(colors: [Brand.cyan, Brand.purpleBright],
+                       startPoint: .leading, endPoint: .trailing)
+    }
     /// Ink on a spark fill (cyan is bright in both appearances).
     static let onSpark = Brand.onAccent
     /// Hairlines on the raised card.
@@ -436,7 +452,7 @@ struct SparkCTA: View {
             .padding(.vertical, 15)
             .foregroundStyle(ChatSurface.onSpark.opacity(enabled ? 1 : 0.6))
             .background(
-                ChatSurface.spark.opacity(enabled ? 1 : 0.3),
+                ChatSurface.ribbon.opacity(enabled ? 1 : 0.3),
                 in: RoundedRectangle(cornerRadius: 18, style: .continuous)
             )
         }
@@ -456,7 +472,7 @@ struct SparkEmptyState: View {
         VStack(spacing: 22) {
             Text("✻")
                 .font(.system(size: 40))
-                .foregroundStyle(ChatSurface.spark)
+                .foregroundStyle(ChatSurface.ribbon)
             Text(line)
                 .font(.chatGreeting)
                 .foregroundStyle(ChatSurface.text.opacity(0.9))

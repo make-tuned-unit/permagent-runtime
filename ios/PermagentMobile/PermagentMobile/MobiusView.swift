@@ -76,7 +76,13 @@ struct MobiusView: View {
                 Circle()
                     .fill(
                         RadialGradient(
-                            colors: [Brand.cyan.opacity(0.45 * glow), .clear],
+                            // The strip runs cyan into magenta; its glow must
+                            // too, or the halo reads as a generic cyan bloom.
+                            colors: [
+                                Brand.cyan.opacity(0.45 * glow),
+                                Brand.purpleBright.opacity(0.28 * glow),
+                                .clear,
+                            ],
                             center: .center,
                             startRadius: 0,
                             endRadius: size * 0.5
