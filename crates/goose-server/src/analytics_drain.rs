@@ -107,19 +107,41 @@ fn id_as_string<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Err
     }
 }
 
+/// Same number-or-string tolerance as `id_as_string`, for the optional
+/// envelope ids. A relay whose ids are `bigIncrements` naturally emits them as
+/// JSON numbers; without this, one such response fails to parse and stalls the
+/// cursor for that project entirely.
+fn opt_id_as_string<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    match Option::<serde_json::Value>::deserialize(d)? {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(s)) => Ok(Some(s)),
+        Some(serde_json::Value::Number(n)) => Ok(Some(n.to_string())),
+        Some(other) => Err(serde::de::Error::custom(format!(
+            "drain envelope id must be a string or number, got {other}"
+        ))),
+    }
+}
+
+/// The drain envelope. **`camelCase`, like `DrainEvent`** — the install brief
+/// tells the site to emit `latestId` / `firstAvailableId`, and without the
+/// rename neither field ever bound: both v41 features (drain-lag reporting and
+/// retention-gap detection) were reading `None` from every spec-compliant
+/// relay and failing silently, which is exactly the class of hole the
+/// retention detector was written to catch.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct DrainResponse {
     #[serde(default)]
     events: Vec<DrainEvent>,
     /// Newest event id the relay currently holds (spec v41, optional). Lets
     /// the daemon report drain lag rather than infer health from silence.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "opt_id_as_string")]
     latest_id: Option<String>,
     /// OLDEST event id the relay still holds (spec v41, optional). When this is
     /// greater than our cursor, the site's retention pruned rows the daemon
     /// never fetched — it slept past the window — and the resulting hole is
     /// otherwise INVISIBLE: the drain just resumes and under-reports forever.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "opt_id_as_string")]
     first_available_id: Option<String>,
 }
 
@@ -513,6 +535,42 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(n, 2);
+    }
+
+    /// The envelope's own wire contract. Both v41 fields were declared
+    /// snake_case while the install brief tells the site to emit camelCase, so
+    /// neither ever bound — drain-lag reporting and retention-gap detection
+    /// both read `None` from every correct relay and failed silently. Nothing
+    /// caught it because nothing asserted on the envelope itself.
+    #[test]
+    fn the_drain_envelope_reads_the_camel_case_the_brief_asks_for() {
+        let parsed: DrainResponse =
+            serde_json::from_str(r#"{"events":[],"latestId":"5001","firstAvailableId":"5000"}"#)
+                .expect("the documented shape parses");
+        assert_eq!(parsed.latest_id.as_deref(), Some("5001"));
+        assert_eq!(parsed.first_available_id.as_deref(), Some("5000"));
+    }
+
+    /// Relay ids are `bigIncrements` in the reference implementation, so a site
+    /// emitting them as JSON numbers is the normal case, not an edge one — and
+    /// a parse failure here stalls that project's cursor entirely.
+    #[test]
+    fn envelope_ids_survive_arriving_as_numbers() {
+        let parsed: DrainResponse =
+            serde_json::from_str(r#"{"events":[],"latestId":5001,"firstAvailableId":5000}"#)
+                .expect("numeric ids parse");
+        assert_eq!(parsed.latest_id.as_deref(), Some("5001"));
+        assert_eq!(parsed.first_available_id.as_deref(), Some("5000"));
+    }
+
+    /// A relay built against the earlier contract carries neither field and
+    /// must keep working rather than failing to parse and stalling.
+    #[test]
+    fn an_older_relay_without_the_v41_fields_still_parses() {
+        let parsed: DrainResponse =
+            serde_json::from_str(r#"{"events":[]}"#).expect("the pre-v41 shape parses");
+        assert!(parsed.latest_id.is_none());
+        assert!(parsed.first_available_id.is_none());
     }
 
     /// A retention gap is not an `Err`, so it reached the success path that
