@@ -163,7 +163,17 @@ pub async fn inject_recall(
                         content: hit.content.clone(),
                     })
                     .collect();
-                tracing::debug!(
+                // INFO, not DEBUG: this line is the only per-turn record of a
+                // sampled turn, and it is what makes the corpus auditable from
+                // outside the library — count these lines over a window,
+                // count `turn_events` rows over the same window, and at sample
+                // rate 1.0 they must be equal. Inequality means turns are
+                // being dropped or eligibility changed, which is detectable in
+                // the data without reading either implementation (Spectral
+                // dispatch 2026-08-06v). At DEBUG it sat below the daemon's
+                // INFO floor, so the check required setting RUST_LOG before
+                // the measurement window — i.e. it was never run.
+                tracing::info!(
                     target: "permagentd::turn",
                     delivered = delivered.len(),
                     "sampled turn opened"
