@@ -262,6 +262,11 @@ export function GrowView() {
   // the loading states happen while nothing is visible, and the new project
   // arrives as one smooth rise instead of a flash.
   const [swapping, setSwapping] = useState(false);
+  // What the user has chosen but the panel has not caught up to yet. The
+  // dropdown is bound to this, not to `activeId` — a control that springs back
+  // to the old value for the length of the fade reads as the app arguing with
+  // the click, which is worse than the flash we came here to remove.
+  const [pendingId, setPendingId] = useState<string | null>(null);
   const [pinnedHeight, setPinnedHeight] = useState<number | undefined>(undefined);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const swapTimer = useRef<ReturnType<typeof setTimeout>>();
@@ -336,9 +341,11 @@ export function GrowView() {
     // Hold the height we are leaving so the scroll container cannot lurch
     // while the new panel is still empty.
     setPinnedHeight(panelRef.current?.offsetHeight);
+    setPendingId(id);
     setSwapping(true);
     swapTimer.current = setTimeout(() => {
       setActiveId(id);
+      setPendingId(null);
       setSwapping(false);
       // Release the pin once the new content has had time to lay out.
       swapTimer.current = setTimeout(() => setPinnedHeight(undefined), SWAP_SETTLE_MS);
@@ -473,7 +480,7 @@ export function GrowView() {
           })}
         </div>
         <select
-          value={activeId ?? ''}
+          value={pendingId ?? activeId ?? ''}
           onChange={(e) => switchProject(e.target.value)}
           aria-label="Select project"
           style={{

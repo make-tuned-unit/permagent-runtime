@@ -191,6 +191,10 @@ describe('Grow project request ordering', () => {
     expect(panel().getAttribute('aria-busy')).toBe('true');
     expect(panel().style.opacity).toBe('0');
     expect(panel().style.transition).toContain('opacity');
+    // …but the control the user just used holds THEIR choice throughout. A
+    // select that springs back for the length of the fade reads as the app
+    // arguing with the click.
+    expect(select.value).toBe('p42');
 
     await settleSwap();
     expect(panel().getAttribute('aria-busy')).toBe('false');
