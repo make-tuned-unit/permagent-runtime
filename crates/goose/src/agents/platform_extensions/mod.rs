@@ -147,8 +147,9 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                               browser (open_website), fetch a public page's readable text without \
                               a tab (read_webpage), read the page the user currently has open \
                               (read_browser_content), list a page's interactive elements as \
-                              stable refs (get_page_snapshot), and click, type, or select on them \
-                              (act_on_page)",
+                              stable refs (get_page_snapshot), click, type, or select on them \
+                              (act_on_page), and — when the browser is unreachable because the \
+                              Mac's app is closed — wake it (wake_desktop_app)",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
