@@ -1189,11 +1189,20 @@ fn split_meeting_body(body: &str) -> (Option<String>, String) {
     let Some(start) = body.find(MARKER) else {
         return (None, body.to_string());
     };
-    let after = &body[start + MARKER.len()..];
+    // `get` rather than byte-indexing: a transcript is arbitrary human speech
+    // and will carry multibyte UTF-8. These offsets come from `find`, so they
+    // ARE char boundaries — but proving that to the reader (and to clippy's
+    // string_slice lint) beats a slice that panics if the invariant ever moves.
+    let Some(after) = body.get(start + MARKER.len()..) else {
+        return (None, body.to_string());
+    };
     match after.find(TRANSCRIPT) {
         Some(end) => {
-            let notes = after[..end].trim();
-            let rest = after[end + TRANSCRIPT.len()..].trim();
+            let notes = after.get(..end).unwrap_or_default().trim();
+            let rest = after
+                .get(end + TRANSCRIPT.len()..)
+                .unwrap_or_default()
+                .trim();
             (
                 (!notes.is_empty()).then(|| notes.to_string()),
                 rest.to_string(),
