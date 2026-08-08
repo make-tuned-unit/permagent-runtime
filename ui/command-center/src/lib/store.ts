@@ -7,7 +7,7 @@ import { maybeSpeakReply, replyDedupeKey } from './speakReplies';
 import { readLiveConversation } from './voiceHandoff';
 import { appendTraceRecord, sessionFrameToRecord } from './traceEvents';
 import { startEventPruning } from './eventBus';
-import type { ProjectPerson } from '../components/projects/types';
+import type { Person, PersonAssociation } from '../components/projects/types';
 import type { BrainMemoryTarget } from '../components/brain/brainMemoryFocus';
 
 // --- Types ---
@@ -288,17 +288,29 @@ interface CommandCenterStore {
   closeGoalDetail: () => void;
   /**
    * Person-detail modal (CRM epic slice 2): the read-only person view opened
-   * from a project's People panel. Carries the full {@link ProjectPerson} from
-   * the list response so the modal needs no extra fetch. Host mounted at the app
-   * root; mirrors the goalDetail seam above.
+   * from a project's People panel *or* from the global people directory.
+   *
+   * Carries a bare {@link Person} so the modal needs no extra fetch. The
+   * project-association fields live in `association` rather than on the person,
+   * because the directory has no project context — `projectId` and
+   * `association` are both null there, and the modal hides the project-role and
+   * disassociate affordances accordingly.
    */
-  personDetail: { projectId: string; person: ProjectPerson } | null;
-  openPersonDetail: (projectId: string, person: ProjectPerson) => void;
+  personDetail: {
+    projectId: string | null;
+    person: Person;
+    association: PersonAssociation | null;
+  } | null;
+  openPersonDetail: (
+    projectId: string | null,
+    person: Person,
+    association?: PersonAssociation | null,
+  ) => void;
   closePersonDetail: () => void;
   /**
-   * Monotonic revision the People panel re-fetches on. Bumped after a mutation
-   * (associate / disassociate) so the store-hosted person modal can refresh the
-   * decoupled panel — there is no people event stream yet.
+   * Monotonic revision the People panel and the directory re-fetch on. Bumped
+   * after a local mutation, and by `livenessSync` when a `person_changed` event
+   * arrives on /events (so a second client's create/associate lands here too).
    */
   peopleRev: number;
   bumpPeople: () => void;
@@ -881,7 +893,8 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   openGoalDetail: (projectId, cardId) => set({ goalDetail: { projectId, cardId } }),
   closeGoalDetail: () => set({ goalDetail: null }),
   personDetail: null,
-  openPersonDetail: (projectId, person) => set({ personDetail: { projectId, person } }),
+  openPersonDetail: (projectId, person, association = null) =>
+    set({ personDetail: { projectId, person, association } }),
   closePersonDetail: () => set({ personDetail: null }),
   peopleRev: 0,
   bumpPeople: () => set(s => ({ peopleRev: s.peopleRev + 1 })),

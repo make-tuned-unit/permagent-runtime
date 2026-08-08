@@ -534,9 +534,234 @@ async fn person_activity_handler(
     Ok(Json(items))
 }
 
+/// A directory row: the person plus the projects they're associated with.
+///
+/// `projects` is empty for the cohort this whole surface exists to reach —
+/// people with no project association, who are invisible to `PeoplePanel`
+/// because it only ever lists `project_people` rows.
+#[derive(Debug, Serialize)]
+pub struct DirectoryPerson {
+    #[serde(flatten)]
+    person: Person,
+    projects: Vec<permagent::project_association::ProjectRef>,
+}
+
+/// The whole directory in two queries — `list_people` plus one grouped pass over
+/// `project_people`. Never per-row: this endpoint is typed against on every
+/// (debounced) keystroke and additionally runs the graph overlay.
+async fn people_directory_handler(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<PeopleQuery>,
+) -> Result<Json<Vec<DirectoryPerson>>, StatusCode> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let filter = PeopleFilter {
+        company: params.company,
+        role: params.role,
+        query: params.q,
+    };
+
+    let mut people = people::list_people(&pool, &filter)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // Decision A: attributes come from the graph, never the columns. Without
+    // this the directory renders stale/blank column values as if they were truth.
+    overlay_graph_attributes(state.brain.as_ref(), people.iter_mut().collect()).await;
+
+    let mut refs = permagent::project_association::project_refs_by_person(&pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(
+        people
+            .into_iter()
+            .map(|person| {
+                let projects = refs.remove(&person.entity_uuid).unwrap_or_default();
+                DirectoryPerson { person, projects }
+            })
+            .collect(),
+    ))
+}
+
+/// The projects one person belongs to. Pure permagent.db — no Brain required,
+/// so this stays available when the graph is down (unlike the relationship
+/// routes, which 503).
+async fn person_projects_handler(
+    State(state): State<Arc<AppState>>,
+    Path(uuid): Path<String>,
+) -> Result<Json<Vec<permagent::project_association::PersonProject>>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    people::get_by_uuid(&pool, &uuid)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Person not found".to_string()))?;
+
+    let projects = permagent::project_association::list_person_projects(&pool, &uuid)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(projects))
+}
+
+/// Body for `POST /api/people`. **snake_case, no `rename_all`** — matching every
+/// other body in this module (`SetFieldsRequest`, `AddRelationshipRequest`). The
+/// sibling *project* route genuinely is camelCase, so this module carries both
+/// conventions; do not "harmonize" one without the other.
+#[derive(Debug, Deserialize)]
+pub struct CreatePersonRequest {
+    pub display_name: String,
+    #[serde(default)]
+    pub fields: Option<HashMap<String, String>>,
+}
+
+/// The created (or pre-existing) person. `created` is load-bearing: it is the
+/// only place a caller learns their "new" person resolved to someone already in
+/// the directory.
+#[derive(Debug, Serialize)]
+pub struct CreatePersonResponse {
+    pub person: Person,
+    pub created: bool,
+}
+
+/// Create a person from the directory (no project association).
+///
+/// Pre-existence is checked on **both** identity keys, because they disagree:
+/// `canonical_id` strips punctuation, `graph_entity_id` preserves it, so
+/// "Jean-Luc Picard" and "Jean Luc Picard" collide on the former and diverge on
+/// the latter. When the two keys resolve to *different* people we refuse (409)
+/// rather than reporting `created: false` — silently returning the wrong human
+/// and then writing this request's fields onto them is the worse failure, and
+/// there is no merge or split primitive to undo it with.
+async fn create_person_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CreatePersonRequest>,
+) -> Result<(StatusCode, Json<CreatePersonResponse>), (StatusCode, String)> {
+    let display_name = req.display_name.trim().to_string();
+    if display_name.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "Name is required".to_string()));
+    }
+    if display_name.chars().count() > MAX_PERSON_FIELD_VALUE_LEN {
+        return Err((StatusCode::BAD_REQUEST, "Name is too long".to_string()));
+    }
+    if display_name.chars().any(char::is_control) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Name contains control characters".to_string(),
+        ));
+    }
+    // Validate the whole field batch before any write, exactly as PATCH does.
+    let fields = req.fields.unwrap_or_default();
+    for (name, value) in &fields {
+        validate_person_field(name, value).map_err(|message| (StatusCode::BAD_REQUEST, message))?;
+    }
+
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let canonical_id = permagent::identity::canonical::canonicalize_entity_id(
+        permagent::identity::canonical::EntityPrefix::Person,
+        &display_name,
+    )
+    .map_err(|e| (StatusCode::BAD_REQUEST, format!("Unusable name: {e:?}")))?;
+    let graph_hex = permagent::identity::canonical::graph_entity_id_hex("person", &display_name);
+
+    let by_canonical = people::get_by_canonical_id(&pool, &canonical_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let by_graph = people::get_by_graph_entity_id(&pool, &graph_hex)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    // The two keys must not point at different humans.
+    if let (Some(a), Some(b)) = (&by_canonical, &by_graph) {
+        if a.entity_uuid != b.entity_uuid {
+            return Err((
+                StatusCode::CONFLICT,
+                format!(
+                    "\"{display_name}\" matches two different existing people \
+                     ({} and {}) under the two identity keys. Open the existing \
+                     person instead — creating here would write onto the wrong one.",
+                    a.display_name, b.display_name
+                ),
+            ));
+        }
+    }
+    let existing = by_canonical.or(by_graph);
+    let created = existing.is_none();
+
+    let brain = state.brain.clone().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Brain unavailable — a person cannot be created without their graph node".to_string(),
+    ))?;
+
+    let mut person = match existing {
+        Some(p) => p,
+        None => permagent::people_create::create_person(
+            &pool,
+            &brain,
+            &display_name,
+            permagent::people_provenance::Provenance::Runtime,
+        )
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?,
+    };
+
+    if !fields.is_empty() {
+        let hex = person.graph_entity_id.as_deref().ok_or((
+            StatusCode::CONFLICT,
+            "Person has no graph bridge yet — cannot write graph fields".to_string(),
+        ))?;
+        let entity_id: spectral::core::entity_id::EntityId = hex.parse().map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("invalid graph_entity_id: {e:?}"),
+            )
+        })?;
+        brain
+            .set_manual_entity_fields(entity_id, fields.into_iter().collect())
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
+
+    overlay_graph_attributes(state.brain.as_ref(), vec![&mut person]).await;
+
+    // #629: peopleRev is client-local, so every other open client (and the phone)
+    // only learns about this person via the bus. No project scope here — the
+    // directory is global; livenessSync dispatches on event type, not payload.
+    permagent::events::emit(permagent::events::person_changed(
+        "",
+        &person.entity_uuid,
+        "created",
+    ));
+
+    let status = if created {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(CreatePersonResponse { person, created })))
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/api/people", get(list_people_handler))
+        .route(
+            "/api/people",
+            get(list_people_handler).post(create_person_handler),
+        )
+        .route("/api/people/directory", get(people_directory_handler))
+        .route("/api/people/{id}/projects", get(person_projects_handler))
         .route("/api/people/{id}/fields", patch(set_person_fields_handler))
         .route(
             "/api/people/{id}/relationships",
@@ -665,5 +890,78 @@ mod tests {
             get_status(&format!("/api/people/{missing}/activity")).await,
             StatusCode::NOT_FOUND
         );
+    }
+
+    /// 404 (person absent) rather than 405 (route absent) is the whole assertion
+    /// — it proves the path is mounted under the `{id}` prefix and not shadowed
+    /// by the sibling static `/api/people/directory` route.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn person_projects_route_is_mounted() {
+        let missing = "00000000-0000-0000-0000-000000000000";
+        assert_eq!(
+            get_status(&format!("/api/people/{missing}/projects")).await,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    /// `/api/people/directory` must resolve to the directory handler, never be
+    /// swallowed by a `{id}` pattern. A 200 here is the proof; the *content*
+    /// guarantee (that the graph overlay ran) needs a real Brain and lives in
+    /// `tests/crm_graph_wiring.rs` — in this harness `state.brain` is `None`, so
+    /// asserting on attributes here would pass for the wrong reason.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn directory_route_is_mounted_and_not_shadowed() {
+        assert_eq!(get_status("/api/people/directory").await, StatusCode::OK);
+    }
+
+    async fn post_people(body: serde_json::Value) -> StatusCode {
+        crate::test_support::test_root();
+        let state = AppState::new(true).await.unwrap();
+        let app = routes(state);
+        let req = Request::builder()
+            .uri("/api/people")
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        app.oneshot(req).await.unwrap().status()
+    }
+
+    /// Validation and the empty-name reject must both resolve BEFORE the brain
+    /// check, so they are deterministic in a harness with no Brain.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn create_person_rejects_empty_name() {
+        assert_eq!(
+            post_people(serde_json::json!({ "display_name": "   " })).await,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn create_person_rejects_off_vocabulary_field() {
+        assert_eq!(
+            post_people(serde_json::json!({
+                "display_name": "Jane Doe",
+                "fields": { "ssn": "123" }
+            }))
+            .await,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    /// The body is snake_case with no `rename_all` (matching every other body in
+    /// this module). A camelCase key must therefore fail to deserialize rather
+    /// than silently binding an empty name — this is the serde-field-never-bound
+    /// trap, pinned.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn create_person_body_is_snake_case() {
+        let status = post_people(serde_json::json!({ "displayName": "Jane Doe" })).await;
+        assert_ne!(status, StatusCode::CREATED);
+        assert_ne!(status, StatusCode::OK);
     }
 }

@@ -130,7 +130,12 @@ export function PeoplePanel({ project }: { project: Project }) {
           {people.map(p => (
             <button
               key={p.entity_uuid}
-              onClick={() => openPersonDetail(project.id, p)}
+              onClick={() =>
+                openPersonDetail(project.id, p, {
+                  project_role: p.project_role,
+                  associated_at: p.associated_at,
+                })
+              }
               style={{
                 display: 'flex', alignItems: 'baseline', gap: 8, textAlign: 'left',
                 padding: '6px 9px', borderRadius: 7, width: '100%',

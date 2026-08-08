@@ -84,6 +84,35 @@ export interface ProjectPerson {
 /** A bare CRM person (#530 `GET /api/people`), used by the associate picker. */
 export type Person = Omit<ProjectPerson, 'project_role' | 'associated_at'>;
 
+/** The project-association fields, carried separately now that a person can be
+ *  viewed outside any project (the directory). Null there, set by PeoplePanel. */
+export interface PersonAssociation {
+  project_role: string | null;
+  associated_at: string;
+}
+
+/** A project a person belongs to (`GET /api/people/{id}/projects`). */
+export interface PersonProject {
+  project_id: string;
+  project_name: string;
+  project_status: string;
+  role: string | null;
+  added_at: string;
+}
+
+/** The minimal project reference a directory row renders as a chip. */
+export interface ProjectRef {
+  project_id: string;
+  project_name: string;
+}
+
+/**
+ * A row of `GET /api/people/directory` — every person, with the projects they
+ * belong to. `projects` is empty for the cohort the directory exists to reach:
+ * people with no association at all, invisible to every project-scoped surface.
+ */
+export type DirectoryPerson = Person & { projects: ProjectRef[] };
+
 export interface PersonRelationship {
   from_entity_uuid: string;
   to_entity_uuid: string;

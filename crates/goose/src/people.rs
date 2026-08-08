@@ -335,6 +335,33 @@ pub async fn get_by_canonical_id(
     Ok(row.as_ref().map(row_to_person))
 }
 
+/// Fetch a single person by immutable `graph_entity_id` (bare blake3 hex).
+///
+/// The *other* identity key. It exists because `canonical_id` and
+/// `graph_entity_id` are derived by two different normalizations —
+/// [`crate::identity::canonical::canonicalize_entity_id`] strips punctuation
+/// while [`crate::identity::canonical::graph_canonical`] preserves it — so
+/// "Jean-Luc Picard" and "Jean Luc Picard" share a `canonical_id` but mint
+/// different EntityIds. A caller checking whether a person already exists must
+/// consult BOTH keys; agreeing on one alone hands back the wrong human.
+///
+/// Returns the first match: `graph_entity_id` carries an index, not a UNIQUE
+/// constraint, and the graph overlay deliberately tolerates several rows sharing
+/// one id.
+pub async fn get_by_graph_entity_id(
+    pool: &Pool<Sqlite>,
+    graph_entity_id: &str,
+) -> Result<Option<Person>, String> {
+    let row = sqlx::query(&format!(
+        "SELECT {SELECT_COLS} FROM people WHERE graph_entity_id = ? ORDER BY created_at ASC"
+    ))
+    .bind(graph_entity_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(row.as_ref().map(row_to_person))
+}
+
 /// List / surface people by attribute. Filters AND together; results are
 /// ordered by most-recent contact first (NULLs last), then display_name.
 pub async fn list_people(

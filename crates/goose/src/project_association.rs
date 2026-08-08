@@ -119,6 +119,90 @@ pub async fn list_project_people(
         .collect())
 }
 
+/// One project a person belongs to — the reverse of [`list_project_people`].
+/// Identity-only: no [`Person`] attributes, so no graph overlay is needed.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PersonProject {
+    pub project_id: String,
+    pub project_name: String,
+    pub project_status: String,
+    /// Role within this project (`project_people.role`). Nullable.
+    pub role: Option<String>,
+    pub added_at: String,
+}
+
+/// List the projects a person belongs to, newest association first.
+///
+/// Served by `idx_project_people_entity`, so this is cheap even though it reads
+/// the join table "backwards". Note that on the live corpus almost every person
+/// belongs to at most one project — the interesting cohort is the people this
+/// returns *nothing* for, who are unreachable from any project-scoped surface.
+pub async fn list_person_projects(
+    pool: &Pool<Sqlite>,
+    entity_uuid: &str,
+) -> Result<Vec<PersonProject>, String> {
+    let rows = sqlx::query(
+        "SELECT p.id AS project_id, p.name AS project_name, p.status AS project_status, \
+                pp.role AS role, pp.added_at AS added_at \
+         FROM project_people pp \
+         JOIN projects p ON p.id = pp.project_id \
+         WHERE pp.entity_uuid = ? \
+         ORDER BY pp.added_at DESC, p.name ASC",
+    )
+    .bind(entity_uuid)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(rows
+        .iter()
+        .map(|r| PersonProject {
+            project_id: r.get("project_id"),
+            project_name: r.get("project_name"),
+            project_status: r.get("project_status"),
+            role: r.get("role"),
+            added_at: r.get("added_at"),
+        })
+        .collect())
+}
+
+/// Every person↔project pair in one query, grouped by `entity_uuid`.
+///
+/// The directory's fan-out guard: one statement for the whole table rather than
+/// [`list_person_projects`] per row. Only the fields a directory chip needs.
+pub async fn project_refs_by_person(
+    pool: &Pool<Sqlite>,
+) -> Result<std::collections::HashMap<String, Vec<ProjectRef>>, String> {
+    let rows = sqlx::query(
+        "SELECT pp.entity_uuid, p.id AS project_id, p.name AS project_name \
+         FROM project_people pp \
+         JOIN projects p ON p.id = pp.project_id \
+         ORDER BY p.name ASC",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut out: std::collections::HashMap<String, Vec<ProjectRef>> =
+        std::collections::HashMap::new();
+    for r in rows.iter() {
+        out.entry(r.get("entity_uuid"))
+            .or_default()
+            .push(ProjectRef {
+                project_id: r.get("project_id"),
+                project_name: r.get("project_name"),
+            });
+    }
+    Ok(out)
+}
+
+/// The minimal project reference a directory row renders as a chip.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ProjectRef {
+    pub project_id: String,
+    pub project_name: String,
+}
+
 // ── project_memories ────────────────────────────────────────────────────────
 
 /// One project↔memory association row. `memory_id` is a Spectral `memory.db` id;

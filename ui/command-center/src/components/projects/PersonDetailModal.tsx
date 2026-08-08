@@ -1,12 +1,14 @@
 /**
  * PersonDetailModal (CRM epic slice 2a read view + slice 2b manual edit) — the
- * detail view for a person associated with a project, opened from the Overview
- * People panel.
+ * detail view for one person, opened from a project's Overview People panel or
+ * from the global people directory.
  *
  * Read view renders the person's typed CRM fields (role / company / email /
- * phone / birthday / relationship / how-met / notes) plus this project's role
- * and association time — carried on the {@link ProjectPerson} the panel already
- * fetched.
+ * phone / birthday / relationship / how-met / notes). When opened from a
+ * project it also shows that project's role and association time, carried in
+ * the `association` prop the panel already fetched; from the directory there is
+ * no project context, so those rows and the Remove-from-project action are
+ * absent rather than blank.
  *
  * Slice 2b (#495) adds an **Edit** mode: the typed fields become inputs and Save
  * writes them via `PATCH /api/people/{entity_uuid}/fields`. Those land in the
@@ -32,7 +34,7 @@ import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { DetailModal } from '../common/DetailModal';
-import type { Person, PersonActivity, PersonRelationship, ProjectPerson } from './types';
+import type { Person, PersonActivity, PersonAssociation, PersonRelationship } from './types';
 
 function fmtTime(iso: string | null): string {
   if (!iso) return '—';
@@ -66,7 +68,7 @@ type EditableKey =
 
 type Draft = Record<EditableKey, string>;
 
-function draftFrom(p: ProjectPerson): Draft {
+function draftFrom(p: Person): Draft {
   return {
     role: p.role ?? '',
     company: p.company ?? '',
@@ -82,10 +84,14 @@ function draftFrom(p: ProjectPerson): Draft {
 export function PersonDetailModal({
   projectId,
   person,
+  association,
   onClose,
 }: {
-  projectId: string;
-  person: ProjectPerson;
+  /** Null when opened from the global directory — there is no project context. */
+  projectId: string | null;
+  person: Person;
+  /** Null outside a project; gates the project-role badge and Disassociate. */
+  association?: PersonAssociation | null;
   onClose: () => void;
 }) {
   const { colors } = useTheme();
@@ -97,7 +103,7 @@ export function PersonDetailModal({
 
   // Local view of the person: seeded from the prop, updated optimistically on a
   // field edit and reconciled from the PATCH response (the graph's own truth).
-  const [view, setView] = useState<ProjectPerson>(person);
+  const [view, setView] = useState<Person>(person);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Draft>(() => draftFrom(person));
   const [saving, setSaving] = useState(false);
@@ -207,7 +213,7 @@ export function PersonDetailModal({
 
     const prior = view;
     // Optimistic: reflect the edit immediately; roll back on failure.
-    const optimistic: ProjectPerson = { ...view };
+    const optimistic: Person = { ...view };
     for (const [k, v] of Object.entries(changed)) {
       (optimistic as unknown as Record<string, string | null>)[k] = v === '' ? null : v;
     }
@@ -249,6 +255,10 @@ export function PersonDetailModal({
   };
 
   const doDisassociate = async () => {
+    // Unreachable from the directory — the control that sets `confirming` is
+    // only rendered when a project scope exists. Belt-and-braces so a future
+    // caller cannot turn a null scope into a request to `/api/projects/null/...`.
+    if (!projectId) return;
     setRemoving(true);
     setError(null);
     try {
@@ -264,8 +274,8 @@ export function PersonDetailModal({
     }
   };
 
-  const badge = view.project_role
-    ? { label: view.project_role, color: colors.cyan, bg: colors.cyanSoft }
+  const badge = association?.project_role
+    ? { label: association.project_role, color: colors.cyan, bg: colors.cyanSoft }
     : null;
 
   const footer = editing ? (
@@ -299,9 +309,11 @@ export function PersonDetailModal({
         {promptCopied ? 'Prompt copied — paste it in chat' : 'Refresh enrichment'}
       </button>
       <span style={{ flex: 1 }} />
-      <button onClick={() => setConfirming(true)} style={dangerBtn(colors)}>
-        Remove from project
-      </button>
+      {projectId && (
+        <button onClick={() => setConfirming(true)} style={dangerBtn(colors)}>
+          Remove from project
+        </button>
+      )}
     </>
   );
 
@@ -312,7 +324,7 @@ export function PersonDetailModal({
           <EditForm colors={colors} draft={draft} onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))} />
         ) : (
           <>
-            <ReadView colors={colors} person={view} />
+            <ReadView colors={colors} person={view} association={association} />
             <RelatedPeople colors={colors} rows={relationships} people={allPeople} status={relatedStatus}
               adding={addingRelationship} targetId={targetId} predicate={predicate}
               onStart={() => setAddingRelationship(true)} onCancel={() => setAddingRelationship(false)}
@@ -375,9 +387,10 @@ function PersonActivityTimeline({ colors, rows, status, onRetry }: { colors: Ret
 function SectionLabel({ colors, children }: { colors: ReturnType<typeof useTheme>['colors']; children: ReactNode }) { return <div style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono, textTransform: 'uppercase', letterSpacing: '.04em' }}>{children}</div>; }
 function Small({ colors, children }: { colors: ReturnType<typeof useTheme>['colors']; children: ReactNode }) { return <div style={{ fontSize: 11, color: colors.textDim, marginTop: 6 }}>{children}</div>; }
 
-function ReadView({ colors, person }: {
+function ReadView({ colors, person, association }: {
   colors: ReturnType<typeof useTheme>['colors'];
-  person: ProjectPerson;
+  person: Person;
+  association?: PersonAssociation | null;
 }) {
   const rows = useMemo<[string, ReactNode][]>(() => [
     ['Role', person.role || '—'],
@@ -391,10 +404,15 @@ function ReadView({ colors, person }: {
     ['Birthday', person.birthday || '—'],
     ['Relationship', person.relationship_strength || '—'],
     ['How met', person.how_met || '—'],
-    ['Project role', person.project_role || '—'],
-    ['Associated', fmtTime(person.associated_at)],
+    // Project-scoped rows only exist when opened from a project's People panel.
+    ...(association
+      ? ([
+          ['Project role', association.project_role || '—'],
+          ['Associated', fmtTime(association.associated_at)],
+        ] as [string, ReactNode][])
+      : []),
     ['Last contact', fmtTime(person.last_contact_at)],
-  ], [colors, person]);
+  ], [colors, person, association]);
 
   return (
     <>
@@ -538,6 +556,7 @@ export function PersonDetailModalHost() {
       key={personDetail.person.entity_uuid}
       projectId={personDetail.projectId}
       person={personDetail.person}
+      association={personDetail.association}
       onClose={closePersonDetail}
     />
   );

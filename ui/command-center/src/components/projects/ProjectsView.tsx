@@ -9,8 +9,12 @@ import { useCommandCenter } from '../../lib/store';
 import { ProjectWorkspace } from './ProjectWorkspace';
 import { PERSONAL_ID, CANCELLABLE_STATES, type Project, type BoardColumn, type Card } from './types';
 import { ViewHeader } from '../common/ViewHeader';
+import { PeopleDirectory } from '../people/PeopleDirectory';
 
 const LS_KEY = 'permagent-projects-last-opened';
+/** Which root surface is showing: the projects board, or the people directory. */
+const ROOT_VIEW_KEY = 'permagent-projects-root-view';
+type RootView = 'projects' | 'people';
 
 function isProject(value: unknown): value is Project {
   if (!value || typeof value !== 'object') return false;
@@ -43,6 +47,9 @@ export function ProjectsView() {
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [rootView, setRootView] = useState<RootView>(
+    () => (localStorage.getItem(ROOT_VIEW_KEY) === 'people' ? 'people' : 'projects'),
+  );
   const pendingProjectNavigation = useCommandCenter(s => s.pendingProjectNavigation);
   const setPendingProjectNavigation = useCommandCenter(s => s.setPendingProjectNavigation);
   // #629 multi-client liveness: `project_changed` on /events bumps this, so a
@@ -93,14 +100,17 @@ export function ProjectsView() {
     if (projectsRev > 0) loadProjects();
   }, [projectsRev, loadProjects]);
 
-  // On first load, restore last-opened project
+  // On first load, restore last-opened project — but NOT when the user left off
+  // on People. Without this guard the restore fires on mount and lands them in a
+  // project workspace, which is exactly how the directory would become
+  // unreachable for anyone who has ever opened a project.
   useEffect(() => {
-    if (loading || projects.length === 0) return;
+    if (loading || projects.length === 0 || rootView === 'people') return;
     const saved = localStorage.getItem(LS_KEY);
     if (saved && projects.some(p => p.id === saved)) {
       setActiveProjectId(saved);
     }
-  }, [loading, projects]);
+  }, [loading, projects, rootView]);
 
   // Agent/voice navigation: open a specific project when pendingProjectNavigation
   // is set. The id is resolved daemon-side against the LIVE project list
@@ -167,6 +177,26 @@ export function ProjectsView() {
     }
   }, [loadProjects]);
 
+  const switchRootView = (next: RootView) => {
+    localStorage.setItem(ROOT_VIEW_KEY, next);
+    setRootView(next);
+    if (next === 'people') setActiveProjectId(null);
+  };
+
+  // People sits ABOVE the projects loading/error gates on purpose: the directory
+  // reads a different endpoint entirely, so a projects-service outage must not
+  // hide it.
+  if (rootView === 'people' && !activeProjectId) {
+    return (
+      <div style={{ width: '100%', height: '100%', overflowY: 'auto', background: gradient.workspace, fontFamily: font.body }}>
+        <div style={{ padding: '20px 24px 0' }}>
+          <RootViewToggle view={rootView} onChange={switchRootView} />
+        </div>
+        <PeopleDirectory />
+      </div>
+    );
+  }
+
   if (loading) {
     return (
       <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', background: gradient.workspace, color: colors.textMuted, fontFamily: font.body, fontSize: 13 }}>
@@ -207,7 +237,51 @@ export function ProjectsView() {
     );
   }
 
-  return <AllProjectsView projects={projects} onOpenProject={openProject} onStatusChange={handleStatusChange} />;
+  return (
+    <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ padding: '20px 24px 0', background: gradient.workspace }}>
+        <RootViewToggle view={rootView} onChange={switchRootView} />
+      </div>
+      <div style={{ flex: 1, minHeight: 0 }}>
+        <AllProjectsView projects={projects} onOpenProject={openProject} onStatusChange={handleStatusChange} />
+      </div>
+    </div>
+  );
+}
+
+/** Projects | People, at the root. Mirrors ProjectWorkspace's per-project lens
+ *  toggle so the two read as one system. */
+function RootViewToggle({ view, onChange }: { view: RootView; onChange: (v: RootView) => void }) {
+  const { colors } = useTheme();
+  const tabs: { key: RootView; label: string }[] = [
+    { key: 'projects', label: 'Projects' },
+    { key: 'people', label: 'People' },
+  ];
+  return (
+    <div style={{
+      display: 'inline-flex', gap: 2, padding: 2, borderRadius: 8,
+      background: 'rgba(255,255,255,0.04)', border: `1px solid ${colors.border}`,
+    }}>
+      {tabs.map(t => {
+        const active = view === t.key;
+        return (
+          <button
+            key={t.key}
+            onClick={() => onChange(t.key)}
+            style={{
+              padding: '4px 12px', borderRadius: 6, cursor: 'pointer', border: 'none',
+              background: active ? colors.cyanSoft : 'transparent',
+              color: active ? colors.cyan : colors.textMuted,
+              fontFamily: font.body, fontSize: 12, fontWeight: active ? 600 : 500,
+              transition: 'all 150ms',
+            }}
+          >
+            {t.label}
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 // ── Shared empty / error state block ────────────────────────────────────────
