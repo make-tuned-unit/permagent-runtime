@@ -4,7 +4,7 @@ use crate::agents::tool_execution::ToolCallContext;
 use async_trait::async_trait;
 use rmcp::model::{
     CallToolResult, Content, Implementation, InitializeResult, JsonObject, ListToolsResult,
-    ServerCapabilities, Tool,
+    ServerCapabilities, Tool, ToolAnnotations,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -889,7 +889,15 @@ impl BrowserClient {
                  user asks about what they're looking at or references their open tab."
                     .to_string(),
                 schema.clone(),
-            ),
+            )
+            // Reads the open tab. No effect on the page.
+            .annotate(ToolAnnotations::from_raw(
+                Some("Read Browser Content".to_string()),
+                Some(true), // pure read — deliberately NOT escalated
+                Some(false),
+                Some(false),
+                Some(true),
+            )),
             Tool::new(
                 "open_website".to_string(),
                 "Open a website in the Permagent browser (the Build tab) so the user can see \
@@ -917,7 +925,15 @@ impl BrowserClient {
                  browser tab open. Public http(s) sites only."
                     .to_string(),
                 url_schema,
-            ),
+            )
+            // Fetches and returns text. No effect on any page.
+            .annotate(ToolAnnotations::from_raw(
+                Some("Read Webpage".to_string()),
+                Some(true), // pure read — deliberately NOT escalated
+                Some(false),
+                Some(false),
+                Some(true), // open-world: arbitrary pages
+            )),
             Tool::new(
                 "get_page_snapshot".to_string(),
                 "List the interactive elements (links, buttons, inputs, selects) on the page \
@@ -926,7 +942,15 @@ impl BrowserClient {
                  use the fresh snapshot it returns rather than an old ref."
                     .to_string(),
                 schema,
-            ),
+            )
+            // Enumerates elements. No effect on the page.
+            .annotate(ToolAnnotations::from_raw(
+                Some("Get Page Snapshot".to_string()),
+                Some(true), // pure read — deliberately NOT escalated
+                Some(false),
+                Some(false),
+                Some(true), // open-world: arbitrary pages
+            )),
             Tool::new(
                 "act_on_page".to_string(),
                 "Act on an element in the Permagent browser page — click it, type text into it, \
@@ -935,7 +959,31 @@ impl BrowserClient {
                  a page, not just read it."
                     .to_string(),
                 act_schema,
-            ),
+            )
+            // Declared WRITE, and this is the only reason it is supervised.
+            //
+            // `Config::apply_tool_annotations` (config/permission.rs) starts
+            // with `let Some(anns) = &tool.annotations else { continue }` — a
+            // tool carrying NO annotations is skipped entirely, so it can never
+            // be marked write and never lands in AskBefore. act_on_page had no
+            // annotations, which meant clicking "Purchase", "Delete account" or
+            // "Confirm transfer" on a live page ran unsupervised.
+            //
+            // Fail closed on the tool, not on the element: a click is judged
+            // safe or not by where it leads, and the DOM role of a control is
+            // not that. A link can say "Delete account". Every act_on_page call
+            // is treated as state-changing; refining that with a per-element
+            // classifier is only safe once there is evidence about which
+            // classes are genuinely inert.
+            .annotate(ToolAnnotations::from_raw(
+                Some("Act on Page".to_string()),
+                Some(false), // not read-only — it clicks, types and selects
+                Some(false), // not inherently destructive, but can drive a destructive control
+                Some(false),
+                // Open-world: it acts on whatever page is loaded, which is not
+                // knowable from the arguments.
+                Some(true),
+            )),
         ]
     }
 }
@@ -1029,6 +1077,84 @@ impl McpClientTrait for BrowserClient {
 
     fn get_info(&self) -> Option<&InitializeResult> {
         Some(&self.info)
+    }
+}
+
+#[cfg(test)]
+mod annotation_tests {
+    use super::BrowserClient;
+
+    /// Tools that deliberately carry NO annotations, each with the reason.
+    ///
+    /// This list exists because an un-annotated tool is INVISIBLE to the write
+    /// gate: `Config::apply_tool_annotations` opens with
+    /// `let Some(anns) = &tool.annotations else { continue }`, so a tool with
+    /// no annotations can never be marked write and never reaches AskBefore.
+    /// That is how `act_on_page` — click, type, select on a live page — ran
+    /// unsupervised. Leaving a tool off the gate must be a decision someone
+    /// wrote down, not the default you get by forgetting.
+    const DELIBERATELY_UNANNOTATED: &[&str] = &[
+        // Navigation the user explicitly asked for ("open cbc.ca"). Gating it
+        // would prompt on the tool's entire purpose. Reversible, no external
+        // effect beyond a GET.
+        "open_website",
+        // Launches the user's own app on their own Mac, already behind
+        // require_loopback on the HTTP rail.
+        "wake_desktop_app",
+    ];
+
+    /// The #622 regression: a state-changing browser act must be gated.
+    #[test]
+    fn act_on_page_is_declared_write_so_the_permission_gate_sees_it() {
+        let tool = BrowserClient::get_tools()
+            .into_iter()
+            .find(|t| t.name.as_ref() == "act_on_page")
+            .expect("act_on_page is registered");
+        let ann = tool
+            .annotations
+            .as_ref()
+            .expect("act_on_page MUST be annotated or the write gate skips it entirely");
+        assert_eq!(
+            ann.read_only_hint,
+            Some(false),
+            "act_on_page clicks, types and selects on a live page — a click on \
+             \"Purchase\" or \"Delete account\" cannot be unsupervised"
+        );
+    }
+
+    /// Every tool is either annotated or explicitly exempted by name. A new
+    /// browser tool cannot slip past the gate by simply omitting annotations.
+    #[test]
+    fn no_browser_tool_skips_the_write_gate_by_accident() {
+        for tool in BrowserClient::get_tools() {
+            let name = tool.name.to_string();
+            if DELIBERATELY_UNANNOTATED.contains(&name.as_str()) {
+                continue;
+            }
+            assert!(
+                tool.annotations.is_some(),
+                "{name} has no annotations, so the permission layer skips it and it can \
+                 never be gated. Annotate it, or add it to DELIBERATELY_UNANNOTATED with \
+                 the reason."
+            );
+        }
+    }
+
+    /// The reads stay reads — pinning this means a later change that makes one
+    /// of them act on the page has to say so here.
+    #[test]
+    fn the_read_tools_are_declared_read_only() {
+        for name in ["read_browser_content", "read_webpage", "get_page_snapshot"] {
+            let tool = BrowserClient::get_tools()
+                .into_iter()
+                .find(|t| t.name.as_ref() == name)
+                .unwrap_or_else(|| panic!("{name} is registered"));
+            let ann = tool
+                .annotations
+                .as_ref()
+                .unwrap_or_else(|| panic!("{name} annotated"));
+            assert_eq!(ann.read_only_hint, Some(true), "{name}");
+        }
     }
 }
 
