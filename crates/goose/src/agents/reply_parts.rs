@@ -589,19 +589,19 @@ impl Agent {
         let manager = self.config.session_manager.clone();
         let session = manager.get_session(session_id, false).await?;
 
-        let accumulate = |a: Option<i32>, b: Option<i32>| -> Option<i32> {
-            match (a, b) {
-                (Some(x), Some(y)) => Some(x + y),
-                _ => a.or(b),
-            }
-        };
-
-        let accumulated_total =
-            accumulate(session.accumulated_total_tokens, usage.usage.total_tokens);
-        let accumulated_input =
-            accumulate(session.accumulated_input_tokens, usage.usage.input_tokens);
-        let accumulated_output =
-            accumulate(session.accumulated_output_tokens, usage.usage.output_tokens);
+        // Accumulate in the DATABASE, not here.
+        //
+        // This used to read `session.accumulated_*`, add the new usage in Rust,
+        // and write the absolute result. Two turns sharing a session — a
+        // subagent alongside the main loop, or concurrent tool calls — both
+        // read the same starting value and both write their own total, so the
+        // second commit silently discards the first's tokens. That undercounts
+        // spend, and the accumulated figures feed the spend caps.
+        let (delta_total, delta_input, delta_output) = (
+            usage.usage.total_tokens.unwrap_or(0),
+            usage.usage.input_tokens.unwrap_or(0),
+            usage.usage.output_tokens.unwrap_or(0),
+        );
 
         let (current_total, current_input, current_output) = if is_compaction_usage {
             // After compaction: summary output becomes new input context
@@ -621,9 +621,7 @@ impl Agent {
             .total_tokens(current_total)
             .input_tokens(current_input)
             .output_tokens(current_output)
-            .accumulated_total_tokens(accumulated_total)
-            .accumulated_input_tokens(accumulated_input)
-            .accumulated_output_tokens(accumulated_output)
+            .accumulate_tokens(delta_total, delta_input, delta_output)
             .apply()
             .await?;
 
