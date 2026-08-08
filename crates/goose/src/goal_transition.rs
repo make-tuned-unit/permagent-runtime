@@ -1414,6 +1414,7 @@ pub async fn insert_roadmap_goal(
     pool: &Pool<Sqlite>,
     project_id: &str,
     input: NewRoadmapGoal,
+    actor: &str,
 ) -> Result<crate::cards::Card, GuardError> {
     let title = input.title.trim().to_string();
     if title.is_empty() {
@@ -1461,13 +1462,22 @@ pub async fn insert_roadmap_goal(
     .await
     .map_err(GuardError::Db)?;
 
-    // Audit the insert (tier-0 system record).
+    // Audit the insert (tier-0 system record), attributed to whoever asked.
+    //
+    // This used to hardcode `ACTOR_JESSE`. That was correct for the only caller
+    // that existed — the UI route — and wrong as a shape: `ACTOR_JESSE` is not
+    // a default, it is the literal the Tier-2 human-only gate compares against
+    // (see `decisions::risk_gate`). Baking it into a library function means the
+    // first non-human caller to appear mints the human's attribution silently,
+    // with nothing at the call site to notice. That is the same defect as the
+    // `answer_decisions` finding, which relayed a model's verdict as Jesse.
+    // The actor is the caller's fact to state, never this function's to assume.
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(db_err)?;
     decisions::append_audit_tx(
         &mut tx,
         "none",
         Some(&card.id),
-        decisions::ACTOR_JESSE,
+        actor,
         0,
         "roadmap:insert",
         None,
@@ -2338,6 +2348,7 @@ mod tests {
                 title: "Root insert".to_string(),
                 ..Default::default()
             },
+            decisions::ACTOR_JESSE,
         )
         .await
         .unwrap();
@@ -2352,6 +2363,7 @@ mod tests {
                 depends_on: vec![root.id.clone()],
                 ..Default::default()
             },
+            decisions::ACTOR_JESSE,
         )
         .await
         .unwrap();
@@ -2371,6 +2383,7 @@ mod tests {
                 depends_on: vec![done.id.clone()],
                 ..Default::default()
             },
+            decisions::ACTOR_JESSE,
         )
         .await
         .unwrap();
@@ -2384,10 +2397,53 @@ mod tests {
                 title: "   ".to_string(),
                 ..Default::default()
             },
+            decisions::ACTOR_JESSE,
         )
         .await
         .unwrap_err();
         assert!(matches!(err, GuardError::Invalid(_)));
+    }
+
+    /// The audit row must name whoever actually asked, not a baked-in default.
+    ///
+    /// `ACTOR_JESSE` is the literal the Tier-2 human-only gate compares
+    /// against, so a library function that hardcodes it launders any future
+    /// non-human caller into the human's identity — silently, with nothing at
+    /// the call site to notice. This asserts a system-originated insert is
+    /// attributed to the system and is NOT recorded as Jesse.
+    #[tokio::test]
+    async fn roadmap_insert_is_attributed_to_the_caller_not_to_jesse() {
+        let pool = test_pool().await;
+        crate::cards::seed_goal_columns(&pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+
+        let card = insert_roadmap_goal(
+            &pool,
+            PERSONAL_PROJECT_ID,
+            NewRoadmapGoal {
+                title: "System-originated goal".to_string(),
+                ..Default::default()
+            },
+            decisions::ACTOR_SYSTEM,
+        )
+        .await
+        .unwrap();
+
+        let acted_by: String = sqlx::query_scalar(
+            "SELECT acted_by FROM decision_audit WHERE goal_id = ? AND outcome = 'roadmap:insert'",
+        )
+        .bind(&card.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(acted_by, decisions::ACTOR_SYSTEM);
+        assert_ne!(
+            acted_by,
+            decisions::ACTOR_JESSE,
+            "a system insert must never be laundered into the human-only actor"
+        );
     }
 
     // ── Per-goal auto-approve (#252) ────────────────────────────────────────

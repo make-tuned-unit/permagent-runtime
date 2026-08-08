@@ -566,6 +566,10 @@ async fn insert_roadmap_goal_handler(
             tags: req.tags,
             depends_on: req.depends_on,
         },
+        // This route is the human's own click arriving over HTTP. Stated here
+        // rather than assumed inside the guard, so a future non-human caller
+        // has to state its own actor instead of inheriting Jesse's.
+        permagent::decisions::ACTOR_JESSE,
     )
     .await
     .map_err(guard_err)?;
@@ -598,9 +602,14 @@ async fn set_goal_dependencies_handler(
         ));
     }
 
-    goal_transition::set_goal_dependencies(&pool, &card_id, &req.depends_on, "jesse")
-        .await
-        .map_err(guard_err)?;
+    goal_transition::set_goal_dependencies(
+        &pool,
+        &card_id,
+        &req.depends_on,
+        permagent::decisions::ACTOR_JESSE,
+    )
+    .await
+    .map_err(guard_err)?;
 
     // Auto-dispatch respects the change: a goal whose (new) deps are all
     // Complete is promoted Triage → Ready now, not on the next approval.
@@ -644,9 +653,13 @@ async fn remove_roadmap_goal_handler(
         ));
     }
 
-    let rewired = goal_transition::detach_goal_from_dependents(&pool, &card_id, "jesse")
-        .await
-        .map_err(guard_err)?;
+    let rewired = goal_transition::detach_goal_from_dependents(
+        &pool,
+        &card_id,
+        permagent::decisions::ACTOR_JESSE,
+    )
+    .await
+    .map_err(guard_err)?;
 
     // Cancel the goal itself unless it is already terminal.
     let col = cards::get_column(&pool, &card.column_id)
@@ -708,9 +721,14 @@ async fn set_auto_approve_handler(
         ));
     }
 
-    goal_transition::set_goal_auto_approve(&pool, &card_id, req.enabled, "jesse")
-        .await
-        .map_err(guard_err)?;
+    goal_transition::set_goal_auto_approve(
+        &pool,
+        &card_id,
+        req.enabled,
+        permagent::decisions::ACTOR_JESSE,
+    )
+    .await
+    .map_err(guard_err)?;
 
     let updated = cards::get_card(&pool, &card_id)
         .await
