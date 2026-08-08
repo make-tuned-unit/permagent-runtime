@@ -843,10 +843,10 @@ const TITLE_SYNONYM_VERBS: &[&str] = &["add", "write", "create", "make", "build"
 fn title_tokens(title: &str) -> std::collections::BTreeSet<String> {
     let lowered = title.to_lowercase();
     // Strip a trailing retry marker without a regex dependency.
-    let stripped = match lowered.find("(retry") {
-        Some(i) => match lowered[i..].find(')') {
-            Some(j) => format!("{}{}", &lowered[..i], &lowered[i + j + 1..]),
-            None => lowered[..i].to_string(),
+    let stripped = match lowered.split_once("(retry") {
+        Some((head, rest)) => match rest.split_once(')') {
+            Some((_, tail)) => format!("{head}{tail}"),
+            None => head.to_string(),
         },
         None => lowered,
     };
