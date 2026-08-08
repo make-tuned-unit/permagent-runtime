@@ -215,7 +215,14 @@ function SummaryPanel({ project, onProjectUpdated }: {
 // design: no badge, no notification — read them as you browse. Renders
 // nothing until the first insight exists.
 
-interface WatcherInsight { text: string; created_at: string }
+interface WatcherInsightCard { id: string; title: string }
+interface WatcherInsight {
+  text: string;
+  created_at: string;
+  /** The cards this insight is about. Absent on rows written before the
+   *  Watcher started naming them — absent and empty render identically. */
+  cards?: WatcherInsightCard[];
+}
 
 function readWatcherInsights(metadata: Record<string, unknown>): WatcherInsight[] {
   const raw = metadata?.watcher_insights;
@@ -228,8 +235,9 @@ function readWatcherInsights(metadata: Record<string, unknown>): WatcherInsight[
     .slice(0, 3);
 }
 
-function WatcherInsightsPanel({ project }: { project: Project }) {
+export function WatcherInsightsPanel({ project }: { project: Project }) {
   const { colors } = useTheme();
+  const openCardOnBoard = useCommandCenter(s => s.openCardOnBoard);
   const insights = readWatcherInsights(project.metadataJson);
   if (insights.length === 0) return null;
   return (
@@ -240,7 +248,28 @@ function WatcherInsightsPanel({ project }: { project: Project }) {
             <span style={{ color: colors.purpleBright, fontSize: 11, flexShrink: 0, lineHeight: '18px' }}>◆</span>
             <div style={{ minWidth: 0 }}>
               <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.55 }}>{i.text}</div>
-              <div style={{ fontSize: 10, color: colors.textDim, marginTop: 2 }}>{formatDate(i.created_at)}</div>
+              {/* The cards the observation is about. Without these the reader
+                  is told something stalled and given no way to reach it. */}
+              {(i.cards ?? []).length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 5 }}>
+                  {(i.cards ?? []).map(c => (
+                    <button
+                      key={c.id}
+                      onClick={() => openCardOnBoard(project.id, c.id)}
+                      title={`Open "${c.title}" on the board`}
+                      style={{
+                        fontSize: 10, color: colors.cyan, background: colors.cyanSoft,
+                        border: 'none', borderRadius: 4, padding: '2px 7px',
+                        cursor: 'pointer', fontFamily: font.body, maxWidth: 260,
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {c.title}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div style={{ fontSize: 10, color: colors.textDim, marginTop: 4 }}>{formatDate(i.created_at)}</div>
             </div>
           </div>
         ))}

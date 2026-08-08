@@ -863,6 +863,7 @@ pub fn proactive_nudge(
     message: &str,
     count: i64,
     last_ts: &str,
+    url: Option<&str>,
 ) -> PermagentEvent {
     PermagentEvent::new(
         PermagentEventType::ProactiveNudge,
@@ -872,6 +873,13 @@ pub fn proactive_nudge(
             "message": message,
             "count": count,
             "last_ts": last_ts,
+            // The thing the nudge is ABOUT. A news nudge that cannot be opened
+            // is a strictly worse version of not being told: it spends the
+            // user's attention and gives them nowhere to put it. The client has
+            // read this key since the feature shipped (`notifications.ts`
+            // `p.url ?? p.link ?? p.source_url` → `openInBrowser`); the server
+            // just never sent it, so every article nudge was a dead end.
+            "url": url,
         }),
     )
 }
@@ -973,6 +981,49 @@ pub fn session_changed(session_id: &str, change: &str) -> PermagentEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A news nudge must deliver the link, on the key the client reads.
+    ///
+    /// The URL was fetched, used for dedup, and then dropped at emit — so
+    /// Henry could say "there's a fresh piece worth reading" with nowhere to
+    /// go. The client has read `url` since the feature shipped
+    /// (`notifications.ts` → `p.url ?? p.link ?? p.source_url` →
+    /// `openInBrowser`), so this asserts the DOCUMENTED WIRE KEY, not merely
+    /// that some field exists — the serde-field-never-bound rule.
+    #[test]
+    fn proactive_nudge_carries_the_link_on_the_key_the_client_reads() {
+        let event = proactive_nudge(
+            "news",
+            "AI and software jobs",
+            "There's a fresh piece worth a read.",
+            1,
+            "2026-08-08T08:35:00Z",
+            Some("https://example.com/article"),
+        );
+        let v = serde_json::to_value(&event).unwrap();
+        assert_eq!(
+            v["payload"]["url"], "https://example.com/article",
+            "the client reads payload.url; anything else is a dead-end nudge"
+        );
+    }
+
+    /// A nudge with nothing to open must send `url: null`, not omit it — an
+    /// absent key and a null one must not be distinguishable to the client,
+    /// which treats both as "no link".
+    #[test]
+    fn proactive_nudge_without_a_link_is_explicitly_null() {
+        let event = proactive_nudge(
+            "brain",
+            "a dormant thread",
+            "Worth revisiting.",
+            3,
+            "t",
+            None,
+        );
+        let v = serde_json::to_value(&event).unwrap();
+        assert!(v["payload"].get("url").is_some());
+        assert!(v["payload"]["url"].is_null());
+    }
 
     #[test]
     fn test_event_serialization() {

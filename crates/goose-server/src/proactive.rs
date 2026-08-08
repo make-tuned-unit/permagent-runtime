@@ -157,6 +157,11 @@ pub fn spawn(state: Arc<AppState>) {
                 &message,
                 nudge.count,
                 &nudge.last_ts,
+                // Deliver the link, don't just remember it. This was fetched
+                // above, used for dedup below, and then dropped — so Henry
+                // could say "there's a fresh piece worth reading" and give the
+                // user no way to reach it.
+                nudge.news_link.as_deref(),
             ));
             tracing::info!(
                 target: "permagentd::echo",

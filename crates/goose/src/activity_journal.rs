@@ -602,6 +602,7 @@ mod tests {
             "You haven't touched the solar shed thread in three weeks.",
             4,
             "2026-06-19T10:00:00.000Z",
+            None,
         );
         let entry = entry_from_event(&e).expect("proactive_nudge is journaled");
         assert_eq!(entry.kind, "proactive_nudge");
@@ -618,6 +619,7 @@ mod tests {
             "kuzu 0.11 shipped — relevant to the Brain.",
             1,
             "2026-07-10T10:00:00.000Z",
+            Some("https://example.com/kuzu-0-11"),
         ))
         .unwrap();
         assert_eq!(news.title, "News: kuzu 0.11");
