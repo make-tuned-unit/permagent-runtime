@@ -164,6 +164,27 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
     });
   }, []);
 
+  // Reap browser webviews the shell has forgotten (#548).
+  //
+  // BrowserSessions and the native children live for the PROCESS; this
+  // component's memory of their ids dies with the page. After a shell reload
+  // (or a dev hot-reload) every previously-open child keeps compositing above
+  // the DOM — native webviews always render over HTML — while nothing left
+  // running can address them. That is the "force-quit required" state.
+  //
+  // Mount-once, with whatever ids we still believe in. Right after a reload
+  // that is the empty list, so everything native is orphaned and gets closed.
+  const reapedRef = useRef(false);
+  useEffect(() => {
+    if (reapedRef.current) return;
+    reapedRef.current = true;
+    const inv = apiRef.current;
+    if (!inv) return;
+    const keep = tabsRef.current.map(t => t.webviewId).filter((id): id is string => !!id);
+    inv.invoke('reap_orphan_browsers', { keep })
+      .catch(() => { /* older shell without the command — nothing to reap */ });
+  }, []);
+
   // Replay buffered events onto tabs that have since registered their
   // webviewId. Runs after every tabs change, so whichever of the two orderings
   // happened, the tab ends up correct — and in event order, so a title that

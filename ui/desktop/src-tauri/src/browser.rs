@@ -426,6 +426,67 @@ pub async fn close_browser(app: AppHandle, webview_id: String) -> Result<(), Str
     Ok(())
 }
 
+/// Close every browser webview the UI no longer knows about.
+///
+/// Why this exists: `BrowserSessions` and the native child webviews live for
+/// the lifetime of the PROCESS, but the React shell's memory of which
+/// `webview_id`s exist dies with the page. Reload the shell (or hot-reload in
+/// dev) and every open browser child keeps compositing above the DOM — native
+/// child webviews always render over HTML — while the only code that could
+/// address them has forgotten their ids. The result is a UI buried under
+/// webviews nothing can close, and the only way out is force-quitting the app.
+///
+/// The shell calls this once on mount with the ids it still believes in
+/// (normally none, right after a reload). Anything labelled `browser-*` that
+/// is not in `keep` is orphaned by definition and gets closed.
+///
+/// Safe as a prefix sweep because these labels come from a single
+/// process-static counter (`WEBVIEW_COUNTER`) and no other webview in the app
+/// uses the `browser-` prefix. Returns the number reaped so a caller — or a
+/// human reading the log — can tell the difference between "nothing was
+/// orphaned" and "the sweep never ran".
+#[tauri::command]
+pub async fn reap_orphan_browsers(app: AppHandle, keep: Vec<String>) -> Result<usize, String> {
+    // Take the full label set first, then close outside the lock: closing a
+    // webview can re-enter, and holding the mutex across that is how the pane
+    // teardown deadlocked before.
+    let orphans: Vec<String> = {
+        let sessions = app.state::<BrowserSessions>();
+        let map = sessions.0.lock().unwrap();
+        map.keys()
+            .filter(|label| !keep.contains(*label))
+            .cloned()
+            .collect()
+    };
+
+    let mut reaped = 0usize;
+    for label in &orphans {
+        if let Some(webview) = app.get_webview(label) {
+            // Best-effort: a webview that is already gone is exactly the
+            // outcome we want, so a close error must not abort the sweep and
+            // strand the remaining orphans.
+            if let Err(e) = webview.close() {
+                eprintln!("[permagent-app] reap: close {label} failed: {e}");
+                continue;
+            }
+        }
+        app.state::<BrowserSessions>()
+            .0
+            .lock()
+            .unwrap()
+            .remove(label);
+        reaped += 1;
+    }
+
+    if reaped > 0 {
+        eprintln!(
+            "[permagent-app] reap: closed {reaped} orphaned browser webview(s), kept {}",
+            keep.len()
+        );
+    }
+    Ok(reaped)
+}
+
 /// Tear down a detached pane window and its child browser webviews in ONE
 /// native operation.
 ///

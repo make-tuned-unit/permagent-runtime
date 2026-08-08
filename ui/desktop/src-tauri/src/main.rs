@@ -333,6 +333,7 @@ fn main() {
             browser::update_browser_bounds,
             browser::hide_browser,
             browser::close_browser,
+            browser::reap_orphan_browsers,
             browser::destroy_pane_window,
             browser::browser_current_url,
             browser::browser_nav_state,
