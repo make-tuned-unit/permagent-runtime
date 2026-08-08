@@ -116,7 +116,7 @@ describe('PeopleDirectory', () => {
   });
 
   it('opens an existing person rather than reporting a false success', async () => {
-    apiFetch.mockImplementation((url: string, init?: { method?: string }) => {
+    apiFetch.mockImplementation((_url: string, init?: { method?: string }) => {
       if (init?.method === 'POST') {
         return Promise.resolve({ person: person('a', 'Jesse Sharratt'), created: false });
       }
@@ -147,7 +147,7 @@ describe('PeopleDirectory', () => {
   });
 
   it('sends the create body in snake_case', async () => {
-    apiFetch.mockImplementation((url: string, init?: { method?: string }) => {
+    apiFetch.mockImplementation((_url: string, init?: { method?: string }) => {
       if (init?.method === 'POST') {
         return Promise.resolve({ person: person('n', 'New Person'), created: true });
       }
