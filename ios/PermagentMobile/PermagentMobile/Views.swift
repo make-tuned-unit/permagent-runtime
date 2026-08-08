@@ -858,17 +858,6 @@ struct ChatView: View {
                         .frame(width: 34, height: 34)
                         .background(ChatSurface.control, in: Circle())
                 }
-                if canSend {
-                    Button { send() } label: {
-                        Image(systemName: "arrow.up")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(ChatSurface.onSpark)
-                            .frame(width: 34, height: 34)
-                            .background(ChatSurface.spark, in: Circle())
-                    }
-                    .accessibilityLabel("Send")
-                    .transition(.scale.combined(with: .opacity))
-                }
                 Text(identity.nameCapitalized)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(ChatSurface.muted)
@@ -876,19 +865,39 @@ struct ChatView: View {
                     .padding(.vertical, 7)
                     .background(ChatSurface.control, in: Capsule())
                 Spacer()
-                dictateButton
-                Button { showVoice = true } label: {
-                    Image(systemName: "waveform")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(ChatSurface.onSpark)
-                        .frame(width: 34, height: 34)
-                        .background(ChatSurface.spark, in: Circle())
+                // The trailing control is one slot with two jobs: talk to
+                // Henry when there is nothing to send, send when there is.
+                // Typing and then reaching past a mic to a second, smaller
+                // send button on the FAR side of the bar was the friction —
+                // the primary action was never where the thumb already was.
+                if hasDraft {
+                    Button { send() } label: {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(ChatSurface.onSpark)
+                            .frame(width: 34, height: 34)
+                            .background(ChatSurface.spark, in: Circle())
+                    }
+                    .disabled(!canSend)
+                    .opacity(canSend ? 1 : 0.5)
+                    .accessibilityLabel("Send")
+                    .transition(.scale.combined(with: .opacity))
+                } else {
+                    dictateButton
+                    Button { showVoice = true } label: {
+                        Image(systemName: "waveform")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(ChatSurface.onSpark)
+                            .frame(width: 34, height: 34)
+                            .background(ChatSurface.spark, in: Circle())
+                    }
+                    .disabled(dictation.isRecording)
+                    .accessibilityLabel("Talk with \(identity.name)")
+                    .transition(.scale.combined(with: .opacity))
                 }
-                .disabled(dictation.isRecording)
-                .accessibilityLabel("Talk with \(identity.name)")
             }
         }
-        .animation(Motion.ease, value: canSend)
+        .animation(Motion.ease, value: hasDraft)
         .padding(14)
         .background(ChatSurface.raised)
         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
@@ -947,7 +956,16 @@ struct ChatView: View {
     }
 
     private var canSend: Bool {
-        !sending && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !sending && hasDraft
+    }
+
+    /// Whether there is anything to send — drives WHICH control occupies the
+    /// trailing slot. Deliberately not `canSend`: that is false while a send is
+    /// in flight, so keying the swap on it would flip the button back to the
+    /// microphone mid-send and then back again, which reads as a glitch and
+    /// puts a mic under a thumb heading for send.
+    private var hasDraft: Bool {
+        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     // ── Sending + surviving the lock screen ─────────────────────────────────
