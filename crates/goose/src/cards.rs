@@ -802,6 +802,76 @@ pub const DUE_DISMISSED_KEY: &str = "dueDismissedAt";
 /// a genuine limitation: rename Done to "Shipped" and its cards reappear as
 /// to-dos. It is recorded rather than hidden, and is the first thing to fix if
 /// due dates graduate to a real column.
+/// Similarity at or above which two goal titles are treated as the same ask.
+///
+/// 0.90, and the 0.05 above the obvious 0.85 is load-bearing. Measured over all
+/// 1169 same-project goal pairs in the live corpus, the band 0.85–0.95 holds
+/// exactly three pairs, all scoring 0.889:
+///
+///   * "Add one-line comment to README and push to main" vs
+///     "Add comment to README and push to main" — a FALSE positive. The second
+///     was created 3 seconds after the first was parked, and the second is the
+///     one that shipped.
+///   * the footer pair (twice) — a TRUE positive.
+///
+/// A true and a false positive at the identical score means 0.85 has zero
+/// separation, so it cannot be tuned into correctness. 0.90 admits only exact
+/// restatements (every surviving pair scores 1.000) and blocks no real work.
+///
+/// The deliberate consequence: a REWORDED duplicate is not caught. On the day
+/// this was written, six cards for one blog post would have collapsed to two,
+/// not one — "…and mention app feature" vs "…and push to main" scores 0.615
+/// for the same underlying ask. Title similarity cannot see intent. That gap is
+/// closed by making retry re-dispatch the SAME card, not by loosening this.
+pub const DUPLICATE_DICE_THRESHOLD: f64 = 0.90;
+
+/// Tokens carrying no distinguishing signal in a goal title.
+const TITLE_STOPWORDS: &[&str] = &[
+    "the", "a", "an", "to", "and", "of", "for", "on", "in", "so", "it", "goes", "live", "with",
+];
+
+/// Production verbs that are freely interchangeable in a goal title — "Add X"
+/// and "Write X" are the same ask. Deliberately excludes fix/update/remove,
+/// which change what is being asked for.
+const TITLE_SYNONYM_VERBS: &[&str] = &["add", "write", "create", "make", "build", "implement"];
+
+/// Normalize a goal title to its distinguishing token set.
+///
+/// Splits on everything except `_ . - /` so identifiers like `VERIFY_A.md` and
+/// paths survive whole; strips a `(retry)` / `(retry 2)` suffix, stopwords, and
+/// interchangeable production verbs.
+fn title_tokens(title: &str) -> std::collections::BTreeSet<String> {
+    let lowered = title.to_lowercase();
+    // Strip a trailing retry marker without a regex dependency.
+    let stripped = match lowered.find("(retry") {
+        Some(i) => match lowered[i..].find(')') {
+            Some(j) => format!("{}{}", &lowered[..i], &lowered[i + j + 1..]),
+            None => lowered[..i].to_string(),
+        },
+        None => lowered,
+    };
+    stripped
+        .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-' | '/')))
+        .filter(|t| !t.is_empty())
+        .filter(|t| !TITLE_STOPWORDS.contains(t))
+        .filter(|t| !TITLE_SYNONYM_VERBS.contains(t))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Sørensen–Dice coefficient over normalized title tokens: `2|A∩B| / (|A|+|B|)`.
+///
+/// Deterministic and zero-LLM by design — a duplicate check that asks a model
+/// is a duplicate check that can be talked out of its answer.
+pub fn title_similarity(a: &str, b: &str) -> f64 {
+    let (ta, tb) = (title_tokens(a), title_tokens(b));
+    if ta.is_empty() || tb.is_empty() {
+        return 0.0;
+    }
+    let overlap = ta.intersection(&tb).count();
+    (2.0 * overlap as f64) / (ta.len() + tb.len()) as f64
+}
+
 const TERMINAL_COLUMN_NAMES: &[&str] = &["done", "complete", "completed", "cancelled", "canceled"];
 
 /// A to-do with a due date, resolved across every project for the dashboard.
@@ -2609,5 +2679,99 @@ mod tests {
             .await
             .unwrap();
         assert!(nonexistent.is_none());
+    }
+}
+
+#[cfg(test)]
+mod duplicate_title_tests {
+    use super::{title_similarity, DUPLICATE_DICE_THRESHOLD};
+
+    fn dup(a: &str, b: &str) -> bool {
+        title_similarity(a, b) >= DUPLICATE_DICE_THRESHOLD
+    }
+
+    /// The pairs that actually happened, 2026-08-08: one blog post became six
+    /// goal cards. Verb-only differences and a (retry) suffix must collapse.
+    #[test]
+    fn catches_the_restatements_that_produced_six_cards() {
+        assert!(dup(
+            "Add sleep training blog post and push to main",
+            "Write sleep training blog post and push to main"
+        ));
+        assert!(dup(
+            "Add sleep training blog post and mention app feature",
+            "Add sleep training blog post and mention app feature (retry)"
+        ));
+        assert!(dup(
+            "Build Teenity MVP foundation",
+            "Teenity MVP foundation"
+        ));
+    }
+
+    /// The false positive that fixes the threshold at 0.90.
+    ///
+    /// These score 0.889 — identical to the lowest TRUE positive in the corpus,
+    /// so no threshold at or below 0.889 can separate them. The second card is
+    /// the one that shipped; blocking it would have stopped real work.
+    #[test]
+    fn does_not_block_the_readme_pair_that_shipped() {
+        let s = title_similarity(
+            "Add one-line comment to README and push to main",
+            "Add comment to README and push to main",
+        );
+        assert!(
+            (s - 0.888).abs() < 0.01,
+            "expected the measured 0.889, got {s}"
+        );
+        assert!(!dup(
+            "Add one-line comment to README and push to main",
+            "Add comment to README and push to main"
+        ));
+    }
+
+    /// Genuinely different goals in one project must never collide.
+    #[test]
+    fn distinct_goals_are_not_duplicates() {
+        assert!(!dup(
+            "Add blue nav bar to Grocery Savers",
+            "Change nav bar to a different shade of green"
+        ));
+        assert!(!dup(
+            "Fix missing url_fr fields in sources and build",
+            "Bug audit on World Litter Run and report findings"
+        ));
+        // fix/update/remove are NOT synonyms of add/write — they change the ask.
+        assert!(!dup(
+            "Add rate limiting to the API",
+            "Remove rate limiting from the API"
+        ));
+    }
+
+    /// Honest about the limit: a REWORDED intent is not caught, and this test
+    /// records that rather than hiding it. Closing this gap is retry-in-place's
+    /// job, not a lower threshold's.
+    #[test]
+    fn a_reworded_intent_is_not_caught_and_that_is_known() {
+        let s = title_similarity(
+            "Add sleep training blog post and mention app feature",
+            "Add sleep training blog post and push to main",
+        );
+        assert!(s < DUPLICATE_DICE_THRESHOLD, "score was {s}");
+    }
+
+    /// Identifiers and paths must survive tokenization whole.
+    #[test]
+    fn identifiers_and_paths_are_not_split() {
+        assert!(dup("Update VERIFY_A.md", "Update VERIFY_A.md"));
+        assert!(!dup("Update VERIFY_A.md", "Update VERIFY_B.md"));
+        assert!(!dup("Edit src/main.rs", "Edit src/lib.rs"));
+    }
+
+    /// An empty or stopword-only title has no signal and must never match.
+    #[test]
+    fn titles_with_no_signal_never_match() {
+        assert_eq!(title_similarity("", ""), 0.0);
+        assert_eq!(title_similarity("the a an", "the a an"), 0.0);
+        assert_eq!(title_similarity("Add", "Write"), 0.0);
     }
 }
