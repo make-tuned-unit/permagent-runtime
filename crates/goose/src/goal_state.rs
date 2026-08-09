@@ -273,12 +273,29 @@ pub fn select_best_worker(
     Ok(eligible[0].key.clone())
 }
 
+/// Cheapest first, by ACTUAL money spent.
+///
+/// A flat-rate subscription call costs nothing at the margin, so it outranks a
+/// metered API however cheap that API's per-token price is (Jesse's call,
+/// 2026-08-09). `cheap_api` therefore sits between `subscription` and
+/// `paid_api`: it is the tier that runs when the subscription CLIs are absent,
+/// rate-limited, or not capable of the goal — not the default for routine work.
+///
+/// The consequence worth naming: the Permagent harness on Kimi/Grok/MiniMax
+/// will NOT win a normal coding goal against an available Claude Code or Codex.
+/// Route work to it deliberately, by mapping a role to it
+/// ([`crate::cost_router::role_map`]) or by giving the worker a capability the
+/// CLIs do not declare.
+///
+/// Unknown tiers sort last: an unrecognised string must never quietly outrank a
+/// known-cheap worker.
 fn cost_tier_rank(tier: &str) -> u8 {
     match tier {
         "local_free" => 0,
         "subscription" => 1,
-        "paid_api" => 2,
-        _ => 3,
+        "cheap_api" => 2,
+        "paid_api" => 3,
+        _ => 4,
     }
 }
 
