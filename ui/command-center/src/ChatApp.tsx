@@ -181,21 +181,29 @@ export default function ChatApp() {
         padding: '0 12px', gap: 8,
         borderBottom: `1px solid ${colors.border}`,
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0, overflow: 'hidden' }}>
+        {/* NO `overflow: hidden` on this row. It is the positioning ancestor
+            of the session dropdown, which opens BELOW the 36px toolbar — so
+            clipping the row hides the panel entirely and the sessions list
+            becomes unreachable. A long agent name is kept from pushing the
+            model picker off the bar by truncating the NAME (below), which is
+            the only thing that can grow, rather than by clipping the row. */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 }}>
           <Mobius size={16} state="idle" glow={0.6} />
 
           {/* Session selector */}
-          <div ref={sessionsRef} style={{ position: 'relative' }}>
+          <div ref={sessionsRef} style={{ position: 'relative', minWidth: 0 }}>
             <button
               onClick={() => setSessionsOpen(!sessionsOpen)}
               style={{
-                display: 'flex', alignItems: 'center', gap: 4,
+                display: 'flex', alignItems: 'center', gap: 4, maxWidth: '100%',
                 background: 'transparent', border: 'none', cursor: 'pointer',
                 color: colors.text, fontSize: 13, fontWeight: 600, fontFamily: font.body,
               }}
             >
-              {agentName}
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}><path d="M6 9l6 6 6-6" /></svg>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+                {agentName}
+              </span>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} style={{ flexShrink: 0 }}><path d="M6 9l6 6 6-6" /></svg>
             </button>
 
             {sessionsOpen && (
