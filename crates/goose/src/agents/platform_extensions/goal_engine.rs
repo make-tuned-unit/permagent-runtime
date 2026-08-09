@@ -945,7 +945,7 @@ async fn await_external_child(
                 // concurrent push) leaves the work reviewable-but-unpushed in
                 // the worktree rather than failing the goal.
                 push_clean_work(&working_dir, &baseline).await;
-                let worker_summary = tail(
+                let worker_summary = worker_closing_summary(
                     &redact_secrets(&String::from_utf8_lossy(&output.stdout)),
                     4000,
                 );
@@ -1331,6 +1331,41 @@ fn parse_shortstat(s: &str) -> (u32, u32, u32) {
 
 /// Roughly the last `max` bytes of `s`, aligned to char boundaries and prefixed
 /// with `…` when cut. Slice-free (clippy::string_slice).
+/// The worker's own closing statement, extracted from its stdout.
+///
+/// `claude --output-format stream-json` emits NDJSON, so a raw tail of stdout
+/// is a slice of machine transcript — half a JSON object, tool-call plumbing,
+/// cache-token accounting. That string is what reached the Decision Inbox as
+/// "the worker's summary", so a human asked to approve finished work was shown
+/// protocol noise instead of a sentence. It also fed the LLM verdict, which
+/// then judged real work as having "no evidence provided".
+///
+/// The stream's final `{"type":"result","result":"…"}` line carries the actual
+/// closing statement. Engines that print plain prose (`codex exec`) have no
+/// such line and fall through to the tail unchanged, so this is safe for any
+/// external CLI.
+fn worker_closing_summary(stdout: &str, max: usize) -> String {
+    for line in stdout.lines().rev() {
+        let line = line.trim();
+        if !line.starts_with('{') {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if value.get("type").and_then(serde_json::Value::as_str) != Some("result") {
+            continue;
+        }
+        if let Some(text) = value.get("result").and_then(serde_json::Value::as_str) {
+            let text = text.trim();
+            if !text.is_empty() {
+                return tail(text, max);
+            }
+        }
+    }
+    tail(stdout, max)
+}
+
 fn tail(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();
@@ -1404,6 +1439,54 @@ fn redact_secrets(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A real `claude --output-format stream-json` tail: the closing statement
+    /// exists, but it is the last line of an NDJSON transcript. Taking a raw
+    /// tail handed the Decision Inbox tool-call plumbing and token accounting
+    /// as "the worker's summary".
+    #[test]
+    fn worker_summary_is_the_result_line_not_the_json_transcript() {
+        let stdout = concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git commit -q -m x"}}]},"usage":{"cache_read_input_tokens":40043}}"#,
+            "\n",
+            r#"{"type":"user","message":{"content":[{"tool_use_id":"t1","type":"tool_result","content":"a719579 docs: add README.md"}]}}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","total_cost_usd":0.35,"result":"Committed a719579 — README.md with all eight sections. Not pushed, per worktree policy."}"#,
+            "\n",
+        );
+
+        let summary = worker_closing_summary(stdout, 4000);
+
+        assert_eq!(
+            summary,
+            "Committed a719579 — README.md with all eight sections. Not pushed, per worktree policy."
+        );
+        assert!(
+            !summary.contains("cache_read_input_tokens") && !summary.contains("tool_use"),
+            "the transcript must not survive into the summary: {summary}"
+        );
+    }
+
+    /// `codex exec` prints prose, not NDJSON. With no result line to find, the
+    /// tail is still the best available summary — the extraction must not
+    /// blank it out.
+    #[test]
+    fn worker_summary_falls_back_to_the_tail_for_plain_prose_engines() {
+        let stdout = "Created PROOF.txt containing OK.\nCommitted locally as fd39d17.\n";
+        assert_eq!(worker_closing_summary(stdout, 4000), stdout);
+    }
+
+    /// A result line with an empty payload is not a summary — keep looking
+    /// rather than reporting nothing.
+    #[test]
+    fn worker_summary_ignores_an_empty_result_payload() {
+        let stdout = concat!(
+            r#"{"type":"result","result":"   "}"#,
+            "\n",
+            "trailing prose the worker printed\n",
+        );
+        assert!(worker_closing_summary(stdout, 4000).contains("trailing prose"));
+    }
 
     /// #455: persisted worker output must not leak prod credentials. A stdout/
     /// stderr tail carrying a `postgres://` connection string and a `*_KEY=`

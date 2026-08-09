@@ -3691,7 +3691,7 @@ fn format_dispatch_evidence_brief(evidence: &serde_json::Value) -> Option<String
         Some(target) => format!("pushed to {}", target),
         None => "worktree only, not pushed".to_string(),
     };
-    Some(format!(
+    let mut out = format!(
         "Proof of work: commit {} ({}) — {} file{} changed, +{} / -{}.",
         head,
         where_,
@@ -3699,7 +3699,73 @@ fn format_dispatch_evidence_brief(evidence: &serde_json::Value) -> Option<String
         if ev.files_changed == 1 { "" } else { "s" },
         ev.insertions,
         ev.deletions,
-    ))
+    );
+
+    // A SHA and a +/- count are not a review. Approving used to mean deciding
+    // about work whose filenames you could not see, from a decision that named
+    // neither the branch nor the worktree — so the only way to actually look
+    // was to leave the app and go hunting. Everything below is already
+    // captured on the card; it was simply never shown to the person asked to
+    // approve it.
+    if !ev.commits.is_empty() {
+        out.push_str("\n\nWhat the worker committed:");
+        for commit in ev.commits.iter().take(MAX_REVIEW_COMMITS) {
+            out.push_str(&format!("\n  {}", commit));
+        }
+        if ev.commits.len() > MAX_REVIEW_COMMITS {
+            out.push_str(&format!(
+                "\n  … and {} more",
+                ev.commits.len() - MAX_REVIEW_COMMITS
+            ));
+        }
+    }
+
+    let diffstat = ev.diffstat.trim();
+    if !diffstat.is_empty() {
+        out.push_str(&format!("\n\nFiles changed:\n{}", indent_block(diffstat)));
+    }
+
+    let summary = ev.worker_summary.trim();
+    if !summary.is_empty() {
+        out.push_str(&format!(
+            "\n\nThe worker's own account:\n{}",
+            indent_block(&truncate_chars(summary, MAX_REVIEW_SUMMARY_CHARS))
+        ));
+    }
+
+    out.push_str(&format!(
+        "\n\nTo read the full diff: git -C {} diff {}..{}",
+        ev.worktree_path,
+        ev.work_base_commit
+            .as_deref()
+            .unwrap_or(&ev.baseline_commit),
+        head,
+    ));
+
+    Some(out)
+}
+
+/// Commit subjects shown inline before the list is elided.
+const MAX_REVIEW_COMMITS: usize = 10;
+/// Characters of the worker's closing statement shown inline.
+const MAX_REVIEW_SUMMARY_CHARS: usize = 1200;
+
+/// Indent a block so multi-line evidence stays visually distinct from the
+/// surrounding prose in the Decision Inbox.
+fn indent_block(text: &str) -> String {
+    text.lines()
+        .map(|line| format!("  {}", line))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Truncate on a char boundary, marking that it happened.
+fn truncate_chars(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(max).collect();
+    format!("{}…", kept.trim_end())
 }
 
 /// Full deterministic proof-of-work block for the Discuss-with-Henry context —
@@ -6367,6 +6433,68 @@ mod tests {
             .await
             .expect_err("tier-2 approve without a jesse decision must fail via tool path");
         assert!(err.contains("requires an answered decision"), "{}", err);
+    }
+
+    /// Approving used to mean deciding about work you could not see: the
+    /// detail carried a SHA and a "+63 / -0", naming neither the file, the
+    /// branch, nor the worktree. Every field below was already captured on
+    /// the card and simply never shown to the person asked to approve it.
+    #[test]
+    fn review_detail_shows_the_work_not_just_a_diffstat_line() {
+        let evidence = serde_json::json!({
+            "worktree_path": "/Users/j/dev/.permagent-goal-worktrees/cli-eee2db6f",
+            "baseline_commit": "24544d2326ef2b877fa1bc7c7cb37a7d708ef1c5",
+            "work_base_commit": "24544d2326ef2b877fa1bc7c7cb37a7d708ef1c5",
+            "head_commit": "a719579a25d684717ca73c131f219b2181c94eb3",
+            "commits": ["a719579 docs: add README.md"],
+            "diffstat": "README.md | 63 +++++++++++++\n 1 file changed, 63 insertions(+)",
+            "files_changed": 1,
+            "insertions": 63,
+            "deletions": 0,
+            "worker_summary": "Committed a719579 — README.md with all eight sections.",
+        });
+
+        let detail = build_review_detail("card-1", Some(&evidence));
+
+        assert!(
+            detail.contains("README.md"),
+            "the FILE must be named: {detail}"
+        );
+        assert!(
+            detail.contains("docs: add README.md"),
+            "the commit subject says what was done: {detail}"
+        );
+        assert!(
+            detail.contains("all eight sections"),
+            "the worker's own account must survive: {detail}"
+        );
+        assert!(
+            detail.contains(".permagent-goal-worktrees/cli-eee2db6f"),
+            "the reviewer must be told where the work lives: {detail}"
+        );
+        assert!(
+            detail.contains("git -C") && detail.contains("24544d23") && detail.contains("a719579a"),
+            "a runnable command to read the full diff: {detail}"
+        );
+    }
+
+    /// A worker that exits clean having committed nothing must still say so
+    /// plainly — the empty case is the one most worth not dressing up.
+    #[test]
+    fn review_detail_states_plainly_when_there_are_no_commits() {
+        let evidence = serde_json::json!({
+            "worktree_path": "/tmp/wt",
+            "baseline_commit": "abc123",
+            "commits": [],
+            "diffstat": "",
+            "files_changed": 0,
+            "insertions": 0,
+            "deletions": 0,
+            "worker_summary": "",
+        });
+
+        let detail = build_review_detail("card-2", Some(&evidence));
+        assert!(detail.contains("produced no commits"), "{detail}");
     }
 
     /// `goal_advance action="dispatch"` used to be a bare column move. It
