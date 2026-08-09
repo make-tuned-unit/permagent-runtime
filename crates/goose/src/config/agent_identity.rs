@@ -454,10 +454,29 @@ pub fn default_roster() -> HashMap<String, WorkerPersona> {
             availability_check: "bin_exists:codex".to_string(),
             cost_tier: "subscription".to_string(),
             engine: WorkerEngineKind::ExternalCli {
-                // Best-effort invocation — confirm against the installed codex
-                // CLI during the behavioral dogfood before relying on it.
+                // `-s workspace-write` is load-bearing, not a hardening knob.
+                // Verified against codex 0.146.0 on 2026-08-09: `codex exec`
+                // defaults to `sandbox: read-only`, so a worker asked to write
+                // a file logs "patch rejected: writing is blocked by read-only
+                // sandbox" — AND STILL EXITS 0. The engine reads exit 0 as
+                // Success, so the goal reached Review having produced nothing.
+                // That is why dispatching to Codex never landed any work.
+                //
+                // workspace-write grants the workdir (plus /tmp and $TMPDIR),
+                // which is the dispatch worktree. Proven in a real `git
+                // worktree add` tree, where `.git` is a FILE pointing at the
+                // parent repo: the worker created, staged and committed a file
+                // there, so the sandbox resolves the linked git dir. Approval
+                // is already `never` under `exec`; no bypass flag is needed,
+                // and none is used — the worker stays confined to its worktree,
+                // unlike claude's `--dangerously-skip-permissions`.
                 bin: "codex".to_string(),
-                args: vec!["exec".to_string(), "{prompt}".to_string()],
+                args: vec![
+                    "exec".to_string(),
+                    "-s".to_string(),
+                    "workspace-write".to_string(),
+                    "{prompt}".to_string(),
+                ],
             },
             ..Default::default()
         },

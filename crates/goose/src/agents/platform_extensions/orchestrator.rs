@@ -272,9 +272,14 @@ impl OrchestratorClient {
                  on a project's Kanban board using card_create with card_type='goal'. Goals \
                  follow a lifecycle: Triage → Ready → InProgress → Review → Complete. Pass \
                  auto_dispatch=true to assign a worker and start immediately.\n\n\
-                 Use goal_advance to transition goals (actions: ready, dispatch, review, \
-                 approve, reject). Use goal_status to check progress. Use list_workers to \
-                 see available workers before dispatching.\n\n\
+                 Use goal_advance to move goals through that lifecycle (actions: ready, \
+                 dispatch, review, approve, reject). Only 'dispatch' does real work: it \
+                 selects a worker, starts it on the goal in an isolated git worktree, and \
+                 returns that worker's session id — there is no separate 'start' step, and \
+                 nothing else you can call makes a worker run. The others are bookkeeping \
+                 moves. Use list_workers first to see who is actually available, and \
+                 goal_status afterwards to check on a running worker; a dispatch that \
+                 returns an error started nothing, so the goal is still yours to place.\n\n\
                  Goals that exhaust their automatic retry budget move to the Failed \
                  column with needs_human_attention=true. Surface these to the user \
                  rather than retrying silently.\n\n\
@@ -1913,8 +1918,24 @@ impl OrchestratorClient {
             goal_state::validate_transition(current_state, action).map_err(|e| e.to_string())?;
 
         match action {
-            // Tier-0 lifecycle steps route through the goal-transition guard.
-            GoalAction::Ready | GoalAction::Dispatch | GoalAction::Review => {
+            // 'dispatch' is not a transition — it is the whole dispatch
+            // pipeline. Moving the card Ready → InProgress on its own selects
+            // no worker, spawns no process and records no receipt, yet returns
+            // a success string that reads exactly like work started; the goal
+            // then sits InProgress until a sweep reclaims it as abandoned.
+            // `dispatch_goal` performs the SAME tier-0 guarded transition (with
+            // worker metadata, baseline_commit and the execution receipt) and
+            // additionally runs the engine, so this arm delegates rather than
+            // duplicating the move.
+            GoalAction::Dispatch => {
+                let session_id = self.dispatch_goal(&card_id).await?;
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Goal '{}' dispatched: {} → {} (worker session: {})",
+                    card.title, current_state, new_state, session_id
+                ))]))
+            }
+            // The remaining tier-0 lifecycle steps ARE bare transitions.
+            GoalAction::Ready | GoalAction::Review => {
                 goal_transition::advance_goal_checked(
                     &pool,
                     &card_id,
@@ -6346,6 +6367,64 @@ mod tests {
             .await
             .expect_err("tier-2 approve without a jesse decision must fail via tool path");
         assert!(err.contains("requires an answered decision"), "{}", err);
+    }
+
+    /// `goal_advance action="dispatch"` used to be a bare column move. It
+    /// answered "Goal 'X' advanced: ready → in_progress" while selecting no
+    /// worker, spawning no process and writing no execution receipt — so the
+    /// orchestrator believed it had assigned work that nothing was doing, and
+    /// the goal sat InProgress until a sweep reclaimed it as abandoned.
+    ///
+    /// The part with teeth is the S4 budget gate: the real pipeline parks a
+    /// goal that is out of attempts, and the bare transition walked straight
+    /// past it. This test pins that gate, because it can be asserted without
+    /// an installed CLI, a git worktree or a provider — an exhausted goal
+    /// fails before worker selection is ever reached.
+    #[tokio::test]
+    async fn tool_path_dispatch_runs_the_pipeline_not_a_bare_transition() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+
+        // Ready, but already past DEFAULT_ATTEMPT_CAP.
+        let card = setup_goal_in_state(&pool, "ready", 99).await;
+
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        };
+        let client = OrchestratorClient::new(context).unwrap();
+
+        let mut args = JsonObject::new();
+        args.insert("card_id".to_string(), serde_json::json!(card.id));
+        args.insert("action".to_string(), serde_json::json!("dispatch"));
+
+        let err = client
+            .handle_goal_advance(Some(args))
+            .await
+            .expect_err("an exhausted goal must not dispatch via the tool path");
+        assert!(
+            err.contains("not dispatched"),
+            "the budget gate must refuse the dispatch: {err}"
+        );
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            col.state_binding.as_deref(),
+            Some("in_progress"),
+            "dispatch must never report progress it did not start"
+        );
+        assert!(
+            updated.metadata_json.get("worker_key").is_none(),
+            "no worker ran, so no worker_key may be recorded"
+        );
     }
 
     #[tokio::test]

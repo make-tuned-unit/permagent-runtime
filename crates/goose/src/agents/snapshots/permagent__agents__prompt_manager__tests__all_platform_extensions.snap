@@ -255,7 +255,7 @@ Manage agent sessions and coordinate goal-driven work across projects.
 
 When users describe work — building, fixing, automating — create goal cards on a project's Kanban board using card_create with card_type='goal'. Goals follow a lifecycle: Triage → Ready → InProgress → Review → Complete. Pass auto_dispatch=true to assign a worker and start immediately.
 
-Use goal_advance to transition goals (actions: ready, dispatch, review, approve, reject). Use goal_status to check progress. Use list_workers to see available workers before dispatching.
+Use goal_advance to move goals through that lifecycle (actions: ready, dispatch, review, approve, reject). Only 'dispatch' does real work: it selects a worker, starts it on the goal in an isolated git worktree, and returns that worker's session id — there is no separate 'start' step, and nothing else you can call makes a worker run. The others are bookkeeping moves. Use list_workers first to see who is actually available, and goal_status afterwards to check on a running worker; a dispatch that returns an error started nothing, so the goal is still yours to place.
 
 Goals that exhaust their automatic retry budget move to the Failed column with needs_human_attention=true. Surface these to the user rather than retrying silently.
 
