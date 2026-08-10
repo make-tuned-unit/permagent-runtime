@@ -294,26 +294,97 @@ async fn history_handler(
 /// audit-recorded — the decision-spine rule is that nothing here may discard
 /// Fast-forward an approved goal's work onto the project trunk.
 ///
-/// `None` when there is nothing to land at all (no evidence, no commits, or a
-/// project with no `root_path` — a project we cannot locate on disk has no
-/// trunk to land onto, and the daemon's cwd is emphatically not it). Every
-/// other case returns an outcome that gets reported on the approval, including
-/// the refusals: a dirty tree or a diverged trunk must be visible, not silent.
+/// The first tuple member is `None` when there is nothing to land at all (no
+/// evidence, no commits, or a project with no `root_path` — a project we cannot
+/// locate on disk has no trunk to land onto, and the daemon's cwd is emphatically
+/// not it). Every other case returns an outcome that gets reported on the
+/// approval, including the refusals: a dirty tree or a diverged trunk must be
+/// visible, not silent. The second member surfaces a failure to persist the
+/// durable NeedsMerge follow-up after approval has already committed.
 async fn land_approved_goal(
     pool: &Pool<Sqlite>,
     goal_id: &str,
     project_id: Option<&str>,
-) -> Option<permagent::goal_landing::LandOutcome> {
-    let card = permagent::cards::get_card(pool, goal_id).await.ok()??;
-    let project_id = project_id.or(Some(card.project_id.as_str()))?;
-    let root = permagent::projects::get_project_by_id_or_slug(pool, project_id)
+) -> (Option<permagent::goal_landing::LandOutcome>, Option<String>) {
+    let Some(card) = permagent::cards::get_card(pool, goal_id)
         .await
-        .ok()??
-        .root_path?;
+        .ok()
+        .flatten()
+    else {
+        return (None, None);
+    };
+    let project_id = project_id.unwrap_or(card.project_id.as_str());
+    let Some(root) = permagent::projects::get_project_by_id_or_slug(pool, project_id)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|project| project.root_path)
+    else {
+        return (None, None);
+    };
 
-    let req =
-        permagent::goal_landing::land_request_from_metadata(&card.metadata_json, Some(&root))?;
-    Some(permagent::goal_landing::land(&req).await)
+    let Some(req) =
+        permagent::goal_landing::land_request_from_metadata(&card.metadata_json, Some(&root))
+    else {
+        return (None, None);
+    };
+    let outcome = permagent::goal_landing::land(&req).await;
+    let warning =
+        if let permagent::goal_landing::LandOutcome::NeedsMerge { branch, trunk } = &outcome {
+            ensure_needs_merge_decision(pool, goal_id, &card.title, &card.project_id, branch, trunk)
+                .await
+                .err()
+                .map(|error| format!("could not create manual-merge inbox item: {}", error))
+        } else {
+            None
+        };
+
+    (Some(outcome), warning)
+}
+
+/// Leave one durable, copy-pasteable recovery item when automatic landing
+/// cannot fast-forward. An existing open unblock for the goal wins: two open
+/// requests for the same goal would compete for the human's answer.
+async fn ensure_needs_merge_decision(
+    pool: &Pool<Sqlite>,
+    goal_id: &str,
+    goal_title: &str,
+    project_id: &str,
+    branch: &str,
+    trunk: &str,
+) -> Result<(), String> {
+    if decisions::find_open_decision_for_goal(pool, goal_id, "unblock")
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
+
+    let detail = format!(
+        "Goal \"{}\" ({}) finished on branch `{}`, but it could not be fast-forwarded onto trunk `{}`.\n\nMerge it:\n```sh\ngit switch {}\ngit merge {}\n```\n\nOr rebase it:\n```sh\ngit switch {}\ngit rebase {}\ngit switch {}\ngit merge --ff-only {}\n```",
+        goal_title, goal_id, branch, trunk, trunk, branch, branch, trunk, trunk, branch
+    );
+    decisions::create_decision(
+        pool,
+        decisions::NewDecision {
+            kind: "unblock".to_string(),
+            goal_id: Some(goal_id.to_string()),
+            project_id: Some(project_id.to_string()),
+            headline: Some(
+                "Goal work could not land and needs a manual merge or rebase".to_string(),
+            ),
+            detail: Some(detail),
+            payload: serde_json::to_value(decisions::UnblockPayload {
+                reason: decisions::UnblockReason::Stuck,
+                spent: None,
+                cap: None,
+            })
+            .map_err(|error| error.to_string())?,
+            ..Default::default()
+        },
+    )
+    .await?;
+    Ok(())
 }
 
 /// a `Result` (bug-sweep wave 1).
@@ -363,14 +434,20 @@ async fn execute_effect(
             // 2026-08-09. Land it now. Fast-forward only, and the outcome is
             // ALWAYS reported: a landing that silently declined is exactly the
             // failure this replaces.
-            let landing = land_approved_goal(pool, goal_id, decision.project_id.as_deref()).await;
+            let (landing, landing_warning) =
+                land_approved_goal(pool, goal_id, decision.project_id.as_deref()).await;
             let effect = match &landing {
                 Some(outcome) => {
                     format!("goal approved: Review → Complete; {}", outcome.describe())
                 }
                 None => "goal approved: Review → Complete".to_string(),
             };
-            Ok((Some(effect), promotion_warning))
+            let warning = match (promotion_warning, landing_warning) {
+                (Some(promotion), Some(landing)) => Some(format!("{}; {}", promotion, landing)),
+                (Some(warning), None) | (None, Some(warning)) => Some(warning),
+                (None, None) => None,
+            };
+            Ok((Some(effect), warning))
         }
         // Review rejected → bounce back for rework, or park on attempt exhaustion.
         ("approve_review", Some("reject")) => {
@@ -1267,6 +1344,103 @@ mod tests {
             .unwrap();
         init_spectral_db(&pool).await.unwrap();
         pool
+    }
+
+    async fn needs_merge_test_goal(pool: &Pool<Sqlite>) -> permagent::cards::Card {
+        use permagent::projects::PERSONAL_PROJECT_ID;
+
+        permagent::cards::seed_goal_columns(pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        let review_col = permagent::cards::get_goal_column(pool, PERSONAL_PROJECT_ID, "review")
+            .await
+            .unwrap()
+            .unwrap();
+        permagent::cards::create_card(
+            pool,
+            permagent::cards::CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: "Ship durable landing recovery".to_string(),
+                description: None,
+                card_type: Some("goal".to_string()),
+                column_id: Some(review_col.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({})),
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_second_needs_merge_landing_does_not_create_another_open_decision() {
+        use permagent::projects::PERSONAL_PROJECT_ID;
+
+        let pool = memory_pool().await;
+        let goal = needs_merge_test_goal(&pool).await;
+        for _ in 0..2 {
+            ensure_needs_merge_decision(
+                &pool,
+                &goal.id,
+                &goal.title,
+                PERSONAL_PROJECT_ID,
+                "goal/run-123",
+                "main",
+            )
+            .await
+            .unwrap();
+        }
+
+        let count: i64 = permagent::sqlx::query_scalar(
+            "SELECT COUNT(*) FROM decisions \
+             WHERE goal_id = ? AND kind = 'unblock' AND status = 'open'",
+        )
+        .bind(&goal.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn needs_merge_decision_names_refs_and_copy_pasteable_git_commands() {
+        use permagent::projects::PERSONAL_PROJECT_ID;
+
+        let pool = memory_pool().await;
+        let goal = needs_merge_test_goal(&pool).await;
+        ensure_needs_merge_decision(
+            &pool,
+            &goal.id,
+            &goal.title,
+            PERSONAL_PROJECT_ID,
+            "goal/run-123",
+            "main",
+        )
+        .await
+        .unwrap();
+
+        let decision = decisions::find_open_decision_for_goal(&pool, &goal.id, "unblock")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(decision.kind, "unblock");
+        assert_eq!(decision.goal_id.as_deref(), Some(goal.id.as_str()));
+        assert_eq!(decision.project_id.as_deref(), Some(PERSONAL_PROJECT_ID));
+        assert!(decision.headline.contains("could not land"));
+        for expected in [
+            goal.id.as_str(),
+            goal.title.as_str(),
+            "goal/run-123",
+            "main",
+            "git switch main\ngit merge goal/run-123",
+            "git switch goal/run-123\ngit rebase main\ngit switch main\ngit merge --ff-only goal/run-123",
+        ] {
+            assert!(
+                decision.detail.contains(expected),
+                "decision detail must contain {expected:?}: {}",
+                decision.detail
+            );
+        }
     }
 
     #[tokio::test]
