@@ -715,6 +715,7 @@ mod tests {
             working_dir,
             baseline_commit: baseline,
             timeout,
+            output_tx: None,
         }
     }
 

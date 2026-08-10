@@ -732,6 +732,28 @@ async fn beat_receipt(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str) {
     }
 }
 
+/// Best-effort worker-output stamp on a goal's execution receipt. The first
+/// timestamp comes from the stdout read boundary; every event also refreshes
+/// the heartbeat at persistence time. Receipt writes remain serialized through
+/// the completion tracker, avoiding read/modify/write races with its ticker.
+async fn record_worker_output(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    event: goal_engine::WorkerOutputEvent,
+) {
+    if let Ok(Some(value)) = cards::get_goal_execution_receipt(pool, card_id).await {
+        if let Ok(mut receipt) = serde_json::from_value::<ExecutionReceipt>(value) {
+            if receipt.state.is_terminal() {
+                return;
+            }
+            receipt.observe_output(event.observed_at, chrono::Utc::now().to_rfc3339());
+            if let Ok(updated) = serde_json::to_value(&receipt) {
+                let _ = cards::set_goal_execution_receipt(pool, card_id, updated).await;
+            }
+        }
+    }
+}
+
 /// Best-effort terminal stamp on a goal's execution receipt (#210).
 async fn finalize_receipt(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str, state: ReceiptState) {
     if let Ok(Some(value)) = cards::get_goal_execution_receipt(pool, card_id).await {
@@ -925,12 +947,14 @@ pub(crate) async fn dispatch_goal_fn(
     let timeout_secs = worker_cfg
         .and_then(|w| w.timeout_secs)
         .unwrap_or(goal_engine::DEFAULT_EXTERNAL_CLI_TIMEOUT_SECS);
+    let (output_tx, mut output_rx) = tokio::sync::mpsc::unbounded_channel();
     let task = goal_engine::GoalTask {
         card_title: card.title.clone(),
         instructions,
         working_dir,
         baseline_commit: baseline_commit.clone(),
         timeout: std::time::Duration::from_secs(timeout_secs),
+        output_tx: Some(output_tx),
     };
 
     let engine: Box<dyn goal_engine::GoalEngine> = match worker_cfg.map(|w| &w.engine) {
@@ -1125,15 +1149,28 @@ pub(crate) async fn dispatch_goal_fn(
             loop {
                 tokio::select! {
                     res = &mut join => {
-                        break match res {
+                        let outcome = match res {
                             Ok(o) => o,
                             Err(e) => goal_engine::GoalOutcome::Failed(
                                 format!("Worker task panicked: {}", e),
                             ),
                         };
+                        // The final stdout read happens before the join becomes
+                        // ready, but both branches can be ready in this select.
+                        // Drain queued events so a fast worker cannot finish
+                        // with first_output_at still null.
+                        while let Ok(event) = output_rx.try_recv() {
+                            record_worker_output(&tracker_pool, &tracker_card_id, event).await;
+                        }
+                        break outcome;
                     }
                     _ = ticker.tick() => {
                         beat_receipt(&tracker_pool, &tracker_card_id).await;
+                    }
+                    event = output_rx.recv(), if !output_rx.is_closed() => {
+                        if let Some(event) = event {
+                            record_worker_output(&tracker_pool, &tracker_card_id, event).await;
+                        }
                     }
                 }
             }
