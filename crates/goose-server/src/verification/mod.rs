@@ -60,6 +60,10 @@ pub struct VerificationRecord {
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub degraded_reason: Option<String>,
+    /// Per-panelist verdicts when the review ran as a consensus panel
+    /// (verifier.json `panel_models`). Empty for single-model reviews.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub panel: Vec<verifier::PanelVerdict>,
     pub started_at: String,
     pub finished_at: String,
     pub evidence_digest: EvidenceDigest,
@@ -280,10 +284,25 @@ pub async fn run_for_goal_with_cfg(
         &claimed_evidence,
     );
 
-    let vr = verifier::run_verifier(ollama_base_url, &cfg.model, &user_prompt).await;
+    // Single model by default; a consensus panel when verifier.json names
+    // panel_models. Panelists run sequentially on the SAME evidence (each
+    // run_verifier call takes VERIFY_MUTEX; this whole gate is already a
+    // spawned background task), then fold by per-question majority with ties
+    // resolving to the worse grade.
+    let panel_models = cfg.panel();
+    let (vr, panel_verdicts) = if panel_models.len() > 1 {
+        let mut runs = Vec::with_capacity(panel_models.len());
+        for m in &panel_models {
+            runs.push(verifier::run_verifier(ollama_base_url, m, &user_prompt).await);
+        }
+        verifier::fold_panel(&runs)
+    } else {
+        let single = verifier::run_verifier(ollama_base_url, &cfg.model, &user_prompt).await;
+        (single, Vec::new())
+    };
 
     // ── 4. Deterministic aggregation + machine-check clamps ──
-    let record = aggregate_record(
+    let mut record = aggregate_record(
         goal_id,
         &card.title,
         &meta,
@@ -297,6 +316,7 @@ pub async fn run_for_goal_with_cfg(
         worker_cost_usd(pool, &meta).await,
         &started_at,
     );
+    record.panel = panel_verdicts;
 
     // ── 5. ONE atomic metadata write: only `dispatch_evidence.verdict` (#466) ──
     write_verification(pool, goal_id, &record).await?;
@@ -331,6 +351,16 @@ pub async fn run_for_goal_with_cfg(
                  enabled for this goal; manual approval required"
             );
         }
+    }
+
+    // ── 7. Review-fail → debugger proposal — PROPOSAL-ONLY ──
+    // A FAIL files a Choice decision offering a debugger-role re-dispatch with
+    // the failing evidence; nothing moves until a human picks an option (the
+    // effect arm lives in decisions_effects). The verdict record above stands
+    // regardless — this block is failure-tolerant but logs loudly, because it
+    // runs on a spawned task where a swallowed error simply vanishes.
+    if record.status == VerdictStatus::Fail {
+        propose_debug_dispatch(pool, goal_id, &card.title, &card.project_id, &record).await;
     }
 
     Ok(record)
@@ -588,9 +618,116 @@ fn aggregate_record(
         out_of_path_files: git.out_of_path_files.clone(),
         model: vr.model.clone(),
         degraded_reason,
+        panel: Vec::new(),
         started_at: started_at.to_string(),
         finished_at,
         evidence_digest,
+    }
+}
+
+/// File the review-fail Choice decision proposing a debugger-role re-dispatch.
+/// Idempotent per goal (open-choice guard); never throws — a proposal failure
+/// must not break verification, but it must be visible in the log.
+async fn propose_debug_dispatch(
+    pool: &Pool<Sqlite>,
+    goal_id: &str,
+    goal_title: &str,
+    project_id: &str,
+    record: &VerificationRecord,
+) {
+    match permagent::decisions::find_open_decision_for_goal(pool, goal_id, "choice").await {
+        Ok(Some(existing)) => {
+            tracing::info!(
+                target: "permagentd::verification",
+                goal_id = %goal_id,
+                decision_id = %existing.id,
+                "Debug-dispatch proposal already open — not filing another"
+            );
+            return;
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!(
+                target: "permagentd::verification",
+                goal_id = %goal_id,
+                error = %e,
+                "Could not check for an open debug-dispatch proposal — skipping"
+            );
+            return;
+        }
+    }
+
+    let mut detail = format!("Verifier verdict: FAIL\n\n{}", record.rationale);
+    if let Some(failing) = record
+        .check_results
+        .iter()
+        .find(|r| r.status != CheckStatus::Pass)
+    {
+        detail.push_str(&format!(
+            "\n\nFirst failing check: {} (exit code: {})",
+            failing.check_type,
+            failing
+                .evidence
+                .exit_code
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "n/a".to_string()),
+        ));
+        if let Some(stderr) = failing.evidence.stderr_tail.as_deref() {
+            if !stderr.is_empty() {
+                detail.push_str(&format!("\nstderr tail:\n{}", stderr));
+            }
+        }
+        if let Some(msg) = failing.evidence.message.as_deref() {
+            if !msg.is_empty() {
+                detail.push_str(&format!("\n{}", msg));
+            }
+        }
+    }
+
+    let req = permagent::decisions::NewDecision {
+        kind: "choice".to_string(),
+        goal_id: Some(goal_id.to_string()),
+        project_id: Some(project_id.to_string()),
+        headline: Some(format!(
+            "Verification failed — dispatch the debugger on '{}'?",
+            goal_title
+        )),
+        detail: Some(detail),
+        payload: serde_json::json!({
+            "question": "Verification failed. Re-dispatch this goal with the debugger \
+                         mandate, or leave it in Review for the normal approve flow?",
+            "proposal": permagent::decisions::PROPOSAL_DEBUG_DISPATCH,
+            "options": [
+                {
+                    "id": "dispatch-debugger",
+                    "label": "Re-dispatch with the debugger mandate \
+                              (rejects the review; next dispatch carries a reproduce-first brief)"
+                },
+                {
+                    "id": "leave-for-review",
+                    "label": "Leave it in Review (answer the approve_review decision as usual)"
+                }
+            ],
+        }),
+        ..Default::default()
+    };
+    match permagent::decisions::create_decision(pool, req).await {
+        Ok(decision) => {
+            tracing::info!(
+                target: "permagentd::verification",
+                goal_id = %goal_id,
+                decision_id = %decision.id,
+                "Verification FAIL — filed debug-dispatch proposal"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "permagentd::verification",
+                goal_id = %goal_id,
+                error = %e,
+                "Verification FAIL but the debug-dispatch proposal could not be filed"
+            );
+        }
     }
 }
 
@@ -1287,6 +1424,58 @@ mod tests {
             .contains("confirmed"));
         // No rate configured → cost_usd null + note.
         assert_eq!(parsed.evidence_digest.costs.cost_usd, None);
+    }
+
+    /// Consensus panel wiring: with panel_models configured, every panelist
+    /// runs on the same evidence, the folded verdict lands in `status`, and
+    /// the per-panelist verdicts are persisted for audit.
+    #[tokio::test]
+    async fn panel_config_runs_all_panelists_and_persists_their_verdicts() {
+        let repo = tempfile::tempdir().unwrap();
+        let baseline = init_repo(repo.path());
+        std::fs::write(repo.path().join("src/lib.rs"), "pub fn a() {}\n").unwrap();
+
+        let pool = test_pool().await;
+        let card = make_goal(
+            &pool,
+            repo.path().to_str().unwrap(),
+            serde_json::json!({
+                "baseline_commit": baseline,
+                "declared_paths": ["src/**"],
+            }),
+        )
+        .await;
+
+        let (base_url, _h) = spawn_mock_ollama(MockMode::Respond(GOOD_PASS.to_string())).await;
+        let cfg = verifier::VerifierConfig {
+            model: "model-a".to_string(),
+            panel_models: vec!["model-b".to_string()],
+            ..Default::default()
+        };
+        let record = run_for_goal_with_cfg(&pool, &card.id, &base_url, cfg)
+            .await
+            .unwrap();
+
+        assert_eq!(record.status, VerdictStatus::Pass);
+        assert_eq!(record.model, "model-a+model-b");
+        assert_eq!(record.panel.len(), 2);
+        assert!(record
+            .panel
+            .iter()
+            .all(|p| p.status == VerdictStatus::Pass && p.degraded_reason.is_none()));
+        // The panel round-trips through the persisted verdict JSON.
+        let after = permagent::cards::get_card(&pool, &card.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let v = after
+            .metadata_json
+            .get(DISPATCH_EVIDENCE_KEY)
+            .and_then(|e| e.get(VERDICT_KEY))
+            .expect("verdict written");
+        let parsed: VerificationRecord = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(parsed.panel.len(), 2);
+        assert_eq!(parsed.panel[1].model, "model-b");
     }
 
     /// CONTRACT (L1 hardening × L2 allowlist, part 1): the module's REAL

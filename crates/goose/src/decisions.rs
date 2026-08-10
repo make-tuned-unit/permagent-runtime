@@ -40,6 +40,10 @@ const OUTBOX_ELIGIBLE_KINDS: &[&str] = &[
     "model_upgrade",
 ];
 
+/// Payload marker for the review-fail → debugger-dispatch proposal (a `choice`
+/// decision filed by the verification gate; its effect arm keys on this).
+pub const PROPOSAL_DEBUG_DISPATCH: &str = "debug_dispatch";
+
 /// Return the stable outbox claim key for a durable decision effect.
 pub fn effect_outbox_claim_key(decision_id: &str, kind: &str) -> Option<String> {
     OUTBOX_ELIGIBLE_KINDS
@@ -193,6 +197,12 @@ pub struct ChoicePayload {
     pub options: Vec<ChoiceOption>,
     #[serde(default)]
     pub default: Option<String>,
+    /// Machine-readable marker linking this choice to a coded effect arm
+    /// (e.g. [`PROPOSAL_DEBUG_DISPATCH`]). None for pure-record choices,
+    /// whose answer is the whole outcome. Skipped when absent so existing
+    /// choice payloads stay byte-identical on the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposal: Option<String>,
 }
 
 /// Payload for `kind='risk_gate'` — permission to perform a risky action class.

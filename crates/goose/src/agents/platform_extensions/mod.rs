@@ -33,6 +33,7 @@ pub mod pronunciation;
 pub mod publish_sequence;
 pub mod recipe_author;
 pub mod retrospect;
+pub mod role_brief;
 pub mod skills;
 pub mod steward;
 pub mod storage_health;

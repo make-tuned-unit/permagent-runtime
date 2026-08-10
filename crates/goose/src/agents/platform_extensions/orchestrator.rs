@@ -181,6 +181,11 @@ struct GoalAdvanceParams {
     /// refused outright — it never falls back to a different one.
     #[serde(default)]
     worker: Option<String>,
+    /// For 'dispatch' only: give the worker a specialist mandate — "debugger",
+    /// "security", or "architect". Persisted on the goal (sticky across
+    /// re-dispatches until changed). An unknown role is refused.
+    #[serde(default)]
+    role: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -1007,6 +1012,13 @@ pub(crate) async fn dispatch_goal_fn(
         "Goal: {}\n\nDescription: {}\nProject: {}\nProject root: {}",
         card.title, card.description, project.name, root_path
     );
+    // Specialist role brief (metadata_json.dispatch_role, set by goal_advance's
+    // `role` argument or a decision effect such as review-fail → debugger).
+    // Prepended so the worker reads mandate-then-task; unknown/absent roles
+    // dispatch unroled rather than failing.
+    if let Some(role_block) = super::role_brief::role_brief_from_metadata(&card.metadata_json) {
+        instructions = format!("{role_block}\n\n{instructions}");
+    }
     // Verify-loop escalation (the #739 ACTION): read the goal's per-goal
     // escalation state. On an escalated RE-dispatch, carry the prior (weaker)
     // attempt's diff + verify failure forward as context (R2) so the stronger
@@ -2100,6 +2112,19 @@ impl OrchestratorClient {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
+        // Specialist role: validated up front so a typo'd role refuses loudly
+        // instead of silently dispatching unroled.
+        let requested_role = match args
+            .get("role")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(s) => Some(super::role_brief::WorkerRole::parse(s).ok_or_else(|| {
+                format!("Unknown role '{s}'. Must be: debugger, security, architect")
+            })?),
+            None => None,
+        };
 
         let action = GoalAction::parse_action(&action_str).ok_or_else(|| {
             format!(
@@ -2159,6 +2184,20 @@ impl OrchestratorClient {
             // additionally runs the engine, so this arm delegates rather than
             // duplicating the move.
             GoalAction::Dispatch => {
+                // Persist the role BEFORE dispatch so dispatch_goal_fn reads it
+                // when assembling the brief. Sticky by design: the goal keeps
+                // its mandate across re-dispatches until changed.
+                if let Some(role) = requested_role {
+                    sqlx::query(
+                        "UPDATE cards SET metadata_json = json_set(metadata_json, '$.dispatch_role', ?) \
+                         WHERE id = ?",
+                    )
+                    .bind(role.as_str())
+                    .bind(&card_id)
+                    .execute(&pool)
+                    .await
+                    .map_err(|e| format!("persist dispatch_role: {e}"))?;
+                }
                 let session_id = self
                     .dispatch_goal_to(&card_id, requested_worker.as_deref())
                     .await?;
@@ -2490,6 +2529,40 @@ impl OrchestratorClient {
                         );
                     }
                 }
+            }
+        }
+
+        // Failure-learning return leg: recent open incidents ride into the
+        // decompose context as raw grounded evidence (surface, goal,
+        // observation, mechanism — no distillation), the same quoted
+        // data-not-instructions framing as the recall blocks above. Comes from
+        // the pool, not the Brain, so it injects even when the Brain is down.
+        // Inert when there are no open incidents; failures are non-fatal. The
+        // `incidents` INFO line is the observable A/B signal.
+        match crate::incidents::list_open_incidents(
+            &pool,
+            crate::incidents::MAX_INJECTED_INCIDENTS as i64,
+        )
+        .await
+        {
+            Ok(incidents) => {
+                if let Some(block) = crate::incidents::format_incident_context_block(&incidents) {
+                    user_text.push_str("\n\n");
+                    user_text.push_str(&block);
+                    tracing::info!(
+                        target: "incidents",
+                        project = %project.slug,
+                        count = incidents.len(),
+                        "injected open failure incidents into decompose context"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::debug!(
+                    target: "incidents",
+                    "Skipping incident recall for decompose: {}",
+                    e
+                );
             }
         }
 
