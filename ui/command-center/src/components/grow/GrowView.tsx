@@ -1708,7 +1708,7 @@ function FirstPartyAnalyticsPanel({
           {(stats.aeoVisits ?? 0) > 0 && (
             <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 8 }}>
               <span style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, letterSpacing: '0.08em', textTransform: 'uppercase' }}>AEO</span>
-              {' '}{stats.aeoVisits.toLocaleString()} answer-engine visit{(stats.aeoVisits === 1) ? '' : 's'}
+              {' '}{(stats.aeoVisits ?? 0).toLocaleString()} answer-engine visit{(stats.aeoVisits === 1) ? '' : 's'}
             </div>
           )}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
