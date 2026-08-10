@@ -621,65 +621,19 @@ pub(crate) async fn select_worker_fn(
         .worker_key)
 }
 
-/// Character budget for the injected code map. Roughly a thousand tokens —
-/// enough for the tree and top-level symbols of a mid-sized repo, and far less
-/// than the multi-turn ls/grep exploration it replaces. A map that costs more
-/// than the exploration would be the feature defeating itself.
-const CODE_MAP_INJECT_MAX_CHARS: usize = 4_000;
-
 /// The stored code map (`code:{project_id}:map`, written by
-/// `POST /api/projects/{id}/index-code`) as a worker-instructions block, or
-/// `None` when the Brain is absent or the project was never indexed.
-async fn code_map_instructions_block(project_id: &str) -> Option<String> {
+/// `POST /api/projects/{id}/index-code`) as a worker-instructions block sliced
+/// around the goal's own words, or `None` when the Brain is absent or the
+/// project was never indexed. The slicing itself lives in [`super::code_map`],
+/// shared with the analyze extension's `map_query` tool so the two views of a
+/// stored map cannot drift.
+async fn code_map_instructions_block(project_id: &str, goal_text: &str) -> Option<String> {
     let brain = super::get_global_brain()?;
     let mem = brain
         .get_memory_by_key(&format!("code:{project_id}:map"))
         .await
         .ok()??;
-    format_code_map_block(&mem.content)
-}
-
-/// Pure: render a stored map as the instructions block. Split from the Brain
-/// fetch so the budget and line-boundary truncation are testable.
-fn format_code_map_block(content: &str) -> Option<String> {
-    let map = content.trim();
-    if map.is_empty() {
-        return None;
-    }
-
-    let (shown, truncated) = if map.chars().count() <= CODE_MAP_INJECT_MAX_CHARS {
-        (map.to_string(), false)
-    } else {
-        // Cut at a line boundary so the map never ends mid-entry, which reads
-        // as a file that exists with a mangled name.
-        let mut kept = String::new();
-        for line in map.lines() {
-            if kept.chars().count() + line.chars().count() + 1 > CODE_MAP_INJECT_MAX_CHARS {
-                break;
-            }
-            kept.push_str(line);
-            kept.push('\n');
-        }
-        (kept, true)
-    };
-
-    let mut block = format!(
-        "Codebase map (pre-indexed — use this to navigate instead of exploring \
-         with ls/grep; it lists the tree with per-file line counts and symbols):\n{}",
-        shown
-    );
-    if truncated {
-        block.push_str(
-            "\n[map truncated — deeper paths exist; explore only below the directories shown]",
-        );
-    }
-    // The index is a snapshot, not a live view — a worker that trusts a stale
-    // entry over the filesystem will edit files that moved.
-    block.push_str(
-        "\nThe map reflects the last index, not necessarily HEAD — confirm a path exists \
-         before editing it.",
-    );
-    Some(block)
+    super::code_map::format_code_map_block(&mem.content, goal_text)
 }
 
 /// Pin dispatch to a NAMED roster worker, bypassing cost ranking.
@@ -1074,7 +1028,10 @@ pub(crate) async fn dispatch_goal_fn(
     // larger than the exploration it replaces, so oversized maps are cut at
     // a line boundary and say so. Best-effort — an absent Brain or unindexed
     // project changes nothing.
-    if let Some(block) = code_map_instructions_block(&project.id).await {
+    if let Some(block) =
+        code_map_instructions_block(&project.id, &format!("{} {}", card.title, card.description))
+            .await
+    {
         instructions = format!("{instructions}\n\n{block}");
     }
 
@@ -6696,40 +6653,10 @@ mod tests {
         assert!(err.contains("requires an answered decision"), "{}", err);
     }
 
-    /// The code map existed only as a Brain write — nothing on the dispatch
-    /// path read it, so every worker re-explored the repo it described. These
-    /// pin the injected block: navigable, bounded, and honest about being a
-    /// snapshot.
-    #[test]
-    fn code_map_block_is_bounded_and_cut_on_line_boundaries() {
-        // Small map: injected whole, with the navigation and staleness framing.
-        let small = format_code_map_block("src/\n  main.rs (120 loc, 3 fn)").unwrap();
-        assert!(small.contains("main.rs"));
-        assert!(small.contains("instead of exploring"));
-        assert!(small.contains("confirm a path exists"));
-        assert!(!small.contains("[map truncated"));
-
-        // Oversized map: cut at a LINE boundary within budget, and says so —
-        // a mid-line cut reads as a file that exists with a mangled name.
-        let long_line = format!("dir{:04}/file.rs (10 loc)", 0);
-        let big: String = (0..2000)
-            .map(|i| format!("dir{:04}/file.rs (10 loc)\n", i))
-            .collect();
-        let block = format_code_map_block(&big).unwrap();
-        assert!(block.contains("[map truncated"));
-        assert!(
-            block.chars().count() < CODE_MAP_INJECT_MAX_CHARS + 400,
-            "the injected map must stay near its budget, got {} chars",
-            block.chars().count()
-        );
-        // Every map line that survived is complete.
-        for line in block.lines().filter(|l| l.starts_with("dir")) {
-            assert_eq!(line.len(), long_line.len(), "cut mid-line: {line:?}");
-        }
-
-        // Empty map: no block at all rather than framing around nothing.
-        assert!(format_code_map_block("   ").is_none());
-    }
+    // The code-map slicing tests moved to `super::super::code_map::tests`
+    // with the extraction — the shared module is now the single home for the
+    // matching + ancestry + budget behaviour, exercised by both the dispatch
+    // injection here and analyze's `map_query` tool.
 
     /// Approving used to mean deciding about work you could not see: the
     /// detail carried a SHA and a "+63 / -0", naming neither the file, the

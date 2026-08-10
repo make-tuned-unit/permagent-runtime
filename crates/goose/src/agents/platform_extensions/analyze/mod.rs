@@ -50,12 +50,25 @@ fn default_follow_depth() -> u32 {
     2
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct MapQueryParams {
+    /// Term to find in the project's stored code map: a file/dir/symbol name
+    /// or a phrase; matching is case-insensitive and trailing-plural tolerant,
+    /// and snake/kebab identifiers match via their parts.
+    pub term: String,
+    /// Project ID (UUID) or slug. If omitted, the project whose root_path
+    /// contains the session's working directory is used.
+    #[serde(default)]
+    pub project_id_or_slug: Option<String>,
+}
+
 pub struct AnalyzeClient {
     info: InitializeResult,
+    context: PlatformExtensionContext,
 }
 
 impl AnalyzeClient {
-    pub fn new(_context: PlatformExtensionContext) -> Result<Self> {
+    pub fn new(context: PlatformExtensionContext) -> Result<Self> {
         let info = InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new(EXTENSION_NAME, "1.0.0").with_title("Analyze"))
             .with_instructions(indoc! {"
@@ -65,9 +78,13 @@ impl AnalyzeClient {
             - Any path + focus parameter → symbol call graph (incoming/outgoing chains)
 
             For large codebases, delegate analysis to a subagent and retain only the summary.
+
+            map_query answers \"where does X live?\" from the project's STORED code map (indexed
+            via POST /api/projects/{id}/index-code) without touching the filesystem — prefer it
+            over ls/grep exploration when a code map exists.
         "});
 
-        Ok(Self { info })
+        Ok(Self { info, context })
     }
 
     fn schema<T: JsonSchema>() -> JsonObject {
@@ -204,6 +221,111 @@ impl AnalyzeClient {
             Err(warning) => CallToolResult::error(vec![Content::text(warning).with_priority(0.0)]),
         }
     }
+
+    /// The `map_query` tool: slice the project's STORED code map
+    /// (`code:{project_id}:map`, written by `POST /api/projects/{id}/index-code`)
+    /// around a term. Added after the goals A/B measurement (2026-08-10) showed
+    /// that INJECTING a map into worker prompts does not change navigation
+    /// behaviour — workers grep anyway. A tool the worker calls at the moment
+    /// it wonders "where does X live?" puts the map on the path it actually
+    /// takes. The matching + ancestry + budget logic is shared with the
+    /// orchestrator's dispatch-time injection ([`super::code_map`]).
+    async fn map_query(
+        &self,
+        params: MapQueryParams,
+        working_dir: Option<&Path>,
+    ) -> CallToolResult {
+        match self.map_query_inner(params, working_dir).await {
+            Ok(text) => CallToolResult::success(vec![Content::text(text).with_priority(0.0)]),
+            Err(error) => CallToolResult::error(vec![
+                Content::text(format!("Error: {error}")).with_priority(0.0)
+            ]),
+        }
+    }
+
+    async fn map_query_inner(
+        &self,
+        params: MapQueryParams,
+        working_dir: Option<&Path>,
+    ) -> std::result::Result<String, String> {
+        let pool = self
+            .context
+            .session_manager
+            .pool_clone()
+            .await
+            .map_err(|e| e.to_string())?;
+        let project = match params
+            .project_id_or_slug
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(id_or_slug) => crate::projects::get_project_by_id_or_slug(&pool, id_or_slug)
+                .await?
+                .ok_or_else(|| format!("Project '{id_or_slug}' not found"))?,
+            None => {
+                Self::project_for_working_dir(&pool, working_dir, self.context.session.as_deref())
+                    .await?
+            }
+        };
+        let map = match super::get_global_brain() {
+            Some(brain) => brain
+                .get_memory_by_key(&format!("code:{}:map", project.id))
+                .await
+                .ok()
+                .flatten()
+                .map(|m| m.content),
+            None => None,
+        };
+        let label = format!("\"{}\" (slug: {})", project.name, project.slug);
+        Ok(super::code_map::render_map_query(
+            map.as_deref(),
+            &params.term,
+            &label,
+            &project.id,
+        ))
+    }
+
+    /// Resolve the session's project by containment, mirroring how sibling
+    /// extensions bind a tool call to "the project I'm working in": the project
+    /// whose `root_path` contains the call's working directory (falling back to
+    /// the session's). Deepest root wins when project roots nest. Explicit,
+    /// never silent — no match is an error naming the directory, not a guess.
+    async fn project_for_working_dir(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        working_dir: Option<&Path>,
+        session: Option<&crate::session::Session>,
+    ) -> std::result::Result<crate::projects::Project, String> {
+        let dir = working_dir
+            .map(Path::to_path_buf)
+            .or_else(|| session.map(|s| s.working_dir.clone()))
+            .ok_or_else(|| {
+                "No project_id_or_slug given and this session has no working directory — \
+                 pass the project explicitly."
+                    .to_string()
+            })?;
+        let dir_str = dir.to_string_lossy();
+        let mut candidates: Vec<crate::projects::Project> =
+            crate::projects::list_projects(pool, None)
+                .await?
+                .into_iter()
+                .filter(|p| {
+                    p.root_path.as_deref().is_some_and(|root| {
+                        let root = root.trim_end_matches('/');
+                        !root.is_empty()
+                            && (dir_str == root || dir_str.starts_with(&format!("{root}/")))
+                    })
+                })
+                .collect();
+        candidates
+            .sort_by_key(|p| std::cmp::Reverse(p.root_path.as_deref().map(str::len).unwrap_or(0)));
+        candidates.into_iter().next().ok_or_else(|| {
+            format!(
+                "No project's root_path contains the working directory {dir_str} — \
+                 pass project_id_or_slug explicitly."
+            )
+        })
+    }
 }
 
 /// A persisted **code map**: the rendered directory/symbol overview plus the
@@ -291,18 +413,32 @@ impl AnalyzeClient {
     /// list — add a tool here and CI fails until the registry `description`
     /// names it.
     pub(crate) fn get_tools() -> Vec<Tool> {
-        vec![Tool::new(
-            "analyze".to_string(),
-            "Analyze code structure in 3 modes: 1) Directory overview - file tree with LOC/function/class counts to max_depth. 2) File details - functions, classes, imports. 3) Symbol focus - call graphs across directory to max_depth (requires file or directory path, case-sensitive). Typical flow: directory → files → symbols. Functions called >3x show •N.".to_string(),
-            Self::schema::<AnalyzeParams>(),
-        )
-        .annotate(ToolAnnotations::from_raw(
-            Some("Analyze".to_string()),
-            Some(true),
-            Some(false),
-            Some(true),
-            Some(false),
-        ))]
+        vec![
+            Tool::new(
+                "analyze".to_string(),
+                "Analyze code structure in 3 modes: 1) Directory overview - file tree with LOC/function/class counts to max_depth. 2) File details - functions, classes, imports. 3) Symbol focus - call graphs across directory to max_depth (requires file or directory path, case-sensitive). Typical flow: directory → files → symbols. Functions called >3x show •N.".to_string(),
+                Self::schema::<AnalyzeParams>(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Analyze".to_string()),
+                Some(true),
+                Some(false),
+                Some(true),
+                Some(false),
+            )),
+            Tool::new(
+                "map_query".to_string(),
+                "Find where something lives using the project's stored code map (indexed by POST /api/projects/{id}/index-code) — no filesystem access. Returns only the map lines matching the term (case-insensitive, tolerates a trailing plural) together with their ancestor directories, so every hit is a navigable path. Prefer this over ls/grep exploration when the project is indexed; if the project argument is omitted, the session's working directory selects it.".to_string(),
+                Self::schema::<MapQueryParams>(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Map Query".to_string()),
+                Some(true),
+                Some(false),
+                Some(true),
+                Some(false),
+            )),
+        ]
     }
 }
 
@@ -335,6 +471,13 @@ impl McpClientTrait for AnalyzeClient {
                     let path = Self::resolve_path(&params.path, working_dir);
                     Ok(self.analyze(params, path))
                 }
+                Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Error: {error}"
+                ))
+                .with_priority(0.0)])),
+            },
+            "map_query" => match Self::parse_args::<MapQueryParams>(arguments) {
+                Ok(params) => Ok(self.map_query(params, working_dir).await),
                 Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
                     "Error: {error}"
                 ))
@@ -549,5 +692,38 @@ fn helper() { validate(0); }
         assert!(map.text.contains("2 files"));
         assert!(map.text.contains("lib.rs"));
         assert!(map.text.contains("app.py"));
+    }
+
+    /// The tool must actually ship: listed with its documented parameters, so
+    /// the self-knowledge completeness guard holds it to the naming contract.
+    #[test]
+    fn map_query_tool_is_listed_with_its_params() {
+        let tools = AnalyzeClient::get_tools();
+        let map_query = tools
+            .iter()
+            .find(|t| t.name == "map_query")
+            .expect("map_query must be in the analyze tool inventory");
+        let props = map_query
+            .input_schema
+            .get("properties")
+            .and_then(|v| v.as_object())
+            .expect("map_query schema has properties");
+        assert!(props.contains_key("term"));
+        assert!(props.contains_key("project_id_or_slug"));
+    }
+
+    /// `project_id_or_slug` is optional on the wire: a bare `{term}` call is
+    /// valid and resolves the project from the session's working directory.
+    #[test]
+    fn map_query_params_parse_with_term_only() {
+        let params: MapQueryParams = AnalyzeClient::parse_args(Some(
+            serde_json::json!({"term": "receipts"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        ))
+        .unwrap();
+        assert_eq!(params.term, "receipts");
+        assert!(params.project_id_or_slug.is_none());
     }
 }
