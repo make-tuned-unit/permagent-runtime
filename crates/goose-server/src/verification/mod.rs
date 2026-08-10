@@ -1433,7 +1433,14 @@ mod tests {
     async fn panel_config_runs_all_panelists_and_persists_their_verdicts() {
         let repo = tempfile::tempdir().unwrap();
         let baseline = init_repo(repo.path());
-        std::fs::write(repo.path().join("src/lib.rs"), "pub fn a() {}\n").unwrap();
+        // A REAL in-path change — writing the baseline content back verbatim
+        // produces an empty diff, and the true-no-op clamp rightly fails it
+        // (which is exactly what CI caught on the first version of this test).
+        std::fs::write(
+            repo.path().join("src/lib.rs"),
+            "pub fn a() {}\npub fn b() {}\n",
+        )
+        .unwrap();
 
         let pool = test_pool().await;
         let card = make_goal(
