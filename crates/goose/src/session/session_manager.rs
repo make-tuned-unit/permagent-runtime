@@ -1420,7 +1420,8 @@ impl SessionStorage {
             if let Some(id) = message_id {
                 message = message.with_id(id);
             }
-            messages.push(message);
+            // Repair sessions that stored per-token Thinking deltas (Kimi crash).
+            messages.push(message.coalesce_adjacent_text_and_thinking());
         }
 
         Ok(Conversation::new_unvalidated(messages))

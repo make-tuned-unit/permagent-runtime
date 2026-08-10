@@ -20,8 +20,19 @@ const PROVIDERS: &[(&str, &str)] = &[
 /// Known models per provider for interactive selection
 fn models_for_provider(provider: &str) -> Vec<&'static str> {
     match provider {
-        "anthropic" => vec!["claude-sonnet-4-5", "claude-opus-4-6", "claude-haiku-4-5"],
-        "openai" => vec!["gpt-4o", "gpt-4o-mini", "o3"],
+        "anthropic" => vec![
+            "claude-fable-5",
+            "claude-opus-4-8",
+            "claude-sonnet-5",
+            "claude-haiku-4-5",
+        ],
+        "openai" => vec![
+            "gpt-5.6-terra",
+            "gpt-5.6-sol",
+            "gpt-5.6-luna",
+            "gpt-5.4",
+            "gpt-4o",
+        ],
         "ollama" => vec!["qwen2.5:14b", "llama3.1", "mistral", "codestral"],
         "google" => vec!["gemini-2.0-flash", "gemini-2.5-pro"],
         _ => vec!["default"],

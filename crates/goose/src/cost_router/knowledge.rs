@@ -169,20 +169,55 @@ pub static KNOWN_MODELS: &[ModelKnowledge] = &[
     // ── OpenAI — approximate published pricing; update from the platform ─────
     ModelKnowledge {
         provider: "openai",
-        model: "gpt-5.6",
-        display_name: "GPT-5.6",
+        model: "gpt-5.6-sol",
+        display_name: "GPT-5.6 Sol",
         family: "openai",
-        // pricing: GPT-5.6 flagship "Sol" tier, GA 2026-07-09 ($5/$30; family also
-        // Terra $2.50/$15, Luna $1/$6).
-        // edit 0.950: no aider row yet; GPT-5 proxy 0.884–0.916 (LB 2026-07-15) plus a
-        // new-version delta — GPT-5 lineage trails the Claude/Gemini/o3 edit cluster.
-        // orch 0.83: GPT-5.6 unpublished on SWE-bench; proxied to GPT-5.5 82.6% (vals.ai 2026-07-15).
         edit_format_reliability: 0.950,
         orchestration_strength: 0.83,
         input_usd_per_mtok: 5.00,
         output_usd_per_mtok: 30.00,
         cache_support: true,
-        context_window: 400_000,
+        context_window: 1_000_000,
+        is_local: false,
+    },
+    ModelKnowledge {
+        provider: "openai",
+        model: "gpt-5.6-terra",
+        display_name: "GPT-5.6 Terra",
+        family: "openai",
+        edit_format_reliability: 0.940,
+        orchestration_strength: 0.80,
+        input_usd_per_mtok: 2.50,
+        output_usd_per_mtok: 15.00,
+        cache_support: true,
+        context_window: 1_000_000,
+        is_local: false,
+    },
+    ModelKnowledge {
+        provider: "openai",
+        model: "gpt-5.6-luna",
+        display_name: "GPT-5.6 Luna",
+        family: "openai",
+        edit_format_reliability: 0.885,
+        orchestration_strength: 0.60,
+        input_usd_per_mtok: 1.00,
+        output_usd_per_mtok: 6.00,
+        cache_support: true,
+        context_window: 1_000_000,
+        is_local: false,
+    },
+    ModelKnowledge {
+        provider: "openai",
+        model: "gpt-5.6",
+        display_name: "GPT-5.6",
+        family: "openai",
+        // Alias / flagship row — Sol pricing when the bare id is used.
+        edit_format_reliability: 0.950,
+        orchestration_strength: 0.83,
+        input_usd_per_mtok: 5.00,
+        output_usd_per_mtok: 30.00,
+        cache_support: true,
+        context_window: 1_000_000,
         is_local: false,
     },
     ModelKnowledge {
@@ -190,16 +225,12 @@ pub static KNOWN_MODELS: &[ModelKnowledge] = &[
         model: "gpt-5.6-mini",
         display_name: "GPT-5.6 mini",
         family: "openai",
-        // pricing: GPT-5.6 budget "Luna" tier ($1/$6), OpenAI's cheapest published
-        // GPT-5.6 (GA 2026-07-09).
-        // edit 0.885 (GPT-5-low proxy 0.867, aider LB 2026-07-15).
-        // orch 0.60: no public SWE-bench row — budget-tier estimate.
         edit_format_reliability: 0.885,
         orchestration_strength: 0.60,
         input_usd_per_mtok: 1.00,
         output_usd_per_mtok: 6.00,
         cache_support: true,
-        context_window: 400_000,
+        context_window: 1_000_000,
         is_local: false,
     },
     // ── xAI — approximate ────────────────────────────────────────────────────

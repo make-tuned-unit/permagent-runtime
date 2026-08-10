@@ -845,6 +845,43 @@ impl Message {
         self.with_content(MessageContent::thinking(thinking, signature))
     }
 
+    /// Merge adjacent Text / Thinking blocks produced by token-streamed
+    /// providers (OpenAI-compat `reasoning_content` deltas). Without this,
+    /// a single Kimi turn can leave tens of thousands of one-token Thinking
+    /// blocks in the session and crash the UI on reload.
+    pub fn coalesce_adjacent_text_and_thinking(mut self) -> Self {
+        if self.role != Role::Assistant {
+            return self;
+        }
+        self.content = self
+            .content
+            .into_iter()
+            .fold(Vec::new(), |mut content, item| {
+                match item {
+                    MessageContent::Text(text) => {
+                        if let Some(MessageContent::Text(ref mut last)) = content.last_mut() {
+                            last.text.push_str(&text.text);
+                        } else {
+                            content.push(MessageContent::Text(text));
+                        }
+                    }
+                    MessageContent::Thinking(thinking) => {
+                        if let Some(MessageContent::Thinking(ref mut last)) = content.last_mut() {
+                            last.thinking.push_str(&thinking.thinking);
+                            if last.signature.is_empty() && !thinking.signature.is_empty() {
+                                last.signature = thinking.signature;
+                            }
+                        } else {
+                            content.push(MessageContent::Thinking(thinking));
+                        }
+                    }
+                    other => content.push(other),
+                }
+                content
+            });
+        self
+    }
+
     /// Add redacted thinking content to the message
     pub fn with_redacted_thinking<S: Into<String>>(self, data: S) -> Self {
         self.with_content(MessageContent::redacted_thinking(data))
