@@ -109,6 +109,10 @@ fn default_env_filter() -> EnvFilter {
         // it injects hints (the A/B-observable signal). Without the directive
         // both fall below the WARN floor (the #580 trap).
         .add_directive("playbook=info".parse().unwrap())
+        // Failure-learning return leg: decompose logs when it injects open
+        // incidents (the A/B-observable signal, same contract as playbook).
+        // Without the directive the INFO line falls below the WARN floor (#580).
+        .add_directive("incidents=info".parse().unwrap())
         // Sovereignty: the egress-audit writer logs its failure modes (audit
         // row write failed / no db pool) under this target — an unlogged cloud
         // call is a lying audit, so these lines must never be dropped (#580).
