@@ -7,6 +7,7 @@ pub mod browser;
 pub mod chatrecall;
 #[cfg(feature = "code-mode")]
 pub mod code_execution;
+pub(crate) mod code_map;
 pub mod dashboard;
 pub mod desktop;
 pub mod developer;
@@ -128,7 +129,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: analyze::EXTENSION_NAME,
                 display_name: "Analyze",
                 description:
-                    "Analyze code structure with tree-sitter: directory overviews, file details, symbol call graphs",
+                    "Analyze code structure with tree-sitter: directory overviews, file details, symbol call graphs (analyze); query a project's indexed code map for the paths matching a term, with their ancestor directories (map_query)",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,

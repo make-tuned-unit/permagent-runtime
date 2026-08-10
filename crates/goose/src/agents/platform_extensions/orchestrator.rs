@@ -625,162 +625,19 @@ pub(crate) async fn select_worker_fn(
         .worker_key)
 }
 
-/// Character budget for the injected code map. Roughly a thousand tokens —
-/// enough for the tree and top-level symbols of a mid-sized repo, and far less
-/// than the multi-turn ls/grep exploration it replaces. A map that costs more
-/// than the exploration would be the feature defeating itself.
-const CODE_MAP_INJECT_MAX_CHARS: usize = 4_000;
-
 /// The stored code map (`code:{project_id}:map`, written by
-/// `POST /api/projects/{id}/index-code`) as a worker-instructions block, or
-/// `None` when the Brain is absent or the project was never indexed.
+/// `POST /api/projects/{id}/index-code`) as a worker-instructions block sliced
+/// around the goal's own words, or `None` when the Brain is absent or the
+/// project was never indexed. The slicing itself lives in [`super::code_map`],
+/// shared with the analyze extension's `map_query` tool so the two views of a
+/// stored map cannot drift.
 async fn code_map_instructions_block(project_id: &str, goal_text: &str) -> Option<String> {
     let brain = super::get_global_brain()?;
     let mem = brain
         .get_memory_by_key(&format!("code:{project_id}:map"))
         .await
         .ok()??;
-    format_code_map_block(&mem.content, goal_text)
-}
-
-/// Words in a goal that say nothing about WHERE its work lives. Kept small:
-/// over-filtering costs matches, and a stray weak term only adds a few lines.
-const GOAL_TERM_STOPWORDS: &[&str] = &[
-    "should", "every", "their", "there", "which", "record", "update", "create", "write", "make",
-    "field", "using", "them", "this", "that", "with", "into", "from", "have", "when", "also",
-];
-
-/// Terms worth matching against map lines: lowercase alphanumeric-ish words of
-/// 4+ chars, minus stopwords. Snake/kebab identifiers split into their parts
-/// ("execution_receipt" matches via "execution" AND "receipt"), and each term
-/// also matches its own singular ("receipts" finds `execution_receipt.rs`).
-fn goal_terms(goal_text: &str) -> Vec<String> {
-    let mut terms: Vec<String> = goal_text
-        .to_lowercase()
-        .split(|c: char| !(c.is_ascii_alphanumeric()))
-        .filter(|t| t.len() >= 4)
-        .filter(|t| !GOAL_TERM_STOPWORDS.contains(t))
-        .map(str::to_string)
-        .collect();
-    terms.sort_unstable();
-    terms.dedup();
-    terms
-}
-
-/// Does this map line mention any goal term (allowing for a trailing plural)?
-fn line_matches(line_lower: &str, terms: &[String]) -> bool {
-    terms.iter().any(|t| {
-        line_lower.contains(t.as_str())
-            || (t.len() > 4
-                && t.strip_suffix('s')
-                    .is_some_and(|stem| line_lower.contains(stem)))
-    })
-}
-
-/// Pure: render a stored map as the instructions block, sliced around the goal.
-///
-/// The first measurement (2026-08-10, goals A/B) showed why a flat top-slice is
-/// inert: 4k chars of a 1,660-file tree never reaches the deep path the goal
-/// actually concerns, so the worker greps exactly as if the map were absent.
-/// The slice is therefore goal-aware: lines mentioning the goal's own terms are
-/// included WITH their ancestor directories (a path fragment without its
-/// ancestry is not navigable), and whatever budget remains carries the plain
-/// top of the tree for orientation. A goal whose terms match nothing falls
-/// back to the flat slice — a worse map than none is not on the menu.
-fn format_code_map_block(content: &str, goal_text: &str) -> Option<String> {
-    let map = content.trim();
-    if map.is_empty() {
-        return None;
-    }
-
-    let terms = goal_terms(goal_text);
-    let lines: Vec<&str> = map.lines().collect();
-    let budget = CODE_MAP_INJECT_MAX_CHARS;
-
-    // ── Relevant subtree: matching lines plus their unemitted ancestors ──
-    let mut included = vec![false; lines.len()];
-    let mut relevant_chars = 0usize;
-    if !terms.is_empty() {
-        // Stack of (indent_level, line_index) for the current directory chain.
-        let mut stack: Vec<(usize, usize)> = Vec::new();
-        for (i, line) in lines.iter().enumerate() {
-            let indent = line.len() - line.trim_start().len();
-            while stack.last().is_some_and(|&(d, _)| d >= indent) {
-                stack.pop();
-            }
-            let is_dir = line.trim_end().ends_with('/');
-            if line_matches(&line.to_lowercase(), &terms) {
-                for &(_, ai) in &stack {
-                    if !included[ai] {
-                        included[ai] = true;
-                        relevant_chars += lines[ai].len() + 1;
-                    }
-                }
-                if !included[i] {
-                    included[i] = true;
-                    relevant_chars += line.len() + 1;
-                }
-            }
-            if is_dir {
-                stack.push((indent, i));
-            }
-            // Leave half the budget for the subtree at most twice over — stop
-            // scoring once even the subtree alone would overflow the block.
-            if relevant_chars > budget {
-                break;
-            }
-        }
-    }
-
-    // ── Compose: relevant subtree first (it is the goal's map), then fill the
-    //    remaining budget with the top of the tree for orientation. ──
-    let mut shown = String::new();
-    let mut subtree_lines = 0usize;
-    if relevant_chars > 0 {
-        shown.push_str("## Paths matching this goal\n");
-        for (i, line) in lines.iter().enumerate() {
-            if included[i] {
-                if shown.len() + line.len() + 1 > budget {
-                    break;
-                }
-                shown.push_str(line);
-                shown.push('\n');
-                subtree_lines += 1;
-            }
-        }
-        shown.push_str("## Repository overview\n");
-    }
-    let mut truncated = false;
-    for (i, line) in lines.iter().enumerate() {
-        if included[i] {
-            continue; // already shown in the subtree section
-        }
-        if shown.len() + line.len() + 1 > budget {
-            truncated = true;
-            break;
-        }
-        shown.push_str(line);
-        shown.push('\n');
-    }
-
-    let mut block = format!(
-        "Codebase map (pre-indexed — use this to navigate instead of exploring \
-         with ls/grep; it lists the tree with per-file line counts and symbols):\n{}",
-        shown
-    );
-    if truncated {
-        block.push_str(
-            "\n[map truncated — deeper paths exist; explore only below the directories shown]",
-        );
-    }
-    // The index is a snapshot, not a live view — a worker that trusts a stale
-    // entry over the filesystem will edit files that moved.
-    block.push_str(
-        "\nThe map reflects the last index, not necessarily HEAD — confirm a path exists \
-         before editing it.",
-    );
-    let _ = subtree_lines; // (kept for debug hooks; the count is asserted in tests)
-    Some(block)
+    super::code_map::format_code_map_block(&mem.content, goal_text)
 }
 
 /// Pin dispatch to a NAMED roster worker, bypassing cost ranking.
@@ -6800,97 +6657,10 @@ mod tests {
         assert!(err.contains("requires an answered decision"), "{}", err);
     }
 
-    /// The A/B measurement (2026-08-10) showed the flat top-slice is inert on
-    /// a deep tree: the goal's actual path never fits in the first 4k chars,
-    /// so the worker greps as if the map were absent. The slice must therefore
-    /// surface the DEEP path a goal names, with its ancestry, ahead of the
-    /// generic tree top.
-    #[test]
-    fn goal_aware_slice_surfaces_the_deep_path_with_its_ancestry() {
-        // A tree where the goal-relevant file sits far past any flat 4k cut.
-        let mut map = String::from("9999 files, 1L, 1F, 0C (unlimited)\n\n");
-        for i in 0..400 {
-            map.push_str(&format!(
-                "padding{:03}/\n  filler{:03}.rs [10L, 1F]\n",
-                i, i
-            ));
-        }
-        map.push_str(
-            "crates/\n  goose/\n    src/\n      agents/\n        execution_receipt.rs [200L, 8F]\n",
-        );
-
-        let block = format_code_map_block(
-            &map,
-            "Record the dispatching machine's hostname on execution receipts",
-        )
-        .unwrap();
-
-        assert!(
-            block.contains("execution_receipt.rs"),
-            "the goal's deep path must be in the slice"
-        );
-        // Ancestry, not a bare basename: an orphan filename is not navigable.
-        for anc in ["crates/", "  goose/", "    src/", "      agents/"] {
-            assert!(block.contains(anc), "missing ancestor {anc:?}");
-        }
-        assert!(
-            block.contains("## Paths matching this goal"),
-            "the subtree section must be labeled"
-        );
-        assert!(
-            block.chars().count() < CODE_MAP_INJECT_MAX_CHARS + 600,
-            "budget still holds: {}",
-            block.chars().count()
-        );
-        // Plural handling did the matching: "receipts" found "receipt.rs".
-        assert!(goal_terms("execution receipts").contains(&"receipts".to_string()));
-    }
-
-    /// A goal whose words match nothing must degrade to the flat slice — a map
-    /// with an empty "matching paths" section is worse than no framing at all.
-    #[test]
-    fn unmatched_goal_falls_back_to_the_flat_slice() {
-        let map = "5 files, 1L, 1F, 0C\n\nsrc/\n  main.rs [10L, 1F]\n";
-        let block = format_code_map_block(map, "zzz qqqq wwww").unwrap();
-        assert!(!block.contains("## Paths matching this goal"));
-        assert!(block.contains("main.rs"));
-    }
-
-    /// The code map existed only as a Brain write — nothing on the dispatch
-    /// path read it, so every worker re-explored the repo it described. These
-    /// pin the injected block: navigable, bounded, and honest about being a
-    /// snapshot.
-    #[test]
-    fn code_map_block_is_bounded_and_cut_on_line_boundaries() {
-        // Small map: injected whole, with the navigation and staleness framing.
-        let small =
-            format_code_map_block("src/\n  main.rs (120 loc, 3 fn)", "irrelevant goal").unwrap();
-        assert!(small.contains("main.rs"));
-        assert!(small.contains("instead of exploring"));
-        assert!(small.contains("confirm a path exists"));
-        assert!(!small.contains("[map truncated"));
-
-        // Oversized map: cut at a LINE boundary within budget, and says so —
-        // a mid-line cut reads as a file that exists with a mangled name.
-        let long_line = format!("dir{:04}/file.rs (10 loc)", 0);
-        let big: String = (0..2000)
-            .map(|i| format!("dir{:04}/file.rs (10 loc)\n", i))
-            .collect();
-        let block = format_code_map_block(&big, "no matching words").unwrap();
-        assert!(block.contains("[map truncated"));
-        assert!(
-            block.chars().count() < CODE_MAP_INJECT_MAX_CHARS + 400,
-            "the injected map must stay near its budget, got {} chars",
-            block.chars().count()
-        );
-        // Every map line that survived is complete.
-        for line in block.lines().filter(|l| l.starts_with("dir")) {
-            assert_eq!(line.len(), long_line.len(), "cut mid-line: {line:?}");
-        }
-
-        // Empty map: no block at all rather than framing around nothing.
-        assert!(format_code_map_block("   ", "anything").is_none());
-    }
+    // The code-map slicing tests moved to `super::super::code_map::tests`
+    // with the extraction — the shared module is now the single home for the
+    // matching + ancestry + budget behaviour, exercised by both the dispatch
+    // injection here and analyze's `map_query` tool.
 
     /// Approving used to mean deciding about work you could not see: the
     /// detail carried a SHA and a "+63 / -0", naming neither the file, the
