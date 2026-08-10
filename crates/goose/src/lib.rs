@@ -32,6 +32,7 @@ pub mod echo;
 pub mod events;
 pub mod execution;
 pub mod gateway;
+pub mod goal_landing;
 pub mod goal_state;
 pub mod goal_transition;
 pub mod goose_apps;

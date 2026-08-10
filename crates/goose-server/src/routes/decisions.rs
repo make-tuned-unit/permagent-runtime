@@ -292,6 +292,30 @@ async fn history_handler(
 /// a follow-on step (dependent promotion) that failed AFTER the effect itself
 /// committed. The warning surfaces in the response's `effect_error` and is
 /// audit-recorded — the decision-spine rule is that nothing here may discard
+/// Fast-forward an approved goal's work onto the project trunk.
+///
+/// `None` when there is nothing to land at all (no evidence, no commits, or a
+/// project with no `root_path` — a project we cannot locate on disk has no
+/// trunk to land onto, and the daemon's cwd is emphatically not it). Every
+/// other case returns an outcome that gets reported on the approval, including
+/// the refusals: a dirty tree or a diverged trunk must be visible, not silent.
+async fn land_approved_goal(
+    pool: &Pool<Sqlite>,
+    goal_id: &str,
+    project_id: Option<&str>,
+) -> Option<permagent::goal_landing::LandOutcome> {
+    let card = permagent::cards::get_card(pool, goal_id).await.ok()??;
+    let project_id = project_id.or(Some(card.project_id.as_str()))?;
+    let root = permagent::projects::get_project_by_id_or_slug(pool, project_id)
+        .await
+        .ok()??
+        .root_path?;
+
+    let req =
+        permagent::goal_landing::land_request_from_metadata(&card.metadata_json, Some(&root))?;
+    Some(permagent::goal_landing::land(&req).await)
+}
+
 /// a `Result` (bug-sweep wave 1).
 async fn execute_effect(
     pool: &Pool<Sqlite>,
@@ -333,10 +357,20 @@ async fn execute_effect(
             // Recognition write-back (SECONDARY proxy): approval is a positive
             // outcome. 2-hop join goal_id → worker_session_id → recognition events.
             permagent::recognition::write_back_decision_outcome(pool, goal_id, true).await;
-            Ok((
-                Some("goal approved: Review → Complete".to_string()),
-                promotion_warning,
-            ))
+
+            // Approving used to move the card and merge NOTHING, so the work
+            // stayed on `goal/<run_id>` and the trunk never saw it — measured
+            // 2026-08-09. Land it now. Fast-forward only, and the outcome is
+            // ALWAYS reported: a landing that silently declined is exactly the
+            // failure this replaces.
+            let landing = land_approved_goal(pool, goal_id, decision.project_id.as_deref()).await;
+            let effect = match &landing {
+                Some(outcome) => {
+                    format!("goal approved: Review → Complete; {}", outcome.describe())
+                }
+                None => "goal approved: Review → Complete".to_string(),
+            };
+            Ok((Some(effect), promotion_warning))
         }
         // Review rejected → bounce back for rework, or park on attempt exhaustion.
         ("approve_review", Some("reject")) => {

@@ -35,6 +35,7 @@
 //! `budget::load_budget_config` touch IO, and each is a thin wrapper over a pure
 //! core.
 
+pub mod assess;
 pub mod best_of_n;
 pub mod budget;
 pub mod cache;
@@ -48,6 +49,7 @@ pub mod review_gate;
 pub mod role_map;
 pub mod tier;
 
+pub use assess::{assess_goal, Assessment};
 pub use best_of_n::{
     best_of_n_enabled, best_of_n_from, difficulty, load_best_of_n, plan_candidates, run_best_of_n,
     select as select_candidate, BestOfNOutcome, BestOfNPlan, CandidateSource, CandidateVerdict,

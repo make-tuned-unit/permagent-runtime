@@ -175,6 +175,12 @@ struct GoalAdvanceParams {
     /// Optional notes for 'approve' or 'reject' actions. Stored in metadata.review_notes.
     #[serde(default)]
     notes: Option<String>,
+    /// For 'dispatch' only: pin the goal to this roster worker (e.g. "permagent",
+    /// "claude_code", "codex") instead of letting cost ranking choose. Omit to
+    /// let the system pick. An unknown, pending or unavailable worker is
+    /// refused outright — it never falls back to a different one.
+    #[serde(default)]
+    worker: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -536,7 +542,18 @@ impl OrchestratorClient {
     /// board-summary refresh on the next read; it never changes dispatch
     /// behavior.
     pub async fn dispatch_goal(&self, card_id: &str) -> Result<String, String> {
-        let result = dispatch_goal_fn(&self.context, &self.probe_cache, card_id).await;
+        self.dispatch_goal_to(card_id, None).await
+    }
+
+    /// Dispatch, optionally PINNING the worker instead of letting cost ranking
+    /// choose. `requested_worker` is the roster key (e.g. `"permagent"`).
+    pub async fn dispatch_goal_to(
+        &self,
+        card_id: &str,
+        requested_worker: Option<&str>,
+    ) -> Result<String, String> {
+        let result =
+            dispatch_goal_fn(&self.context, &self.probe_cache, card_id, requested_worker).await;
         self.invalidate_kanban_cache().await;
         result
     }
@@ -602,6 +619,94 @@ pub(crate) async fn select_worker_fn(
     Ok(select_worker_detailed(pool, probe_cache, goal)
         .await?
         .worker_key)
+}
+
+/// Pin dispatch to a NAMED roster worker, bypassing cost ranking.
+///
+/// Refuses loudly rather than silently falling back to the cheapest worker: a
+/// pin that quietly routes somewhere else is worse than no pin at all, because
+/// the caller believes it took effect. Each refusal names the roster keys that
+/// WOULD work, since the common cause is a typo or a worker that is real but
+/// not installed.
+pub(crate) async fn select_requested_worker(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    probe_cache: &ProbeCache,
+    goal: &cards::Card,
+    requested: &str,
+) -> Result<WorkerSelection, String> {
+    let config = agent_identity::load_agent_config();
+    let runnable = || {
+        let mut keys: Vec<&str> = config
+            .workers
+            .iter()
+            .filter(|(_, p)| !matches!(p.engine, agent_identity::WorkerEngineKind::Pending))
+            .map(|(k, _)| k.as_str())
+            .collect();
+        keys.sort_unstable();
+        keys.join(", ")
+    };
+
+    let persona = config.workers.get(requested).ok_or_else(|| {
+        format!(
+            "No worker '{}' in the roster. Dispatchable workers: {}.",
+            requested,
+            runnable()
+        )
+    })?;
+
+    if matches!(persona.engine, agent_identity::WorkerEngineKind::Pending) {
+        return Err(format!(
+            "Worker '{}' has no runnable engine yet (engine pending) — not dispatched. \
+             Dispatchable workers: {}.",
+            requested,
+            runnable()
+        ));
+    }
+
+    let (available, reason) = match probe_cache.get(requested) {
+        Some(cached) => (cached.available, cached.reason.clone()),
+        None => {
+            let (ok, why) = worker_probe::probe_worker(&persona.availability_check);
+            probe_cache.set(requested, ok, why.clone());
+            (ok, why)
+        }
+    };
+    if !available {
+        return Err(format!(
+            "Worker '{}' is not available on this machine{} — not dispatched. \
+             Dispatchable workers: {}.",
+            requested,
+            reason
+                .map(|r| format!(" ({})", r))
+                .unwrap_or_else(String::new),
+            runnable()
+        ));
+    }
+
+    let load = cards::active_worker_load(pool).await.unwrap_or_default();
+    Ok(WorkerSelection {
+        worker_key: requested.to_string(),
+        snapshot: serde_json::json!({
+            "selected_at": chrono::Utc::now().to_rfc3339(),
+            "worker_key": requested,
+            // The audit trail must record that cost ranking did NOT decide this,
+            // so a later "why did an expensive worker run?" has an answer.
+            "selection_mode": "explicitly_requested",
+            "required_kinds": goal
+                .metadata_json
+                .get("tags")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default(),
+            "selected": {
+                "key": requested,
+                "available": true,
+                "cost_tier": persona.cost_tier,
+                "tool_kinds": persona.tool_kinds,
+                "active_sessions": load.get(requested).copied().unwrap_or(0),
+            },
+        }),
+    })
 }
 
 /// Select a worker AND capture the capability snapshot used for routing (#211).
@@ -754,6 +859,7 @@ pub(crate) async fn dispatch_goal_fn(
     context: &PlatformExtensionContext,
     probe_cache: &ProbeCache,
     card_id: &str,
+    requested_worker: Option<&str>,
 ) -> Result<String, String> {
     let pool = context
         .session_manager
@@ -817,7 +923,18 @@ pub(crate) async fn dispatch_goal_fn(
     // Select worker — on failure, leave card in Ready, no metadata changes.
     // #211: also capture the routing snapshot (why this worker won) so the
     // dispatch decision is auditable after the fact.
-    let selection = select_worker_detailed(&pool, probe_cache, &card).await?;
+    //
+    // An explicitly requested worker PINS the choice and skips cost ranking.
+    // Without this there was no way to send a goal anywhere in particular:
+    // dispatch ranked by cost alone, so "dispatch this to the Permagent
+    // harness" was a sentence the system could not act on — measured
+    // 2026-08-09, when exactly that instruction routed to claude_code. Every
+    // refusal below leaves the card in Ready and changes no metadata, so a
+    // rejected pin is retryable rather than a half-dispatched goal.
+    let selection = match requested_worker {
+        Some(requested) => select_requested_worker(&pool, probe_cache, &card, requested).await?,
+        None => select_worker_detailed(&pool, probe_cache, &card).await?,
+    };
     let worker_key = selection.worker_key.clone();
     let capability_snapshot = selection.snapshot;
 
@@ -987,12 +1104,37 @@ pub(crate) async fn dispatch_goal_fn(
                 }
             } else if escalation_state.is_none() {
                 // First dispatch of a fresh goal: seed the escalation ladder
-                // position from the worker's role tier so the first verify-loop
-                // climb knows which rung it leaves. A role-less (single-model)
-                // worker seeds no tier → any later escalation parks (no-default).
-                let seed = crate::cost_router::GoalEscalationState::seed(
-                    worker_role.map(crate::cost_router::tier_for_workflow_role),
+                // position, and pick the rung from the GOAL rather than from
+                // the worker's static role. The worker's role says what KIND of
+                // work it does; it says nothing about whether this particular
+                // goal is a README or a concurrency rewrite, so every goal a
+                // worker took started on the same rung.
+                //
+                // The assessment is deterministic and reads no self-declared
+                // difficulty (see `cost_router::assess`), so a goal cannot argue
+                // itself onto the expensive model. It only chooses the STARTING
+                // rung — the reactive ladder still owns the outcome, and an
+                // under-tiered goal escalates on its own verify failure.
+                let assessment = crate::cost_router::assess_goal(
+                    &card.title,
+                    &card.description,
+                    &card.metadata_json,
                 );
+                let assessed_role = crate::cost_router::workflow_role_for_tier(assessment.tier);
+                if let Some(rm) = crate::cost_router::role_model(assessed_role) {
+                    tracing::info!(
+                        target: "permagentd::brain",
+                        card_id,
+                        tier = assessment.tier.as_str(),
+                        reason = assessment.reason,
+                        provider = %rm.provider,
+                        model = %rm.model,
+                        "goal assessed to a starting tier",
+                    );
+                    role = Some(assessed_role);
+                    model_override = Some(rm);
+                }
+                let seed = crate::cost_router::GoalEscalationState::seed(Some(assessment.tier));
                 if let Err(e) = persist_escalation_state(&pool, card_id, &seed).await {
                     tracing::warn!(
                         target: "permagentd::brain",
@@ -1869,6 +2011,12 @@ impl OrchestratorClient {
             .get("notes")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
+        let requested_worker = args
+            .get("worker")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
 
         let action = GoalAction::parse_action(&action_str).ok_or_else(|| {
             format!(
@@ -1928,7 +2076,9 @@ impl OrchestratorClient {
             // additionally runs the engine, so this arm delegates rather than
             // duplicating the move.
             GoalAction::Dispatch => {
-                let session_id = self.dispatch_goal(&card_id).await?;
+                let session_id = self
+                    .dispatch_goal_to(&card_id, requested_worker.as_deref())
+                    .await?;
                 Ok(CallToolResult::success(vec![Content::text(format!(
                     "Goal '{}' dispatched: {} → {} (worker session: {})",
                     card.title, current_state, new_state, session_id
@@ -6337,7 +6487,7 @@ mod tests {
         };
         let probe_cache = ProbeCache::new();
 
-        let err = dispatch_goal_fn(&context, &probe_cache, &card.id)
+        let err = dispatch_goal_fn(&context, &probe_cache, &card.id, None)
             .await
             .expect_err("a non-Ready goal must not dispatch");
         assert!(
