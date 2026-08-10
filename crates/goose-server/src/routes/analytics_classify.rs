@@ -167,17 +167,11 @@ pub enum ReferrerClass {
     Referral,
 }
 
-impl ReferrerClass {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ReferrerClass::Direct => "direct",
-            ReferrerClass::Search => "search",
-            ReferrerClass::Social => "social",
-            ReferrerClass::Internal => "internal",
-            ReferrerClass::Referral => "referral",
-        }
-    }
-}
+// NOTE: no `as_str` on ReferrerClass on purpose. The in-progress work this
+// completes (Cursor, 2026-08-10) left one as dead code — user-facing labels
+// come from `TrafficAttribution::label()`, and the enum's only consumer
+// (`first_party_analytics`) matches on variants directly. Add a serializer
+// when a wire format actually needs one.
 
 const SEARCH_HOSTS: &[&str] = &[
     "google.",
@@ -259,6 +253,156 @@ pub fn classify_referrer(referrer: Option<&str>, site_host: Option<&str>) -> Ref
         return ReferrerClass::Social;
     }
     ReferrerClass::Referral
+}
+
+// ── First-party traffic attribution (source / medium) ───────────────────────
+//
+// Traffic sources must not require `utm_*`. Organic search, social, and answer
+// engines almost always arrive with an empty campaign string — the referrer
+// (or an explicit `session_attribution` event) is the signal. This map is the
+// shared default for every drained project; keep it extensible later.
+
+/// First-touch traffic source for a session (or a single sessionless hit).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+pub struct TrafficAttribution {
+    pub source: String,
+    pub medium: String,
+}
+
+impl TrafficAttribution {
+    pub fn new(source: impl Into<String>, medium: impl Into<String>) -> Self {
+        Self {
+            source: source.into(),
+            medium: medium.into(),
+        }
+    }
+
+    /// Display form used by the Traffic sources widget and growth brief.
+    pub fn label(&self) -> String {
+        format!("{} / {}", self.source, self.medium)
+    }
+
+    pub fn is_aeo(&self) -> bool {
+        self.medium.eq_ignore_ascii_case("aeo")
+    }
+}
+
+/// Exact-host → (source, medium). Hosts are compared after `referrer_host`
+/// normalization (lowercase, no `www.`).
+const ATTRIBUTION_HOSTS: &[(&str, &str, &str)] = &[
+    ("google.com", "google", "organic"),
+    ("bing.com", "bing", "organic"),
+    ("duckduckgo.com", "duckduckgo", "organic"),
+    ("chatgpt.com", "chatgpt", "aeo"),
+    ("chat.openai.com", "chatgpt", "aeo"),
+    ("reddit.com", "reddit", "social"),
+    ("com.reddit.frontpage", "reddit", "social"),
+    ("ca.search.yahoo.com", "yahoo", "organic"),
+    ("search.yahoo.com", "yahoo", "organic"),
+    ("yahoo.com", "yahoo", "organic"),
+    ("youtube.com", "youtube", "social"),
+    // Additional AEO hosts — same medium, countable without campaign params.
+    ("perplexity.ai", "perplexity", "aeo"),
+    ("claude.ai", "claude", "aeo"),
+    ("copilot.microsoft.com", "copilot", "aeo"),
+    ("gemini.google.com", "gemini", "aeo"),
+];
+
+/// Suffix matches for regional Google / Bing hosts (`google.ca`, `google.co.uk`).
+fn host_matches_engine(host: &str, engine: &str) -> bool {
+    host == engine
+        || host.ends_with(&format!(".{engine}"))
+        || host.starts_with(&format!("{engine}."))
+}
+
+/// Map a raw referrer URL (or android-app URI) to source / medium.
+///
+/// Empty → `direct / none`. Known hosts use the table above. Everything else
+/// with a parseable host → `<hostname> / referral`.
+pub fn attribute_from_referrer(referrer: Option<&str>) -> TrafficAttribution {
+    let Some(raw) = referrer.map(str::trim).filter(|s| !s.is_empty()) else {
+        return TrafficAttribution::new("direct", "none");
+    };
+
+    // Android in-app browsers often send `android-app://com.reddit.frontpage`
+    // rather than an https URL. Treat the package as the host.
+    let host = if let Some(rest) = raw
+        .strip_prefix("android-app://")
+        .or_else(|| raw.strip_prefix("android-app:"))
+    {
+        let pkg = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+        Some(pkg.to_ascii_lowercase())
+    } else {
+        referrer_host(raw)
+    };
+
+    let Some(host) = host else {
+        return TrafficAttribution::new("direct", "none");
+    };
+
+    for (mapped, source, medium) in ATTRIBUTION_HOSTS {
+        if host == *mapped {
+            return TrafficAttribution::new(*source, *medium);
+        }
+    }
+    // Regional search engines not listed exactly (google.ca, google.co.uk, …).
+    if host_matches_engine(&host, "google.com") || host.starts_with("google.") {
+        return TrafficAttribution::new("google", "organic");
+    }
+    if host_matches_engine(&host, "bing.com") || host.starts_with("bing.") {
+        return TrafficAttribution::new("bing", "organic");
+    }
+    if host.contains("duckduckgo.") {
+        return TrafficAttribution::new("duckduckgo", "organic");
+    }
+    if host.contains("yahoo.") {
+        return TrafficAttribution::new("yahoo", "organic");
+    }
+    if host.contains("reddit.") {
+        return TrafficAttribution::new("reddit", "social");
+    }
+    if host.contains("youtube.") || host == "youtu.be" {
+        return TrafficAttribution::new("youtube", "social");
+    }
+
+    TrafficAttribution::new(host, "referral")
+}
+
+/// Normalize a client-supplied `session_attribution` payload.
+///
+/// Prefer explicit `source` / `medium` when both are present; otherwise derive
+/// from `referrer_raw` (or `referrer`) via the shared map so every project lands
+/// on the same dimensions.
+pub fn attribute_from_session_props(props: &serde_json::Value) -> TrafficAttribution {
+    let str_prop = |keys: &[&str]| -> Option<String> {
+        for key in keys {
+            if let Some(s) = props.get(*key).and_then(|v| v.as_str()) {
+                let t = s.trim();
+                if !t.is_empty() {
+                    return Some(t.chars().take(128).collect());
+                }
+            }
+        }
+        None
+    };
+    let source = str_prop(&["source"]);
+    let medium = str_prop(&["medium"]);
+    let referrer = str_prop(&["referrer_raw", "referrer"]);
+
+    match (source, medium) {
+        (Some(s), Some(m)) => {
+            TrafficAttribution::new(s.to_ascii_lowercase(), m.to_ascii_lowercase())
+        }
+        (Some(s), None) => {
+            let derived = attribute_from_referrer(referrer.as_deref());
+            TrafficAttribution::new(s.to_ascii_lowercase(), derived.medium)
+        }
+        (None, Some(m)) => {
+            let derived = attribute_from_referrer(referrer.as_deref());
+            TrafficAttribution::new(derived.source, m.to_ascii_lowercase())
+        }
+        (None, None) => attribute_from_referrer(referrer.as_deref()),
+    }
 }
 
 // ── Event properties ────────────────────────────────────────────────────────
@@ -530,5 +674,81 @@ mod tests {
         assert!(sanitize_properties(&json!(null)).is_none());
         // An object of only nested values keeps nothing.
         assert!(sanitize_properties(&json!({ "a": {"b": 1} })).is_none());
+    }
+
+    // ── traffic attribution ──
+
+    #[test]
+    fn maps_canonical_referrers_to_source_medium() {
+        assert_eq!(
+            attribute_from_referrer(Some("https://www.google.com/search?q=x")),
+            TrafficAttribution::new("google", "organic")
+        );
+        assert_eq!(
+            attribute_from_referrer(Some("https://bing.com/")),
+            TrafficAttribution::new("bing", "organic")
+        );
+        assert_eq!(
+            attribute_from_referrer(Some("https://chatgpt.com/")),
+            TrafficAttribution::new("chatgpt", "aeo")
+        );
+        assert_eq!(
+            attribute_from_referrer(Some("https://www.reddit.com/r/canada")),
+            TrafficAttribution::new("reddit", "social")
+        );
+        assert_eq!(
+            attribute_from_referrer(Some("android-app://com.reddit.frontpage")),
+            TrafficAttribution::new("reddit", "social")
+        );
+        assert_eq!(
+            attribute_from_referrer(Some("https://ca.search.yahoo.com/search")),
+            TrafficAttribution::new("yahoo", "organic")
+        );
+        assert_eq!(
+            attribute_from_referrer(Some("https://www.youtube.com/watch?v=1")),
+            TrafficAttribution::new("youtube", "social")
+        );
+        assert_eq!(
+            attribute_from_referrer(Some("https://someblog.dev/post")),
+            TrafficAttribution::new("someblog.dev", "referral")
+        );
+        assert_eq!(
+            attribute_from_referrer(None),
+            TrafficAttribution::new("direct", "none")
+        );
+        assert_eq!(
+            attribute_from_referrer(Some("")),
+            TrafficAttribution::new("direct", "none")
+        );
+    }
+
+    #[test]
+    fn regional_google_still_maps_organic() {
+        assert_eq!(
+            attribute_from_referrer(Some("https://www.google.ca/search?q=milk")),
+            TrafficAttribution::new("google", "organic")
+        );
+    }
+
+    #[test]
+    fn session_attribution_props_prefer_explicit_source_medium() {
+        let props = json!({
+            "source": "chatgpt",
+            "medium": "aeo",
+            "referrer_raw": "https://chatgpt.com/"
+        });
+        assert_eq!(
+            attribute_from_session_props(&props),
+            TrafficAttribution::new("chatgpt", "aeo")
+        );
+    }
+
+    #[test]
+    fn session_attribution_falls_back_to_referrer_raw() {
+        let props = json!({ "referrer_raw": "https://www.google.com/" });
+        assert_eq!(
+            attribute_from_session_props(&props),
+            TrafficAttribution::new("google", "organic")
+        );
     }
 }

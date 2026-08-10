@@ -21,6 +21,7 @@
 //! Visitor uniques are privacy-preserving: sha256(site_key, UA,
 //! Accept-Language, UTC day) — no IP stored, rotates daily.
 
+use crate::routes::analytics_attribution as attribution;
 use crate::routes::analytics_classify as classify;
 use crate::routes::analytics_funnel as funnel;
 use crate::routes::analytics_verify as verify;
@@ -223,10 +224,15 @@ struct FirstPartyStats {
     top_pages: Vec<NamedCount>,
     top_referrers: Vec<NamedCount>,
     top_events: Vec<NamedCount>,
-    // ── v40 ──
-    /// Referrers bucketed into direct / search / social / referral.
+    // ── v40 / traffic attribution ──
+    /// First-touch `"source / medium"` ranks. Prefers `session_attribution`
+    /// events; falls back to pageview referrer via the shared hostname map.
+    /// Does **not** require `utm_*`.
     top_sources: Vec<NamedCount>,
     top_campaigns: Vec<NamedCount>,
+    /// Answer-engine visits: `answer_engine_visit` and/or first-touch
+    /// medium=`aeo` (ChatGPT, etc.) — countable without campaign params.
+    aeo_visits: i64,
     /// Sessions and what they unlock. Zero/None until a relay sends session ids.
     sessions: i64,
     /// Share of sessions with exactly one pageview, 0..1. None when there are
@@ -536,6 +542,29 @@ fn agent_prompt_for(
          permagent.event('list_item_added'). Dropping the second argument silently destroys the \
          data that answers every product question, and nothing will ever surface the loss. If \
          any call site's properties cannot be carried over, list it explicitly in your report.\n\n\
+         SESSION TRAFFIC ATTRIBUTION (optional but recommended for every project). \
+         Emit once per browser session, ideally BEFORE the first pageview, so Traffic \
+         sources and funnel slices work without relying on utm_* (organic search, \
+         social, and answer engines usually have empty UTMs):\n\
+         \n\
+         permagent.event('session_attribution', {{\n\
+           source: 'google',\n\
+           medium: 'organic',\n\
+           referrer_raw: document.referrer || '',\n\
+           landing_path: location.pathname,\n\
+           timestamp: new Date().toISOString()\n\
+         }});\n\
+         \n\
+         When the referrer is an answer engine (chatgpt.com, …), also emit\n\
+         permagent.event('answer_engine_visit', {{ source: 'chatgpt' }});\n\
+         \n\
+         Permagent falls back to a shared referrer map when these events are absent:\n\
+         google→google/organic, bing→bing/organic, duckduckgo→duckduckgo/organic,\n\
+         chatgpt→chatgpt/aeo, reddit→reddit/social, yahoo→yahoo/organic,\n\
+         youtube→youtube/social, other host→host/referral, empty→direct/none.\n\
+         Bind session via beacon `s` / sessionId — do not require a project-specific \
+         cookie name.\n\
+         \n\
          WHERE THINGS GO, by stack (match the repo; these are the usual answers):\n\
          - Next.js app router: snippet in app/layout.tsx (next/script, strategy=afterInteractive \
          or a raw <script> in <head>); routes as app/api/permagent-analytics/{{collect,drain}}/route.ts; \
@@ -922,6 +951,10 @@ struct FunnelQuery {
     /// Named rather than assumed, because a site's field might be `amount`
     /// or `total` and silently reading the wrong one would misreport revenue.
     value_key: Option<String>,
+    /// Optional first-touch traffic source filter (e.g. `google`, `chatgpt`).
+    source: Option<String>,
+    /// Optional first-touch medium filter (e.g. `organic`, `aeo`, `social`).
+    medium: Option<String>,
 }
 
 /// Where visitors drop out of a funnel, and what completing it is worth.
@@ -977,6 +1010,21 @@ async fn first_party_funnel(
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
+    // First-touch source/medium per session — same map as Traffic sources —
+    // so funnels can slice by traffic source for every drained project.
+    let traffic = attribution::rollup_traffic_sources(
+        &pool,
+        &project_id,
+        &since,
+        q.include_bots.unwrap_or(false),
+    )
+    .await;
+    let allowed = attribution::sessions_matching(
+        &traffic.by_session,
+        q.source.as_deref(),
+        q.medium.as_deref(),
+    );
+
     let value_key = q.value_key.unwrap_or_else(|| "value".to_string());
     let mut touches = Vec::new();
     let mut excluded_sessionless: u64 = 0;
@@ -996,6 +1044,11 @@ async fn first_party_funnel(
             excluded_sessionless += 1;
             continue;
         };
+        if let Some(ref allow) = allowed {
+            if !allow.contains(&session_id) {
+                continue;
+            }
+        }
         let value = properties
             .as_deref()
             .and_then(|p| serde_json::from_str::<serde_json::Value>(p).ok())
@@ -1144,34 +1197,14 @@ async fn first_party_stats(
         .and_then(|u| classify::referrer_host(&u));
 
     let mut by_host: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
-    let mut by_class: std::collections::HashMap<&'static str, i64> =
-        std::collections::HashMap::new();
-    let mut internal = 0i64;
     for (referrer, count) in &referrer_rows {
         let class = classify::classify_referrer(Some(referrer), site_host.as_deref());
         if class == classify::ReferrerClass::Internal {
-            internal += count;
             continue;
         }
-        *by_class.entry(class.as_str()).or_default() += count;
         if let Some(host) = classify::referrer_host(referrer) {
             *by_host.entry(host).or_default() += count;
         }
-    }
-    // Everything with no referrer at all is direct.
-    let direct: i64 = sqlx::query_scalar(&format!(
-        "SELECT count(*) FROM analytics_events
-         WHERE project_id = ?1 AND kind = 'pageview'
-           AND (referrer IS NULL OR referrer = '')
-           AND created_at >= datetime('now', ?2){bot_filter}"
-    ))
-    .bind(&project.id)
-    .bind(&since)
-    .fetch_one(&pool)
-    .await
-    .unwrap_or(0);
-    if direct + internal > 0 {
-        *by_class.entry("direct").or_default() += direct + internal;
     }
 
     let sort_desc = |mut v: Vec<NamedCount>| -> Vec<NamedCount> {
@@ -1185,15 +1218,17 @@ async fn first_party_stats(
             .map(|(name, count)| NamedCount { name, count })
             .collect(),
     );
-    let top_sources = sort_desc(
-        by_class
-            .into_iter()
-            .map(|(name, count)| NamedCount {
-                name: name.to_string(),
-                count,
-            })
-            .collect(),
-    );
+
+    // Traffic sources: first-touch source/medium per session. Prefer
+    // session_attribution; fall back to pageview.referrer. Never require utm_*.
+    let traffic =
+        attribution::rollup_traffic_sources(&pool, &project.id, &since, including_bots).await;
+    let top_sources: Vec<NamedCount> = traffic
+        .top_sources
+        .into_iter()
+        .map(|(name, count)| NamedCount { name, count })
+        .collect();
+    let aeo_visits = traffic.aeo_visits;
 
     let top_campaigns = shared
         .top_utm_campaigns
@@ -1255,6 +1290,7 @@ async fn first_party_stats(
         top_events,
         top_sources,
         top_campaigns,
+        aeo_visits,
         sessions,
         bounce_rate,
         pages_per_session,
@@ -1938,9 +1974,11 @@ mod tests {
             stats["topReferrers"][0]["name"],
             serde_json::json!("news.ycombinator.com")
         );
-        // …and bucketed. Hacker News is classified social — it is a community
-        // aggregator, which is the useful grouping, not a generic referral.
-        assert_eq!(stats["topSources"][0]["name"], serde_json::json!("social"));
+        // First-touch source/medium from the shared referrer map (no utm_*).
+        assert_eq!(
+            stats["topSources"][0]["name"],
+            serde_json::json!("news.ycombinator.com / referral")
+        );
         assert_eq!(stats["topEvents"][0]["name"], serde_json::json!("signup"));
     }
 
