@@ -22,7 +22,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use once_cell::sync::Lazy;
 use regex::Regex;
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -178,6 +180,18 @@ pub struct GoalTask {
     /// a git repo (external dispatch then fails fast).
     pub baseline_commit: Option<String>,
     pub timeout: Duration,
+    /// Best-effort progress events consumed by the orchestrator's receipt
+    /// tracker. External workers emit one event for every stdout read; engines
+    /// without a byte stream leave this unused.
+    pub output_tx: Option<mpsc::UnboundedSender<WorkerOutputEvent>>,
+}
+
+/// Timestamped evidence that an external worker produced stdout. The timestamp
+/// is captured at the read boundary so a queued event still records when the
+/// worker first became observable, rather than when the database write ran.
+#[derive(Debug, Clone)]
+pub struct WorkerOutputEvent {
+    pub observed_at: String,
 }
 
 /// What an engine returns once the goal is spawned: a stable run identifier
@@ -438,6 +452,7 @@ impl GoalEngine for ExternalCliEngine {
             .collect();
         let bin = self.bin.clone();
         let timeout = task.timeout;
+        let output_tx = task.output_tx;
 
         // Spawn the worker NOW (in its own process group) so we can capture its
         // pid for a cancel/timeout group-kill before handing the wait off to the
@@ -462,7 +477,7 @@ impl GoalEngine for ExternalCliEngine {
         let pid = child.id();
 
         let join = tokio::spawn(async move {
-            await_external_child(child, pid, bin, worktree, baseline, timeout).await
+            await_external_child(child, pid, bin, worktree, baseline, timeout, output_tx).await
         });
 
         Ok(DispatchedWork { run_id, join, kill })
@@ -928,8 +943,9 @@ async fn await_external_child(
     working_dir: PathBuf,
     baseline: String,
     timeout: Duration,
+    output_tx: Option<mpsc::UnboundedSender<WorkerOutputEvent>>,
 ) -> GoalOutcome {
-    match tokio::time::timeout(timeout, child.wait_with_output()).await {
+    match tokio::time::timeout(timeout, collect_child_output(child, output_tx)).await {
         Ok(Ok(output)) => {
             if output.status.success() {
                 // #508: deterministic credential guard. Scan the worker's
@@ -1001,6 +1017,51 @@ async fn await_external_child(
     }
 }
 
+/// The streaming equivalent of `Child::wait_with_output`: drain stdout and
+/// stderr concurrently while waiting, retaining every byte for the existing
+/// completion/evidence path. Only stdout produces progress events.
+async fn collect_child_output(
+    mut child: tokio::process::Child,
+    output_tx: Option<mpsc::UnboundedSender<WorkerOutputEvent>>,
+) -> std::io::Result<std::process::Output> {
+    let mut stdout = child.stdout.take().ok_or_else(|| {
+        std::io::Error::other("external worker stdout was not configured as piped")
+    })?;
+    let mut stderr = child.stderr.take().ok_or_else(|| {
+        std::io::Error::other("external worker stderr was not configured as piped")
+    })?;
+
+    let read_stdout = async move {
+        let mut accumulated = Vec::new();
+        let mut buffer = [0_u8; 8192];
+        loop {
+            let read = stdout.read(&mut buffer).await?;
+            if read == 0 {
+                break;
+            }
+            accumulated.extend_from_slice(&buffer[..read]);
+            if let Some(tx) = &output_tx {
+                let _ = tx.send(WorkerOutputEvent {
+                    observed_at: chrono::Utc::now().to_rfc3339(),
+                });
+            }
+        }
+        Ok::<_, std::io::Error>(accumulated)
+    };
+    let read_stderr = async move {
+        let mut accumulated = Vec::new();
+        stderr.read_to_end(&mut accumulated).await?;
+        Ok::<_, std::io::Error>(accumulated)
+    };
+
+    let (status, stdout, stderr) = tokio::try_join!(child.wait(), read_stdout, read_stderr)?;
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
 /// Spawn the external CLI in `working_dir`, bounded by `timeout`, and await it.
 /// Convenience wrapper over [`build_cli_command`] + [`await_external_child`]
 /// for callers that don't need the kill handle (tests).
@@ -1023,6 +1084,7 @@ async fn run_external_cli(
                 working_dir.to_path_buf(),
                 baseline.to_string(),
                 timeout,
+                None,
             )
             .await
         }
@@ -1600,6 +1662,61 @@ mod tests {
         );
     }
 
+    /// The receipt timestamp must describe the first stdout bytes, not process
+    /// completion. Keep collecting the complete stream after emitting it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn streaming_output_reports_first_bytes_before_child_exit() {
+        let mut cmd = build_cli_command(
+            "/bin/sh",
+            &[
+                "-c".to_string(),
+                "printf first; sleep 2; printf second".to_string(),
+            ],
+            Path::new("."),
+        );
+        let child = cmd.spawn().expect("spawn fake streaming worker");
+        let (output_tx, mut output_rx) = mpsc::unbounded_channel();
+        let collector = tokio::spawn(collect_child_output(child, Some(output_tx)));
+
+        let event = tokio::time::timeout(Duration::from_secs(1), output_rx.recv())
+            .await
+            .expect("first stdout event must arrive promptly")
+            .expect("stdout event channel closed unexpectedly");
+        let first_output_at = chrono::DateTime::parse_from_rfc3339(&event.observed_at)
+            .expect("event timestamp is RFC3339");
+        let mut receipt =
+            crate::agents::platform_extensions::execution_receipt::ExecutionReceipt::new(
+                "worker",
+                "session",
+                serde_json::Value::Null,
+                "lifecycle",
+                chrono::Utc::now().to_rfc3339(),
+                1,
+            );
+        receipt.observe_output(event.observed_at.clone(), chrono::Utc::now().to_rfc3339());
+        assert_eq!(
+            receipt.first_output_at.as_deref(),
+            Some(event.observed_at.as_str())
+        );
+        assert!(
+            !collector.is_finished(),
+            "first_output_at must be stamped while the child is still running"
+        );
+
+        let output = collector.await.unwrap().unwrap();
+        let exited_at = chrono::Utc::now();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"firstsecond");
+        assert!(
+            exited_at
+                .signed_duration_since(first_output_at)
+                .num_milliseconds()
+                >= 1_000,
+            "first_output_at was stamped too close to child exit"
+        );
+    }
+
     /// #490: a cancel must actually stop the worker. Spawn a long sleep in its
     /// own process group, group-kill it by pid, and confirm it is reaped fast
     /// (not left running for its full duration).
@@ -1968,6 +2085,7 @@ mod tests {
             working_dir: std::env::temp_dir(),
             baseline_commit: None,
             timeout: Duration::from_secs(10),
+            output_tx: None,
         };
         match engine.spawn(task).await {
             Err(err) => assert!(

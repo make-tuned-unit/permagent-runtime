@@ -6,8 +6,8 @@ import { ChatInput } from './ChatInput';
 import type { ChatInputHandle } from './ChatInput';
 import { SkillPromptBanner } from './SkillPromptBanner';
 import { ModelPicker } from './ModelPicker';
+import { SessionPicker } from './SessionPicker';
 import { VoiceOrb } from '../voice/VoiceOrb';
-import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 export function ChatView() {
@@ -64,12 +64,8 @@ export function ChatView() {
         className="flex items-center justify-between px-4 py-2.5"
         style={{ borderBottom: `1px solid ${colors.border}` }}
       >
-        <span
-          className="text-[11px] uppercase tracking-wider"
-          style={{ fontFamily: font.display, fontWeight: 600, color: colors.textMuted }}
-        >
-          Chat
-        </span>
+        {/* Keep this row unclipped: SessionPicker's panel opens below it. */}
+        <SessionPicker />
         <ModelPicker />
       </div>
 

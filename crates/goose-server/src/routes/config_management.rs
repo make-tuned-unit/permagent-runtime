@@ -28,7 +28,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_yaml;
 use std::{collections::HashMap, sync::Arc};
+use tokio::task::JoinHandle;
+use tokio::time::Duration;
 use utoipa::ToSchema;
+
+const PROVIDER_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Serialize, ToSchema)]
 pub struct ExtensionResponse {
@@ -923,13 +927,47 @@ pub async fn update_custom_provider(
 pub async fn check_provider(
     Json(CheckProviderRequest { provider }): Json<CheckProviderRequest>,
 ) -> Result<(), ErrorResponse> {
-    // Provider check does not use extensions.
-    create_with_default_model(&provider, Vec::new())
-        .await
-        .map_err(|err| {
-            ErrorResponse::bad_request(format!("Provider '{}' check failed: {}", provider, err))
-        })?;
-    Ok(())
+    let runtime = tokio::runtime::Handle::current();
+    let checked_provider = provider.clone();
+
+    // Declarative OpenAI-compatible providers (including Moonshot) resolve
+    // their API key during construction. That reaches Config::all_secrets,
+    // whose synchronous OS-keyring read runs while holding secrets_cache's
+    // mutex. A wedged keyring call therefore cannot yield to an async timeout.
+    // Isolate the complete provider construction on the blocking pool so the
+    // request timer remains schedulable. Dropping a timed-out JoinHandle cannot
+    // cancel the OS call, but it does guarantee this HTTP request returns.
+    let check = tokio::task::spawn_blocking(move || {
+        runtime
+            .block_on(create_with_default_model(&checked_provider, Vec::new()))
+            .map(|_| ())
+            .map_err(|err| err.to_string())
+    });
+
+    await_provider_check(&provider, PROVIDER_CHECK_TIMEOUT, check).await
+}
+
+async fn await_provider_check(
+    provider: &str,
+    timeout: Duration,
+    check: JoinHandle<Result<(), String>>,
+) -> Result<(), ErrorResponse> {
+    match tokio::time::timeout(timeout, check).await {
+        Ok(Ok(Ok(()))) => Ok(()),
+        Ok(Ok(Err(err))) => Err(ErrorResponse::bad_request(format!(
+            "Provider '{}' check failed: {}",
+            provider, err
+        ))),
+        Ok(Err(err)) => Err(ErrorResponse::internal(format!(
+            "Provider '{}' check task failed: {}",
+            provider, err
+        ))),
+        Err(_) => Err(ErrorResponse::service_unavailable(format!(
+            "Provider '{}' check timed out after {} seconds",
+            provider,
+            timeout.as_secs()
+        ))),
+    }
 }
 
 #[utoipa::path(
@@ -1191,6 +1229,27 @@ pub fn routes(state: Arc<AppState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn provider_check_times_out_even_when_blocking_work_hangs() {
+        let check = tokio::task::spawn_blocking(|| {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            Ok(())
+        });
+        let started = std::time::Instant::now();
+
+        let error = await_provider_check("moonshot", Duration::from_millis(20), check)
+            .await
+            .expect_err("blocking provider check must time out");
+
+        assert_eq!(error.status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+        assert!(error.message.contains("moonshot"));
+        assert!(error.message.contains("timed out"));
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(200),
+            "handler waited for the blocking provider check to finish"
+        );
+    }
 
     /// The masked-secret wire shape is camelCase — `maskedValue`, NOT
     /// `masked_value`. The command-center read it under the snake_case name, so

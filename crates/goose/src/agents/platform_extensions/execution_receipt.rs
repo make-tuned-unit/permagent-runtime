@@ -110,6 +110,22 @@ impl ExecutionReceipt {
         }
     }
 
+    /// Record worker stdout. The first observed timestamp is write-once, while
+    /// every read refreshes liveness at the time the event is persisted.
+    pub fn observe_output(
+        &mut self,
+        observed_at_rfc3339: impl Into<String>,
+        heartbeat_at_rfc3339: impl Into<String>,
+    ) {
+        if self.state.is_terminal() {
+            return;
+        }
+        if self.first_output_at.is_none() {
+            self.first_output_at = Some(observed_at_rfc3339.into());
+        }
+        self.last_heartbeat_at = heartbeat_at_rfc3339.into();
+    }
+
     /// Move to a terminal state, stamping `terminal_at` and a final heartbeat.
     pub fn finalize(&mut self, state: ReceiptState, now_rfc3339: impl Into<String>) {
         let now = now_rfc3339.into();
