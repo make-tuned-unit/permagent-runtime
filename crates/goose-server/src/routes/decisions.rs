@@ -297,23 +297,28 @@ async fn history_handler(
 /// `None` when there is nothing to land at all (no evidence, no commits, or a
 /// project with no `root_path` — a project we cannot locate on disk has no
 /// trunk to land onto, and the daemon's cwd is emphatically not it). Every
-/// other case returns an outcome that gets reported on the approval, including
-/// the refusals: a dirty tree or a diverged trunk must be visible, not silent.
+/// other case returns `(resolved_project_id, outcome)` — the project id comes
+/// back alongside the outcome because the post-landing code-map refresh needs
+/// the id this fn RESOLVED (decision.project_id may be absent; the card's is
+/// the fallback), not the caller's possibly-None view of it. The outcome gets
+/// reported on the approval in every case, including the refusals: a dirty
+/// tree or a diverged trunk must be visible, not silent.
 async fn land_approved_goal(
     pool: &Pool<Sqlite>,
     goal_id: &str,
     project_id: Option<&str>,
-) -> Option<permagent::goal_landing::LandOutcome> {
+) -> Option<(String, permagent::goal_landing::LandOutcome)> {
     let card = permagent::cards::get_card(pool, goal_id).await.ok()??;
-    let project_id = project_id.or(Some(card.project_id.as_str()))?;
-    let root = permagent::projects::get_project_by_id_or_slug(pool, project_id)
+    let project_id = project_id.unwrap_or(card.project_id.as_str()).to_string();
+    let root = permagent::projects::get_project_by_id_or_slug(pool, &project_id)
         .await
         .ok()??
         .root_path?;
 
     let req =
         permagent::goal_landing::land_request_from_metadata(&card.metadata_json, Some(&root))?;
-    Some(permagent::goal_landing::land(&req).await)
+    let outcome = permagent::goal_landing::land(&req).await;
+    Some((project_id, outcome))
 }
 
 /// a `Result` (bug-sweep wave 1).
@@ -365,11 +370,29 @@ async fn execute_effect(
             // failure this replaces.
             let landing = land_approved_goal(pool, goal_id, decision.project_id.as_deref()).await;
             let effect = match &landing {
-                Some(outcome) => {
+                Some((_, outcome)) => {
                     format!("goal approved: Review → Complete; {}", outcome.describe())
                 }
                 None => "goal approved: Review → Complete".to_string(),
             };
+
+            // The trunk just moved: an existing code map now describes the
+            // pre-landing tree. Refresh it DETACHED and best-effort — the
+            // approval response never waits on (and can never fail because of)
+            // a tree-sitter pass. Fast-forward only: refusals and no-op
+            // landings changed nothing, so there is nothing to re-index. A
+            // never-indexed project is skipped inside the task — landing must
+            // not create indexes nobody asked for.
+            if let Some((project_id, permagent::goal_landing::LandOutcome::FastForwarded { .. })) =
+                &landing
+            {
+                let pool = pool.clone();
+                let project_id = project_id.clone();
+                tokio::spawn(async move {
+                    crate::routes::projects::refresh_code_map_after_landing(&pool, &project_id)
+                        .await;
+                });
+            }
             Ok((Some(effect), promotion_warning))
         }
         // Review rejected → bounce back for rework, or park on attempt exhaustion.

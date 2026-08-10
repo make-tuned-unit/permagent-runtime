@@ -1555,6 +1555,135 @@ struct IndexCodeResponse {
     memory_key: String,
 }
 
+/// Deterministic Brain key for a project's code map. One key per project —
+/// re-indexing overwrites it (idempotent), and its EXISTENCE is the signal
+/// "someone asked for this project to be indexed" that the post-landing
+/// refresh keys off.
+pub fn code_map_memory_key(project_id: &str) -> String {
+    format!("code:{project_id}:map")
+}
+
+/// What a successful (re)index pass produced.
+pub struct CodeIndexOutcome {
+    pub files: usize,
+    pub memory_key: String,
+}
+
+/// Why a (re)index pass failed. Carries the exact human-readable messages the
+/// route has always returned, split by cause so the HTTP handler can keep its
+/// status mapping while the post-landing hook only needs one warn line.
+#[derive(Debug)]
+pub enum CodeIndexError {
+    /// `root_path` missing, blank, or not a readable directory (route: 400).
+    BadRoot(String),
+    /// The spawn_blocking parse task panicked (route: 500).
+    ParsePanic(String),
+    /// Nothing parseable under `root_path` (route: 400).
+    NoSourceFiles,
+    /// The Brain rejected the write (route: 500).
+    BrainWrite(String),
+}
+
+impl std::fmt::Display for CodeIndexError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BadRoot(msg) => write!(f, "{msg}"),
+            Self::ParsePanic(e) => write!(f, "code parse task panicked: {e}"),
+            Self::NoSourceFiles => {
+                write!(f, "No source files could be parsed under root_path")
+            }
+            Self::BrainWrite(e) => write!(f, "brain write failed: {e}"),
+        }
+    }
+}
+
+impl CodeIndexError {
+    /// The status mapping the route has always used — byte-identical messages.
+    fn http(self) -> (StatusCode, String) {
+        let status = match &self {
+            Self::BadRoot(_) | Self::NoSourceFiles => StatusCode::BAD_REQUEST,
+            Self::ParsePanic(_) | Self::BrainWrite(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        (status, self.to_string())
+    }
+}
+
+/// The indexing core shared by POST /api/projects/{id}/index-code and the
+/// post-landing refresh: validate `root_path`, run the tree-sitter pass
+/// off-thread (CPU-bound — never on the async executor), write the rendered
+/// map to the Brain under [`code_map_memory_key`], and best-effort associate
+/// the memory with the project (logged, not fatal — the map is already durable
+/// in the Brain once written).
+pub async fn reindex_project_code(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    brain: &permagent::brain_handle::SafeBrain,
+    project: &projects::Project,
+) -> Result<CodeIndexOutcome, CodeIndexError> {
+    let root_path = project
+        .root_path
+        .clone()
+        .filter(|p| !p.trim().is_empty())
+        .ok_or_else(|| CodeIndexError::BadRoot("Project has no root_path to index".to_string()))?;
+    let root = std::path::Path::new(&root_path).to_path_buf();
+    if !root.is_dir() {
+        return Err(CodeIndexError::BadRoot(format!(
+            "root_path is not a readable directory: {root_path}"
+        )));
+    }
+
+    // Tree-sitter parsing is CPU-bound (rayon) — never run it on the async
+    // executor. Build the map off-thread. `max_depth = 0` = the whole tree
+    // (WalkBuilder still skips .gitignore'd artifacts like node_modules/target).
+    let map = tokio::task::spawn_blocking(move || analyze::build_code_map(&root, 0))
+        .await
+        .map_err(|e| {
+            tracing::error!(project = %project.id, error = %e, "code index parse task panicked");
+            CodeIndexError::ParsePanic(e.to_string())
+        })?;
+
+    if map.files == 0 {
+        return Err(CodeIndexError::NoSourceFiles);
+    }
+
+    let memory_key = code_map_memory_key(&project.id);
+    let opts = spectral::RememberOpts {
+        source: Some(CODE_MAP_SOURCE.to_string()),
+        visibility: spectral::Visibility::Private,
+        ..Default::default()
+    };
+    brain
+        .remember_with(&memory_key, &map.text, opts)
+        .await
+        .map_err(|e| {
+            tracing::error!(project = %project.id, error = %e, "code map brain write failed");
+            CodeIndexError::BrainWrite(e.to_string())
+        })?;
+
+    // Resolve the just-written memory's id and scope it to the project.
+    // Best-effort (logged, not fatal): the map is already durable in the Brain.
+    match brain.get_memory_by_key(&memory_key).await {
+        Ok(Some(mem)) => {
+            if let Err(e) = project_association::associate_memory(pool, &project.id, &mem.id).await
+            {
+                tracing::warn!(project = %project.id, error = %e, "code map project association failed");
+            } else {
+                tracing::info!(project = %project.id, memory = %mem.id, files = map.files, "project code indexed into brain");
+            }
+        }
+        Ok(None) => {
+            tracing::warn!(project = %project.id, key = %memory_key, "code map written but its memory was not found for association")
+        }
+        Err(e) => {
+            tracing::warn!(project = %project.id, error = %e, "code map memory lookup failed")
+        }
+    }
+
+    Ok(CodeIndexOutcome {
+        files: map.files,
+        memory_key,
+    })
+}
+
 /// POST /api/projects/{id}/index-code — parse the project's codebase into a
 /// durable, project-scoped **code map** memory in the Brain.
 ///
@@ -1589,22 +1718,6 @@ async fn index_project_code_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
         .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
 
-    let root_path = project
-        .root_path
-        .clone()
-        .filter(|p| !p.trim().is_empty())
-        .ok_or((
-            StatusCode::BAD_REQUEST,
-            "Project has no root_path to index".to_string(),
-        ))?;
-    let root = std::path::Path::new(&root_path).to_path_buf();
-    if !root.is_dir() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!("root_path is not a readable directory: {root_path}"),
-        ));
-    }
-
     // The whole point of this route is durable code in the Brain — unlike the
     // document/note handlers there is no other record, so an absent Brain is a
     // 503, not a silent skip.
@@ -1613,67 +1726,93 @@ async fn index_project_code_handler(
         "Brain is not available".to_string(),
     ))?;
 
-    // Tree-sitter parsing is CPU-bound (rayon) — never run it on the async
-    // executor. Build the map off-thread. `max_depth = 0` = the whole tree
-    // (WalkBuilder still skips .gitignore'd artifacts like node_modules/target).
-    let map = tokio::task::spawn_blocking(move || analyze::build_code_map(&root, 0))
+    let outcome = reindex_project_code(&pool, brain, &project)
         .await
-        .map_err(|e| {
-            tracing::error!(project = %project.id, error = %e, "code index parse task panicked");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("code parse task panicked: {e}"),
-            )
-        })?;
-
-    if map.files == 0 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "No source files could be parsed under root_path".to_string(),
-        ));
-    }
-
-    let memory_key = format!("code:{}:map", project.id);
-    let opts = spectral::RememberOpts {
-        source: Some(CODE_MAP_SOURCE.to_string()),
-        visibility: spectral::Visibility::Private,
-        ..Default::default()
-    };
-    brain
-        .remember_with(&memory_key, &map.text, opts)
-        .await
-        .map_err(|e| {
-            tracing::error!(project = %project.id, error = %e, "code map brain write failed");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("brain write failed: {e}"),
-            )
-        })?;
-
-    // Resolve the just-written memory's id and scope it to the project.
-    // Best-effort (logged, not fatal): the map is already durable in the Brain.
-    match brain.get_memory_by_key(&memory_key).await {
-        Ok(Some(mem)) => {
-            if let Err(e) = project_association::associate_memory(&pool, &project.id, &mem.id).await
-            {
-                tracing::warn!(project = %project.id, error = %e, "code map project association failed");
-            } else {
-                tracing::info!(project = %project.id, memory = %mem.id, files = map.files, "project code indexed into brain");
-            }
-        }
-        Ok(None) => {
-            tracing::warn!(project = %project.id, key = %memory_key, "code map written but its memory was not found for association")
-        }
-        Err(e) => {
-            tracing::warn!(project = %project.id, error = %e, "code map memory lookup failed")
-        }
-    }
+        .map_err(CodeIndexError::http)?;
 
     Ok(Json(IndexCodeResponse {
         indexed: true,
-        files: map.files,
-        memory_key,
+        files: outcome.files,
+        memory_key: outcome.memory_key,
     }))
+}
+
+// ── Post-landing code-map refresh: keep the map honest when the trunk moves ──
+
+/// Whether landing approved goal work should refresh the project's code map.
+/// Pure — decidable from two facts, so it is testable without a Brain or a
+/// filesystem. The load-bearing rule: landing REFRESHES an index someone asked
+/// for; it never CREATES one nobody did (a never-indexed project skips, and
+/// skips silently — this runs detached behind every approval).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostLandingReindex {
+    /// The project has an existing `code:{id}:map` memory and a root to parse.
+    Refresh,
+    /// No existing code-map memory: the project was never indexed. Silent.
+    SkipNeverIndexed,
+    /// No usable `root_path` — nothing to parse even if a stale map exists.
+    SkipNoRoot,
+}
+
+pub fn post_landing_reindex_decision(
+    root_path: Option<&str>,
+    previously_indexed: bool,
+) -> PostLandingReindex {
+    match root_path {
+        None => PostLandingReindex::SkipNoRoot,
+        Some(p) if p.trim().is_empty() => PostLandingReindex::SkipNoRoot,
+        Some(_) if !previously_indexed => PostLandingReindex::SkipNeverIndexed,
+        Some(_) => PostLandingReindex::Refresh,
+    }
+}
+
+/// Body of the detached best-effort task decisions.rs spawns after a
+/// `LandOutcome::FastForwarded`: the trunk just moved, so an existing code map
+/// now describes the pre-landing tree. Refresh it.
+///
+/// Never returns an error — approval already succeeded and must not be blocked
+/// or failed by a tree-sitter pass. Every skip/failure path here is a log line
+/// at most: info on a successful refresh, warn on a failed one, and SILENCE
+/// when the project was never indexed (see [`post_landing_reindex_decision`]).
+/// Brain access goes through the process-wide handle rather than `AppState`
+/// because the effect layer only carries a pool; an absent Brain also means no
+/// existing map, so skipping is the correct behavior, not a degraded one.
+pub async fn refresh_code_map_after_landing(pool: &sqlx::Pool<sqlx::Sqlite>, project_id: &str) {
+    let Some(brain) = permagent::agents::platform_extensions::get_global_brain() else {
+        return;
+    };
+    let project = match projects::get_project_by_id_or_slug(pool, project_id).await {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            tracing::warn!(project = %project_id, "post-landing code reindex: project not found");
+            return;
+        }
+        Err(e) => {
+            tracing::warn!(project = %project_id, error = %e, "post-landing code reindex: project lookup failed");
+            return;
+        }
+    };
+    let previously_indexed = match brain
+        .get_memory_by_key(&code_map_memory_key(&project.id))
+        .await
+    {
+        Ok(existing) => existing.is_some(),
+        Err(e) => {
+            tracing::warn!(project = %project.id, error = %e, "post-landing code reindex: code-map lookup failed");
+            return;
+        }
+    };
+    match post_landing_reindex_decision(project.root_path.as_deref(), previously_indexed) {
+        PostLandingReindex::SkipNeverIndexed | PostLandingReindex::SkipNoRoot => {}
+        PostLandingReindex::Refresh => match reindex_project_code(pool, &brain, &project).await {
+            Ok(outcome) => {
+                tracing::info!(project = %project.id, files = outcome.files, key = %outcome.memory_key, "code map refreshed after goal landing");
+            }
+            Err(e) => {
+                tracing::warn!(project = %project.id, error = %e, "post-landing code map refresh failed");
+            }
+        },
+    }
 }
 
 // ── Project stack organizer (#512): services + login identity, reference-only ─
@@ -1993,6 +2132,69 @@ mod tests {
     use serial_test::serial;
     use std::path::Path as StdPath;
     use tower::ServiceExt;
+
+    // ── Post-landing reindex decision (pure) ────────────────────────────────
+    //
+    // The invariant under test: landing approved goal work REFRESHES a code
+    // map someone asked for, and never CREATES one nobody did. The decision is
+    // a pure function of (root_path, previously_indexed) so these run without
+    // a Brain, a filesystem, or a tokio runtime.
+
+    #[test]
+    fn landing_skips_when_project_was_never_indexed() {
+        // Perfectly indexable project — but nobody ever asked for an index.
+        assert_eq!(
+            post_landing_reindex_decision(Some("/some/real/project"), false),
+            PostLandingReindex::SkipNeverIndexed
+        );
+    }
+
+    #[test]
+    fn landing_refreshes_an_existing_index() {
+        assert_eq!(
+            post_landing_reindex_decision(Some("/some/real/project"), true),
+            PostLandingReindex::Refresh
+        );
+    }
+
+    #[test]
+    fn landing_skips_without_a_root_path_even_if_previously_indexed() {
+        // A stale map with no root to re-parse: nothing can refresh it.
+        assert_eq!(
+            post_landing_reindex_decision(None, true),
+            PostLandingReindex::SkipNoRoot
+        );
+        assert_eq!(
+            post_landing_reindex_decision(None, false),
+            PostLandingReindex::SkipNoRoot
+        );
+    }
+
+    #[test]
+    fn landing_treats_blank_root_path_as_absent() {
+        // Mirrors the route's `.filter(|p| !p.trim().is_empty())` — an empty
+        // or whitespace root_path column must not read as "has a root".
+        assert_eq!(
+            post_landing_reindex_decision(Some(""), true),
+            PostLandingReindex::SkipNoRoot
+        );
+        assert_eq!(
+            post_landing_reindex_decision(Some("   "), true),
+            PostLandingReindex::SkipNoRoot
+        );
+    }
+
+    #[test]
+    fn code_map_key_is_deterministic_and_matches_the_route_format() {
+        // The route has always written `code:{project_id}:map`; the landing
+        // hook's existence probe must look up the SAME key or the skip logic
+        // silently never refreshes anything.
+        assert_eq!(code_map_memory_key("abc-123"), "code:abc-123:map");
+        assert_eq!(
+            code_map_memory_key("abc-123"),
+            code_map_memory_key("abc-123")
+        );
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
