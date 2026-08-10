@@ -190,6 +190,15 @@ struct GoalStatusParams {
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct SteerGoalParams {
+    /// The goal card ID (UUID) whose running worker should receive the message.
+    card_id: String,
+    /// The correction or redirection, delivered to the worker as a user
+    /// message for its next turn. Be specific — the worker keeps its context.
+    message: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct DecomposeRoadmapParams {
     /// The user's high-level objective to decompose into goals.
     objective: String,
@@ -1280,6 +1289,7 @@ pub(crate) async fn dispatch_goal_fn(
         run_id: session_id,
         join,
         kill,
+        steer,
     } = match engine.spawn(task).await {
         Ok(work) => work,
         Err(error) => {
@@ -1298,8 +1308,9 @@ pub(crate) async fn dispatch_goal_fn(
         }
     };
 
-    // Register the worker kill handle so the cancel path (#490) can stop it.
-    register_goal_worker(card_id, kill);
+    // Register the worker handles: kill for the cancel path (#490), steer for
+    // mid-run correction (claude workers only).
+    register_goal_worker(card_id, kill, steer);
 
     // Spawn completion tracker — awaits the engine's outcome and transitions
     // the card. Success / retriable failure route to handle_goal_completion;
@@ -2239,6 +2250,38 @@ impl OrchestratorClient {
         }
     }
 
+    /// Mid-run steering (hardening pass, 2026-08-10). The registry lookup is
+    /// non-destructive — steering must never disarm the cancel path — and the
+    /// failure modes are spelled out, because "steered" that silently went
+    /// nowhere is the same lie class as "dispatched" that spawned nothing.
+    async fn handle_steer_goal(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<CallToolResult, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let card_id = extract_string(&args, "card_id")?;
+        let message = extract_string(&args, "message")?;
+        if message.trim().is_empty() {
+            return Err("steer message is empty — say what the worker should change".to_string());
+        }
+
+        let Some(handle) = steer_handle_for(&card_id) else {
+            return Err(format!(
+                "Goal {} has no live steerable worker. Steering reaches claude-CLI workers \
+                 while they are RUNNING; internal-subagent and codex workers are not steerable \
+                 yet, and a finished worker cannot be steered — reject the review with notes \
+                 instead.",
+                card_id
+            ));
+        };
+        handle.steer(&message).await?;
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Steered goal {}: the message will reach the worker as its next turn. It buys \
+             exactly one more turn — the worker still finishes through checks and review.",
+            card_id
+        ))]))
+    }
+
     async fn handle_goal_status(
         &self,
         arguments: Option<JsonObject>,
@@ -2852,6 +2895,18 @@ impl OrchestratorClient {
                 schema::<GoalStatusParams>(),
             ),
             Tool::new(
+                "steer_goal".to_string(),
+                "Send a mid-run correction to a goal's RUNNING worker — it arrives as a \
+                 user message for the worker's next turn, with its full context intact. \
+                 Use this instead of cancelling when a worker is on the wrong track, \
+                 waiting on something it should skip, or missing a constraint. Only \
+                 claude-CLI workers are steerable; a goal with no live steerable worker \
+                 is refused with the reason. Steering is not a substitute for review — \
+                 the goal still completes through checks and the Decision Inbox."
+                    .to_string(),
+                schema::<SteerGoalParams>(),
+            ),
+            Tool::new(
                 "decompose_roadmap".to_string(),
                 "Decompose a high-level objective into a proposed roadmap of goal cards. \
                  Returns a PROPOSED plan for user review — does NOT create cards. \
@@ -2939,6 +2994,7 @@ impl McpClientTrait for OrchestratorClient {
             "check_worker" => self.handle_check_worker(arguments).await,
             "goal_advance" => self.handle_goal_advance(arguments).await,
             "goal_status" => self.handle_goal_status(arguments).await,
+            "steer_goal" => self.handle_steer_goal(arguments).await,
             "decompose_roadmap" => {
                 self.handle_decompose_roadmap(&ctx.session_id, arguments)
                     .await
@@ -4053,13 +4109,24 @@ pub fn format_dispatch_evidence_full(evidence: &serde_json::Value) -> Option<Str
 /// per-`OrchestratorClient`) because dispatch happens inside the agent session
 /// while cancel arrives over HTTP from the Decision Inbox or the Kanban board —
 /// the same registry must serve both.
-static GOAL_WORKERS: once_cell::sync::Lazy<Mutex<HashMap<String, goal_engine::GoalKill>>> =
+static GOAL_WORKERS: once_cell::sync::Lazy<Mutex<HashMap<String, LiveWorker>>> =
     once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
 
-/// Record the kill handle for a freshly-dispatched goal's worker.
-pub fn register_goal_worker(card_id: &str, kill: goal_engine::GoalKill) {
+/// A dispatched goal's live control surface: the kill handle (#490) plus, for
+/// steerable engines, the mid-run steering handle (hardening pass 2026-08-10).
+pub struct LiveWorker {
+    pub kill: goal_engine::GoalKill,
+    pub steer: Option<std::sync::Arc<goal_engine::SteerHandle>>,
+}
+
+/// Record the control handles for a freshly-dispatched goal's worker.
+pub fn register_goal_worker(
+    card_id: &str,
+    kill: goal_engine::GoalKill,
+    steer: Option<std::sync::Arc<goal_engine::SteerHandle>>,
+) {
     if let Ok(mut map) = GOAL_WORKERS.lock() {
-        map.insert(card_id.to_string(), kill);
+        map.insert(card_id.to_string(), LiveWorker { kill, steer });
     }
 }
 
@@ -4069,6 +4136,16 @@ pub fn take_goal_worker(card_id: &str) -> Option<goal_engine::GoalKill> {
         .lock()
         .ok()
         .and_then(|mut map| map.remove(card_id))
+        .map(|w| w.kill)
+}
+
+/// Clone a goal's steer handle WITHOUT removing the registry entry — steering
+/// must not disarm the cancel path.
+pub fn steer_handle_for(card_id: &str) -> Option<std::sync::Arc<goal_engine::SteerHandle>> {
+    GOAL_WORKERS
+        .lock()
+        .ok()
+        .and_then(|map| map.get(card_id).and_then(|w| w.steer.clone()))
 }
 
 /// Cancel a goal (#490): kill its worker if one is running, supersede any open

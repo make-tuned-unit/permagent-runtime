@@ -391,6 +391,8 @@ impl GoalEngine for SupervisedCliEngine {
             run_id: session_id,
             join,
             kill: GoalKill::None,
+            // Supervised sessions are steered by the human IN the terminal.
+            steer: None,
         })
     }
 }
