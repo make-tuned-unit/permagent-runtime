@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   disconnectSession: vi.fn(),
   setAgentName: vi.fn(),
   getIdentity: vi.fn(),
+  loadSessions: vi.fn(),
+  switchToSession: vi.fn(),
 }));
 
 vi.mock('../../lib/store', () => {
@@ -20,6 +22,11 @@ vi.mock('../../lib/store', () => {
     disconnectSession: mocks.disconnectSession,
     setAgentName: mocks.setAgentName,
     identityRev: 0,
+    agentName: 'Henry',
+    sessions: [],
+    loadSessions: mocks.loadSessions,
+    switchToSession: mocks.switchToSession,
+    chatSessionId: null,
   };
   const useCommandCenter = Object.assign(
     (selector: (value: typeof state) => unknown) => selector(state),
@@ -27,7 +34,9 @@ vi.mock('../../lib/store', () => {
   );
   return { useCommandCenter };
 });
-vi.mock('../../lib/api', () => ({ api: { getIdentity: mocks.getIdentity } }));
+vi.mock('../../lib/api', () => ({
+  api: { getIdentity: mocks.getIdentity, createSession: vi.fn() },
+}));
 vi.mock('./MessageList', () => ({ MessageList: () => null }));
 vi.mock('./ChatInput', () => ({ ChatInput: () => null }));
 vi.mock('./SkillPromptBanner', () => ({ SkillPromptBanner: () => null }));
@@ -70,4 +79,13 @@ it('does not load history or open SSE after unmount while session creation is pe
   expect(mocks.disconnectSession).toHaveBeenCalledTimes(1);
   expect(mocks.loadSessionMessages).not.toHaveBeenCalled();
   expect(mocks.connectSession).not.toHaveBeenCalled();
+});
+
+it('renders the shared session picker in the docked chat header', async () => {
+  mocks.ensureSession.mockResolvedValue(undefined);
+
+  await act(async () => root.render(<ChatView />));
+
+  expect(container.querySelector('[data-testid="session-picker"]')).not.toBeNull();
+  expect(container.querySelector('[aria-label="Choose chat session"]')?.textContent).toContain('Henry');
 });
