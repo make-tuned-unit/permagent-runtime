@@ -128,13 +128,13 @@ mod tests {
             assert_steps(name, def.teaching);
         }
         for d in permagent::agents::self_knowledge::WORKER_DESCRIPTORS {
-            assert_steps(d.name, d.teaching);
+            assert_steps(d.id, d.teaching);
         }
         for d in permagent::agents::self_knowledge::GUARD_DESCRIPTORS {
-            assert_steps(d.name, d.teaching);
+            assert_steps(d.id, d.teaching);
         }
         for d in permagent::agents::self_knowledge::SURFACE_DESCRIPTORS {
-            assert_steps(d.name, d.teaching);
+            assert_steps(d.id, d.teaching);
         }
 
         assert!(
