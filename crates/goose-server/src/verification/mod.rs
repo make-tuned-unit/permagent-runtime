@@ -625,6 +625,20 @@ fn aggregate_record(
     }
 }
 
+/// Headline for the debug-dispatch proposal. L1 rejects headlines over 80
+/// chars as malformed (which the FIRST live firing of this arm hit — the goal
+/// title pushed it to 95 and the proposal landed unanswerable), so the title
+/// is included only when it fits.
+fn debug_dispatch_headline(goal_title: &str) -> String {
+    const MAX: usize = 80; // decisions::MAX_HEADLINE_CHARS
+    let with_title = format!("Verification failed — dispatch the debugger on '{goal_title}'?");
+    if with_title.chars().count() <= MAX {
+        with_title
+    } else {
+        "Verification failed — dispatch the debugger?".to_string()
+    }
+}
+
 /// File the review-fail Choice decision proposing a debugger-role re-dispatch.
 /// Idempotent per goal (open-choice guard); never throws — a proposal failure
 /// must not break verification, but it must be visible in the log.
@@ -688,10 +702,7 @@ async fn propose_debug_dispatch(
         kind: "choice".to_string(),
         goal_id: Some(goal_id.to_string()),
         project_id: Some(project_id.to_string()),
-        headline: Some(format!(
-            "Verification failed — dispatch the debugger on '{}'?",
-            goal_title
-        )),
+        headline: Some(debug_dispatch_headline(goal_title)),
         detail: Some(detail),
         payload: serde_json::json!({
             "question": "Verification failed. Re-dispatch this goal with the debugger \
@@ -1424,6 +1435,21 @@ mod tests {
             .contains("confirmed"));
         // No rate configured → cost_usd null + note.
         assert_eq!(parsed.evidence_digest.costs.cost_usd, None);
+    }
+
+    /// The proposal headline must NEVER exceed L1's 80-char cap — the first
+    /// live firing did (long goal title) and the whole proposal was stored
+    /// malformed and unanswerable.
+    #[test]
+    fn debug_dispatch_headline_always_fits_the_cap() {
+        let short = debug_dispatch_headline("Fix the parser");
+        assert!(short.contains("Fix the parser"));
+        assert!(short.chars().count() <= 80);
+        let long = debug_dispatch_headline(
+            "Bench: locate the similarity scorer across every module of the indexing pipeline",
+        );
+        assert_eq!(long, "Verification failed — dispatch the debugger?");
+        assert!(long.chars().count() <= 80);
     }
 
     /// Consensus panel wiring: with panel_models configured, every panelist

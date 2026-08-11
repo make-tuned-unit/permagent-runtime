@@ -201,13 +201,19 @@ def harvest_cli(worker_session: str) -> dict:
 
 
 def harvest_internal(worker_session: str) -> dict:
+    # sessions has no message_count column (schema drift caught 2026-08-10 on
+    # the first haiku cell) — count from the messages table instead.
     rows = sq(
         "SELECT accumulated_input_tokens, accumulated_output_tokens, "
-        "accumulated_cache_read_tokens, accumulated_cache_write_tokens, message_count "
+        "accumulated_cache_read_tokens, accumulated_cache_write_tokens "
         "FROM sessions WHERE id=?", (worker_session,))
     if not rows:
         return {"harvest": "session-row-missing"}
-    inp, out, cr, cw, msgs = (v or 0 for v in rows[0])
+    inp, out, cr, cw = (v or 0 for v in rows[0])
+    try:
+        msgs = sq("SELECT COUNT(*) FROM messages WHERE session_id=?", (worker_session,))[0][0]
+    except Exception:
+        msgs = None
     return {"harvest": "daemon-session", "messages": msgs,
             "output_tokens": out, "input_tokens": inp,
             "cache_creation": cw, "cache_read": cr,

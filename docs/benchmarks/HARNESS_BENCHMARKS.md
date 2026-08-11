@@ -54,6 +54,30 @@ the goal's deep path. Consequences adopted: goal-aware subtree slice
 path is a query tool + landing-time re-index, not a bigger injection.
 Multi-file rerun (goals C/D) pending.
 
+### 2026-08-11 — permagent/haiku-4.5, lookup task (first automated cell)
+
+Dispatched by `harness_bench.py` through the live pipeline; record at
+`scripts/bench/results/lookup-permagent-haiku-4.5-salvaged.json` ("salvaged"
+because the harvester crashed on schema drift after the run finished — fixed
+in the same commit).
+
+| | permagent/haiku-4.5 (n=1) |
+|---|---|
+| state | completed |
+| **verify verdict** | **FAIL — out-of-declared-path edits, no evidence** |
+| wall clock | 6m 18s |
+| messages | 37 |
+| output tokens | 1,886 |
+| billed input | 843,492 |
+
+**Finding:** the cheapest tier finished the task shape but broke path
+discipline on a single-symbol edit, and the deterministic gate caught it —
+this is the "failures surface as ladder climbs, not bad results reaching the
+user" half of the thesis working. The row is red and it counts. Side effect:
+the run fired the review-fail → debugger proposal LIVE for the first time and
+exposed its headline overflowing L1's 80-char cap (stored fail-closed as
+malformed; fixed + pinned by test in the same commit).
+
 ## Open cells
 
 The matrix worth filling next, one row at a time:

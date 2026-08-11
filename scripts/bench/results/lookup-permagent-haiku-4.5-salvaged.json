@@ -1,0 +1,24 @@
+{
+  "at": "2026-08-11T01:34:19+00:00",
+  "task": "lookup",
+  "task_class": "navigation / single-symbol lookup",
+  "nonce": "salvaged",
+  "label": "permagent-haiku-4.5",
+  "worker": "permagent",
+  "card_id": "019fee6a-2fe7-7610-8e15-74269ac7900c",
+  "worker_session": "20260811_2",
+  "state": "completed",
+  "check_status": "fail",
+  "dispatched_at": "2026-08-11T01:26:03.937950+00:00",
+  "terminal_at": "2026-08-11T01:32:21.990641+00:00",
+  "first_output_at": null,
+  "usage": {
+    "harvest": "daemon-session",
+    "messages": 37,
+    "output_tokens": 1886,
+    "input_tokens": 421782,
+    "cache_creation": 140175,
+    "cache_read": 281535,
+    "billed_input": 843492
+  }
+}
