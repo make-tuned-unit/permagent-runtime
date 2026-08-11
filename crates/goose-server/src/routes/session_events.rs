@@ -453,6 +453,7 @@ pub async fn session_reply(
     // Decision-Inbox answer reached a freshly recreated agent with no waiter.
     // A session with an active bus request now 400s above with the agent
     // intact, and the swap is deferred to its next idle turn.
+    let mut provider_switch_notice: Option<String> = None;
     {
         let config = permagent::config::Config::global();
         let current_provider = config.get_goose_provider().ok();
@@ -505,6 +506,27 @@ pub async fn session_reply(
                     session_data.provider_name,
                     current_provider
                 );
+                // Tell the user, in the chat, that the swap actually happened —
+                // a silent model switch reads as "my /model change did nothing"
+                // when the next reply still errors for an unrelated reason.
+                let old_label = format!(
+                    "{}/{}",
+                    session_data.provider_name.as_deref().unwrap_or("unknown"),
+                    session_data
+                        .model_config
+                        .as_ref()
+                        .map(|m| m.model_name.as_str())
+                        .unwrap_or("unknown")
+                );
+                let new_label = format!(
+                    "{}/{}",
+                    current_provider.as_deref().unwrap_or("unknown"),
+                    current_model.as_deref().unwrap_or("unknown")
+                );
+                provider_switch_notice = Some(format!(
+                    "Model switched: this session now uses {} (was {}).",
+                    new_label, old_label
+                ));
                 // Evict cached agent so it gets recreated with the new provider
                 let _ = state.agent_manager.remove_session(&session_id).await;
             }
@@ -620,6 +642,33 @@ pub async fn session_reply(
             None => session.conversation.unwrap_or_default(),
         };
         all_messages.push(user_message.clone());
+
+        // Surface (and persist) the provider/model swap applied above, so the
+        // switch is visible in the transcript instead of happening silently.
+        if let Some(notice) = provider_switch_notice {
+            let notice_message = Message::assistant().with_text(&notice);
+            if let Err(e) = task_state
+                .session_manager()
+                .add_message(&task_session_id, &notice_message)
+                .await
+            {
+                tracing::warn!(
+                    "Failed to persist provider-switch notice for {}: {}",
+                    task_session_id,
+                    e
+                );
+            }
+            all_messages.push(notice_message.clone());
+            let token_state = get_token_state(task_state.session_manager(), &task_session_id).await;
+            publish(
+                Some(task_request_id.clone()),
+                MessageEvent::Message {
+                    message: notice_message,
+                    token_state,
+                },
+            )
+            .await;
+        }
 
         // ── Phase 3b: Ambient context from ContextBuilder ──
         {
