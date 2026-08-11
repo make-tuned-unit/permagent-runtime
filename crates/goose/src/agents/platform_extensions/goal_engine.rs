@@ -393,6 +393,45 @@ impl GoalEngine for InternalSubagentEngine {
 
         let session_id = subagent_session.id.clone();
 
+        // Worktree isolation (2026-08-11 bench-contamination bug): the internal
+        // subagent used to run in the PRIMARY project root, so verification
+        // diffed the operator's own uncommitted work into the worker's verdict
+        // (which voided the first three benchmark cells), and concurrent
+        // internal goals poisoned each other. Isolate exactly like the
+        // external engine — worktree off the baseline on goal/<session_id>,
+        // work-base hooks, credential scan, evidence — so landing derives the
+        // same branch name it does for CLI workers. A non-git project (no
+        // baseline) or a worktree failure degrades LOUDLY to the shared dir
+        // rather than failing dispatch: unisolated is how it always ran.
+        let mut isolation: Option<(PathBuf, String)> = None;
+        if let Some(baseline) = task.baseline_commit.clone() {
+            match create_goal_worktree(&task.working_dir, &baseline, &session_id).await {
+                Ok(wt) => {
+                    let _ = install_work_base_hooks(&wt).await;
+                    isolation = Some((wt, baseline));
+                }
+                Err(e) => tracing::warn!(
+                    target: "permagentd::goals",
+                    session_id = %session_id,
+                    "internal goal worktree creation failed — running UNISOLATED \
+                     in the shared project dir (verification may attribute \
+                     unrelated tree changes to this worker): {}",
+                    e
+                ),
+            }
+        } else {
+            tracing::warn!(
+                target: "permagentd::goals",
+                session_id = %session_id,
+                "internal goal has no baseline commit (non-git project?) — \
+                 running unisolated"
+            );
+        }
+        let work_dir = isolation
+            .as_ref()
+            .map(|(wt, _)| wt.clone())
+            .unwrap_or_else(|| task.working_dir.clone());
+
         // Route this goal to its workflow role's CONFIGURED model (#730 wiring)
         // when the orchestrator resolved one; otherwise clone the parent session's
         // provider+model — the single-model fallback, never a baked-in default.
@@ -442,7 +481,7 @@ impl GoalEngine for InternalSubagentEngine {
         let task_config = TaskConfig::new(
             task_provider,
             &session_id,
-            &task.working_dir,
+            &work_dir,
             self.extensions.clone(),
         );
 
@@ -482,7 +521,28 @@ impl GoalEngine for InternalSubagentEngine {
             })
             .await
             {
-                Ok(_) => GoalOutcome::Success(None),
+                // Isolated runs get the same post-exit treatment as external
+                // workers: credential scan first (#508 — a secret must never
+                // survive to review), then deterministic evidence from the
+                // worktree so verification diffs THE WORKER'S commits, not the
+                // shared project tree.
+                Ok(_) => match &isolation {
+                    Some((wt, baseline)) => {
+                        if let Some(reason) = scan_committed_changes(wt, baseline).await {
+                            GoalOutcome::Blocked { reason }
+                        } else {
+                            GoalOutcome::Success(Some(
+                                collect_evidence(
+                                    wt,
+                                    baseline,
+                                    "in-process subagent run".to_string(),
+                                )
+                                .await,
+                            ))
+                        }
+                    }
+                    None => GoalOutcome::Success(None),
+                },
                 Err(e) => GoalOutcome::Failed(e.to_string()),
             }
         });

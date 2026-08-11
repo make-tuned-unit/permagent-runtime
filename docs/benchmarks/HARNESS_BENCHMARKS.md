@@ -70,13 +70,36 @@ in the same commit).
 | output tokens | 1,886 |
 | billed input | 843,492 |
 
-**Finding:** the cheapest tier finished the task shape but broke path
-discipline on a single-symbol edit, and the deterministic gate caught it —
-this is the "failures surface as ladder climbs, not bad results reaching the
-user" half of the thesis working. The row is red and it counts. Side effect:
-the run fired the review-fail → debugger proposal LIVE for the first time and
-exposed its headline overflowing L1's 80-char cap (stored fail-closed as
-malformed; fixed + pinned by test in the same commit).
+**RETRACTED 2026-08-11 (same night): the FAIL verdict was CONTAMINATED, not
+earned.** The `permagent` (internal) worker runs in the PRIMARY project root —
+no worktree isolation, unlike external CLI workers — and at dispatch time the
+primary tree carried 9 uncommitted files of unrelated in-flight work. The
+verifier diffed the tree against baseline and attributed all of it to the
+worker, whose actual output was one 7-line file (`docs/notes/
+bench-lookup-08110122.md`). So "out-of-path edits" was the operator's dirty
+tree, not Haiku's behavior. Verdict on the verdict: the gate graded honestly
+on poisoned evidence. **The Haiku cell is INVALID and must re-run after
+internal workers get worktree isolation** (filed as a harness bug — this
+contamination also makes concurrent internal goals poison each other's
+reviews). The kimi/gpt cells run the same night share the vector; treat all
+three usage rows as cost telemetry only, verdicts void. What DID hold up:
+the review-fail → debugger proposal fired live for the first time and its
+headline overflowed L1's 80-char cap (fixed + pinned by test), and the
+harvest schema drift was caught and fixed.
+
+## The apples-to-apples tier (2026-08-11)
+
+Comparing each provider's LATEST model at the closest available price tier
+(list rates per Mtok from the canonical catalog). Re-runs are BLOCKED until
+the internal-worker isolation fix is installed — verdicts before that are
+contaminated by the shared tree.
+
+| provider | model | $/Mtok in | $/Mtok out | note |
+|---|---|---|---|---|
+| anthropic | claude-haiku-4-5-20251001 | 1.00 | 5.00 | tier anchor |
+| moonshot | kimi-k2.6 | 0.95 | 4.00 | closest match to the anchor |
+| minimax | minimax-m2.5 | 0.30 | 1.20 | their top coding tier — cheaper by ~3×; label it |
+| openai | (cheap-tier id TBC from catalog before the run) | — | — | gpt-5.6-terra is the mid tier, not this tier |
 
 ## Open cells
 
