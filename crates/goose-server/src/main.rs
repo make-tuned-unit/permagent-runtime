@@ -19,6 +19,7 @@ mod proactive;
 mod routes;
 mod session_event_bus;
 mod state;
+mod steward_sweep;
 mod strix;
 mod watcher_insights;
 // The route modules are compiled into BOTH crate roots (this bin and the lib),

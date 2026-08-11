@@ -339,6 +339,34 @@ pub async fn apply_decision_effect(
             goal_transition::delete_goal_checked(pool, goal_id, proof).await?;
             already_applied(format!("goal {goal_id} deleted"))
         }
+        // Steward git-health lane: an approved repo-hygiene cleanup (worktree
+        // reap / branch delete). The mutation lives ONLY here, behind the
+        // DecisionProof; `apply_repo_hygiene` RE-VERIFIES every safety
+        // predicate at effect time (second-look contract) — "world changed"
+        // resolves Ok-with-refusal so the outbox stops, "cannot determine"
+        // resolves Err so it retries.
+        ("risk_gate", Some("approve"))
+            if decision
+                .payload
+                .get("action_class")
+                .and_then(|v| v.as_str())
+                .is_some_and(|c| {
+                    c == crate::steward::hygiene::ACTION_REPO_WORKTREE_REAP
+                        || c == crate::steward::hygiene::ACTION_REPO_BRANCH_DELETE
+                }) =>
+        {
+            let payload: decisions::RiskGatePayload =
+                serde_json::from_value(decision.payload.clone()).map_err(|e| {
+                    GuardError::Invalid(format!("stored risk_gate payload unreadable: {e}"))
+                })?;
+            let Some(target) = payload.repo_target.as_ref() else {
+                return Err(GuardError::Invalid(
+                    "repo-hygiene decision carries no repo_target — nothing safe to apply"
+                        .to_string(),
+                ));
+            };
+            crate::steward::hygiene::apply_repo_hygiene(&payload.action_class, target).await
+        }
         ("automation_proposal", Some("reject")) => {
             let normalized = decision
                 .payload
@@ -1216,5 +1244,171 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    // ── Steward git-health arm (repo_worktree_reap / repo_branch_delete) ──
+
+    fn git(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap()
+    }
+
+    /// Real repo at `<tmp>/proj` with a file:// origin, one pushed baseline
+    /// commit, and one clean detached worktree registered at `<tmp>/wt-reap`.
+    fn repo_with_worktree(tmp: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let origin = tmp.join("origin.git");
+        std::process::Command::new("git")
+            .args(["init", "-q", "--bare"])
+            .arg(&origin)
+            .output()
+            .unwrap();
+        let repo = tmp.join("proj");
+        std::fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["config", "user.email", "t@t.t"]);
+        git(&repo, &["config", "user.name", "t"]);
+        git(&repo, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(repo.join("README.md"), "hi").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "base"]);
+        git(&repo, &["branch", "-M", "main"]);
+        git(
+            &repo,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        git(&repo, &["push", "-q", "-u", "origin", "main"]);
+        git(&repo, &["fetch", "-q", "origin"]);
+        let wt = tmp.join("wt-reap");
+        git(
+            &repo,
+            &["worktree", "add", "-q", "--detach", wt.to_str().unwrap()],
+        );
+        assert!(wt.is_dir());
+        (repo, wt)
+    }
+
+    /// File the reap through the REAL proposer, then answer as Jesse.
+    async fn answered_reap_decision(
+        pool: &Pool<Sqlite>,
+        repo: &std::path::Path,
+        wt: &std::path::Path,
+    ) -> Decision {
+        let id = crate::steward::hygiene::propose_repo_hygiene(
+            pool,
+            crate::steward::hygiene::RepoHygieneProposal {
+                action_class: crate::steward::hygiene::ACTION_REPO_WORKTREE_REAP.to_string(),
+                repo_path: repo.to_string_lossy().to_string(),
+                worktree_path: Some(wt.to_string_lossy().to_string()),
+                branch: None,
+                evidence: vec!["clean, fully pushed, detached at baseline".to_string()],
+                headline: "Tidy up: remove a finished worktree?".to_string(),
+                project_id: None,
+            },
+        )
+        .await
+        .unwrap()
+        .expect("proposal files");
+        let d = decisions::get_decision(pool, &id).await.unwrap().unwrap();
+        assert_eq!(
+            d.tier, 2,
+            "repo hygiene must resolve to the Jesse-only tier"
+        );
+        decisions::answer_decision(
+            pool,
+            &id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap()
+        .0
+    }
+
+    async fn outbox_status(pool: &Pool<Sqlite>, decision_id: &str) -> String {
+        sqlx::query_scalar("SELECT status FROM effect_outbox WHERE decision_id = ?")
+            .bind(decision_id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn approved_worktree_reap_removes_the_worktree_via_the_outbox() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, wt) = repo_with_worktree(tmp.path());
+        let pool = test_pool().await;
+        let decision = answered_reap_decision(&pool, &repo, &wt).await;
+
+        drain_effect_outbox(&pool).await.unwrap();
+
+        assert_eq!(outbox_status(&pool, &decision.id).await, "applied");
+        assert!(!wt.exists(), "the approved worktree must be gone");
+    }
+
+    #[tokio::test]
+    async fn world_changed_dirty_worktree_is_refused_but_outbox_settles_applied() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, wt) = repo_with_worktree(tmp.path());
+        let pool = test_pool().await;
+        let decision = answered_reap_decision(&pool, &repo, &wt).await;
+
+        // The world changes between approval and application.
+        std::fs::write(wt.join("scratch.txt"), "uncommitted work").unwrap();
+
+        drain_effect_outbox(&pool).await.unwrap();
+
+        assert!(
+            wt.exists(),
+            "a now-dirty worktree must be refused, not removed"
+        );
+        assert_eq!(
+            outbox_status(&pool, &decision.id).await,
+            "applied",
+            "a world-changed refusal is terminal — the outbox must NOT retry it"
+        );
+        let _ = repo;
+    }
+
+    #[tokio::test]
+    async fn repo_hygiene_decision_without_repo_target_errs_not_applies() {
+        let pool = test_pool().await;
+        let decision = decisions::create_decision(
+            &pool,
+            NewDecision {
+                kind: "risk_gate".to_string(),
+                headline: Some("Remove a worktree?".to_string()),
+                detail: Some("no target".to_string()),
+                payload: serde_json::json!({
+                    "action_class": crate::steward::hygiene::ACTION_REPO_WORKTREE_REAP,
+                    "description": "?",
+                    "requested_by": "steward"
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let (decision, proof) = decisions::answer_decision(
+            &pool,
+            &decision.id,
+            &DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        let err = apply_decision_effect(&pool, &decision, proof, "risk_gate")
+            .await
+            .unwrap_err();
+        assert!(format!("{err:?}").contains("repo_target"));
     }
 }

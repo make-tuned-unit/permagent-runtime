@@ -1023,6 +1023,14 @@ impl SessionStorage {
                     if version < 40 {
                         spectral_schema::migrate_v39_to_v40(&self.pool).await?;
                     }
+                    // v41: seed the Steward git-health risk_policy classes
+                    // (repo_worktree_reap / repo_branch_delete — Tier 2,
+                    // Jesse-only, so henry-policy can never auto-approve a
+                    // deletion). INSERT OR IGNORE, purely additive to a
+                    // free-text-PK table, base-independent.
+                    if version < 41 {
+                        spectral_schema::migrate_v40_to_v41(&self.pool).await?;
+                    }
                     // Version-independent safety net for recognition columns.
                     // The always-on v23 above can stamp schema_version past the
                     // cfg-gated `version < 22` migration, leaving a feature-off DB

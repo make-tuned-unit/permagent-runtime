@@ -928,100 +928,13 @@ fn goal_worktrees_dir(repo: &Path) -> PathBuf {
     repo.parent().unwrap_or(repo).join(GOAL_WORKTREES_DIR)
 }
 
-/// Outcome of a worktree reap attempt (#504). Returned for logging/observability
-/// and asserted in tests; never an error — reaping is best-effort by contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReapOutcome {
-    /// `git worktree remove` succeeded (git-tracked worktree).
-    RemovedTracked,
-    /// `git worktree remove` failed; the dir was deleted via `rm -rf` +
-    /// `git worktree prune` (an orphaned dir git had lost the ref to).
-    RemovedOrphaned,
-    /// Nothing on disk to remove.
-    Absent,
-    /// Kept on purpose: unpushed commits present (or push state unprovable) and
-    /// removal was not force-allowed. Protects unreviewed work — see #504.
-    SkippedUnpushed,
-    /// Removal was attempted but the dir still exists afterwards.
-    Failed,
-}
-
-/// Run `git <args>` in `dir`; `Some(trimmed stdout)` on a clean exit (possibly
-/// empty), `None` if git failed to launch or exited non-zero. Unlike
-/// [`git_text`], this distinguishes "succeeded with empty output" from "failed",
-/// which the push-safety guard depends on.
-async fn git_checked(dir: &Path, args: &[&str]) -> Option<String> {
-    let mut cmd = Command::new("git");
-    cmd.arg("-C")
-        .arg(dir)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    configure_subprocess(&mut cmd);
-    match cmd.output().await {
-        Ok(o) if o.status.success() => Some(String::from_utf8_lossy(&o.stdout).trim().to_string()),
-        _ => None,
-    }
-}
-
-/// Does this worktree hold commits not present on any remote (unpushed work)?
-///
-/// - `Some(true)`  — HEAD has commits reachable from no remote-tracking ref.
-/// - `Some(false)` — HEAD is fully contained on a remote (or has no commits
-///   beyond what remotes already have).
-/// - `None`        — git state is unreadable (e.g. an orphaned dir whose
-///   worktree admin ref is gone). The caller decides: the on-transition reaper
-///   protects (can't prove safety); the sweep treats it as safe because an
-///   unreadable admin ref means those commits are already unreachable in the
-///   repo regardless.
-async fn has_unpushed_work(worktree: &Path) -> Option<bool> {
-    // Readability probe: if HEAD won't resolve, the worktree's admin ref is gone.
-    git_checked(worktree, &["rev-parse", "--verify", "HEAD"]).await?;
-    // Commits reachable from HEAD but from no remote-tracking ref.
-    let unpushed = git_checked(worktree, &["rev-list", "HEAD", "--not", "--remotes"]).await?;
-    Some(!unpushed.is_empty())
-}
-
-/// Two-phase removal handling both #504 leak forms. Phase 1 lets git deregister
-/// and delete a tracked worktree (`--force` so a dirty working tree of build
-/// artifacts doesn't block it). On any failure, phase 2 deletes the dir directly
-/// and prunes the stale admin entry — the orphaned-dir case git no longer tracks.
-/// A phase-1 failure must never leave the dir behind.
-async fn remove_worktree_dir(repo: &Path, dest: &Path) -> ReapOutcome {
-    let dest_str = dest.to_string_lossy().to_string();
-    if git_checked(repo, &["worktree", "remove", "--force", &dest_str])
-        .await
-        .is_some()
-        && !dest.exists()
-    {
-        tracing::info!(
-            target: "permagentd::brain",
-            "reaper: removed tracked worktree {}",
-            dest.display()
-        );
-        return ReapOutcome::RemovedTracked;
-    }
-
-    // Orphaned dir (git remove failed / dir survived): rm -rf, then prune the
-    // stale `.git/worktrees/<name>` admin entry git may still list.
-    let _ = tokio::fs::remove_dir_all(dest).await;
-    if dest.exists() {
-        tracing::warn!(
-            target: "permagentd::brain",
-            "reaper: failed to remove worktree dir {}",
-            dest.display()
-        );
-        return ReapOutcome::Failed;
-    }
-    let _ = git_checked(repo, &["worktree", "prune"]).await;
-    tracing::info!(
-        target: "permagentd::brain",
-        "reaper: removed orphaned worktree dir {} (git ref lost) + pruned",
-        dest.display()
-    );
-    ReapOutcome::RemovedOrphaned
-}
+// The #504 reap primitives (`ReapOutcome`, `has_unpushed_work`,
+// `remove_worktree_dir`, `git_checked`) were lifted VERBATIM into
+// `crate::steward::hygiene` so the goal reaper and the Steward's git-health
+// lane share one implementation. Semantics are unchanged; `ReapOutcome` is
+// re-exported here so existing paths keep resolving.
+pub use crate::steward::hygiene::ReapOutcome;
+use crate::steward::hygiene::{has_unpushed_work, remove_worktree_dir};
 
 /// Reap a single goal worktree once its goal is terminal (#504).
 ///

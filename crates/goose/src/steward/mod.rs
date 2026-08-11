@@ -17,6 +17,8 @@
 //! Destructive proposals that clear the guard are surfaced to a human via
 //! [`surface_destructive_proposal`] — the single abstracted routing seam.
 
+pub mod git_health;
+pub mod hygiene;
 pub mod secret_scan;
 
 use crate::cards::{self, CreateCard};
@@ -510,11 +512,15 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
              `git-steward` recipe — its cron belongs to it, not to you), sweeping repositories \
              to draft commit messages, PR descriptions and changelogs, and to detect stale \
              merged branches and orphaned worktrees (a merged branch whose worktree was \
-             never reaped). It surfaces a repo-health card on the board, writes a recallable \
-             Brain memory, and BRIEFS YOU directly — both when it proposes destructive \
-             cleanup (which becomes an approval card for the user) and when its \
-             protected-branch guard refuses an operation outright, which creates no card at \
-             all. Destructive work is never run autonomously",
+             never reaped). Its git-health sweep (default OFF, `steward_scan_enabled`) files \
+             merged-and-clean worktree removals and merged-branch deletions as Jesse-only \
+             Decision-Inbox approvals — every safety check is re-run at the moment of \
+             removal, and anything with uncommitted or unpushed work is refused. Failing CI \
+             and a dirty primary tree are alert-only: a briefing and a repo-health card, \
+             never a fake approve button. It also BRIEFS YOU directly — both when it \
+             proposes destructive cleanup and when its protected-branch guard refuses an \
+             operation outright, which creates no card at all. Destructive work is never run \
+             autonomously",
         why_it_matters:
             "It turns invisible repo grind into something you can see, recall, and speak to \
              unprompted. Because it reports to you, you can raise a pending branch deletion \
