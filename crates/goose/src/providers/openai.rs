@@ -562,7 +562,22 @@ impl Provider for OpenAiProvider {
         messages: &[Message],
         tools: &[Tool],
     ) -> Result<MessageStream, ProviderError> {
-        if Self::should_use_responses_api(&model_config.model_name, &self.base_path) {
+        let use_responses =
+            Self::should_use_responses_api(&model_config.model_name, &self.base_path);
+        tracing::info!(
+            model = %model_config.model_name,
+            base_path = %self.base_path,
+            endpoint = if use_responses { "responses" } else { "chat_completions" },
+            "openai endpoint routing"
+        );
+        if !use_responses && Self::is_responses_model(&model_config.model_name) {
+            tracing::warn!(
+                model = %model_config.model_name,
+                base_path = %self.base_path,
+                "responses-preferred model routed to chat/completions — check OPENAI_BASE_PATH"
+            );
+        }
+        if use_responses {
             let mut payload = create_responses_request(model_config, system, messages, tools)?;
             payload["stream"] = serde_json::Value::Bool(self.supports_streaming);
 

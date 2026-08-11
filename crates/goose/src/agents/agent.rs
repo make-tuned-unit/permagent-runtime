@@ -2113,6 +2113,22 @@ impl Agent {
                             state_guard.mark_error();
                             break;
                         }
+                        Err(ref provider_err @ ProviderError::RequestFailed(_)) => {
+                            #[cfg(feature = "telemetry")]
+                            crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
+                            error!("Error: {}", provider_err);
+                            // A 4xx means the provider rejected this exact request as
+                            // invalid — resending the identical payload fails the same
+                            // way, so don't invite a retry. Point at the levers that
+                            // actually change the request.
+                            yield AgentEvent::Message(
+                                Message::assistant().with_text(
+                                    format!("Ran into this error: {provider_err}.\n\nThe provider rejected this request as invalid, so sending it again unchanged will fail the same way. Switch the model (Settings → Models), or start a new session, then resend your message.")
+                                )
+                            );
+                            state_guard.mark_error();
+                            break;
+                        }
                         Err(ref provider_err) => {
                             #[cfg(feature = "telemetry")]
                             crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());

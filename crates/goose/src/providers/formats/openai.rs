@@ -1036,6 +1036,23 @@ pub fn create_request(
     });
 
     if let Some(effort) = reasoning_effort {
+        // The gpt-5.6 family rejects any reasoning_effort other than "none"
+        // when function tools are present on chat/completions (the responses
+        // API is the intended route). Downgrade instead of letting the whole
+        // request 400.
+        let effort = if model_name.starts_with("gpt-5.6")
+            && !tools_spec.is_empty()
+            && effort != "none"
+        {
+            tracing::warn!(
+                model = %model_name,
+                requested_effort = %effort,
+                "downgrading reasoning_effort to 'none': chat/completions rejects it alongside function tools for this model family"
+            );
+            "none".to_string()
+        } else {
+            effort
+        };
         payload["reasoning_effort"] = json!(effort);
     }
 
@@ -1826,6 +1843,97 @@ mod tests {
             assert_eq!(obj.get(key).unwrap(), value);
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_request_gpt_5_6_with_tools_downgrades_reasoning_effort() -> anyhow::Result<()> {
+        // gpt-5.6 family + function tools on chat/completions: any effort other
+        // than "none" is rejected by the API, so create_request must downgrade.
+        let model_config = ModelConfig {
+            model_name: "gpt-5.6-terra".to_string(),
+            context_limit: Some(4096),
+            temperature: None,
+            max_tokens: Some(1024),
+            toolshim: false,
+            toolshim_model: None,
+            fast_model_config: None,
+            request_params: None,
+            reasoning: None,
+        };
+        let tool = Tool::new(
+            "test_tool",
+            "A test tool",
+            object!({
+                "type": "object",
+                "properties": {},
+            }),
+        );
+        let request = create_request(
+            &model_config,
+            "system",
+            &[],
+            &[tool],
+            &ImageFormat::OpenAi,
+            false,
+        )?;
+        let obj = request.as_object().unwrap();
+        assert_eq!(obj.get("model").unwrap(), "gpt-5.6-terra");
+        assert_eq!(obj.get("reasoning_effort").unwrap(), "none");
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_request_gpt_5_6_without_tools_keeps_reasoning_effort() -> anyhow::Result<()> {
+        let model_config = ModelConfig {
+            model_name: "gpt-5.6-terra".to_string(),
+            context_limit: Some(4096),
+            temperature: None,
+            max_tokens: Some(1024),
+            toolshim: false,
+            toolshim_model: None,
+            fast_model_config: None,
+            request_params: None,
+            reasoning: None,
+        };
+        let request = create_request(
+            &model_config,
+            "system",
+            &[],
+            &[],
+            &ImageFormat::OpenAi,
+            false,
+        )?;
+        let obj = request.as_object().unwrap();
+        assert_eq!(obj.get("reasoning_effort").unwrap(), "medium");
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_request_none_suffix_parses() -> anyhow::Result<()> {
+        // An explicit "-none" suffix strips into base model + effort "none".
+        let model_config = ModelConfig {
+            model_name: "gpt-5.6-terra-none".to_string(),
+            context_limit: Some(4096),
+            temperature: None,
+            max_tokens: Some(1024),
+            toolshim: false,
+            toolshim_model: None,
+            fast_model_config: None,
+            request_params: None,
+            reasoning: None,
+        };
+        let request = create_request(
+            &model_config,
+            "system",
+            &[],
+            &[],
+            &ImageFormat::OpenAi,
+            false,
+        )?;
+        let obj = request.as_object().unwrap();
+        assert_eq!(obj.get("model").unwrap(), "gpt-5.6-terra");
+        assert_eq!(obj.get("reasoning_effort").unwrap(), "none");
         Ok(())
     }
 
