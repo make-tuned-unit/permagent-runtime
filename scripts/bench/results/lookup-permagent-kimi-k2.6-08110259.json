@@ -1,0 +1,24 @@
+{
+  "at": "2026-08-11T03:01:31+00:00",
+  "task": "lookup",
+  "task_class": "navigation / single-symbol lookup",
+  "nonce": "08110259",
+  "label": "permagent-kimi-k2.6",
+  "worker": "permagent",
+  "card_id": "019feec3-1b87-7aa0-9f61-ca145204e635",
+  "worker_session": "20260811_3",
+  "state": "completed",
+  "check_status": null,
+  "dispatched_at": "2026-08-11T03:00:03.256329+00:00",
+  "terminal_at": "2026-08-11T03:01:29.685108+00:00",
+  "first_output_at": null,
+  "usage": {
+    "harvest": "daemon-session",
+    "messages": 26,
+    "output_tokens": 1098,
+    "input_tokens": 173570,
+    "cache_creation": 0,
+    "cache_read": 0,
+    "billed_input": 173570
+  }
+}
