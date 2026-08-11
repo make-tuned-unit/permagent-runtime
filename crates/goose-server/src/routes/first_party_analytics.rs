@@ -122,6 +122,16 @@ pub fn drain_config(project: &Project) -> Option<DrainState> {
     config_from_project(project)
 }
 
+/// Drain lag in events: how far the relay's newest id sits ahead of this
+/// hub's cursor. `None` unless the relay reported `latestId` (spec v41) AND
+/// both ids parse as integers — anything less is a guess, and a guessed zero
+/// reads as "caught up", which is exactly the lie this figure exists to kill.
+pub fn drain_lag_events(config: &FirstPartyConfig) -> Option<i64> {
+    let latest: i64 = config.relay_latest_id.as_deref()?.parse().ok()?;
+    let cursor: i64 = config.cursor.as_deref()?.parse().ok()?;
+    Some((latest - cursor).max(0))
+}
+
 /// The drain secret WITHOUT minting one — the poller must never create
 /// credentials as a side effect of a background pass.
 pub fn stored_drain_secret_readonly(project_id: &str) -> Option<String> {
@@ -220,6 +230,15 @@ struct FirstPartyStats {
     bots_excluded: i64,
     /// True when bot traffic is included (the `includeBots` toggle).
     including_bots: bool,
+    // ── Drain health (relay-and-drain) ──
+    /// When the drain loop last completed a successful pass (RFC3339). `None`
+    /// until the first pass, or in direct-ingest mode. Surfaced with the
+    /// figures it dates, so a stale number never reads as a quiet day.
+    last_drain_at: Option<String>,
+    /// Events the relay reports holding beyond this hub's cursor (spec v41
+    /// `latestId` vs `cursor`). `None` for a pre-v41 relay or non-numeric ids
+    /// — an honest gap, not a reassuring zero.
+    drain_lag_events: Option<i64>,
     by_day: Vec<DayCount>,
     top_pages: Vec<NamedCount>,
     top_referrers: Vec<NamedCount>,
@@ -1074,7 +1093,8 @@ async fn first_party_stats(
     Query(q): Query<StatsQuery>,
 ) -> Result<Json<FirstPartyStats>, StatusCode> {
     let (pool, project) = project_and_pool(&state, &project_id).await?;
-    let enabled = config_from_project(&project).is_some();
+    let config = config_from_project(&project);
+    let enabled = config.is_some();
     let days = q.days.unwrap_or(30).clamp(1, 365);
     let since = format!("-{days} days");
 
@@ -1192,9 +1212,10 @@ async fn first_party_stats(
     // document.referrer still holds the ORIGINAL external referrer after a
     // client-side route change, so without this every internal navigation
     // re-reports it and inflates the list.
-    let site_host = config_from_project(&project)
-        .and_then(|c| c.drain_url)
-        .and_then(|u| classify::referrer_host(&u));
+    let site_host = config
+        .as_ref()
+        .and_then(|c| c.drain_url.as_deref())
+        .and_then(classify::referrer_host);
 
     let mut by_host: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
     for (referrer, count) in &referrer_rows {
@@ -1275,6 +1296,11 @@ async fn first_party_stats(
     );
 
     let receiving = pageviews > 0 || has_any_events(&pool, &project.id).await;
+    // Drain health rides with the figures it dates: the poller has captured
+    // `relay_latest_id` since v41 but never surfaced it, so a healthy cursor
+    // and a growing backlog looked identical from the UI.
+    let last_drain_at = config.as_ref().and_then(|c| c.last_drain_at.clone());
+    let drain_lag = config.as_ref().and_then(drain_lag_events);
     Ok(Json(FirstPartyStats {
         enabled,
         receiving,
@@ -1284,6 +1310,8 @@ async fn first_party_stats(
         events_last_5m,
         bots_excluded,
         including_bots,
+        last_drain_at,
+        drain_lag_events: drain_lag,
         by_day,
         top_pages,
         top_referrers,
@@ -1980,6 +2008,92 @@ mod tests {
             serde_json::json!("news.ycombinator.com / referral")
         );
         assert_eq!(stats["topEvents"][0]["name"], serde_json::json!("signup"));
+    }
+
+    fn lag_config(cursor: Option<&str>, latest: Option<&str>) -> FirstPartyConfig {
+        FirstPartyConfig {
+            site_key: "k".repeat(32),
+            ingest_base: None,
+            drain_url: None,
+            cursor: cursor.map(str::to_string),
+            last_drain_at: None,
+            last_error: None,
+            relay_latest_id: latest.map(str::to_string),
+        }
+    }
+
+    /// Drain lag is only ever computed, never guessed. A pre-v41 relay (no
+    /// `latestId`) and a string-id relay both yield `None` — a guessed zero
+    /// would read as "caught up", which is the exact lie the figure exists
+    /// to kill.
+    #[test]
+    fn drain_lag_is_honest_about_what_it_can_know() {
+        assert_eq!(
+            drain_lag_events(&lag_config(Some("1200"), Some("1237"))),
+            Some(37)
+        );
+        // Caught up (or the relay pruned): clamped to zero, not negative.
+        assert_eq!(
+            drain_lag_events(&lag_config(Some("1237"), Some("1200"))),
+            Some(0)
+        );
+        assert_eq!(drain_lag_events(&lag_config(Some("1200"), None)), None);
+        assert_eq!(drain_lag_events(&lag_config(None, Some("1237"))), None);
+        assert_eq!(
+            drain_lag_events(&lag_config(Some("uuid-a"), Some("uuid-b"))),
+            None
+        );
+    }
+
+    /// ITEM: surface drain lag. The poller has captured `relay_latest_id`
+    /// since v41 but never surfaced it — a healthy cursor and a growing
+    /// backlog looked identical from the stats the Grow UI reads. The stats
+    /// payload now carries `drainLagEvents` and `lastDrainAt`.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn stats_surface_drain_lag_and_freshness() {
+        let root = crate::test_support::test_root();
+        let home = tempfile::tempdir().unwrap();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(home.path().to_str().unwrap())),
+            ("PERMAGENT_PATH_ROOT", Some(root.to_str().unwrap())),
+        ]);
+        let (app, _collect_app, pool, _state) = test_app().await;
+        let project = seed_project(&pool, "fp-drain-lag").await;
+
+        let mut config = lag_config(Some("1200"), Some("1237"));
+        config.drain_url = Some("https://example.org/api/permagent-analytics/drain".into());
+        config.last_drain_at = Some("2026-08-10T12:00:00Z".into());
+        write_config(&pool, project.clone(), &config).await.unwrap();
+
+        let (status, stats) = request(
+            &app,
+            "GET",
+            &format!("/api/projects/{}/analytics/first_party/stats", project.id),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(stats["drainLagEvents"], serde_json::json!(37));
+        assert_eq!(
+            stats["lastDrainAt"],
+            serde_json::json!("2026-08-10T12:00:00Z")
+        );
+
+        // A relay that never reported latestId yields an honest null, not 0.
+        let older = seed_project(&pool, "fp-drain-lag-pre-v41").await;
+        write_config(&pool, older.clone(), &lag_config(Some("1200"), None))
+            .await
+            .unwrap();
+        let (status, stats) = request(
+            &app,
+            "GET",
+            &format!("/api/projects/{}/analytics/first_party/stats", older.id),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(stats["drainLagEvents"], serde_json::json!(null));
     }
 
     #[tokio::test(flavor = "multi_thread")]
