@@ -19,6 +19,8 @@ import { apiFetch } from '../../lib/api';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { ViewHeader } from '../common/ViewHeader';
 import type { Project } from '../projects/types';
+import { FunnelPanel } from './FunnelPanel';
+import { drainFreshness } from './analyticsFormat';
 
 // Appended to every Grow prompt that DRAFTS user-facing copy (value props,
 // posts, outreach) so the output reads like a sharp human wrote it, not a
@@ -224,6 +226,10 @@ interface FirstPartyStats {
   eventsLast5m: number;
   botsExcluded: number;
   includingBots: boolean;
+  /** When the drain loop last completed a pass — the staleness signal. */
+  lastDrainAt?: string | null;
+  /** Events the relay holds beyond our cursor; null for pre-v41 relays. */
+  drainLagEvents?: number | null;
   byDay: { day: string; pageviews: number; visitors: number }[];
   topPages: { name: string; count: number }[];
   topReferrers: { name: string; count: number }[];
@@ -1276,6 +1282,12 @@ function GrowAnalytics({
         onRefresh={() => loadFpStats(project.id)}
       />
 
+      {/* Conversion funnel over first-party events — only once the collector
+          is live; an empty form on a project with no data is noise. Keyed on
+          the project so saved steps and results never leak across a switch
+          (the same class of bug as the verify PASS leak above). */}
+      {fpLive && <FunnelPanel key={`funnel-${project.id}`} projectId={project.id} colors={colors} />}
+
       {/* Third-party connection, deliberately understated. */}
       {!providersOpen ? (
         <button
@@ -1621,13 +1633,33 @@ function FirstPartyAnalyticsPanel({
           </div>
         </>
       )}
-      {receiving && (setup.lastError || setup.lastDrainAt) && (
-        <div style={{ fontSize: 10, color: setup.lastError ? colors.danger : colors.textDim, fontFamily: font.mono }}>
-          {setup.lastError
-            ? `Drain failing: ${setup.lastError}`
-            : `Last drained ${new Date(setup.lastDrainAt!).toLocaleTimeString()}`}
-        </div>
-      )}
+      {receiving && (() => {
+        if (setup.lastError) {
+          return (
+            <div style={{ fontSize: 10, color: colors.danger, fontFamily: font.mono }}>
+              Drain failing: {setup.lastError}
+            </div>
+          );
+        }
+        // Drain health, subtly, but honest: freshness comes from stats (it
+        // refreshes with the panel; setup only loads once), and a drain that
+        // has gone quiet for over an hour — or a relay holding events we have
+        // not pulled — gets the warning tint. A stale figure must never read
+        // as a quiet day (the botsExcluded rule).
+        const fresh = drainFreshness(stats?.lastDrainAt ?? setup.lastDrainAt);
+        if (!fresh) return null;
+        const lag = stats?.drainLagEvents ?? 0;
+        return (
+          <div style={{
+            fontSize: 10, fontFamily: font.mono,
+            color: fresh.stale || lag > 0 ? colors.warning : colors.textDim,
+          }}>
+            {fresh.label}
+            {lag > 0 && <> · {lag.toLocaleString()} event{lag === 1 ? '' : 's'} behind</>}
+            {fresh.stale && <> · figures may be behind</>}
+          </div>
+        );
+      })()}
 
       {receiving && stats && (
         <>
