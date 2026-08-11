@@ -52,6 +52,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
   const decisions = data?.decisions ?? [];
   const total = data?.total_pending ?? 0;
   const handled = data?.handled_count ?? 0;
+  const attentionGoals = data?.attention_goals ?? [];
   // #464/#515: the live shared source (event-driven, parked/archived excluded)
   // — the summary number is only a fallback and now shares its definition.
   const { activeCount: liveGoalCount, loaded: liveGoalsLoaded } = useLiveGoals();
@@ -151,7 +152,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                 Retry
               </button>
             </div>
-          ) : total === 0 ? (
+          ) : total === 0 && attentionGoals.length === 0 ? (
             <div style={{ padding: '48px 18px', textAlign: 'center' }}>
               <div style={{
                 width: 34, height: 34, borderRadius: '50%',
@@ -166,6 +167,40 @@ export function DecisionInbox({ inbox, onClose }: Props) {
             </div>
           ) : (
             <>
+              {/* Parked goals — needs_human_attention finally MEANS attention
+                  (wave-1 item 1): before this bucket the flag only hid the
+                  goal from every active list. */}
+              {attentionGoals.length > 0 && (
+                <div style={{ padding: '10px 18px 4px' }}>
+                  <div style={{
+                    fontFamily: font.body, fontSize: 10, fontWeight: 700,
+                    letterSpacing: '0.10em', textTransform: 'uppercase',
+                    color: '#e8a33d', marginBottom: 6,
+                  }}>
+                    Parked goals — waiting on you
+                  </div>
+                  {attentionGoals.map(g => (
+                    <div
+                      key={g.id}
+                      style={{
+                        display: 'flex', alignItems: 'baseline', gap: 8,
+                        padding: '6px 0',
+                        borderBottom: `1px solid ${colors.border}`,
+                      }}
+                    >
+                      <span style={{ fontSize: 12, color: colors.text, flex: 1 }}>{g.title}</span>
+                      <span style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim }}>
+                        {g.state_binding}
+                      </span>
+                      {g.reason && (
+                        <span style={{ fontSize: 11, color: colors.textMuted, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={g.reason}>
+                          {g.reason}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
               {decisions.map(d => (
                 <DecisionItem
                   key={d.id}

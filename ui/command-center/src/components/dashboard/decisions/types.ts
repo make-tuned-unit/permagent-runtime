@@ -84,7 +84,20 @@ export interface InboxSummary {
   total_pending: number;
   handled_count: number;
   goals_in_flight: number;
+  /** Goals parked `needs_human_attention` (wave-1 item 1). */
+  goals_needing_attention: number;
   oldest_pending_at: string | null;
+}
+
+/** A goal parked for the user (`needs_human_attention`) — its own Inbox
+ *  bucket; before wave 1 the flag only hid the goal from every list. */
+export interface AttentionGoal {
+  id: string;
+  title: string;
+  project_id: string | null;
+  state_binding: string;
+  reason: string | null;
+  updated_at: string;
 }
 
 /** UI-side flattening of GET /api/decisions (routes/decisions.rs:46-51). */
@@ -94,6 +107,8 @@ export interface DecisionsResponse {
   total_pending: number;
   handled_count: number;
   goals_in_flight: number;
+  goals_needing_attention: number;
+  attention_goals: AttentionGoal[];
   oldest_pending_at: string | null;
 }
 

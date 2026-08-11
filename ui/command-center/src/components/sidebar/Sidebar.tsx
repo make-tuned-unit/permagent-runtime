@@ -147,6 +147,7 @@ export function Sidebar() {
   const activePanel = useCommandCenter(s => s.activePanel);
   const switchWorkspace = useCommandCenter(s => s.switchWorkspace);
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
+  const connectionStatus = useCommandCenter(s => s.connectionStatus);
 
   const { target: tooltipTarget, show: showTooltip, hide: hideTooltip } = useSidebarTooltip();
 
@@ -196,6 +197,31 @@ export function Sidebar() {
         justifyContent: open ? 'flex-start' : 'center',
       }}>
         <Mobius size={14} state="idle" glow={0.7} />
+        {/* Daemon connection dot — connectionStatus was written to the store
+            but never rendered, so a dead daemon looked identical to a healthy
+            one (wave-1 item 6). Green stays quiet; anything else speaks up. */}
+        <span
+          title={`Daemon ${connectionStatus}`}
+          style={{
+            width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
+            marginLeft: open ? 8 : 4,
+            background:
+              connectionStatus === 'connected' ? colors.success
+                : connectionStatus === 'connecting' ? '#e8a33d'
+                : '#e05252',
+            boxShadow: connectionStatus === 'connected' ? 'none' : '0 0 6px currentColor',
+            transition: 'background 300ms',
+          }}
+        />
+        {open && connectionStatus !== 'connected' && (
+          <span style={{
+            marginLeft: 6, fontSize: 10, fontFamily: font.body,
+            color: connectionStatus === 'connecting' ? '#e8a33d' : '#e05252',
+            letterSpacing: '0.04em',
+          }}>
+            {connectionStatus === 'connecting' ? 'reconnecting…' : 'daemon offline'}
+          </span>
+        )}
       </div>
 
       {/* Workspace items */}

@@ -34,6 +34,7 @@ pub mod growth_actions;
 pub mod henry_status;
 pub mod identity;
 pub mod inbox;
+pub mod incidents;
 pub mod integrations;
 pub mod librarian;
 #[cfg(feature = "local-inference")]
@@ -149,6 +150,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(reply::routes(state.clone()))
         .merge(activity::routes(state.clone()))
         .merge(action_required::routes(state.clone()))
+        .merge(incidents::routes(state.clone()))
         .merge(agent::routes(state.clone()))
         .merge(config_management::routes(state.clone()))
         .merge(coding_session::routes(state.clone()))

@@ -97,6 +97,52 @@ mod tests {
         assert_eq!(trace.section.as_deref(), Some("activity"));
     }
 
+    /// Every teaching step that opens a surface must name a tab the catalog can
+    /// actually navigate to — a lesson pointing at a nonexistent tab walks the
+    /// user into a dead click (the wave-1 "Home" regression: the dashboard
+    /// lesson navigated to "Home", which is not a catalog entry).
+    #[test]
+    fn every_teaching_step_opens_a_real_catalog_tab() {
+        let catalog: AppCatalog =
+            serde_yaml::from_str(CATALOG_YAML).expect("catalog.yaml must parse");
+
+        let mut checked = 0usize;
+        let mut assert_steps =
+            |owner: &str, steps: &[permagent::agents::self_knowledge::TeachingStep]| {
+                for step in steps {
+                    if let Some(surface) = step.open_surface {
+                        assert!(
+                            catalog.find_by_name(surface.tab).is_some(),
+                            "teaching step '{}' of '{}' opens tab '{}' which is not in \
+                             catalog.yaml — the lesson would dead-end",
+                            step.title,
+                            owner,
+                            surface.tab
+                        );
+                        checked += 1;
+                    }
+                }
+            };
+
+        for (name, def) in permagent::agents::platform_extensions::PLATFORM_EXTENSIONS.iter() {
+            assert_steps(name, def.teaching);
+        }
+        for d in permagent::agents::self_knowledge::WORKER_DESCRIPTORS {
+            assert_steps(d.name, d.teaching);
+        }
+        for d in permagent::agents::self_knowledge::GUARD_DESCRIPTORS {
+            assert_steps(d.name, d.teaching);
+        }
+        for d in permagent::agents::self_knowledge::SURFACE_DESCRIPTORS {
+            assert_steps(d.name, d.teaching);
+        }
+
+        assert!(
+            checked > 0,
+            "no teaching step carried an open_surface — the guard is vacuous"
+        );
+    }
+
     /// The Governance surface was removed (2026-08 ruling): its panels merged
     /// into Settings (Spend / Sovereignty / Models / Autonomy). The catalog
     /// must no longer offer it, or the agent would navigate users to a surface

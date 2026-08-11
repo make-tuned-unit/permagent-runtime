@@ -32,9 +32,11 @@ export function DecisionsCard({ activeCount }: Props = {}) {
   const count = data?.total_pending ?? 0;
   const handled = data?.handled_count ?? 0;
   const goals = activeCount ?? data?.goals_in_flight ?? 0;
+  const attention = data?.goals_needing_attention ?? 0;
   const oldest = data?.oldest_pending_at ?? null;
 
-  const empty = data !== null && count === 0;
+  // A parked goal waiting on the user is NOT "all clear" (wave-1 item 1).
+  const empty = data !== null && count === 0 && attention === 0;
 
   return (
     <>
@@ -100,6 +102,11 @@ export function DecisionsCard({ activeCount }: Props = {}) {
             {oldest && (
               <div style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, marginTop: 6 }}>
                 oldest waiting {formatAge(oldest)}
+              </div>
+            )}
+            {attention > 0 && (
+              <div style={{ fontFamily: font.body, fontSize: 11, color: '#e8a33d', marginTop: 6 }}>
+                {attention} parked goal{attention === 1 ? '' : 's'} need{attention === 1 ? 's' : ''} your attention
               </div>
             )}
             {handled > 0 && (

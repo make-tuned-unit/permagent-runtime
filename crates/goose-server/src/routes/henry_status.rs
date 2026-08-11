@@ -1,8 +1,13 @@
 use crate::state::AppState;
-use axum::{extract::State, routing::get, Json, Router};
+use axum::{
+    extract::State,
+    http::StatusCode,
+    routing::{get, post},
+    Json, Router,
+};
 use chrono::{NaiveTime, Utc};
 use permagent::session::session_manager::SessionType;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 #[derive(Serialize)]
@@ -387,8 +392,37 @@ fn query_brain_memory_stats(today_str: &str) -> (usize, usize) {
     (total, today)
 }
 
+#[derive(Deserialize)]
+struct AckBriefingsRequest {
+    ids: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct AckBriefingsResponse {
+    acknowledged: u64,
+}
+
+/// Wave-1 item 5: briefings were un-acknowledgeable — no route, no button —
+/// so the unacked list only ever grew. Ack means "seen", never approval
+/// (the briefings.rs contract).
+async fn ack_briefings(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<AckBriefingsRequest>,
+) -> Result<Json<AckBriefingsResponse>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let acknowledged = permagent::briefings::acknowledge(&pool, &req.ids)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(AckBriefingsResponse { acknowledged }))
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/henry/status", get(henry_status))
+        .route("/api/henry/briefings/ack", post(ack_briefings))
         .with_state(state)
 }

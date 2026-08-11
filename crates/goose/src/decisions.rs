@@ -1308,7 +1308,56 @@ pub struct InboxSummary {
     pub total_pending: i64,
     pub handled_count: i64,
     pub goals_in_flight: i64,
+    /// Goals flagged `needs_human_attention` — parked FOR the user. Until
+    /// wave 1 this flag only ever HID a goal from the active lists (the
+    /// inverted-flag bug): raised to get attention, rendered nowhere.
+    pub goals_needing_attention: i64,
     pub oldest_pending_at: Option<String>,
+}
+
+/// A goal parked with `needs_human_attention` — surfaced as its own Inbox
+/// bucket. The flag means "a human must look at this"; hiding it from the
+/// active lists is correct only if somewhere ELSE shows it. This is that
+/// somewhere.
+#[derive(Debug, Clone, Serialize)]
+pub struct AttentionGoal {
+    pub id: String,
+    pub title: String,
+    pub project_id: Option<String>,
+    pub state_binding: String,
+    /// Free-text reason recorded when the goal was parked, when present
+    /// (`$.attention_reason`, else `$.parked_reason`).
+    pub reason: Option<String>,
+    pub updated_at: String,
+}
+
+/// List goals currently flagged `needs_human_attention` (unarchived, any
+/// state), newest first.
+pub async fn list_attention_goals(pool: &Pool<Sqlite>) -> Result<Vec<AttentionGoal>, String> {
+    let rows = sqlx::query(
+        "SELECT c.id, c.title, c.project_id, bc.state_binding, c.updated_at, \
+                COALESCE(json_extract(c.metadata_json, '$.attention_reason'), \
+                         json_extract(c.metadata_json, '$.parked_reason')) AS reason \
+         FROM cards c JOIN board_columns bc ON c.column_id = bc.id \
+         WHERE c.card_type = 'goal' AND c.archived_at IS NULL \
+           AND COALESCE(json_extract(c.metadata_json, '$.needs_human_attention'), 0) = 1 \
+         ORDER BY c.updated_at DESC",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(rows
+        .iter()
+        .map(|r| AttentionGoal {
+            id: r.get("id"),
+            title: r.get("title"),
+            project_id: r.get("project_id"),
+            state_binding: r.get("state_binding"),
+            reason: r.get("reason"),
+            updated_at: r.get("updated_at"),
+        })
+        .collect())
 }
 
 /// An open inbox item, ranked, with the goal title joined in.
@@ -1371,6 +1420,14 @@ pub async fn inbox_summary(pool: &Pool<Sqlite>) -> Result<InboxSummary, String> 
         goals_q = goals_q.bind(*b);
     }
     let goals_in_flight: i64 = goals_q.fetch_one(pool).await.map_err(|e| e.to_string())?;
+    let goals_needing_attention: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM cards c \
+         WHERE c.card_type = 'goal' AND c.archived_at IS NULL \
+           AND COALESCE(json_extract(c.metadata_json, '$.needs_human_attention'), 0) = 1",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
     let oldest_pending_at: Option<String> =
         sqlx::query_scalar("SELECT MIN(created_at) FROM decisions WHERE status = 'open'")
             .fetch_one(pool)
@@ -1381,6 +1438,7 @@ pub async fn inbox_summary(pool: &Pool<Sqlite>) -> Result<InboxSummary, String> 
         total_pending,
         handled_count,
         goals_in_flight,
+        goals_needing_attention,
         oldest_pending_at,
     })
 }
