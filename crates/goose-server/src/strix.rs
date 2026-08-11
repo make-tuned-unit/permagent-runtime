@@ -3,8 +3,8 @@
 //! Every pass walks the user's own active projects, runs the Strix pentest
 //! engine over each in read-only posture, and turns its SARIF findings into a
 //! living fix checklist on that project's Overview. Nothing is remediated:
-//! The Guard reports, and anything intrusive is proposed for the user rather than
-//! performed (`permagent::strix::classify`).
+//! The Guard reports, and every scan is instructed static-only — the read-only
+//! posture rides the engine's instruction channel (see `scan_project`).
 //!
 //! Honesty laws, inherited from the Watcher's loop:
 //!   * no findings → silence, never filler;
@@ -50,6 +50,9 @@ fn sweep_interval() -> Duration {
 }
 /// Let boot (and any in-flight goal work) settle before the first sweep.
 const STARTUP_DELAY: Duration = Duration::from_secs(300);
+/// The short settle used instead of `STARTUP_DELAY` when the Guard is enabled
+/// and has never scanned anything — just long enough for the DB to come up.
+const FIRST_SWEEP_SETTLE: Duration = Duration::from_secs(15);
 /// Hard bound on one project's scan.
 const SCAN_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 /// The default bucket is not a project Strix reports on.
@@ -85,8 +88,27 @@ pub fn spawn(state: Arc<AppState>) {
         );
     }
     tokio::spawn(async move {
-        tokio::time::sleep(STARTUP_DELAY).await;
         let mut last_sweep: Option<tokio::time::Instant> = None;
+        // First-value latency (audit 2026-08-11): a user who just enabled the
+        // Guard on a never-scanned fleet should not wait STARTUP_DELAY +
+        // CHECK_EVERY for the first evidence it exists. One short settle for
+        // the DB to come up, then sweep immediately — only in the genuinely
+        // never-scanned case; an established install keeps the full boot
+        // settle.
+        let first_sweep_now = if strix::is_enabled() {
+            tokio::time::sleep(FIRST_SWEEP_SETTLE).await;
+            strix::is_enabled() && never_scanned(&state).await
+        } else {
+            false
+        };
+        if first_sweep_now {
+            last_sweep = Some(tokio::time::Instant::now());
+            if let Err(e) = sweep_once(&state).await {
+                tracing::debug!(target: "permagentd::strix", "first sweep skipped: {e}");
+            }
+        } else {
+            tokio::time::sleep(STARTUP_DELAY).await;
+        }
         loop {
             let due = last_sweep.is_none_or(|t| t.elapsed() >= sweep_interval());
             if strix::is_enabled() && due {
@@ -128,6 +150,28 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
         .pool_clone()
         .await
         .map_err(|e| e.to_string())?;
+
+    // Dependency preflight — refuse loudly, once per condition. Before this,
+    // a missing scanner or stopped Docker surfaced only as a per-project
+    // daemon-log warning: the user who flipped the toggle saw nothing, ever.
+    let config = permagent::config::Config::global();
+    match preflight().await {
+        Ok(()) => {
+            // Recovered (or always fine): clear the stamp so a future
+            // breakage is news again.
+            if config.get_param::<String>(PREFLIGHT_BRIEFED_KEY).is_ok() {
+                let _ = config.delete(PREFLIGHT_BRIEFED_KEY);
+            }
+        }
+        Err(failure) => {
+            let prev = config.get_param::<String>(PREFLIGHT_BRIEFED_KEY).ok();
+            if report_preflight_failure(&pool, prev.as_deref(), &failure).await {
+                let _ = config.set_param(PREFLIGHT_BRIEFED_KEY, failure.clone());
+            }
+            return Err(format!("preflight failed: {failure}"));
+        }
+    }
+
     let projects = projects::list_projects(&pool, Some("active")).await?;
 
     let roots: Vec<PathBuf> = projects
@@ -241,6 +285,22 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
         "sweep complete — next sweep takes the next least-recently-scanned project"
     );
     Ok(())
+}
+
+/// True only when NO active project carries a last-scan stamp — the Guard has
+/// genuinely never run here. Any error reads as "not first time": the honest
+/// failure mode is the normal (slow) startup path, never an eager scan on bad
+/// data.
+async fn never_scanned(state: &Arc<AppState>) -> bool {
+    let Ok(pool) = state.session_manager().pool_clone().await else {
+        return false;
+    };
+    match projects::list_projects(&pool, Some("active")).await {
+        Ok(projects) => {
+            !projects.is_empty() && projects.iter().all(|p| last_scan_stamp(p).is_empty())
+        }
+        Err(_) => false,
+    }
 }
 
 /// The project's last-scan stamp, empty if never scanned (sorts first).
@@ -415,6 +475,104 @@ fn resolve_strix_bin() -> PathBuf {
         return brew;
     }
     PathBuf::from("strix")
+}
+
+/// Locate the `docker` CLI the same way `resolve_strix_bin` locates strix:
+/// launchd's bare PATH misses the places Docker Desktop actually installs it.
+fn resolve_docker_bin() -> PathBuf {
+    for candidate in ["/usr/local/bin/docker", "/opt/homebrew/bin/docker"] {
+        let p = PathBuf::from(candidate);
+        if p.is_file() {
+            return p;
+        }
+    }
+    PathBuf::from("docker")
+}
+
+/// Is the strix binary an existing file? The pipx/brew fallbacks are absolute;
+/// the bare-name fallback is searched on PATH.
+fn strix_bin_present() -> bool {
+    let bin = resolve_strix_bin();
+    if bin.is_absolute() {
+        return bin.is_file();
+    }
+    std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).any(|d| d.join(&bin).is_file()))
+        .unwrap_or(false)
+}
+
+/// Dependency preflight (audit 2026-08-11): the Guard needs the `strix` CLI
+/// AND a running Docker daemon. The failure is a stated fact the sweep refuses
+/// on — never a degraded pretend-scan — and `sweep_once` files ONE briefing
+/// per distinct failure (see [`report_preflight_failure`]).
+async fn preflight() -> Result<(), String> {
+    let mut missing = Vec::new();
+    if !strix_bin_present() {
+        missing.push("the `strix` scanner is not installed (fix: `pipx install strix-agent`)");
+    }
+    let docker_ok = {
+        let mut cmd = tokio::process::Command::new(resolve_docker_bin());
+        cmd.arg("info")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        cmd.kill_on_drop(true);
+        matches!(
+            tokio::time::timeout(Duration::from_secs(15), cmd.status()).await,
+            Ok(Ok(status)) if status.success()
+        )
+    };
+    if !docker_ok {
+        missing.push("Docker is not running (`docker info` failed)");
+    }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(missing.join("; "))
+    }
+}
+
+/// Config stamp: the preflight failure that has already been briefed. One
+/// briefing per CONDITION, not one per 15-minute tick — a new, different
+/// failure briefs again; a preflight that recovers clears the stamp so a
+/// future breakage is news again.
+const PREFLIGHT_BRIEFED_KEY: &str = "strix_preflight_briefed";
+
+/// Pure dedupe gate for the preflight briefing.
+fn preflight_should_brief(previously_briefed: Option<&str>, failure: &str) -> bool {
+    previously_briefed != Some(failure)
+}
+
+/// File the one-per-condition preflight briefing. Returns true when a briefing
+/// was actually filed — the caller persists the stamp only then, so a failed
+/// DB write retries at the next tick instead of going silent forever.
+async fn report_preflight_failure(
+    pool: &Pool<Sqlite>,
+    previously_briefed: Option<&str>,
+    failure: &str,
+) -> bool {
+    if !preflight_should_brief(previously_briefed, failure) {
+        return false;
+    }
+    permagent::briefings::file_briefing(
+        pool,
+        permagent::briefings::NewBriefing {
+            from_agent: strix::STRIX_FEATURE_ID.to_string(),
+            kind: "preflight_failed".to_string(),
+            severity: permagent::briefings::Severity::ActionRequired,
+            summary: format!("The Guard is enabled but cannot run: {failure}"),
+            detail: Some(
+                "Sweeps are skipped until this is fixed. `pipx install strix-agent` installs \
+                 the scanner; Docker Desktop must be installed and running. The sweep loop \
+                 retries automatically — nothing to restart."
+                    .to_string(),
+            ),
+            ref_kind: None,
+            ref_id: None,
+        },
+    )
+    .await
+    .is_some()
 }
 
 /// Kill a timed-out scan and everything it started.
@@ -746,6 +904,42 @@ mod tests {
             remediation: None,
             found_at: "2026-08-05T00:00:00Z".to_string(),
         }
+    }
+
+    #[test]
+    fn preflight_brief_gate_is_once_per_condition() {
+        assert!(preflight_should_brief(None, "docker down"));
+        assert!(!preflight_should_brief(Some("docker down"), "docker down"));
+        assert!(preflight_should_brief(Some("docker down"), "strix missing"));
+    }
+
+    /// Preflight failure files ONE briefing, not one per 15-minute tick — and
+    /// a DIFFERENT failure is news, so it briefs again.
+    #[tokio::test]
+    async fn preflight_failure_briefs_once_not_every_tick() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        permagent::session::spectral_schema::apply_briefings_schema(&pool)
+            .await
+            .unwrap();
+
+        let mut stamp: Option<String> = None;
+        for _ in 0..4 {
+            if report_preflight_failure(&pool, stamp.as_deref(), "docker down").await {
+                stamp = Some("docker down".to_string());
+            }
+        }
+        assert_eq!(
+            permagent::briefings::unacknowledged_count(&pool).await,
+            1,
+            "the same broken condition must brief exactly once"
+        );
+
+        assert!(report_preflight_failure(&pool, stamp.as_deref(), "strix missing").await);
+        assert_eq!(permagent::briefings::unacknowledged_count(&pool).await, 2);
     }
 
     #[test]

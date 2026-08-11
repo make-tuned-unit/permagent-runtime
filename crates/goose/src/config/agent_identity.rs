@@ -534,8 +534,8 @@ pub fn default_roster() -> HashMap<String, WorkerPersona> {
             first_name: "The Guard".to_string(),
             role: "Security review — continuously probes the user's own projects for \
                    exposed secrets, vulnerable dependencies, injection and access-control \
-                   weaknesses, and risky configuration; REPORTS findings and PROPOSES \
-                   (never performs) anything intrusive"
+                   weaknesses, and risky configuration; REPORTS findings only — sweeps \
+                   are instructed static-only and never remediate"
                 .to_string(),
             tool_kinds: vec!["shell".to_string(), "review".to_string()],
             availability_check: "bin_exists:docker".to_string(),

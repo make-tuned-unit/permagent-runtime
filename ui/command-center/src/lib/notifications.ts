@@ -12,7 +12,7 @@
 import { useSyncExternalStore } from 'react';
 import { eventsWsUrl } from './api';
 import { wireEventType } from './wireEvent';
-import { navigateToTool } from './store';
+import { navigateToTool, useCommandCenter } from './store';
 
 export interface AppNotification {
   id: string;
@@ -45,7 +45,7 @@ export const KIND_LABELS: Record<NotificationKind, string> = {
   goal_failure: 'Goal failures',
   librarian: 'Librarian runs',
   initiative: 'Initiative proposals',
-  echo: "Echo — Henry's nudges",
+  echo: 'The Watcher',
   system: 'System messages',
 };
 
@@ -137,11 +137,19 @@ function push(n: Omit<AppNotification, 'id' | 'ts' | 'read'>): void {
     try {
       if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
         const osNote = new Notification(item.title, { body: item.body });
-        // Clicking the OS notification was dead — deep-link it like the tray.
-        if (item.onActivate) {
+        // Clicking the OS notification was dead for url/target items (only
+        // onActivate was wired) — deep-link every shape, same branch order as
+        // the tray's activate().
+        if (item.onActivate || item.url || item.target) {
           osNote.onclick = () => {
             window.focus();
-            item.onActivate?.();
+            if (item.onActivate) {
+              item.onActivate();
+            } else if (item.url) {
+              useCommandCenter.getState().openInBrowser(item.url);
+            } else if (item.target) {
+              navigateToTool(item.target);
+            }
           };
         }
       }
@@ -289,15 +297,18 @@ async function connect(): Promise<void> {
             // so anything that arrives here is meant to be seen.
             if (prefs.echo) {
               const p = (evt.payload ?? {}) as {
-                message?: string; subject?: string; url?: string; link?: string; source_url?: string;
+                kind?: string; message?: string; subject?: string;
+                url?: string; link?: string; source_url?: string;
               };
               // If the nudge carries a source link (project news), clicking the
               // notification opens it in the in-app browser on the Build tab.
+              // Fallback target by nudge kind: a dormant thread lives in the
+              // Brain; project news is about a project.
               push({
                 kind: 'echo',
-                title: '✦ Henry noticed something',
+                title: '✦ The Watcher noticed something',
                 body: p.message ?? `A thread worth revisiting${p.subject ? `: ${p.subject}` : ''}.`,
-                target: 'memory',
+                target: p.kind === 'dormant_thread' ? 'memory' : 'projects',
                 url: p.url ?? p.link ?? p.source_url,
               });
             }

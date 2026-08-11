@@ -159,6 +159,19 @@ pub static TEACHABLE: &[TeachableFeature] = &[
             section: None,
         },
     },
+    TeachableFeature {
+        // The Guard (strix). Deliberately teachable while its flag is OFF —
+        // the descriptor is render-gated out of the brief until enabled
+        // (`worker_descriptor_visible`), which made the Guard undiscoverable:
+        // nothing could ever offer it. `find_descriptor` still resolves the
+        // id regardless of the flag, so the lesson content is real, and the
+        // lesson itself walks the user to the enable toggle.
+        id: "strix",
+        surface: SurfaceRef {
+            tab: "Settings",
+            section: Some("models"),
+        },
+    },
 ];
 
 /// Find a teachable feature by id.
