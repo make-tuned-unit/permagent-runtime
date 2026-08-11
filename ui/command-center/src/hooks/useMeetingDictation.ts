@@ -36,6 +36,13 @@ export type MeetingDictationState =
   | 'finishing' // stopped; flushing + transcribing the tail, then saving
   | 'error';
 
+/** Identity of a just-saved meeting note, for deep-linking from the
+ *  "note saved" notification straight to the note in Projects. */
+export interface SavedNoteRef {
+  projectId: string;
+  noteId: string;
+}
+
 /** Seconds of audio per transcription chunk. Long enough for Whisper context,
  *  short enough that a meeting never nears the 25 MB upload cap (at 16 kHz,
  *  45 s ≈ 1.4 MB) and the transcript stays near-live. Exported for tests. */
@@ -515,19 +522,24 @@ export function useMeetingDictation() {
     }
   }, [state, flushChunk, teardownAudio, startSystemAudio, systemAudio, stashDraft]);
 
-  const saveNote = useCallback(async (projectId: string, title: string, body: string) => {
-    // kind:'meeting' triggers the daemon's background action-item extraction —
-    // to-dos stated in the meeting land on the project's kanban unasked.
-    await api.createProjectNote(projectId, { title, body, kind: 'meeting' });
-    unsavedRef.current = null;
-    clearDraft(startedAtRef.current.toISOString());
-    // Saved and cleared — a late chunk must not resurrect the draft.
-    targetRef.current = null;
-  }, [clearDraft]);
+  const saveNote = useCallback(
+    async (projectId: string, title: string, body: string): Promise<string> => {
+      // kind:'meeting' triggers the daemon's background action-item extraction —
+      // to-dos stated in the meeting land on the project's kanban unasked.
+      const created = await api.createProjectNote(projectId, { title, body, kind: 'meeting' });
+      unsavedRef.current = null;
+      clearDraft(startedAtRef.current.toISOString());
+      // Saved and cleared — a late chunk must not resurrect the draft.
+      targetRef.current = null;
+      return created.id;
+    },
+    [clearDraft]
+  );
 
-  /** Stop recording, transcribe the tail, and save the note. */
-  const stop = useCallback(async (): Promise<boolean> => {
-    if (state !== 'recording' || !target) return false;
+  /** Stop recording, transcribe the tail, and save the note. Resolves to the
+   *  saved note's identity so callers can deep-link to it, or null. */
+  const stop = useCallback(async (): Promise<SavedNoteRef | null> => {
+    if (state !== 'recording' || !target) return null;
     setState('finishing');
     flushChunk(); // tail
     teardownAudio();
@@ -541,40 +553,42 @@ export function useMeetingDictation() {
       // Nothing transcribable — honest outcome, no empty note.
       setError('No speech was transcribed — no note was saved.');
       setState('error');
-      return false;
+      return null;
     }
     const title = meetingNoteTitle(startedAtRef.current);
     const composed = composeMeetingBody(body, userNotesRef.current);
     unsavedRef.current = { title, body: composed };
+    const projectId = target.projectId;
     try {
-      await saveNote(target.projectId, title, composed);
+      const noteId = await saveNote(projectId, title, composed);
       // Usage-only signal (no transcript in the payload) — mirrors useDictation.
       emitActivity('dictation_completed', 'voice', { char_count: composed.length });
       setState('idle');
       setTarget(null);
-      return true;
+      return { projectId, noteId };
     } catch (e) {
       setError(`Couldn't save the meeting note: ${(e as Error).message || 'request failed'}. Your transcript is kept — retry the save.`);
       setState('error');
-      return false;
+      return null;
     }
   }, [state, target, flushChunk, teardownAudio, saveNote]);
 
   /** Re-attempt the note save after a failure (transcript was retained). */
-  const retrySave = useCallback(async (): Promise<boolean> => {
+  const retrySave = useCallback(async (): Promise<SavedNoteRef | null> => {
     const unsaved = unsavedRef.current;
-    if (!unsaved || !target) return false;
+    if (!unsaved || !target) return null;
     setError(null);
+    const projectId = target.projectId;
     try {
-      await saveNote(target.projectId, unsaved.title, unsaved.body);
+      const noteId = await saveNote(projectId, unsaved.title, unsaved.body);
       emitActivity('dictation_completed', 'voice', { char_count: unsaved.body.length });
       setState('idle');
       setTarget(null);
-      return true;
+      return { projectId, noteId };
     } catch (e) {
       setError(`Couldn't save the meeting note: ${(e as Error).message || 'request failed'}. Your transcript is kept — retry the save.`);
       setState('error');
-      return false;
+      return null;
     }
   }, [target, saveNote]);
 
@@ -607,18 +621,18 @@ export function useMeetingDictation() {
 
   /** Save a crash-recovered transcript as the meeting note it should have
    *  been. Same path as a live save, so the kanban extraction runs too. */
-  const recoverDraft = useCallback(async (d: MeetingDraft): Promise<boolean> => {
+  const recoverDraft = useCallback(async (d: MeetingDraft): Promise<SavedNoteRef | null> => {
     const body = draftBody(d);
     const title = `${meetingNoteTitle(new Date(d.startedAt))} (recovered)`;
     try {
-      await api.createProjectNote(d.projectId, { title, body, kind: 'meeting' });
+      const created = await api.createProjectNote(d.projectId, { title, body, kind: 'meeting' });
       emitActivity('dictation_completed', 'voice', { char_count: body.length });
       clearDraft(d.startedAt);
       setRecoveredDrafts(list => list.filter(x => x.startedAt !== d.startedAt));
-      return true;
+      return { projectId: d.projectId, noteId: created.id };
     } catch (e) {
       setError(`Couldn't save the recovered transcript: ${(e as Error).message || 'request failed'}.`);
-      return false;
+      return null;
     }
   }, [clearDraft]);
 

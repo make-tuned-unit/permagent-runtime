@@ -373,6 +373,14 @@ interface CommandCenterStore {
   pendingProjectNavigation: string | null;
   setPendingProjectNavigation: (id: string | null) => void;
 
+  // --- Note deep-link: "note saved" notification → the note on Details ---
+  // Mirrors openCardOnBoard: pendingProjectNavigation does the (self-healing)
+  // project hop; this adds only what it doesn't cover — force the Details
+  // lens and expand/scroll the note row in NotesPanel.
+  pendingNoteNavigation: { projectId: string; noteId: string } | null;
+  focusProjectNote: (projectId: string, noteId: string) => void;
+  clearPendingNoteNavigation: () => void;
+
   // --- Brain-loop: "View in Brain" deep-link (surface a specific memory) ---
   // Product surfaces that write into the Brain (Projects Memories panel, Notes,
   // Codebase index) close the loop by focusing the memory they created back in
@@ -1643,6 +1651,15 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     navigateToTool('projects');
   },
   clearPendingCardNavigation: () => set({ pendingCardNavigation: null }),
+  pendingNoteNavigation: null,
+  focusProjectNote: (projectId, noteId) => {
+    set({
+      pendingProjectNavigation: projectId,
+      pendingNoteNavigation: { projectId, noteId },
+    });
+    navigateToTool('projects');
+  },
+  clearPendingNoteNavigation: () => set({ pendingNoteNavigation: null }),
   buildTerminalHidden: false,
   buildBrowserHidden: false,
   // Never allow both hidden: hiding one re-shows the other.

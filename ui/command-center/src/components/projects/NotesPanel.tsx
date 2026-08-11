@@ -44,6 +44,26 @@ export function NotesPanel({ project }: { project: Project }) {
   // Notes collapse to their title row so long notes can't turn the panel into
   // an infinite scroll; expansion is per-note.
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // "Note saved" deep link: expand + scroll + briefly highlight the target
+  // note once a loaded list actually contains it (the pending id is held
+  // until then — the toast can win the race with the daemon's refetch bump).
+  const pendingNote = useCommandCenter(s => s.pendingNoteNavigation);
+  const clearPendingNoteNavigation = useCommandCenter(s => s.clearPendingNoteNavigation);
+  const [highlightId, setHighlightId] = useState<string | null>(null);
+  const rowEls = useRef(new Map<string, HTMLDivElement>());
+  useEffect(() => {
+    if (!pendingNote || pendingNote.projectId !== project.id) return;
+    const { noteId } = pendingNote;
+    if (!notes.some(n => n.id === noteId)) return; // hold until it loads
+    setExpanded(prev => new Set(prev).add(noteId));
+    setHighlightId(noteId);
+    clearPendingNoteNavigation();
+    requestAnimationFrame(() => {
+      rowEls.current.get(noteId)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+    const t = setTimeout(() => setHighlightId(null), 2600);
+    return () => clearTimeout(t);
+  }, [pendingNote, notes, project.id, clearPendingNoteNavigation]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadGeneration = useRef(0);
@@ -248,12 +268,17 @@ export function NotesPanel({ project }: { project: Project }) {
             return (
               <div
                 key={note.id}
+                ref={el => {
+                  if (el) rowEls.current.set(note.id, el);
+                  else rowEls.current.delete(note.id);
+                }}
                 style={{
-                  borderRadius: 7, background: rowVeil, border: `1px solid ${colors.border}`,
-                  transition: 'border-color 150ms',
+                  borderRadius: 7, background: rowVeil,
+                  border: `1px solid ${highlightId === note.id ? colors.cyan : colors.border}`,
+                  transition: 'border-color 600ms',
                 }}
                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
-                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = highlightId === note.id ? colors.cyan : colors.border; }}
               >
                 {/* Title row — the whole row toggles; icon buttons stop propagation. */}
                 <div

@@ -71,6 +71,10 @@ export function ChatView() {
 
       <MessageList />
       <SkillPromptBanner />
+      {/* Meeting-recorder dock slot: MeetingRecorder portals its live panel
+          here while the dock is open (state stays in the Sidebar mount).
+          Zero-height when empty; content-sized, capped, scrollable when not. */}
+      <div id="meeting-dock-slot" style={{ flexShrink: 0, maxHeight: '45%', overflowY: 'auto' }} />
       <ChatInput ref={chatInputRef} />
 
       {voiceConversation && !chatWindowOpen && (

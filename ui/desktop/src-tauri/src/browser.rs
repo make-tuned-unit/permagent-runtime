@@ -200,6 +200,18 @@ struct BrowserTitleChangedPayload {
     title: String,
 }
 
+/// `target=_blank` / `window.open` from a page: the popup is DENIED at the
+/// WKWebView layer and re-routed to the tab strip via this event. The UI
+/// listener predates this emitter's return — the original emitter (#240,
+/// 9c856568e) lived in the old command-center shell and was deleted with it
+/// (#709), leaving every popup link silently dead. Field name is
+/// `source_webview_id` because that is what Browser.tsx already reads.
+#[derive(Clone, Serialize)]
+struct BrowserNewWindowPayload {
+    source_webview_id: String,
+    url: String,
+}
+
 #[tauri::command]
 pub async fn create_browser_webview(
     app: AppHandle,
@@ -224,6 +236,9 @@ pub async fn create_browser_webview(
     let nav_app = app.clone();
     let title_id = label.clone();
     let title_app = app.clone();
+    let popup_id = label.clone();
+    let popup_app = app.clone();
+    let popup_owner = owner.clone();
     // Pending downloads keyed by source URL, carried Requested -> Finished.
     let pending: Arc<Mutex<HashMap<String, PendingInboxDownload>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -288,6 +303,21 @@ pub async fn create_browser_webview(
                     title,
                 },
             );
+        })
+        // Popups become tabs: deny the native window, hand the URL to the tab
+        // strip. Scoped to the OWNING window (`emit_to`) — a global emit would
+        // open the link once per live Browser instance (BuildView + any
+        // detached pane both run the listener).
+        .on_new_window(move |url, _features| {
+            let _ = popup_app.emit_to(
+                popup_owner.as_str(),
+                "browser_new_window_request",
+                BrowserNewWindowPayload {
+                    source_webview_id: popup_id.clone(),
+                    url: url.to_string(),
+                },
+            );
+            tauri::webview::NewWindowResponse::Deny
         });
 
     let position = tauri::Position::Logical(tauri::LogicalPosition::new(x, y));
@@ -931,6 +961,41 @@ mod tests {
             "The payload carries the commit/finish distinction: the label is \
              only re-derived on a commit onto a new page, so that a real page \
              title is not clobbered when the load finishes."
+        );
+    }
+
+    /// Popup links must be denied-and-rerouted, never dropped. The UI half of
+    /// this contract (Browser.tsx's `browser_new_window_request` listener)
+    /// outlived the original emitter once already — #240's emitter lived in
+    /// the old command-center shell and died with it in #709, leaving Gmail
+    /// meeting links dead for a month. This pins the re-added emitter.
+    #[test]
+    fn popup_links_are_denied_and_rerouted_to_the_tab_strip() {
+        let src = include_str!("browser.rs");
+        assert!(
+            src.contains(concat!(".on_", "new_window(")),
+            "create_browser_webview must wire the new-window hook — without it \
+             WKWebView silently drops every target=_blank / window.open link."
+        );
+        assert!(
+            src.contains(concat!("\"browser_", "new_window_request\"")),
+            "The frontend listens for this exact event name (Browser.tsx). \
+             Rename both sides together."
+        );
+        assert!(
+            src.contains(concat!("source_", "webview_id")),
+            "Browser.tsx reads `source_webview_id` — every other payload uses \
+             `webview_id`, so this mismatch would fail silently."
+        );
+        assert!(
+            src.contains("NewWindowResponse::Deny"),
+            "The native popup window must be denied; the tab strip owns the URL."
+        );
+        assert!(
+            src.contains(concat!("emit_", "to(")),
+            "The event must be scoped to the owning window — a global emit \
+             opens the link once per live Browser instance (BuildView + any \
+             detached pane)."
         );
     }
 

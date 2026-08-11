@@ -25,6 +25,9 @@ export interface AppNotification {
   target?: Parameters<typeof navigateToTool>[0];
   /** Optional deep link — opens in the in-app browser (Build tab). */
   url?: string;
+  /** Custom click action — wins over url/target when present (e.g. the
+   *  "note saved" toast navigating to the exact note). */
+  onActivate?: () => void;
 }
 
 export type NotificationKind =
@@ -133,8 +136,14 @@ function push(n: Omit<AppNotification, 'id' | 'ts' | 'read'>): void {
   if (getOsNotificationsEnabled()) {
     try {
       if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-        // eslint-disable-next-line no-new
-        new Notification(item.title, { body: item.body });
+        const osNote = new Notification(item.title, { body: item.body });
+        // Clicking the OS notification was dead — deep-link it like the tray.
+        if (item.onActivate) {
+          osNote.onclick = () => {
+            window.focus();
+            item.onActivate?.();
+          };
+        }
       }
     } catch { /* webview without the plugin — in-app only */ }
   }
@@ -309,7 +318,7 @@ async function connect(): Promise<void> {
  *  as a transient toast, no daemon event required. Honors the Settings
  *  "System messages" preference — before this guard the toggle persisted
  *  prefs.system while every toast ignored it. */
-export function toast(title: string, body = ''): void {
+export function toast(title: string, body = '', onActivate?: () => void): void {
   if (!getNotificationPrefs().system) return;
-  push({ kind: 'system', title, body });
+  push({ kind: 'system', title, body, onActivate });
 }
