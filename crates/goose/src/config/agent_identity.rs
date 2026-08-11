@@ -114,7 +114,51 @@ pub const WEB_SEARCH_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
             "Fresh information beyond your training data. Check your live tool list before \
              claiming you can or cannot search — the truth is whatever tools are present",
         state_source: crate::agents::self_knowledge::StateSource::Static,
-        teaching: &[],
+        // The guided-setup lesson: assume the user has never made an API key.
+        // Open pages FOR them (a Markdown link opens in the in-app browser),
+        // watch where they are via read_browser_content, and never claim
+        // success without the tools actually appearing.
+        teaching: &[
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Pick a provider",
+                body: "Offer the two choices plainly: Tavily (easiest — sign in with Google or \
+                       GitHub, no card, free tier) or Brave Search (free tier, asks for a card \
+                       but does not charge it). Recommend Tavily for a fastest start. Wait for \
+                       their pick.",
+                open_surface: None,
+                confirm: None,
+            },
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Open the key page for them",
+                body: "Post the provider's key page as a Markdown link — it opens right in the \
+                       app's browser: Tavily https://app.tavily.com/ or Brave \
+                       https://api-dashboard.search.brave.com/app/keys. Tell them the goal in \
+                       one sentence: sign in, create a key, copy it.",
+                open_surface: None,
+                confirm: None,
+            },
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Guide them from where they actually are",
+                body: "Use read_browser_content to see the page they are on and narrate the next \
+                       click from there — sign-up form, plan picker, key list — one step at a \
+                       time, until they have copied a key. Never recite steps for a page they \
+                       are not looking at.",
+                open_surface: None,
+                confirm: None,
+            },
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Paste it in Settings and prove it works",
+                body: "Bring them to the Search & tools section, tell them to paste the key next \
+                       to their provider and press Save, then press Test. Only a passing test — \
+                       or the search tools appearing in your own tool list — counts as done; a \
+                       saved key alone proves nothing.",
+                open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                    tab: "Settings",
+                    section: Some("search"),
+                }),
+                confirm: None,
+            },
+        ],
     };
 
 /// Primary agent persona configuration.
@@ -410,10 +454,29 @@ pub fn default_roster() -> HashMap<String, WorkerPersona> {
             availability_check: "bin_exists:codex".to_string(),
             cost_tier: "subscription".to_string(),
             engine: WorkerEngineKind::ExternalCli {
-                // Best-effort invocation — confirm against the installed codex
-                // CLI during the behavioral dogfood before relying on it.
+                // `-s workspace-write` is load-bearing, not a hardening knob.
+                // Verified against codex 0.146.0 on 2026-08-09: `codex exec`
+                // defaults to `sandbox: read-only`, so a worker asked to write
+                // a file logs "patch rejected: writing is blocked by read-only
+                // sandbox" — AND STILL EXITS 0. The engine reads exit 0 as
+                // Success, so the goal reached Review having produced nothing.
+                // That is why dispatching to Codex never landed any work.
+                //
+                // workspace-write grants the workdir (plus /tmp and $TMPDIR),
+                // which is the dispatch worktree. Proven in a real `git
+                // worktree add` tree, where `.git` is a FILE pointing at the
+                // parent repo: the worker created, staged and committed a file
+                // there, so the sandbox resolves the linked git dir. Approval
+                // is already `never` under `exec`; no bypass flag is needed,
+                // and none is used — the worker stays confined to its worktree,
+                // unlike claude's `--dangerously-skip-permissions`.
                 bin: "codex".to_string(),
-                args: vec!["exec".to_string(), "{prompt}".to_string()],
+                args: vec![
+                    "exec".to_string(),
+                    "-s".to_string(),
+                    "workspace-write".to_string(),
+                    "{prompt}".to_string(),
+                ],
             },
             ..Default::default()
         },
@@ -423,7 +486,12 @@ pub fn default_roster() -> HashMap<String, WorkerPersona> {
         "librarian".to_string(),
         WorkerPersona {
             first_name: "Librarian".to_string(),
-            role: "Brain-curation worker (Ollama) — engine not yet wired".to_string(),
+            // Engine stays Pending (not dispatchable for handed-off goals), but
+            // the nightly curation loop itself IS live — see
+            // routes/librarian/scheduling.rs.
+            role: "Brain-curation worker (Ollama) — nightly describe, consolidation \
+                   and pruning runs on its own schedule"
+                .to_string(),
             tool_kinds: vec!["memory_ops".to_string()],
             availability_check: "model_loaded:qwen2.5".to_string(),
             cost_tier: "local_free".to_string(),
@@ -451,8 +519,65 @@ pub fn default_roster() -> HashMap<String, WorkerPersona> {
                 .to_string(),
             tool_kinds: vec!["shell".to_string()],
             availability_check: "bin_exists:git".to_string(),
-            cost_tier: "local_free".to_string(),
+            // The scheduled run executes on the global default provider/model
+            // (scheduler::execute_job), which is a paid API here — claiming
+            // local_free was a documented lie the audit caught.
+            cost_tier: "paid_api".to_string(),
             engine: WorkerEngineKind::Pending,
+            ..Default::default()
+        },
+    );
+
+    roster.insert(
+        "strix".to_string(),
+        WorkerPersona {
+            first_name: "The Guard".to_string(),
+            role: "Security review — continuously probes the user's own projects for \
+                   exposed secrets, vulnerable dependencies, injection and access-control \
+                   weaknesses, and risky configuration; REPORTS findings and PROPOSES \
+                   (never performs) anything intrusive"
+                .to_string(),
+            tool_kinds: vec!["shell".to_string(), "review".to_string()],
+            availability_check: "bin_exists:docker".to_string(),
+            // The external Strix engine drives its own LLM (STRIX_LLM) — an
+            // API spend, not a free local run.
+            cost_tier: "paid_api".to_string(),
+            engine: WorkerEngineKind::Pending,
+            ..Default::default()
+        },
+    );
+
+    roster.insert(
+        "permagent".to_string(),
+        WorkerPersona {
+            first_name: "Permagent".to_string(),
+            role: "In-house coding worker — implements a goal end to end in an isolated git \
+                   worktree using Permagent's own agent loop and extensions, on whatever \
+                   provider the Edit role is mapped to"
+                .to_string(),
+            // Same capabilities the external CLIs declare, which is the whole
+            // point: without `code_edit`/`shell` the harness is filtered out of
+            // every code goal before cost is even considered, and the routing
+            // below can never be exercised. The only InternalSubagent worker
+            // before this was the read-only `reviewer`.
+            tool_kinds: vec![
+                "code_edit".to_string(),
+                "shell".to_string(),
+                "git".to_string(),
+            ],
+            // Derives WorkflowRole::Edit, so PERMAGENT_ROLE_EDIT_PROVIDER +
+            // _MODEL choose the engine behind it — Kimi (moonshot), Grok (xai),
+            // MiniMax, or anything else configured. Unset ⇒ the parent session
+            // model, never a baked-in vendor default.
+            workflow_role: Some("edit".to_string()),
+            // No binary to probe: this runs in-process. It is the one coding
+            // worker that is always available, which also makes it the honest
+            // fallback when neither CLI is installed.
+            availability_check: "always".to_string(),
+            // Ranks BELOW subscription (see goal_state::cost_tier_rank): an
+            // available Claude Code or Codex still wins a routine coding goal.
+            cost_tier: "cheap_api".to_string(),
+            engine: WorkerEngineKind::InternalSubagent,
             ..Default::default()
         },
     );
@@ -489,11 +614,33 @@ pub fn default_roster() -> HashMap<String, WorkerPersona> {
     roster
 }
 
+/// Merge any [`default_roster`] worker the config does not already define.
+///
+/// Seeding used to be all-or-nothing — the roster was planted only when the
+/// file was absent or had no workers at all. Every worker added to the default
+/// roster after a user's `agent.yaml` was first written therefore never reached
+/// them: this machine's Jul-29 file still had 3 workers while the default had 6,
+/// so `steward`, `guard` and `reviewer` existed only in the source. A roster
+/// that silently stops receiving new workers is indistinguishable from one that
+/// has them, which is how a whole engine can look wired and be unreachable.
+///
+/// Merge is by key and NEVER overwrites: a key the user has customised is
+/// theirs, including their edits to a worker we also ship. Purely additive, so
+/// removing a worker you do not want still needs an explicit delete — the
+/// alternative is re-adding one the user deliberately dropped.
+///
+/// In-memory only. Persisting belongs to the existing PUT/save path.
+fn merge_missing_default_workers(workers: &mut HashMap<String, WorkerPersona>) {
+    for (key, persona) in default_roster() {
+        workers.entry(key).or_insert(persona);
+    }
+}
+
 /// Load agent config from ~/.permagent/agent.yaml.
 ///
-/// Seeds the embedded [`default_roster`] in-memory when the file is absent or
-/// carries no workers (no disk write — the existing PUT/save path persists any
-/// user edits). The `primary` persona still defaults independently.
+/// Merges in any [`default_roster`] worker the file does not define (no disk
+/// write — the existing PUT/save path persists user edits). The `primary`
+/// persona still defaults independently.
 pub fn load_agent_config() -> AgentConfig {
     let path = agent_yaml_path();
     let mut config = if !path.exists() {
@@ -511,9 +658,7 @@ pub fn load_agent_config() -> AgentConfig {
             }
         }
     };
-    if config.workers.is_empty() {
-        config.workers = default_roster();
-    }
+    merge_missing_default_workers(&mut config.workers);
     config
 }
 
@@ -786,6 +931,86 @@ workers:
         );
     }
 
+    /// The Permagent harness must be a real candidate for a CODING goal.
+    /// Before this it declared no code capability, so `select_best_worker`
+    /// filtered it out before cost was considered and the whole role→model
+    /// routing path was unreachable for actual work.
+    #[test]
+    fn the_permagent_harness_can_take_a_coding_goal_and_routes_by_edit_role() {
+        use crate::cost_router::WorkflowRole;
+        let roster = default_roster();
+        let harness = &roster["permagent"];
+
+        for kind in ["code_edit", "shell"] {
+            assert!(
+                harness.tool_kinds.iter().any(|k| k == kind),
+                "the harness must declare '{kind}' or it is filtered out of every code goal"
+            );
+        }
+        assert_eq!(harness.routing_role(), Some(WorkflowRole::Edit));
+        assert!(matches!(harness.engine, WorkerEngineKind::InternalSubagent));
+        assert_eq!(
+            harness.availability_check, "always",
+            "in-process: there is no binary to probe"
+        );
+    }
+
+    /// Jesse's ruling (2026-08-09): a flat-rate subscription call costs nothing
+    /// at the margin, so it outranks a cheap metered API. The harness is the
+    /// fallback tier, not the default for routine coding work.
+    #[test]
+    fn an_available_subscription_cli_outranks_the_cheap_api_harness() {
+        use crate::goal_state::{select_best_worker, WorkerCandidate};
+
+        let candidate = |key: &str, tier: &str| WorkerCandidate {
+            key: key.to_string(),
+            available: true,
+            tool_kinds: vec!["code_edit".to_string(), "shell".to_string()],
+            cost_tier: tier.to_string(),
+            active_sessions: 0,
+        };
+
+        let all = vec![
+            candidate("permagent", "cheap_api"),
+            candidate("claude_code", "subscription"),
+        ];
+        assert_eq!(
+            select_best_worker(&all, &["code_edit".to_string()]).unwrap(),
+            "claude_code"
+        );
+
+        // With no CLI installed the harness is the honest fallback — the goal
+        // runs rather than failing "no suitable worker".
+        let harness_only = vec![candidate("permagent", "cheap_api")];
+        assert_eq!(
+            select_best_worker(&harness_only, &["code_edit".to_string()]).unwrap(),
+            "permagent"
+        );
+    }
+
+    /// The staleness class that hid three workers on this machine: an
+    /// `agent.yaml` written before they existed never received them, because
+    /// seeding only fired on an ABSENT or empty roster.
+    #[test]
+    fn workers_added_to_the_default_roster_reach_an_existing_config() {
+        let mut workers = HashMap::new();
+        // A user's customised copy of a worker we also ship.
+        let mut mine = default_roster()["claude_code"].clone();
+        mine.first_name = "My Claude".to_string();
+        workers.insert("claude_code".to_string(), mine);
+
+        merge_missing_default_workers(&mut workers);
+
+        assert!(
+            workers.contains_key("permagent") && workers.contains_key("reviewer"),
+            "workers added to the default roster must reach an existing config"
+        );
+        assert_eq!(
+            workers["claude_code"].first_name, "My Claude",
+            "a customised worker is the user's — merge must never overwrite it"
+        );
+    }
+
     #[test]
     fn routing_role_derives_from_tool_kinds_and_tag() {
         use crate::cost_router::WorkflowRole;
@@ -833,7 +1058,15 @@ workers:
         keys.sort_unstable();
         assert_eq!(
             keys,
-            vec!["claude_code", "codex", "librarian", "reviewer", "steward"],
+            vec![
+                "claude_code",
+                "codex",
+                "librarian",
+                "permagent",
+                "reviewer",
+                "steward",
+                "strix",
+            ],
         );
 
         // The reviewer: in-process subagent, review-tagged (routes to the Review

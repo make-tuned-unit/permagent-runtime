@@ -5,6 +5,7 @@ import { InFlightCard } from './InFlightCard';
 import { RecentCard } from './RecentCard';
 import { DecisionsCard } from './DecisionsCard';
 import { TimelineCard } from './TimelineCard';
+import { TodosCard } from './TodosCard';
 import { ManifestCard } from './ManifestCard';
 
 /**
@@ -29,8 +30,15 @@ import { ManifestCard } from './ManifestCard';
  * skill can never shadow a built-in card.
  */
 
-/** The constrained set of layouts the first-party {@link ManifestCard} can draw. */
-export type CardLayout = 'stat-grid' | 'list' | 'key-value';
+/**
+ * The constrained set of layouts the first-party {@link ManifestCard} can draw.
+ *
+ * `compact` is the small-tile layout: one hero value with the rest of the cells
+ * as quiet label/value rows beneath it. Ambient readouts (weather, machine
+ * load) use it — they are glanced at, not read, and a full-size card spends
+ * dashboard real estate that the things you actually act on should get.
+ */
+export type CardLayout = 'stat-grid' | 'list' | 'key-value' | 'compact';
 
 /**
  * An optional configuration affordance a manifest card exposes in its empty
@@ -87,6 +95,7 @@ export const CARD_REGISTRY: Record<string, CardRegistryEntry> = {
   in_flight: { component: InFlightCard, name: 'In Flight',       description: 'Goals Henry is actively working',defaultSize: { w: 12, h: 3 } },
   recent:    { component: RecentCard,   name: 'Recent Activity', description: 'Recently completed sessions',   defaultSize: { w: 12, h: 4 } },
   timeline:  { component: TimelineCard, name: 'Timeline',        description: 'What your agents did, day by day', defaultSize: { w: 12, h: 6 } },
+  todos:     { component: TodosCard,    name: 'To-dos',          description: 'Dated cards from every board, soonest first', defaultSize: { w: 5, h: 6 } },
 };
 
 /** Turn a declarative manifest into a registry entry backed by ManifestCard. */

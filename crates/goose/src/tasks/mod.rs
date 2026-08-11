@@ -154,15 +154,54 @@ impl TaskLogger {
 
     /// Mark a task as `failed`.
     pub async fn log_task_failed(&self, task_id: &str, error: &str) {
-        let result =
-            sqlx::query("UPDATE tasks SET status = 'failed', error_message = ? WHERE id = ?")
-                .bind(error)
-                .bind(task_id)
-                .execute(&self.pool)
-                .await;
+        self.log_task_failed_with_shape(task_id, None, None, error)
+            .await
+    }
+
+    /// Mark a task `failed`, recording the same shape/timing metadata a
+    /// completion records, and write the NEGATIVE recognition outcome.
+    ///
+    /// The mirror of [`Self::log_task_completed`]. Both halves must exist: a
+    /// failure path that records less than the success path re-creates the bias
+    /// it is meant to fix — the label would still only ever move in one
+    /// direction, just more slowly.
+    pub async fn log_task_failed_with_shape(
+        &self,
+        task_id: &str,
+        tool_used: Option<&str>,
+        arguments: Option<&Value>,
+        error: &str,
+    ) {
+        let now = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+        let shape_hash = compute_argument_shape_hash(tool_used, arguments);
+
+        let result = sqlx::query(
+            "UPDATE tasks SET status = 'failed', error_message = ?, argument_shape_hash = ?,
+             completed_at = ? WHERE id = ?",
+        )
+        .bind(error)
+        .bind(&shape_hash)
+        .bind(&now)
+        .bind(task_id)
+        .execute(&self.pool)
+        .await;
 
         if let Err(e) = result {
             warn!("Failed to log task_failed: {}", e);
+        }
+
+        // Recognition write-back (the negative half of the PRIMARY proxy). Same
+        // attribute-by-key-later shape as the completion path: read the session
+        // off the task row, resolve its still-unattributed recalls.
+        let task_session_id: Option<String> =
+            sqlx::query_scalar("SELECT session_id FROM tasks WHERE id = ?")
+                .bind(task_id)
+                .fetch_optional(&self.pool)
+                .await
+                .ok()
+                .flatten();
+        if let Some(sid) = task_session_id {
+            crate::recognition::write_back_task_failure(&self.pool, &sid).await;
         }
 
         events::emit(events::task_failed(task_id, error));
@@ -521,6 +560,152 @@ mod tests {
         assert!(compute_argument_shape_hash(None, None).is_none());
         assert!(compute_argument_shape_hash(Some("tool"), None).is_none());
         assert!(compute_argument_shape_hash(None, Some(&serde_json::json!({}))).is_none());
+    }
+
+    /// Seed a task row already linked to a session, plus one unattributed
+    /// recognition event for that session — the shape the write-back resolves.
+    async fn seed_task_and_recall(pool: &Pool<Sqlite>, session_id: &str) -> String {
+        // tasks.session_id is a FK — the session has to exist first.
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, '/tmp')")
+            .bind(session_id)
+            .execute(pool)
+            .await
+            .unwrap();
+
+        let task_id = Uuid::now_v7().to_string();
+        sqlx::query(
+            "INSERT INTO tasks (id, user_id, description, status, session_id)
+             VALUES (?, 'default', 'a tool call', 'running', ?)",
+        )
+        .bind(&task_id)
+        .bind(session_id)
+        .execute(pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO recognition_events
+                (retrieval_id, session_id, query, retrieved_at, rc_persona, strategy)
+             VALUES (?, ?, 'what is the weather', strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                     'henry', 'cascade')",
+        )
+        .bind(Uuid::now_v7().to_string())
+        .bind(session_id)
+        .execute(pool)
+        .await
+        .unwrap();
+
+        task_id
+    }
+
+    async fn outcome_of(pool: &Pool<Sqlite>, session_id: &str) -> (Option<String>, Option<String>) {
+        sqlx::query_as::<_, (Option<String>, Option<String>)>(
+            "SELECT outcome_kind, outcome_polarity FROM recognition_events WHERE session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    async fn test_pool() -> Pool<Sqlite> {
+        use sqlx::sqlite::SqlitePoolOptions;
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::session::spectral_schema::init_spectral_db(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    /// The bug this whole change exists to close: a failed tool call used to be
+    /// logged as `completed`, which stamped `Positive` across the session's
+    /// recalls. `wrong` was therefore unreachable and the label was a constant.
+    #[tokio::test]
+    async fn a_failed_task_writes_a_negative_recognition_outcome() {
+        let pool = test_pool().await;
+        let session_id = "session-fail";
+        let task_id = seed_task_and_recall(&pool, session_id).await;
+
+        let logger = TaskLogger::new(pool.clone());
+        logger
+            .log_task_failed_with_shape(
+                &task_id,
+                Some("shell"),
+                Some(&serde_json::json!({"command": "curl ..."})),
+                "exit 7: could not resolve host",
+            )
+            .await;
+
+        let (status, error): (String, Option<String>) =
+            sqlx::query_as("SELECT status, error_message FROM tasks WHERE id = ?")
+                .bind(&task_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "failed");
+        assert_eq!(error.as_deref(), Some("exit 7: could not resolve host"));
+
+        let (kind, polarity) = outcome_of(&pool, session_id).await;
+        assert_eq!(kind.as_deref(), Some("TaskFailed"));
+        assert_eq!(
+            polarity.as_deref(),
+            Some("Negative"),
+            "a failed tool call must not leave the session's recalls marked Positive"
+        );
+    }
+
+    /// The success path is unchanged — the fix must not invert the bias.
+    #[tokio::test]
+    async fn a_completed_task_still_writes_a_positive_recognition_outcome() {
+        let pool = test_pool().await;
+        let session_id = "session-ok";
+        let task_id = seed_task_and_recall(&pool, session_id).await;
+
+        let logger = TaskLogger::new(pool.clone());
+        logger
+            .log_task_completed(
+                &task_id,
+                Some("shell"),
+                Some(&serde_json::json!({"command": "ls"})),
+                &serde_json::json!({}),
+                12,
+            )
+            .await;
+
+        let (kind, polarity) = outcome_of(&pool, session_id).await;
+        assert_eq!(kind.as_deref(), Some("TaskResolved"));
+        assert_eq!(polarity.as_deref(), Some("Positive"));
+    }
+
+    /// A failure records the same shape metadata a completion does, so the two
+    /// halves stay comparable rather than the failure path recording less.
+    #[tokio::test]
+    async fn a_failed_task_records_its_argument_shape() {
+        let pool = test_pool().await;
+        let task_id = seed_task_and_recall(&pool, "session-shape").await;
+
+        let args = serde_json::json!({"command": "cargo test"});
+        TaskLogger::new(pool.clone())
+            .log_task_failed_with_shape(&task_id, Some("shell"), Some(&args), "boom")
+            .await;
+
+        let (shape, completed_at): (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT argument_shape_hash, completed_at FROM tasks WHERE id = ?")
+                .bind(&task_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            shape,
+            compute_argument_shape_hash(Some("shell"), Some(&args))
+        );
+        assert!(
+            completed_at.is_some(),
+            "a failure is a terminal timestamp too"
+        );
     }
 
     #[tokio::test]

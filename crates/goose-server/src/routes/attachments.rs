@@ -179,27 +179,7 @@ async fn get_handler(
     let stream = ReaderStream::new(file);
     let body = Body::from_stream(stream);
 
-    // Sanitize the upload-supplied filename before putting it in the header:
-    // strip quotes, backslashes, and control chars so it can't break the quoted
-    // string (download-name spoofing) or inject header bytes / trigger a 500 on
-    // an invalid header value (RFC 6266). Falls back to a generic name if empty.
-    let safe_name: String = record
-        .filename
-        .chars()
-        .map(|c| {
-            if c == '"' || c == '\\' || c.is_control() {
-                '_'
-            } else {
-                c
-            }
-        })
-        .collect();
-    let safe_name = if safe_name.trim().is_empty() {
-        "download".to_string()
-    } else {
-        safe_name
-    };
-    let disposition = format!("inline; filename=\"{safe_name}\"");
+    let disposition = content_disposition(&record.filename);
 
     Ok((
         [
@@ -235,4 +215,118 @@ async fn delete_handler(
     }
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Build an RFC 6266 `Content-Disposition` for a user-supplied filename.
+///
+/// The previous version emitted a bare `filename="…"` after stripping quotes,
+/// backslashes and control characters — and its comment claimed that prevented
+/// "a 500 on an invalid header value". It did not: non-ASCII survived the
+/// filter, and `HeaderValue` accepts only visible ASCII, so a perfectly
+/// ordinary upload named `café.pdf` produced an invalid header and failed the
+/// download outright. The sanitizer was guarding against injection, which is a
+/// different problem from encoding, and the comment made the gap look covered.
+///
+/// So: an ASCII-only `filename=` fallback for old clients, plus `filename*=`
+/// carrying the real UTF-8 name percent-encoded. Every byte outside the RFC
+/// 5987 `attr-char` set is escaped, which subsumes the injection concern —
+/// quotes, backslashes and control bytes cannot survive percent-encoding.
+fn content_disposition(filename: &str) -> String {
+    // ASCII fallback: anything non-ASCII or structurally unsafe becomes '_'.
+    let ascii: String = filename
+        .chars()
+        .map(|c| {
+            if c.is_ascii() && !c.is_control() && c != '"' && c != '\\' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let ascii = if ascii.trim().is_empty() {
+        "download".to_string()
+    } else {
+        ascii
+    };
+
+    // RFC 5987 attr-char: ALPHA / DIGIT / !#$&+-.^_`|~
+    fn is_attr_char(b: u8) -> bool {
+        b.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(&b)
+    }
+    let mut encoded = String::new();
+    for b in filename.as_bytes() {
+        if is_attr_char(*b) {
+            encoded.push(*b as char);
+        } else {
+            encoded.push_str(&format!("%{b:02X}"));
+        }
+    }
+
+    format!("inline; filename=\"{ascii}\"; filename*=UTF-8''{encoded}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::content_disposition;
+    use axum::http::HeaderValue;
+
+    /// The bug: `café.pdf` is an ordinary filename, and it made the download
+    /// return 500 because the header value was not valid ASCII. Every case here
+    /// asserts the result is a CONSTRUCTIBLE HeaderValue — that is the property
+    /// that was actually broken, not the string's shape.
+    #[test]
+    fn non_ascii_filenames_produce_a_valid_header() {
+        for name in [
+            "café.pdf",
+            "日本語のファイル.txt",
+            "Ünterlagen — final (v2).docx",
+            "emoji 🎉.png",
+        ] {
+            let v = content_disposition(name);
+            assert!(
+                HeaderValue::from_str(&v).is_ok(),
+                "{name} produced an invalid header value: {v}"
+            );
+            assert!(
+                v.contains("filename*=UTF-8''"),
+                "{name} must carry the encoded name"
+            );
+        }
+    }
+
+    #[test]
+    fn the_real_name_survives_percent_encoded() {
+        let v = content_disposition("café.pdf");
+        // c a f + é (0xC3 0xA9) + . p d f
+        assert!(v.contains("filename*=UTF-8''caf%C3%A9.pdf"), "{v}");
+        // ...and the ASCII fallback stays present for old clients.
+        assert!(v.contains("filename=\"caf_.pdf\""), "{v}");
+    }
+
+    /// Quotes and backslashes were the ORIGINAL concern; percent-encoding
+    /// subsumes it, so the injection guarantee must not regress.
+    #[test]
+    fn quotes_and_backslashes_cannot_escape_the_quoted_string() {
+        let v = content_disposition(r#"evil".pdf"#);
+        assert!(HeaderValue::from_str(&v).is_ok());
+        // Exactly two quotes: the pair delimiting the ASCII fallback.
+        assert_eq!(v.matches('"').count(), 2, "{v}");
+        let v2 = content_disposition(r"back\slash.pdf");
+        assert!(HeaderValue::from_str(&v2).is_ok());
+        assert!(!v2.contains('\\'), "{v2}");
+    }
+
+    #[test]
+    fn control_bytes_cannot_inject_a_header() {
+        let v = content_disposition("bad\r\nX-Injected: 1.pdf");
+        assert!(HeaderValue::from_str(&v).is_ok());
+        assert!(!v.contains('\r') && !v.contains('\n'), "{v}");
+    }
+
+    #[test]
+    fn an_empty_or_unnameable_file_still_downloads() {
+        let v = content_disposition("");
+        assert!(HeaderValue::from_str(&v).is_ok());
+        assert!(v.contains("filename=\"download\""), "{v}");
+    }
 }

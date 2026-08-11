@@ -48,11 +48,21 @@ impl Conversation {
             .last_mut()
             .filter(|m| m.id.is_some() && m.id == message.id)
         {
-            match (last.content.last_mut(), message.content.last()) {
-                (Some(MessageContent::Text(ref mut last)), Some(MessageContent::Text(new)))
-                    if message.content.len() == 1 =>
-                {
-                    last.text.push_str(&new.text);
+            // Streamed OpenAI-compat reasoning arrives as one Thinking delta per
+            // token (Kimi/Moonshot). Coalesce like Text so we don't persist
+            // tens of thousands of tiny blocks and blow up the UI/session.
+            match (last.content.last_mut(), message.content.as_slice()) {
+                (Some(MessageContent::Text(ref mut last_text)), [MessageContent::Text(new)]) => {
+                    last_text.text.push_str(&new.text);
+                }
+                (
+                    Some(MessageContent::Thinking(ref mut last_think)),
+                    [MessageContent::Thinking(new)],
+                ) => {
+                    last_think.thinking.push_str(&new.thinking);
+                    if last_think.signature.is_empty() && !new.signature.is_empty() {
+                        last_think.signature = new.signature.clone();
+                    }
                 }
                 (_, _) => {
                     last.content.extend(message.content);
@@ -222,27 +232,8 @@ fn fix_messages(messages: Vec<Message>) -> (Vec<Message>, Vec<String>) {
     )
 }
 
-fn merge_text_content_in_message(mut msg: Message) -> Message {
-    if msg.role != Role::Assistant {
-        return msg;
-    }
-    msg.content = msg
-        .content
-        .into_iter()
-        .fold(Vec::new(), |mut content, item| {
-            match item {
-                MessageContent::Text(text) => {
-                    if let Some(MessageContent::Text(ref mut last)) = content.last_mut() {
-                        last.text.push_str(&text.text);
-                    } else {
-                        content.push(MessageContent::Text(text));
-                    }
-                }
-                other => content.push(other),
-            }
-            content
-        });
-    msg
+fn merge_text_content_in_message(msg: Message) -> Message {
+    msg.coalesce_adjacent_text_and_thinking()
 }
 
 fn merge_text_content_items(messages: Vec<Message>) -> (Vec<Message>, Vec<String>) {
@@ -829,6 +820,42 @@ mod tests {
         } else {
             panic!("Expected text content");
         }
+    }
+
+    #[test]
+    fn push_coalesces_streamed_thinking_deltas_with_same_message_id() {
+        use crate::conversation::message::MessageContent;
+
+        let mut conv = Conversation::empty();
+        let id = "chatcmpl-kimi-think";
+        for token in ["Let", " me", " check"] {
+            conv.push(Message::assistant().with_id(id).with_thinking(token, ""));
+        }
+
+        assert_eq!(conv.len(), 1);
+        assert_eq!(conv.messages()[0].content.len(), 1);
+        match &conv.messages()[0].content[0] {
+            MessageContent::Thinking(t) => assert_eq!(t.thinking, "Let me check"),
+            other => panic!("expected single Thinking block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn coalesce_adjacent_repairs_tokenized_thinking_history() {
+        use crate::conversation::message::MessageContent;
+
+        let mut msg = Message::assistant().with_thinking("Let", "");
+        msg.content.push(MessageContent::thinking(" me", ""));
+        msg.content.push(MessageContent::thinking(" check", ""));
+        msg.content.push(MessageContent::text(" done"));
+
+        let coalesced = msg.coalesce_adjacent_text_and_thinking();
+        assert_eq!(coalesced.content.len(), 2);
+        match &coalesced.content[0] {
+            MessageContent::Thinking(t) => assert_eq!(t.thinking, "Let me check"),
+            other => panic!("expected Thinking, got {other:?}"),
+        }
+        assert_eq!(coalesced.content[1].as_text(), Some(" done"));
     }
 
     #[test]

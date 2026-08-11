@@ -4,11 +4,11 @@
 import Foundation
 
 struct HubConfig: Codable, Equatable {
-    var baseURL: URL       // http://<magicdns>:3001
+    var baseURL: URL       // http://<magicdns> — via tailscale serve, no port
     var token: String      // daemon_token (the pairing secret)
 }
 
-enum APIError: Error { case unauthorized, badStatus(Int), notPaired, dictationUnavailable }
+enum APIError: Error { case unauthorized, badStatus(Int), notPaired, dictationUnavailable, daemon(String) }
 
 actor APIClient {
     static let shared = APIClient()
@@ -50,6 +50,22 @@ actor APIClient {
         var req = URLRequest(url: config.baseURL.appendingPathComponent(path))
         req.httpMethod = method
         req.setValue("Bearer \(config.token)", forHTTPHeaderField: "Authorization")
+        let (_, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse else { throw APIError.badStatus(0) }
+        if http.statusCode == 401 { throw APIError.unauthorized }
+        guard (200..<300).contains(http.statusCode) else { throw APIError.badStatus(http.statusCode) }
+    }
+
+    /// `send` with a JSON body, for endpoints whose response body we don't
+    /// need (set_provider answers a shape that varies by daemon version —
+    /// only the status matters here).
+    func send<B: Encodable>(_ path: String, method: String = "POST", body: B) async throws {
+        guard let config else { throw APIError.notPaired }
+        var req = URLRequest(url: config.baseURL.appendingPathComponent(path))
+        req.httpMethod = method
+        req.setValue("Bearer \(config.token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONEncoder().encode(body)
         let (_, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse else { throw APIError.badStatus(0) }
         if http.statusCode == 401 { throw APIError.unauthorized }
@@ -111,22 +127,20 @@ actor APIClient {
         let task = URLSession.shared.webSocketTask(with: comps.url!)
         task.resume()
         return AsyncStream { continuation in
-            func listen() {
-                task.receive { result in
-                    switch result {
-                    case .success(let message):
+            Task {
+                do {
+                    while !Task.isCancelled {
+                        let message = try await task.receive()
                         if case .string(let text) = message,
                            let data = text.data(using: .utf8),
                            let event = try? JSONDecoder().decode(DaemonEvent.self, from: data) {
                             continuation.yield(event)
                         }
-                        listen()
-                    case .failure:
-                        continuation.finish()
                     }
+                } catch {
+                    continuation.finish()
                 }
             }
-            listen()
             continuation.onTermination = { _ in task.cancel(with: .goingAway, reason: nil) }
         }
     }
@@ -162,25 +176,83 @@ actor APIClient {
                     if http.statusCode == 401 { throw APIError.unauthorized }
                     guard (200..<300).contains(http.statusCode) else { throw APIError.badStatus(http.statusCode) }
 
+                    // The parsing — including the segment-break bookkeeping
+                    // that fixes "…works.Let me dig deeper…" — lives in
+                    // ReplyStreamParser (ChatStream.swift) so the regression
+                    // tests can drive it with raw SSE lines.
+                    var parser = ReplyStreamParser()
+                    for try await line in bytes.lines {
+                        switch parser.consume(line: line) {
+                        case .none:
+                            break
+                        case .delta(let delta):
+                            continuation.yield(delta)
+                        case .finish:
+                            continuation.finish(); return
+                        case .error(let message):
+                            continuation.finish(throwing: APIError.daemon(message)); return
+                        }
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// One frame from the session's reattachable event stream.
+    enum SessionEvent: Sendable {
+        /// The daemon's first frame: the session's in-flight request ids. Empty
+        /// means nothing is running — the stored transcript is the whole truth.
+        case activeRequests([String])
+        /// The turn finished (a terminal Finish frame arrived).
+        case finished
+    }
+
+    /// Reattach to a session's live event stream (GET /sessions/{id}/events).
+    ///
+    /// This is how a phone that was locked or closed mid-reply catches up: the
+    /// hub keeps running the turn regardless of who is watching, and this
+    /// stream's opening ActiveRequests frame says whether one is still live.
+    /// Deliberately NOT used for token-level rendering — replayed frames can
+    /// span earlier turns, so the caller re-fetches the stored transcript for
+    /// content and uses this stream only for "is it done yet".
+    nonisolated func sessionEvents(sessionId: String) -> AsyncThrowingStream<SessionEvent, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    await loadSavedPairing()
+                    guard let config = await self.config else {
+                        continuation.finish(throwing: APIError.notPaired); return
+                    }
+                    var comps = URLComponents(
+                        url: config.baseURL.appendingPathComponent("/sessions/\(sessionId)/events"),
+                        resolvingAgainstBaseURL: false
+                    )!
+                    comps.queryItems = [URLQueryItem(name: "token", value: config.token)]
+                    var req = URLRequest(url: comps.url!)
+                    req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+                    req.timeoutInterval = 600
+
+                    let (bytes, resp) = try await URLSession.shared.bytes(for: req)
+                    guard let http = resp as? HTTPURLResponse else { throw APIError.badStatus(0) }
+                    if http.statusCode == 401 { throw APIError.unauthorized }
+                    guard (200..<300).contains(http.statusCode) else { throw APIError.badStatus(http.statusCode) }
+
+                    struct Frame: Decodable { let type: String; let request_ids: [String]? }
                     for try await line in bytes.lines {
                         guard line.hasPrefix("data: ") else { continue }
-                        let json = String(line.dropFirst(6))
-                        guard let data = json.data(using: .utf8),
-                              let event = try? JSONDecoder().decode(ReplyEvent.self, from: data)
+                        guard let data = String(line.dropFirst(6)).data(using: .utf8),
+                              let frame = try? JSONDecoder().decode(Frame.self, from: data)
                         else { continue }
-                        switch event.type {
-                        case "Message":
-                            if let m = event.message, m.role == "assistant" {
-                                let t = m.content.compactMap(\.text).joined()
-                                let th = m.content.compactMap(\.thinking).joined()
-                                if !t.isEmpty || !th.isEmpty {
-                                    continuation.yield(ReplyDelta(text: t, thinking: th))
-                                }
-                            }
-                        case "Finish":
-                            continuation.finish(); return
-                        case "Error":
-                            continuation.finish(throwing: APIError.badStatus(422)); return
+                        switch frame.type {
+                        case "ActiveRequests":
+                            continuation.yield(.activeRequests(frame.request_ids ?? []))
+                        case "Finish", "Error":
+                            // Either way the turn is over; the transcript holds
+                            // whatever truth there is.
+                            continuation.yield(.finished)
                         default:
                             break
                         }
@@ -289,60 +361,130 @@ extension APIClient {
     }
 }
 
-// ── /reply request + event shapes (mirror the daemon's serde) ────────────────
-
-/// One streamed slice of the reply: answer `text` and/or reasoning `thinking`.
-struct ReplyDelta { let text: String; let thinking: String }
-
-/// A content block is `{ type, text?, thinking? }`; tool blocks have neither and
-/// decode to nil. Thinking blocks carry `thinking`; answer blocks carry `text`.
-private struct ReplyContent: Codable { let type: String; let text: String?; let thinking: String? }
-private struct ReplyMeta: Codable { let userVisible: Bool; let agentVisible: Bool }
-private struct ReplyMessage: Codable {
-    let role: String
-    let created: Int
-    let content: [ReplyContent]
-    let metadata: ReplyMeta
-}
-private struct ReplyRequest: Encodable {
-    let user_message: ReplyMessage
-    let session_id: String
-}
-private struct ReplyEvent: Decodable {
-    let type: String
-    let message: ReplyMessage?
-    let error: String?
-}
+// The /reply request + event shapes, the stream parser, and the transcript
+// mapping all live in ChatStream.swift — Foundation-only so the regression
+// tests compile them without the app target.
 
 /// A stable per-install chat session id so the conversation persists across
-/// launches. The hub creates the session lazily on first reply (get_agent).
+/// launches.
+///
+/// The hub does NOT create sessions lazily — that assumption (in the comment
+/// this replaces) is why chat never worked from the phone. Minting a UUID
+/// locally and posting it as `session_id` made `/reply` answer 200 and then
+/// immediately fail its stream with
+/// `Failed to read session for <uuid>: Session not found`, which the UI
+/// reported as "Couldn't reach Henry" — pointing at the network while the
+/// network was fine (diagnosed from the hub log, 2026-08-04).
+///
+/// Sessions are created by `POST /api/sessions`, which returns the id. The
+/// phone must ask for one and use what it is given.
 enum MobileSession {
     private static let key = "ai.permagent.mobile-chat-session"
-    static func chatSessionId() -> String {
-        if let existing = UserDefaults.standard.string(forKey: key) { return existing }
-        let id = UUID().uuidString
+
+    private struct SessionResponse: Decodable { let id: String }
+    private struct CreateBody: Encodable { let workingDir: String }
+
+    /// Adopt an existing hub session as this install's conversation and return
+    /// its history as chat bubbles. Both voice and text follow the adopted id,
+    /// because they deliberately share one thread.
+    ///
+    /// Tool traffic is dropped: a resumed thread should read the way it read
+    /// when it was live — the user's words and the agent's answers — not a
+    /// transcript of every tool call underneath them.
+    static func adopt(_ id: String) async throws -> [ChatBubble] {
+        struct Session: Decodable { let conversation: [StoredMessage]? }
+
+        let session = try await APIClient.shared.get("/api/sessions/\(id)", as: Session.self)
         UserDefaults.standard.set(id, forKey: key)
-        return id
+        // The mapping (segment joins, role filtering) is ChatTranscript's —
+        // pure and regression-tested in ChatStreamTests.
+        return ChatTranscript.bubbles(from: session.conversation ?? [])
+    }
+
+    /// The persisted conversation id, if any — read-only, never creates.
+    /// Cold launch uses this to put the ongoing conversation back on screen
+    /// (and catch up on any reply that finished while the app was closed).
+    static var persistedId: String? {
+        UserDefaults.standard.string(forKey: key)
+    }
+
+    /// Forget the current conversation, so the next turn mints a fresh one.
+    ///
+    /// Voice and text share this id deliberately — a spoken turn lands in the
+    /// same thread — so ending it here ends both. Nothing is deleted on the
+    /// hub: the old session keeps its history and stays browsable there; this
+    /// only stops new turns from joining it.
+    static func endConversation() {
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+
+    /// The hub-created session for this install, creating one if needed.
+    ///
+    /// A cached id is verified against the hub before reuse: sessions can be
+    /// deleted on the desktop, and a stale id fails exactly the same way an
+    /// invented one did. Verification is a cheap GET and only happens once per
+    /// launch, so the cost is a single request against never chatting again.
+    static func chatSessionId() async throws -> String {
+        if let existing = UserDefaults.standard.string(forKey: key) {
+            if (try? await APIClient.shared.send("/api/sessions/\(existing)", method: "GET")) != nil {
+                return existing
+            }
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+        let created: SessionResponse = try await APIClient.shared.post(
+            "/api/sessions",
+            body: CreateBody(workingDir: "/tmp"),
+            as: SessionResponse.self
+        )
+        UserDefaults.standard.set(created.id, forKey: key)
+        return created.id
     }
 }
 
-struct DaemonEvent: Decodable {
+struct DaemonEvent: Decodable, Sendable {
     let type: String
     let payload: [String: AnyCodable]?
 }
 
 /// Minimal AnyCodable for event payloads.
-struct AnyCodable: Decodable {
-    let value: Any
+///
+/// Backed by a closed enum rather than `Any`. `Any` is not `Sendable`, which
+/// made `DaemonEvent` non-Sendable and meant yielding one into the event
+/// stream's continuation tripped Swift 6's `sending` check ("Sending 'event'
+/// risks causing data races"). Annotating the surrounding closure could not fix
+/// that — the TYPE was the problem, so the annotation only moved the error.
+///
+/// The enum is not a workaround: the decoder below only ever produced a String,
+/// Int, Double or Bool, so this is a faithful — and now checkable —
+/// representation of what the payload could always hold.
+struct AnyCodable: Decodable, Sendable {
+    enum Value: Sendable, Equatable {
+        case string(String)
+        case int(Int)
+        case double(Double)
+        case bool(Bool)
+        /// The decoder's existing fallback for an unrecognized scalar.
+        case empty
+    }
+
+    let value: Value
+
     init(from decoder: Decoder) throws {
         let c = try decoder.singleValueContainer()
-        if let s = try? c.decode(String.self) { value = s }
-        else if let i = try? c.decode(Int.self) { value = i }
-        else if let d = try? c.decode(Double.self) { value = d }
-        else if let b = try? c.decode(Bool.self) { value = b }
-        else { value = "" }
+        if let s = try? c.decode(String.self) { value = .string(s) }
+        else if let i = try? c.decode(Int.self) { value = .int(i) }
+        else if let d = try? c.decode(Double.self) { value = .double(d) }
+        else if let b = try? c.decode(Bool.self) { value = .bool(b) }
+        else { value = .empty }
     }
-    var string: String? { value as? String }
+
+    var string: String? {
+        switch value {
+        case .string(let string): return string
+        case .empty: return ""
+        default: return nil
+        }
+    }
 }
 
 enum KeychainStore {

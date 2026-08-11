@@ -755,10 +755,127 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // migrate_v37_to_v38 so fresh installs get it on first boot.
     apply_analytics_events_schema(pool).await?;
 
+    // Failure-learning incident capture. Version-independent, additive, and
+    // idempotent so the pinned fresh-init base stamp remains unchanged.
+    apply_incidents_schema(pool).await?;
+    apply_lessons_schema(pool).await?;
+
     info!(
         "Spectral schema v{} initialized successfully",
         SPECTRAL_SCHEMA_VERSION
     );
+    Ok(())
+}
+
+/// Apply the Phase-1 failure-learning incident-capture schema.
+///
+/// This is deliberately version-independent: incident capture is an additive
+/// table and must become available on every database regardless of its recorded
+/// base version. It records grounded failures only; later learning-loop stages
+/// do not belong in this schema.
+/// Governed lesson pool (Phase 3). Two tables by design:
+///
+/// - `lesson_events` is an APPEND-ONLY ledger. It is the truth.
+/// - `lessons` is a derived, mutable projection carrying the current
+///   importance, kept for cheap reads.
+///
+/// The split is what makes a bad lesson revocable: the projection can always be
+/// recomputed from the ledger (`lessons::replay_importance`), so drift is
+/// corrected by replay rather than by trusting that the mutable copy stayed
+/// right. An append-only lesson list with no ledger has no such recovery.
+///
+/// New-table-only and idempotent, so it runs on every boot and does not disturb
+/// the pinned fresh-init stamp.
+pub async fn apply_lessons_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS lessons (
+            id            TEXT PRIMARY KEY,
+            fingerprint   TEXT NOT NULL UNIQUE,
+            text          TEXT NOT NULL,
+            incident_id   TEXT NOT NULL REFERENCES incidents(id),
+            importance    INTEGER NOT NULL DEFAULT 2,
+            retired       INTEGER NOT NULL DEFAULT 0,
+            created_at    TEXT NOT NULL,
+            last_used_at  TEXT
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS lesson_events (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            lesson_id    TEXT NOT NULL REFERENCES lessons(id) ON DELETE CASCADE,
+            event        TEXT NOT NULL CHECK (event IN
+                           ('admitted','corroborated','contradicted','retired')),
+            occurred_at  TEXT NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // The ledger is the truth, so it must not be rewritten. Same discipline as
+    // `decision_audit` and `egress_audit`.
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS lesson_events_no_update
+         BEFORE UPDATE ON lesson_events
+         BEGIN SELECT RAISE(ABORT, 'lesson_events is append-only'); END",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS lesson_events_no_delete
+         BEFORE DELETE ON lesson_events
+         BEGIN SELECT RAISE(ABORT, 'lesson_events is append-only'); END",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_lessons_active ON lessons (retired, importance DESC)",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_lesson_events_lesson ON lesson_events (lesson_id)")
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn apply_incidents_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS incidents (
+            id            TEXT PRIMARY KEY,
+            created_at    TEXT NOT NULL,
+            session_id    TEXT REFERENCES sessions(id),
+            surface       TEXT NOT NULL,
+            user_goal     TEXT NOT NULL,
+            observation   TEXT NOT NULL,
+            mechanism     TEXT NOT NULL CHECK (mechanism IN (
+                'A_environment', 'B_design_assumption', 'C_error_swallowing',
+                'D_fail_plausible', 'E_operational_omission', 'unclassified'
+            )),
+            artifact_kind TEXT NOT NULL CHECK (artifact_kind IN (
+                'user_report', 'tool_error', 'exit_code', 'http_status',
+                'run_diff', 'recognition_record'
+            )),
+            artifact_ref  TEXT NOT NULL,
+            status        TEXT NOT NULL DEFAULT 'open'
+                          CHECK (status IN ('open','triaged','regressed','dismissed')),
+            resolved_at   TEXT
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_incidents_status_created
+         ON incidents(status, created_at)",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_incidents_session ON incidents(session_id)")
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -2260,7 +2377,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS decisions (
             id            TEXT PRIMARY KEY,
             kind          TEXT NOT NULL CHECK (kind IN
-                            ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','project_intel_proposal','file_to_project','model_upgrade','tool_approval','session_gate','malformed')),
+                            ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','project_intel_proposal','file_to_project','model_upgrade','tool_approval','session_gate','capability_gap','regression_proposal','malformed')),
             goal_id       TEXT REFERENCES cards(id) ON DELETE SET NULL,
             project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,
             tier          INTEGER NOT NULL CHECK (tier IN (0,1,2)),
@@ -2333,6 +2450,8 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
                 || !sql.contains("file_to_project")
                 || !sql.contains("session_gate")
                 || !sql.contains("model_upgrade")
+                || !sql.contains("capability_gap")
+                || !sql.contains("regression_proposal")
         })
         .unwrap_or(false)
     {
@@ -2360,7 +2479,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
             "CREATE TABLE decisions_new (
                 id            TEXT PRIMARY KEY,
                 kind          TEXT NOT NULL CHECK (kind IN
-                                ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','project_intel_proposal','file_to_project','model_upgrade','tool_approval','session_gate','malformed')),
+                                ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','project_intel_proposal','file_to_project','model_upgrade','tool_approval','session_gate','capability_gap','regression_proposal','malformed')),
                 goal_id       TEXT REFERENCES cards(id) ON DELETE SET NULL,
                 project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,
                 tier          INTEGER NOT NULL CHECK (tier IN (0,1,2)),

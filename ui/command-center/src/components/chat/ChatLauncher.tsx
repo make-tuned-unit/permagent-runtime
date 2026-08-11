@@ -114,16 +114,28 @@ export function ChatLauncher() {
       try {
         const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
         const { TauriEvent } = await import('@tauri-apps/api/event');
+        // Window creation is fire-and-forget: right after createChatWindow()
+        // the label may not exist YET. Marking gone on the first null flipped
+        // chatWindowOpen false mid-creation, which VoiceHost answered by
+        // re-opening the dock — dock AND window open, the bug-2 precondition.
+        // Only a window we have actually observed can be declared gone; the
+        // window-created listener (below) re-arms this effect for late birth.
         const existing = await WebviewWindow.getByLabel('chat');
-        if (!existing) {
-          markGone();
-          return;
+        if (existing) {
+          const un = await existing.listen(TauriEvent.WINDOW_DESTROYED, markGone);
+          if (disposed) un(); else unlisten = un;
         }
-        const un = await existing.listen(TauriEvent.WINDOW_DESTROYED, markGone);
-        if (disposed) un(); else unlisten = un;
-
+        let seen = existing !== null;
+        let misses = 0;
         poll = setInterval(() => {
-          void WebviewWindow.getByLabel('chat').then(w => { if (!w) markGone(); }).catch(() => {});
+          void WebviewWindow.getByLabel('chat')
+            .then(w => {
+              if (w) { seen = true; misses = 0; return; }
+              // Unseen window: allow ~3s of creation grace before giving up.
+              misses += 1;
+              if (seen || misses >= 6) markGone();
+            })
+            .catch(() => {});
         }, 500);
       } catch {
         markGone();

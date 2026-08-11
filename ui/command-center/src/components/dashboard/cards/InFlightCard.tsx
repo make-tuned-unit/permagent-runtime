@@ -3,7 +3,7 @@ import { font, radius } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { useOrchestratorName } from '../../world/shared/useOrchestratorName';
 import { Mobius } from '../../mobius/Mobius';
-import { SectionTitle } from '../atoms';
+import { SectionTitle, EmptyNote } from '../atoms';
 import { useCommandCenter } from '../../../lib/store';
 import type { ActiveGoal } from '../../../lib/useLiveGoals';
 
@@ -27,20 +27,15 @@ export const InFlightCard = memo(function InFlightCard({ goals }: Props) {
       background: colors.surface,
       border: `1px solid ${colors.border}`,
       boxShadow: [colors.cardShadow, colors.cardHighlight].filter(Boolean).join(', '),
-      padding: '18px 20px',
+      padding: 16,
       display: 'flex', flexDirection: 'column',
       overflow: 'hidden',
     }}>
       <SectionTitle title="In flight" right={goals.length > 0 ? `${goals.length} active` : undefined} />
       {goals.length === 0 ? (
-        <div style={{
-          flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
-        }}>
-          <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: 13, color: colors.textMuted, marginBottom: 4 }}>No active goals</div>
-            <div style={{ fontSize: 11, color: colors.textDim }}>{`Goals ${persona} is working on appear here`}</div>
-          </div>
-        </div>
+        <EmptyNote hint={`Goals ${persona} is working on appear here`}>
+          Nothing in flight
+        </EmptyNote>
       ) : (
         <div style={{ flex: 1, overflow: 'auto' }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 14 }}>

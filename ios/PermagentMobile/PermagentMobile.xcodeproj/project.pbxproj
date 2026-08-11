@@ -7,35 +7,238 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		02D708E5094E8C1D707E7631 /* Manrope-OFL.txt in Resources */ = {isa = PBXBuildFile; fileRef = C775766BB71B91EECA6FAAC1 /* Manrope-OFL.txt */; };
+		04ACE51338886772B88EDA45 /* ChatStreamTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEAB4D45CE7CAF7281A46AE0 /* ChatStreamTests.swift */; };
+		0A15DF3328C25A3EF138FA44 /* mobius_66.webp in Resources */ = {isa = PBXBuildFile; fileRef = 5241FED37E727F70D96EF7AA /* mobius_66.webp */; };
+		0D8A364D8FC9A0D197FD6F88 /* VoiceOrbView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FEED3E5A9B281991FABC481 /* VoiceOrbView.swift */; };
+		0F77D5464AEDEBB583942494 /* JetBrainsMono-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = D10A4D843A64C8C92883D729 /* JetBrainsMono-Regular.ttf */; };
+		11FCF69481F74733BC03E04D /* AgentIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF0D5D72E70CE12B1E837D71 /* AgentIdentity.swift */; };
+		12E4D534C3E04C154F03BE52 /* mobius_39.webp in Resources */ = {isa = PBXBuildFile; fileRef = D438F8D1C32B74538EF4F0AF /* mobius_39.webp */; };
+		14C7F957DA55FF5F851FBB01 /* mobius_01.webp in Resources */ = {isa = PBXBuildFile; fileRef = FD217B47A0E95ABD4739B494 /* mobius_01.webp */; };
+		1508DA94B5E3ED22FCA12F4B /* mobius_57.webp in Resources */ = {isa = PBXBuildFile; fileRef = F29247F9621E9DE2137A0C10 /* mobius_57.webp */; };
+		153EEEC9ED7721E03EDBDB9C /* mobius_54.webp in Resources */ = {isa = PBXBuildFile; fileRef = 966500083B24ACE71ABBD8AD /* mobius_54.webp */; };
+		1A656D43C34F0C4D96FB2174 /* Inter-OFL.txt in Resources */ = {isa = PBXBuildFile; fileRef = D047DD5EB0226F5C108BE2DD /* Inter-OFL.txt */; };
+		237D5E5B42F6A7DC3D25EF53 /* ChatStream.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B6B8D36D573BDC32A82690D /* ChatStream.swift */; };
+		248C4007BB1491CF5388F737 /* mobius_45.webp in Resources */ = {isa = PBXBuildFile; fileRef = 5834485AF6815A993EAB8246 /* mobius_45.webp */; };
+		24C2D1CBDD4195F58BCF84AA /* mobius_08.webp in Resources */ = {isa = PBXBuildFile; fileRef = 0884AF18F290B54074BF357F /* mobius_08.webp */; };
+		26458EBB29DED9593DA5766E /* JetBrainsMono-OFL.txt in Resources */ = {isa = PBXBuildFile; fileRef = DA47FF553E92344005395D59 /* JetBrainsMono-OFL.txt */; };
+		270A3871444AA1ED4CAE4E76 /* mobius_16.webp in Resources */ = {isa = PBXBuildFile; fileRef = F887F06D6DA8665F0CAE25AE /* mobius_16.webp */; };
+		272F3B99FC8FC6FFCE13ADDE /* mobius_67.webp in Resources */ = {isa = PBXBuildFile; fileRef = 820E69821F1CA3B0E87C82F3 /* mobius_67.webp */; };
+		2975B6383D5433EFA00F72F4 /* mobius_64.webp in Resources */ = {isa = PBXBuildFile; fileRef = E07480822E8FEE2A898A2605 /* mobius_64.webp */; };
+		308BADDD5D25E51D299FC343 /* Inter-Regular.otf in Resources */ = {isa = PBXBuildFile; fileRef = 42D96E2A0E90E608750ABFB2 /* Inter-Regular.otf */; };
+		31BE4193B32F15848ED8A4C8 /* mobius_60.webp in Resources */ = {isa = PBXBuildFile; fileRef = F78457E597795833604DE024 /* mobius_60.webp */; };
 		336AFAC211E2D1C99E32CB2A /* DictateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99F34E2381968F13A858F14A /* DictateView.swift */; };
+		3763765877E4B418D2CE5E66 /* mobius_72.webp in Resources */ = {isa = PBXBuildFile; fileRef = F83E5EC31CC02070F9A63CAC /* mobius_72.webp */; };
 		389CCEEEE3C95E4B8E3A0D3F /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E26A800CF1D4790CE5DA10 /* Theme.swift */; };
+		3BC8C5AC70FB3597D2221D26 /* mobius_69.webp in Resources */ = {isa = PBXBuildFile; fileRef = B6F0018258AE31DA3C2066AA /* mobius_69.webp */; };
+		4904E55910E1289BBA612900 /* mobius_61.webp in Resources */ = {isa = PBXBuildFile; fileRef = A2929017C0AB57BB453FE479 /* mobius_61.webp */; };
+		4A97D4B90394BE305751C889 /* mobius_28.webp in Resources */ = {isa = PBXBuildFile; fileRef = F2E74815A78063D762CFA02A /* mobius_28.webp */; };
+		4F195459B43EB157D454EAA4 /* mobius_73.webp in Resources */ = {isa = PBXBuildFile; fileRef = F2C357BC721A2F9D99617979 /* mobius_73.webp */; };
+		4F5B6CA01AD21ADBE170CB0F /* mobius_30.webp in Resources */ = {isa = PBXBuildFile; fileRef = F69A3E36CE477B9F8F117D5E /* mobius_30.webp */; };
+		54B5D8BFACB124F9CCB50D56 /* mobius_47.webp in Resources */ = {isa = PBXBuildFile; fileRef = 95E428CEB4EA1BD8981C54ED /* mobius_47.webp */; };
+		559F1CDA2AF8B315F47B24EA /* Inter-SemiBold.otf in Resources */ = {isa = PBXBuildFile; fileRef = 37120DC59C45803562C55A0A /* Inter-SemiBold.otf */; };
 		5B30E073BB2ECAB6E33164B1 /* AgentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0EDD200AC9AB1D53EB3754 /* AgentsView.swift */; };
+		5DACE5C30A67AB589D464C2F /* mobius_25.webp in Resources */ = {isa = PBXBuildFile; fileRef = E4595A217F1BC6673A61434F /* mobius_25.webp */; };
+		5FFC587EE2879794404CD491 /* JetBrainsMono-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = D0BB820907A45AEF52B8EF66 /* JetBrainsMono-Medium.ttf */; };
+		65C7C52359EEE94471B77FCC /* mobius_13.webp in Resources */ = {isa = PBXBuildFile; fileRef = 3D71A28310BFC06A57F5C545 /* mobius_13.webp */; };
+		65CDEC6160E05940DE40EFC0 /* mobius_11.webp in Resources */ = {isa = PBXBuildFile; fileRef = 79B624DD50B28C932A809D4D /* mobius_11.webp */; };
+		65FD269A9A5C6F4516F8F66E /* mobius_63.webp in Resources */ = {isa = PBXBuildFile; fileRef = 55838E3E6C56C18D3B3DF44D /* mobius_63.webp */; };
+		6674F05CDA156A1CC887C0C9 /* mobius_75.webp in Resources */ = {isa = PBXBuildFile; fileRef = F43F18C6E4951035C0EB1426 /* mobius_75.webp */; };
+		66DB01E4D1223BB87874B914 /* Inter-Medium.otf in Resources */ = {isa = PBXBuildFile; fileRef = DAA8C84359BF73D7505BA019 /* Inter-Medium.otf */; };
+		6805EE14D524EECC61DD0FD8 /* mobius_15.webp in Resources */ = {isa = PBXBuildFile; fileRef = CEC021DE8FB3CC7E8C84F947 /* mobius_15.webp */; };
+		684E0A1BD2C5EECEDF9A4390 /* Manrope-ExtraBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = C5EE1883E26DB1BBB2207242 /* Manrope-ExtraBold.ttf */; };
+		6B8EEC13095E9F2F6C02965A /* mobius_62.webp in Resources */ = {isa = PBXBuildFile; fileRef = D5FC5C685CBD279DABF0DF1D /* mobius_62.webp */; };
+		7252CEB45C5C6557601BB12A /* mobius_31.webp in Resources */ = {isa = PBXBuildFile; fileRef = A50E726E7A7F3E738039E437 /* mobius_31.webp */; };
+		74121FE658DFF52EFD481487 /* MobiusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E42505E2B61F537431E47F2D /* MobiusView.swift */; };
+		74B9A7058C0A3750BD79AB6F /* mobius_49.webp in Resources */ = {isa = PBXBuildFile; fileRef = F8C47FA510F5D3DD93D73CC3 /* mobius_49.webp */; };
+		79EF67298C7F75AB03541663 /* mobius_70.webp in Resources */ = {isa = PBXBuildFile; fileRef = F4403DC20C2D5999DD1B1673 /* mobius_70.webp */; };
+		7B192495931C573B896DF1F0 /* mobius_19.webp in Resources */ = {isa = PBXBuildFile; fileRef = 01AACB1FBD851BA34EE1ED9D /* mobius_19.webp */; };
+		7B96C8AA6BD6E14310D4DFDC /* Manrope-SemiBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 423261D9233DB68AF1B0BFDE /* Manrope-SemiBold.ttf */; };
+		7CDE4D3404EA6BF70CECEB1B /* mobius_58.webp in Resources */ = {isa = PBXBuildFile; fileRef = 79BB7C24CB5A54725466E6A0 /* mobius_58.webp */; };
+		7CF0821B363A714765825661 /* TodosView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7B80C27B4E2ECC150070E7B /* TodosView.swift */; };
+		7D2C9734F04E69CD82CCEAC7 /* mobius_46.webp in Resources */ = {isa = PBXBuildFile; fileRef = 8371B38D78B810EDE35E0120 /* mobius_46.webp */; };
+		7DD46702E4BB4F9A85B8A1AB /* mobius_26.webp in Resources */ = {isa = PBXBuildFile; fileRef = ACF042D26EBA2B8AA3FC72E1 /* mobius_26.webp */; };
+		7E0BB92621F39263691D2900 /* mobius_29.webp in Resources */ = {isa = PBXBuildFile; fileRef = F6C7E6718CD9980470FB3A90 /* mobius_29.webp */; };
 		831E82FFAA0BC3E001164146 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8694CAB5B48EE233EE1B6617 /* APIClient.swift */; };
+		84D0B916B79467B77415AE31 /* mobius_10.webp in Resources */ = {isa = PBXBuildFile; fileRef = F82C05C7BEEFCC8963722708 /* mobius_10.webp */; };
+		876785D1618F76B9F5A8681D /* mobius_74.webp in Resources */ = {isa = PBXBuildFile; fileRef = 92F5A8A5633ED54576A243D3 /* mobius_74.webp */; };
+		8784ED0174977F55A6EB0237 /* Permagent.icon in Resources */ = {isa = PBXBuildFile; fileRef = 27F090C554069B3A53A77509 /* Permagent.icon */; };
+		8AB762D308537BE266F6D5B0 /* mobius_02.webp in Resources */ = {isa = PBXBuildFile; fileRef = 0C853FA9D10A529C2BEA5227 /* mobius_02.webp */; };
+		8DADBF750DCA08670AE5949D /* mobius_53.webp in Resources */ = {isa = PBXBuildFile; fileRef = 7B939767A843244D60550976 /* mobius_53.webp */; };
 		8F94851B95D12EF04506A591 /* PermagentApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C775F55DDB9DE14F8D4323E6 /* PermagentApp.swift */; };
+		903B030DA4435430E2D44FA5 /* mobius_35.webp in Resources */ = {isa = PBXBuildFile; fileRef = 952108923C1510E5569EDF9A /* mobius_35.webp */; };
+		93334C044001476062C81950 /* mobius_09.webp in Resources */ = {isa = PBXBuildFile; fileRef = 9BD4017C1B5025C7532A43B7 /* mobius_09.webp */; };
+		935D68C6F3150B93748E1239 /* ModelPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E08AFB4AE75FC1E977EF1630 /* ModelPickerView.swift */; };
 		9535CCB0091E9B276307213D /* SchedulesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F04A0A4A5E3D5490ADCF447 /* SchedulesView.swift */; };
 		969E272CC336191295B24887 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F08F07F303B94889E794863 /* HomeView.swift */; };
 		9B082791DC9A6835AEF5B8CB /* NotesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F97923677E193EC119FAB68 /* NotesView.swift */; };
+		9BCC577B4E09E6B04D20B225 /* mobius_38.webp in Resources */ = {isa = PBXBuildFile; fileRef = E23860BBA6F6F24F415A6348 /* mobius_38.webp */; };
+		9C75D24044621D43D8DEEFC8 /* mobius_55.webp in Resources */ = {isa = PBXBuildFile; fileRef = A1562D9A5A48D2C6D7E5DE38 /* mobius_55.webp */; };
+		9D1D6B771A44E3C123FBA98D /* mobius_33.webp in Resources */ = {isa = PBXBuildFile; fileRef = A344629E2ADF70E9DAC9675C /* mobius_33.webp */; };
+		A0CB25250528B105F719D120 /* mobius_65.webp in Resources */ = {isa = PBXBuildFile; fileRef = 6BA8E11A706A9BB0AA4D27D7 /* mobius_65.webp */; };
+		A11276ED7DB3B9A5C8366990 /* Manrope-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 55192CC5445F1262DDA99454 /* Manrope-Bold.ttf */; };
+		A25A6E0FE6271166779B1574 /* mobius_44.webp in Resources */ = {isa = PBXBuildFile; fileRef = EDD0EC686BC293BA0C44B42B /* mobius_44.webp */; };
+		A26C5C504814143998309B7D /* mobius_42.webp in Resources */ = {isa = PBXBuildFile; fileRef = 7722E775A3596146D765945C /* mobius_42.webp */; };
+		A308C9F7DEC7CC68DE4380BB /* ChatHistorySheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C4D37D5C1C8C7AA951A2D50 /* ChatHistorySheet.swift */; };
+		A54FEFFA798755F033DA867B /* mobius_50.webp in Resources */ = {isa = PBXBuildFile; fileRef = 0DD0AD8534C3A6D7F82199B9 /* mobius_50.webp */; };
+		A57887BA28EE1E3391A419BC /* mobius_04.webp in Resources */ = {isa = PBXBuildFile; fileRef = 141797575D3BC8ECCADD6937 /* mobius_04.webp */; };
+		A8F5B573CA79A423EF3D89FD /* mobius_22.webp in Resources */ = {isa = PBXBuildFile; fileRef = D71679DA3104CF09ED329EC9 /* mobius_22.webp */; };
+		A9AA44DD7E6A07B6BE6EC50D /* mobius_37.webp in Resources */ = {isa = PBXBuildFile; fileRef = 9194A1942B76D48DFDDC4F52 /* mobius_37.webp */; };
+		AA74D8115CC0B7AC6A2161FC /* mobius_51.webp in Resources */ = {isa = PBXBuildFile; fileRef = D020F778D098308E570DE67A /* mobius_51.webp */; };
+		AAE14420E62950A2C5DA0C78 /* mobius_07.webp in Resources */ = {isa = PBXBuildFile; fileRef = B727F49FD18B9C50E728D994 /* mobius_07.webp */; };
+		AE072646C3ED56E1F1974A1E /* mobius_40.webp in Resources */ = {isa = PBXBuildFile; fileRef = 97D9644DF105F1726FC52DEA /* mobius_40.webp */; };
+		AE95E145226F804CE8D686FA /* mobius_59.webp in Resources */ = {isa = PBXBuildFile; fileRef = 17E73AFCDABF4A8BEEE0B1D6 /* mobius_59.webp */; };
+		AEC2A0E2E93851490589AB8B /* mobius_41.webp in Resources */ = {isa = PBXBuildFile; fileRef = C52D8A69FE2C8DF32AC11D60 /* mobius_41.webp */; };
+		B30CFC17F4FE411C9F494552 /* mobius_43.webp in Resources */ = {isa = PBXBuildFile; fileRef = EE1056C318BBC7C0F5755D94 /* mobius_43.webp */; };
 		B579F2361368D7C62FF7B48F /* VoiceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4BD3E1B6A179219E2AC1FDD /* VoiceView.swift */; };
+		B6DD907A727FE746A2750E11 /* mobius_71.webp in Resources */ = {isa = PBXBuildFile; fileRef = 9DB85BFD1C09686A08BB5040 /* mobius_71.webp */; };
+		B83B0931CB251E62924D6795 /* VoiceVADTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03ECD1FBD23E34DDAA6C60F4 /* VoiceVADTests.swift */; };
+		B8EC4A35AE5B70E9694AE808 /* mobius_56.webp in Resources */ = {isa = PBXBuildFile; fileRef = 0789D585C4E32C8367B4D9DF /* mobius_56.webp */; };
+		BBFD50AE7314F95BAEC6D741 /* mobius_27.webp in Resources */ = {isa = PBXBuildFile; fileRef = E9E7E684F0381A55C80FDCF7 /* mobius_27.webp */; };
+		BDE803D3E14E594782A0E0CA /* ChatStream.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B6B8D36D573BDC32A82690D /* ChatStream.swift */; };
+		C12C257253232156BB5ABC0C /* mobius_03.webp in Resources */ = {isa = PBXBuildFile; fileRef = 53ACA964D3B37A85E1C2AA14 /* mobius_03.webp */; };
+		C1BABEE832FF296D82C88C45 /* mobius_18.webp in Resources */ = {isa = PBXBuildFile; fileRef = 5A4C5B0C5522D3A318BD30E3 /* mobius_18.webp */; };
+		C338F7F7A94CC26220AFFC51 /* VoiceVAD.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EEE1C8D68C52C00634826E5 /* VoiceVAD.swift */; };
+		C4C3538EF6C1D49FD838839F /* mobius_21.webp in Resources */ = {isa = PBXBuildFile; fileRef = CC8E4CBB923FAD453492F9C1 /* mobius_21.webp */; };
+		C54BCA6F7089504728ACC202 /* mobius_12.webp in Resources */ = {isa = PBXBuildFile; fileRef = DDF0E03807AA1E9E3F8D7E72 /* mobius_12.webp */; };
+		C5BCD758953BD9E35770CD89 /* mobius_68.webp in Resources */ = {isa = PBXBuildFile; fileRef = 75732F55A6BED9FB899F2904 /* mobius_68.webp */; };
+		C6B99F61752C11FD58A7730F /* mobius_05.webp in Resources */ = {isa = PBXBuildFile; fileRef = 703C34CF2F95143E83461EBD /* mobius_05.webp */; };
+		CEDBB2339402826A2B473F06 /* mobius_17.webp in Resources */ = {isa = PBXBuildFile; fileRef = 0E09A773F32ADCF97CFBED6B /* mobius_17.webp */; };
+		CEF87751516CE567C7C8A055 /* mobius_00.webp in Resources */ = {isa = PBXBuildFile; fileRef = 47E3F47D43EBBE98C02C0DCD /* mobius_00.webp */; };
+		D0869F4465AF6B0372722BC6 /* mobius_24.webp in Resources */ = {isa = PBXBuildFile; fileRef = 1BD65746168153E4927EA4BF /* mobius_24.webp */; };
+		D18A6856EBE158DF068E24E4 /* mobius_20.webp in Resources */ = {isa = PBXBuildFile; fileRef = E37A4053643D2CE4973B3F69 /* mobius_20.webp */; };
+		D50689448A84AD9315336677 /* mobius_23.webp in Resources */ = {isa = PBXBuildFile; fileRef = 032DBBA07506A4CB030698CA /* mobius_23.webp */; };
+		D608E7CD8B4A393517D8122E /* mobius_36.webp in Resources */ = {isa = PBXBuildFile; fileRef = DF52D5387FB44B148544B0D6 /* mobius_36.webp */; };
+		D6203DCC175CF8AF5BD5D154 /* mobius_52.webp in Resources */ = {isa = PBXBuildFile; fileRef = 96E3CD59C334F2231416D963 /* mobius_52.webp */; };
+		D76E4B067E18EAFFBE9BEBE2 /* mobius_48.webp in Resources */ = {isa = PBXBuildFile; fileRef = 1FE3E488DA41183B5847860E /* mobius_48.webp */; };
+		DB09BBD764DCC5DB777B651F /* mobius_34.webp in Resources */ = {isa = PBXBuildFile; fileRef = 2D057DD50738AF82B6EEFAFB /* mobius_34.webp */; };
+		DC72B30C2119CCDE63F83B4E /* mobius_06.webp in Resources */ = {isa = PBXBuildFile; fileRef = FBB0FEA26280A6E401A0396B /* mobius_06.webp */; };
+		E2F92C125DDE2D99E40123D8 /* VoiceVAD.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EEE1C8D68C52C00634826E5 /* VoiceVAD.swift */; };
+		E73B2BD17DB2CE2B88B627B0 /* mobius_32.webp in Resources */ = {isa = PBXBuildFile; fileRef = DFD325F2AFCC1504F4FADE8C /* mobius_32.webp */; };
 		E7443621280D39788C3B75AA /* ControlHub.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4002AFFA392F4F378F587763 /* ControlHub.swift */; };
 		EFB9D44B159846261786C6DF /* Views.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC49B12939BF081C69BFE0E1 /* Views.swift */; };
+		F2CBA915EC484D57BF570E30 /* SplashView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2500EEA5FF92FB9A6C15CAB /* SplashView.swift */; };
 		F388A89F2C4238B747CCD5BF /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 87D915FC199267FC631F862F /* Assets.xcassets */; };
+		F99248031EF1818AC9B070D2 /* mobius_14.webp in Resources */ = {isa = PBXBuildFile; fileRef = 04BE8368A38BE1F127F616DA /* mobius_14.webp */; };
+		FD8C2F192231D10084420232 /* Inter-Bold.otf in Resources */ = {isa = PBXBuildFile; fileRef = 9ACD191FD7EC37CAC94B4382 /* Inter-Bold.otf */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		004E18064E0FDB2E41E29212 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		01AACB1FBD851BA34EE1ED9D /* mobius_19.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_19.webp; sourceTree = "<group>"; };
+		032DBBA07506A4CB030698CA /* mobius_23.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_23.webp; sourceTree = "<group>"; };
+		03ECD1FBD23E34DDAA6C60F4 /* VoiceVADTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceVADTests.swift; sourceTree = "<group>"; };
+		04BE8368A38BE1F127F616DA /* mobius_14.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_14.webp; sourceTree = "<group>"; };
 		04E26A800CF1D4790CE5DA10 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		0789D585C4E32C8367B4D9DF /* mobius_56.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_56.webp; sourceTree = "<group>"; };
+		0884AF18F290B54074BF357F /* mobius_08.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_08.webp; sourceTree = "<group>"; };
+		0C853FA9D10A529C2BEA5227 /* mobius_02.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_02.webp; sourceTree = "<group>"; };
+		0DD0AD8534C3A6D7F82199B9 /* mobius_50.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_50.webp; sourceTree = "<group>"; };
+		0DEC784721DA7508FFE6FC29 /* PermagentTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = PermagentTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		0E09A773F32ADCF97CFBED6B /* mobius_17.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_17.webp; sourceTree = "<group>"; };
+		141797575D3BC8ECCADD6937 /* mobius_04.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_04.webp; sourceTree = "<group>"; };
+		17E73AFCDABF4A8BEEE0B1D6 /* mobius_59.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_59.webp; sourceTree = "<group>"; };
+		1BD65746168153E4927EA4BF /* mobius_24.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_24.webp; sourceTree = "<group>"; };
+		1EEE1C8D68C52C00634826E5 /* VoiceVAD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceVAD.swift; sourceTree = "<group>"; };
+		1FE3E488DA41183B5847860E /* mobius_48.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_48.webp; sourceTree = "<group>"; };
+		27F090C554069B3A53A77509 /* Permagent.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = Permagent.icon; sourceTree = "<group>"; };
+		2D057DD50738AF82B6EEFAFB /* mobius_34.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_34.webp; sourceTree = "<group>"; };
+		37120DC59C45803562C55A0A /* Inter-SemiBold.otf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Inter-SemiBold.otf"; sourceTree = "<group>"; };
+		3D71A28310BFC06A57F5C545 /* mobius_13.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_13.webp; sourceTree = "<group>"; };
 		4002AFFA392F4F378F587763 /* ControlHub.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ControlHub.swift; sourceTree = "<group>"; };
+		423261D9233DB68AF1B0BFDE /* Manrope-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Manrope-SemiBold.ttf"; sourceTree = "<group>"; };
+		42D96E2A0E90E608750ABFB2 /* Inter-Regular.otf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Inter-Regular.otf"; sourceTree = "<group>"; };
+		47E3F47D43EBBE98C02C0DCD /* mobius_00.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_00.webp; sourceTree = "<group>"; };
+		5241FED37E727F70D96EF7AA /* mobius_66.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_66.webp; sourceTree = "<group>"; };
+		53ACA964D3B37A85E1C2AA14 /* mobius_03.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_03.webp; sourceTree = "<group>"; };
+		55192CC5445F1262DDA99454 /* Manrope-Bold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Manrope-Bold.ttf"; sourceTree = "<group>"; };
+		55838E3E6C56C18D3B3DF44D /* mobius_63.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_63.webp; sourceTree = "<group>"; };
+		5834485AF6815A993EAB8246 /* mobius_45.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_45.webp; sourceTree = "<group>"; };
+		5A4C5B0C5522D3A318BD30E3 /* mobius_18.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_18.webp; sourceTree = "<group>"; };
+		5B6B8D36D573BDC32A82690D /* ChatStream.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatStream.swift; sourceTree = "<group>"; };
 		5F08F07F303B94889E794863 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+		6BA8E11A706A9BB0AA4D27D7 /* mobius_65.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_65.webp; sourceTree = "<group>"; };
 		6F04A0A4A5E3D5490ADCF447 /* SchedulesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SchedulesView.swift; sourceTree = "<group>"; };
+		6FEED3E5A9B281991FABC481 /* VoiceOrbView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceOrbView.swift; sourceTree = "<group>"; };
+		703C34CF2F95143E83461EBD /* mobius_05.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_05.webp; sourceTree = "<group>"; };
+		75732F55A6BED9FB899F2904 /* mobius_68.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_68.webp; sourceTree = "<group>"; };
+		7722E775A3596146D765945C /* mobius_42.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_42.webp; sourceTree = "<group>"; };
+		79B624DD50B28C932A809D4D /* mobius_11.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_11.webp; sourceTree = "<group>"; };
+		79BB7C24CB5A54725466E6A0 /* mobius_58.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_58.webp; sourceTree = "<group>"; };
+		7B939767A843244D60550976 /* mobius_53.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_53.webp; sourceTree = "<group>"; };
+		820E69821F1CA3B0E87C82F3 /* mobius_67.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_67.webp; sourceTree = "<group>"; };
+		8371B38D78B810EDE35E0120 /* mobius_46.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_46.webp; sourceTree = "<group>"; };
 		8694CAB5B48EE233EE1B6617 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		87D915FC199267FC631F862F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		8F97923677E193EC119FAB68 /* NotesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesView.swift; sourceTree = "<group>"; };
+		9194A1942B76D48DFDDC4F52 /* mobius_37.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_37.webp; sourceTree = "<group>"; };
+		92F5A8A5633ED54576A243D3 /* mobius_74.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_74.webp; sourceTree = "<group>"; };
+		952108923C1510E5569EDF9A /* mobius_35.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_35.webp; sourceTree = "<group>"; };
+		95E428CEB4EA1BD8981C54ED /* mobius_47.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_47.webp; sourceTree = "<group>"; };
+		966500083B24ACE71ABBD8AD /* mobius_54.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_54.webp; sourceTree = "<group>"; };
+		96E3CD59C334F2231416D963 /* mobius_52.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_52.webp; sourceTree = "<group>"; };
+		97D9644DF105F1726FC52DEA /* mobius_40.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_40.webp; sourceTree = "<group>"; };
 		99F34E2381968F13A858F14A /* DictateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictateView.swift; sourceTree = "<group>"; };
+		9ACD191FD7EC37CAC94B4382 /* Inter-Bold.otf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Inter-Bold.otf"; sourceTree = "<group>"; };
+		9BD4017C1B5025C7532A43B7 /* mobius_09.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_09.webp; sourceTree = "<group>"; };
+		9C4D37D5C1C8C7AA951A2D50 /* ChatHistorySheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatHistorySheet.swift; sourceTree = "<group>"; };
+		9DB85BFD1C09686A08BB5040 /* mobius_71.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_71.webp; sourceTree = "<group>"; };
+		A1562D9A5A48D2C6D7E5DE38 /* mobius_55.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_55.webp; sourceTree = "<group>"; };
+		A2929017C0AB57BB453FE479 /* mobius_61.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_61.webp; sourceTree = "<group>"; };
+		A344629E2ADF70E9DAC9675C /* mobius_33.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_33.webp; sourceTree = "<group>"; };
+		A50E726E7A7F3E738039E437 /* mobius_31.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_31.webp; sourceTree = "<group>"; };
 		AA0EDD200AC9AB1D53EB3754 /* AgentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentsView.swift; sourceTree = "<group>"; };
+		ACF042D26EBA2B8AA3FC72E1 /* mobius_26.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_26.webp; sourceTree = "<group>"; };
+		B6F0018258AE31DA3C2066AA /* mobius_69.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_69.webp; sourceTree = "<group>"; };
+		B727F49FD18B9C50E728D994 /* mobius_07.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_07.webp; sourceTree = "<group>"; };
+		BF0D5D72E70CE12B1E837D71 /* AgentIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentIdentity.swift; sourceTree = "<group>"; };
 		C4BD3E1B6A179219E2AC1FDD /* VoiceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceView.swift; sourceTree = "<group>"; };
+		C52D8A69FE2C8DF32AC11D60 /* mobius_41.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_41.webp; sourceTree = "<group>"; };
+		C5EE1883E26DB1BBB2207242 /* Manrope-ExtraBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Manrope-ExtraBold.ttf"; sourceTree = "<group>"; };
+		C775766BB71B91EECA6FAAC1 /* Manrope-OFL.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "Manrope-OFL.txt"; sourceTree = "<group>"; };
 		C775F55DDB9DE14F8D4323E6 /* PermagentApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermagentApp.swift; sourceTree = "<group>"; };
+		C7B80C27B4E2ECC150070E7B /* TodosView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodosView.swift; sourceTree = "<group>"; };
+		CC8E4CBB923FAD453492F9C1 /* mobius_21.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_21.webp; sourceTree = "<group>"; };
+		CEAB4D45CE7CAF7281A46AE0 /* ChatStreamTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatStreamTests.swift; sourceTree = "<group>"; };
+		CEC021DE8FB3CC7E8C84F947 /* mobius_15.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_15.webp; sourceTree = "<group>"; };
+		D020F778D098308E570DE67A /* mobius_51.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_51.webp; sourceTree = "<group>"; };
+		D047DD5EB0226F5C108BE2DD /* Inter-OFL.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "Inter-OFL.txt"; sourceTree = "<group>"; };
+		D0BB820907A45AEF52B8EF66 /* JetBrainsMono-Medium.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "JetBrainsMono-Medium.ttf"; sourceTree = "<group>"; };
+		D10A4D843A64C8C92883D729 /* JetBrainsMono-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "JetBrainsMono-Regular.ttf"; sourceTree = "<group>"; };
+		D438F8D1C32B74538EF4F0AF /* mobius_39.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_39.webp; sourceTree = "<group>"; };
+		D5FC5C685CBD279DABF0DF1D /* mobius_62.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_62.webp; sourceTree = "<group>"; };
+		D71679DA3104CF09ED329EC9 /* mobius_22.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_22.webp; sourceTree = "<group>"; };
+		DA47FF553E92344005395D59 /* JetBrainsMono-OFL.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "JetBrainsMono-OFL.txt"; sourceTree = "<group>"; };
+		DAA8C84359BF73D7505BA019 /* Inter-Medium.otf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Inter-Medium.otf"; sourceTree = "<group>"; };
+		DDF0E03807AA1E9E3F8D7E72 /* mobius_12.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_12.webp; sourceTree = "<group>"; };
+		DF52D5387FB44B148544B0D6 /* mobius_36.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_36.webp; sourceTree = "<group>"; };
+		DFD325F2AFCC1504F4FADE8C /* mobius_32.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_32.webp; sourceTree = "<group>"; };
+		E07480822E8FEE2A898A2605 /* mobius_64.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_64.webp; sourceTree = "<group>"; };
+		E08AFB4AE75FC1E977EF1630 /* ModelPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelPickerView.swift; sourceTree = "<group>"; };
+		E23860BBA6F6F24F415A6348 /* mobius_38.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_38.webp; sourceTree = "<group>"; };
+		E37A4053643D2CE4973B3F69 /* mobius_20.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_20.webp; sourceTree = "<group>"; };
+		E42505E2B61F537431E47F2D /* MobiusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobiusView.swift; sourceTree = "<group>"; };
+		E4595A217F1BC6673A61434F /* mobius_25.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_25.webp; sourceTree = "<group>"; };
 		E8D531DED49DC50B4B71FE69 /* Permagent.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Permagent.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		E9E7E684F0381A55C80FDCF7 /* mobius_27.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_27.webp; sourceTree = "<group>"; };
+		EDD0EC686BC293BA0C44B42B /* mobius_44.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_44.webp; sourceTree = "<group>"; };
+		EE1056C318BBC7C0F5755D94 /* mobius_43.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_43.webp; sourceTree = "<group>"; };
+		F2500EEA5FF92FB9A6C15CAB /* SplashView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SplashView.swift; sourceTree = "<group>"; };
+		F29247F9621E9DE2137A0C10 /* mobius_57.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_57.webp; sourceTree = "<group>"; };
+		F2C357BC721A2F9D99617979 /* mobius_73.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_73.webp; sourceTree = "<group>"; };
+		F2E74815A78063D762CFA02A /* mobius_28.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_28.webp; sourceTree = "<group>"; };
+		F43F18C6E4951035C0EB1426 /* mobius_75.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_75.webp; sourceTree = "<group>"; };
+		F4403DC20C2D5999DD1B1673 /* mobius_70.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_70.webp; sourceTree = "<group>"; };
+		F69A3E36CE477B9F8F117D5E /* mobius_30.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_30.webp; sourceTree = "<group>"; };
+		F6C7E6718CD9980470FB3A90 /* mobius_29.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_29.webp; sourceTree = "<group>"; };
+		F78457E597795833604DE024 /* mobius_60.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_60.webp; sourceTree = "<group>"; };
+		F82C05C7BEEFCC8963722708 /* mobius_10.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_10.webp; sourceTree = "<group>"; };
+		F83E5EC31CC02070F9A63CAC /* mobius_72.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_72.webp; sourceTree = "<group>"; };
+		F887F06D6DA8665F0CAE25AE /* mobius_16.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_16.webp; sourceTree = "<group>"; };
+		F8C47FA510F5D3DD93D73CC3 /* mobius_49.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_49.webp; sourceTree = "<group>"; };
+		FBB0FEA26280A6E401A0396B /* mobius_06.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_06.webp; sourceTree = "<group>"; };
 		FC49B12939BF081C69BFE0E1 /* Views.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views.swift; sourceTree = "<group>"; };
+		FD217B47A0E95ABD4739B494 /* mobius_01.webp */ = {isa = PBXFileReference; lastKnownFileType = file; path = mobius_01.webp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -43,34 +246,159 @@
 			isa = PBXGroup;
 			children = (
 				E8D531DED49DC50B4B71FE69 /* Permagent.app */,
+				0DEC784721DA7508FFE6FC29 /* PermagentTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		4775D8B42E1952BE602D3725 /* MobiusFrames */ = {
+			isa = PBXGroup;
+			children = (
+				47E3F47D43EBBE98C02C0DCD /* mobius_00.webp */,
+				FD217B47A0E95ABD4739B494 /* mobius_01.webp */,
+				0C853FA9D10A529C2BEA5227 /* mobius_02.webp */,
+				53ACA964D3B37A85E1C2AA14 /* mobius_03.webp */,
+				141797575D3BC8ECCADD6937 /* mobius_04.webp */,
+				703C34CF2F95143E83461EBD /* mobius_05.webp */,
+				FBB0FEA26280A6E401A0396B /* mobius_06.webp */,
+				B727F49FD18B9C50E728D994 /* mobius_07.webp */,
+				0884AF18F290B54074BF357F /* mobius_08.webp */,
+				9BD4017C1B5025C7532A43B7 /* mobius_09.webp */,
+				F82C05C7BEEFCC8963722708 /* mobius_10.webp */,
+				79B624DD50B28C932A809D4D /* mobius_11.webp */,
+				DDF0E03807AA1E9E3F8D7E72 /* mobius_12.webp */,
+				3D71A28310BFC06A57F5C545 /* mobius_13.webp */,
+				04BE8368A38BE1F127F616DA /* mobius_14.webp */,
+				CEC021DE8FB3CC7E8C84F947 /* mobius_15.webp */,
+				F887F06D6DA8665F0CAE25AE /* mobius_16.webp */,
+				0E09A773F32ADCF97CFBED6B /* mobius_17.webp */,
+				5A4C5B0C5522D3A318BD30E3 /* mobius_18.webp */,
+				01AACB1FBD851BA34EE1ED9D /* mobius_19.webp */,
+				E37A4053643D2CE4973B3F69 /* mobius_20.webp */,
+				CC8E4CBB923FAD453492F9C1 /* mobius_21.webp */,
+				D71679DA3104CF09ED329EC9 /* mobius_22.webp */,
+				032DBBA07506A4CB030698CA /* mobius_23.webp */,
+				1BD65746168153E4927EA4BF /* mobius_24.webp */,
+				E4595A217F1BC6673A61434F /* mobius_25.webp */,
+				ACF042D26EBA2B8AA3FC72E1 /* mobius_26.webp */,
+				E9E7E684F0381A55C80FDCF7 /* mobius_27.webp */,
+				F2E74815A78063D762CFA02A /* mobius_28.webp */,
+				F6C7E6718CD9980470FB3A90 /* mobius_29.webp */,
+				F69A3E36CE477B9F8F117D5E /* mobius_30.webp */,
+				A50E726E7A7F3E738039E437 /* mobius_31.webp */,
+				DFD325F2AFCC1504F4FADE8C /* mobius_32.webp */,
+				A344629E2ADF70E9DAC9675C /* mobius_33.webp */,
+				2D057DD50738AF82B6EEFAFB /* mobius_34.webp */,
+				952108923C1510E5569EDF9A /* mobius_35.webp */,
+				DF52D5387FB44B148544B0D6 /* mobius_36.webp */,
+				9194A1942B76D48DFDDC4F52 /* mobius_37.webp */,
+				E23860BBA6F6F24F415A6348 /* mobius_38.webp */,
+				D438F8D1C32B74538EF4F0AF /* mobius_39.webp */,
+				97D9644DF105F1726FC52DEA /* mobius_40.webp */,
+				C52D8A69FE2C8DF32AC11D60 /* mobius_41.webp */,
+				7722E775A3596146D765945C /* mobius_42.webp */,
+				EE1056C318BBC7C0F5755D94 /* mobius_43.webp */,
+				EDD0EC686BC293BA0C44B42B /* mobius_44.webp */,
+				5834485AF6815A993EAB8246 /* mobius_45.webp */,
+				8371B38D78B810EDE35E0120 /* mobius_46.webp */,
+				95E428CEB4EA1BD8981C54ED /* mobius_47.webp */,
+				1FE3E488DA41183B5847860E /* mobius_48.webp */,
+				F8C47FA510F5D3DD93D73CC3 /* mobius_49.webp */,
+				0DD0AD8534C3A6D7F82199B9 /* mobius_50.webp */,
+				D020F778D098308E570DE67A /* mobius_51.webp */,
+				96E3CD59C334F2231416D963 /* mobius_52.webp */,
+				7B939767A843244D60550976 /* mobius_53.webp */,
+				966500083B24ACE71ABBD8AD /* mobius_54.webp */,
+				A1562D9A5A48D2C6D7E5DE38 /* mobius_55.webp */,
+				0789D585C4E32C8367B4D9DF /* mobius_56.webp */,
+				F29247F9621E9DE2137A0C10 /* mobius_57.webp */,
+				79BB7C24CB5A54725466E6A0 /* mobius_58.webp */,
+				17E73AFCDABF4A8BEEE0B1D6 /* mobius_59.webp */,
+				F78457E597795833604DE024 /* mobius_60.webp */,
+				A2929017C0AB57BB453FE479 /* mobius_61.webp */,
+				D5FC5C685CBD279DABF0DF1D /* mobius_62.webp */,
+				55838E3E6C56C18D3B3DF44D /* mobius_63.webp */,
+				E07480822E8FEE2A898A2605 /* mobius_64.webp */,
+				6BA8E11A706A9BB0AA4D27D7 /* mobius_65.webp */,
+				5241FED37E727F70D96EF7AA /* mobius_66.webp */,
+				820E69821F1CA3B0E87C82F3 /* mobius_67.webp */,
+				75732F55A6BED9FB899F2904 /* mobius_68.webp */,
+				B6F0018258AE31DA3C2066AA /* mobius_69.webp */,
+				F4403DC20C2D5999DD1B1673 /* mobius_70.webp */,
+				9DB85BFD1C09686A08BB5040 /* mobius_71.webp */,
+				F83E5EC31CC02070F9A63CAC /* mobius_72.webp */,
+				F2C357BC721A2F9D99617979 /* mobius_73.webp */,
+				92F5A8A5633ED54576A243D3 /* mobius_74.webp */,
+				F43F18C6E4951035C0EB1426 /* mobius_75.webp */,
+			);
+			path = MobiusFrames;
+			sourceTree = "<group>";
+		};
+		47FD8F558205136C66BB79D7 /* PermagentMobileTests */ = {
+			isa = PBXGroup;
+			children = (
+				CEAB4D45CE7CAF7281A46AE0 /* ChatStreamTests.swift */,
+				03ECD1FBD23E34DDAA6C60F4 /* VoiceVADTests.swift */,
+			);
+			path = PermagentMobileTests;
 			sourceTree = "<group>";
 		};
 		4A4F8C5EB1DA6638A3805CC0 /* PermagentMobile */ = {
 			isa = PBXGroup;
 			children = (
+				BF0D5D72E70CE12B1E837D71 /* AgentIdentity.swift */,
 				AA0EDD200AC9AB1D53EB3754 /* AgentsView.swift */,
 				8694CAB5B48EE233EE1B6617 /* APIClient.swift */,
 				87D915FC199267FC631F862F /* Assets.xcassets */,
+				9C4D37D5C1C8C7AA951A2D50 /* ChatHistorySheet.swift */,
+				5B6B8D36D573BDC32A82690D /* ChatStream.swift */,
 				4002AFFA392F4F378F587763 /* ControlHub.swift */,
 				99F34E2381968F13A858F14A /* DictateView.swift */,
 				5F08F07F303B94889E794863 /* HomeView.swift */,
 				004E18064E0FDB2E41E29212 /* Info.plist */,
+				E42505E2B61F537431E47F2D /* MobiusView.swift */,
+				E08AFB4AE75FC1E977EF1630 /* ModelPickerView.swift */,
 				8F97923677E193EC119FAB68 /* NotesView.swift */,
+				27F090C554069B3A53A77509 /* Permagent.icon */,
 				C775F55DDB9DE14F8D4323E6 /* PermagentApp.swift */,
 				6F04A0A4A5E3D5490ADCF447 /* SchedulesView.swift */,
+				F2500EEA5FF92FB9A6C15CAB /* SplashView.swift */,
 				04E26A800CF1D4790CE5DA10 /* Theme.swift */,
+				C7B80C27B4E2ECC150070E7B /* TodosView.swift */,
 				FC49B12939BF081C69BFE0E1 /* Views.swift */,
+				6FEED3E5A9B281991FABC481 /* VoiceOrbView.swift */,
+				1EEE1C8D68C52C00634826E5 /* VoiceVAD.swift */,
 				C4BD3E1B6A179219E2AC1FDD /* VoiceView.swift */,
+				A36A8EB49E49D7487ABB25A9 /* Fonts */,
+				4775D8B42E1952BE602D3725 /* MobiusFrames */,
 			);
 			path = PermagentMobile;
+			sourceTree = "<group>";
+		};
+		A36A8EB49E49D7487ABB25A9 /* Fonts */ = {
+			isa = PBXGroup;
+			children = (
+				9ACD191FD7EC37CAC94B4382 /* Inter-Bold.otf */,
+				DAA8C84359BF73D7505BA019 /* Inter-Medium.otf */,
+				D047DD5EB0226F5C108BE2DD /* Inter-OFL.txt */,
+				42D96E2A0E90E608750ABFB2 /* Inter-Regular.otf */,
+				37120DC59C45803562C55A0A /* Inter-SemiBold.otf */,
+				D0BB820907A45AEF52B8EF66 /* JetBrainsMono-Medium.ttf */,
+				DA47FF553E92344005395D59 /* JetBrainsMono-OFL.txt */,
+				D10A4D843A64C8C92883D729 /* JetBrainsMono-Regular.ttf */,
+				55192CC5445F1262DDA99454 /* Manrope-Bold.ttf */,
+				C5EE1883E26DB1BBB2207242 /* Manrope-ExtraBold.ttf */,
+				C775766BB71B91EECA6FAAC1 /* Manrope-OFL.txt */,
+				423261D9233DB68AF1B0BFDE /* Manrope-SemiBold.ttf */,
+			);
+			path = Fonts;
 			sourceTree = "<group>";
 		};
 		E6B2462D39D1E1E555A169B8 = {
 			isa = PBXGroup;
 			children = (
 				4A4F8C5EB1DA6638A3805CC0 /* PermagentMobile */,
+				47FD8F558205136C66BB79D7 /* PermagentMobileTests */,
 				0BB819F64F12E043A9FF5E6E /* Products */,
 			);
 			sourceTree = "<group>";
@@ -96,6 +424,23 @@
 			productReference = E8D531DED49DC50B4B71FE69 /* Permagent.app */;
 			productType = "com.apple.product-type.application";
 		};
+		C072C1E2E43C4931F40B34A9 /* PermagentTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 191186744BCD7BB5FEDDE670 /* Build configuration list for PBXNativeTarget "PermagentTests" */;
+			buildPhases = (
+				A35CE7161F7F326BC1255279 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = PermagentTests;
+			packageProductDependencies = (
+			);
+			productName = PermagentTests;
+			productReference = 0DEC784721DA7508FFE6FC29 /* PermagentTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -104,6 +449,15 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					6DBCCCC19FD9F29A2366588C = {
+						DevelopmentTeam = GANM22MFCH;
+					};
+					C072C1E2E43C4931F40B34A9 = {
+						DevelopmentTeam = GANM22MFCH;
+						ProvisioningStyle = Automatic;
+					};
+				};
 			};
 			buildConfigurationList = 2C52E59FB12CF0D71319F5D9 /* Build configuration list for PBXProject "PermagentMobile" */;
 			developmentRegion = en;
@@ -120,6 +474,7 @@
 			projectRoot = "";
 			targets = (
 				6DBCCCC19FD9F29A2366588C /* Permagent */,
+				C072C1E2E43C4931F40B34A9 /* PermagentTests */,
 			);
 		};
 /* End PBXProject section */
@@ -130,6 +485,95 @@
 			buildActionMask = 2147483647;
 			files = (
 				F388A89F2C4238B747CCD5BF /* Assets.xcassets in Resources */,
+				FD8C2F192231D10084420232 /* Inter-Bold.otf in Resources */,
+				66DB01E4D1223BB87874B914 /* Inter-Medium.otf in Resources */,
+				1A656D43C34F0C4D96FB2174 /* Inter-OFL.txt in Resources */,
+				308BADDD5D25E51D299FC343 /* Inter-Regular.otf in Resources */,
+				559F1CDA2AF8B315F47B24EA /* Inter-SemiBold.otf in Resources */,
+				5FFC587EE2879794404CD491 /* JetBrainsMono-Medium.ttf in Resources */,
+				26458EBB29DED9593DA5766E /* JetBrainsMono-OFL.txt in Resources */,
+				0F77D5464AEDEBB583942494 /* JetBrainsMono-Regular.ttf in Resources */,
+				A11276ED7DB3B9A5C8366990 /* Manrope-Bold.ttf in Resources */,
+				684E0A1BD2C5EECEDF9A4390 /* Manrope-ExtraBold.ttf in Resources */,
+				02D708E5094E8C1D707E7631 /* Manrope-OFL.txt in Resources */,
+				7B96C8AA6BD6E14310D4DFDC /* Manrope-SemiBold.ttf in Resources */,
+				8784ED0174977F55A6EB0237 /* Permagent.icon in Resources */,
+				CEF87751516CE567C7C8A055 /* mobius_00.webp in Resources */,
+				14C7F957DA55FF5F851FBB01 /* mobius_01.webp in Resources */,
+				8AB762D308537BE266F6D5B0 /* mobius_02.webp in Resources */,
+				C12C257253232156BB5ABC0C /* mobius_03.webp in Resources */,
+				A57887BA28EE1E3391A419BC /* mobius_04.webp in Resources */,
+				C6B99F61752C11FD58A7730F /* mobius_05.webp in Resources */,
+				DC72B30C2119CCDE63F83B4E /* mobius_06.webp in Resources */,
+				AAE14420E62950A2C5DA0C78 /* mobius_07.webp in Resources */,
+				24C2D1CBDD4195F58BCF84AA /* mobius_08.webp in Resources */,
+				93334C044001476062C81950 /* mobius_09.webp in Resources */,
+				84D0B916B79467B77415AE31 /* mobius_10.webp in Resources */,
+				65CDEC6160E05940DE40EFC0 /* mobius_11.webp in Resources */,
+				C54BCA6F7089504728ACC202 /* mobius_12.webp in Resources */,
+				65C7C52359EEE94471B77FCC /* mobius_13.webp in Resources */,
+				F99248031EF1818AC9B070D2 /* mobius_14.webp in Resources */,
+				6805EE14D524EECC61DD0FD8 /* mobius_15.webp in Resources */,
+				270A3871444AA1ED4CAE4E76 /* mobius_16.webp in Resources */,
+				CEDBB2339402826A2B473F06 /* mobius_17.webp in Resources */,
+				C1BABEE832FF296D82C88C45 /* mobius_18.webp in Resources */,
+				7B192495931C573B896DF1F0 /* mobius_19.webp in Resources */,
+				D18A6856EBE158DF068E24E4 /* mobius_20.webp in Resources */,
+				C4C3538EF6C1D49FD838839F /* mobius_21.webp in Resources */,
+				A8F5B573CA79A423EF3D89FD /* mobius_22.webp in Resources */,
+				D50689448A84AD9315336677 /* mobius_23.webp in Resources */,
+				D0869F4465AF6B0372722BC6 /* mobius_24.webp in Resources */,
+				5DACE5C30A67AB589D464C2F /* mobius_25.webp in Resources */,
+				7DD46702E4BB4F9A85B8A1AB /* mobius_26.webp in Resources */,
+				BBFD50AE7314F95BAEC6D741 /* mobius_27.webp in Resources */,
+				4A97D4B90394BE305751C889 /* mobius_28.webp in Resources */,
+				7E0BB92621F39263691D2900 /* mobius_29.webp in Resources */,
+				4F5B6CA01AD21ADBE170CB0F /* mobius_30.webp in Resources */,
+				7252CEB45C5C6557601BB12A /* mobius_31.webp in Resources */,
+				E73B2BD17DB2CE2B88B627B0 /* mobius_32.webp in Resources */,
+				9D1D6B771A44E3C123FBA98D /* mobius_33.webp in Resources */,
+				DB09BBD764DCC5DB777B651F /* mobius_34.webp in Resources */,
+				903B030DA4435430E2D44FA5 /* mobius_35.webp in Resources */,
+				D608E7CD8B4A393517D8122E /* mobius_36.webp in Resources */,
+				A9AA44DD7E6A07B6BE6EC50D /* mobius_37.webp in Resources */,
+				9BCC577B4E09E6B04D20B225 /* mobius_38.webp in Resources */,
+				12E4D534C3E04C154F03BE52 /* mobius_39.webp in Resources */,
+				AE072646C3ED56E1F1974A1E /* mobius_40.webp in Resources */,
+				AEC2A0E2E93851490589AB8B /* mobius_41.webp in Resources */,
+				A26C5C504814143998309B7D /* mobius_42.webp in Resources */,
+				B30CFC17F4FE411C9F494552 /* mobius_43.webp in Resources */,
+				A25A6E0FE6271166779B1574 /* mobius_44.webp in Resources */,
+				248C4007BB1491CF5388F737 /* mobius_45.webp in Resources */,
+				7D2C9734F04E69CD82CCEAC7 /* mobius_46.webp in Resources */,
+				54B5D8BFACB124F9CCB50D56 /* mobius_47.webp in Resources */,
+				D76E4B067E18EAFFBE9BEBE2 /* mobius_48.webp in Resources */,
+				74B9A7058C0A3750BD79AB6F /* mobius_49.webp in Resources */,
+				A54FEFFA798755F033DA867B /* mobius_50.webp in Resources */,
+				AA74D8115CC0B7AC6A2161FC /* mobius_51.webp in Resources */,
+				D6203DCC175CF8AF5BD5D154 /* mobius_52.webp in Resources */,
+				8DADBF750DCA08670AE5949D /* mobius_53.webp in Resources */,
+				153EEEC9ED7721E03EDBDB9C /* mobius_54.webp in Resources */,
+				9C75D24044621D43D8DEEFC8 /* mobius_55.webp in Resources */,
+				B8EC4A35AE5B70E9694AE808 /* mobius_56.webp in Resources */,
+				1508DA94B5E3ED22FCA12F4B /* mobius_57.webp in Resources */,
+				7CDE4D3404EA6BF70CECEB1B /* mobius_58.webp in Resources */,
+				AE95E145226F804CE8D686FA /* mobius_59.webp in Resources */,
+				31BE4193B32F15848ED8A4C8 /* mobius_60.webp in Resources */,
+				4904E55910E1289BBA612900 /* mobius_61.webp in Resources */,
+				6B8EEC13095E9F2F6C02965A /* mobius_62.webp in Resources */,
+				65FD269A9A5C6F4516F8F66E /* mobius_63.webp in Resources */,
+				2975B6383D5433EFA00F72F4 /* mobius_64.webp in Resources */,
+				A0CB25250528B105F719D120 /* mobius_65.webp in Resources */,
+				0A15DF3328C25A3EF138FA44 /* mobius_66.webp in Resources */,
+				272F3B99FC8FC6FFCE13ADDE /* mobius_67.webp in Resources */,
+				C5BCD758953BD9E35770CD89 /* mobius_68.webp in Resources */,
+				3BC8C5AC70FB3597D2221D26 /* mobius_69.webp in Resources */,
+				79EF67298C7F75AB03541663 /* mobius_70.webp in Resources */,
+				B6DD907A727FE746A2750E11 /* mobius_71.webp in Resources */,
+				3763765877E4B418D2CE5E66 /* mobius_72.webp in Resources */,
+				4F195459B43EB157D454EAA4 /* mobius_73.webp in Resources */,
+				876785D1618F76B9F5A8681D /* mobius_74.webp in Resources */,
+				6674F05CDA156A1CC887C0C9 /* mobius_75.webp in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -141,16 +585,36 @@
 			buildActionMask = 2147483647;
 			files = (
 				831E82FFAA0BC3E001164146 /* APIClient.swift in Sources */,
+				11FCF69481F74733BC03E04D /* AgentIdentity.swift in Sources */,
 				5B30E073BB2ECAB6E33164B1 /* AgentsView.swift in Sources */,
+				A308C9F7DEC7CC68DE4380BB /* ChatHistorySheet.swift in Sources */,
+				237D5E5B42F6A7DC3D25EF53 /* ChatStream.swift in Sources */,
 				E7443621280D39788C3B75AA /* ControlHub.swift in Sources */,
 				336AFAC211E2D1C99E32CB2A /* DictateView.swift in Sources */,
 				969E272CC336191295B24887 /* HomeView.swift in Sources */,
+				74121FE658DFF52EFD481487 /* MobiusView.swift in Sources */,
+				935D68C6F3150B93748E1239 /* ModelPickerView.swift in Sources */,
 				9B082791DC9A6835AEF5B8CB /* NotesView.swift in Sources */,
 				8F94851B95D12EF04506A591 /* PermagentApp.swift in Sources */,
 				9535CCB0091E9B276307213D /* SchedulesView.swift in Sources */,
+				F2CBA915EC484D57BF570E30 /* SplashView.swift in Sources */,
 				389CCEEEE3C95E4B8E3A0D3F /* Theme.swift in Sources */,
+				7CF0821B363A714765825661 /* TodosView.swift in Sources */,
 				EFB9D44B159846261786C6DF /* Views.swift in Sources */,
+				0D8A364D8FC9A0D197FD6F88 /* VoiceOrbView.swift in Sources */,
+				E2F92C125DDE2D99E40123D8 /* VoiceVAD.swift in Sources */,
 				B579F2361368D7C62FF7B48F /* VoiceView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A35CE7161F7F326BC1255279 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BDE803D3E14E594782A0E0CA /* ChatStream.swift in Sources */,
+				04ACE51338886772B88EDA45 /* ChatStreamTests.swift in Sources */,
+				C338F7F7A94CC26220AFFC51 /* VoiceVAD.swift in Sources */,
+				B83B0931CB251E62924D6795 /* VoiceVADTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -216,18 +680,18 @@
 		4BE27E854DEF33944A5A9F8B /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = Permagent;
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 19;
 				DEVELOPMENT_TEAM = GANM22MFCH;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				INFOPLIST_FILE = PermagentMobile/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = Permagent;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				MARKETING_VERSION = 1.31.0;
 				PRODUCT_BUNDLE_IDENTIFIER = ai.permagent.mobile;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 6.0;
@@ -298,21 +762,60 @@
 			};
 			name = Debug;
 		};
+		8ECA19F042F258F2CD684950 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = GANM22MFCH;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = ai.permagent.mobile.tests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		CBAF97E057EABA405FE0DF98 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = GANM22MFCH;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = ai.permagent.mobile.tests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
 		D05DEECA3C9948BFA425B87A /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGNING_ALLOWED = NO;
+				ASSETCATALOG_COMPILER_APPICON_NAME = Permagent;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 1;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 19;
 				DEVELOPMENT_TEAM = GANM22MFCH;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				INFOPLIST_FILE = PermagentMobile/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = Permagent;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				MARKETING_VERSION = 1.31.0;
 				PRODUCT_BUNDLE_IDENTIFIER = ai.permagent.mobile;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 6.0;
@@ -323,6 +826,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		191186744BCD7BB5FEDDE670 /* Build configuration list for PBXNativeTarget "PermagentTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CBAF97E057EABA405FE0DF98 /* Debug */,
+				8ECA19F042F258F2CD684950 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		2C52E59FB12CF0D71319F5D9 /* Build configuration list for PBXProject "PermagentMobile" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

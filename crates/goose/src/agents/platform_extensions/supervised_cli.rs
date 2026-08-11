@@ -391,6 +391,8 @@ impl GoalEngine for SupervisedCliEngine {
             run_id: session_id,
             join,
             kill: GoalKill::None,
+            // Supervised sessions are steered by the human IN the terminal.
+            steer: None,
         })
     }
 }
@@ -416,12 +418,22 @@ async fn await_supervised_completion(
             let evidence = collect_evidence(&worktree, &baseline, summary).await;
             GoalOutcome::Success(Some(evidence))
         }
-        Ok(Ok(SupervisedOutcome::Failed { reason })) => GoalOutcome::Failed(reason),
+        Ok(Ok(SupervisedOutcome::Failed { reason })) => {
+            // W4: preserve partial work on the goal branch (see the external
+            // engine's failure arm for the rationale).
+            if scan_committed_changes(&worktree, &baseline).await.is_none() {
+                push_clean_work(&worktree, &baseline).await;
+            }
+            GoalOutcome::Failed(reason)
+        }
         Ok(Err(_)) => GoalOutcome::Failed(
             "supervised session completion hook dropped without an outcome".to_string(),
         ),
         Err(_) => {
             drop_completion_hook(&session_id);
+            if scan_committed_changes(&worktree, &baseline).await.is_none() {
+                push_clean_work(&worktree, &baseline).await;
+            }
             GoalOutcome::TimedOut {
                 secs: timeout.as_secs(),
             }
@@ -705,6 +717,7 @@ mod tests {
             working_dir,
             baseline_commit: baseline,
             timeout,
+            output_tx: None,
         }
     }
 

@@ -19,6 +19,7 @@
 //! spend a model call every time, and so the actions are stable enough to act
 //! on rather than reshuffling on every render.
 
+use crate::routes::analytics_attribution as attribution;
 use crate::state::AppState;
 use axum::{
     extract::{Path, State},
@@ -94,6 +95,8 @@ pub struct AnalyticsSummary {
     pub top_campaigns: Vec<(String, i64)>,
     pub top_entry_pages: Vec<(String, i64)>,
     pub top_events: Vec<(String, i64)>,
+    /// Answer-engine first-touch / answer_engine_visit count.
+    pub aeo_visits: i64,
     pub days_with_traffic: usize,
     pub period_days: u32,
 }
@@ -195,15 +198,25 @@ pub fn render_summary(project_name: &str, s: &AnalyticsSummary) -> String {
             s.top_referrers
                 .iter()
                 .any(|(r, _)| r.to_ascii_lowercase().contains(host))
+                || s.top_sources.iter().any(|(n, _)| {
+                    let n = n.to_ascii_lowercase();
+                    n.contains(host) || n.contains(" / aeo")
+                })
         })
         .collect();
-    if !answer_engines.is_empty() {
-        out.push_str(&format!(
-            "\nAEO SIGNAL: referrals arrived from answer engines ({}). The content is being \
-             cited in generated answers — worth making more quotable and structured.\n",
+    if s.aeo_visits > 0 || !answer_engines.is_empty() {
+        let engines = if answer_engines.is_empty() {
+            "aeo".to_string()
+        } else {
             answer_engines.join(", ")
+        };
+        out.push_str(&format!(
+            "\nAEO SIGNAL: {} answer-engine visit(s); sources include ({}). The content is being \
+             cited in generated answers — worth making more quotable and structured.\n",
+            s.aeo_visits, engines,
         ));
     }
+
     let content_pages: Vec<&(String, i64)> = s
         .top_pages
         .iter()
@@ -477,8 +490,8 @@ async fn load_summary(pool: &Pool<Sqlite>, project_id: &str, period_days: u32) -
     .await
     .unwrap_or(0);
 
-    let base = "FROM analytics_events WHERE project_id = ?1 AND is_bot = 0 \
-                AND created_at >= datetime('now', ?2)";
+    let base = "FROM analytics_events WHERE project_id = ?1 AND is_bot = 0                 AND created_at >= datetime('now', ?2)";
+    let traffic = attribution::rollup_traffic_sources(pool, project_id, &since, false).await;
     AnalyticsSummary {
         pageviews,
         device_signatures,
@@ -490,30 +503,24 @@ async fn load_summary(pool: &Pool<Sqlite>, project_id: &str, period_days: u32) -
             "SELECT path, count(*) {base} AND kind = 'pageview' GROUP BY path ORDER BY count(*) DESC LIMIT 8"
         ))
         .await,
-        top_sources: Vec::new(),
+        top_sources: traffic.top_sources,
         top_referrers: rows(format!(
-            "SELECT referrer, count(*) {base} AND kind = 'pageview' AND referrer IS NOT NULL \
-             AND referrer <> '' GROUP BY referrer ORDER BY count(*) DESC LIMIT 8"
+            "SELECT referrer, count(*) {base} AND kind = 'pageview' AND referrer IS NOT NULL              AND referrer <> '' GROUP BY referrer ORDER BY count(*) DESC LIMIT 8"
         ))
         .await,
         top_campaigns: rows(format!(
-            "SELECT coalesce(utm_campaign, utm_source), count(*) {base} \
-             AND (utm_campaign IS NOT NULL OR utm_source IS NOT NULL) \
-             GROUP BY coalesce(utm_campaign, utm_source) ORDER BY count(*) DESC LIMIT 8"
+            "SELECT coalesce(utm_campaign, utm_source), count(*) {base}              AND (utm_campaign IS NOT NULL OR utm_source IS NOT NULL)              GROUP BY coalesce(utm_campaign, utm_source) ORDER BY count(*) DESC LIMIT 8"
         ))
         .await,
         top_entry_pages: rows(format!(
-            "SELECT path, count(*) FROM (SELECT path, session_id, \
-             row_number() OVER (PARTITION BY session_id ORDER BY id) AS rn \
-             {base} AND kind = 'pageview' AND session_id IS NOT NULL) WHERE rn = 1 \
-             GROUP BY path ORDER BY count(*) DESC LIMIT 8"
+            "SELECT path, count(*) FROM (SELECT path, session_id,              row_number() OVER (PARTITION BY session_id ORDER BY id) AS rn              {base} AND kind = 'pageview' AND session_id IS NOT NULL) WHERE rn = 1              GROUP BY path ORDER BY count(*) DESC LIMIT 8"
         ))
         .await,
         top_events: rows(format!(
-            "SELECT coalesce(name, '(unnamed)'), count(*) {base} AND kind = 'event' \
-             GROUP BY name ORDER BY count(*) DESC LIMIT 8"
+            "SELECT coalesce(name, '(unnamed)'), count(*) {base} AND kind = 'event'              GROUP BY name ORDER BY count(*) DESC LIMIT 8"
         ))
         .await,
+        aeo_visits: traffic.aeo_visits,
         days_with_traffic: days_with_traffic as usize,
         period_days,
     }
@@ -723,6 +730,8 @@ mod tests {
             ("https://google.com/".into(), 12),
             ("https://chatgpt.com/".into(), 1),
         ];
+        s.aeo_visits = 1;
+        s.top_sources = vec![("chatgpt / aeo".into(), 1)];
         let text = render_summary("GrocerySaver", &s);
         assert!(text.contains("AEO SIGNAL"), "{text}");
         assert!(text.contains("chatgpt.com"), "{text}");

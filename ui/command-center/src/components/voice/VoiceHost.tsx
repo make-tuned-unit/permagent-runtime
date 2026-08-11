@@ -40,6 +40,7 @@ export function VoiceHost() {
     getMicAnalyser,
     handsFree,
     setHandsFree,
+    wakeWord,
   } = useVoice({ sessionId: chatSessionId ?? undefined });
 
   useEffect(() => {
@@ -55,10 +56,11 @@ export function VoiceHost() {
       getAnalyser,
       getMicAnalyser,
       setHandsFree,
+      wakeWord,
     });
     return () => setVoiceEngine(null);
   }, [
-    state, error, handsFree,
+    state, error, handsFree, wakeWord,
     activate, deactivate, startRecording, stopRecording, interrupt,
     getAnalyser, getMicAnalyser, setHandsFree, setVoiceEngine,
   ]);
@@ -119,11 +121,23 @@ export function VoiceHost() {
     const was = prevChatWindowOpen.current;
     prevChatWindowOpen.current = chatWindowOpen;
     if (was && !chatWindowOpen && handsFreeRef.current) {
-      // setState directly, NOT openChatDock(): that helper focuses an existing
-      // chat window when `chatWindowOpen` is still true, and racing this very
-      // transition it would re-show the window the user just closed — which is
-      // why closing took two clicks.
-      useCommandCenter.setState({ chatDockOpen: true });
+      // The false-flip can be SPURIOUS: ChatLauncher's existence check races
+      // window creation right after a pop-out, so confirm the window is
+      // really gone before bringing the conversation home — acting on the
+      // first flip re-opened the dock behind a live chat window (two
+      // surfaces, and the dock X then killed the window's voice).
+      void (async () => {
+        try {
+          const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+          if (await WebviewWindow.getByLabel('chat')) return; // still alive
+        } catch { /* non-tauri: no window to race */ }
+        if (!handsFreeRef.current) return; // conversation ended meanwhile
+        // setState directly, NOT openChatDock(): that helper focuses an
+        // existing chat window when `chatWindowOpen` is still true, and
+        // racing this very transition it would re-show the window the user
+        // just closed — which is why closing took two clicks.
+        useCommandCenter.setState({ chatDockOpen: true });
+      })();
     }
   }, [chatWindowOpen]);
 
@@ -143,9 +157,13 @@ export function VoiceHost() {
         void setHandsFree(false);
         deactivate();
       },
+      wakeHint:
+        wakeWord.active && wakeWord.gated && wakeWord.phrase
+          ? `Say "${wakeWord.phrase}"`
+          : null,
     });
     return () => setVoiceConversation(null);
-  }, [handsFree, state, getAnalyser, getMicAnalyser, setHandsFree, deactivate, setVoiceConversation]);
+  }, [handsFree, state, getAnalyser, getMicAnalyser, setHandsFree, deactivate, setVoiceConversation, wakeWord]);
 
   return null;
 }

@@ -175,12 +175,32 @@ struct GoalAdvanceParams {
     /// Optional notes for 'approve' or 'reject' actions. Stored in metadata.review_notes.
     #[serde(default)]
     notes: Option<String>,
+    /// For 'dispatch' only: pin the goal to this roster worker (e.g. "permagent",
+    /// "claude_code", "codex") instead of letting cost ranking choose. Omit to
+    /// let the system pick. An unknown, pending or unavailable worker is
+    /// refused outright — it never falls back to a different one.
+    #[serde(default)]
+    worker: Option<String>,
+    /// For 'dispatch' only: give the worker a specialist mandate — "debugger",
+    /// "security", or "architect". Persisted on the goal (sticky across
+    /// re-dispatches until changed). An unknown role is refused.
+    #[serde(default)]
+    role: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct GoalStatusParams {
     /// The card ID (UUID) of the goal to inspect.
     card_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct SteerGoalParams {
+    /// The goal card ID (UUID) whose running worker should receive the message.
+    card_id: String,
+    /// The correction or redirection, delivered to the worker as a user
+    /// message for its next turn. Be specific — the worker keeps its context.
+    message: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -272,9 +292,14 @@ impl OrchestratorClient {
                  on a project's Kanban board using card_create with card_type='goal'. Goals \
                  follow a lifecycle: Triage → Ready → InProgress → Review → Complete. Pass \
                  auto_dispatch=true to assign a worker and start immediately.\n\n\
-                 Use goal_advance to transition goals (actions: ready, dispatch, review, \
-                 approve, reject). Use goal_status to check progress. Use list_workers to \
-                 see available workers before dispatching.\n\n\
+                 Use goal_advance to move goals through that lifecycle (actions: ready, \
+                 dispatch, review, approve, reject). Only 'dispatch' does real work: it \
+                 selects a worker, starts it on the goal in an isolated git worktree, and \
+                 returns that worker's session id — there is no separate 'start' step, and \
+                 nothing else you can call makes a worker run. The others are bookkeeping \
+                 moves. Use list_workers first to see who is actually available, and \
+                 goal_status afterwards to check on a running worker; a dispatch that \
+                 returns an error started nothing, so the goal is still yours to place.\n\n\
                  Goals that exhaust their automatic retry budget move to the Failed \
                  column with needs_human_attention=true. Surface these to the user \
                  rather than retrying silently.\n\n\
@@ -342,7 +367,11 @@ impl OrchestratorClient {
                  - Ready: well-defined, waiting for a worker\n\
                  - InProgress: a worker is actively working on it\n\
                  - Review: worker finished, waiting for YOUR approval or rejection\n\
-                 - Complete: you approved the work\n\
+                 - Complete: the work was approved AND the daemon then fast-forwards it onto \
+                 the project's trunk when the trunk has not moved — the approval response says \
+                 exactly what landed, or exactly why it could not (dirty tree, diverged trunk). \
+                 Never tell the user their approved work is on the trunk unless that response \
+                 said 'landed'; if it said NOT landed, relay the reason and the branch name\n\
                  - Cancelled: the user abandoned the goal. The user can cancel from the \
                  Decision Inbox or the Kanban card menu at ANY non-terminal state; if a \
                  worker is running it is stopped first. Cancelled is terminal — the goal \
@@ -379,7 +408,35 @@ impl OrchestratorClient {
             kanban_cache: Arc::new(tokio::sync::Mutex::new(KanbanContextCache::new())),
         };
 
-        // Spawn one-shot resume of in-progress goals from a prior daemon lifecycle
+        // Resume in-progress goals from a PRIOR DAEMON LIFECYCLE — at most once
+        // per process.
+        //
+        // This is `Self::new`, and `client_factory` runs it for every agent
+        // session that loads the orchestrator extension: every scheduled job,
+        // every chat turn. The sweep was therefore anything but one-shot. With
+        // `monitor-3-active-goals-every-2-minutes` on its schedule it ran every
+        // couple of minutes, and each pass treated freshly-dispatched goals as
+        // orphans and requeued them — eight Wave 1 goals died that way on
+        // 2026-08-05, logging "Resuming 8 in-progress goal(s) from prior
+        // session" twice in nine minutes while the daemon never restarted once.
+        //
+        // The guard is process-wide, not per-client, because that is the scope
+        // the sweep's own precondition assumes: "a prior daemon lifecycle" can
+        // only be recovered from once, at this daemon's start.
+        static RESUME_DONE: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if RESUME_DONE
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .is_err()
+        {
+            return Ok(client);
+        }
+
         let resume_sm = client.context.session_manager.clone();
         tokio::spawn(async move {
             // Small delay to let the DB pool and AgentManager finish initializing
@@ -503,7 +560,18 @@ impl OrchestratorClient {
     /// board-summary refresh on the next read; it never changes dispatch
     /// behavior.
     pub async fn dispatch_goal(&self, card_id: &str) -> Result<String, String> {
-        let result = dispatch_goal_fn(&self.context, &self.probe_cache, card_id).await;
+        self.dispatch_goal_to(card_id, None).await
+    }
+
+    /// Dispatch, optionally PINNING the worker instead of letting cost ranking
+    /// choose. `requested_worker` is the roster key (e.g. `"permagent"`).
+    pub async fn dispatch_goal_to(
+        &self,
+        card_id: &str,
+        requested_worker: Option<&str>,
+    ) -> Result<String, String> {
+        let result =
+            dispatch_goal_fn(&self.context, &self.probe_cache, card_id, requested_worker).await;
         self.invalidate_kanban_cache().await;
         result
     }
@@ -569,6 +637,109 @@ pub(crate) async fn select_worker_fn(
     Ok(select_worker_detailed(pool, probe_cache, goal)
         .await?
         .worker_key)
+}
+
+/// The stored code map (`code:{project_id}:map`, written by
+/// `POST /api/projects/{id}/index-code`) as a worker-instructions block sliced
+/// around the goal's own words, or `None` when the Brain is absent or the
+/// project was never indexed. The slicing itself lives in [`super::code_map`],
+/// shared with the analyze extension's `map_query` tool so the two views of a
+/// stored map cannot drift.
+async fn code_map_instructions_block(project_id: &str, goal_text: &str) -> Option<String> {
+    let brain = super::get_global_brain()?;
+    let mem = brain
+        .get_memory_by_key(&format!("code:{project_id}:map"))
+        .await
+        .ok()??;
+    super::code_map::format_code_map_block(&mem.content, goal_text)
+}
+
+/// Pin dispatch to a NAMED roster worker, bypassing cost ranking.
+///
+/// Refuses loudly rather than silently falling back to the cheapest worker: a
+/// pin that quietly routes somewhere else is worse than no pin at all, because
+/// the caller believes it took effect. Each refusal names the roster keys that
+/// WOULD work, since the common cause is a typo or a worker that is real but
+/// not installed.
+pub(crate) async fn select_requested_worker(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    probe_cache: &ProbeCache,
+    goal: &cards::Card,
+    requested: &str,
+) -> Result<WorkerSelection, String> {
+    let config = agent_identity::load_agent_config();
+    let runnable = || {
+        let mut keys: Vec<&str> = config
+            .workers
+            .iter()
+            .filter(|(_, p)| !matches!(p.engine, agent_identity::WorkerEngineKind::Pending))
+            .map(|(k, _)| k.as_str())
+            .collect();
+        keys.sort_unstable();
+        keys.join(", ")
+    };
+
+    let persona = config.workers.get(requested).ok_or_else(|| {
+        format!(
+            "No worker '{}' in the roster. Dispatchable workers: {}.",
+            requested,
+            runnable()
+        )
+    })?;
+
+    if matches!(persona.engine, agent_identity::WorkerEngineKind::Pending) {
+        return Err(format!(
+            "Worker '{}' has no runnable engine yet (engine pending) — not dispatched. \
+             Dispatchable workers: {}.",
+            requested,
+            runnable()
+        ));
+    }
+
+    let (available, reason) = match probe_cache.get(requested) {
+        Some(cached) => (cached.available, cached.reason.clone()),
+        None => {
+            let (ok, why) = worker_probe::probe_worker(&persona.availability_check);
+            probe_cache.set(requested, ok, why.clone());
+            (ok, why)
+        }
+    };
+    if !available {
+        return Err(format!(
+            "Worker '{}' is not available on this machine{} — not dispatched. \
+             Dispatchable workers: {}.",
+            requested,
+            reason
+                .map(|r| format!(" ({})", r))
+                .unwrap_or_else(String::new),
+            runnable()
+        ));
+    }
+
+    let load = cards::active_worker_load(pool).await.unwrap_or_default();
+    Ok(WorkerSelection {
+        worker_key: requested.to_string(),
+        snapshot: serde_json::json!({
+            "selected_at": chrono::Utc::now().to_rfc3339(),
+            "worker_key": requested,
+            // The audit trail must record that cost ranking did NOT decide this,
+            // so a later "why did an expensive worker run?" has an answer.
+            "selection_mode": "explicitly_requested",
+            "required_kinds": goal
+                .metadata_json
+                .get("tags")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default(),
+            "selected": {
+                "key": requested,
+                "available": true,
+                "cost_tier": persona.cost_tier,
+                "tool_kinds": persona.tool_kinds,
+                "active_sessions": load.get(requested).copied().unwrap_or(0),
+            },
+        }),
+    })
 }
 
 /// Select a worker AND capture the capability snapshot used for routing (#211).
@@ -699,6 +870,28 @@ async fn beat_receipt(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str) {
     }
 }
 
+/// Best-effort worker-output stamp on a goal's execution receipt. The first
+/// timestamp comes from the stdout read boundary; every event also refreshes
+/// the heartbeat at persistence time. Receipt writes remain serialized through
+/// the completion tracker, avoiding read/modify/write races with its ticker.
+async fn record_worker_output(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    event: goal_engine::WorkerOutputEvent,
+) {
+    if let Ok(Some(value)) = cards::get_goal_execution_receipt(pool, card_id).await {
+        if let Ok(mut receipt) = serde_json::from_value::<ExecutionReceipt>(value) {
+            if receipt.state.is_terminal() {
+                return;
+            }
+            receipt.observe_output(event.observed_at, chrono::Utc::now().to_rfc3339());
+            if let Ok(updated) = serde_json::to_value(&receipt) {
+                let _ = cards::set_goal_execution_receipt(pool, card_id, updated).await;
+            }
+        }
+    }
+}
+
 /// Best-effort terminal stamp on a goal's execution receipt (#210).
 async fn finalize_receipt(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str, state: ReceiptState) {
     if let Ok(Some(value)) = cards::get_goal_execution_receipt(pool, card_id).await {
@@ -721,6 +914,7 @@ pub(crate) async fn dispatch_goal_fn(
     context: &PlatformExtensionContext,
     probe_cache: &ProbeCache,
     card_id: &str,
+    requested_worker: Option<&str>,
 ) -> Result<String, String> {
     let pool = context
         .session_manager
@@ -784,7 +978,18 @@ pub(crate) async fn dispatch_goal_fn(
     // Select worker — on failure, leave card in Ready, no metadata changes.
     // #211: also capture the routing snapshot (why this worker won) so the
     // dispatch decision is auditable after the fact.
-    let selection = select_worker_detailed(&pool, probe_cache, &card).await?;
+    //
+    // An explicitly requested worker PINS the choice and skips cost ranking.
+    // Without this there was no way to send a goal anywhere in particular:
+    // dispatch ranked by cost alone, so "dispatch this to the Permagent
+    // harness" was a sentence the system could not act on — measured
+    // 2026-08-09, when exactly that instruction routed to claude_code. Every
+    // refusal below leaves the card in Ready and changes no metadata, so a
+    // rejected pin is retryable rather than a half-dispatched goal.
+    let selection = match requested_worker {
+        Some(requested) => select_requested_worker(&pool, probe_cache, &card, requested).await?,
+        None => select_worker_detailed(&pool, probe_cache, &card).await?,
+    };
     let worker_key = selection.worker_key.clone();
     let capability_snapshot = selection.snapshot;
 
@@ -807,6 +1012,13 @@ pub(crate) async fn dispatch_goal_fn(
         "Goal: {}\n\nDescription: {}\nProject: {}\nProject root: {}",
         card.title, card.description, project.name, root_path
     );
+    // Specialist role brief (metadata_json.dispatch_role, set by goal_advance's
+    // `role` argument or a decision effect such as review-fail → debugger).
+    // Prepended so the worker reads mandate-then-task; unknown/absent roles
+    // dispatch unroled rather than failing.
+    if let Some(role_block) = super::role_brief::role_brief_from_metadata(&card.metadata_json) {
+        instructions = format!("{role_block}\n\n{instructions}");
+    }
     // Verify-loop escalation (the #739 ACTION): read the goal's per-goal
     // escalation state. On an escalated RE-dispatch, carry the prior (weaker)
     // attempt's diff + verify failure forward as context (R2) so the stronger
@@ -829,6 +1041,22 @@ pub(crate) async fn dispatch_goal_fn(
     // "pushed" as "deployed/live".
     let publish_steps = publish_sequence::parse_publish_sequence(&project.metadata_json);
     if let Some(block) = publish_sequence::dispatch_instructions_block(&publish_steps) {
+        instructions = format!("{instructions}\n\n{block}");
+    }
+
+    // Code map (#471, wired 2026-08-10): the project's indexed code map was
+    // stored in the Brain and then read by NOTHING on this path — every
+    // worker re-derived the repo's shape with ls/grep/file reads on every
+    // dispatch, which is exactly the token burn the index exists to avoid.
+    // External-CLI workers have no Brain access, so injection here is the
+    // ONLY way the map can reach them. Bounded: a whole-tree map can be far
+    // larger than the exploration it replaces, so oversized maps are cut at
+    // a line boundary and say so. Best-effort — an absent Brain or unindexed
+    // project changes nothing.
+    if let Some(block) =
+        code_map_instructions_block(&project.id, &format!("{} {}", card.title, card.description))
+            .await
+    {
         instructions = format!("{instructions}\n\n{block}");
     }
 
@@ -892,12 +1120,14 @@ pub(crate) async fn dispatch_goal_fn(
     let timeout_secs = worker_cfg
         .and_then(|w| w.timeout_secs)
         .unwrap_or(goal_engine::DEFAULT_EXTERNAL_CLI_TIMEOUT_SECS);
+    let (output_tx, mut output_rx) = tokio::sync::mpsc::unbounded_channel();
     let task = goal_engine::GoalTask {
         card_title: card.title.clone(),
         instructions,
         working_dir,
         baseline_commit: baseline_commit.clone(),
         timeout: std::time::Duration::from_secs(timeout_secs),
+        output_tx: Some(output_tx),
     };
 
     let engine: Box<dyn goal_engine::GoalEngine> = match worker_cfg.map(|w| &w.engine) {
@@ -954,12 +1184,37 @@ pub(crate) async fn dispatch_goal_fn(
                 }
             } else if escalation_state.is_none() {
                 // First dispatch of a fresh goal: seed the escalation ladder
-                // position from the worker's role tier so the first verify-loop
-                // climb knows which rung it leaves. A role-less (single-model)
-                // worker seeds no tier → any later escalation parks (no-default).
-                let seed = crate::cost_router::GoalEscalationState::seed(
-                    worker_role.map(crate::cost_router::tier_for_workflow_role),
+                // position, and pick the rung from the GOAL rather than from
+                // the worker's static role. The worker's role says what KIND of
+                // work it does; it says nothing about whether this particular
+                // goal is a README or a concurrency rewrite, so every goal a
+                // worker took started on the same rung.
+                //
+                // The assessment is deterministic and reads no self-declared
+                // difficulty (see `cost_router::assess`), so a goal cannot argue
+                // itself onto the expensive model. It only chooses the STARTING
+                // rung — the reactive ladder still owns the outcome, and an
+                // under-tiered goal escalates on its own verify failure.
+                let assessment = crate::cost_router::assess_goal(
+                    &card.title,
+                    &card.description,
+                    &card.metadata_json,
                 );
+                let assessed_role = crate::cost_router::workflow_role_for_tier(assessment.tier);
+                if let Some(rm) = crate::cost_router::role_model(assessed_role) {
+                    tracing::info!(
+                        target: "permagentd::brain",
+                        card_id,
+                        tier = assessment.tier.as_str(),
+                        reason = assessment.reason,
+                        provider = %rm.provider,
+                        model = %rm.model,
+                        "goal assessed to a starting tier",
+                    );
+                    role = Some(assessed_role);
+                    model_override = Some(rm);
+                }
+                let seed = crate::cost_router::GoalEscalationState::seed(Some(assessment.tier));
                 if let Err(e) = persist_escalation_state(&pool, card_id, &seed).await {
                     tracing::warn!(
                         target: "permagentd::brain",
@@ -1046,6 +1301,7 @@ pub(crate) async fn dispatch_goal_fn(
         run_id: session_id,
         join,
         kill,
+        steer,
     } = match engine.spawn(task).await {
         Ok(work) => work,
         Err(error) => {
@@ -1064,8 +1320,9 @@ pub(crate) async fn dispatch_goal_fn(
         }
     };
 
-    // Register the worker kill handle so the cancel path (#490) can stop it.
-    register_goal_worker(card_id, kill);
+    // Register the worker handles: kill for the cancel path (#490), steer for
+    // mid-run correction (claude workers only).
+    register_goal_worker(card_id, kill, steer);
 
     // Spawn completion tracker — awaits the engine's outcome and transitions
     // the card. Success / retriable failure route to handle_goal_completion;
@@ -1092,15 +1349,28 @@ pub(crate) async fn dispatch_goal_fn(
             loop {
                 tokio::select! {
                     res = &mut join => {
-                        break match res {
+                        let outcome = match res {
                             Ok(o) => o,
                             Err(e) => goal_engine::GoalOutcome::Failed(
                                 format!("Worker task panicked: {}", e),
                             ),
                         };
+                        // The final stdout read happens before the join becomes
+                        // ready, but both branches can be ready in this select.
+                        // Drain queued events so a fast worker cannot finish
+                        // with first_output_at still null.
+                        while let Ok(event) = output_rx.try_recv() {
+                            record_worker_output(&tracker_pool, &tracker_card_id, event).await;
+                        }
+                        break outcome;
                     }
                     _ = ticker.tick() => {
                         beat_receipt(&tracker_pool, &tracker_card_id).await;
+                    }
+                    event = output_rx.recv(), if !output_rx.is_closed() => {
+                        if let Some(event) = event {
+                            record_worker_output(&tracker_pool, &tracker_card_id, event).await;
+                        }
                     }
                 }
             }
@@ -1836,6 +2106,25 @@ impl OrchestratorClient {
             .get("notes")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
+        let requested_worker = args
+            .get("worker")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        // Specialist role: validated up front so a typo'd role refuses loudly
+        // instead of silently dispatching unroled.
+        let requested_role = match args
+            .get("role")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(s) => Some(super::role_brief::WorkerRole::parse(s).ok_or_else(|| {
+                format!("Unknown role '{s}'. Must be: debugger, security, architect")
+            })?),
+            None => None,
+        };
 
         let action = GoalAction::parse_action(&action_str).ok_or_else(|| {
             format!(
@@ -1885,8 +2174,40 @@ impl OrchestratorClient {
             goal_state::validate_transition(current_state, action).map_err(|e| e.to_string())?;
 
         match action {
-            // Tier-0 lifecycle steps route through the goal-transition guard.
-            GoalAction::Ready | GoalAction::Dispatch | GoalAction::Review => {
+            // 'dispatch' is not a transition — it is the whole dispatch
+            // pipeline. Moving the card Ready → InProgress on its own selects
+            // no worker, spawns no process and records no receipt, yet returns
+            // a success string that reads exactly like work started; the goal
+            // then sits InProgress until a sweep reclaims it as abandoned.
+            // `dispatch_goal` performs the SAME tier-0 guarded transition (with
+            // worker metadata, baseline_commit and the execution receipt) and
+            // additionally runs the engine, so this arm delegates rather than
+            // duplicating the move.
+            GoalAction::Dispatch => {
+                // Persist the role BEFORE dispatch so dispatch_goal_fn reads it
+                // when assembling the brief. Sticky by design: the goal keeps
+                // its mandate across re-dispatches until changed.
+                if let Some(role) = requested_role {
+                    sqlx::query(
+                        "UPDATE cards SET metadata_json = json_set(metadata_json, '$.dispatch_role', ?) \
+                         WHERE id = ?",
+                    )
+                    .bind(role.as_str())
+                    .bind(&card_id)
+                    .execute(&pool)
+                    .await
+                    .map_err(|e| format!("persist dispatch_role: {e}"))?;
+                }
+                let session_id = self
+                    .dispatch_goal_to(&card_id, requested_worker.as_deref())
+                    .await?;
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Goal '{}' dispatched: {} → {} (worker session: {})",
+                    card.title, current_state, new_state, session_id
+                ))]))
+            }
+            // The remaining tier-0 lifecycle steps ARE bare transitions.
+            GoalAction::Ready | GoalAction::Review => {
                 goal_transition::advance_goal_checked(
                     &pool,
                     &card_id,
@@ -1966,6 +2287,38 @@ impl OrchestratorClient {
                     .to_string(),
             ),
         }
+    }
+
+    /// Mid-run steering (hardening pass, 2026-08-10). The registry lookup is
+    /// non-destructive — steering must never disarm the cancel path — and the
+    /// failure modes are spelled out, because "steered" that silently went
+    /// nowhere is the same lie class as "dispatched" that spawned nothing.
+    async fn handle_steer_goal(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<CallToolResult, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let card_id = extract_string(&args, "card_id")?;
+        let message = extract_string(&args, "message")?;
+        if message.trim().is_empty() {
+            return Err("steer message is empty — say what the worker should change".to_string());
+        }
+
+        let Some(handle) = steer_handle_for(&card_id) else {
+            return Err(format!(
+                "Goal {} has no live steerable worker. Steering reaches claude-CLI workers \
+                 while they are RUNNING; internal-subagent and codex workers are not steerable \
+                 yet, and a finished worker cannot be steered — reject the review with notes \
+                 instead.",
+                card_id
+            ));
+        };
+        handle.steer(&message).await?;
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Steered goal {}: the message will reach the worker as its next turn. It buys \
+             exactly one more turn — the worker still finishes through checks and review.",
+            card_id
+        ))]))
     }
 
     async fn handle_goal_status(
@@ -2176,6 +2529,40 @@ impl OrchestratorClient {
                         );
                     }
                 }
+            }
+        }
+
+        // Failure-learning return leg: recent open incidents ride into the
+        // decompose context as raw grounded evidence (surface, goal,
+        // observation, mechanism — no distillation), the same quoted
+        // data-not-instructions framing as the recall blocks above. Comes from
+        // the pool, not the Brain, so it injects even when the Brain is down.
+        // Inert when there are no open incidents; failures are non-fatal. The
+        // `incidents` INFO line is the observable A/B signal.
+        match crate::incidents::list_open_incidents(
+            &pool,
+            crate::incidents::MAX_INJECTED_INCIDENTS as i64,
+        )
+        .await
+        {
+            Ok(incidents) => {
+                if let Some(block) = crate::incidents::format_incident_context_block(&incidents) {
+                    user_text.push_str("\n\n");
+                    user_text.push_str(&block);
+                    tracing::info!(
+                        target: "incidents",
+                        project = %project.slug,
+                        count = incidents.len(),
+                        "injected open failure incidents into decompose context"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::debug!(
+                    target: "incidents",
+                    "Skipping incident recall for decompose: {}",
+                    e
+                );
             }
         }
 
@@ -2581,6 +2968,18 @@ impl OrchestratorClient {
                 schema::<GoalStatusParams>(),
             ),
             Tool::new(
+                "steer_goal".to_string(),
+                "Send a mid-run correction to a goal's RUNNING worker — it arrives as a \
+                 user message for the worker's next turn, with its full context intact. \
+                 Use this instead of cancelling when a worker is on the wrong track, \
+                 waiting on something it should skip, or missing a constraint. Only \
+                 claude-CLI workers are steerable; a goal with no live steerable worker \
+                 is refused with the reason. Steering is not a substitute for review — \
+                 the goal still completes through checks and the Decision Inbox."
+                    .to_string(),
+                schema::<SteerGoalParams>(),
+            ),
+            Tool::new(
                 "decompose_roadmap".to_string(),
                 "Decompose a high-level objective into a proposed roadmap of goal cards. \
                  Returns a PROPOSED plan for user review — does NOT create cards. \
@@ -2668,6 +3067,7 @@ impl McpClientTrait for OrchestratorClient {
             "check_worker" => self.handle_check_worker(arguments).await,
             "goal_advance" => self.handle_goal_advance(arguments).await,
             "goal_status" => self.handle_goal_status(arguments).await,
+            "steer_goal" => self.handle_steer_goal(arguments).await,
             "decompose_roadmap" => {
                 self.handle_decompose_roadmap(&ctx.session_id, arguments)
                     .await
@@ -3642,7 +4042,7 @@ fn format_dispatch_evidence_brief(evidence: &serde_json::Value) -> Option<String
         Some(target) => format!("pushed to {}", target),
         None => "worktree only, not pushed".to_string(),
     };
-    Some(format!(
+    let mut out = format!(
         "Proof of work: commit {} ({}) — {} file{} changed, +{} / -{}.",
         head,
         where_,
@@ -3650,7 +4050,73 @@ fn format_dispatch_evidence_brief(evidence: &serde_json::Value) -> Option<String
         if ev.files_changed == 1 { "" } else { "s" },
         ev.insertions,
         ev.deletions,
-    ))
+    );
+
+    // A SHA and a +/- count are not a review. Approving used to mean deciding
+    // about work whose filenames you could not see, from a decision that named
+    // neither the branch nor the worktree — so the only way to actually look
+    // was to leave the app and go hunting. Everything below is already
+    // captured on the card; it was simply never shown to the person asked to
+    // approve it.
+    if !ev.commits.is_empty() {
+        out.push_str("\n\nWhat the worker committed:");
+        for commit in ev.commits.iter().take(MAX_REVIEW_COMMITS) {
+            out.push_str(&format!("\n  {}", commit));
+        }
+        if ev.commits.len() > MAX_REVIEW_COMMITS {
+            out.push_str(&format!(
+                "\n  … and {} more",
+                ev.commits.len() - MAX_REVIEW_COMMITS
+            ));
+        }
+    }
+
+    let diffstat = ev.diffstat.trim();
+    if !diffstat.is_empty() {
+        out.push_str(&format!("\n\nFiles changed:\n{}", indent_block(diffstat)));
+    }
+
+    let summary = ev.worker_summary.trim();
+    if !summary.is_empty() {
+        out.push_str(&format!(
+            "\n\nThe worker's own account:\n{}",
+            indent_block(&truncate_chars(summary, MAX_REVIEW_SUMMARY_CHARS))
+        ));
+    }
+
+    out.push_str(&format!(
+        "\n\nTo read the full diff: git -C {} diff {}..{}",
+        ev.worktree_path,
+        ev.work_base_commit
+            .as_deref()
+            .unwrap_or(&ev.baseline_commit),
+        head,
+    ));
+
+    Some(out)
+}
+
+/// Commit subjects shown inline before the list is elided.
+const MAX_REVIEW_COMMITS: usize = 10;
+/// Characters of the worker's closing statement shown inline.
+const MAX_REVIEW_SUMMARY_CHARS: usize = 1200;
+
+/// Indent a block so multi-line evidence stays visually distinct from the
+/// surrounding prose in the Decision Inbox.
+fn indent_block(text: &str) -> String {
+    text.lines()
+        .map(|line| format!("  {}", line))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Truncate on a char boundary, marking that it happened.
+fn truncate_chars(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(max).collect();
+    format!("{}…", kept.trim_end())
 }
 
 /// Full deterministic proof-of-work block for the Discuss-with-Henry context —
@@ -3716,13 +4182,24 @@ pub fn format_dispatch_evidence_full(evidence: &serde_json::Value) -> Option<Str
 /// per-`OrchestratorClient`) because dispatch happens inside the agent session
 /// while cancel arrives over HTTP from the Decision Inbox or the Kanban board —
 /// the same registry must serve both.
-static GOAL_WORKERS: once_cell::sync::Lazy<Mutex<HashMap<String, goal_engine::GoalKill>>> =
+static GOAL_WORKERS: once_cell::sync::Lazy<Mutex<HashMap<String, LiveWorker>>> =
     once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
 
-/// Record the kill handle for a freshly-dispatched goal's worker.
-pub fn register_goal_worker(card_id: &str, kill: goal_engine::GoalKill) {
+/// A dispatched goal's live control surface: the kill handle (#490) plus, for
+/// steerable engines, the mid-run steering handle (hardening pass 2026-08-10).
+pub struct LiveWorker {
+    pub kill: goal_engine::GoalKill,
+    pub steer: Option<std::sync::Arc<goal_engine::SteerHandle>>,
+}
+
+/// Record the control handles for a freshly-dispatched goal's worker.
+pub fn register_goal_worker(
+    card_id: &str,
+    kill: goal_engine::GoalKill,
+    steer: Option<std::sync::Arc<goal_engine::SteerHandle>>,
+) {
     if let Ok(mut map) = GOAL_WORKERS.lock() {
-        map.insert(card_id.to_string(), kill);
+        map.insert(card_id.to_string(), LiveWorker { kill, steer });
     }
 }
 
@@ -3732,6 +4209,16 @@ pub fn take_goal_worker(card_id: &str) -> Option<goal_engine::GoalKill> {
         .lock()
         .ok()
         .and_then(|mut map| map.remove(card_id))
+        .map(|w| w.kill)
+}
+
+/// Clone a goal's steer handle WITHOUT removing the registry entry — steering
+/// must not disarm the cancel path.
+pub fn steer_handle_for(card_id: &str) -> Option<std::sync::Arc<goal_engine::SteerHandle>> {
+    GOAL_WORKERS
+        .lock()
+        .ok()
+        .and_then(|map| map.get(card_id).and_then(|w| w.steer.clone()))
 }
 
 /// Cancel a goal (#490): kill its worker if one is running, supersede any open
@@ -4895,7 +5382,16 @@ async fn resume_single_goal(
         // Case 1: session is dead — requeue, or park on budget exhaustion.
         let new_attempt = attempt_count.saturating_add(1);
         let budget = goal_transition::goal_budget(&card.metadata_json);
-        let abandon_reason = "Abandoned during daemon restart";
+        // The condition tested above is "the worker SESSION is dead" — which is
+        // usually, but not necessarily, a daemon restart. Naming the cause
+        // instead of the symptom cost a full misdiagnosis on 2026-08-05: eight
+        // dispatched goals came back with "Abandoned during daemon restart",
+        // and the resulting investigation hunted a daemon crash that never
+        // happened (zero panics in a 15 MB log, last exit code 0, and HTTP
+        // requests served continuously straight through the supposed restart).
+        // The message must describe what was observed, so the next reader looks
+        // at the worker rather than the daemon.
+        let abandon_reason = "Worker session ended before the goal completed";
 
         // Also honor token/wallclock budgets on the resume path (S4).
         let other_exhaustion = goal_transition::check_budget(pool, &card.metadata_json).await?;
@@ -4937,7 +5433,7 @@ async fn resume_single_goal(
 
             tracing::info!(
                 target: "permagentd::brain",
-                "Goal '{}' moved to Ready after restart (attempt {}/{})",
+                "Goal '{}' requeued to Ready — worker session gone (attempt {}/{})",
                 card.title,
                 new_attempt,
                 budget.attempt_cap
@@ -6213,7 +6709,7 @@ mod tests {
         };
         let probe_cache = ProbeCache::new();
 
-        let err = dispatch_goal_fn(&context, &probe_cache, &card.id)
+        let err = dispatch_goal_fn(&context, &probe_cache, &card.id, None)
             .await
             .expect_err("a non-Ready goal must not dispatch");
         assert!(
@@ -6309,6 +6805,131 @@ mod tests {
             .await
             .expect_err("tier-2 approve without a jesse decision must fail via tool path");
         assert!(err.contains("requires an answered decision"), "{}", err);
+    }
+
+    // The code-map slicing tests moved to `super::super::code_map::tests`
+    // with the extraction — the shared module is now the single home for the
+    // matching + ancestry + budget behaviour, exercised by both the dispatch
+    // injection here and analyze's `map_query` tool.
+
+    /// Approving used to mean deciding about work you could not see: the
+    /// detail carried a SHA and a "+63 / -0", naming neither the file, the
+    /// branch, nor the worktree. Every field below was already captured on
+    /// the card and simply never shown to the person asked to approve it.
+    #[test]
+    fn review_detail_shows_the_work_not_just_a_diffstat_line() {
+        let evidence = serde_json::json!({
+            "worktree_path": "/Users/j/dev/.permagent-goal-worktrees/cli-eee2db6f",
+            "baseline_commit": "24544d2326ef2b877fa1bc7c7cb37a7d708ef1c5",
+            "work_base_commit": "24544d2326ef2b877fa1bc7c7cb37a7d708ef1c5",
+            "head_commit": "a719579a25d684717ca73c131f219b2181c94eb3",
+            "commits": ["a719579 docs: add README.md"],
+            "diffstat": "README.md | 63 +++++++++++++\n 1 file changed, 63 insertions(+)",
+            "files_changed": 1,
+            "insertions": 63,
+            "deletions": 0,
+            "worker_summary": "Committed a719579 — README.md with all eight sections.",
+        });
+
+        let detail = build_review_detail("card-1", Some(&evidence));
+
+        assert!(
+            detail.contains("README.md"),
+            "the FILE must be named: {detail}"
+        );
+        assert!(
+            detail.contains("docs: add README.md"),
+            "the commit subject says what was done: {detail}"
+        );
+        assert!(
+            detail.contains("all eight sections"),
+            "the worker's own account must survive: {detail}"
+        );
+        assert!(
+            detail.contains(".permagent-goal-worktrees/cli-eee2db6f"),
+            "the reviewer must be told where the work lives: {detail}"
+        );
+        assert!(
+            detail.contains("git -C") && detail.contains("24544d23") && detail.contains("a719579a"),
+            "a runnable command to read the full diff: {detail}"
+        );
+    }
+
+    /// A worker that exits clean having committed nothing must still say so
+    /// plainly — the empty case is the one most worth not dressing up.
+    #[test]
+    fn review_detail_states_plainly_when_there_are_no_commits() {
+        let evidence = serde_json::json!({
+            "worktree_path": "/tmp/wt",
+            "baseline_commit": "abc123",
+            "commits": [],
+            "diffstat": "",
+            "files_changed": 0,
+            "insertions": 0,
+            "deletions": 0,
+            "worker_summary": "",
+        });
+
+        let detail = build_review_detail("card-2", Some(&evidence));
+        assert!(detail.contains("produced no commits"), "{detail}");
+    }
+
+    /// `goal_advance action="dispatch"` used to be a bare column move. It
+    /// answered "Goal 'X' advanced: ready → in_progress" while selecting no
+    /// worker, spawning no process and writing no execution receipt — so the
+    /// orchestrator believed it had assigned work that nothing was doing, and
+    /// the goal sat InProgress until a sweep reclaimed it as abandoned.
+    ///
+    /// The part with teeth is the S4 budget gate: the real pipeline parks a
+    /// goal that is out of attempts, and the bare transition walked straight
+    /// past it. This test pins that gate, because it can be asserted without
+    /// an installed CLI, a git worktree or a provider — an exhausted goal
+    /// fails before worker selection is ever reached.
+    #[tokio::test]
+    async fn tool_path_dispatch_runs_the_pipeline_not_a_bare_transition() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+
+        // Ready, but already past DEFAULT_ATTEMPT_CAP.
+        let card = setup_goal_in_state(&pool, "ready", 99).await;
+
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        };
+        let client = OrchestratorClient::new(context).unwrap();
+
+        let mut args = JsonObject::new();
+        args.insert("card_id".to_string(), serde_json::json!(card.id));
+        args.insert("action".to_string(), serde_json::json!("dispatch"));
+
+        let err = client
+            .handle_goal_advance(Some(args))
+            .await
+            .expect_err("an exhausted goal must not dispatch via the tool path");
+        assert!(
+            err.contains("not dispatched"),
+            "the budget gate must refuse the dispatch: {err}"
+        );
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            col.state_binding.as_deref(),
+            Some("in_progress"),
+            "dispatch must never report progress it did not start"
+        );
+        assert!(
+            updated.metadata_json.get("worker_key").is_none(),
+            "no worker ran, so no worker_key may be recorded"
+        );
     }
 
     #[tokio::test]
@@ -6413,7 +7034,7 @@ mod tests {
         );
         assert_eq!(
             updated.metadata_json.get("last_error").unwrap().as_str(),
-            Some("Abandoned during daemon restart")
+            Some("Worker session ended before the goal completed")
         );
         assert_eq!(
             updated.metadata_json.get("goal_state").unwrap().as_str(),
@@ -6677,7 +7298,7 @@ mod tests {
                 .metadata_json
                 .get("last_error")
                 .and_then(|v| v.as_str())
-                .is_some_and(|e| e.contains("Abandoned during daemon restart")),
+                .is_some_and(|e| e.contains("Worker session ended")),
             "abandonment reason must be recorded in last_error"
         );
         // Parking does not fabricate a consumed attempt: the exhausted resume

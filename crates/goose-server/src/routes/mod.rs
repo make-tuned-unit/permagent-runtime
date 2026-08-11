@@ -2,7 +2,9 @@ pub mod action_required;
 pub mod activity;
 pub mod agent;
 pub mod agents;
+pub mod analytics_attribution;
 pub mod analytics_classify;
+pub mod analytics_funnel;
 pub mod analytics_verify;
 pub mod attachments;
 pub mod backup;
@@ -11,10 +13,12 @@ pub mod browser_act;
 pub mod browser_content;
 pub mod browser_state;
 pub mod cards;
+pub mod coding_session;
 pub mod config_management;
 pub mod dashboard;
 pub mod dashboard_cards;
 pub mod decisions;
+pub mod desktop_control;
 pub mod devices;
 pub mod dictation;
 pub mod errors;
@@ -85,6 +89,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         // Browser content bridge: unauthenticated, localhost-only.
         // Called by the in-process MCP tool (no access to daemon token).
         .merge(browser_content::routes(state.clone()))
+        .merge(desktop_control::routes(state.clone()))
         // Act-on-page bridge (#649): snapshot + click/type/select. Same rail.
         .merge(browser_act::routes(state.clone()))
         // Voice WebSocket: does its own token validation via query param
@@ -146,6 +151,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(action_required::routes(state.clone()))
         .merge(agent::routes(state.clone()))
         .merge(config_management::routes(state.clone()))
+        .merge(coding_session::routes(state.clone()))
         .merge(security::routes(state.clone()))
         .merge(prompts::routes())
         .merge(recipe::routes(state.clone()))

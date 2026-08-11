@@ -107,10 +107,42 @@ fn id_as_string<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Err
     }
 }
 
+/// Same number-or-string tolerance as `id_as_string`, for the optional
+/// envelope ids. A relay whose ids are `bigIncrements` naturally emits them as
+/// JSON numbers; without this, one such response fails to parse and stalls the
+/// cursor for that project entirely.
+fn opt_id_as_string<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    match Option::<serde_json::Value>::deserialize(d)? {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(s)) => Ok(Some(s)),
+        Some(serde_json::Value::Number(n)) => Ok(Some(n.to_string())),
+        Some(other) => Err(serde::de::Error::custom(format!(
+            "drain envelope id must be a string or number, got {other}"
+        ))),
+    }
+}
+
+/// The drain envelope. **`camelCase`, like `DrainEvent`** — the install brief
+/// tells the site to emit `latestId` / `firstAvailableId`, and without the
+/// rename neither field ever bound: both v41 features (drain-lag reporting and
+/// retention-gap detection) were reading `None` from every spec-compliant
+/// relay and failing silently, which is exactly the class of hole the
+/// retention detector was written to catch.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct DrainResponse {
     #[serde(default)]
     events: Vec<DrainEvent>,
+    /// Newest event id the relay currently holds (spec v41, optional). Lets
+    /// the daemon report drain lag rather than infer health from silence.
+    #[serde(default, deserialize_with = "opt_id_as_string")]
+    latest_id: Option<String>,
+    /// OLDEST event id the relay still holds (spec v41, optional). When this is
+    /// greater than our cursor, the site's retention pruned rows the daemon
+    /// never fetched — it slept past the window — and the resulting hole is
+    /// otherwise INVISIBLE: the drain just resumes and under-reports forever.
+    #[serde(default, deserialize_with = "opt_id_as_string")]
+    first_available_id: Option<String>,
 }
 
 pub fn spawn(state: Arc<AppState>) {
@@ -206,6 +238,15 @@ async fn drain_project(
     config: &mut crate::routes::first_party_analytics::DrainState,
 ) -> Result<usize, String> {
     let mut total = 0usize;
+    // The site's own host, for the self-referral drop in insert_event. The
+    // drain URL IS the site's origin, so no extra configuration is needed.
+    let site_host = classify::referrer_host(drain_url);
+    // A retention gap is not an error — the drain succeeds, it just succeeds
+    // over a hole. It therefore reached the success path at the bottom, which
+    // clears `last_error`, and the one durable record that data was lost was
+    // erased before the caller ever persisted it. Carried out of the loop so
+    // the success path can keep it.
+    let mut retention_warning: Option<String> = None;
     for _ in 0..MAX_PAGES_PER_TICK {
         let since = config.cursor.clone().unwrap_or_else(|| "0".to_string());
         let sep = if drain_url.contains('?') { '&' } else { '?' };
@@ -239,12 +280,40 @@ async fn drain_project(
             msg
         })?;
 
+        // Record what the relay says it holds, every page (last wins). Set
+        // even on an empty page: "cursor == latest" is the proof of caught-up.
+        if parsed.latest_id.is_some() {
+            config.relay_latest_id = parsed.latest_id.clone();
+        }
+
+        // Retention hole: the relay's oldest surviving row is newer than where
+        // we left off, so events were pruned before we ever fetched them. Say
+        // so loudly and durably — a silent under-report is indistinguishable
+        // from a quiet traffic week, which is exactly how this stays unnoticed.
+        if let (Some(first), Some(cursor)) = (&parsed.first_available_id, &config.cursor) {
+            if numeric_id_gt(first, cursor) {
+                let msg = format!(
+                    "retention gap: the site's oldest kept event is {first} but this hub last \
+                     drained {cursor} — events in between were pruned before they were \
+                     collected and cannot be recovered"
+                );
+                tracing::warn!(target: "analytics_drain", "{msg}");
+                retention_warning = Some(msg.clone());
+                // Also set now, so an early `?` return from ingest below still
+                // carries the explanation out with it.
+                config.last_error = Some(msg);
+                // Skip forward: staying behind the retention floor would refetch
+                // nothing forever while the backlog silently grew.
+                config.cursor = Some(first.clone());
+            }
+        }
+
         let batch = parsed.events.len();
         if batch == 0 {
             break;
         }
         for ev in &parsed.events {
-            insert_event(pool, project_id, ev).await?;
+            insert_event(pool, project_id, ev, site_host.as_deref()).await?;
             config.cursor = Some(ev.id.clone());
         }
         total += batch;
@@ -252,15 +321,30 @@ async fn drain_project(
             break; // drained to the tip
         }
     }
-    config.last_error = None;
+    // A clean pass clears a stale error; a pass that found a hole keeps saying
+    // so, next to the cursor that skipped over it.
+    config.last_error = retention_warning;
     config.last_drain_at = Some(chrono::Utc::now().to_rfc3339());
     Ok(total)
+}
+
+/// Compare two drain ids numerically when both parse as integers, else
+/// lexically. Relay ids are `bigIncrements` in the reference implementation,
+/// but a string-id relay must not make this comparison nonsense.
+fn numeric_id_gt(a: &str, b: &str) -> bool {
+    match (a.parse::<u64>(), b.parse::<u64>()) {
+        (Ok(x), Ok(y)) => x > y,
+        _ => a > b,
+    }
 }
 
 async fn insert_event(
     pool: &Pool<Sqlite>,
     project_id: &str,
     ev: &DrainEvent,
+    // The site's own host, derived from the drain URL. Used to drop
+    // self-referrals; `None` disables the check rather than guessing.
+    site_host: Option<&str>,
 ) -> Result<(), String> {
     let kind = match ev.kind.as_deref() {
         Some("event") | Some("ev") => "event",
@@ -292,6 +376,25 @@ async fn insert_event(
         .properties
         .as_ref()
         .and_then(classify::sanitize_properties);
+    // Drop self-referrals at ingest. `document.referrer` is the site's own URL
+    // on every hard internal load — a reload, an open-in-new-tab, or crossing a
+    // locale boundary that is a full navigation — so storing it raw makes the
+    // site the top "referrer" of itself. The snippet cannot fix this without
+    // knowing its own host reliably; the daemon does, from the drain URL. Fixed
+    // here rather than in each query so every downstream aggregate inherits it.
+    // (Reported against reckonize.org, 2026-08-06.)
+    // Normalize BOTH sides through referrer_host: it lowercases and strips
+    // `www.`, so comparing a normalized host against a raw one silently never
+    // matches (caught by CI — "www.reckonize.org" vs "reckonize.org"). Running
+    // the site host through it too makes this correct whether the caller hands
+    // us a bare host or a full URL, instead of resting on an implicit contract.
+    let own_host = site_host.and_then(classify::referrer_host);
+    let referrer = ev.referrer.as_deref().filter(|r| {
+        match (classify::referrer_host(r), own_host.as_deref()) {
+            (Some(h), Some(own)) => h != own,
+            _ => true,
+        }
+    });
 
     // INSERT OR IGNORE against UNIQUE(project_id, source_event_id): re-draining
     // the same window is a no-op instead of inflating every count.
@@ -304,7 +407,7 @@ async fn insert_event(
     .bind(project_id)
     .bind(kind)
     .bind(&stored_path)
-    .bind(ev.referrer.as_deref())
+    .bind(referrer)
     .bind(ev.name.as_deref())
     .bind(ev.visitor_hash.as_deref())
     .bind(created_at)
@@ -361,13 +464,43 @@ mod tests {
     async fn redraining_the_same_events_is_a_no_op() {
         let pool = mem_pool().await;
         let e = ev("42", "2026-07-01T10:00:00Z");
-        insert_event(&pool, "p1", &e).await.unwrap();
-        insert_event(&pool, "p1", &e).await.unwrap();
+        insert_event(&pool, "p1", &e, None).await.unwrap();
+        insert_event(&pool, "p1", &e, None).await.unwrap();
         let n: i64 = sqlx::query_scalar("SELECT count(*) FROM analytics_events")
             .fetch_one(&pool)
             .await
             .unwrap();
         assert_eq!(n, 1, "same source id must insert once");
+    }
+
+    /// Self-referrals must not be stored. `document.referrer` is the site's own
+    /// URL on every hard internal load (reload, new tab, locale switch), so
+    /// storing it raw makes the site its own top referrer — reported live
+    /// against reckonize.org, 2026-08-06.
+    #[tokio::test]
+    async fn same_host_referrer_is_dropped_but_foreign_referrers_are_kept() {
+        let pool = mem_pool().await;
+        let site = Some("www.reckonize.org");
+
+        let mut own = ev("1", "2026-07-01T10:00:00Z");
+        own.referrer = Some("https://www.reckonize.org/en/pricing".into());
+        insert_event(&pool, "p1", &own, site).await.unwrap();
+
+        let mut foreign = ev("2", "2026-07-01T10:00:00Z");
+        foreign.referrer = Some("https://news.ycombinator.com/".into());
+        insert_event(&pool, "p1", &foreign, site).await.unwrap();
+
+        let stored: Vec<Option<String>> =
+            sqlx::query_scalar("SELECT referrer FROM analytics_events ORDER BY source_event_id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stored[0], None, "a self-referral must not be stored");
+        assert_eq!(
+            stored[1].as_deref(),
+            Some("https://news.ycombinator.com/"),
+            "a genuine referrer must survive"
+        );
     }
 
     /// The source's timestamp must be preserved. Letting created_at default to
@@ -376,7 +509,7 @@ mod tests {
     #[tokio::test]
     async fn event_time_is_preserved_not_ingest_time() {
         let pool = mem_pool().await;
-        insert_event(&pool, "p1", &ev("1", "2026-07-01T10:00:00Z"))
+        insert_event(&pool, "p1", &ev("1", "2026-07-01T10:00:00Z"), None)
             .await
             .unwrap();
         let at: String = sqlx::query_scalar("SELECT created_at FROM analytics_events")
@@ -391,10 +524,10 @@ mod tests {
     #[tokio::test]
     async fn same_id_in_two_projects_both_land() {
         let pool = mem_pool().await;
-        insert_event(&pool, "p1", &ev("7", "2026-07-01T10:00:00Z"))
+        insert_event(&pool, "p1", &ev("7", "2026-07-01T10:00:00Z"), None)
             .await
             .unwrap();
-        insert_event(&pool, "p2", &ev("7", "2026-07-01T10:00:00Z"))
+        insert_event(&pool, "p2", &ev("7", "2026-07-01T10:00:00Z"), None)
             .await
             .unwrap();
         let n: i64 = sqlx::query_scalar("SELECT count(*) FROM analytics_events")
@@ -402,6 +535,102 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(n, 2);
+    }
+
+    /// The envelope's own wire contract. Both v41 fields were declared
+    /// snake_case while the install brief tells the site to emit camelCase, so
+    /// neither ever bound — drain-lag reporting and retention-gap detection
+    /// both read `None` from every correct relay and failed silently. Nothing
+    /// caught it because nothing asserted on the envelope itself.
+    #[test]
+    fn the_drain_envelope_reads_the_camel_case_the_brief_asks_for() {
+        let parsed: DrainResponse =
+            serde_json::from_str(r#"{"events":[],"latestId":"5001","firstAvailableId":"5000"}"#)
+                .expect("the documented shape parses");
+        assert_eq!(parsed.latest_id.as_deref(), Some("5001"));
+        assert_eq!(parsed.first_available_id.as_deref(), Some("5000"));
+    }
+
+    /// Relay ids are `bigIncrements` in the reference implementation, so a site
+    /// emitting them as JSON numbers is the normal case, not an edge one — and
+    /// a parse failure here stalls that project's cursor entirely.
+    #[test]
+    fn envelope_ids_survive_arriving_as_numbers() {
+        let parsed: DrainResponse =
+            serde_json::from_str(r#"{"events":[],"latestId":5001,"firstAvailableId":5000}"#)
+                .expect("numeric ids parse");
+        assert_eq!(parsed.latest_id.as_deref(), Some("5001"));
+        assert_eq!(parsed.first_available_id.as_deref(), Some("5000"));
+    }
+
+    /// A relay built against the earlier contract carries neither field and
+    /// must keep working rather than failing to parse and stalling.
+    #[test]
+    fn an_older_relay_without_the_v41_fields_still_parses() {
+        let parsed: DrainResponse =
+            serde_json::from_str(r#"{"events":[]}"#).expect("the pre-v41 shape parses");
+        assert!(parsed.latest_id.is_none());
+        assert!(parsed.first_available_id.is_none());
+    }
+
+    /// A retention gap is not an `Err`, so it reached the success path that
+    /// clears `last_error` — and the one durable record that events were
+    /// pruned before we collected them was erased before the caller persisted
+    /// the state. A silent under-report is indistinguishable from a quiet
+    /// traffic week, which is exactly how this would stay unnoticed.
+    #[tokio::test]
+    async fn a_retention_gap_survives_into_the_persisted_state() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // We left off at 1200; the relay's oldest surviving row is 5000.
+        Mock::given(method("GET"))
+            .and(path("/api/permagent-analytics/drain"))
+            .and(query_param("since", "1200"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "events": [
+                    { "id": 5001, "kind": "pageview", "path": "/", "referrer": null,
+                      "name": null, "visitorHash": "aa11", "at": "2026-08-06T09:00:00.000Z" }
+                ],
+                "latestId": "5001",
+                "firstAvailableId": "5000"
+            })))
+            .mount(&server)
+            .await;
+
+        let pool = mem_pool().await;
+        let mut state = crate::routes::first_party_analytics::DrainState {
+            site_key: "k".into(),
+            ingest_base: None,
+            drain_url: None,
+            cursor: Some("1200".into()),
+            last_drain_at: None,
+            last_error: None,
+            relay_latest_id: None,
+        };
+        let url = format!("{}/api/permagent-analytics/drain", server.uri());
+
+        let n = drain_project(&pool, "p1", &url, "SECRET123", &mut state)
+            .await
+            .expect("a gap is not a failure — the drain still succeeds");
+
+        assert_eq!(n, 1, "the surviving event was still ingested");
+        assert!(
+            state
+                .last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("retention gap"),
+            "the gap was erased before it could be persisted: {:?}",
+            state.last_error
+        );
+        assert_eq!(
+            state.cursor.as_deref(),
+            Some("5001"),
+            "skipped forward over the hole and then advanced normally"
+        );
+        assert!(state.last_drain_at.is_some(), "freshness still recorded");
     }
 
     /// END-TO-END CONTRACT TEST. Stands up a mock site speaking exactly the
@@ -447,6 +676,7 @@ mod tests {
             cursor: None,
             last_drain_at: None,
             last_error: None,
+            relay_latest_id: None,
         };
         let url = format!("{}/api/permagent-analytics/drain", server.uri());
 
@@ -512,6 +742,7 @@ mod tests {
             cursor: None,
             last_drain_at: None,
             last_error: None,
+            relay_latest_id: None,
         };
         let err = drain_project(&pool, "p1", &server.uri(), "WRONG", &mut state)
             .await

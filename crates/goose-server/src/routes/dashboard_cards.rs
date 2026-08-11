@@ -90,7 +90,24 @@ pub struct CardCell {
     pub delta: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub accent: bool,
+    /// Name of a glyph the renderer should draw beside this cell (see
+    /// `cardIcons.tsx`). The data source names the meaning; the UI must not
+    /// infer it from display text, which breaks the moment a label is
+    /// reworded. Unknown names simply render no icon.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// Optional grouping hint for the renderer, e.g. `"forecast"`. Same
+    /// contract as `icon`: the data source names the meaning, the UI decides
+    /// how to draw it. A compact tile lays inline cells out as a dense
+    /// icon+value row, which is right for "77% humidity" and useless for four
+    /// days of weather — those need their day labels. An unknown group simply
+    /// falls back to the inline treatment.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
+
+/// Cells carrying this group are the days ahead, drawn as a labelled strip.
+pub const GROUP_FORECAST: &str = "forecast";
 
 /// Normalized response every manifest-card data endpoint returns.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -124,9 +141,11 @@ pub fn builtin_card_manifests() -> Vec<CardManifest> {
         CardManifest {
             card_type: "system_stats".to_string(),
             name: "System".to_string(),
-            description: "CPU, memory, disk and uptime at a glance".to_string(),
-            default_size: CardSize { w: 5, h: 4 },
-            layout: "stat-grid".to_string(),
+            description: "CPU load, memory, free disk space and uptime".to_string(),
+            // Ambient readout: glanced at, never acted on. It gets a small tile
+            // so the surfaces the user actually works from keep the width.
+            default_size: CardSize { w: 3, h: 2 },
+            layout: "compact".to_string(),
             data_endpoint: "/api/dashboard/system-stats".to_string(),
             refresh_seconds: Some(30),
             source: "built-in".to_string(),
@@ -146,9 +165,9 @@ pub fn builtin_card_manifests() -> Vec<CardManifest> {
         CardManifest {
             card_type: "weather".to_string(),
             name: "Weather".to_string(),
-            description: "Current conditions for your location".to_string(),
-            default_size: CardSize { w: 5, h: 4 },
-            layout: "stat-grid".to_string(),
+            description: "Current conditions and the next few days".to_string(),
+            default_size: CardSize { w: 3, h: 2 },
+            layout: "compact".to_string(),
             data_endpoint: "/api/dashboard/weather".to_string(),
             refresh_seconds: Some(900),
             source: "built-in".to_string(),
@@ -207,11 +226,18 @@ async fn run_cmd(program: &str, args: &[&str]) -> Option<String> {
 
 /// CPU load as a percentage of available cores (1-minute load average / ncpu).
 /// A cheap, instantaneous-enough proxy that needs no sampling interval.
+///
+/// **Not clamped.** A run queue of 98 on 8 cores is 1230%, and saturating that
+/// to "100%" reports the same number as a machine that is merely busy — the
+/// difference between "this build is working" and "this machine is twelve deep
+/// and everything is going to crawl". Unix has always reported load this way;
+/// the card carries the raw load and core count beside it so the number is
+/// readable rather than merely large.
 fn cpu_load_percent(loadavg1: f64, ncpu: u32) -> u32 {
     if ncpu == 0 {
         return 0;
     }
-    ((loadavg1 / ncpu as f64) * 100.0).round().min(100.0) as u32
+    ((loadavg1 / ncpu as f64) * 100.0).round().max(0.0) as u32
 }
 
 /// Parse the 1-minute load from `sysctl -n vm.loadavg` → `{ 2.14 2.00 1.87 }`.
@@ -262,6 +288,62 @@ fn parse_df_capacity(df: &str) -> Option<String> {
     line.split_whitespace()
         .find(|f| f.ends_with('%'))
         .map(|s| s.to_string())
+}
+
+/// The volume this card must measure.
+///
+/// **NOT `/`.** On an APFS macOS install `/` is the sealed, read-only *system*
+/// snapshot: it reported 27% used on a machine whose writable volume was 93%
+/// full and eleven gigabytes from stalling a build. Both share one container,
+/// so the free-space figure is identical either way — but the *capacity*
+/// reading off `/` is a statement about a volume nothing writes to, and it was
+/// the reassuring half of the card. `/System/Volumes/Data` is where `~` lives
+/// and where every build happens.
+#[cfg(target_os = "macos")]
+const MEASURED_VOLUME: &str = "/System/Volumes/Data";
+#[cfg(not(target_os = "macos"))]
+const MEASURED_VOLUME: &str = "/";
+
+/// Free space on the volume, in bytes, from `df -k <volume>`.
+///
+/// The percentage alone is the wrong number for the question actually being
+/// asked of this card — "can I start a build?" is answered in gigabytes, and a
+/// shared cargo target swings tens of them. The columns are
+/// `Filesystem 1024-blocks Used Available Capacity …`, so Available is the
+/// field before the capacity column. Located relative to that column rather
+/// than by absolute index: a filesystem name containing spaces shifts
+/// everything before it, and `%iused` later in the row also ends in `%`, so
+/// the FIRST such field is the one that anchors the row.
+fn parse_df_available_bytes(df: &str) -> Option<u64> {
+    let line = df.lines().nth(1)?;
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    // Walk from the capacity column backwards: `… <used> <avail> <capacity%>`.
+    let cap_idx = fields.iter().position(|f| f.ends_with('%'))?;
+    let avail = fields.get(cap_idx.checked_sub(1)?)?;
+    avail.parse::<u64>().ok().map(|kb| kb * 1024)
+}
+
+/// Free space, rendered at the scale a person reasons about builds in.
+fn fmt_free_space(bytes: u64) -> String {
+    let g = 1024f64 * 1024.0 * 1024.0;
+    let gb = bytes as f64 / g;
+    if gb >= 100.0 {
+        format!("{:.0} GB free", gb)
+    } else {
+        format!("{:.1} GB free", gb)
+    }
+}
+
+/// The disk cell's text: free space, with used-capacity as context when the
+/// row gave us both. `None` only when `df` told us nothing usable — better an
+/// absent cell than an invented one.
+fn disk_value(free_bytes: Option<u64>, capacity: Option<&str>) -> Option<String> {
+    match (free_bytes, capacity) {
+        (Some(free), Some(cap)) => Some(format!("{} · {} used", fmt_free_space(free), cap)),
+        (Some(free), None) => Some(fmt_free_space(free)),
+        (None, Some(cap)) => Some(format!("{cap} used")),
+        (None, None) => None,
+    }
 }
 
 /// Boot epoch seconds from `sysctl -n kern.boottime`
@@ -321,8 +403,20 @@ async fn get_system_stats() -> Json<CardData> {
     ) {
         cells.push(CardCell {
             label: "CPU load".to_string(),
+            icon: Some("cpu".to_string()),
             value: format!("{}%", cpu_load_percent(load, ncpu)),
             accent: true,
+            ..Default::default()
+        });
+        // The raw figures the percentage came from, as their own cell rather
+        // than a `sub` — a compact tile draws only icon and value for
+        // supporting cells, so a `sub` here would silently render as nothing.
+        // Without these, a reading above 100% is unreadable: you cannot tell
+        // oversubscription from a broken gauge.
+        cells.push(CardCell {
+            label: "Load average".to_string(),
+            icon: Some("cpu".to_string()),
+            value: format!("{load:.1} on {ncpu} cores"),
             ..Default::default()
         });
     }
@@ -336,21 +430,30 @@ async fn get_system_stats() -> Json<CardData> {
     ) {
         cells.push(CardCell {
             label: "Memory".to_string(),
+            icon: Some("memory".to_string()),
             value: fmt_gb_ratio(vm_used_bytes(&vm_stat), total),
             ..Default::default()
         });
     }
 
-    // Disk capacity on the primary volume.
-    if let Some(cap) = run_cmd("df", &["-k", "/"])
-        .await
-        .and_then(|s| parse_df_capacity(&s))
-    {
-        cells.push(CardCell {
-            label: "Disk".to_string(),
-            value: format!("{} used", cap),
-            ..Default::default()
-        });
+    // Disk on the volume that is actually written to. FREE SPACE leads: this
+    // card is read to answer "can I start a build?", and a percentage does not
+    // answer it — the shared cargo target alone swings tens of gigabytes.
+    if let Some(df) = run_cmd("df", &["-k", MEASURED_VOLUME]).await {
+        // Both numbers in ONE value: free space is what the question is about,
+        // and the percentage is the context that makes it legible. A compact
+        // tile ignores `sub`, so anything put there would simply vanish.
+        if let Some(value) = disk_value(
+            parse_df_available_bytes(&df),
+            parse_df_capacity(&df).as_deref(),
+        ) {
+            cells.push(CardCell {
+                label: "Disk".to_string(),
+                icon: Some("disk".to_string()),
+                value,
+                ..Default::default()
+            });
+        }
     }
 
     // Battery if present, otherwise uptime.
@@ -370,6 +473,7 @@ async fn get_system_stats() -> Json<CardData> {
         let now = chrono::Utc::now().timestamp();
         cells.push(CardCell {
             label: "Uptime".to_string(),
+            icon: Some("clock".to_string()),
             value: fmt_uptime(now - boot),
             ..Default::default()
         });
@@ -492,6 +596,23 @@ fn http_client() -> Option<reqwest::Client> {
 }
 
 /// WMO weather-interpretation code → short human label.
+/// WMO weather code → glyph name understood by `cardIcons.tsx`. Kept beside
+/// [`weather_code_label`] so the two stay in step; a code that gains a label
+/// should gain an icon in the same edit.
+fn weather_code_icon(code: i64) -> &'static str {
+    match code {
+        0 => "clear",
+        1..=2 => "partly-cloudy",
+        3 => "overcast",
+        45 | 48 => "fog",
+        51 | 53 | 55 | 56 | 57 => "drizzle",
+        61 | 63 | 65 | 66 | 67 | 80..=82 => "rain",
+        71 | 73 | 75 | 77 | 85 | 86 => "snow",
+        95 | 96 | 99 => "thunderstorm",
+        _ => "overcast",
+    }
+}
+
 fn weather_code_label(code: i64) -> &'static str {
     match code {
         0 => "Clear",
@@ -512,6 +633,34 @@ fn weather_code_label(code: i64) -> &'static str {
     }
 }
 
+/// Days of forecast requested, today included. Four fills the card's spare
+/// height with days a person actually plans around without turning a glanceable
+/// widget into a table.
+const FORECAST_DAYS: usize = 4;
+
+/// Weekday label for a `YYYY-MM-DD` date from Open-Meteo's `daily.time`.
+///
+/// Computed from the date string rather than an offset from "today" because the
+/// API is asked for `timezone=auto` — the location's day boundary, which is not
+/// necessarily this machine's. Sakamoto's method; no calendar dependency.
+fn weekday_label(iso_date: &str) -> Option<String> {
+    let mut parts = iso_date.split('-');
+    let y: i32 = parts.next()?.parse().ok()?;
+    let m: i32 = parts.next()?.parse().ok()?;
+    let d: i32 = parts.next()?.parse().ok()?;
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    const T: [i32; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+    let y = if m < 3 { y - 1 } else { y };
+    let idx = (y + y / 4 - y / 100 + y / 400 + T[(m - 1) as usize] + d).rem_euclid(7);
+    Some(
+        ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+            .get(idx as usize)?
+            .to_string(),
+    )
+}
+
 /// Build the weather card cells from an Open-Meteo forecast response.
 fn weather_cells(v: &serde_json::Value, place: &str) -> Vec<CardCell> {
     let cur = &v["current"];
@@ -529,12 +678,14 @@ fn weather_cells(v: &serde_json::Value, place: &str) -> Vec<CardCell> {
             None => weather_code_label(code).to_string(),
         },
         accent: true,
+        icon: Some(weather_code_icon(code).to_string()),
         ..Default::default()
     }];
     if let (Some(hi), Some(lo)) = (hi, lo) {
         cells.push(CardCell {
             label: "High / Low".to_string(),
             value: format!("{}° / {}°", hi.round() as i64, lo.round() as i64),
+            icon: Some("thermometer".to_string()),
             ..Default::default()
         });
     }
@@ -542,6 +693,37 @@ fn weather_cells(v: &serde_json::Value, place: &str) -> Vec<CardCell> {
         cells.push(CardCell {
             label: "Humidity".to_string(),
             value: format!("{}%", h.round() as i64),
+            icon: Some("droplet".to_string()),
+            ..Default::default()
+        });
+    }
+
+    // The days ahead. Index 0 is today, already spoken for by the two cells
+    // above, so the forecast starts at 1. Each day needs both temperatures to
+    // be worth a row — a high with no low is not a forecast, it is a fragment.
+    for i in 1..FORECAST_DAYS {
+        let (Some(hi), Some(lo)) = (
+            daily["temperature_2m_max"][i].as_f64(),
+            daily["temperature_2m_min"][i].as_f64(),
+        ) else {
+            continue;
+        };
+        let code = daily["weather_code"][i].as_i64().unwrap_or(-1);
+        let label = daily["time"][i]
+            .as_str()
+            .and_then(weekday_label)
+            .unwrap_or_else(|| format!("+{i}d"));
+        // Precipitation probability only when the API actually returned one —
+        // a missing value must not render as "0%", which is a forecast of dry.
+        let rain = daily["precipitation_probability_max"][i]
+            .as_f64()
+            .map(|p| format!("{}% rain", p.round() as i64));
+        cells.push(CardCell {
+            label,
+            value: format!("{}° / {}°", hi.round() as i64, lo.round() as i64),
+            sub: rain,
+            icon: Some(weather_code_icon(code).to_string()),
+            group: Some(GROUP_FORECAST.to_string()),
             ..Default::default()
         });
     }
@@ -551,7 +733,7 @@ fn weather_cells(v: &serde_json::Value, place: &str) -> Vec<CardCell> {
 async fn fetch_weather(loc: &WeatherLocation) -> Option<CardData> {
     let client = http_client()?;
     let url = format!(
-        "https://api.open-meteo.com/v1/forecast?latitude={}&longitude={}&current=temperature_2m,relative_humidity_2m,weather_code&daily=temperature_2m_max,temperature_2m_min&forecast_days=1&timezone=auto",
+        "https://api.open-meteo.com/v1/forecast?latitude={}&longitude={}&current=temperature_2m,relative_humidity_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max&forecast_days={FORECAST_DAYS}&timezone=auto",
         loc.lat, loc.lon
     );
     let v: serde_json::Value = client.get(url).send().await.ok()?.json().await.ok()?;
@@ -697,7 +879,10 @@ mod tests {
         for m in &manifests {
             assert!(seen.insert(m.card_type.clone()), "dup type {}", m.card_type);
             assert!(
-                matches!(m.layout.as_str(), "stat-grid" | "list" | "key-value"),
+                matches!(
+                    m.layout.as_str(),
+                    "stat-grid" | "list" | "key-value" | "compact"
+                ),
                 "invalid layout {} on {}",
                 m.layout,
                 m.card_type
@@ -729,12 +914,17 @@ mod tests {
 
     // ── system stats parsers ────────────────────────────────────────────────
 
+    // The cap this test pinned (`cpu_load_percent(20.0, 8) == 100`) was
+    // REMOVED deliberately: saturating an over-subscribed machine to 100%
+    // reported the same number as one that was merely busy. The replacement is
+    // `cpu_load_is_not_clamped_at_one_hundred` below, which asserts the
+    // uncapped value; normalisation and the divide-by-zero guard live there
+    // too, so nothing this test covered went uncovered.
+
     #[test]
-    fn cpu_load_percent_normalizes_and_caps() {
+    fn cpu_load_percent_normalizes_against_core_count() {
         assert_eq!(cpu_load_percent(2.0, 8), 25);
-        assert_eq!(cpu_load_percent(8.0, 8), 100);
-        assert_eq!(cpu_load_percent(20.0, 8), 100); // capped
-        assert_eq!(cpu_load_percent(1.0, 0), 0); // guard div-by-zero
+        assert_eq!(cpu_load_percent(2.0, 4), 50, "same load, fewer cores");
     }
 
     #[test]
@@ -773,6 +963,163 @@ mod tests {
                   /dev/disk3s1  971350180 534719816 402630364    58%    /\n";
         assert_eq!(parse_df_capacity(df), Some("58%".to_string()));
         assert_eq!(parse_df_capacity("only a header line"), None);
+    }
+
+    /// Real `df -k` output from an APFS Mac, verbatim. Both rows come from the
+    /// SAME container — identical Available, wildly different Capacity — which
+    /// is the whole reason this card must not measure `/`.
+    const DF_SYSTEM_VOLUME: &str = "Filesystem     1024-blocks      Used Available Capacity iused     ifree %iused  Mounted on\n         /dev/disk3s3s1   482797652  12006668  32957000    27%  453127 329570000    0%   /\n";
+    const DF_DATA_VOLUME: &str = "Filesystem   1024-blocks      Used Available Capacity iused     ifree %iused  Mounted on\n         /dev/disk3s1   482797652 410782332  32957000    93% 2972273 329570000    1%   /System/Volumes/Data\n";
+
+    #[test]
+    fn the_measured_volume_is_the_one_that_gets_written_to() {
+        // `/` on macOS is the sealed read-only system snapshot. It read 27%
+        // used on a machine whose writable volume was 93% full and one build
+        // from ENOSPC — the reassuring half of the card was measuring a volume
+        // nothing writes to.
+        assert_eq!(parse_df_capacity(DF_SYSTEM_VOLUME).as_deref(), Some("27%"));
+        assert_eq!(parse_df_capacity(DF_DATA_VOLUME).as_deref(), Some("93%"));
+        #[cfg(target_os = "macos")]
+        assert_eq!(MEASURED_VOLUME, "/System/Volumes/Data");
+    }
+
+    #[test]
+    fn free_space_is_read_from_the_available_column() {
+        // 32_957_000 KiB = 31.43 GiB. Both volumes share the container, so the
+        // free figure is the same either way — it is the honest number.
+        let free = parse_df_available_bytes(DF_DATA_VOLUME).expect("available parses");
+        assert_eq!(free, 32_957_000 * 1024);
+        assert_eq!(
+            parse_df_available_bytes(DF_SYSTEM_VOLUME),
+            Some(32_957_000 * 1024)
+        );
+        // `%iused` later in the row also ends in '%'; anchoring on the FIRST
+        // such field is what keeps Available in the right place.
+        assert_eq!(fmt_free_space(free), "31.4 GB free");
+    }
+
+    #[test]
+    fn free_space_survives_a_row_with_no_inode_columns() {
+        let df = "Filesystem  1024-blocks      Used Available Capacity  Mounted on\n                  /dev/disk3s1  971350180 534719816 402630364    58%    /\n";
+        assert_eq!(parse_df_available_bytes(df), Some(402_630_364 * 1024));
+        assert_eq!(parse_df_available_bytes("only a header line"), None);
+    }
+
+    #[test]
+    fn the_disk_cell_says_free_first_then_the_percentage() {
+        let g = 1024u64 * 1024 * 1024;
+        assert_eq!(
+            disk_value(Some(31 * g), Some("93%")).as_deref(),
+            Some("31.0 GB free · 93% used")
+        );
+        // Either half alone is still worth showing; neither is not.
+        assert_eq!(
+            disk_value(Some(31 * g), None).as_deref(),
+            Some("31.0 GB free")
+        );
+        assert_eq!(disk_value(None, Some("93%")).as_deref(), Some("93% used"));
+        assert_eq!(disk_value(None, None), None);
+    }
+
+    #[test]
+    fn a_big_volume_drops_the_decimal() {
+        let g = 1024u64 * 1024 * 1024;
+        assert_eq!(fmt_free_space(420 * g), "420 GB free");
+    }
+
+    #[test]
+    fn cpu_load_is_not_clamped_at_one_hundred() {
+        // The reading that prompted this: a run queue of 98.45 on 8 cores.
+        // Saturating to 100% reports the same number as a machine that is
+        // merely busy.
+        assert_eq!(cpu_load_percent(98.45, 8), 1231);
+        assert_eq!(cpu_load_percent(4.0, 8), 50);
+        assert_eq!(cpu_load_percent(8.0, 8), 100);
+        assert_eq!(cpu_load_percent(1.0, 0), 0, "no cores, no claim");
+    }
+
+    #[test]
+    fn weekday_label_names_the_day() {
+        // Computed from the DATE, not an offset from today: the API answers in
+        // the location's timezone, whose day boundary need not be ours.
+        assert_eq!(weekday_label("2026-08-07").as_deref(), Some("Fri"));
+        assert_eq!(weekday_label("2026-08-08").as_deref(), Some("Sat"));
+        assert_eq!(weekday_label("2026-01-01").as_deref(), Some("Thu"));
+        assert_eq!(
+            weekday_label("2024-02-29").as_deref(),
+            Some("Thu"),
+            "leap day"
+        );
+        assert_eq!(
+            weekday_label("2000-02-29").as_deref(),
+            Some("Tue"),
+            "century leap"
+        );
+        assert_eq!(weekday_label("garbage"), None);
+        assert_eq!(weekday_label("2026-13-01"), None);
+    }
+
+    #[test]
+    fn weather_cells_carry_the_days_ahead() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{
+              "current": {"temperature_2m": 26.0, "relative_humidity_2m": 77.0, "weather_code": 0},
+              "daily": {
+                "time": ["2026-08-07","2026-08-08","2026-08-09","2026-08-10"],
+                "temperature_2m_max": [30.0, 24.4, 21.0, 19.0],
+                "temperature_2m_min": [19.0, 16.6, 15.0, 14.0],
+                "weather_code": [0, 61, 3, 95],
+                "precipitation_probability_max": [0.0, 80.0, 20.0, 90.0]
+              }
+            }"#,
+        )
+        .unwrap();
+        let cells = weather_cells(&v, "Halifax");
+
+        // Today still leads: conditions, then high/low, then humidity.
+        assert_eq!(cells[0].label, "Halifax");
+        assert_eq!(cells[0].value, "26° Clear");
+        assert_eq!(cells[1].value, "30° / 19°");
+
+        let forecast: Vec<&CardCell> = cells
+            .iter()
+            .filter(|c| c.group.as_deref() == Some(GROUP_FORECAST))
+            .collect();
+        assert_eq!(
+            forecast.len(),
+            FORECAST_DAYS - 1,
+            "today is not in the forecast strip"
+        );
+        assert_eq!(forecast[0].label, "Sat");
+        assert_eq!(forecast[0].value, "24° / 17°");
+        assert_eq!(forecast[0].sub.as_deref(), Some("80% rain"));
+        assert_eq!(forecast[2].label, "Mon");
+    }
+
+    #[test]
+    fn a_day_without_both_temperatures_is_omitted_not_invented() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{
+              "current": {"temperature_2m": 26.0, "weather_code": 0},
+              "daily": {
+                "time": ["2026-08-07","2026-08-08","2026-08-09","2026-08-10"],
+                "temperature_2m_max": [30.0, 24.0, null, 19.0],
+                "temperature_2m_min": [19.0, 16.0, 15.0, 14.0],
+                "weather_code": [0, 61, 3, 95]
+              }
+            }"#,
+        )
+        .unwrap();
+        let forecast: Vec<CardCell> = weather_cells(&v, "Halifax")
+            .into_iter()
+            .filter(|c| c.group.as_deref() == Some(GROUP_FORECAST))
+            .collect();
+        assert_eq!(forecast.len(), 2, "the incomplete day is dropped");
+        assert_eq!(forecast[0].label, "Sat");
+        assert_eq!(forecast[1].label, "Mon");
+        // No precipitation field at all — an absent probability must not
+        // render as "0% rain", which is a forecast of dry weather.
+        assert!(forecast.iter().all(|c| c.sub.is_none()));
     }
 
     #[test]

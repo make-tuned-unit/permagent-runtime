@@ -177,6 +177,9 @@ pub struct SessionUpdateBuilder<'a> {
     accumulated_total_tokens: Option<Option<i32>>,
     accumulated_input_tokens: Option<Option<i32>>,
     accumulated_output_tokens: Option<Option<i32>>,
+    /// Deltas folded by the DATABASE (`col = COALESCE(col,0) + ?`) rather than
+    /// read-modify-written in Rust. See [`SessionUpdateBuilder::accumulate_tokens`].
+    accumulated_deltas: Option<(i32, i32, i32)>,
     schedule_id: Option<Option<String>>,
     recipe: Option<Option<Recipe>>,
     user_recipe_values: Option<Option<HashMap<String, String>>>,
@@ -209,6 +212,7 @@ impl<'a> SessionUpdateBuilder<'a> {
             accumulated_total_tokens: None,
             accumulated_input_tokens: None,
             accumulated_output_tokens: None,
+            accumulated_deltas: None,
             schedule_id: None,
             recipe: None,
             user_recipe_values: None,
@@ -283,6 +287,23 @@ impl<'a> SessionUpdateBuilder<'a> {
 
     pub fn accumulated_output_tokens(mut self, tokens: Option<i32>) -> Self {
         self.accumulated_output_tokens = Some(tokens);
+        self
+    }
+
+    /// Add token deltas to the accumulated counters ATOMICALLY.
+    ///
+    /// The absolute setters above are a lost update when two turns share a
+    /// session: each reads the current total, adds its own usage in Rust, and
+    /// writes an absolute value, so whichever commits second silently discards
+    /// the other's tokens. That path bills the user for less than they spent
+    /// and, worse, is the input to the spend caps.
+    ///
+    /// This folds the addition into the UPDATE itself, so the database
+    /// serializes it and no read is involved. Prefer it for anything additive;
+    /// the absolute setters remain for compaction, which deliberately RESETS
+    /// the counters rather than adding to them.
+    pub fn accumulate_tokens(mut self, total: i32, input: i32, output: i32) -> Self {
+        self.accumulated_deltas = Some((total, input, output));
         self
     }
 
@@ -1043,6 +1064,15 @@ impl SessionStorage {
                     // and the rebuild is marker-gated to run at most once per
                     // widening, so run it on every boot.
                     spectral_schema::apply_decision_inbox_schema(&self.pool).await?;
+
+                    // Version-independent Phase-1 failure incident capture.
+                    // New-table-only and idempotent, so it runs on every boot
+                    // without changing the pinned fresh-init base stamp.
+                    spectral_schema::apply_incidents_schema(&self.pool).await?;
+
+                    // Governed lesson pool (Phase 3). Same discipline: new tables
+                    // only, idempotent, version-independent.
+                    spectral_schema::apply_lessons_schema(&self.pool).await?;
                 } else {
                     info!("Initializing Spectral schema at {:?}", self.db_path);
                     spectral_schema::init_spectral_db(&self.pool).await?;
@@ -1169,12 +1199,31 @@ impl SessionStorage {
         add_update!(builder.total_tokens, "total_tokens");
         add_update!(builder.input_tokens, "input_tokens");
         add_update!(builder.output_tokens, "output_tokens");
-        add_update!(builder.accumulated_total_tokens, "accumulated_total_tokens");
-        add_update!(builder.accumulated_input_tokens, "accumulated_input_tokens");
-        add_update!(
-            builder.accumulated_output_tokens,
-            "accumulated_output_tokens"
-        );
+        // Delta accumulation takes precedence: setting both an absolute value
+        // and a delta for the same column would emit it twice in one SET.
+        if builder.accumulated_deltas.is_some() {
+            for name in [
+                "accumulated_total_tokens",
+                "accumulated_input_tokens",
+                "accumulated_output_tokens",
+            ] {
+                if !updates.is_empty() {
+                    query.push_str(", ");
+                }
+                updates.push(name);
+                query.push_str(name);
+                query.push_str(" = COALESCE(");
+                query.push_str(name);
+                query.push_str(", 0) + ?");
+            }
+        } else {
+            add_update!(builder.accumulated_total_tokens, "accumulated_total_tokens");
+            add_update!(builder.accumulated_input_tokens, "accumulated_input_tokens");
+            add_update!(
+                builder.accumulated_output_tokens,
+                "accumulated_output_tokens"
+            );
+        }
         add_update!(builder.schedule_id, "schedule_id");
         add_update!(builder.recipe, "recipe_json");
         add_update!(builder.user_recipe_values, "user_recipe_values_json");
@@ -1216,14 +1265,18 @@ impl SessionStorage {
         if let Some(ot) = builder.output_tokens {
             q = q.bind(ot);
         }
-        if let Some(att) = builder.accumulated_total_tokens {
-            q = q.bind(att);
-        }
-        if let Some(ait) = builder.accumulated_input_tokens {
-            q = q.bind(ait);
-        }
-        if let Some(aot) = builder.accumulated_output_tokens {
-            q = q.bind(aot);
+        if let Some((dt, di, dout)) = builder.accumulated_deltas {
+            q = q.bind(dt).bind(di).bind(dout);
+        } else {
+            if let Some(att) = builder.accumulated_total_tokens {
+                q = q.bind(att);
+            }
+            if let Some(ait) = builder.accumulated_input_tokens {
+                q = q.bind(ait);
+            }
+            if let Some(aot) = builder.accumulated_output_tokens {
+                q = q.bind(aot);
+            }
         }
         if let Some(sid) = builder.schedule_id {
             q = q.bind(sid);
@@ -1367,7 +1420,8 @@ impl SessionStorage {
             if let Some(id) = message_id {
                 message = message.with_id(id);
             }
-            messages.push(message);
+            // Repair sessions that stored per-token Thinking deltas (Kimi crash).
+            messages.push(message.coalesce_adjacent_text_and_thinking());
         }
 
         Ok(Conversation::new_unvalidated(messages))
@@ -2410,6 +2464,116 @@ mod tests {
 
         let reloaded = sm.get_session(&session.id, false).await.unwrap();
         assert_eq!(reloaded.goose_mode, mode);
+    }
+
+    /// Concurrent turns on one session must not lose each other's tokens.
+    ///
+    /// The old path read `accumulated_*`, added in Rust, and wrote an absolute
+    /// value — so two turns that both read N each wrote N+their own delta, and
+    /// the second commit discarded the first's usage. This drives the spend
+    /// caps, so undercounting is not cosmetic.
+    ///
+    /// Interleaved deliberately: BOTH updates are built from the same observed
+    /// starting state before either applies, which is exactly the race. With
+    /// the DB folding the addition, the result is the sum regardless of order.
+    #[tokio::test]
+    async fn concurrent_token_accumulation_does_not_lose_updates() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "tokens".into(),
+                SessionType::User,
+                GooseMode::default(),
+            )
+            .await
+            .unwrap();
+
+        // Both "turns" observe the same (empty) starting state first.
+        let before = sm.get_session(&session.id, false).await.unwrap();
+        assert_eq!(before.accumulated_total_tokens.unwrap_or(0), 0);
+
+        sm.update(&session.id)
+            .accumulate_tokens(100, 60, 40)
+            .apply()
+            .await
+            .unwrap();
+        sm.update(&session.id)
+            .accumulate_tokens(30, 20, 10)
+            .apply()
+            .await
+            .unwrap();
+
+        let after = sm.get_session(&session.id, false).await.unwrap();
+        assert_eq!(
+            after.accumulated_total_tokens,
+            Some(130),
+            "the second write must ADD to the first, not replace it"
+        );
+        assert_eq!(after.accumulated_input_tokens, Some(80));
+        assert_eq!(after.accumulated_output_tokens, Some(50));
+    }
+
+    /// NULL columns must start from zero, not stay NULL — a fresh session has
+    /// no accumulated value and `NULL + 5` is NULL in SQL.
+    #[tokio::test]
+    async fn accumulating_onto_null_starts_from_zero() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "null-start".into(),
+                SessionType::User,
+                GooseMode::default(),
+            )
+            .await
+            .unwrap();
+
+        sm.update(&session.id)
+            .accumulate_tokens(7, 5, 2)
+            .apply()
+            .await
+            .unwrap();
+
+        let after = sm.get_session(&session.id, false).await.unwrap();
+        assert_eq!(after.accumulated_total_tokens, Some(7));
+    }
+
+    /// Compaction still needs to RESET the counters, so the absolute setters
+    /// must keep working alongside the new delta path.
+    #[tokio::test]
+    async fn absolute_setters_still_replace() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "absolute".into(),
+                SessionType::User,
+                GooseMode::default(),
+            )
+            .await
+            .unwrap();
+
+        sm.update(&session.id)
+            .accumulate_tokens(100, 60, 40)
+            .apply()
+            .await
+            .unwrap();
+        sm.update(&session.id)
+            .accumulated_total_tokens(Some(5))
+            .apply()
+            .await
+            .unwrap();
+
+        let after = sm.get_session(&session.id, false).await.unwrap();
+        assert_eq!(
+            after.accumulated_total_tokens,
+            Some(5),
+            "absolute must replace"
+        );
     }
 
     #[tokio::test]

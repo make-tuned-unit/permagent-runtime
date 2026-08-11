@@ -5,6 +5,7 @@ import { ProjectKanban } from './ProjectsView';
 import { ProjectOverview } from './ProjectOverview';
 import { ProjectDetails } from './ProjectDetails';
 import type { Project, ProjectLens } from './types';
+import { useCommandCenter } from '../../lib/store';
 
 // ── Project Workspace ───────────────────────────────────────────────────────
 //
@@ -25,6 +26,16 @@ export function ProjectWorkspace({ project, projects, onSwitchProject, onBack, o
   const { colors, gradient } = useTheme();
   // VIEW axis — persists across project switches (single source, no reset).
   const [lens, setLens] = useState<ProjectLens>('overview');
+
+  // Deep-link from the dashboard's to-do list: a card lives on the board, so
+  // force the Kanban lens when a card navigation lands on ITS project. Guarded
+  // on the project id because the pending navigation and the project selection
+  // settle in separate renders — without the guard, arriving here would yank
+  // whatever project happened to be open over to Kanban.
+  const pendingCard = useCommandCenter(s => s.pendingCardNavigation);
+  useEffect(() => {
+    if (pendingCard && pendingCard.projectId === project.id) setLens('kanban');
+  }, [pendingCard, project.id]);
 
   return (
     <div style={{

@@ -159,3 +159,48 @@ describe('spinner-overwrite rendering through a real xterm buffer', () => {
     expect(forgingLines).toEqual(['⠋ Forging… (3m 11s)']);
   });
 });
+
+// ── Replay/live overlap ─────────────────────────────────────────────────────
+//
+// The PTY reader appends each chunk to the bounded replay buffer AND emits it
+// as `pty_data`, so both carry the same bytes. A terminal that reattaches
+// subscribes first (or it loses whatever arrives during the round trip), which
+// means the live stream and the replay overlap. Writing both wrote that overlap
+// twice — stale output landing on top of the line the TUI was drawing, which is
+// how harness text ended up spliced into Claude Code's input box.
+//
+// `seq` is a stream POSITION, not a length, so it stays correct even after the
+// replay buffer truncates at 2 MB.
+describe('replay/live handoff', () => {
+  /** The rule Terminal.tsx applies when releasing held chunks. */
+  function release(held: Array<{ data: string; seq?: number }>, upTo: number | null): string[] {
+    return held
+      .filter(c => !(c.seq !== undefined && upTo !== null && c.seq <= upTo))
+      .map(c => c.data);
+  }
+
+  it('drops chunks the replay already contains', () => {
+    const held = [{ data: 'a', seq: 10 }, { data: 'b', seq: 20 }, { data: 'c', seq: 30 }];
+    expect(release(held, 20)).toEqual(['c']);
+  });
+
+  it('keeps everything when the replay covered nothing', () => {
+    const held = [{ data: 'a', seq: 10 }, { data: 'b', seq: 20 }];
+    expect(release(held, 0)).toEqual(['a', 'b']);
+  });
+
+  it('keeps chunks with no seq — a duplicate is recoverable, a gap is not', () => {
+    const held = [{ data: 'a' }, { data: 'b', seq: 5 }];
+    expect(release(held, 10)).toEqual(['a']);
+  });
+
+  it('releases everything when the replay call failed', () => {
+    const held = [{ data: 'a', seq: 1 }, { data: 'b', seq: 2 }];
+    expect(release(held, null)).toEqual(['a', 'b']);
+  });
+
+  it('is exact at the boundary — seq equal to the replay position is covered', () => {
+    const held = [{ data: 'boundary', seq: 100 }, { data: 'after', seq: 101 }];
+    expect(release(held, 100)).toEqual(['after']);
+  });
+});

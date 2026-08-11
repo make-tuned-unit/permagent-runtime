@@ -29,7 +29,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
   const { colors, reduceMotion } = useTheme();
   const { data, loading, error } = inbox;
   const { data: persona } = usePersona();
-  const agentName = persona?.display_name ?? 'Aria';
+  const agentName = persona?.display_name ?? 'your agent';
   const [view, setView] = useState<'list' | 'history'>('list');
   const [history, setHistory] = useState<HistoryItem[] | null>(null);
   const [tier1Open, setTier1Open] = useState(false);
@@ -294,7 +294,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
 function HistoryList({ items }: { items: HistoryItem[] | null }) {
   const { colors } = useTheme();
   const { data: persona } = usePersona();
-  const agentName = persona?.display_name ?? 'Aria';
+  const agentName = persona?.display_name ?? 'your agent';
   if (items === null) {
     return (
       <div style={{ padding: '32px 18px', textAlign: 'center', fontSize: 12, color: colors.textDim }}>

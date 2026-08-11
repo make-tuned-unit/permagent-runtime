@@ -38,6 +38,7 @@ struct ProjectNote: Decodable, Identifiable {
 // ── Notes screen ─────────────────────────────────────────────────────────────
 
 struct NotesView: View {
+    @ObservedObject private var identity = AgentIdentity.shared
     @State private var projects: [Project] = []
     @State private var selected: Project?
     @State private var notes: [ProjectNote] = []
@@ -59,7 +60,7 @@ struct NotesView: View {
             }
             .padding()
         }
-        .background(Brand.shell)
+        .background(ChatSurface.bg.ignoresSafeArea())
         .navigationTitle("Notes")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -94,23 +95,25 @@ struct NotesView: View {
                 }
             }
         } label: {
-            HStack(spacing: 10) {
-                Image(systemName: "folder.fill")
-                    .foregroundStyle(Brand.cyan)
+            HStack(spacing: 12) {
+                Image(systemName: "folder")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(ChatSurface.spark)
+                    .frame(width: 34, height: 34)
+                    .background(ChatSurface.control, in: Circle())
                 Text(selected?.name ?? (projectsLoaded ? "Select a project" : "Loading…"))
                     .font(.brandHeadline)
-                    .foregroundStyle(Brand.text)
+                    .foregroundStyle(ChatSurface.text)
                 Spacer()
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.caption)
-                    .foregroundStyle(Brand.textDim)
+                    .foregroundStyle(ChatSurface.dim)
             }
             .padding(14)
-            .background(Brand.surface)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(ChatSurface.raised, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(Brand.borderHi, lineWidth: 1)
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .strokeBorder(ChatSurface.border, lineWidth: 1)
             )
         }
         .disabled(projects.isEmpty)
@@ -119,29 +122,22 @@ struct NotesView: View {
     @ViewBuilder
     private var notesSection: some View {
         if selected == nil && projectsLoaded && projects.isEmpty {
-            GlassCard {
-                Text("No projects yet. Create one on the desktop (or ask Henry), then jot or dictate notes to it from here.")
-                    .font(.brandCaption)
-                    .foregroundStyle(Brand.textMuted)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            SparkEmptyState(
+                line: "No projects yet.",
+                caption: "Create one on the desktop (or ask \(identity.name)), then jot or dictate notes to it from here."
+            )
+            .padding(.top, 60)
         } else if !notesLoaded && selected != nil {
             ProgressView()
-                .tint(Brand.cyan)
+                .tint(ChatSurface.spark)
                 .frame(maxWidth: .infinity)
                 .padding(.top, 30)
         } else if notesLoaded && notes.isEmpty {
-            GlassCard {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("NO NOTES YET")
-                        .font(.brandLabel)
-                        .foregroundStyle(Brand.textDim)
-                    Text("Tap the compose button to write — or dictate — your first note for this project.")
-                        .font(.brandCaption)
-                        .foregroundStyle(Brand.textMuted)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            SparkEmptyState(
+                line: "No notes yet.",
+                caption: "Tap the compose button to write — or dictate — your first note for this project."
+            )
+            .padding(.top, 60)
         } else {
             ForEach(notes) { note in
                 noteCard(note)
@@ -150,21 +146,23 @@ struct NotesView: View {
     }
 
     private func noteCard(_ note: ProjectNote) -> some View {
-        GlassCard {
+        RaisedCard {
             VStack(alignment: .leading, spacing: 6) {
                 if let title = note.title, !title.isEmpty {
                     Text(title)
                         .font(.brandHeadline)
-                        .foregroundStyle(Brand.text)
+                        .foregroundStyle(ChatSurface.text)
                 }
+                // A note's body is reading prose — the serif surface.
                 Text(note.body)
-                    .font(.brandCaption)
-                    .foregroundStyle(Brand.textMuted)
+                    .font(.chatProse)
+                    .lineSpacing(4)
+                    .foregroundStyle(ChatSurface.text)
                     .lineLimit(8)
                 if let when = RelativeTime.string(from: note.created_at) {
                     Text(when)
                         .font(.caption2)
-                        .foregroundStyle(Brand.textDim)
+                        .foregroundStyle(ChatSurface.dim)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -231,29 +229,38 @@ struct NoteComposer: View {
                 VStack(alignment: .leading, spacing: 14) {
                     TextField("Title (optional)", text: $title)
                         .font(.brandHeadline)
-                        .foregroundStyle(Brand.text)
+                        .foregroundStyle(ChatSurface.text)
+                        .tint(ChatSurface.spark)
                         .padding(14)
-                        .background(Brand.surface)
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .background(ChatSurface.raised, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                                .strokeBorder(ChatSurface.border, lineWidth: 1)
+                        )
 
                     ZStack(alignment: .topLeading) {
                         if text.isEmpty {
                             Text("Write your note…")
-                                .font(.brandBody)
-                                .foregroundStyle(Brand.textDim)
+                                .font(.chatProse)
+                                .foregroundStyle(ChatSurface.dim)
                                 .padding(.horizontal, 18)
                                 .padding(.vertical, 22)
                                 .allowsHitTesting(false)
                         }
+                        // The note is written the way it will be read — serif.
                         TextEditor(text: $text)
-                            .font(.brandBody)
-                            .foregroundStyle(Brand.text)
+                            .font(.chatProse)
+                            .foregroundStyle(ChatSurface.text)
+                            .tint(ChatSurface.spark)
                             .scrollContentBackground(.hidden)
                             .frame(minHeight: 160)
                             .padding(8)
                     }
-                    .background(Brand.surface)
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .background(ChatSurface.raised, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 24, style: .continuous)
+                            .strokeBorder(ChatSurface.border, lineWidth: 1)
+                    )
 
                     dictateBar
 
@@ -265,13 +272,13 @@ struct NoteComposer: View {
                 }
                 .padding()
             }
-            .background(Brand.shell)
+            .background(ChatSurface.bg.ignoresSafeArea())
             .navigationTitle("New note")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
-                        .foregroundStyle(Brand.textMuted)
+                        .foregroundStyle(ChatSurface.muted)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button {
@@ -292,28 +299,29 @@ struct NoteComposer: View {
                 Task { await toggleDictation() }
             } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: recorder.isRecording ? "stop.circle.fill" : "mic.fill")
-                        .font(.title3)
-                        .foregroundStyle(recorder.isRecording ? Brand.danger : Brand.cyan)
+                    Image(systemName: recorder.isRecording ? "stop.fill" : "mic")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(recorder.isRecording ? Brand.onDanger : ChatSurface.text)
+                        .frame(width: 34, height: 34)
+                        .background(recorder.isRecording ? AnyShapeStyle(Brand.danger) : AnyShapeStyle(ChatSurface.control), in: Circle())
                     Text(recorder.isRecording
                          ? "Recording… tap to stop"
                          : (transcribing ? "Transcribing…" : "Dictate a note"))
                         .font(.brandCaption)
-                        .foregroundStyle(Brand.textMuted)
+                        .foregroundStyle(ChatSurface.muted)
                     Spacer()
                     if transcribing {
-                        ProgressView().tint(Brand.cyan)
+                        ProgressView().tint(ChatSurface.spark)
                     } else if recorder.isRecording {
                         PulseDot(color: Brand.danger)
                     }
                 }
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Brand.surface)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .background(ChatSurface.raised, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(recorder.isRecording ? Brand.danger.opacity(0.5) : Brand.borderHi, lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .strokeBorder(recorder.isRecording ? Brand.danger.opacity(0.5) : ChatSurface.border, lineWidth: 1)
                 )
             }
             .buttonStyle(.plain)

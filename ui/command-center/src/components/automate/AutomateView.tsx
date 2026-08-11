@@ -169,7 +169,7 @@ type DetailTarget =
 
 export function AutomateView() {
   const { data: persona } = usePersona();
-  const agentName = persona?.display_name ?? 'Aria';
+  const agentName = persona?.display_name ?? 'your agent';
   const [jobs, setJobs] = useState<ScheduledJob[]>([]);
   const [sessions, setSessions] = useState<Map<string, SessionInfo[]>>(new Map());
   const [extensions, setExtensions] = useState<ExtensionInfo[]>([]);

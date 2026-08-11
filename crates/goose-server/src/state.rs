@@ -98,11 +98,19 @@ pub struct AppState {
     /// restart — `None` until the Kokoro models are present and loaded
     /// (see routes::voice voice-model endpoints).
     pub voice_tts: SharedTts,
+    /// Wake-word / spoken-stop keyword spotter (sherpa-onnx KWS zipformer).
+    /// Hot-swappable like TTS: `None` until the ~17MB model is downloaded, at
+    /// which point the on-demand downloader loads it without a restart.
+    pub wake_spotter: SharedWakeSpotter,
 }
 
 /// Hot-swappable TTS slot — `None` until Kokoro models are downloaded/loaded,
 /// then swapped in place by the on-demand downloader's completion callback.
 pub type SharedTts = Arc<tokio::sync::RwLock<Option<Arc<dyn crate::voice::TextToSpeech>>>>;
+
+/// Hot-swappable wake-word spotter slot, same lifecycle as [`SharedTts`].
+pub type SharedWakeSpotter =
+    Arc<tokio::sync::RwLock<Option<Arc<crate::voice::kws::WakeWordSpotter>>>>;
 
 impl AppState {
     pub async fn new(tls: bool) -> anyhow::Result<Arc<AppState>> {
@@ -170,8 +178,9 @@ impl AppState {
         // project registry so content mentioning a project classifies into
         // that project's wing instead of Spectral's demo defaults (which dump
         // most real content into "general"). Empty (registry unavailable, no
-        // projects, or feature off) → builder gets no rules → Spectral
-        // defaults, exactly as before.
+        // projects, or feature off) → an EMPTY rule set is still passed, so
+        // Spectral's fixture defaults never apply. See the builder call below
+        // for why the absence of rules must not mean "use the fixtures".
         #[cfg(feature = "spectral-recognition")]
         let project_wing_rules: Vec<(String, String)> =
             match agent_manager.session_manager().pool_clone().await {
@@ -235,14 +244,35 @@ impl AppState {
                     .data_dir(&brain_dir)
                     .ontology_path(&ontology_path)
                     .device_id(spectral::DeviceId::from_descriptor(&device_id_str));
-                if !project_wing_rules.is_empty() {
-                    tracing::info!(
-                        target: "permagentd::brain",
-                        rules = project_wing_rules.len(),
-                        "Opening Brain with per-project wing rules"
-                    );
-                    builder = builder.wing_rules(project_wing_rules);
-                }
+                // ALWAYS pass the rule set, even when it is empty.
+                //
+                // Spectral resolves `config.wing_rules.unwrap_or_else(
+                // default_wing_rule_strings)`, so *not calling this* does not
+                // mean "no rules" — it means Spectral's FIXTURE rules
+                // (alice/apollo/acme/polaris/vega/…), whose patterns are as
+                // broad as `apollo|polymarket|strategy|weather|prediction|
+                // wager|trade`. Those capture real production writes: 118 live
+                // memories sit in fixture wings today, and Spectral observed a
+                // new one landing in `acme` mid-afternoon on 2026-08-04.
+                //
+                // The trap is that `spectral-recognition` is NOT a default
+                // feature, so in the SHIPPING build `project_wing_rules` is
+                // always empty and the old `if !is_empty()` guard meant the
+                // fixture rules were what the live brain always ran on — the
+                // per-project rules built to replace them were compiled out.
+                //
+                // Empty here classifies everything to "general", which is
+                // merely uninformative. A fixture wing is actively WRONG: it
+                // is recognition-validation ground truth and the TACT gate, so
+                // a false label poisons both. Uninformative beats wrong.
+                // Ambient writes keep their own wing via
+                // `activity::ingestion::derive_wing_slug` regardless.
+                tracing::info!(
+                    target: "permagentd::brain",
+                    rules = project_wing_rules.len(),
+                    "Opening Brain with per-project wing rules (empty ⇒ no fixture fallback)"
+                );
+                builder = builder.wing_rules(project_wing_rules);
                 let raw_brain = match builder.build() {
                     Ok(b) => {
                         tracing::info!(
@@ -901,6 +931,7 @@ impl AppState {
             app_catalog,
             voice_stt,
             voice_tts: Arc::new(tokio::sync::RwLock::new(voice_tts)),
+            wake_spotter: Arc::new(tokio::sync::RwLock::new(build_wake_spotter())),
         });
 
         // Agent runtime-state tick (#288 interim A): derive Henry's state from the
@@ -1088,6 +1119,32 @@ pub fn build_kokoro_tts() -> Option<Arc<dyn crate::voice::TextToSpeech>> {
         }
         Err(e) => {
             tracing::error!(target: "permagentd::voice", "TTS load failed: {}", e);
+            None
+        }
+    }
+}
+
+/// Build the wake-word keyword spotter if its model files are present.
+///
+/// Returns `None` (wake word unavailable) until the ~17MB KWS model is
+/// downloaded — the on-demand downloader fetches it and calls this again to
+/// hot-swap a live spotter into [`SharedWakeSpotter`] without a restart.
+pub fn build_wake_spotter() -> Option<Arc<crate::voice::kws::WakeWordSpotter>> {
+    let paths = crate::voice::kws::WakeWordModelPaths::default_paths();
+    if !paths.models_exist() {
+        tracing::info!(
+            target: "permagentd::voice",
+            "KWS model not found — wake word disabled until downloaded"
+        );
+        return None;
+    }
+    match crate::voice::kws::WakeWordSpotter::new(&paths.model_dir, 2) {
+        Ok(s) => {
+            tracing::info!(target: "permagentd::voice", "Wake-word spotter loaded (sherpa-onnx KWS)");
+            Some(Arc::new(s))
+        }
+        Err(e) => {
+            tracing::error!(target: "permagentd::voice", "Wake-word spotter load failed: {}", e);
             None
         }
     }

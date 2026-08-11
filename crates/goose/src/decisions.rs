@@ -40,6 +40,10 @@ const OUTBOX_ELIGIBLE_KINDS: &[&str] = &[
     "model_upgrade",
 ];
 
+/// Payload marker for the review-fail → debugger-dispatch proposal (a `choice`
+/// decision filed by the verification gate; its effect arm keys on this).
+pub const PROPOSAL_DEBUG_DISPATCH: &str = "debug_dispatch";
+
 /// Return the stable outbox claim key for a durable decision effect.
 pub fn effect_outbox_claim_key(decision_id: &str, kind: &str) -> Option<String> {
     OUTBOX_ELIGIBLE_KINDS
@@ -193,6 +197,12 @@ pub struct ChoicePayload {
     pub options: Vec<ChoiceOption>,
     #[serde(default)]
     pub default: Option<String>,
+    /// Machine-readable marker linking this choice to a coded effect arm
+    /// (e.g. [`PROPOSAL_DEBUG_DISPATCH`]). None for pure-record choices,
+    /// whose answer is the whole outcome. Skipped when absent so existing
+    /// choice payloads stay byte-identical on the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposal: Option<String>,
 }
 
 /// Payload for `kind='risk_gate'` — permission to perform a risky action class.
@@ -292,6 +302,218 @@ pub struct ModelUpgradePayload {
     /// The model that was active when the proposal was made (for the card).
     #[serde(default)]
     pub current_model: Option<String>,
+}
+
+/// A capability the agent found itself missing while trying to do what the user
+/// asked — surfaced as a request rather than acted on.
+///
+/// The motivating case: asked for the weather, the agent tried a search API, four
+/// government URLs, `weather.com`, DuckDuckGo and `curl` over several minutes,
+/// while the answer sat on the user's own dashboard. It had no tool to read it.
+/// The useful output of that struggle is not a lesson telling it to try harder —
+/// it is "I lack a tool for this, here is the evidence, should I have one?".
+///
+/// Deliberately evidence-first. `attempts` are the concrete things that were
+/// tried and failed; without them this is an agent asking for capabilities on a
+/// hunch, which is the phantom-guardrail failure mode (fabricating a problem to
+/// look diligent about solving it).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CapabilityGapPayload {
+    /// What the user was trying to get done, in their terms.
+    pub user_goal: String,
+    /// The capability that would have made it one step instead of many.
+    pub missing_capability: String,
+    /// What was actually tried, in order, and how each failed. The evidence.
+    pub attempts: Vec<String>,
+    /// Session the struggle happened in, so the transcript stays reachable.
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// An existing tool that nearly covers it, if any — often the answer is
+    /// "extend that one" rather than "build a new one".
+    #[serde(default)]
+    pub nearest_existing_tool: Option<String>,
+}
+
+/// A proposed regression test, distilled from a confirmed incident.
+///
+/// The durable artifact of the learning loop. Audits of a production agent
+/// runtime measured **0% ex-ante prevention but 87% regression blocking** —
+/// they encode the past rather than predicting novel failure. So the primary
+/// output of a failure is not a lesson telling the agent to try harder; it is a
+/// test that fails if the same thing happens again.
+///
+/// Materialises as a `permagent-eval` task: a declarative `task.yaml` plus a
+/// deterministic `oracle/` grader. Chosen over generating Rust because the eval
+/// harness overlays the oracle PRISTINE over the finished workspace, so the
+/// agent cannot weaken the grader it is being judged by — the anti-gaming
+/// property is already built and must not be bypassed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegressionProposalPayload {
+    /// Task id; also the directory name. Strictly slug-shaped — see
+    /// [`is_safe_task_id`]. This value reaches the filesystem on approval.
+    pub task_id: String,
+    pub title: String,
+    /// The objective handed to the harness as the run prompt.
+    pub prompt: String,
+    /// Oracle command as an argv vector. Exit 0 = solved.
+    pub test: Vec<String>,
+    /// Filename of the grader written into `oracle/`.
+    pub oracle_filename: String,
+    /// The grader's source. Deterministic; must exit non-zero on the failure.
+    pub oracle_source: String,
+    /// The incident this regression pins.
+    pub incident_id: String,
+    #[serde(default)]
+    pub category: Option<String>,
+}
+
+/// A task id becomes a directory name on approval, so it is restricted to a
+/// strict slug. Anything permitting `.`, `/` or absolute paths would turn an
+/// approved proposal into arbitrary filesystem write — the decision gate
+/// authorises the CONTENT, it must not also have to police the PATH.
+pub fn is_safe_task_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && !id.starts_with('-')
+        && !id.ends_with('-')
+}
+
+/// Same discipline for the oracle filename: a bare filename, never a path.
+pub fn is_safe_oracle_filename(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.starts_with('.')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+}
+
+fn validate_regression_proposal_payload(p: &RegressionProposalPayload) -> Result<(), String> {
+    if !is_safe_task_id(&p.task_id) {
+        return Err(
+            "regression_proposal task_id must be a lowercase slug ([a-z0-9-], no leading or \
+             trailing dash) — it becomes a directory name"
+                .to_string(),
+        );
+    }
+    if !is_safe_oracle_filename(&p.oracle_filename) {
+        return Err(
+            "regression_proposal oracle_filename must be a bare filename, not a path".to_string(),
+        );
+    }
+    if p.title.trim().is_empty() || p.prompt.trim().is_empty() {
+        return Err("regression_proposal requires a non-empty title and prompt".to_string());
+    }
+    if p.test.is_empty() || p.test.iter().all(|t| t.trim().is_empty()) {
+        return Err("regression_proposal requires a non-empty test argv".to_string());
+    }
+    if p.oracle_source.trim().is_empty() {
+        return Err(
+            "regression_proposal requires oracle_source — a grader that exits non-zero on the \
+             failure being pinned"
+                .to_string(),
+        );
+    }
+    // A regression with no incident behind it is an invented test, not a
+    // learned one. Same grounding rule as `incidents`.
+    if p.incident_id.trim().is_empty() {
+        return Err("regression_proposal must cite the incident_id it pins".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod regression_payload_tests {
+    use super::*;
+
+    #[test]
+    fn task_id_slug_rejects_anything_that_could_escape_the_tasks_dir() {
+        assert!(is_safe_task_id("weather-card-read"));
+        assert!(is_safe_task_id("fix-median-2"));
+        // Path traversal, absolute paths, and hidden files are the whole point.
+        assert!(!is_safe_task_id("../../etc/passwd"));
+        assert!(!is_safe_task_id("a/b"));
+        assert!(!is_safe_task_id("/abs"));
+        assert!(!is_safe_task_id(".hidden"));
+        assert!(!is_safe_task_id("has.dot"));
+        assert!(!is_safe_task_id("UPPER"));
+        assert!(!is_safe_task_id(""));
+        assert!(!is_safe_task_id("-leading"));
+        assert!(!is_safe_task_id("trailing-"));
+    }
+
+    #[test]
+    fn oracle_filename_must_be_a_bare_filename() {
+        assert!(is_safe_oracle_filename("check.py"));
+        assert!(is_safe_oracle_filename("grade_it.sh"));
+        assert!(!is_safe_oracle_filename("../check.py"));
+        assert!(!is_safe_oracle_filename("oracle/check.py"));
+        assert!(!is_safe_oracle_filename(".bashrc"));
+        assert!(!is_safe_oracle_filename(""));
+    }
+
+    fn valid() -> RegressionProposalPayload {
+        RegressionProposalPayload {
+            task_id: "weather-card-read".into(),
+            title: "Reads the dashboard weather card".into(),
+            prompt: "Tell me the weather.".into(),
+            test: vec!["python3".into(), "check.py".into()],
+            oracle_filename: "check.py".into(),
+            oracle_source: "import sys\nsys.exit(0)\n".into(),
+            incident_id: "inc-123".into(),
+            category: None,
+        }
+    }
+
+    #[test]
+    fn a_valid_regression_proposal_passes() {
+        assert!(validate_regression_proposal_payload(&valid()).is_ok());
+    }
+
+    #[test]
+    fn a_regression_with_no_incident_is_an_invented_test_not_a_learned_one() {
+        let mut p = valid();
+        p.incident_id = "  ".into();
+        assert!(validate_regression_proposal_payload(&p).is_err());
+    }
+
+    #[test]
+    fn a_regression_without_a_grader_is_refused() {
+        let mut p = valid();
+        p.oracle_source = "".into();
+        assert!(validate_regression_proposal_payload(&p).is_err());
+        let mut p2 = valid();
+        p2.test = vec![];
+        assert!(validate_regression_proposal_payload(&p2).is_err());
+    }
+
+    #[test]
+    fn an_unsafe_task_id_is_refused_at_the_payload_boundary() {
+        let mut p = valid();
+        p.task_id = "../escape".into();
+        assert!(validate_regression_proposal_payload(&p).is_err());
+    }
+}
+
+fn validate_capability_gap_payload(p: &CapabilityGapPayload) -> Result<(), String> {
+    if p.user_goal.trim().is_empty() {
+        return Err("capability_gap requires a non-empty user_goal".to_string());
+    }
+    if p.missing_capability.trim().is_empty() {
+        return Err("capability_gap requires a non-empty missing_capability".to_string());
+    }
+    // Evidence, not vibes: a request with nothing tried is a guess.
+    if p.attempts.iter().all(|a| a.trim().is_empty()) {
+        return Err(
+            "capability_gap requires at least one concrete attempt that failed".to_string(),
+        );
+    }
+    Ok(())
 }
 
 fn validate_model_upgrade_payload(p: &ModelUpgradePayload) -> Result<(), String> {
@@ -698,6 +920,8 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
         "model_upgrade",
         "tool_approval",
         "session_gate",
+        "capability_gap",
+        "regression_proposal",
     ]
     .contains(&req.kind.as_str())
     {
@@ -775,6 +999,18 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
             Ok(p) => validate_session_gate_payload(&p),
             Err(e) => Err(e.to_string()),
         },
+        "capability_gap" => {
+            match serde_json::from_value::<CapabilityGapPayload>(req.payload.clone()) {
+                Ok(p) => validate_capability_gap_payload(&p),
+                Err(e) => Err(e.to_string()),
+            }
+        }
+        "regression_proposal" => {
+            match serde_json::from_value::<RegressionProposalPayload>(req.payload.clone()) {
+                Ok(p) => validate_regression_proposal_payload(&p),
+                Err(e) => Err(e.to_string()),
+            }
+        }
         _ => unreachable!("kind validated above"),
     };
     payload_result.map_err(|e| format!("payload failed schema for kind '{}': {}", req.kind, e))

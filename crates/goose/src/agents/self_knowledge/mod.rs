@@ -156,6 +156,10 @@ pub static WORKER_DESCRIPTORS: &[FeatureDescriptor] = &[
     // inbox-triage character (#640) is hidden from the brief until deliberately
     // enabled, so the canonical prompt snapshots stay byte-for-byte identical.
     crate::concierge::SELF_KNOWLEDGE_FEATURE,
+    // Render-gated on `strix_enabled` (default OFF): a security agent that
+    // runs live scan tooling is switched on deliberately, and until then the
+    // brief stays byte-for-byte identical.
+    crate::strix::SELF_KNOWLEDGE_FEATURE,
 ];
 
 /// Whether a worker descriptor should be rendered into the `permagent_self`
@@ -171,6 +175,9 @@ fn worker_descriptor_visible(d: &FeatureDescriptor) -> bool {
     if d.id == crate::concierge::CONCIERGE_FEATURE_ID {
         return crate::concierge::is_enabled();
     }
+    if d.id == crate::strix::STRIX_FEATURE_ID {
+        return crate::strix::is_enabled();
+    }
     true
 }
 
@@ -181,6 +188,7 @@ pub static GUARD_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::session::crash_capture::DURABILITY_FEATURE,
     crate::tool_monitor::SELF_KNOWLEDGE_FEATURE,
     crate::sovereignty::SELF_KNOWLEDGE_FEATURE,
+    crate::agents::platform_extensions::goal_engine::GOAL_LANDING_FEATURE,
 ];
 
 /// User-facing surfaces. Each entry is a `const` co-located with its module.
@@ -497,6 +505,11 @@ impl SelfKnowledgeBuilder {
             } else {
                 "off (initiative_enabled=false)".to_string()
             }),
+            "strix" => Some(if crate::strix::is_enabled() {
+                "on — the Guard is sweeping your projects for security flaws".to_string()
+            } else {
+                "off (strix_enabled=false)".to_string()
+            }),
             _ => None,
         }
     }
@@ -619,6 +632,8 @@ mod tests {
         "playbook",
         // Same render-gated contract as the playbook (PERMAGENT_CONCIERGE_ENABLED).
         "concierge",
+        // Same render-gated contract, on the `strix_enabled` config key.
+        "strix",
     ];
     /// Every known surface id must have exactly one descriptor.
     const KNOWN_SURFACE_IDS: &[&str] = &[
@@ -686,6 +701,7 @@ mod tests {
             "durability_supervision",
             "runaway_loop_guard",
             "sovereignty_guard",
+            "goal_landing",
         ];
         for id in KNOWN_GUARD_IDS {
             let n = GUARD_DESCRIPTORS.iter().filter(|d| d.id == *id).count();
@@ -1181,10 +1197,10 @@ mod tests {
     ///   branch lands here automatically.
     fn extension_tool_inventories() -> Vec<(&'static str, Vec<String>)> {
         use crate::agents::platform_extensions::{
-            analyze, app_conductor, app_perception, apps, browser, chatrecall, desktop, developer,
-            ext_manager, file_to_project, listen, model_manager, orchestrator, people,
-            project_manager, pronunciation, recipe_author, skills, storage_health, summarize,
-            summon, todo,
+            analyze, app_conductor, app_perception, apps, browser, chatrecall, dashboard, desktop,
+            developer, ext_manager, file_to_project, finance, inbox_tools, listen, model_manager,
+            orchestrator, people, project_manager, pronunciation, recipe_author, retrospect,
+            skills, storage_health, summarize, summon, todo,
         };
 
         fn names(tools: Vec<rmcp::model::Tool>) -> Vec<String> {
@@ -1211,6 +1227,10 @@ mod tests {
                 names(analyze::AnalyzeClient::get_tools()),
             ),
             (
+                inbox_tools::EXTENSION_NAME,
+                names(inbox_tools::InboxClient::get_tools()),
+            ),
+            (
                 app_conductor::EXTENSION_NAME,
                 names(app_conductor::AppConductorClient::get_tools()),
             ),
@@ -1231,6 +1251,14 @@ mod tests {
                 names(chatrecall::ChatRecallClient::get_tools()),
             ),
             (
+                dashboard::EXTENSION_NAME,
+                names(dashboard::DashboardClient::get_tools()),
+            ),
+            (
+                retrospect::EXTENSION_NAME,
+                names(retrospect::RetrospectClient::get_tools()),
+            ),
+            (
                 // Flag-gated at runtime (DESKTOP_CONTROL_ENABLED): `list_tools`
                 // selects from this superset, so the superset is the inventory
                 // (the Extension Manager precedent).
@@ -1248,6 +1276,10 @@ mod tests {
             (
                 file_to_project::EXTENSION_NAME,
                 names(file_to_project::FileToProjectClient::get_tools()),
+            ),
+            (
+                finance::EXTENSION_NAME,
+                names(finance::FinanceClient::get_tools()),
             ),
             (
                 listen::EXTENSION_NAME,
@@ -1606,7 +1638,9 @@ mod tests {
     ///   authoring FIELDS on the `Recipe`/`ScheduledJob`, named in the
     ///   descriptor prose so the agent knows the richer recipe surface exists.
     ///   They are recipe schema keys, not callable tools.
-    const NON_TOOL_PROSE_TOKENS: &[&str] = &["sub_recipes", "worker_persona"];
+    // `strix_llm` is a config.yaml key (the Guard's scanner model), named in
+    // the Guard's cost teaching step — a setting, not a tool.
+    const NON_TOOL_PROSE_TOKENS: &[&str] = &["sub_recipes", "worker_persona", "strix_llm"];
 
     /// Every tool name that exists in the runtime: the statically-derived
     /// per-extension inventories, hidden-but-real extensions (Git Steward),

@@ -48,6 +48,11 @@ pub struct PageSnapshot {
     /// "ok", "no_tab", "refused_scheme" (non-http(s) page), or "error".
     #[serde(default = "default_status")]
     pub status: String,
+    /// The snapshot generation these refs were stamped in. An act presents it
+    /// back so refs superseded by ANOTHER session's snapshot of the same shared
+    /// webview fail loudly instead of resolving to a restamped element (#939).
+    #[serde(default)]
+    pub generation: String,
 }
 
 /// Result of an act. On success carries a FRESH snapshot so the caller re-grounds
@@ -80,6 +85,10 @@ pub struct ActRequest {
     pub value: Option<String>,
     pub webview_id: String,
     pub page_url: String,
+    /// Generation the caller's refs came from (#939). Absent from an older
+    /// caller means "no generation check" — the page-URL guard still applies.
+    #[serde(default)]
+    pub generation: Option<String>,
 }
 
 /// Validate an act: `click` takes no value; `type` requires a value present
@@ -107,20 +116,19 @@ pub fn validate_act(action: &str, value: Option<&str>) -> Result<(), String> {
 async fn read_snapshot(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<PageSnapshot>, StatusCode> {
-    let (request_id, rx) = state.browser_snapshot_bridge.request().await;
+    // `slot` owns the pending entry — see PendingSlot: an abandoned request
+    // releases it on drop instead of leaking the map entry.
+    let (slot, rx) = state.browser_snapshot_bridge.request();
 
     permagent::events::emit(permagent::events::PermagentEvent::new(
         permagent::events::PermagentEventType::BrowserSnapshotRequested,
-        serde_json::json!({ "request_id": request_id }),
+        serde_json::json!({ "request_id": slot.id() }),
     ));
 
     match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
         Ok(Ok(snapshot)) => Ok(Json(snapshot)),
         Ok(Err(_)) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-        Err(_) => {
-            state.browser_snapshot_bridge.cancel(&request_id).await;
-            Err(StatusCode::GATEWAY_TIMEOUT)
-        }
+        Err(_) => Err(StatusCode::GATEWAY_TIMEOUT),
     }
 }
 
@@ -130,11 +138,7 @@ async fn fulfill_snapshot(
     Path(request_id): Path<String>,
     Json(snapshot): Json<PageSnapshot>,
 ) -> StatusCode {
-    if state
-        .browser_snapshot_bridge
-        .fulfill(&request_id, snapshot)
-        .await
-    {
+    if state.browser_snapshot_bridge.fulfill(&request_id, snapshot) {
         StatusCode::OK
     } else {
         StatusCode::NOT_FOUND
@@ -152,27 +156,25 @@ async fn act(
         return Err(StatusCode::UNPROCESSABLE_ENTITY);
     }
 
-    let (request_id, rx) = state.browser_act_bridge.request().await;
+    let (slot, rx) = state.browser_act_bridge.request();
 
     permagent::events::emit(permagent::events::PermagentEvent::new(
         permagent::events::PermagentEventType::BrowserActRequested,
         serde_json::json!({
-            "request_id": request_id,
+            "request_id": slot.id(),
             "ref": req.ref_id,
             "action": req.action,
             "value": req.value,
             "webview_id": req.webview_id,
             "page_url": req.page_url,
+            "generation": req.generation,
         }),
     ));
 
     match tokio::time::timeout(std::time::Duration::from_secs(15), rx).await {
         Ok(Ok(result)) => Ok(Json(result)),
         Ok(Err(_)) => Err(StatusCode::INTERNAL_SERVER_ERROR),
-        Err(_) => {
-            state.browser_act_bridge.cancel(&request_id).await;
-            Err(StatusCode::GATEWAY_TIMEOUT)
-        }
+        Err(_) => Err(StatusCode::GATEWAY_TIMEOUT),
     }
 }
 
@@ -182,7 +184,7 @@ async fn fulfill_act(
     Path(request_id): Path<String>,
     Json(result): Json<ActResult>,
 ) -> StatusCode {
-    if state.browser_act_bridge.fulfill(&request_id, result).await {
+    if state.browser_act_bridge.fulfill(&request_id, result) {
         StatusCode::OK
     } else {
         StatusCode::NOT_FOUND
@@ -267,6 +269,28 @@ mod tests {
         assert_eq!(req.value.as_deref(), Some("hi"));
         assert_eq!(req.webview_id, "browser-1");
         assert_eq!(req.page_url, "https://example.com/");
+        // Absent generation is tolerated — the URL guard still applies.
+        assert_eq!(req.generation, None);
+    }
+
+    /// #939: the generation rides the act so a superseded ref is refused.
+    #[test]
+    fn act_request_carries_the_snapshot_generation() {
+        let req: ActRequest = serde_json::from_str(
+            r#"{"ref":3,"action":"click","webview_id":"browser-1","page_url":"https://example.com/","generation":"gen-7"}"#,
+        )
+        .unwrap();
+        assert_eq!(req.generation.as_deref(), Some("gen-7"));
+    }
+
+    #[test]
+    fn page_snapshot_round_trips_the_generation() {
+        let json = r#"{"url":"https://e.com","elements":[],"generation":"gen-9"}"#;
+        let snap: PageSnapshot = serde_json::from_str(json).unwrap();
+        assert_eq!(snap.generation, "gen-9");
+        // A frontend that omits it degrades to the empty (unchecked) generation.
+        let bare: PageSnapshot = serde_json::from_str(r#"{"url":"x","elements":[]}"#).unwrap();
+        assert_eq!(bare.generation, "");
     }
 
     #[test]

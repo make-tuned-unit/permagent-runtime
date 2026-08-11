@@ -56,7 +56,8 @@
     ],
     "resources": {
       "resources/mcp-runtime/": "mcp-runtime/",
-      "resources/whisper/": "whisper/"
+      "resources/whisper/": "whisper/",
+      "audiocap/permagent-audiocap": "permagent-audiocap"
     },
     "createUpdaterArtifacts": true
   },

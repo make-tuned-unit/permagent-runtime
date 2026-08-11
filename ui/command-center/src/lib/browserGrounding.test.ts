@@ -24,6 +24,7 @@ interface Snapshot {
   elements: SnapshotElement[];
   truncated: boolean;
   status: string;
+  generation: string;
 }
 interface ActResult {
   ok: boolean;
@@ -45,8 +46,13 @@ const grounding = new Function(
     ' role: __permagentRole' +
     ' };',
 )() as {
-  snapshot: (max?: number) => Snapshot;
-  act: (args: { ref: number; action: string; value?: string }, max?: number) => ActResult;
+  snapshot: (max?: number, gen?: string) => Snapshot;
+  act: (
+    args: { ref: number; action: string; value?: string },
+    max?: number,
+    expectedGen?: string,
+    nextGen?: string,
+  ) => ActResult;
   isWebScheme: (protocol: string) => boolean;
   name: (el: Element) => string;
   role: (el: Element) => string;
@@ -267,5 +273,55 @@ describe('act dispatcher', () => {
     const res = grounding.act({ ref: 999, action: 'click' });
     expect(res.ok).toBe(false);
     expect(res.error).toMatch(/not found/);
+  });
+});
+
+describe('snapshot generation (#939 cross-session ref stomping)', () => {
+  it('stamps the generation it was given and reports it back', () => {
+    document.body.innerHTML = `<button>Go</button>`;
+    const snap = grounding.snapshot(150, 'gen-a');
+    expect(snap.generation).toBe('gen-a');
+    expect(document.documentElement.getAttribute('data-permagent-gen')).toBe('gen-a');
+  });
+
+  it('refuses an act whose refs came from a superseded snapshot', () => {
+    // Session A snapshots and gets ref 0 → the Cancel button.
+    document.body.innerHTML = `<button>Cancel</button>`;
+    const a = grounding.snapshot(150, 'gen-a');
+    const ref = refOf(a, (e) => e.tag === 'button');
+
+    // Session B snapshots the same page. Refs are cleared and restamped from 0,
+    // so A's "ref 0" now points at B's numbering — on a page whose URL never
+    // changed, which is why the URL guard cannot catch this.
+    document.body.innerHTML = `<button>Delete everything</button>`;
+    grounding.snapshot(150, 'gen-b');
+
+    let clicked = 0;
+    document.querySelector('button')!.addEventListener('click', () => (clicked += 1));
+
+    const res = grounding.act({ ref, action: 'click' }, 150, 'gen-a', 'gen-c');
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/re-snapshotted/);
+    expect(clicked).toBe(0); // refused BEFORE touching the page
+  });
+
+  it('allows an act whose generation still matches, and re-stamps for the next one', () => {
+    document.body.innerHTML = `<button>Go</button>`;
+    const snap = grounding.snapshot(150, 'gen-a');
+    const ref = refOf(snap, (e) => e.tag === 'button');
+
+    const res = grounding.act({ ref, action: 'click' }, 150, 'gen-a', 'gen-b');
+    expect(res.ok).toBe(true);
+    // The fresh post-action snapshot belongs to the NEXT generation, so the
+    // refs it hands back are the only ones now valid.
+    expect(res.snapshot?.generation).toBe('gen-b');
+    expect(document.documentElement.getAttribute('data-permagent-gen')).toBe('gen-b');
+  });
+
+  it('skips the check when no generation is supplied (older caller)', () => {
+    document.body.innerHTML = `<button>Go</button>`;
+    const snap = grounding.snapshot();
+    const ref = refOf(snap, (e) => e.tag === 'button');
+    expect(grounding.act({ ref, action: 'click' }).ok).toBe(true);
   });
 });

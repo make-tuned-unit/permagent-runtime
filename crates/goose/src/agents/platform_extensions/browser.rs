@@ -4,7 +4,7 @@ use crate::agents::tool_execution::ToolCallContext;
 use async_trait::async_trait;
 use rmcp::model::{
     CallToolResult, Content, Implementation, InitializeResult, JsonObject, ListToolsResult,
-    ServerCapabilities, Tool,
+    ServerCapabilities, Tool, ToolAnnotations,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -58,6 +58,11 @@ struct PageSnapshot {
     truncated: bool,
     #[serde(default)]
     status: String,
+    /// Generation these refs were stamped in — bound to the session and
+    /// presented back on act, so another session's snapshot of the same shared
+    /// webview invalidates them instead of silently re-pointing them (#939).
+    #[serde(default)]
+    generation: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -143,6 +148,8 @@ pub struct BrowserClient {
 struct PageIdentity {
     webview_id: String,
     page_url: String,
+    /// The snapshot generation this session's refs belong to (#939).
+    generation: String,
 }
 
 /// Accept bare domains ("bbc.com") by assuming https; refuse non-web schemes.
@@ -559,6 +566,16 @@ impl BrowserClient {
             .send()
             .await
             .map_err(|e| format!("Failed to reach the browser bridge: {e}"))?;
+        if resp.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+            // The daemon is up (it answered) but no desktop UI is attached —
+            // the Mac's app is closed, which is normal for a phone-only
+            // session since the daemon runs under launchd independently.
+            return Err(format!(
+                "The Permagent desktop app is not open on your Mac, so there is no browser to \
+                 open {url} in. Ask me to open the app (I can launch it remotely), or use \
+                 read_webpage instead — it fetches the page server-side and needs no app."
+            ));
+        }
         if !resp.status().is_success() {
             return Err(format!("Browser navigate rejected: {}", resp.status()));
         }
@@ -573,6 +590,28 @@ impl BrowserClient {
         Ok(vec![Content::text(format!(
             "Opened {url} in the Permagent browser (Build tab). {hint}"
         ))])
+    }
+
+    /// Wake the desktop app so UI-dependent tools become usable. The daemon
+    /// answers regardless of the app, so this is the recovery path for a phone
+    /// session that hit a browser/terminal refusal.
+    async fn handle_wake_desktop(&self) -> Result<Vec<Content>, String> {
+        let client = reqwest::Client::new();
+        let resp = client
+            .post("http://127.0.0.1:3001/api/desktop/launch")
+            .timeout(std::time::Duration::from_secs(15))
+            .send()
+            .await
+            .map_err(|e| format!("Couldn't reach the desktop control endpoint: {e}"))?;
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Malformed desktop launch response: {e}"))?;
+        let message = body
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("Desktop launch attempted.");
+        Ok(vec![Content::text(message.to_string())])
     }
 
     /// Fetch a public web page server-side and return its readable text —
@@ -686,6 +725,7 @@ impl BrowserClient {
         let identity = snap.webview_id.as_ref().map(|webview_id| PageIdentity {
             webview_id: webview_id.clone(),
             page_url: snap.url.clone(),
+            generation: snap.generation.clone(),
         });
         let mut identities = self
             .snapshot_identities
@@ -734,6 +774,7 @@ impl BrowserClient {
                 "value": value,
                 "webview_id": identity.webview_id,
                 "page_url": identity.page_url,
+                "generation": identity.generation,
             }))
             .send()
             .await
@@ -772,6 +813,7 @@ impl BrowserClient {
                             PageIdentity {
                                 webview_id: webview_id.clone(),
                                 page_url: snapshot.url.clone(),
+                                generation: snapshot.generation.clone(),
                             },
                         );
                     }
@@ -847,7 +889,15 @@ impl BrowserClient {
                  user asks about what they're looking at or references their open tab."
                     .to_string(),
                 schema.clone(),
-            ),
+            )
+            // Reads the open tab. No effect on the page.
+            .annotate(ToolAnnotations::from_raw(
+                Some("Read Browser Content".to_string()),
+                Some(true), // pure read — deliberately NOT escalated
+                Some(false),
+                Some(false),
+                Some(true),
+            )),
             Tool::new(
                 "open_website".to_string(),
                 "Open a website in the Permagent browser (the Build tab) so the user can see \
@@ -859,13 +909,31 @@ impl BrowserClient {
                 url_schema.clone(),
             ),
             Tool::new(
+                "wake_desktop_app".to_string(),
+                "Open the Permagent desktop app on the user's Mac, and report whether a \
+                 desktop UI is currently attached. USE THIS when a browser or terminal action \
+                 failed because the app is closed (typically a phone session — the daemon \
+                 runs independently, so chat, voice, notes and automations work regardless). \
+                 Requires the Mac to be awake; it cannot wake a sleeping machine."
+                    .to_string(),
+                schema.clone(),
+            ),
+            Tool::new(
                 "read_webpage".to_string(),
                 "Fetch a public web page and return its readable text — the reliable way to \
                  read a site to the user (e.g. 'read me the BBC homepage'). Works without any \
                  browser tab open. Public http(s) sites only."
                     .to_string(),
                 url_schema,
-            ),
+            )
+            // Fetches and returns text. No effect on any page.
+            .annotate(ToolAnnotations::from_raw(
+                Some("Read Webpage".to_string()),
+                Some(true), // pure read — deliberately NOT escalated
+                Some(false),
+                Some(false),
+                Some(true), // open-world: arbitrary pages
+            )),
             Tool::new(
                 "get_page_snapshot".to_string(),
                 "List the interactive elements (links, buttons, inputs, selects) on the page \
@@ -874,7 +942,15 @@ impl BrowserClient {
                  use the fresh snapshot it returns rather than an old ref."
                     .to_string(),
                 schema,
-            ),
+            )
+            // Enumerates elements. No effect on the page.
+            .annotate(ToolAnnotations::from_raw(
+                Some("Get Page Snapshot".to_string()),
+                Some(true), // pure read — deliberately NOT escalated
+                Some(false),
+                Some(false),
+                Some(true), // open-world: arbitrary pages
+            )),
             Tool::new(
                 "act_on_page".to_string(),
                 "Act on an element in the Permagent browser page — click it, type text into it, \
@@ -883,7 +959,31 @@ impl BrowserClient {
                  a page, not just read it."
                     .to_string(),
                 act_schema,
-            ),
+            )
+            // Declared WRITE, and this is the only reason it is supervised.
+            //
+            // `Config::apply_tool_annotations` (config/permission.rs) starts
+            // with `let Some(anns) = &tool.annotations else { continue }` — a
+            // tool carrying NO annotations is skipped entirely, so it can never
+            // be marked write and never lands in AskBefore. act_on_page had no
+            // annotations, which meant clicking "Purchase", "Delete account" or
+            // "Confirm transfer" on a live page ran unsupervised.
+            //
+            // Fail closed on the tool, not on the element: a click is judged
+            // safe or not by where it leads, and the DOM role of a control is
+            // not that. A link can say "Delete account". Every act_on_page call
+            // is treated as state-changing; refining that with a per-element
+            // classifier is only safe once there is evidence about which
+            // classes are genuinely inert.
+            .annotate(ToolAnnotations::from_raw(
+                Some("Act on Page".to_string()),
+                Some(false), // not read-only — it clicks, types and selects
+                Some(false), // not inherently destructive, but can drive a destructive control
+                Some(false),
+                // Open-world: it acts on whatever page is loaded, which is not
+                // knowable from the arguments.
+                Some(true),
+            )),
         ]
     }
 }
@@ -920,6 +1020,10 @@ impl McpClientTrait for BrowserClient {
         };
         match name {
             "open_website" => match self.handle_open_website(&url_arg()).await {
+                Ok(content) => Ok(CallToolResult::success(content)),
+                Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
+            },
+            "wake_desktop_app" => match self.handle_wake_desktop().await {
                 Ok(content) => Ok(CallToolResult::success(content)),
                 Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
             },
@@ -973,6 +1077,84 @@ impl McpClientTrait for BrowserClient {
 
     fn get_info(&self) -> Option<&InitializeResult> {
         Some(&self.info)
+    }
+}
+
+#[cfg(test)]
+mod annotation_tests {
+    use super::BrowserClient;
+
+    /// Tools that deliberately carry NO annotations, each with the reason.
+    ///
+    /// This list exists because an un-annotated tool is INVISIBLE to the write
+    /// gate: `Config::apply_tool_annotations` opens with
+    /// `let Some(anns) = &tool.annotations else { continue }`, so a tool with
+    /// no annotations can never be marked write and never reaches AskBefore.
+    /// That is how `act_on_page` — click, type, select on a live page — ran
+    /// unsupervised. Leaving a tool off the gate must be a decision someone
+    /// wrote down, not the default you get by forgetting.
+    const DELIBERATELY_UNANNOTATED: &[&str] = &[
+        // Navigation the user explicitly asked for ("open cbc.ca"). Gating it
+        // would prompt on the tool's entire purpose. Reversible, no external
+        // effect beyond a GET.
+        "open_website",
+        // Launches the user's own app on their own Mac, already behind
+        // require_loopback on the HTTP rail.
+        "wake_desktop_app",
+    ];
+
+    /// The #622 regression: a state-changing browser act must be gated.
+    #[test]
+    fn act_on_page_is_declared_write_so_the_permission_gate_sees_it() {
+        let tool = BrowserClient::get_tools()
+            .into_iter()
+            .find(|t| t.name.as_ref() == "act_on_page")
+            .expect("act_on_page is registered");
+        let ann = tool
+            .annotations
+            .as_ref()
+            .expect("act_on_page MUST be annotated or the write gate skips it entirely");
+        assert_eq!(
+            ann.read_only_hint,
+            Some(false),
+            "act_on_page clicks, types and selects on a live page — a click on \
+             \"Purchase\" or \"Delete account\" cannot be unsupervised"
+        );
+    }
+
+    /// Every tool is either annotated or explicitly exempted by name. A new
+    /// browser tool cannot slip past the gate by simply omitting annotations.
+    #[test]
+    fn no_browser_tool_skips_the_write_gate_by_accident() {
+        for tool in BrowserClient::get_tools() {
+            let name = tool.name.to_string();
+            if DELIBERATELY_UNANNOTATED.contains(&name.as_str()) {
+                continue;
+            }
+            assert!(
+                tool.annotations.is_some(),
+                "{name} has no annotations, so the permission layer skips it and it can \
+                 never be gated. Annotate it, or add it to DELIBERATELY_UNANNOTATED with \
+                 the reason."
+            );
+        }
+    }
+
+    /// The reads stay reads — pinning this means a later change that makes one
+    /// of them act on the page has to say so here.
+    #[test]
+    fn the_read_tools_are_declared_read_only() {
+        for name in ["read_browser_content", "read_webpage", "get_page_snapshot"] {
+            let tool = BrowserClient::get_tools()
+                .into_iter()
+                .find(|t| t.name.as_ref() == name)
+                .unwrap_or_else(|| panic!("{name} is registered"));
+            let ann = tool
+                .annotations
+                .as_ref()
+                .unwrap_or_else(|| panic!("{name} annotated"));
+            assert_eq!(ann.read_only_hint, Some(true), "{name}");
+        }
     }
 }
 
@@ -1169,6 +1351,7 @@ mod tests {
             ],
             truncated: false,
             status: "ok".into(),
+            generation: "gen-a".into(),
         };
         let out = format_snapshot(&snap);
         assert!(out.contains("[0] link \"Home\""));
@@ -1182,6 +1365,7 @@ mod tests {
             elements: vec![],
             truncated: false,
             status: "refused_scheme".into(),
+            generation: String::new(),
         };
         assert!(format_snapshot(&refused).contains("http(s)"));
     }

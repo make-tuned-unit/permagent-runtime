@@ -179,11 +179,23 @@ pub fn format_messages(messages: &[Message]) -> Vec<Value> {
                             .collect::<Vec<_>>()
                             .join("\n");
 
-                        content.push(json!({
+                        // A tool that FAILED reports it via CallToolResult::error
+                        // (is_error = true) and still arrives here as Ok — the
+                        // transport succeeded, the tool did not. Dropping the flag
+                        // made every ordinary tool failure look like a SUCCESS whose
+                        // text happens to start with "Error:", so the model had only
+                        // prose to steer on. Weak models steer on the structural
+                        // flag; this is what marks a result as something to retry
+                        // differently rather than build on.
+                        let mut result_block = json!({
                             TYPE_FIELD: TOOL_RESULT_TYPE,
                             TOOL_USE_ID_FIELD: sanitize_tool_use_id(&tool_response.id),
                             CONTENT_FIELD: text
-                        }));
+                        });
+                        if result.is_error.unwrap_or(false) {
+                            result_block[IS_ERROR_FIELD] = json!(true);
+                        }
+                        content.push(result_block);
                     }
                     Err(tool_error) => {
                         content.push(json!({

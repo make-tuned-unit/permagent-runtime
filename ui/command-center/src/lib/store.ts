@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { api, apiFetch, extractText, extractThinking, fileToBase64, readerIngest } from './api';
+import { api, apiFetch, extractText, extractThinking, fileToBase64, hasToolActivity, readerIngest } from './api';
 import { emitActivity, type ActivityEventName, type ActivitySourceSurface } from './emitActivity';
 import type { SessionSummary, DaemonMessage, SSEEvent, AppContextPayload, TokenState } from './api';
 import { costFromFrame } from './costMeter';
@@ -7,7 +7,7 @@ import { maybeSpeakReply, replyDedupeKey } from './speakReplies';
 import { readLiveConversation } from './voiceHandoff';
 import { appendTraceRecord, sessionFrameToRecord } from './traceEvents';
 import { startEventPruning } from './eventBus';
-import type { ProjectPerson } from '../components/projects/types';
+import type { Person, PersonAssociation } from '../components/projects/types';
 import type { BrainMemoryTarget } from '../components/brain/brainMemoryFocus';
 
 // --- Types ---
@@ -108,7 +108,11 @@ export type PermagentEventType =
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 
-export type ActivePanel = 'chat' | 'skills' | 'events' | 'settings' | 'sessions' | 'terminal' | 'browser' | 'inbox' | 'trace' | 'governance';
+// 'chat' means "no overlay — show the active workspace". The old Console
+// overlay values ('sessions' | 'inbox' | 'trace' | 'governance') and the
+// never-used 'events' are gone (2026-08 ruling): those pages live inside
+// Settings and deep-link via pendingSettingsSection.
+export type ActivePanel = 'chat' | 'skills' | 'settings' | 'terminal' | 'browser';
 
 // ── Workspace types ──
 
@@ -221,8 +225,26 @@ interface CommandCenterStore {
    *  with a Retry instead of the old silent catch that disowned the session.
    *  Null while loading and after a successful load. */
   sessionLoadError: string | null;
+  /** False while loadSessionMessages is in flight. The greeting (bubble +
+   *  auto-speak) must not render off a momentarily-empty list: on pop-out the
+   *  history fetch races the identity fetch and the greeting fired over an
+   *  existing conversation every time. */
+  chatHistoryLoaded: boolean;
+  /** Files dropped on the app shell, awaiting the dock chat's composer. The
+   *  shell drop handler queues here when the DOCK is the open chat surface —
+   *  popping a whole window out over the app was the old (wrong) behavior. */
+  pendingChatFiles: File[] | null;
+  queueChatFiles: (files: File[]) => void;
+  takeChatFiles: () => File[] | null;
   addChatMessage: (msg: ChatMessage) => void;
   _streamingMessageId: string | null;
+  /** Tool activity arrived since the last delta — the next text/thinking is a
+   *  NEW segment and owes the reader a paragraph break. Tracked PER CHANNEL:
+   *  a thinking-only delta consuming a single flag would leave the following
+   *  text glued ("…works.Let me dig deeper…"), which then SNAPPED into shape
+   *  on the Finish rehydrate. */
+  _textBreakPending: boolean;
+  _thinkingBreakPending: boolean;
   /** request_id of the in-flight reply turn (client-generated in api.sendReply,
    *  re-adopted from the daemon's ActiveRequests SSE event on reconnect). The
    *  Stop button's cancel target; null when idle. */
@@ -266,17 +288,29 @@ interface CommandCenterStore {
   closeGoalDetail: () => void;
   /**
    * Person-detail modal (CRM epic slice 2): the read-only person view opened
-   * from a project's People panel. Carries the full {@link ProjectPerson} from
-   * the list response so the modal needs no extra fetch. Host mounted at the app
-   * root; mirrors the goalDetail seam above.
+   * from a project's People panel *or* from the global people directory.
+   *
+   * Carries a bare {@link Person} so the modal needs no extra fetch. The
+   * project-association fields live in `association` rather than on the person,
+   * because the directory has no project context — `projectId` and
+   * `association` are both null there, and the modal hides the project-role and
+   * disassociate affordances accordingly.
    */
-  personDetail: { projectId: string; person: ProjectPerson } | null;
-  openPersonDetail: (projectId: string, person: ProjectPerson) => void;
+  personDetail: {
+    projectId: string | null;
+    person: Person;
+    association: PersonAssociation | null;
+  } | null;
+  openPersonDetail: (
+    projectId: string | null,
+    person: Person,
+    association?: PersonAssociation | null,
+  ) => void;
   closePersonDetail: () => void;
   /**
-   * Monotonic revision the People panel re-fetches on. Bumped after a mutation
-   * (associate / disassociate) so the store-hosted person modal can refresh the
-   * decoupled panel — there is no people event stream yet.
+   * Monotonic revision the People panel and the directory re-fetch on. Bumped
+   * after a local mutation, and by `livenessSync` when a `person_changed` event
+   * arrives on /events (so a second client's create/associate lands here too).
    */
   peopleRev: number;
   bumpPeople: () => void;
@@ -374,6 +408,15 @@ interface CommandCenterStore {
   openGrowForProject: string | null;
   growProject: (projectId: string) => void;
   setOpenGrowForProject: (id: string | null) => void;
+
+  // Board deep-link: the dashboard's due-to-do list sets this, Projects reads
+  // it to select the project, open the Kanban lens, and highlight the card.
+  // Consumed-then-cleared via clearPendingCardNavigation() (same one-shot
+  // pattern as openGrowForProject) so revisiting Projects later doesn't
+  // re-open a board the user has since navigated away from.
+  pendingCardNavigation: { projectId: string; cardId: string } | null;
+  openCardOnBoard: (projectId: string, cardId: string) => void;
+  clearPendingCardNavigation: () => void;
   openInBrowser: (url: string) => void;
   clearPendingBrowserUrl: () => void;
 
@@ -421,6 +464,8 @@ interface CommandCenterStore {
     getPlaybackAnalyser: () => AnalyserNode | null;
     getMicAnalyser: () => AnalyserNode | null;
     exit: () => void;
+    /** When the wake gate is armed: the phrase to say (e.g. `Say "Hey Henry"`). */
+    wakeHint: string | null;
   } | null;
   setVoiceConversation: (conv: CommandCenterStore['voiceConversation']) => void;
 
@@ -441,6 +486,14 @@ interface CommandCenterStore {
     getAnalyser: () => AnalyserNode | null;
     getMicAnalyser: () => AnalyserNode | null;
     setHandsFree: (on: boolean) => void | Promise<void>;
+    /** Wake-word surface (hands-free activation): preference + live status. */
+    wakeWord: {
+      enabled: boolean;
+      setEnabled: (on: boolean) => void;
+      active: boolean;
+      phrase: string | null;
+      gated: boolean;
+    };
   } | null;
   setVoiceEngine: (engine: CommandCenterStore['voiceEngine']) => void;
 
@@ -822,7 +875,17 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     try { return localStorage.getItem('permagent-chat-session-id'); } catch { return null; }
   })(),
   sessionLoadError: null,
+  chatHistoryLoaded: true,
+  pendingChatFiles: null,
+  queueChatFiles: (files) => set({ pendingChatFiles: files }),
+  takeChatFiles: () => {
+    const files = get().pendingChatFiles;
+    if (files) set({ pendingChatFiles: null });
+    return files;
+  },
   _streamingMessageId: null,
+  _textBreakPending: false,
+  _thinkingBreakPending: false,
   _pendingContext: null,
   discussSeedDecisionId: null,
 
@@ -830,7 +893,8 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   openGoalDetail: (projectId, cardId) => set({ goalDetail: { projectId, cardId } }),
   closeGoalDetail: () => set({ goalDetail: null }),
   personDetail: null,
-  openPersonDetail: (projectId, person) => set({ personDetail: { projectId, person } }),
+  openPersonDetail: (projectId, person, association = null) =>
+    set({ personDetail: { projectId, person, association } }),
   closePersonDetail: () => set({ personDetail: null }),
   peopleRev: 0,
   bumpPeople: () => set(s => ({ peopleRev: s.peopleRev + 1 })),
@@ -998,6 +1062,8 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     const streamMsgId = `msg-${Date.now()}-stream`;
     set(s => ({
       isStreaming: true,
+      _textBreakPending: false,
+      _thinkingBreakPending: false,
       _streamingMessageId: streamMsgId,
       chatMessages: [...s.chatMessages, {
         id: streamMsgId,
@@ -1309,13 +1375,18 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
    *  the #568 lesson), instead of silently discarding a working session and
    *  leaving connectSession running against a disowned id. */
   loadSessionMessages: async (sessionId: string) => {
-    set({ sessionLoadError: null });
+    set({ sessionLoadError: null, chatHistoryLoaded: false });
     try {
       const session = await api.getSession(sessionId);
       if (session.conversation && session.conversation.length > 0) {
         const responses = indexToolResponses(session.conversation);
         const msgs = session.conversation.map((m, i) => daemonMsgToChat(m, i, sessionId, responses));
         set({ chatMessages: msgs });
+      } else {
+        // An empty conversation is a LOADED fact, not an un-set state: leaving
+        // chatMessages untouched kept a stale greeting on screen forever for
+        // sessions whose turns went down the /voice socket.
+        set({ chatMessages: [] });
       }
     } catch (err) {
       if ((err as { status?: number }).status === 404) {
@@ -1331,6 +1402,8 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
             : 'Could not reach the agent',
         });
       }
+    } finally {
+      set({ chatHistoryLoaded: true });
     }
   },
 
@@ -1389,20 +1462,32 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       }
       case 'Message': {
         const msg = (data as { type: string; message: DaemonMessage }).message;
+        // Tool results ride user-role frames; requests ride assistant frames.
+        // Either one ends the current text segment — the next delta owes the
+        // reader a paragraph break (matches how the settled transcript joins
+        // stored segments, so nothing snaps into shape on Finish).
+        const toolActivity = hasToolActivity(msg);
         if (msg.role === 'assistant') {
           const delta = extractText(msg);
           const thinkingDelta = extractThinking(msg);
           const streamMsgId = get()._streamingMessageId;
           if (streamMsgId && (delta || thinkingDelta)) {
             const pending = get()._pendingContext;
+            const textBrk = get()._textBreakPending && !!delta;
+            const thinkBrk = get()._thinkingBreakPending && !!thinkingDelta;
             set(s => ({
               _pendingContext: null,
+              // Each channel consumes its own break only when it appends.
+              ...(delta ? { _textBreakPending: false } : {}),
+              ...(thinkingDelta ? { _thinkingBreakPending: false } : {}),
               chatMessages: s.chatMessages.map(m =>
                 m.id === streamMsgId
                   ? {
                       ...m,
-                      content: m.content + delta,
-                      ...(thinkingDelta ? { thinking: (m.thinking ?? '') + thinkingDelta } : {}),
+                      content: m.content + (textBrk && m.content ? '\n\n' : '') + delta,
+                      ...(thinkingDelta
+                        ? { thinking: (m.thinking ?? '') + (thinkBrk && m.thinking ? '\n\n' : '') + thinkingDelta }
+                        : {}),
                       ...(pending && !m.context_attached ? { context_attached: pending } : {}),
                     }
                   : m
@@ -1410,6 +1495,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
             }));
           }
         }
+        if (toolActivity) set({ _textBreakPending: true, _thinkingBreakPending: true });
 
         // Trace recording moved to the connectSession funnel (es.onmessage →
         // sessionFrameToRecord): every frame type is recorded there with its
@@ -1448,11 +1534,22 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
           // hands-free is still false (visible in daemon.err as SSE connect →
           // POST /voice/synthesize → GET /voice 101, in that order, every time).
           //
-          // `isStreaming` is the honest discriminator: a live turn sets it (from
-          // sendMessage, or adopted from ActiveRequests when attaching mid-turn)
-          // and this handler clears it just below, while replayed history never
-          // sets it. Replays are therefore silent by construction.
-          const isLiveTurn = get().isStreaming;
+          // `isStreaming` ALONE is not enough, because it has two sources: this
+          // window's own `sendMessage`, and adoption from the `ActiveRequests`
+          // frame the daemon sends on every (re)connect. Popping the chat out
+          // mid-turn hits the second: the new window adopts isStreaming=true,
+          // THEN the null-cursor replay delivers the whole session's history,
+          // and the first replayed Finish — whose `lastAssistant` is the
+          // session's opening reply — passed this guard and re-spoke the
+          // greeting the user had already heard.
+          //
+          // `_streamingMessageId` is the honest half: it is set ONLY by
+          // `sendMessage` (this window's own placeholder) and deliberately left
+          // alone by ActiveRequests adoption, so it is exactly "this client
+          // watched this turn stream in" — which is what the rule always meant.
+          // A window that merely attached to a live turn has none, and replayed
+          // history never sets one, so both are silent by construction.
+          const isLiveTurn = get().isStreaming && get()._streamingMessageId !== null;
           // Never during a live voice conversation (local OR mirrored from the
           // other window) either: voice turns are already spoken by the /voice
           // pipeline, so synthesizing here would double-speak.
@@ -1533,6 +1630,19 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   openGrowForProject: null,
   growProject: (projectId) => { set({ openGrowForProject: projectId }); navigateToTool('grow'); },
   setOpenGrowForProject: (id) => set({ openGrowForProject: id }),
+  pendingCardNavigation: null,
+  openCardOnBoard: (projectId, cardId) => {
+    // Reuse pendingProjectNavigation for the project hop rather than selecting
+    // the project here: that path already self-heals when the target is missing
+    // from ProjectsView's ≤5s-old snapshot (#266). pendingCardNavigation adds
+    // only what it doesn't cover — open the Kanban lens, highlight the card.
+    set({
+      pendingProjectNavigation: projectId,
+      pendingCardNavigation: { projectId, cardId },
+    });
+    navigateToTool('projects');
+  },
+  clearPendingCardNavigation: () => set({ pendingCardNavigation: null }),
   buildTerminalHidden: false,
   buildBrowserHidden: false,
   // Never allow both hidden: hiding one re-shows the other.

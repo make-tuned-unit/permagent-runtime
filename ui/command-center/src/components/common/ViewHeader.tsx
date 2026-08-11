@@ -28,11 +28,16 @@ export interface ViewHeaderProps {
   subtitle?: ReactNode;
   /** Fixed-size element before the text (e.g. Build's Mobius). */
   leading?: ReactNode;
+  /** A control that sits immediately to the RIGHT of the title, on the same
+   *  baseline — for a per-view switcher that belongs with the title rather than
+   *  pinned to the far edge (Build's project picker). Kept left of the flex
+   *  spacer so it stays next to the name instead of drifting right. */
+  afterTitle?: ReactNode;
   /** Controls pinned to the right edge (search, buttons, indicators). */
   actions?: ReactNode;
 }
 
-export function ViewHeader({ title, subtitle, leading, actions }: ViewHeaderProps) {
+export function ViewHeader({ title, subtitle, leading, afterTitle, actions }: ViewHeaderProps) {
   const { colors } = useTheme();
 
   return (
@@ -57,8 +62,14 @@ export function ViewHeader({ title, subtitle, leading, actions }: ViewHeaderProp
     >
       {leading}
 
-      {/* minWidth:0 is what lets the title actually truncate inside a flex row. */}
-      <div data-testid="view-title-block" style={{ minWidth: 0, flex: 1 }}>
+      {/* minWidth:0 is what lets the title actually truncate inside a flex row.
+          Not flex:1 when there's an afterTitle control — the title takes only
+          its own width so the control sits immediately beside it rather than
+          across a gap. */}
+      <div
+        data-testid="view-title-block"
+        style={{ minWidth: 0, flex: afterTitle ? '0 1 auto' : 1 }}
+      >
         <div
           data-testid="view-title"
           style={{
@@ -75,6 +86,11 @@ export function ViewHeader({ title, subtitle, leading, actions }: ViewHeaderProp
           <div style={{ ...type.micro, color: colors.textMuted, marginTop: 2 }}>{subtitle}</div>
         )}
       </div>
+
+      {afterTitle && <div style={{ flexShrink: 0 }}>{afterTitle}</div>}
+
+      {/* Spacer so afterTitle hugs the title and actions stay at the far edge. */}
+      {afterTitle && <div style={{ flex: 1 }} />}
 
       {actions && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>

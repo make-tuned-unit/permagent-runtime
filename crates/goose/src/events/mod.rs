@@ -35,15 +35,16 @@ pub const WORLD_VIEW_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
 /// Self-knowledge descriptor for the Execution trace surface — a live view over
 /// this same event bus. Lets the agent point the user at the raw event stream to
 /// inspect what the runtime is doing. Static: editorial, no live status claim.
-/// Reachable as an overlay (no seeded workspace hosts it) — the agent opens it
-/// via `navigate_app("Trace")`.
+/// Lives as the Activity page inside Settings (2026-08 Console consolidation) —
+/// the agent opens it via `navigate_app("Trace")`, which deep-links to
+/// Settings → Activity.
 pub const TRACE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
     crate::agents::self_knowledge::FeatureDescriptor {
         id: "trace",
         display_name: "Execution trace",
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
         what_it_does:
-            "A live, chronological readout of the runtime's most recent events straight off the running system's event streams — each entry a timestamp and event type as tool calls, worker activity, navigations, and lifecycle signals fire in real time. It reflects the whole running system and needs no session id",
+            "A live, chronological readout of the runtime's most recent events straight off the running system's event streams — the Activity page in Settings, each entry a timestamp and event type as tool calls, worker activity, navigations, and lifecycle signals fire in real time. It reflects the whole running system and needs no session id",
         why_it_matters:
             "It is the low-level, in-the-moment 'what is the system doing right now' view for inspecting or debugging behavior as it happens — distinct from the Activity timeline, which is the curated, durable record of what your agents did; when the user wants to watch the raw event stream or see what just fired under the hood, bring them here",
         state_source: crate::agents::self_knowledge::StateSource::Static,
@@ -85,6 +86,44 @@ pub fn emit(event: PermagentEvent) {
 /// Subscribe to the live event stream.
 pub fn subscribe() -> broadcast::Receiver<PermagentEvent> {
     EVENT_BUS.tx.subscribe()
+}
+
+/// Is anything listening to the event stream right now?
+///
+/// `emit` silently drops when there are no receivers, which is correct for
+/// fire-and-forget notifications but a LIE for the request/response bridges
+/// that ride this bus (open a website, read the page, drive a terminal): with
+/// the desktop app closed — a phone-only session, the daemon being launchd-
+/// managed and independent — those requests vanish and the agent still reports
+/// success. Callers that need a UI must check this first and say so plainly.
+pub fn has_listeners() -> bool {
+    UI_CLIENTS.load(std::sync::atomic::Ordering::Relaxed) > 0
+}
+
+/// Connected UI clients on the `/events` WebSocket.
+///
+/// NOT `tx.receiver_count()`: the daemon itself holds permanent subscribers
+/// (the notification router, the state-sync loops), so that count is always
+/// non-zero and answered "yes, a UI is attached" even with every window shut.
+/// Only a real websocket client counts.
+static UI_CLIENTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// RAII guard: the `/events` handler holds one for the life of a connection,
+/// so a dropped socket — closed, crashed, or network-lost — decrements without
+/// the handler having to remember an unregister on every exit path.
+pub struct UiClientGuard;
+
+impl UiClientGuard {
+    pub fn register() -> Self {
+        UI_CLIENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self
+    }
+}
+
+impl Drop for UiClientGuard {
+    fn drop(&mut self) {
+        UI_CLIENTS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// Get a snapshot of buffered events (up to last 1000).
@@ -824,6 +863,7 @@ pub fn proactive_nudge(
     message: &str,
     count: i64,
     last_ts: &str,
+    url: Option<&str>,
 ) -> PermagentEvent {
     PermagentEvent::new(
         PermagentEventType::ProactiveNudge,
@@ -833,6 +873,13 @@ pub fn proactive_nudge(
             "message": message,
             "count": count,
             "last_ts": last_ts,
+            // The thing the nudge is ABOUT. A news nudge that cannot be opened
+            // is a strictly worse version of not being told: it spends the
+            // user's attention and gives them nowhere to put it. The client has
+            // read this key since the feature shipped (`notifications.ts`
+            // `p.url ?? p.link ?? p.source_url` → `openInBrowser`); the server
+            // just never sent it, so every article nudge was a dead end.
+            "url": url,
         }),
     )
 }
@@ -934,6 +981,49 @@ pub fn session_changed(session_id: &str, change: &str) -> PermagentEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A news nudge must deliver the link, on the key the client reads.
+    ///
+    /// The URL was fetched, used for dedup, and then dropped at emit — so
+    /// Henry could say "there's a fresh piece worth reading" with nowhere to
+    /// go. The client has read `url` since the feature shipped
+    /// (`notifications.ts` → `p.url ?? p.link ?? p.source_url` →
+    /// `openInBrowser`), so this asserts the DOCUMENTED WIRE KEY, not merely
+    /// that some field exists — the serde-field-never-bound rule.
+    #[test]
+    fn proactive_nudge_carries_the_link_on_the_key_the_client_reads() {
+        let event = proactive_nudge(
+            "news",
+            "AI and software jobs",
+            "There's a fresh piece worth a read.",
+            1,
+            "2026-08-08T08:35:00Z",
+            Some("https://example.com/article"),
+        );
+        let v = serde_json::to_value(&event).unwrap();
+        assert_eq!(
+            v["payload"]["url"], "https://example.com/article",
+            "the client reads payload.url; anything else is a dead-end nudge"
+        );
+    }
+
+    /// A nudge with nothing to open must send `url: null`, not omit it — an
+    /// absent key and a null one must not be distinguishable to the client,
+    /// which treats both as "no link".
+    #[test]
+    fn proactive_nudge_without_a_link_is_explicitly_null() {
+        let event = proactive_nudge(
+            "brain",
+            "a dormant thread",
+            "Worth revisiting.",
+            3,
+            "t",
+            None,
+        );
+        let v = serde_json::to_value(&event).unwrap();
+        assert!(v["payload"].get("url").is_some());
+        assert!(v["payload"]["url"].is_null());
+    }
 
     #[test]
     fn test_event_serialization() {

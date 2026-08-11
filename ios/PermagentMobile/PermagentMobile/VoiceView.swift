@@ -16,7 +16,8 @@
 //            {"type":"error","message":…}
 //
 // Turn-taking mirrors ui/command-center/src/hooks/useVoice.ts: push-to-talk or
-// hands-free VAD (RMS thresholds copied from the web hook) and barge-in by
+// hands-free VAD (VoiceVAD.swift — thresholds retuned for iOS's quieter
+// voiceChat-processed mic levels; see that file's header) and barge-in by
 // reconnecting a FRESH socket — closing the old one sets the daemon handler's
 // cancellation flag, so it stops synthesizing the reply the user talked over.
 
@@ -29,19 +30,44 @@ import AVFoundation
 private final class MicPipe: @unchecked Sendable {
     private let converter: AVAudioConverter
     private let outFormat: AVAudioFormat
+    /// The format the converter was built for. A tap buffer in any OTHER format
+    /// must be dropped, never fed in — see `convert`.
+    private let inFormat: AVAudioFormat
 
     init?(from inputFormat: AVAudioFormat) {
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else { return nil }
         guard let out = AVAudioFormat(
             commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false
         ), let conv = AVAudioConverter(from: inputFormat, to: out) else { return nil }
         converter = conv
         outFormat = out
+        inFormat = inputFormat
     }
 
     /// Convert one tap buffer; returns (f32le bytes @16 kHz, RMS of the frame).
     func convert(_ buffer: AVAudioPCMBuffer) -> (Data, Float) {
-        let ratio = outFormat.sampleRate / buffer.format.sampleRate
-        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 16
+        // A route change mid-session (AirPods connecting, a call arriving, the
+        // speaker engaging) re-formats the input node while the tap keeps
+        // delivering. Feeding an AVAudioConverter a buffer that does not match
+        // the format it was constructed for raises an ObjC exception, which
+        // Swift cannot catch — the app just dies. Dropping the buffer costs one
+        // frame; the engine's restart path re-makes the pipe.
+        guard buffer.format.sampleRate == inFormat.sampleRate,
+              buffer.format.channelCount == inFormat.channelCount else {
+            return (Data(), 0)
+        }
+        // `AVAudioFrameCount` is UInt32, and converting a NaN or infinite Double
+        // to an integer type is a FATAL Swift trap, not a wrong number — the
+        // same trap VoiceOrbView documents for `Int(NaN)`. A zero sample rate
+        // makes `ratio` infinite, and a zero rate is exactly what a
+        // deactivated or mid-reconfiguration session reports.
+        let sourceRate = buffer.format.sampleRate
+        guard sourceRate > 0 else { return (Data(), 0) }
+        let scaled = Double(buffer.frameLength) * (outFormat.sampleRate / sourceRate)
+        guard scaled.isFinite, scaled >= 0, scaled < Double(UInt32.max - 16) else {
+            return (Data(), 0)
+        }
+        let capacity = AVAudioFrameCount(scaled) + 16
         guard let out = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: capacity) else {
             return (Data(), 0)
         }
@@ -70,6 +96,27 @@ private final class MicPipe: @unchecked Sendable {
     }
 }
 
+/// Why audio setup gave up. Each case exists because the corresponding
+/// AVAudioEngine call would otherwise raise an uncatchable ObjC exception —
+/// naming them turns an instant crash into a message on the orb screen, and
+/// tells the next bug report exactly which format was bad.
+enum AudioSetupError: LocalizedError {
+    case unusableInputFormat(Double, UInt32)
+    case converterUnavailable(Double)
+    case unusableOutputFormat(Double)
+
+    var errorDescription: String? {
+        switch self {
+        case let .unusableInputFormat(rate, channels):
+            return "the microphone reported an unusable format (\(Int(rate)) Hz, \(channels) ch). Another app may hold the mic — close it and reopen voice."
+        case let .converterUnavailable(rate):
+            return "couldn't convert \(Int(rate)) Hz mic audio to 16 kHz."
+        case let .unusableOutputFormat(rate):
+            return "the audio output reported an unusable format (\(Int(rate)) Hz)."
+        }
+    }
+}
+
 // ── Engine: audio session + WS + turn state machine ──────────────────────────
 
 @MainActor
@@ -91,17 +138,25 @@ final class VoiceEngine: ObservableObject {
     @Published private(set) var notice: String?
     /// Live audio level 0…1 (mic while listening, TTS pulse while speaking).
     @Published private(set) var level: Float = 0
-    @Published var handsFree = false { didSet { if !handsFree && state == .listening { endTurn() } } }
+    /// ON by default: tapping the voice icon should drop you into a
+    /// conversation with the agent already listening, not into a screen you
+    /// have to hold a button on to be heard. Push-to-talk is still one tap
+    /// away. Turning it off mid-turn ends that turn rather than stranding it.
+    @Published var handsFree = true { didSet { if !handsFree && state == .listening { endTurn() } } }
 
-    // VAD thresholds — mirror useVoice.ts exactly.
-    private static let vadOnset: Float = 0.015
-    private static let vadKeepalive: Float = 0.010
-    private static let vadBarge: Float = 0.05
-    private static let vadSilenceMs: Double = 900
-    private static let vadMaxTurnMs: Double = 45_000
+    /// Hands-free turn-taking. The state machine (thresholds, silence window,
+    /// 60 s turn cap) lives in VoiceVAD.swift, pure and unit-tested — this
+    /// engine only feeds it frames and executes the actions it returns.
+    private var vad = VoiceVAD()
+    /// A route change mid-turn parks the new preset here; it applies at the
+    /// next non-listening frame so an open turn's clocks are never clobbered.
+    private var pendingVADConfig: VoiceVAD.Config?
+    private var routeObserver: NSObjectProtocol?
 
     private var sessionId = ""
     private var active = false
+    /// Set synchronously at the top of `start` — see the comment there.
+    private var starting = false
     private var connectEpoch = 0
     private var wsTask: URLSessionWebSocketTask?
 
@@ -113,40 +168,83 @@ final class VoiceEngine: ObservableObject {
     private var pendingBuffers = 0
     private var replyEnded = false
 
-    private var vadLastVoice: TimeInterval = 0
-    private var vadHeardSpeech = false
-    private var vadBargeStreak = 0
-    private var vadTurnStart: TimeInterval = 0
-
     // ── Lifecycle ────────────────────────────────────────────────────────────
 
-    func start(sessionId: String) async {
-        guard !active else { return }
-        self.sessionId = sessionId
-        active = true
+    /// Bring the conversation up. `provided` is the caller's already-resolved
+    /// hub session; `nil` means resolve one here.
+    ///
+    /// Resolution lives INSIDE the engine on purpose. It used to happen at the
+    /// tap site, which discarded the error with `try?` and presented the sheet
+    /// regardless — so a hub that could not mint a session slid up a black
+    /// screen with no orb and no explanation (reported 2026-08-04). Every way
+    /// this can fail now lands in `.failed`, which the orb screen already
+    /// renders. It also means the sheet opens INSTANTLY: no round trip runs
+    /// before presentation, and no message has to be typed first to create the
+    /// session — `chatSessionId()` mints one if there is none.
+    func start(sessionId provided: String?) async {
+        // `starting` closes a TOCTOU that `active` alone cannot: `active` is not
+        // set until after the session round trip and the permission prompt, so
+        // between the guard and the assignment there are two suspension points
+        // during which a second `start` would sail past. Two starts means two
+        // `installTap` calls on input bus 0, and AVAudioEngine raises
+        // `NSInternalInconsistencyException` on the second — an ObjC exception
+        // Swift cannot catch, i.e. an instant crash. Set synchronously, before
+        // the first `await`, so the window does not exist.
+        guard !active, !starting else { return }
+        starting = true
+        defer { starting = false }
+        state = .connecting
 
-        guard await AVAudioApplication.requestRecordPermission() else {
-            state = .failed("Microphone access is off for Permagent — enable it in Settings to talk with Henry.")
-            active = false
+        // Startup used to be strictly serial — session round trip, THEN the
+        // permission prompt, THEN the audio engine, THEN the socket — so the
+        // orb sat on "connecting" for the SUM of a network call and CoreAudio
+        // bring-up. The two are independent: the mic does not need a session
+        // id, and the session does not need a microphone. Run them together
+        // and the wait becomes the slower of the two rather than the total.
+        async let sessionTask: String? = {
+            if let provided { return provided }
+            return try? await MobileSession.chatSessionId()
+        }()
+        async let micGranted = AVAudioApplication.requestRecordPermission()
+
+        // Audio first once permission lands: it is the piece that must be
+        // live before the user speaks.
+        guard await micGranted else {
+            state = .failed("Microphone access is off for Permagent — enable it in Settings to talk with \(AgentIdentity.shared.name).")
             return
         }
         do {
             try startAudio()
         } catch {
-            state = .failed("Couldn't start the microphone — close other audio apps and try again.")
-            active = false
+            // Carry the reason through. The old blanket message sent Jesse
+            // hunting a missing on-device voice model that does not exist —
+            // STT/TTS both run on the hub, over the /voice socket.
+            state = .failed("Couldn't start audio — \(error.localizedDescription)")
             return
         }
+
+        guard let resolved = await sessionTask else {
+            state = .failed("Couldn't open a conversation on your hub.")
+            stop()
+            return
+        }
+        self.sessionId = resolved
+        active = true
         await connect()
     }
 
     func stop() {
         active = false
         connectEpoch += 1
+        if let routeObserver {
+            NotificationCenter.default.removeObserver(routeObserver)
+            self.routeObserver = nil
+        }
         wsTask?.cancel(with: .goingAway, reason: nil)
         wsTask = nil
         playerNode?.stop()
         engine?.inputNode.removeTap(onBus: 0)
+        playerNode?.removeTap(onBus: 0)
         engine?.stop()
         engine = nil
         playerNode = nil
@@ -162,28 +260,125 @@ final class VoiceEngine: ObservableObject {
         let session = AVAudioSession.sharedInstance()
         // voiceChat mode = echo cancellation, so hands-free VAD doesn't trip on
         // Henry's own TTS (same reason the web hook requests echoCancellation).
+        let bluetoothOption: AVAudioSession.CategoryOptions
+        if #available(iOS 26.0, *) {
+            bluetoothOption = .allowBluetoothHFP
+        } else {
+            bluetoothOption = .allowBluetooth
+        }
         try session.setCategory(
-            .playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth]
+            .playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, bluetoothOption]
         )
         try session.setActive(true)
+        // Full input gain where the hardware allows it — every dB helps the
+        // arm's-length built-in mic clear the VAD floor.
+        if session.isInputGainSettable {
+            try? session.setInputGain(1.0)
+        }
+        // Thresholds are calibrated per input route: the bare iPhone's mic
+        // under voiceChat AGC runs far quieter than a headset mic at the
+        // mouth — with one fixed onset, "Listening" heard AirPods but not the
+        // phone itself. Apply now and on every route change (headphones in,
+        // AirPods out, CarPlay…).
+        applyVADConfigForCurrentRoute()
+        routeObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.applyVADConfigForCurrentRoute() }
+        }
 
         let engine = AVAudioEngine()
+
+        // ── Validate EVERY format before AVAudioEngine sees it ──────────────
+        //
+        // `connect(_:to:format:)` and `installTap` do not return errors on a bad
+        // format — they raise an ObjC exception, and Swift cannot catch an
+        // ObjC exception. The `do { try startAudio() } catch` around this call
+        // therefore never fires; the process just dies. That is the shape of
+        // the crash: the orb paints, `.task` runs this, and the app is gone a
+        // frame later — on device only, because the simulator's audio stack
+        // barely engages and always hands back a plausible format.
+        //
+        // So the order matters. Read the INPUT first: on real hardware it is
+        // the one that comes back 0 Hz / 0 channels while the session is still
+        // settling a route, and every call below would inherit that. Turning
+        // each case into a thrown Swift error means the failure lands on the
+        // orb screen with a reason instead of killing the app.
+        let input = engine.inputNode
+        let inFormat = input.inputFormat(forBus: 0)
+        guard inFormat.sampleRate > 0, inFormat.channelCount > 0 else {
+            throw AudioSetupError.unusableInputFormat(inFormat.sampleRate,
+                                                      inFormat.channelCount)
+        }
+        guard let pipe = MicPipe(from: inFormat) else {
+            throw AudioSetupError.converterUnavailable(inFormat.sampleRate)
+        }
+        // Touching `mainMixerNode` is itself what wires the mixer to the output
+        // node, at the HARDWARE format — so it has to be sound before anything
+        // is connected to it.
+        let mixerFormat = engine.mainMixerNode.outputFormat(forBus: 0)
+        guard mixerFormat.sampleRate > 0, mixerFormat.channelCount > 0 else {
+            throw AudioSetupError.unusableOutputFormat(mixerFormat.sampleRate)
+        }
+
         let player = AVAudioPlayerNode()
         engine.attach(player)
         engine.connect(player, to: engine.mainMixerNode, format: playbackFormat)
-
-        let input = engine.inputNode
-        let inFormat = input.inputFormat(forBus: 0)
-        guard let pipe = MicPipe(from: inFormat) else {
-            throw APIError.badStatus(0)
-        }
         // ~85 ms per callback at 48 kHz — close to the web hook's ~128 ms VAD
         // window, so the copied thresholds behave comparably.
-        input.installTap(onBus: 0, bufferSize: 4096, format: inFormat) { [weak self] buffer, _ in
+        // `@Sendable` is LOAD-BEARING, not decoration.
+        //
+        // `AVAudioNodeTapBlock` is not marked @Sendable in the SDK, so a closure
+        // written here inherits the isolation of its enclosing context — and
+        // `startAudio()` is a method on a @MainActor class. Under Swift 6 the
+        // compiler then plants a runtime executor check in the block, CoreAudio
+        // invokes it from its realtime thread, and `dispatch_assert_queue` traps
+        // with `brk #0x1`. That is an instant process kill: no catchable error,
+        // no `.failed` state, and no crash report — the app simply vanishes the
+        // moment the first audio buffer arrives, which is exactly the reported
+        // "orb for a split second, then gone" (2026-08-04, confirmed under lldb:
+        // _dispatch_assert_queue_fail ← _swift_task_checkIsolatedSwift ← this
+        // closure ← AVAudioNodeTap::TapMessage::RealtimeMessenger_Perform).
+        //
+        // Marking it @Sendable opts the closure OUT of inherited isolation, so
+        // no check is planted. Everything it touches is already safe to use off
+        // the main actor: `pipe` is @unchecked Sendable and confined to this
+        // thread, and the only main-actor work hops explicitly via Task.
+        input.installTap(onBus: 0, bufferSize: 4096, format: inFormat) { @Sendable [weak self] buffer, _ in
             guard let self else { return }
             let (data, rms) = pipe.convert(buffer)
             guard !data.isEmpty else { return }
             Task { @MainActor in self.handleMicFrame(data, rms: rms) }
+        }
+        // Playback tap — the orb's TRUTH while the agent speaks. The level used
+        // to be pulsed once per delivered TTS chunk, but the daemon synthesizes
+        // far faster than real time, so every chunk of a 30s answer lands in
+        // the first ~10s: the orb animated to the DELIVERY schedule, not the
+        // voice. Tapping the player node reads the audio actually being
+        // rendered, so the orb moves with his syllables.
+        //
+        // @Sendable is load-bearing here for exactly the reason spelled out
+        // above the input tap — this block runs on CoreAudio's realtime thread.
+        player.installTap(onBus: 0, bufferSize: 1024, format: playbackFormat) {
+            @Sendable [weak self] buffer, _ in
+            guard let self, let ch = buffer.floatChannelData else { return }
+            let n = Int(buffer.frameLength)
+            guard n > 0 else { return }
+            var sum: Float = 0
+            let stride = max(1, n / 256)
+            var count = 0
+            var i = 0
+            while i < n {
+                sum += ch[0][i] * ch[0][i]
+                count += 1
+                i += stride
+            }
+            let rms = (sum / Float(max(1, count))).squareRoot()
+            guard rms.isFinite else { return }
+            // Same 6× gain the per-chunk pulse used, so the orb's dynamics are
+            // unchanged — only its clock is.
+            let lvl = min(1, rms * 6)
+            Task { @MainActor in self.handlePlaybackLevel(lvl) }
         }
         engine.prepare()
         try engine.start()
@@ -191,75 +386,146 @@ final class VoiceEngine: ObservableObject {
         self.playerNode = player
     }
 
+    /// Publish a playback level for the orb. Ignored unless the agent is
+    /// actually speaking, so a trailing tap callback can't light the orb after
+    /// a barge-in.
+    private func handlePlaybackLevel(_ lvl: Float) {
+        guard state == .speaking else { return }
+        level = lvl
+    }
+
+    /// Rolling pre-roll of the most recent mic frames, kept while NOT
+    /// streaming. Speech is only detected once it crosses the VAD's onset
+    /// threshold — by which point the first syllable is already spoken and,
+    /// before this buffer, thrown away ("it misses the first words I say").
+    /// When a turn opens these frames are flushed ahead of the live audio, so
+    /// the hub transcribes the word from its actual beginning.
+    private var preRoll: [Data] = []
+    /// ~85 ms per frame; 6 frames ≈ half a second of lead-in, which covers a
+    /// word begun before onset without adding meaningful latency.
+    private static let preRollFrames = 6
+
+    /// Swap the VAD to the preset for whatever is currently capturing. Applied
+    /// immediately unless a turn is open — then it parks until the turn ends,
+    /// so the endpoint clocks are never reset mid-utterance.
+    private func applyVADConfigForCurrentRoute() {
+        let ports = AVAudioSession.sharedInstance().currentRoute.inputs.map(\.portType.rawValue)
+        let cfg = VoiceVAD.configForRoute(inputPortTypes: ports)
+        if state == .listening {
+            pendingVADConfig = cfg
+        } else {
+            vad = VoiceVAD(config: cfg)
+            pendingVADConfig = nil
+        }
+    }
+
     private func handleMicFrame(_ data: Data, rms: Float) {
+        if let cfg = pendingVADConfig, state != .listening {
+            vad = VoiceVAD(config: cfg)
+            pendingVADConfig = nil
+        }
         if state == .listening {
             level = min(1, rms * 8)
             wsTask?.send(.data(data)) { _ in }
-        } else {
-            level = max(0, level * 0.9)
+        } else if state == .ready {
+            // Only while idle-and-armed: keep the tail of what was just heard.
+            preRoll.append(data)
+            if preRoll.count > Self.preRollFrames { preRoll.removeFirst() }
+        }
+        if state != .listening && state != .speaking {
+            // NOT while speaking: level is pulsed per delivered TTS chunk, and
+            // delivery finishes ~10-15s into a long answer (TTS runs ahead of
+            // playback). Letting the mic tap decay it afterwards flattened the
+            // orb mid-speech — it read as frozen while audio kept playing.
+            if level > 0.001 { level = max(0, level * 0.9) }
         }
         if handsFree { vadStep(rms: rms) }
     }
 
-    // ── VAD (hands-free): thresholds and transitions mirror useVoice.ts ─────
+    // ── VAD (hands-free): the state machine itself is VoiceVAD, unit-tested ──
 
     private func vadStep(rms: Float) {
-        let now = Date().timeIntervalSince1970
+        let phase: VoiceVAD.Phase
         switch state {
-        case .ready:
-            vadBargeStreak = 0
-            if rms > Self.vadOnset {
-                vadHeardSpeech = true
-                vadLastVoice = now
-                vadTurnStart = now
-                beginTurn()
-            }
-        case .listening:
-            if rms > Self.vadKeepalive {
-                vadHeardSpeech = true
-                vadLastVoice = now
-            }
-            let silentMs = (now - vadLastVoice) * 1000
-            let turnMs = (now - vadTurnStart) * 1000
-            if (vadHeardSpeech && silentMs > Self.vadSilenceMs) || turnMs > Self.vadMaxTurnMs {
-                vadHeardSpeech = false
-                endTurn()
-            }
-        case .speaking, .thinking:
-            // Barge-in demands a sustained loud signal (2 consecutive buffers
-            // over the high bar) so residual TTS bleed can't cut Henry off —
-            // and, like the web hook, only fires while actually speaking.
-            if rms > Self.vadBarge {
-                vadBargeStreak += 1
-                if vadBargeStreak >= 2 && state == .speaking {
-                    vadBargeStreak = 0
-                    vadHeardSpeech = false
-                    interrupt()
-                }
-            } else {
-                vadBargeStreak = 0
-            }
-        default:
-            break
+        case .ready: phase = .ready
+        case .listening: phase = .listening
+        case .thinking: phase = .thinking
+        case .speaking: phase = .speaking
+        default: phase = .inactive
+        }
+        switch vad.step(rms: rms, phase: phase, now: Date().timeIntervalSince1970) {
+        case .beginTurn: enterListening()  // NOT beginTurn(): the VAD stamped its own clocks
+        case .endTurn: endTurn()
+        case .interrupt: interrupt()
+        case .none: break
         }
     }
 
     // ── Turns ────────────────────────────────────────────────────────────────
 
+    /// Begin a turn from OUTSIDE the VAD (the push-to-talk button). Stamps the
+    /// VAD's turn clocks so the max-turn cap measures from now — a turn begun
+    /// here used to inherit the previous hands-free turn's epoch, and the cap
+    /// could end it on the first frame after hands-free came back on.
     func beginTurn() {
+        guard state == .ready, wsTask != nil else { return }
+        vad.noteTurnBegan(at: Date().timeIntervalSince1970)
+        enterListening()
+    }
+
+    /// Send `start` and switch to `.listening`. The VAD's clocks are already
+    /// stamped, by whichever path got here.
+    private func enterListening() {
         guard state == .ready, wsTask != nil else { return }
         transcript = ""
         reply = ""
         notice = nil
         sendText(#"{"type":"start","sample_rate":16000}"#)
+        // Flush the lead-in BEFORE any live frame, so the hub hears the word
+        // from its beginning rather than from the moment it got loud enough
+        // to notice. Ordering matters: these are older than everything the
+        // tap will deliver next.
+        let lead = preRoll
+        preRoll.removeAll(keepingCapacity: true)
+        for frame in lead {
+            wsTask?.send(.data(frame)) { _ in }
+        }
         state = .listening
     }
 
     func endTurn() {
         guard state == .listening else { return }
-        sendText(#"{"type":"stop"}"#)
+        vad.noteTurnEnded()
+        // The stop send used to discard its error: a failed send left the
+        // daemon recording forever and this client in .thinking with no exit.
+        wsTask?.send(.string(#"{"type":"stop"}"#)) { [weak self] error in
+            guard error != nil else { return }
+            Task { @MainActor [weak self] in
+                guard let self, self.state == .thinking else { return }
+                self.notice = "Connection hiccup — try that again."
+                self.state = .ready
+            }
+        }
         level = 0
         state = .thinking
+        armThinkingWatchdog()
+    }
+
+    /// `.thinking` has no natural exit if the daemon parks (tool approval
+    /// waits indefinitely) or an early server return skips reply_end — the
+    /// orb sat in THINKING forever with the mic dead. Epoch-guarded: any real
+    /// transition (first audio chunk, reply_end, error, disconnect) advances
+    /// state, and the stale watchdog fires harmlessly against the guard.
+    private var thinkingEpoch = 0
+    private func armThinkingWatchdog() {
+        thinkingEpoch += 1
+        let epoch = thinkingEpoch
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            guard let self, self.thinkingEpoch == epoch, self.state == .thinking else { return }
+            self.notice = "Still working on it — check Decisions if I asked for approval."
+            self.state = .ready
+        }
     }
 
     /// Barge-in: silence is instant (playback torn down first), then the turn is
@@ -408,22 +674,25 @@ final class VoiceEngine: ObservableObject {
               let buf = AVAudioPCMBuffer(pcmFormat: playbackFormat, frameCapacity: AVAudioFrameCount(n))
         else { return }
         buf.frameLength = AVAudioFrameCount(n)
+        // `floatChannelData` is nil whenever the buffer is not float32
+        // non-interleaved — a route change (AirPods connecting, a call
+        // arriving) can hand back a different format mid-session. Force
+        // unwrapping it crashes the app in the middle of the agent speaking;
+        // dropping one buffer is the correct trade.
+        guard let channels = buf.floatChannelData else { return }
         data.withUnsafeBytes { raw in
             guard let base = raw.baseAddress else { return }
-            memcpy(buf.floatChannelData![0], base, n * MemoryLayout<Float>.size)
+            memcpy(channels[0], base, n * MemoryLayout<Float>.size)
         }
-        // A pulse per sentence for the orb.
-        var sum: Float = 0
-        let ch = buf.floatChannelData![0]
-        let stride = max(1, n / 512)
-        var count = 0
-        var i = 0
-        while i < n { sum += ch[i] * ch[i]; count += 1; i += stride }
-        level = min(1, (sum / Float(max(1, count))).squareRoot() * 6)
-
+        // No per-chunk level pulse here: chunks arrive far ahead of playback,
+        // so they are the wrong clock for the orb. The player tap installed in
+        // startAudio() drives `level` from the audio actually being heard.
         pendingBuffers += 1
         state = .speaking
-        player.scheduleBuffer(buf) { [weak self] in
+        // Same inherited-isolation trap as the mic tap above: this completion
+        // runs on an audio thread, and without @Sendable it would carry a
+        // main-actor check that traps the moment a TTS buffer finishes.
+        player.scheduleBuffer(buf) { @Sendable [weak self] in
             guard let self else { return }
             Task { @MainActor in self.bufferDrained() }
         }
@@ -514,7 +783,9 @@ private struct BlobOrb: View {
 // ── The screen ───────────────────────────────────────────────────────────────
 
 struct VoiceView: View {
-    let sessionId: String
+    /// An already-resolved hub session, when the caller has one. `nil` means
+    /// "resolve it yourself" — see `VoiceEngine.start(sessionId:)`.
+    var sessionId: String? = nil
     @Environment(\.dismiss) private var dismiss
     @StateObject private var engine = VoiceEngine()
     @State private var pressing = false
@@ -528,7 +799,15 @@ struct VoiceView: View {
                 header
                 Spacer()
 
-                BlobOrb(state: engine.state, level: engine.level)
+                // The particle sphere, shared with the desktop conversation
+                // view (VoiceOrbView ← VoiceOrb.tsx). Replaces the old
+                // breathing-rings BlobOrb, which made the same product read
+                // as two different apps mid-conversation.
+                VoiceOrbView(
+                    level: Double(engine.level),
+                    speaking: engine.state == .speaking,
+                    thinking: engine.state == .thinking
+                )
                     .onTapGesture { engine.interrupt() }
                     .accessibilityLabel(orbAccessibility)
                     .accessibilityAddTraits(.isButton)
@@ -549,7 +828,6 @@ struct VoiceView: View {
         }
         .task { await engine.start(sessionId: sessionId) }
         .onDisappear { engine.stop() }
-        .preferredColorScheme(.dark)
     }
 
     // ── Chrome ───────────────────────────────────────────────────────────────
@@ -557,8 +835,8 @@ struct VoiceView: View {
     private var header: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("VOICE").font(.brandLabel).foregroundStyle(Brand.cyan)
-                Text("Henry").font(.brandTitle).foregroundStyle(Brand.text)
+                Text("VOICE").font(.brandLabel).foregroundStyle(Brand.cyanInk)
+                Text(AgentIdentity.shared.displayName).font(.brandTitle).foregroundStyle(Brand.text)
             }
             Spacer()
             Button {
@@ -622,10 +900,10 @@ struct VoiceView: View {
                 HStack(spacing: 7) {
                     Image(systemName: engine.handsFree ? "waveform.badge.mic" : "hand.raised.fill")
                         .font(.caption.weight(.semibold))
-                    Text(engine.handsFree ? "Hands-free on — Henry is listening" : "Go hands-free")
+                    Text(engine.handsFree ? "Hands-free on — \(AgentIdentity.shared.nameCapitalized) is listening" : "Go hands-free")
                         .font(.caption.weight(.semibold))
                 }
-                .foregroundStyle(engine.handsFree ? Brand.deepVoid : Brand.textMuted)
+                .foregroundStyle(engine.handsFree ? Brand.onAccent : Brand.textMuted)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
                 .background(engine.handsFree ? AnyShapeStyle(Brand.cyan) : AnyShapeStyle(Color.clear))
@@ -647,7 +925,7 @@ struct VoiceView: View {
                 .shadow(color: Brand.cyanGlow, radius: pressing ? 24 : 10)
             Image(systemName: "mic.fill")
                 .font(.system(size: 28, weight: .semibold))
-                .foregroundStyle(pressing ? Brand.deepVoid : Brand.cyan)
+                .foregroundStyle(pressing ? Brand.onAccent : Brand.cyan)
         }
         .scaleEffect(pressing ? 1.08 : 1)
         .animation(Motion.spring, value: pressing)
@@ -700,9 +978,9 @@ struct VoiceView: View {
 
     private var orbAccessibility: String {
         switch engine.state {
-        case .speaking: return "Henry is speaking. Tap to interrupt."
-        case .thinking: return "Henry is thinking. Tap to cancel."
-        default: return "Henry"
+        case .speaking: return "\(AgentIdentity.shared.nameCapitalized) is speaking. Tap to interrupt."
+        case .thinking: return "\(AgentIdentity.shared.nameCapitalized) is thinking. Tap to cancel."
+        default: return AgentIdentity.shared.displayName
         }
     }
 }

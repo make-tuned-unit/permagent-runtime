@@ -28,7 +28,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_yaml;
 use std::{collections::HashMap, sync::Arc};
+use tokio::task::JoinHandle;
+use tokio::time::Duration;
 use utoipa::ToSchema;
+
+const PROVIDER_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Serialize, ToSchema)]
 pub struct ExtensionResponse {
@@ -139,6 +143,26 @@ pub struct SetProviderRequest {
 #[serde(rename_all = "camelCase")]
 pub struct MaskedSecret {
     pub masked_value: String,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct ExtensionProbeRequest {
+    /// Display name of the configured extension to probe (e.g. "Brave Search").
+    pub name: String,
+}
+
+/// Result of actually starting an extension and asking it for its tools.
+/// Serialized camelCase like the rest of this module's responses.
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionProbeResponse {
+    /// True only when the server started AND answered with at least one tool.
+    pub ok: bool,
+    pub tool_count: usize,
+    /// Tool names it advertised — the concrete evidence the key works.
+    pub tools: Vec<String>,
+    /// Why it failed, verbatim, when `ok` is false.
+    pub error: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -266,6 +290,93 @@ pub async fn read_config(
         Err(e) => return Err(e.into()),
     };
     Ok(Json(response_value))
+}
+
+/// How long to wait for an extension to start and answer `list_tools`. Well
+/// past a healthy stdio server's startup, short enough that a wedged one still
+/// gives the user an answer.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
+
+#[utoipa::path(
+    post,
+    path = "/config/extensions/probe",
+    request_body = ExtensionProbeRequest,
+    responses(
+        (status = 200, description = "Probe completed (check `ok`)", body = ExtensionProbeResponse),
+    )
+)]
+/// Actually start a configured extension and ask it for its tools.
+///
+/// "Key saved" only proves a string reached the keychain — a typo'd key looks
+/// identical to a working one, and search then fails silently at the moment the
+/// user needs it. This runs the real thing: resolve the config (which pulls the
+/// key through `env_keys`), spawn the server, list its tools. Tool names coming
+/// back are the evidence; anything else is reported verbatim rather than
+/// summarized into a green light.
+///
+/// Always answers 200 — a failed probe is a RESULT, not a request error. The
+/// manager is local to this call, so the probe never mutates a live session.
+pub async fn probe_extension(
+    Json(req): Json<ExtensionProbeRequest>,
+) -> Result<Json<ExtensionProbeResponse>, ErrorResponse> {
+    let fail = |error: String| {
+        Ok(Json(ExtensionProbeResponse {
+            ok: false,
+            tool_count: 0,
+            tools: Vec::new(),
+            error: Some(error),
+        }))
+    };
+
+    let Some(config) = permagent::config::extensions::get_extension_by_name(&req.name) else {
+        return fail(format!("No extension named '{}' is configured.", req.name));
+    };
+    let key = config.key();
+
+    let manager = std::sync::Arc::new(
+        permagent::agents::extension_manager::ExtensionManager::new_without_provider(
+            permagent::config::paths::Paths::data_dir(),
+        ),
+    );
+
+    // Run the probe on its OWN task and time out the join handle, NOT the
+    // future inline. Starting an extension resolves its `env_keys` through the
+    // keychain, and `SecKeychainFindGenericPassword` is a BLOCKING call: on a
+    // fresh ad-hoc-signed build the ACL no longer matches the new cdhash, so it
+    // sits on a "allow access" dialog indefinitely. Awaited inline that blocks
+    // the worker thread, the timer never gets polled, and `timeout` cannot fire
+    // — the request hangs forever instead of failing at PROBE_TIMEOUT (observed
+    // 2026-07-31: two probes hung past 60s with a 25s timeout set). Timing out
+    // a separate task lets the caller get an honest answer even while the
+    // blocked thread is still parked.
+    let probe = tokio::spawn(async move {
+        manager.add_extension(config, None, None, None).await?;
+        manager
+            .get_prefixed_tools("extension-probe", Some(key.clone()))
+            .await
+    });
+
+    match tokio::time::timeout(PROBE_TIMEOUT, probe).await {
+        Ok(Ok(Ok(tools))) if !tools.is_empty() => Ok(Json(ExtensionProbeResponse {
+            ok: true,
+            tool_count: tools.len(),
+            tools: tools.iter().map(|t| t.name.to_string()).collect(),
+            error: None,
+        })),
+        // Started but advertised nothing: not a working search provider, and
+        // saying "ok" here is exactly the false green light this route exists
+        // to remove.
+        Ok(Ok(Ok(_))) => fail("The server started but offered no tools.".to_string()),
+        Ok(Ok(Err(e))) => fail(format!("{e}")),
+        // The probe task itself died (panic or cancellation) — report it rather
+        // than letting a crashed probe read as a plain failure.
+        Ok(Err(e)) => fail(format!("The probe did not complete: {e}")),
+        Err(_) => fail(format!(
+            "The server did not answer within {}s. If a keychain access dialog \
+             is waiting on screen, allow it and test again.",
+            PROBE_TIMEOUT.as_secs()
+        )),
+    }
 }
 
 #[utoipa::path(
@@ -816,13 +927,47 @@ pub async fn update_custom_provider(
 pub async fn check_provider(
     Json(CheckProviderRequest { provider }): Json<CheckProviderRequest>,
 ) -> Result<(), ErrorResponse> {
-    // Provider check does not use extensions.
-    create_with_default_model(&provider, Vec::new())
-        .await
-        .map_err(|err| {
-            ErrorResponse::bad_request(format!("Provider '{}' check failed: {}", provider, err))
-        })?;
-    Ok(())
+    let runtime = tokio::runtime::Handle::current();
+    let checked_provider = provider.clone();
+
+    // Declarative OpenAI-compatible providers (including Moonshot) resolve
+    // their API key during construction. That reaches Config::all_secrets,
+    // whose synchronous OS-keyring read runs while holding secrets_cache's
+    // mutex. A wedged keyring call therefore cannot yield to an async timeout.
+    // Isolate the complete provider construction on the blocking pool so the
+    // request timer remains schedulable. Dropping a timed-out JoinHandle cannot
+    // cancel the OS call, but it does guarantee this HTTP request returns.
+    let check = tokio::task::spawn_blocking(move || {
+        runtime
+            .block_on(create_with_default_model(&checked_provider, Vec::new()))
+            .map(|_| ())
+            .map_err(|err| err.to_string())
+    });
+
+    await_provider_check(&provider, PROVIDER_CHECK_TIMEOUT, check).await
+}
+
+async fn await_provider_check(
+    provider: &str,
+    timeout: Duration,
+    check: JoinHandle<Result<(), String>>,
+) -> Result<(), ErrorResponse> {
+    match tokio::time::timeout(timeout, check).await {
+        Ok(Ok(Ok(()))) => Ok(()),
+        Ok(Ok(Err(err))) => Err(ErrorResponse::bad_request(format!(
+            "Provider '{}' check failed: {}",
+            provider, err
+        ))),
+        Ok(Err(err)) => Err(ErrorResponse::internal(format!(
+            "Provider '{}' check task failed: {}",
+            provider, err
+        ))),
+        Err(_) => Err(ErrorResponse::service_unavailable(format!(
+            "Provider '{}' check timed out after {} seconds",
+            provider,
+            timeout.as_secs()
+        ))),
+    }
 }
 
 #[utoipa::path(
@@ -1041,6 +1186,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/config/read", post(read_config))
         .route("/config/extensions", get(get_extensions))
         .route("/config/extensions", post(add_extension))
+        .route("/config/extensions/probe", post(probe_extension))
         .route("/config/extensions/{name}", delete(remove_extension))
         .route("/config/providers", get(providers))
         .route("/config/providers/{name}/models", get(get_provider_models))
@@ -1081,4 +1227,82 @@ pub fn routes(state: Arc<AppState>) -> Router {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn provider_check_times_out_even_when_blocking_work_hangs() {
+        let check = tokio::task::spawn_blocking(|| {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            Ok(())
+        });
+        let started = std::time::Instant::now();
+
+        let error = await_provider_check("moonshot", Duration::from_millis(20), check)
+            .await
+            .expect_err("blocking provider check must time out");
+
+        assert_eq!(error.status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+        assert!(error.message.contains("moonshot"));
+        assert!(error.message.contains("timed out"));
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(200),
+            "handler waited for the blocking provider check to finish"
+        );
+    }
+
+    /// The masked-secret wire shape is camelCase — `maskedValue`, NOT
+    /// `masked_value`. The command-center read it under the snake_case name, so
+    /// every "is this key configured?" check answered false against a keychain
+    /// that DID hold the key: saved Brave/Tavily keys showed "No key" the moment
+    /// the user navigated back to Settings, and the agent was told search was
+    /// unconfigured. Pin the name so a rename has to break this test first.
+    #[test]
+    fn masked_secret_serializes_as_camel_case() {
+        let v = serde_json::to_value(MaskedSecret {
+            masked_value: "abc***".to_string(),
+        })
+        .unwrap();
+        assert_eq!(v["maskedValue"], "abc***");
+        assert!(
+            v.get("masked_value").is_none(),
+            "snake_case is not the wire name — clients key off maskedValue"
+        );
+    }
+
+    /// The probe response is camelCase on the wire too — same trap as
+    /// `maskedValue`, and this one gates a green "Working" light, so a client
+    /// reading `tool_count` would silently render every healthy provider as
+    /// broken.
+    #[test]
+    fn extension_probe_response_serializes_as_camel_case() {
+        let v = serde_json::to_value(ExtensionProbeResponse {
+            ok: true,
+            tool_count: 2,
+            tools: vec!["brave_web_search".into(), "brave_local_search".into()],
+            error: None,
+        })
+        .unwrap();
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["toolCount"], 2);
+        assert_eq!(v["tools"][0], "brave_web_search");
+        assert!(v.get("tool_count").is_none());
+        // A clean probe carries no error field noise.
+        assert!(v["error"].is_null());
+    }
+
+    /// A secret read is untagged, so the masked struct flattens to the response
+    /// body itself; an unset key answers a bare `null`. Both shapes are what the
+    /// client's `{ value?, maskedValue? } | null` type has to survive.
+    #[test]
+    fn config_value_response_is_untagged_for_both_arms() {
+        let masked = serde_json::to_value(ConfigValueResponse::MaskedValue(MaskedSecret {
+            masked_value: "tvly-dev***".to_string(),
+        }))
+        .unwrap();
+        assert_eq!(masked["maskedValue"], "tvly-dev***");
+
+        let missing = serde_json::to_value(ConfigValueResponse::Value(Value::Null)).unwrap();
+        assert!(missing.is_null());
+    }
+}

@@ -418,6 +418,32 @@ impl Config {
                     parse_error
                 );
 
+                // FIRST, sideline the corrupted file. Recovery used to write
+                // straight over it — and because the single .bak slot is
+                // refreshed on every save, one transient parse failure (e.g.
+                // the daemon killed mid-write during an install) cascaded into
+                // defaults REPLACING the user's config with no copy left
+                // anywhere (2026-08-06: provider, model, wizard_complete all
+                // destroyed). Whatever recovery does below, the bytes that
+                // were in the file survive for manual repair.
+                let sidelined = self.config_path.with_file_name(format!(
+                    "config.yaml.corrupt-{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0)
+                ));
+                match std::fs::copy(&self.config_path, &sidelined) {
+                    Ok(_) => tracing::error!(
+                        "Corrupted config preserved at {} — recover user values from it manually",
+                        sidelined.display()
+                    ),
+                    Err(e) => tracing::error!(
+                        "Could not sideline corrupted config ({e}) — recovery continues but \
+                         the corrupted bytes may be lost"
+                    ),
+                }
+
                 // Try to recover from backup
                 if let Ok(backup_values) = self.try_restore_from_backup() {
                     tracing::info!("Successfully restored config from backup");
@@ -2062,6 +2088,44 @@ mod tests {
         let config_file = NamedTempFile::new().unwrap();
         let secrets_file = NamedTempFile::new().unwrap();
         Config::new_with_file_secrets(config_file.path(), secrets_file.path()).unwrap()
+    }
+
+    /// The 2026-08-06 config destruction: a corrupted config recovered to
+    /// defaults with the original bytes written over — the user's provider,
+    /// model, and wizard state gone with no copy anywhere. Recovery must
+    /// sideline the corrupted file before touching anything.
+    #[test]
+    #[serial]
+    fn corrupted_config_is_sidelined_before_recovery() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        let secrets_path = dir.path().join("secrets.yaml");
+        let corrupt = "GOOSE_PROVIDER: anthropic\n  broken:\nindent: [unclosed";
+        std::fs::write(&config_path, corrupt).unwrap();
+
+        let config = Config::new_with_file_secrets(&config_path, &secrets_path).unwrap();
+        // Trigger the recovery path.
+        let _ = config.load_raw();
+
+        let sidelined: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("config.yaml.corrupt-")
+            })
+            .collect();
+        assert_eq!(
+            sidelined.len(),
+            1,
+            "the corrupted bytes must be preserved in a sidelined copy"
+        );
+        let preserved = std::fs::read_to_string(sidelined[0].path()).unwrap();
+        assert_eq!(
+            preserved, corrupt,
+            "the sidelined copy must hold the original corrupted bytes"
+        );
     }
 
     fn new_test_config_with_defaults(defaults_content: &str) -> (Config, NamedTempFile) {

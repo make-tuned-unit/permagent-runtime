@@ -1,0 +1,182 @@
+/**
+ * @vitest-environment jsdom
+ *
+ * Settings → Spend wiring (panel moved here from the retired Governance
+ * surface). Pins that the panel is REAL, not decorative:
+ *   1. it renders the running total + tokens from GET /api/governance/spend,
+ *   2. it lists per-project and per-session spend from that same payload,
+ *   3. saving the budget round-trips to POST /api/governance/budget,
+ *   4. the per-TASK ceilings are editable too — this panel fully supersedes
+ *      the old Autonomy "Spend cap" sliders.
+ *
+ * `../../lib/api` is mocked (the DataPanel.consent pattern) so mounting touches
+ * no network.
+ */
+
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { createRoot, type Root } from 'react-dom/client';
+import { act } from 'react-dom/test-utils';
+
+vi.mock('../../lib/api', () => ({
+  api: {
+    getSpend: vi.fn(),
+    setBudget: vi.fn(),
+  },
+  apiFetch: vi.fn(),
+  getApiBaseUrl: vi.fn(() => 'http://localhost:1234'),
+}));
+
+import { SpendPanel } from './SpendPanel';
+import { api } from '../../lib/api';
+
+(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
+
+const getSpendMock = vi.mocked(api.getSpend);
+const setBudgetMock = vi.mocked(api.setBudget);
+
+const SNAPSHOT = {
+  runningTotalUsd: 5.25,
+  totalTokens: 3400,
+  sessionCount: 2,
+  budget: {
+    session: { soft: 10, gate: 25, hard: 50 },
+    task: { soft: 2, gate: 5, hard: 10 },
+  },
+  sessions: [
+    { id: 's1', name: 'build session', workingDir: '/proj/a', sessionType: 'user', costUsd: 5.0, tokens: 3000, updatedAt: '2026-07-22T00:00:00Z', band: 'ok' },
+    { id: 's2', name: 'chat session', workingDir: '/proj/b', sessionType: 'user', costUsd: 0.25, tokens: 400, updatedAt: '2026-07-22T00:00:00Z', band: 'ok' },
+  ],
+  projects: [
+    { path: '/proj/a', label: 'Alpha', costUsd: 5.0, tokens: 3000, sessionCount: 1 },
+    { path: '/proj/b', label: 'b', costUsd: 0.25, tokens: 400, sessionCount: 1 },
+  ],
+};
+
+let container: HTMLDivElement;
+let root: Root;
+
+beforeEach(() => {
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  root = createRoot(container);
+  getSpendMock.mockReset();
+  setBudgetMock.mockReset();
+});
+
+afterEach(() => {
+  act(() => root.unmount());
+  container.remove();
+});
+
+async function flush() {
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+}
+
+describe('SpendPanel', () => {
+  it('renders running total, tokens, projects, and sessions from the real spend read', async () => {
+    getSpendMock.mockResolvedValue(SNAPSHOT as never);
+    await act(async () => { root.render(<SpendPanel />); });
+    await flush();
+
+    expect(getSpendMock).toHaveBeenCalled();
+    const text = container.textContent ?? '';
+    expect(text).toContain('$5.25');   // running total
+    expect(text).toContain('3.4k');    // total tokens, compacted
+    expect(text).toContain('Alpha');   // per-project label
+    expect(text).toContain('build session'); // per-session name
+  });
+
+  it('saves the budget through POST /api/governance/budget', async () => {
+    getSpendMock.mockResolvedValue(SNAPSHOT as never);
+    setBudgetMock.mockResolvedValue({
+      session: { soft: 8, gate: 25, hard: 50 },
+      task: { soft: 2, gate: 5, hard: 10 },
+    } as never);
+    await act(async () => { root.render(<SpendPanel />); });
+    await flush();
+
+    // Change the soft input, then click "Save cap".
+    const softInput = container.querySelector('input[aria-label="Session Warn (soft) ceiling in USD"]') as HTMLInputElement;
+    expect(softInput).toBeTruthy();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+      setter.call(softInput, '8');
+      softInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    const saveBtn = Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Save caps')!;
+    expect(saveBtn).toBeTruthy();
+    await act(async () => { saveBtn.click(); });
+    await flush();
+
+    expect(setBudgetMock).toHaveBeenCalledTimes(1);
+    const patch = setBudgetMock.mock.calls[0][0];
+    expect(patch.session?.soft).toBe(8);
+  });
+
+  it('omits blank ceilings instead of submitting them as zero', async () => {
+    getSpendMock.mockResolvedValue(SNAPSHOT as never);
+    setBudgetMock.mockResolvedValue(SNAPSHOT.budget as never);
+    await act(async () => { root.render(<SpendPanel />); });
+    await flush();
+
+    const softInput = container.querySelector('input[aria-label="Session Warn (soft) ceiling in USD"]') as HTMLInputElement;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+      setter.call(softInput, '');
+      softInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const saveBtn = Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Save caps')!;
+    await act(async () => { saveBtn.click(); });
+    await flush();
+
+    const patch = setBudgetMock.mock.calls[0][0];
+    expect(patch.session).not.toHaveProperty('soft');
+    expect(patch.session?.gate).toBe(25);
+    expect(patch.session?.hard).toBe(50);
+  });
+
+  it('round-trips the per-task hard ceiling (supersedes the Autonomy spend-cap slider)', async () => {
+    getSpendMock.mockResolvedValue(SNAPSHOT as never);
+    setBudgetMock.mockResolvedValue({
+      session: { soft: 10, gate: 25, hard: 50 },
+      task: { soft: 2, gate: 5, hard: 12 },
+    } as never);
+    await act(async () => { root.render(<SpendPanel />); });
+    await flush();
+
+    const taskHardInput = container.querySelector('input[aria-label="Task Stop (hard) ceiling in USD"]') as HTMLInputElement;
+    expect(taskHardInput).toBeTruthy();
+    expect(taskHardInput.value).toBe('10'); // loaded from the spend read
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+      setter.call(taskHardInput, '12');
+      taskHardInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const saveBtn = Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Save caps')!;
+    await act(async () => { saveBtn.click(); });
+    await flush();
+
+    const patch = setBudgetMock.mock.calls[0][0];
+    expect(patch.task?.hard).toBe(12);
+  });
+
+  it('rejects negative ceilings without submitting a patch', async () => {
+    getSpendMock.mockResolvedValue(SNAPSHOT as never);
+    await act(async () => { root.render(<SpendPanel />); });
+    await flush();
+
+    const hardInput = container.querySelector('input[aria-label="Session Stop (hard) ceiling in USD"]') as HTMLInputElement;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+      setter.call(hardInput, '-1');
+      hardInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const saveBtn = Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Save caps')!;
+    await act(async () => { saveBtn.click(); });
+    await flush();
+
+    expect(setBudgetMock).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('Could not save the budget.');
+  });
+});

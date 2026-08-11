@@ -9,6 +9,14 @@ interface MobiusProps {
   logoMode?: boolean;
   glow?: number;
   className?: string;
+  /**
+   * Source frames advanced per tick. `2` plays the loop at double speed while
+   * still swapping images at the state's normal rate — the splash needs to be
+   * quicker without doubling decode pressure, which raising `fps` would do.
+   * Keep this in lockstep with the iOS frame set (`MobiusFrames/`, every 2nd
+   * source frame at 30fps) so both splashes run at the same visual speed.
+   */
+  frameStep?: number;
 }
 
 const FRAME_COUNT = 151;
@@ -41,6 +49,7 @@ export const Mobius = memo(function Mobius({
   logoMode: _logoMode = false,
   glow = 1,
   className,
+  frameStep = 1,
 }: MobiusProps) {
   const { mobiusGlow, idleAnim, reduceMotion } = useTheme();
   const [frame, setFrame] = useState(0);
@@ -80,9 +89,13 @@ export const Mobius = memo(function Mobius({
     setFrame(0);
     const interval = 1000 / fps;
     const count = isIdle ? IDLE_FRAME_COUNT : FRAME_COUNT;
+    const step = Math.max(1, Math.floor(frameStep));
+    // Wrap on a whole multiple of the step so a stepped loop keeps landing on
+    // the same frames every pass instead of drifting onto the off-phase ones.
+    const cycle = step === 1 ? count : count - (count % step);
     const tick = (now: number) => {
       if (now - lastTime.current >= interval) {
-        setFrame(f => (f + 1) % count);
+        setFrame(f => (f + step) % cycle);
         lastTime.current = now;
       }
       rafRef.current = requestAnimationFrame(tick);
@@ -90,7 +103,7 @@ export const Mobius = memo(function Mobius({
     lastTime.current = performance.now();
     rafRef.current = requestAnimationFrame(tick);
     return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
-  }, [isAnimated, isIdle, fps]);
+  }, [isAnimated, isIdle, fps, frameStep]);
 
   const src = isAnimated
     ? (isIdle ? idleFrameSrc(frame) : frameSrc(frame))

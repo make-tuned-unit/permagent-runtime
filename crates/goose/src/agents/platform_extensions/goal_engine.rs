@@ -22,7 +22,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use once_cell::sync::Lazy;
 use regex::Regex;
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -178,16 +180,129 @@ pub struct GoalTask {
     /// a git repo (external dispatch then fails fast).
     pub baseline_commit: Option<String>,
     pub timeout: Duration,
+    /// Best-effort progress events consumed by the orchestrator's receipt
+    /// tracker. External workers emit one event for every stdout read; engines
+    /// without a byte stream leave this unused.
+    pub output_tx: Option<mpsc::UnboundedSender<WorkerOutputEvent>>,
+}
+
+/// Timestamped evidence that an external worker produced stdout. The timestamp
+/// is captured at the read boundary so a queued event still records when the
+/// worker first became observable, rather than when the database write ran.
+#[derive(Debug, Clone)]
+pub struct WorkerOutputEvent {
+    pub observed_at: String,
 }
 
 /// What an engine returns once the goal is spawned: a stable run identifier
 /// (recorded in card metadata as the worker session id), the join handle the
-/// tracker awaits, and a [`GoalKill`] handle the cancel path uses to stop the
-/// worker on demand (#490).
+/// tracker awaits, a [`GoalKill`] handle the cancel path uses to stop the
+/// worker on demand (#490), and — for steerable workers — a [`SteerHandle`]
+/// the orchestrator can use to inject a mid-run correction.
 pub struct DispatchedWork {
     pub run_id: String,
     pub join: JoinHandle<GoalOutcome>,
     pub kill: GoalKill,
+    /// `Some` only for claude external-CLI workers (the one engine with a
+    /// bidirectional stdin protocol today). `None` = not steerable; the steer
+    /// tool reports that honestly instead of pretending.
+    pub steer: Option<std::sync::Arc<SteerHandle>>,
+}
+
+/// Mid-run steering for a claude external-CLI worker (hardening pass,
+/// 2026-08-10). The CLI's `--input-format stream-json` mode is bidirectional:
+/// user messages written to stdin become new turns. The lifecycle rule that
+/// makes this SAFE for completion detection: the CLI exits only when stdin
+/// closes, so the reader loop closes stdin after each `result` event UNLESS a
+/// steer arrived during the turn — one pending steer buys exactly one more
+/// turn, and an unsteered worker behaves byte-identically to the old one-shot
+/// dispatch (first result → close → exit).
+///
+/// Proven against a live CLI before this was written: with
+/// `--input-format stream-json` the `-p` argument is NOT auto-run — the first
+/// stdin message is the first turn — and the process exits 0 on stdin close.
+pub struct SteerHandle {
+    writer: tokio::sync::Mutex<Option<tokio::process::ChildStdin>>,
+    steer_pending: std::sync::atomic::AtomicBool,
+}
+
+impl SteerHandle {
+    fn new(stdin: tokio::process::ChildStdin) -> Self {
+        Self {
+            writer: tokio::sync::Mutex::new(Some(stdin)),
+            steer_pending: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Encode one user message as the CLI's NDJSON wire line.
+    fn user_message_line(text: &str) -> String {
+        serde_json::json!({
+            "type": "user",
+            "message": { "role": "user", "content": [{ "type": "text", "text": text }] }
+        })
+        .to_string()
+            + "\n"
+    }
+
+    /// Inject a correction into the running worker. Sets the pending flag
+    /// BEFORE writing so a result event racing this call cannot close stdin
+    /// between the write and the flag.
+    pub async fn steer(&self, text: &str) -> Result<(), String> {
+        use tokio::io::AsyncWriteExt;
+        self.steer_pending
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut guard = self.writer.lock().await;
+        let Some(writer) = guard.as_mut() else {
+            self.steer_pending
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            return Err(
+                "the worker has already finished its final turn — steering arrived too late"
+                    .to_string(),
+            );
+        };
+        writer
+            .write_all(Self::user_message_line(text).as_bytes())
+            .await
+            .map_err(|e| format!("could not write to the worker's stdin: {e}"))?;
+        writer
+            .flush()
+            .await
+            .map_err(|e| format!("could not flush the worker's stdin: {e}"))?;
+        Ok(())
+    }
+
+    /// Called by the reader on each `result` event: a pending steer buys one
+    /// more turn; otherwise close stdin so the CLI exits and the existing
+    /// completion path runs unchanged.
+    async fn close_unless_steered(&self) {
+        if self
+            .steer_pending
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        self.writer.lock().await.take();
+    }
+
+    /// Send the opening turn (the goal prompt). Same write path as steer but
+    /// without the pending flag — the first result after an unsteered opening
+    /// turn must close stdin.
+    async fn open_with_prompt(&self, prompt: &str) -> Result<(), String> {
+        use tokio::io::AsyncWriteExt;
+        let mut guard = self.writer.lock().await;
+        let Some(writer) = guard.as_mut() else {
+            return Err("worker stdin closed before the opening prompt".to_string());
+        };
+        writer
+            .write_all(Self::user_message_line(prompt).as_bytes())
+            .await
+            .map_err(|e| format!("could not send the goal prompt: {e}"))?;
+        writer
+            .flush()
+            .await
+            .map_err(|e| format!("could not flush the goal prompt: {e}"))?;
+        Ok(())
+    }
 }
 
 /// Handle to stop a dispatched goal's worker (#490). The orchestrator holds one
@@ -376,6 +491,9 @@ impl GoalEngine for InternalSubagentEngine {
             run_id: session_id,
             join,
             kill,
+            // In-process subagents have no stdin protocol; steering them is a
+            // different seam (session message), not built yet.
+            steer: None,
         })
     }
 }
@@ -425,7 +543,7 @@ impl GoalEngine for ExternalCliEngine {
         let work_base_hooks = install_work_base_hooks(&worktree).await;
 
         let prompt = self.build_prompt(&task.instructions);
-        let args: Vec<String> = self
+        let mut args: Vec<String> = self
             .args
             .iter()
             .map(|a| {
@@ -436,13 +554,49 @@ impl GoalEngine for ExternalCliEngine {
                 }
             })
             .collect();
+
+        // Worker policy hooks (hardening pass, 2026-08-10): prose in the brief
+        // does not bind a worker — one burned 3.85M input tokens waiting on a
+        // cold-worktree cargo build it was explicitly told to skip. Claude
+        // workers get a PreToolUse hook (via --settings) that BLOCKS the known
+        // failure classes deterministically, with a message that teaches the
+        // policy instead of a bare denial. Best-effort: a write failure logs
+        // and the worker runs unhooked — a missing guard must not kill the
+        // dispatch it guards.
+        if self.bin.contains("claude") {
+            match write_worker_policy_settings(&worktree).await {
+                Ok(settings_path) => {
+                    args.push("--settings".to_string());
+                    args.push(settings_path);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "permagentd::brain",
+                        error = %e,
+                        "worker policy hook not installed; worker runs unguarded",
+                    );
+                }
+            }
+        }
         let bin = self.bin.clone();
         let timeout = task.timeout;
+        let output_tx = task.output_tx;
+
+        // Steering (hardening pass): claude's stream-json stdin protocol makes
+        // the worker correctable mid-run. In that mode the `-p` argument is
+        // NOT auto-run (proven live) — the goal prompt is sent as the opening
+        // stdin message instead, and the reader closes stdin after a result
+        // event unless a steer bought another turn.
+        let steerable = bin.contains("claude");
+        if steerable && !args.iter().any(|a| a == "--input-format") {
+            args.push("--input-format".to_string());
+            args.push("stream-json".to_string());
+        }
 
         // Spawn the worker NOW (in its own process group) so we can capture its
         // pid for a cancel/timeout group-kill before handing the wait off to the
         // tracker task. A spawn failure here means the goal never started.
-        let mut cmd = build_cli_command(&bin, &args, &worktree);
+        let mut cmd = build_cli_command(&bin, &args, &worktree, steerable);
         // Ephemeral git config for the worker (#523 hooks + #522 push block) —
         // inherited only by this worker's git subprocesses, so the user's repo
         // config is never touched.
@@ -452,7 +606,7 @@ impl GoalEngine for ExternalCliEngine {
             cmd.env(format!("GIT_CONFIG_KEY_{i}"), key)
                 .env(format!("GIT_CONFIG_VALUE_{i}"), value);
         }
-        let child = cmd
+        let mut child = cmd
             .spawn()
             .map_err(|e| format!("Failed to run `{}`: {}", bin, e))?;
         let kill = match child.id() {
@@ -461,19 +615,71 @@ impl GoalEngine for ExternalCliEngine {
         };
         let pid = child.id();
 
+        let steer = if steerable {
+            match child.stdin.take() {
+                Some(stdin) => {
+                    let handle = std::sync::Arc::new(SteerHandle::new(stdin));
+                    handle.open_with_prompt(&prompt).await?;
+                    Some(handle)
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
+
+        let reader_steer = steer.clone();
         let join = tokio::spawn(async move {
-            await_external_child(child, pid, bin, worktree, baseline, timeout).await
+            await_external_child(
+                child,
+                pid,
+                bin,
+                worktree,
+                baseline,
+                timeout,
+                output_tx,
+                reader_steer,
+            )
+            .await
         });
 
-        Ok(DispatchedWork { run_id, join, kill })
+        Ok(DispatchedWork {
+            run_id,
+            join,
+            kill,
+            steer,
+        })
     }
 }
 
-/// Create a detached git worktree at
-/// `<repo>/../.permagent-goal-worktrees/<run_id>` checked out at `baseline`.
-/// Returns the worktree path. The worktree is intentionally *not* removed on
-/// completion — its commits are the work product the Decision Inbox review
-/// points to.
+/// Self-knowledge descriptor for the goal landing path — how dispatched work
+/// becomes durable, reviewable code. Co-located with the engine per the
+/// descriptor convention.
+pub const GOAL_LANDING_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "goal_landing",
+        display_name: "Goal work landing path",
+        category: crate::agents::self_knowledge::FeatureCategory::Guard,
+        what_it_does: "Every dispatched goal runs in an isolated git worktree on its own goal/<run-id> branch; when the worker finishes, its commits are credential-scanned and pushed to that goal branch on origin — never to main. Failed and timed-out attempts push their partial work too, so no attempt's commits are ever lost. Landing on main happens only through the user's review and approval, never as a side effect of a worker finishing",
+        why_it_matters:
+            "When asked where a goal's work went: it is on its goal branch and cited in the review decision — not on main until the user approves. Never tell a user their goal's changes are live before the review gate has passed",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        teaching: &[],
+    };
+
+/// The branch a goal run's work lives on, derived from its run id. Named (not
+/// detached) so the commits are reachable from a ref: a detached worktree was
+/// one `git worktree prune` away from GC — three finished goals' commits were
+/// orphaned exactly that way on 2026-08-05 and had to be hand-rescued.
+pub(crate) fn goal_branch_name(run_id: &str) -> String {
+    format!("goal/{}", run_id)
+}
+
+/// Create a git worktree at `<repo>/../.permagent-goal-worktrees/<run_id>`
+/// checked out at `baseline` on a fresh `goal/<run_id>` branch. Returns the
+/// worktree path. The worktree is intentionally *not* removed on completion —
+/// its commits are the work product the Decision Inbox review points to, and
+/// the branch keeps them alive even if it is.
 pub(crate) async fn create_goal_worktree(
     repo: &Path,
     baseline: &str,
@@ -490,7 +696,8 @@ pub(crate) async fn create_goal_worktree(
         .arg(repo)
         .arg("worktree")
         .arg("add")
-        .arg("--detach")
+        .arg("-b")
+        .arg(goal_branch_name(run_id))
         .arg(&dest)
         .arg(baseline)
         .stdin(Stdio::null())
@@ -878,11 +1085,91 @@ pub async fn sweep_orphaned_worktrees(repo: &Path, active_run_ids: &[String]) ->
 /// — the CLI plus any tool subprocesses it spawns — not just the group leader.
 /// `kill_on_drop` is the backstop that reaps the leader if the wait future is
 /// dropped.
-fn build_cli_command(bin: &str, args: &[String], working_dir: &Path) -> Command {
+/// The PreToolUse policy script installed into every claude worker's worktree.
+///
+/// Deterministic enforcement of the two rules prose has already failed to
+/// hold (each line cites the incident that earned it):
+/// - heavy cargo invocations: a cold goal worktree has no target/ tree, so
+///   `cargo build/check/test/clippy` runs for tens of minutes, can outlive the
+///   session (the 3.85M-token wait, 2026-08-10) and can fill the disk (three
+///   ENOSPC incidents that same weekend). The central gate compiles; workers
+///   verify by reading.
+/// - `git push`: the #522 rule — Permagent owns the push after the scan. The
+///   pushurl sentinel already blocks the push itself; blocking the attempt
+///   here means the worker LEARNS instead of burning a turn on a git error.
+///
+/// Exit 2 blocks the call and the stderr message reaches the model. Grep on
+/// the raw hook JSON keeps the script dependency-free (no jq): PreToolUse is
+/// matcher-scoped to Bash, so the only `"command"` value present is Bash's.
+const WORKER_POLICY_SCRIPT: &str = r#"#!/bin/sh
+# Permagent worker policy (generated per-dispatch; see goal_engine.rs).
+payload=$(cat)
+case "$payload" in
+*"cargo build"*|*"cargo check"*|*"cargo test"*|*"cargo clippy"*|*"cargo run"*)
+    echo "Blocked by worker policy: heavy cargo invocations are not run in goal worktrees (cold target tree: slow, disk-hungry, and can outlive your session). Verify by reading the code; the central gate compiles after review." >&2
+    exit 2
+    ;;
+*"git push"*)
+    echo "Blocked by worker policy: workers never push. Commit locally; Permagent scans and pushes clean work itself." >&2
+    exit 2
+    ;;
+esac
+exit 0
+"#;
+
+/// Write the worker policy hook + settings into `<worktree>/.permagent/`,
+/// returning the settings path for `--settings`. The directory is inside the
+/// worktree on purpose: it is reaped with the worktree and never touches the
+/// user's own ~/.claude configuration.
+async fn write_worker_policy_settings(worktree: &Path) -> Result<String, String> {
+    let dir = worktree.join(".permagent");
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| format!("create {}: {e}", dir.display()))?;
+
+    let script_path = dir.join("worker-policy.sh");
+    tokio::fs::write(&script_path, WORKER_POLICY_SCRIPT)
+        .await
+        .map_err(|e| format!("write {}: {e}", script_path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
+            .await
+            .map_err(|e| format!("chmod {}: {e}", script_path.display()))?;
+    }
+
+    let settings = serde_json::json!({
+        "hooks": {
+            "PreToolUse": [{
+                "matcher": "Bash",
+                "hooks": [{ "type": "command", "command": script_path.to_string_lossy() }]
+            }]
+        }
+    });
+    let settings_path = dir.join("worker-settings.json");
+    tokio::fs::write(
+        &settings_path,
+        serde_json::to_string_pretty(&settings).unwrap_or_default(),
+    )
+    .await
+    .map_err(|e| format!("write {}: {e}", settings_path.display()))?;
+
+    Ok(settings_path.to_string_lossy().into_owned())
+}
+
+fn build_cli_command(bin: &str, args: &[String], working_dir: &Path, steerable: bool) -> Command {
     let mut cmd = Command::new(bin);
     cmd.args(args)
         .current_dir(working_dir)
-        .stdin(Stdio::null())
+        // Steerable (claude) workers keep stdin open for mid-run user
+        // messages; everything else gets the old closed stdin so a
+        // stdin-reading CLI (codex without a prompt arg) can never hang.
+        .stdin(if steerable {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -897,6 +1184,7 @@ fn build_cli_command(bin: &str, args: &[String], working_dir: &Path) -> Command 
 /// against `baseline`); nonzero → `Failed(stderr tail)`; timeout → `TimedOut`
 /// (the whole process group is SIGKILLed via `pid`, with `kill_on_drop` reaping
 /// the leader as the dropped wait future falls out of scope).
+#[allow(clippy::too_many_arguments)]
 async fn await_external_child(
     child: tokio::process::Child,
     pid: Option<u32>,
@@ -904,8 +1192,10 @@ async fn await_external_child(
     working_dir: PathBuf,
     baseline: String,
     timeout: Duration,
+    output_tx: Option<mpsc::UnboundedSender<WorkerOutputEvent>>,
+    steer: Option<std::sync::Arc<SteerHandle>>,
 ) -> GoalOutcome {
-    match tokio::time::timeout(timeout, child.wait_with_output()).await {
+    match tokio::time::timeout(timeout, collect_child_output(child, output_tx, steer)).await {
         Ok(Ok(output)) => {
             if output.status.success() {
                 // #508: deterministic credential guard. Scan the worker's
@@ -921,13 +1211,24 @@ async fn await_external_child(
                 // concurrent push) leaves the work reviewable-but-unpushed in
                 // the worktree rather than failing the goal.
                 push_clean_work(&working_dir, &baseline).await;
-                let worker_summary = tail(
+                let worker_summary = worker_closing_summary(
                     &redact_secrets(&String::from_utf8_lossy(&output.stdout)),
                     4000,
                 );
                 let evidence = collect_evidence(&working_dir, &baseline, worker_summary).await;
                 GoalOutcome::Success(Some(evidence))
             } else {
+                // W4: failure must not destroy the work. Scan + push whatever
+                // was committed to the goal branch so a partial attempt is
+                // durable and the retry (or a human) can build on it — a worker
+                // that failed at minute 119 with twelve commits used to leave
+                // nothing but an error string and a GC-able worktree.
+                if scan_committed_changes(&working_dir, &baseline)
+                    .await
+                    .is_none()
+                {
+                    push_clean_work(&working_dir, &baseline).await;
+                }
                 let code = output
                     .status
                     .code()
@@ -951,11 +1252,81 @@ async fn await_external_child(
             if let Some(p) = pid {
                 kill_process_group(p);
             }
+            // Same W4 preservation as the failure arm: a timed-out worker's
+            // commits survive on the goal branch.
+            if scan_committed_changes(&working_dir, &baseline)
+                .await
+                .is_none()
+            {
+                push_clean_work(&working_dir, &baseline).await;
+            }
             GoalOutcome::TimedOut {
                 secs: timeout.as_secs(),
             }
         }
     }
+}
+
+/// The streaming equivalent of `Child::wait_with_output`: drain stdout and
+/// stderr concurrently while waiting, retaining every byte for the existing
+/// completion/evidence path. Only stdout produces progress events.
+async fn collect_child_output(
+    mut child: tokio::process::Child,
+    output_tx: Option<mpsc::UnboundedSender<WorkerOutputEvent>>,
+    steer: Option<std::sync::Arc<SteerHandle>>,
+) -> std::io::Result<std::process::Output> {
+    let mut stdout = child.stdout.take().ok_or_else(|| {
+        std::io::Error::other("external worker stdout was not configured as piped")
+    })?;
+    let mut stderr = child.stderr.take().ok_or_else(|| {
+        std::io::Error::other("external worker stderr was not configured as piped")
+    })?;
+
+    let read_stdout = async move {
+        let mut accumulated = Vec::new();
+        let mut buffer = [0_u8; 8192];
+        // Byte offset of the first not-yet-line-scanned byte: `result`-event
+        // detection must see each COMPLETE line exactly once, chunk boundaries
+        // notwithstanding.
+        let mut scanned_to = 0usize;
+        loop {
+            let read = stdout.read(&mut buffer).await?;
+            if read == 0 {
+                break;
+            }
+            accumulated.extend_from_slice(&buffer[..read]);
+            if let Some(steer) = &steer {
+                while let Some(nl) = accumulated[scanned_to..].iter().position(|b| *b == b'\n') {
+                    let line = &accumulated[scanned_to..scanned_to + nl];
+                    scanned_to += nl + 1;
+                    // Cheap containment test on the raw line: the CLI emits one
+                    // JSON object per line, and only result events carry this
+                    // key at the top level.
+                    if line.windows(16).any(|w| w == b"\"type\":\"result\"") {
+                        steer.close_unless_steered().await;
+                    }
+                }
+            }
+            if let Some(tx) = &output_tx {
+                let _ = tx.send(WorkerOutputEvent {
+                    observed_at: chrono::Utc::now().to_rfc3339(),
+                });
+            }
+        }
+        Ok::<_, std::io::Error>(accumulated)
+    };
+    let read_stderr = async move {
+        let mut accumulated = Vec::new();
+        stderr.read_to_end(&mut accumulated).await?;
+        Ok::<_, std::io::Error>(accumulated)
+    };
+
+    let (status, stdout, stderr) = tokio::try_join!(child.wait(), read_stdout, read_stderr)?;
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
 /// Spawn the external CLI in `working_dir`, bounded by `timeout`, and await it.
@@ -969,7 +1340,7 @@ async fn run_external_cli(
     baseline: &str,
     timeout: Duration,
 ) -> GoalOutcome {
-    let mut cmd = build_cli_command(bin, args, working_dir);
+    let mut cmd = build_cli_command(bin, args, working_dir, false);
     match cmd.spawn() {
         Ok(child) => {
             let pid = child.id();
@@ -980,6 +1351,8 @@ async fn run_external_cli(
                 working_dir.to_path_buf(),
                 baseline.to_string(),
                 timeout,
+                None,
+                None,
             )
             .await
         }
@@ -988,11 +1361,14 @@ async fn run_external_cli(
 }
 
 /// #522 — the Permagent-owned push: after `scan_committed_changes` passes,
-/// push the worker's commits to `origin` `HEAD:main` (the target workers used
-/// when they owned the push). Skipped when the worker made no commits. A
-/// failure — unreachable remote, non-fast-forward from a concurrent push — is
-/// logged loudly and left for review-in-worktree; it never fails the goal and
-/// never bypasses the scan.
+/// push the worker's commits to the run's `goal/<run_id>` branch on `origin`.
+/// NEVER to main: work used to land on `origin/main` before completion checks
+/// or human review ran, making the Review gate advisory theatre — approve had
+/// nothing left to land and reject had no revert. The goal branch makes the
+/// work durable and reviewable; landing on main is the approve step's job.
+/// Skipped when the worker made no commits. A push failure — unreachable
+/// remote, no remote at all — is logged loudly and left for
+/// review-in-worktree; it never fails the goal and never bypasses the scan.
 pub(crate) async fn push_clean_work(worktree: &Path, baseline: &str) {
     let range = format!("{}..HEAD", baseline);
     let committed = git_text(worktree, &["rev-list", "--count", &range])
@@ -1004,10 +1380,30 @@ pub(crate) async fn push_clean_work(worktree: &Path, baseline: &str) {
         return; // nothing to publish (analysis/docs goal with no commits)
     }
 
+    // The worktree sits on its goal/<run_id> branch; push to the same-named
+    // remote ref. Pre-branch worktrees (detached HEAD) fall back to a branch
+    // named after the worktree dir — still never main.
+    let branch = {
+        let named = git_text(worktree, &["symbolic-ref", "--short", "HEAD"])
+            .await
+            .trim()
+            .to_string();
+        if named.is_empty() {
+            worktree
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(goal_branch_name)
+                .unwrap_or_else(|| "goal/unnamed-run".to_string())
+        } else {
+            named
+        }
+    };
+    let refspec = format!("HEAD:refs/heads/{}", branch);
+
     let mut cmd = Command::new("git");
     cmd.arg("-C")
         .arg(worktree)
-        .args(["push", "origin", "HEAD:main"])
+        .args(["push", "origin", &refspec])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1017,7 +1413,8 @@ pub(crate) async fn push_clean_work(worktree: &Path, baseline: &str) {
             tracing::info!(
                 worktree = %worktree.display(),
                 commits = committed,
-                "credential scan clean — pushed worker commits to origin/main (#522)"
+                branch = %branch,
+                "credential scan clean — pushed worker commits to the goal branch (#522)"
             );
         }
         Ok(out) => {
@@ -1264,6 +1661,41 @@ fn parse_shortstat(s: &str) -> (u32, u32, u32) {
 
 /// Roughly the last `max` bytes of `s`, aligned to char boundaries and prefixed
 /// with `…` when cut. Slice-free (clippy::string_slice).
+/// The worker's own closing statement, extracted from its stdout.
+///
+/// `claude --output-format stream-json` emits NDJSON, so a raw tail of stdout
+/// is a slice of machine transcript — half a JSON object, tool-call plumbing,
+/// cache-token accounting. That string is what reached the Decision Inbox as
+/// "the worker's summary", so a human asked to approve finished work was shown
+/// protocol noise instead of a sentence. It also fed the LLM verdict, which
+/// then judged real work as having "no evidence provided".
+///
+/// The stream's final `{"type":"result","result":"…"}` line carries the actual
+/// closing statement. Engines that print plain prose (`codex exec`) have no
+/// such line and fall through to the tail unchanged, so this is safe for any
+/// external CLI.
+fn worker_closing_summary(stdout: &str, max: usize) -> String {
+    for line in stdout.lines().rev() {
+        let line = line.trim();
+        if !line.starts_with('{') {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if value.get("type").and_then(serde_json::Value::as_str) != Some("result") {
+            continue;
+        }
+        if let Some(text) = value.get("result").and_then(serde_json::Value::as_str) {
+            let text = text.trim();
+            if !text.is_empty() {
+                return tail(text, max);
+            }
+        }
+    }
+    tail(stdout, max)
+}
+
 fn tail(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();
@@ -1337,6 +1769,124 @@ fn redact_secrets(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The worker policy hook must block exactly the incident classes it was
+    /// written for — and nothing else. Exercised through a real sh, the same
+    /// way the claude CLI runs it.
+    #[tokio::test]
+    async fn worker_policy_blocks_cargo_and_push_but_not_normal_work() {
+        let tmp = tempfile::tempdir().unwrap();
+        let settings_path = write_worker_policy_settings(tmp.path()).await.unwrap();
+
+        // The settings file names the script with a Bash matcher.
+        let settings: serde_json::Value =
+            serde_json::from_str(&tokio::fs::read_to_string(&settings_path).await.unwrap())
+                .unwrap();
+        assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], "Bash");
+        let script = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let run = |payload: &'static str| {
+            let script = script.clone();
+            async move {
+                let mut child = tokio::process::Command::new("sh")
+                    .arg(&script)
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                use tokio::io::AsyncWriteExt;
+                child
+                    .stdin
+                    .take()
+                    .unwrap()
+                    .write_all(payload.as_bytes())
+                    .await
+                    .unwrap();
+                let out = child.wait_with_output().await.unwrap();
+                (
+                    out.status.code(),
+                    String::from_utf8_lossy(&out.stderr).to_string(),
+                )
+            }
+        };
+
+        let (code, msg) =
+            run(r#"{"tool_name":"Bash","tool_input":{"command":"cargo check -p permagent"}}"#)
+                .await;
+        assert_eq!(code, Some(2), "cargo check must be blocked");
+        assert!(
+            msg.contains("central gate compiles"),
+            "the denial teaches: {msg}"
+        );
+
+        let (code, msg) =
+            run(r#"{"tool_name":"Bash","tool_input":{"command":"git push origin HEAD"}}"#).await;
+        assert_eq!(code, Some(2), "git push must be blocked");
+        assert!(msg.contains("never push"), "{msg}");
+
+        // Ordinary work sails through — a guard that blocks the job is worse
+        // than no guard.
+        for ok in [
+            r#"{"tool_name":"Bash","tool_input":{"command":"git add -A && git commit -m x"}}"#,
+            r#"{"tool_name":"Bash","tool_input":{"command":"grep -rn cargo_toml src/"}}"#,
+            r#"{"tool_name":"Bash","tool_input":{"command":"python3 -m unittest discover"}}"#,
+        ] {
+            let (code, _) = run(ok).await;
+            assert_eq!(code, Some(0), "must not block: {ok}");
+        }
+    }
+
+    /// A real `claude --output-format stream-json` tail: the closing statement
+    /// exists, but it is the last line of an NDJSON transcript. Taking a raw
+    /// tail handed the Decision Inbox tool-call plumbing and token accounting
+    /// as "the worker's summary".
+    #[test]
+    fn worker_summary_is_the_result_line_not_the_json_transcript() {
+        let stdout = concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git commit -q -m x"}}]},"usage":{"cache_read_input_tokens":40043}}"#,
+            "\n",
+            r#"{"type":"user","message":{"content":[{"tool_use_id":"t1","type":"tool_result","content":"a719579 docs: add README.md"}]}}"#,
+            "\n",
+            r#"{"type":"result","subtype":"success","total_cost_usd":0.35,"result":"Committed a719579 — README.md with all eight sections. Not pushed, per worktree policy."}"#,
+            "\n",
+        );
+
+        let summary = worker_closing_summary(stdout, 4000);
+
+        assert_eq!(
+            summary,
+            "Committed a719579 — README.md with all eight sections. Not pushed, per worktree policy."
+        );
+        assert!(
+            !summary.contains("cache_read_input_tokens") && !summary.contains("tool_use"),
+            "the transcript must not survive into the summary: {summary}"
+        );
+    }
+
+    /// `codex exec` prints prose, not NDJSON. With no result line to find, the
+    /// tail is still the best available summary — the extraction must not
+    /// blank it out.
+    #[test]
+    fn worker_summary_falls_back_to_the_tail_for_plain_prose_engines() {
+        let stdout = "Created PROOF.txt containing OK.\nCommitted locally as fd39d17.\n";
+        assert_eq!(worker_closing_summary(stdout, 4000), stdout);
+    }
+
+    /// A result line with an empty payload is not a summary — keep looking
+    /// rather than reporting nothing.
+    #[test]
+    fn worker_summary_ignores_an_empty_result_payload() {
+        let stdout = concat!(
+            r#"{"type":"result","result":"   "}"#,
+            "\n",
+            "trailing prose the worker printed\n",
+        );
+        assert!(worker_closing_summary(stdout, 4000).contains("trailing prose"));
+    }
 
     /// #455: persisted worker output must not leak prod credentials. A stdout/
     /// stderr tail carrying a `postgres://` connection string and a `*_KEY=`
@@ -1450,13 +2000,69 @@ mod tests {
         );
     }
 
+    /// The receipt timestamp must describe the first stdout bytes, not process
+    /// completion. Keep collecting the complete stream after emitting it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn streaming_output_reports_first_bytes_before_child_exit() {
+        let mut cmd = build_cli_command(
+            "/bin/sh",
+            &[
+                "-c".to_string(),
+                "printf first; sleep 2; printf second".to_string(),
+            ],
+            Path::new("."),
+            false,
+        );
+        let child = cmd.spawn().expect("spawn fake streaming worker");
+        let (output_tx, mut output_rx) = mpsc::unbounded_channel();
+        let collector = tokio::spawn(collect_child_output(child, Some(output_tx), None));
+
+        let event = tokio::time::timeout(Duration::from_secs(1), output_rx.recv())
+            .await
+            .expect("first stdout event must arrive promptly")
+            .expect("stdout event channel closed unexpectedly");
+        let first_output_at = chrono::DateTime::parse_from_rfc3339(&event.observed_at)
+            .expect("event timestamp is RFC3339");
+        let mut receipt =
+            crate::agents::platform_extensions::execution_receipt::ExecutionReceipt::new(
+                "worker",
+                "session",
+                serde_json::Value::Null,
+                "lifecycle",
+                chrono::Utc::now().to_rfc3339(),
+                1,
+            );
+        receipt.observe_output(event.observed_at.clone(), chrono::Utc::now().to_rfc3339());
+        assert_eq!(
+            receipt.first_output_at.as_deref(),
+            Some(event.observed_at.as_str())
+        );
+        assert!(
+            !collector.is_finished(),
+            "first_output_at must be stamped while the child is still running"
+        );
+
+        let output = collector.await.unwrap().unwrap();
+        let exited_at = chrono::Utc::now();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"firstsecond");
+        assert!(
+            exited_at
+                .signed_duration_since(first_output_at)
+                .num_milliseconds()
+                >= 1_000,
+            "first_output_at was stamped too close to child exit"
+        );
+    }
+
     /// #490: a cancel must actually stop the worker. Spawn a long sleep in its
     /// own process group, group-kill it by pid, and confirm it is reaped fast
     /// (not left running for its full duration).
     #[cfg(unix)]
     #[tokio::test]
     async fn kill_process_group_reaps_the_worker() {
-        let mut cmd = build_cli_command("sleep", &["30".to_string()], Path::new("."));
+        let mut cmd = build_cli_command("sleep", &["30".to_string()], Path::new("."), false);
         let mut child = cmd.spawn().expect("spawn sleep");
         let pid = child.id().expect("child has a pid");
 
@@ -1818,6 +2424,7 @@ mod tests {
             working_dir: std::env::temp_dir(),
             baseline_commit: None,
             timeout: Duration::from_secs(10),
+            output_tx: None,
         };
         match engine.spawn(task).await {
             Err(err) => assert!(
@@ -1982,9 +2589,10 @@ mod tests {
     }
 
     /// After a clean scan, Permagent's own push (no blocking env) publishes
-    /// the worker's commits; with no commits it is a no-op.
+    /// the worker's commits to the run's goal branch — NEVER to main; with no
+    /// commits it is a no-op.
     #[tokio::test]
-    async fn push_clean_work_publishes_commits() {
+    async fn push_clean_work_publishes_commits_to_goal_branch_not_main() {
         let tmp = tempfile::TempDir::new().unwrap();
         let (repo, baseline) = init_repo_with_remote(tmp.path());
         let wt = create_goal_worktree(&repo, &baseline, "cli-permagent-push")
@@ -1993,22 +2601,30 @@ mod tests {
 
         // No commits: no-op, origin untouched.
         push_clean_work(&wt, &baseline).await;
-        let tip = String::from_utf8(git(&repo, &["ls-remote", "origin", "refs/heads/main"]).stdout)
-            .unwrap();
-        assert!(tip.starts_with(&baseline));
+        let goal_ref = "refs/heads/goal/cli-permagent-push";
+        let tip = String::from_utf8(git(&repo, &["ls-remote", "origin", goal_ref]).stdout).unwrap();
+        assert!(tip.trim().is_empty(), "no-commit run must push nothing");
 
-        // With a commit: origin/main advances to the worktree HEAD.
+        // With a commit: the goal branch appears at the worktree HEAD, and
+        // origin/main does NOT move — landing on main is the approve step's
+        // job, not the completion path's.
         commit_in_worktree(&wt, "work.txt");
         let head = String::from_utf8(git(&wt, &["rev-parse", "HEAD"]).stdout)
             .unwrap()
             .trim()
             .to_string();
         push_clean_work(&wt, &baseline).await;
-        let tip = String::from_utf8(git(&repo, &["ls-remote", "origin", "refs/heads/main"]).stdout)
-            .unwrap();
+        let tip = String::from_utf8(git(&repo, &["ls-remote", "origin", goal_ref]).stdout).unwrap();
         assert!(
             tip.starts_with(&head),
-            "origin/main must be at the worker's HEAD after the Permagent-owned push"
+            "the goal branch must be at the worker's HEAD after the Permagent-owned push"
+        );
+        let main_tip =
+            String::from_utf8(git(&repo, &["ls-remote", "origin", "refs/heads/main"]).stdout)
+                .unwrap();
+        assert!(
+            main_tip.starts_with(&baseline),
+            "origin/main must NOT move on the completion path"
         );
     }
 

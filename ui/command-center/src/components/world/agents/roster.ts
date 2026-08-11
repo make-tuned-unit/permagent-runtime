@@ -29,7 +29,11 @@ export const MEZZ_Y = 10.15;
 export const ROSTER: AgentIdentity[] = [
   {
     id: 'henry',
-    name: 'Henry',
+    // `id` is a stable KEY, not a label. The display name is overwritten
+    // from `/api/agent/identity` by stateSources on the first poll; this is
+    // only what shows before that lands, so it must not assert a name the
+    // user did not choose.
+    name: 'Agent',
     role: 'orchestrator',
     trimColor: AGENT_TRIM.henry,
     isHenry: true,
@@ -93,6 +97,23 @@ export const ROSTER: AgentIdentity[] = [
     mezzanineLocked: false,
     home: { x: -7.5, y: 0, z: -6.0 },
     weathering: 0.35,
+  },
+  {
+    // The Guard — the security agent, born of the Strix engine (crate::strix +
+    // the daemon sweep loop; the id/config keys keep the `strix` spelling). It
+    // probes the user's OWN projects and reports; it never remediates, and
+    // anything intrusive is proposed rather than performed. Unlike the
+    // Reader/Watcher/Steward it HAS a live wire: the sweep emits
+    // agent_state_changed, so its working pose is real, not sim-ambient.
+    // Home sits opposite the Steward, on the far +x/+z quadrant.
+    id: 'strix',
+    name: 'The Guard',
+    role: 'agent',
+    trimColor: AGENT_TRIM.strix,
+    isHenry: false,
+    mezzanineLocked: false,
+    home: { x: 8.6, y: 0, z: 5.4 },
+    weathering: 0.3,
   },
 ];
 

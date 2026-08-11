@@ -6,8 +6,8 @@ import { ChatInput } from './ChatInput';
 import type { ChatInputHandle } from './ChatInput';
 import { SkillPromptBanner } from './SkillPromptBanner';
 import { ModelPicker } from './ModelPicker';
+import { SessionPicker } from './SessionPicker';
 import { VoiceOrb } from '../voice/VoiceOrb';
-import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 export function ChatView() {
@@ -20,6 +20,15 @@ export function ChatView() {
   // #629 multi-client liveness: re-read identity when `identity_changed`
   // arrives on /events (persona edited on another device).
   const identityRev = useCommandCenter(s => s.identityRev);
+  // Files dropped on the app shell while the dock is the chat surface land in
+  // this composer (see App.handleDrop). Subscribing to the field (not just
+  // takeChatFiles) makes a drop that happens after mount consume too.
+  const pendingChatFiles = useCommandCenter(s => s.pendingChatFiles);
+  useEffect(() => {
+    if (!pendingChatFiles) return;
+    const files = useCommandCenter.getState().takeChatFiles();
+    if (files && files.length > 0) chatInputRef.current?.addFiles(files);
+  }, [pendingChatFiles]);
 
   useEffect(() => {
     api.getIdentity().then(id => setAgentName(id.first_name)).catch(() => {});
@@ -55,12 +64,8 @@ export function ChatView() {
         className="flex items-center justify-between px-4 py-2.5"
         style={{ borderBottom: `1px solid ${colors.border}` }}
       >
-        <span
-          className="text-[11px] uppercase tracking-wider"
-          style={{ fontFamily: font.display, fontWeight: 600, color: colors.textMuted }}
-        >
-          Chat
-        </span>
+        {/* Keep this row unclipped: SessionPicker's panel opens below it. */}
+        <SessionPicker />
         <ModelPicker />
       </div>
 
@@ -74,6 +79,7 @@ export function ChatView() {
           getPlaybackAnalyser={voiceConversation.getPlaybackAnalyser}
           getMicAnalyser={voiceConversation.getMicAnalyser}
           onExit={voiceConversation.exit}
+          wakeHint={voiceConversation.wakeHint}
         />
       )}
     </div>

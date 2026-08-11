@@ -240,7 +240,13 @@ fn normalized_words(text: &str) -> Vec<String> {
         .collect()
 }
 
-fn cited_memories_by_content_overlap(
+/// Which injected memories the reply actually drew on, by content overlap.
+///
+/// Public so the `Brain::turn` outcome path reports usage by the SAME rule the
+/// recognition write-back already uses. Two different definitions of "used"
+/// would make the turn corpus incomparable with the recognition data it is
+/// meant to be validated against.
+pub fn cited_memories_by_content_overlap(
     injected: &[InjectedMemory],
     assistant_reply: &str,
 ) -> Vec<String> {
@@ -316,6 +322,22 @@ pub async fn write_back_task_outcome(pool: &Pool<Sqlite>, session_id: &str) {
         return;
     }
     write_back_outcome(pool, session_id, "TaskResolved", "Positive", "Task").await;
+}
+
+/// Write back a FAILED-task outcome (the negative half of the primary proxy).
+///
+/// Until this existed, every tool call — including the ones that errored — was
+/// logged as a completed task, so [`write_back_task_outcome`] stamped
+/// `Positive` across the session's recalls unconditionally and `outcome_label`
+/// could essentially never become `wrong`. The recall-quality ground truth was
+/// biased to success by construction, which makes it useless as a training or
+/// evaluation signal. A tool call that failed is exactly the case where the
+/// recalls that led into it deserve a negative label.
+pub async fn write_back_task_failure(pool: &Pool<Sqlite>, session_id: &str) {
+    if session_id.is_empty() {
+        return;
+    }
+    write_back_outcome(pool, session_id, "TaskFailed", "Negative", "Task").await;
 }
 
 /// Write back a DECISION outcome (SECONDARY proxy) via the 2-hop join

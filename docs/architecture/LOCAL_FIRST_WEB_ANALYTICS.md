@@ -101,6 +101,14 @@ built SPA, Knex migrations run automatically at boot (`db.migrate.latest()` in
    fail-closed when unset) — mirror `cityRequests.ts:120`. Returns rows with
    `id > since` ordered ascending, so the cursor is exact.
 
+   **Spec v41 — drain-lag visibility.** Alongside `events`, the response
+   SHOULD include `"latest_id"`: the site's newest buffered event id
+   (`select max(id)`), sent on every page **including empty ones**. The
+   daemon stores it beside its cursor, which turns lag into a number
+   ("37 events behind") and makes caught-up provable (`cursor ==
+   latest_id`) — without it, a healthy cursor and a growing backlog are
+   indistinguishable. Optional: pre-v41 relays keep working unchanged.
+
 #### Gotchas the research surfaced — each one silently breaks collection
 
 - **`sendBeacon` posts `text/plain`.** `express.json()` will not parse it. Mount
@@ -203,3 +211,28 @@ over every tunnel variant.
    freshness indicator.
 3. Remove the dead `127.0.0.1` snippet from `frontend/index.html` (currently
    live and inert on production).
+
+## Session traffic attribution (platform-wide)
+
+Traffic sources must not require `utm_*`. Organic search, social, and answer
+engines usually arrive with empty campaign params.
+
+**Emitter contract** (optional; recommended for every drained project):
+
+- `session_attribution` once per browser session (ideally before the first
+  pageview): flat scalars `source`, `medium`, `referrer_raw`, `landing_path`,
+  `timestamp`. Bind the session via drained `sessionId` / beacon `s`.
+- `answer_engine_visit` when the referrer is an answer engine (e.g. ChatGPT).
+
+**Permagent behaviour** (all projects, default on):
+
+1. Traffic sources prefer the first `session_attribution` in a session;
+   otherwise derive source/medium from pageview `referrer` via the shared
+   hostname map (`google/organic`, `chatgpt/aeo`, `reddit/social`, …).
+2. AEO is counted from `answer_engine_visit` and/or first-touch `medium=aeo`.
+3. Funnels accept optional `source` / `medium` query filters against that
+   first-touch map.
+
+See `analytics_classify::attribute_from_referrer` and
+`analytics_attribution::rollup_traffic_sources`.
+

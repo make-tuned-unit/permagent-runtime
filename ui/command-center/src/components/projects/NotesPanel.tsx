@@ -21,7 +21,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { FiTrash2, FiMic, FiSquare, FiLoader, FiExternalLink } from 'react-icons/fi';
+import { FiTrash2, FiMic, FiSquare, FiLoader, FiExternalLink, FiCopy, FiCheck, FiChevronRight } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { useDictation } from '../../hooks/useDictation';
@@ -41,7 +41,36 @@ export function NotesPanel({ project }: { project: Project }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<'loading' | 'error' | 'ready'>('loading');
+  // Notes collapse to their title row so long notes can't turn the panel into
+  // an infinite scroll; expansion is per-note.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadGeneration = useRef(0);
+
+  useEffect(() => () => { if (copiedTimer.current) clearTimeout(copiedTimer.current); }, []);
+
+  const toggleExpanded = (id: string) => {
+    setExpanded(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  // One-click copy of the full note (title + body) — for pasting straight
+  // into a coding agent. Mirrors the backend's note_memory_content shape.
+  const copyNote = async (note: ProjectNote) => {
+    const text = note.title ? `${note.title}\n\n${note.body}` : note.body;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedId(note.id);
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+      copiedTimer.current = setTimeout(() => setCopiedId(null), 1500);
+    } catch {
+      setError("Couldn't copy note to clipboard");
+    }
+  };
 
   // Dictation: append transcribed speech to the composer body.
   const appendDictation = useCallback((text: string) => {
@@ -214,61 +243,107 @@ export function NotesPanel({ project }: { project: Project }) {
 
       {status === 'ready' && notes.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {notes.map(note => (
-            <div
-              key={note.id}
-              style={{
-                display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 10px',
-                borderRadius: 7, background: rowVeil, border: `1px solid ${colors.border}`,
-                transition: 'border-color 150ms',
-              }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; }}
-            >
-              <div style={{ flex: 1, minWidth: 0 }}>
-                {note.title && (
-                  <div style={{ fontSize: 12, fontWeight: 600, color: colors.text, marginBottom: 2 }}>
-                    {note.title}
+          {notes.map(note => {
+            const isOpen = expanded.has(note.id);
+            return (
+              <div
+                key={note.id}
+                style={{
+                  borderRadius: 7, background: rowVeil, border: `1px solid ${colors.border}`,
+                  transition: 'border-color 150ms',
+                }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; }}
+              >
+                {/* Title row — the whole row toggles; icon buttons stop propagation. */}
+                <div
+                  role="button"
+                  aria-expanded={isOpen}
+                  onClick={() => toggleExpanded(note.id)}
+                  onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleExpanded(note.id); } }}
+                  tabIndex={0}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 7, padding: '8px 10px',
+                    cursor: 'pointer', userSelect: 'none',
+                  }}
+                >
+                  <FiChevronRight
+                    size={12}
+                    style={{
+                      color: colors.textDim, flexShrink: 0,
+                      transform: isOpen ? 'rotate(90deg)' : 'none', transition: 'transform 150ms',
+                    }}
+                  />
+                  <div style={{
+                    flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: colors.text,
+                    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                  }}>
+                    {note.title || firstLine(note.body)}
+                  </div>
+                  <span style={{ fontSize: 10, color: colors.textDim, flexShrink: 0 }}>{relativeTime(note.created_at)}</span>
+                  <button
+                    onClick={e => { e.stopPropagation(); copyNote(note); }}
+                    title="Copy note"
+                    aria-label="Copy note"
+                    style={{
+                      background: 'none', border: 'none', cursor: 'pointer', padding: 2,
+                      display: 'flex', flexShrink: 0,
+                      color: copiedId === note.id ? colors.cyan : colors.textDim,
+                    }}
+                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = colors.cyan; }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = copiedId === note.id ? colors.cyan : colors.textDim; }}
+                  >
+                    {copiedId === note.id ? <FiCheck size={13} /> : <FiCopy size={13} />}
+                  </button>
+                  <button
+                    onClick={e => { e.stopPropagation(); remove(note); }}
+                    title="Delete note"
+                    aria-label="Delete note"
+                    style={{ background: 'none', border: 'none', color: colors.textDim, cursor: 'pointer', padding: 2, display: 'flex', flexShrink: 0 }}
+                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = colors.danger; }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = colors.textDim; }}
+                  >
+                    <FiTrash2 size={13} />
+                  </button>
+                </div>
+                {isOpen && (
+                  <div style={{ padding: '0 10px 8px 29px' }}>
+                    <div style={{
+                      fontSize: 12, color: colors.textMuted, lineHeight: 1.5, whiteSpace: 'pre-wrap',
+                      overflowWrap: 'anywhere',
+                    }}>
+                      {note.body}
+                    </div>
+                    {note.memory_key && (
+                      <div style={{ marginTop: 4 }}>
+                        <button
+                          onClick={() => viewInBrain(note)}
+                          title="View this note in your Brain"
+                          style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 4,
+                            background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                            color: colors.cyan, fontFamily: font.body, fontSize: 10, fontWeight: 600,
+                          }}
+                        >
+                          View in Brain <FiExternalLink size={9} />
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
-                <div style={{
-                  fontSize: 12, color: colors.textMuted, lineHeight: 1.5, whiteSpace: 'pre-wrap',
-                  overflowWrap: 'anywhere',
-                }}>
-                  {note.body}
-                </div>
-                <div style={{ fontSize: 10, color: colors.textDim, marginTop: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <span>{relativeTime(note.created_at)}</span>
-                  {note.memory_key && (
-                    <button
-                      onClick={() => viewInBrain(note)}
-                      title="View this note in your Brain"
-                      style={{
-                        display: 'inline-flex', alignItems: 'center', gap: 4,
-                        background: 'none', border: 'none', padding: 0, cursor: 'pointer',
-                        color: colors.cyan, fontFamily: font.body, fontSize: 10, fontWeight: 600,
-                      }}
-                    >
-                      View in Brain <FiExternalLink size={9} />
-                    </button>
-                  )}
-                </div>
               </div>
-              <button
-                onClick={() => remove(note)}
-                title="Delete note"
-                style={{ background: 'none', border: 'none', color: colors.textDim, cursor: 'pointer', padding: 2, display: 'flex', flexShrink: 0 }}
-                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = colors.danger; }}
-                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = colors.textDim; }}
-              >
-                <FiTrash2 size={13} />
-              </button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </Panel>
   );
+}
+
+/** Collapsed-row label for an untitled note: its first non-empty line. */
+function firstLine(body: string): string {
+  const line = body.split('\n').find(l => l.trim());
+  return line ? line.trim() : '(empty note)';
 }
 
 /** Compact relative time ("just now", "3h ago", "2d ago"), falling back to a

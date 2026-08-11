@@ -11,6 +11,84 @@ const RUNNING_LEASE_SECONDS: i64 = 300;
 /// The result displayed by the inline answer path.
 pub type EffectResult = (Option<String>, Option<String>);
 
+/// Where approved regressions are materialised, relative to the repo root.
+const EVAL_TASKS_DIR: &str = "crates/permagent-eval/tasks";
+
+/// Write an approved regression as a `permagent-eval` task directory.
+///
+/// Re-validates the slug and filename rather than trusting the payload: these
+/// values reach the filesystem, and the approval gate authorises WHAT is
+/// written, not WHERE. Refuses to overwrite an existing task — a proposal that
+/// silently replaced a passing regression would be a way to delete coverage
+/// through the approval path.
+fn write_regression_task(
+    payload: &crate::decisions::RegressionProposalPayload,
+) -> Result<String, GuardError> {
+    use std::io::Write;
+
+    if !crate::decisions::is_safe_task_id(&payload.task_id) {
+        return Err(GuardError::Invalid(format!(
+            "unsafe regression task_id '{}'",
+            payload.task_id
+        )));
+    }
+    if !crate::decisions::is_safe_oracle_filename(&payload.oracle_filename) {
+        return Err(GuardError::Invalid(format!(
+            "unsafe oracle filename '{}'",
+            payload.oracle_filename
+        )));
+    }
+
+    let root = std::path::Path::new(EVAL_TASKS_DIR).join(&payload.task_id);
+    if root.exists() {
+        return Err(GuardError::Invalid(format!(
+            "regression task '{}' already exists — refusing to overwrite existing coverage",
+            payload.task_id
+        )));
+    }
+    let oracle_dir = root.join("oracle");
+    std::fs::create_dir_all(&oracle_dir)
+        .map_err(|e| GuardError::Invalid(format!("could not create task dir: {e}")))?;
+
+    let spec = serde_yaml::to_string(
+        &serde_yaml::from_str::<serde_yaml::Value>(&format!(
+            "id: {}\ntitle: {}\ncategory: {}\ntest: {}\nprompt: |\n{}\n",
+            serde_yaml::to_string(&payload.task_id)
+                .unwrap_or_default()
+                .trim(),
+            serde_yaml::to_string(&payload.title)
+                .unwrap_or_default()
+                .trim(),
+            serde_yaml::to_string(payload.category.as_deref().unwrap_or("regression"))
+                .unwrap_or_default()
+                .trim(),
+            serde_yaml::to_string(&payload.test)
+                .unwrap_or_default()
+                .trim(),
+            payload
+                .prompt
+                .lines()
+                .map(|l| format!("  {l}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ))
+        .map_err(|e| GuardError::Invalid(format!("could not build task.yaml: {e}")))?,
+    )
+    .map_err(|e| GuardError::Invalid(format!("could not serialize task.yaml: {e}")))?;
+
+    let mut f = std::fs::File::create(root.join("task.yaml"))
+        .map_err(|e| GuardError::Invalid(format!("could not write task.yaml: {e}")))?;
+    f.write_all(spec.as_bytes())
+        .map_err(|e| GuardError::Invalid(format!("could not write task.yaml: {e}")))?;
+
+    let mut o = std::fs::File::create(oracle_dir.join(&payload.oracle_filename))
+        .map_err(|e| GuardError::Invalid(format!("could not write oracle: {e}")))?;
+    o.write_all(payload.oracle_source.as_bytes())
+        .map_err(|e| GuardError::Invalid(format!("could not write oracle: {e}")))?;
+
+    Ok(root.display().to_string())
+}
+
 async fn goal_state(pool: &Pool<Sqlite>, goal_id: &str) -> Result<Option<String>, GuardError> {
     sqlx::query_scalar(
         "SELECT col.state_binding
@@ -44,6 +122,20 @@ pub async fn apply_decision_effect(
     }
     let acted_by = proof.acted_by().to_string();
     match (kind, decision.answer.as_deref()) {
+        // An approved regression becomes a real permagent-eval task on disk.
+        // The path is re-validated HERE and not trusted from the payload: the
+        // decision authorises the content, and a gate that also had to police
+        // path traversal would be one mistake away from arbitrary file write.
+        ("regression_proposal", Some("approve")) => {
+            let payload: crate::decisions::RegressionProposalPayload =
+                serde_json::from_value(decision.payload.clone()).map_err(|e| {
+                    GuardError::Invalid(format!("regression_proposal payload unreadable: {e}"))
+                })?;
+            match write_regression_task(&payload) {
+                Ok(path) => Ok((None, Some(format!("Regression written to {path}")))),
+                Err(e) => Err(e),
+            }
+        }
         ("approve_review", Some("approve")) => {
             let Some(goal_id) = decision.goal_id.as_deref() else {
                 return Ok((None, None));
@@ -328,6 +420,88 @@ pub async fn apply_decision_effect(
         ("model_upgrade", Some("approve")) => apply_model_upgrade(decision).await,
         ("model_upgrade", Some("reject")) => {
             already_applied("model upgrade declined; the active model is unchanged")
+        }
+        // Review-fail → debugger proposal (the verification FAIL arm files it).
+        // Only the debug_dispatch proposal has an effect; every other choice
+        // decision stays a pure record — the answer itself is the outcome.
+        ("choice", Some("choice"))
+            if decision.payload.get("proposal").and_then(|v| v.as_str())
+                == Some(decisions::PROPOSAL_DEBUG_DISPATCH) =>
+        {
+            let Some(goal_id) = decision.goal_id.as_deref() else {
+                return Ok((None, None));
+            };
+            match decision.answer_choice_id.as_deref() {
+                Some("dispatch-debugger") => {
+                    if goal_state(pool, goal_id).await?.as_deref() != Some("review") {
+                        return already_applied("goal already advanced out of Review");
+                    }
+                    // 1. Sticky debugger mandate — the next dispatch reads
+                    //    dispatch_role when assembling the worker brief.
+                    sqlx::query(
+                        "UPDATE cards SET metadata_json = \
+                             json_set(metadata_json, '$.dispatch_role', 'debugger') \
+                         WHERE id = ?",
+                    )
+                    .bind(goal_id)
+                    .execute(pool)
+                    .await
+                    .map_err(|e| GuardError::Db(format!("persist dispatch_role: {e}")))?;
+                    // 2. Delegate the state change to the existing review
+                    //    reject flow: answer the goal's open approve_review
+                    //    decision as 'reject' under the same actor. That arm
+                    //    owns the rework transition, attempt budget, and
+                    //    at-cap parking — one source of truth, full audit
+                    //    trail, and the tier-1 proof gate stays intact.
+                    let Some(review) =
+                        decisions::find_open_decision_for_goal(pool, goal_id, "approve_review")
+                            .await
+                            .map_err(GuardError::Db)?
+                    else {
+                        return already_applied(
+                            "debugger mandate recorded, but the goal has no open \
+                             approve_review decision to reject — advance it manually",
+                        );
+                    };
+                    decisions::answer_decision(
+                        pool,
+                        &review.id,
+                        &crate::decisions::DecisionAnswer {
+                            answer: "reject".to_string(),
+                            note: Some(format!(
+                                "Debugger re-dispatch requested via decision {}",
+                                decision.id
+                            )),
+                            choice_id: None,
+                            input_text: None,
+                        },
+                        &acted_by,
+                    )
+                    .await
+                    .map_err(|e| {
+                        GuardError::Invalid(format!(
+                            "debugger mandate recorded, but rejecting review {} failed: {e:?}",
+                            review.id
+                        ))
+                    })?;
+                    Ok((
+                        Some(
+                            "debugger mandate set; review rejected for rework — the goal \
+                             returns to InProgress and its next dispatch carries the \
+                             debugger brief"
+                                .to_string(),
+                        ),
+                        None,
+                    ))
+                }
+                Some("leave-for-review") => {
+                    already_applied("noted — goal stays in Review for the normal approve flow")
+                }
+                other => already_applied(format!(
+                    "unrecognized debug-dispatch option '{}' — no effect applied",
+                    other.unwrap_or("(none)")
+                )),
+            }
         }
         _ => crate::decision_inbox::policy::resume_answered_decision(pool, decision, proof)
             .await
@@ -702,6 +876,185 @@ mod tests {
             .unwrap();
         init_spectral_db(&pool).await.unwrap();
         pool
+    }
+
+    async fn goal_in_review(pool: &Pool<Sqlite>) -> crate::cards::Card {
+        crate::cards::seed_goal_columns(pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        let col = crate::cards::get_goal_column(pool, PERSONAL_PROJECT_ID, "review")
+            .await
+            .unwrap()
+            .unwrap();
+        let mut meta = serde_json::Map::new();
+        meta.insert("attempt_count".to_string(), serde_json::json!(0));
+        meta.insert("goal_state".to_string(), serde_json::json!("review"));
+        crate::cards::create_card(
+            pool,
+            crate::cards::CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: "Debug arm test goal".to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(col.id.clone()),
+                created_by: None,
+                metadata_json: Some(serde_json::Value::Object(meta)),
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn goal_state_of(pool: &Pool<Sqlite>, card_id: &str) -> String {
+        let card = crate::cards::get_card(pool, card_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let col = crate::cards::get_column(pool, &card.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        col.state_binding.unwrap_or_default()
+    }
+
+    async fn answered_debug_choice(
+        pool: &Pool<Sqlite>,
+        goal_id: &str,
+        choice_id: &str,
+    ) -> Decision {
+        let d = decisions::create_decision(
+            pool,
+            NewDecision {
+                kind: "choice".to_string(),
+                goal_id: Some(goal_id.to_string()),
+                project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Verification failed — dispatch the debugger?".to_string()),
+                detail: Some("verifier fail".to_string()),
+                payload: serde_json::json!({
+                    "question": "Dispatch the debugger?",
+                    "proposal": decisions::PROPOSAL_DEBUG_DISPATCH,
+                    "options": [
+                        {"id": "dispatch-debugger", "label": "Re-dispatch with the debugger mandate"},
+                        {"id": "leave-for-review", "label": "Leave it in Review"}
+                    ],
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        decisions::answer_decision(
+            pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: "choice".to_string(),
+                note: None,
+                choice_id: Some(choice_id.to_string()),
+                input_text: None,
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        decisions::get_decision(pool, &d.id).await.unwrap().unwrap()
+    }
+
+    #[tokio::test]
+    async fn debug_dispatch_choice_sets_role_and_rejects_the_open_review() {
+        let pool = test_pool().await;
+        let goal = goal_in_review(&pool).await;
+        let review = decisions::create_decision(
+            &pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(goal.id.clone()),
+                project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Review the finished work on the test goal".to_string()),
+                detail: Some("evidence".to_string()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let choice = answered_debug_choice(&pool, &goal.id, "dispatch-debugger").await;
+        let proof = DecisionProof::from_answered_row(&choice).unwrap();
+        let (effect, warning) = apply_decision_effect(&pool, &choice, proof, "choice")
+            .await
+            .unwrap();
+        assert!(effect.unwrap().contains("debugger mandate set"));
+        assert!(warning.is_none());
+
+        // Sticky mandate persisted for the next dispatch.
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card.metadata_json
+                .get("dispatch_role")
+                .and_then(|v| v.as_str()),
+            Some("debugger")
+        );
+        // The open review was answered 'reject' under the same actor…
+        let review_after = decisions::get_decision(&pool, &review.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(review_after.answer.as_deref(), Some("reject"));
+        assert_eq!(review_after.acted_by.as_deref(), Some(ACTOR_JESSE));
+        // …and draining the outbox applies the standard rework transition.
+        drain_effect_outbox(&pool).await.unwrap();
+        assert_eq!(goal_state_of(&pool, &goal.id).await, "in_progress");
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card.metadata_json
+                .get("attempt_count")
+                .and_then(|v| v.as_u64()),
+            Some(1)
+        );
+        assert_eq!(
+            card.metadata_json
+                .get("dispatch_role")
+                .and_then(|v| v.as_str()),
+            Some("debugger"),
+            "the mandate survives the rework transition"
+        );
+    }
+
+    #[tokio::test]
+    async fn debug_dispatch_without_open_review_records_role_but_moves_nothing() {
+        let pool = test_pool().await;
+        let goal = goal_in_review(&pool).await;
+        let choice = answered_debug_choice(&pool, &goal.id, "dispatch-debugger").await;
+        let proof = DecisionProof::from_answered_row(&choice).unwrap();
+        let (effect, _) = apply_decision_effect(&pool, &choice, proof, "choice")
+            .await
+            .unwrap();
+        assert!(effect.unwrap().contains("no open approve_review"));
+        assert_eq!(goal_state_of(&pool, &goal.id).await, "review");
+    }
+
+    #[tokio::test]
+    async fn leave_for_review_choice_changes_nothing() {
+        let pool = test_pool().await;
+        let goal = goal_in_review(&pool).await;
+        let choice = answered_debug_choice(&pool, &goal.id, "leave-for-review").await;
+        let proof = DecisionProof::from_answered_row(&choice).unwrap();
+        let (effect, _) = apply_decision_effect(&pool, &choice, proof, "choice")
+            .await
+            .unwrap();
+        assert!(effect.unwrap().contains("stays in Review"));
+        assert_eq!(goal_state_of(&pool, &goal.id).await, "review");
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(card.metadata_json.get("dispatch_role").is_none());
     }
 
     async fn answered_file_decision(pool: &Pool<Sqlite>) -> Decision {

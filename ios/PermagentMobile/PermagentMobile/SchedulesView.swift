@@ -37,13 +37,14 @@ struct ScheduleJob: Decodable, Identifiable {
     }
 
     var statusColor: Color {
-        if currently_running { return Brand.cyan }
+        if currently_running { return ChatSurface.spark }
         if paused { return Brand.warning }
-        return Brand.textDim
+        return ChatSurface.dim
     }
 }
 
 struct SchedulesView: View {
+    @ObservedObject private var identity = AgentIdentity.shared
     @State private var jobs: [ScheduleJob] = []
     @State private var loaded = false
     @State private var errorText: String?
@@ -59,22 +60,16 @@ struct SchedulesView: View {
 
                 if !loaded && jobs.isEmpty && errorText == nil {
                     ProgressView()
-                        .tint(Brand.cyan)
+                        .tint(ChatSurface.spark)
                         .padding(.top, 40)
                 }
 
                 if loaded && jobs.isEmpty && errorText == nil {
-                    GlassCard {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("NO AUTOMATIONS")
-                                .font(.brandLabel)
-                                .foregroundStyle(Brand.textDim)
-                            Text("You haven't set up any scheduled jobs yet. Ask Henry to create one, or add it from the desktop — it'll show here with run and pause controls.")
-                                .font(.brandCaption)
-                                .foregroundStyle(Brand.textMuted)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+                    SparkEmptyState(
+                        line: "No automations yet.",
+                        caption: "Ask \(identity.name) to create one, or add it from the desktop — it'll show here with run and pause controls."
+                    )
+                    .padding(.top, 60)
                 }
 
                 ForEach(jobs) { job in
@@ -83,7 +78,7 @@ struct SchedulesView: View {
             }
             .padding()
         }
-        .background(Brand.shell)
+        .background(ChatSurface.bg.ignoresSafeArea())
         .navigationTitle("Automations")
         .refreshable { await load() }
         .task { await load() }
@@ -91,51 +86,51 @@ struct SchedulesView: View {
     }
 
     private func jobCard(_ job: ScheduleJob) -> some View {
-        GlassCard {
+        RaisedCard {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
                     if job.currently_running {
-                        PulseDot(color: Brand.cyan)
+                        PulseDot(color: ChatSurface.spark)
                     } else {
                         Circle().fill(job.statusColor).frame(width: 8, height: 8)
                     }
                     Text(job.name)
                         .font(.brandHeadline)
-                        .foregroundStyle(Brand.text)
+                        .foregroundStyle(ChatSurface.text)
                         .lineLimit(1)
                     Spacer()
                     Text(job.statusLabel.uppercased())
-                        .font(.brandLabel)
+                        .font(.brandLabel).tracking(0.88)
                         .foregroundStyle(job.statusColor)
                 }
 
                 if let desc = job.description, !desc.isEmpty {
                     Text(desc)
                         .font(.brandCaption)
-                        .foregroundStyle(Brand.textMuted)
+                        .foregroundStyle(ChatSurface.muted)
                         .lineLimit(3)
                 }
 
                 HStack(spacing: 10) {
                     Label(job.cron, systemImage: "calendar")
-                        .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(Brand.textDim)
+                        .font(.jetbrainsMono(11))
+                        .foregroundStyle(ChatSurface.dim)
                         .lineLimit(1)
                     if let persona = job.worker_persona, !persona.isEmpty {
                         Label(persona, systemImage: "person.fill")
-                            .font(.system(.caption2, design: .monospaced))
-                            .foregroundStyle(Brand.textDim)
+                            .font(.brandMicro)
+                            .foregroundStyle(ChatSurface.dim)
                     }
                 }
 
                 if let last = RelativeTime.string(from: job.last_run) {
                     Text("Last run \(last)")
                         .font(.caption2)
-                        .foregroundStyle(Brand.textDim)
+                        .foregroundStyle(ChatSurface.dim)
                 } else {
                     Text("Not run yet")
                         .font(.caption2)
-                        .foregroundStyle(Brand.textDim)
+                        .foregroundStyle(ChatSurface.dim)
                 }
 
                 actions(for: job)
@@ -148,16 +143,16 @@ struct SchedulesView: View {
         HStack(spacing: 10) {
             if job.currently_running {
                 actionButton(job, verb: "kill", label: "Stop",
-                             tint: Brand.deepVoid, fill: Brand.danger)
+                             tint: Brand.onDanger, fill: Brand.danger)
             } else {
                 actionButton(job, verb: "run_now", label: "Run now",
-                             tint: Brand.deepVoid, fill: Brand.cyan)
+                             tint: ChatSurface.onSpark, fill: ChatSurface.spark)
                 if job.paused {
                     actionButton(job, verb: "unpause", label: "Resume",
-                                 tint: Brand.text, fill: Brand.surface)
+                                 tint: ChatSurface.text, fill: ChatSurface.control)
                 } else {
                     actionButton(job, verb: "pause", label: "Pause",
-                                 tint: Brand.textMuted, fill: Brand.surface)
+                                 tint: ChatSurface.text, fill: ChatSurface.control)
                 }
             }
         }

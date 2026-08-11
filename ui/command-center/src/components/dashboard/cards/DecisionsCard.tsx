@@ -25,7 +25,7 @@ export function DecisionsCard({ activeCount }: Props = {}) {
   const inbox = useDecisions();
   const { data } = inbox;
   const { data: persona } = usePersona();
-  const agentName = persona?.display_name ?? 'Aria';
+  const agentName = persona?.display_name ?? 'your agent';
   const [open, setOpen] = useState(false);
   const [hover, setHover] = useState(false);
 
@@ -70,21 +70,17 @@ export function DecisionsCard({ activeCount }: Props = {}) {
         </div>
 
         {empty ? (
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{
-                width: 34, height: 34, borderRadius: '50%',
-                background: colors.success + '26', color: colors.success,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: 16, margin: '0 auto 10px',
-              }}>✓</div>
-              <div style={{ fontSize: 13, color: colors.textMuted, marginBottom: 4 }}>
-                No decisions needed.
-              </div>
-              <div style={{ fontSize: 11, color: colors.textDim }}>
-                {goals} goal{goals === 1 ? '' : 's'} in flight.
-              </div>
-            </div>
+          // One line and a small tick, top-aligned. "All clear" is genuinely
+          // low-information — it should cost a line, not a whole card.
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingTop: 2 }}>
+            <span style={{
+              width: 18, height: 18, borderRadius: '50%', flexShrink: 0,
+              background: colors.success + '26', color: colors.success,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11,
+            }}>✓</span>
+            <span style={{ fontSize: 12, color: colors.textMuted }}>
+              All clear — {goals} goal{goals === 1 ? '' : 's'} in flight
+            </span>
           </div>
         ) : (
           <>

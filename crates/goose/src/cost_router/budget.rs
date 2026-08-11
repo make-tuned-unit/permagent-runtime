@@ -272,6 +272,7 @@ pub fn gate_choice_payload(scope: BudgetScope, spent: f64, increment: f64) -> Ch
             },
         ],
         default: Some(GATE_OPTION_STOP.to_string()),
+        proposal: None,
     }
 }
 

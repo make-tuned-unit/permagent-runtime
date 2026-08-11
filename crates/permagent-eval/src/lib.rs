@@ -30,6 +30,7 @@ pub mod cost;
 pub mod invocation;
 pub mod metrics;
 pub mod oracle;
+pub mod paired;
 pub mod report;
 pub mod runner;
 pub mod task;

@@ -42,6 +42,13 @@ pub struct VerifierConfig {
     /// gate for auto-approval; the future low-risk-type taxonomy populates it.
     #[serde(default)]
     pub auto_approve_goal_types: Vec<String>,
+    /// Additional panelist models for consensus review. When non-empty, the
+    /// gate runs `model` plus each panelist on the same evidence and folds the
+    /// verdicts per rubric question by majority, ties resolving to the worse
+    /// grade (see fold_panel). Empty — the default — keeps the single-model
+    /// gate byte-identical.
+    #[serde(default)]
+    pub panel_models: Vec<String>,
 }
 
 impl Default for VerifierConfig {
@@ -50,7 +57,22 @@ impl Default for VerifierConfig {
             model: DEFAULT_VERIFIER_MODEL.to_string(),
             usd_per_1k_tokens: None,
             auto_approve_goal_types: Vec::new(),
+            panel_models: Vec::new(),
         }
+    }
+}
+
+impl VerifierConfig {
+    /// The full reviewer panel: the primary model plus configured panelists,
+    /// deduplicated in order. Length 1 means single-model review.
+    pub fn panel(&self) -> Vec<String> {
+        let mut out = vec![self.model.clone()];
+        for m in &self.panel_models {
+            if !m.is_empty() && !out.contains(m) {
+                out.push(m.clone());
+            }
+        }
+        out
     }
 }
 
@@ -487,6 +509,109 @@ pub struct VerifierRun {
     pub model: String,
 }
 
+/// One panelist's contribution to a consensus review, persisted for audit in
+/// the verification record. `status` is the panelist's own pre-clamp verdict.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PanelVerdict {
+    pub model: String,
+    pub status: VerdictStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub degraded_reason: Option<String>,
+}
+
+/// Fold N independent verifier runs into one synthetic run.
+///
+/// Per rubric question the folded grade is the mode across the panel, ties
+/// resolving to the WORSE grade. A degraded panelist contributes Uncertain to
+/// every question and stays in the denominator — two offline models must not
+/// quietly turn a 3-model panel into a 1-model gate. The folded run feeds the
+/// unchanged aggregate/clamp pipeline, so machine-check clamps still cap the
+/// result and the model side can never upgrade machine findings.
+pub fn fold_panel(runs: &[VerifierRun]) -> (VerifierRun, Vec<PanelVerdict>) {
+    let panel: Vec<PanelVerdict> = runs
+        .iter()
+        .map(|r| PanelVerdict {
+            model: r.model.clone(),
+            status: match &r.grades {
+                Some(g) => aggregate_grades(g),
+                None => VerdictStatus::Uncertain,
+            },
+            degraded_reason: r.degraded_reason.clone(),
+        })
+        .collect();
+
+    let joined_model = runs
+        .iter()
+        .map(|r| r.model.as_str())
+        .collect::<Vec<_>>()
+        .join("+");
+
+    if runs.iter().all(|r| r.grades.is_none()) {
+        let reasons = runs
+            .iter()
+            .filter_map(|r| r.degraded_reason.as_deref())
+            .collect::<Vec<_>>()
+            .join("; ");
+        let folded = VerifierRun {
+            grades: None,
+            raw_output: String::new(),
+            degraded_reason: Some(if reasons.is_empty() {
+                "all panelists degraded".to_string()
+            } else {
+                reasons
+            }),
+            model: joined_model,
+        };
+        return (folded, panel);
+    }
+
+    let majority = |pick: &dyn Fn(&RubricGrades) -> Grade| -> Grade {
+        // Indexed by rank: Fail=0, Uncertain=1, Pass=2. Scanning from rank 0
+        // with a strict `>` makes ties land on the worse grade.
+        let mut counts = [0usize; 3];
+        for r in runs {
+            let g = match &r.grades {
+                Some(g) => pick(g),
+                None => Grade::Uncertain,
+            };
+            counts[g.rank() as usize] += 1;
+        }
+        let mut best = Grade::Fail;
+        let mut best_count = counts[0];
+        for (grade, count) in [(Grade::Uncertain, counts[1]), (Grade::Pass, counts[2])] {
+            if count > best_count {
+                best = grade;
+                best_count = count;
+            }
+        }
+        best
+    };
+
+    let rationale = runs
+        .iter()
+        .map(|r| match (&r.grades, &r.degraded_reason) {
+            (Some(g), _) => format!("[{}] {}", r.model, g.rationale),
+            (None, Some(reason)) => format!("[{}] degraded: {}", r.model, reason),
+            (None, None) => format!("[{}] degraded", r.model),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let folded = VerifierRun {
+        grades: Some(RubricGrades {
+            q1_intent: majority(&|g| g.q1_intent),
+            q2_evidence: majority(&|g| g.q2_evidence),
+            q3_checks: majority(&|g| g.q3_checks),
+            q4_paths: majority(&|g| g.q4_paths),
+            rationale,
+        }),
+        raw_output: String::new(),
+        degraded_reason: None,
+        model: joined_model,
+    };
+    (folded, panel)
+}
+
 /// Run the verifier against Ollama at `base_url`, serialized by VERIFY_MUTEX.
 /// One retry on parse failure (mirrors the Librarian's describe_one).
 /// All failure modes return grades=None + degraded_reason — never a fabricated pass.
@@ -559,6 +684,99 @@ mod tests {
             q4_paths: q4,
             rationale: "r".to_string(),
         }
+    }
+
+    fn healthy(model: &str, g: RubricGrades) -> VerifierRun {
+        VerifierRun {
+            grades: Some(g),
+            raw_output: String::new(),
+            degraded_reason: None,
+            model: model.to_string(),
+        }
+    }
+
+    fn degraded_run(model: &str, reason: &str) -> VerifierRun {
+        VerifierRun {
+            grades: None,
+            raw_output: String::new(),
+            degraded_reason: Some(reason.to_string()),
+            model: model.to_string(),
+        }
+    }
+
+    fn all(g: Grade) -> RubricGrades {
+        grades(g, g, g, g)
+    }
+
+    #[test]
+    fn fold_panel_majority_wins_per_question() {
+        let (folded, panel) = fold_panel(&[
+            healthy("a", all(Grade::Pass)),
+            healthy("b", all(Grade::Pass)),
+            healthy("c", all(Grade::Fail)),
+        ]);
+        let g = folded.grades.expect("folded grades");
+        assert_eq!(aggregate_grades(&g), VerdictStatus::Pass);
+        assert_eq!(folded.model, "a+b+c");
+        assert_eq!(panel.len(), 3);
+        assert_eq!(panel[0].status, VerdictStatus::Pass);
+        assert_eq!(panel[2].status, VerdictStatus::Fail);
+    }
+
+    #[test]
+    fn fold_panel_tie_resolves_to_worse_grade() {
+        let (folded, _) = fold_panel(&[
+            healthy("a", all(Grade::Pass)),
+            healthy("b", all(Grade::Fail)),
+        ]);
+        assert_eq!(
+            aggregate_grades(&folded.grades.unwrap()),
+            VerdictStatus::Fail,
+            "a split panel must not pass"
+        );
+    }
+
+    #[test]
+    fn fold_panel_degraded_panelists_stay_in_the_denominator() {
+        // One healthy PASS + two offline models must NOT become a 1-model
+        // pass — the degraded majority grades Uncertain.
+        let (folded, panel) = fold_panel(&[
+            healthy("a", all(Grade::Pass)),
+            degraded_run("b", "down"),
+            degraded_run("c", "down"),
+        ]);
+        assert_eq!(
+            aggregate_grades(&folded.grades.unwrap()),
+            VerdictStatus::Uncertain
+        );
+        assert_eq!(panel[1].status, VerdictStatus::Uncertain);
+        assert_eq!(panel[1].degraded_reason.as_deref(), Some("down"));
+    }
+
+    #[test]
+    fn fold_panel_all_degraded_is_degraded_never_pass() {
+        let (folded, _) = fold_panel(&[degraded_run("a", "x"), degraded_run("b", "y")]);
+        assert!(folded.grades.is_none());
+        assert_eq!(folded.degraded_reason.as_deref(), Some("x; y"));
+        assert_eq!(folded.model, "a+b");
+    }
+
+    #[test]
+    fn fold_panel_rationale_attributes_each_model() {
+        let (folded, _) =
+            fold_panel(&[healthy("a", all(Grade::Pass)), degraded_run("b", "timeout")]);
+        let rationale = folded.grades.unwrap().rationale;
+        assert!(rationale.contains("[a] r"));
+        assert!(rationale.contains("[b] degraded: timeout"));
+    }
+
+    #[test]
+    fn config_panel_dedupes_and_defaults_to_single() {
+        let mut cfg = VerifierConfig::default();
+        assert_eq!(cfg.panel(), vec![DEFAULT_VERIFIER_MODEL.to_string()]);
+        cfg.model = "a".to_string();
+        cfg.panel_models = vec!["b".to_string(), "a".to_string(), String::new()];
+        assert_eq!(cfg.panel(), vec!["a".to_string(), "b".to_string()]);
     }
 
     fn check_result(status: CheckStatus) -> CheckResult {

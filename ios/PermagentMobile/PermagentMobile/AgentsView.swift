@@ -35,6 +35,7 @@ struct WorkerEntry: Identifiable {
 }
 
 struct AgentsView: View {
+    @ObservedObject private var identity = AgentIdentity.shared
     @State private var running: [ScheduleJob] = []
     @State private var workers: [WorkerEntry] = []
     @State private var loaded = false
@@ -50,16 +51,16 @@ struct AgentsView: View {
                 }
 
                 // Working now — the interruptible, live rows.
-                GlassCard {
+                RaisedCard {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack(spacing: 8) {
                             Text("WORKING NOW")
-                                .font(.brandLabel)
-                                .foregroundStyle(Brand.textDim)
+                                .font(.brandLabel).tracking(0.88)
+                                .foregroundStyle(ChatSurface.dim)
                             if !running.isEmpty {
                                 Text("\(running.count)")
                                     .font(.brandLabel)
-                                    .foregroundStyle(Brand.cyan)
+                                    .foregroundStyle(ChatSurface.spark)
                             }
                             Spacer()
                         }
@@ -68,7 +69,7 @@ struct AgentsView: View {
                                  ? "Nothing running right now. When an automation fires, it appears here — with a Stop button."
                                  : "Checking…")
                                 .font(.brandCaption)
-                                .foregroundStyle(Brand.textMuted)
+                                .foregroundStyle(ChatSurface.muted)
                         } else {
                             ForEach(running) { job in runningRow(job) }
                         }
@@ -77,17 +78,17 @@ struct AgentsView: View {
                 }
 
                 // Background agents — the roster (who your agents are + readiness).
-                GlassCard {
+                RaisedCard {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("BACKGROUND AGENTS")
-                            .font(.brandLabel)
-                            .foregroundStyle(Brand.textDim)
+                            .font(.brandLabel).tracking(0.88)
+                            .foregroundStyle(ChatSurface.dim)
                         if workers.isEmpty {
                             Text(loaded
-                                 ? "No workers configured. Henry runs solo until you add background agents on the desktop."
+                                 ? "No workers configured. \(identity.nameCapitalized) runs solo until you add background agents on the desktop."
                                  : "Loading…")
                                 .font(.brandCaption)
-                                .foregroundStyle(Brand.textMuted)
+                                .foregroundStyle(ChatSurface.muted)
                         } else {
                             ForEach(workers) { entry in workerRow(entry.worker) }
                         }
@@ -95,21 +96,21 @@ struct AgentsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                GlassCard {
+                RaisedCard {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("REMOTE HANDS")
-                            .font(.brandLabel)
-                            .foregroundStyle(Brand.textDim)
+                            .font(.brandLabel).tracking(0.88)
+                            .foregroundStyle(ChatSurface.dim)
                         Text("These agents run on your Mac. Stop a job here and it halts on the hub — your desktop updates live.")
                             .font(.brandCaption)
-                            .foregroundStyle(Brand.textMuted)
+                            .foregroundStyle(ChatSurface.muted)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
             .padding()
         }
-        .background(Brand.shell)
+        .background(ChatSurface.bg.ignoresSafeArea())
         .navigationTitle("Agents at work")
         .refreshable { await load() }
         .task { await load() }
@@ -119,16 +120,16 @@ struct AgentsView: View {
 
     private func runningRow(_ job: ScheduleJob) -> some View {
         HStack(spacing: 10) {
-            PulseDot(color: Brand.cyan)
+            PulseDot(color: ChatSurface.spark)
             VStack(alignment: .leading, spacing: 2) {
                 Text(job.name)
                     .font(.brandCaption)
-                    .foregroundStyle(Brand.text)
+                    .foregroundStyle(ChatSurface.text)
                     .lineLimit(1)
                 if let last = RelativeTime.string(from: job.last_run) {
                     Text("started \(last)")
                         .font(.caption2)
-                        .foregroundStyle(Brand.textDim)
+                        .foregroundStyle(ChatSurface.dim)
                 }
             }
             Spacer()
@@ -140,7 +141,7 @@ struct AgentsView: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 7)
                     .background(Brand.danger)
-                    .foregroundStyle(Brand.deepVoid)
+                    .foregroundStyle(Brand.onDanger)
                     .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
             }
             .buttonStyle(.plain)
@@ -157,16 +158,16 @@ struct AgentsView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(w.display_name)
                     .font(.brandCaption)
-                    .foregroundStyle(Brand.text)
+                    .foregroundStyle(ChatSurface.text)
                 Text(w.available ? w.role : (w.reason ?? "Unavailable"))
                     .font(.caption2)
-                    .foregroundStyle(w.available ? Brand.textMuted : Brand.warning)
+                    .foregroundStyle(w.available ? ChatSurface.muted : Brand.warning)
                     .lineLimit(1)
             }
             Spacer()
             Text(w.engineLabel)
-                .font(.system(.caption2, design: .monospaced))
-                .foregroundStyle(Brand.textDim)
+                .font(.jetbrainsMono(11))
+                .foregroundStyle(ChatSurface.dim)
         }
     }
 

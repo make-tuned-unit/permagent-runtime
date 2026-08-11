@@ -7,13 +7,17 @@ pub mod browser;
 pub mod chatrecall;
 #[cfg(feature = "code-mode")]
 pub mod code_execution;
+pub(crate) mod code_map;
+pub mod dashboard;
 pub mod desktop;
 pub mod developer;
 pub mod execution_receipt;
 pub mod ext_manager;
 pub mod file_to_project;
+pub mod finance;
 pub mod gate_classifier;
 pub mod goal_engine;
+pub mod inbox_tools;
 pub mod librarian;
 pub mod librarian_adjudicator;
 pub mod librarian_atoms;
@@ -28,6 +32,8 @@ pub mod project_manager;
 pub mod pronunciation;
 pub mod publish_sequence;
 pub mod recipe_author;
+pub mod retrospect;
+pub mod role_brief;
 pub mod skills;
 pub mod steward;
 pub mod storage_health;
@@ -124,7 +130,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: analyze::EXTENSION_NAME,
                 display_name: "Analyze",
                 description:
-                    "Analyze code structure with tree-sitter: directory overviews, file details, symbol call graphs",
+                    "Analyze code structure with tree-sitter: directory overviews, file details, symbol call graphs (analyze); query a project's indexed code map for the paths matching a term, with their ancestor directories (map_query)",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
@@ -144,8 +150,9 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                               browser (open_website), fetch a public page's readable text without \
                               a tab (read_webpage), read the page the user currently has open \
                               (read_browser_content), list a page's interactive elements as \
-                              stable refs (get_page_snapshot), and click, type, or select on them \
-                              (act_on_page)",
+                              stable refs (get_page_snapshot), click, type, or select on them \
+                              (act_on_page), and — when the browser is unreachable because the \
+                              Mac's app is closed — wake it (wake_desktop_app)",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
@@ -221,6 +228,104 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                     },
                 ],
                 client_factory: |ctx| Box::new(listen::ListenClient::new(ctx).unwrap()),
+            },
+        );
+
+        map.insert(
+            dashboard::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: dashboard::EXTENSION_NAME,
+                display_name: "Dashboard",
+                description: "Read the live cards on the user's Home dashboard (read_dashboard) — \
+                              local weather, system stats, today's calendar — the same numbers \
+                              they are looking at",
+                default_enabled: true,
+                unprefixed_tools: true,
+                hidden: false,
+                why_it_matters:
+                    "The dashboard already holds answers, localized to this user. Asked for the \
+                     weather, read the weather card instead of searching the web — the card knows \
+                     where they are, needs no API key, and matches what is on their screen. \
+                     Searching for something a card already shows is slower and often wrong.",
+                teaching: &[crate::agents::self_knowledge::TeachingStep {
+                    title: "Read the room",
+                    body: "Bring the user Home and read a card back to them — the weather where \
+                           they actually are, or how their machine is doing — so they see you \
+                           looking at the same screen they are.",
+                    open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                        tab: "Home",
+                        section: None,
+                    }),
+                    confirm: None,
+                }],
+                client_factory: |ctx| Box::new(dashboard::DashboardClient::new(ctx).unwrap()),
+            },
+        );
+
+        map.insert(
+            inbox_tools::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: inbox_tools::EXTENSION_NAME,
+                display_name: "Decision Inbox",
+                description: "Surface and settle the user's Decision Inbox from chat: read what \
+                              is waiting on them (list_pending_decisions) and apply the verdict \
+                              they state in conversation (answer_decisions), bundling related \
+                              items — five finished goal cards, one approval",
+                default_enabled: true,
+                unprefixed_tools: true,
+                hidden: false,
+                why_it_matters:
+                    "Approvals the user must chase across the app do not get answered. When they \
+                     ask what needs them — or when pending decisions are the obvious blocker — \
+                     bring the Inbox to them, grouped into bundles they can settle in one \
+                     breath. The verdict is ALWAYS the user's words from this conversation; \
+                     never answer a decision on your own judgment, and read the bundle back \
+                     before applying it",
+                teaching: &[crate::agents::self_knowledge::TeachingStep {
+                    title: "Settle what is waiting",
+                    body: "Read the user their open decisions grouped into bundles ('five \
+                           reviews of goals we already finished'), let them say the word, and \
+                           apply exactly what they said — then confirm what changed.",
+                    open_surface: None,
+                    confirm: None,
+                }],
+                client_factory: |ctx| Box::new(inbox_tools::InboxClient::new(ctx).unwrap()),
+            },
+        );
+
+        map.insert(
+            retrospect::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: retrospect::EXTENSION_NAME,
+                display_name: "Retrospect",
+                description: "Review where you struggled in a session (review_struggles), record \
+                              a grounded failure without fixing it (report_failure), propose a \
+                              regression test that pins it (propose_regression), and ask the \
+                              user for a tool you turned out not to have (request_capability) — \
+                              Decision Inbox proposals, never builds",
+                default_enabled: true,
+                unprefixed_tools: true,
+                hidden: false,
+                why_it_matters:
+                    "Some failures are you using a tool badly; some are you not having the tool. \
+                     review_struggles tells them apart from the recorded outcome of every call — \
+                     the same shape retried unchanged reads differently from six different \
+                     formulations that all missed. When it is a missing tool, say so and file \
+                     request_capability with what you tried, rather than flailing again next \
+                     time. When something went wrong, report_failure records the grounded \
+                     incident but does not fix it. Asking for a better tool is not a failure; \
+                     hiding the gap is.",
+                teaching: &[crate::agents::self_knowledge::TeachingStep {
+                    title: "Look back at a rough patch",
+                    body: "After a session that went badly, call review_struggles and read the \
+                           result back honestly — including that a confidently wrong answer \
+                           leaves no failed call behind, so silence there is not proof it went \
+                           well. Record grounded failures with report_failure; if a tool was \
+                           missing, file request_capability.",
+                    open_surface: None,
+                    confirm: None,
+                }],
+                client_factory: |ctx| Box::new(retrospect::RetrospectClient::new(ctx).unwrap()),
             },
         );
 
@@ -417,7 +522,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: orchestrator::EXTENSION_NAME,
                 display_name: "Orchestrator",
                 description:
-                    "Orchestrate work across agent sessions: list, view, start, message, and interrupt them (list_sessions, view_session, start_agent, send_message, interrupt_agent); inspect available workers (list_workers, check_worker); plan objectives and dispatch roadmap goals to worker agents (decompose_roadmap, create_roadmap, goal_advance, goal_status, pause_roadmap, resume_roadmap); and surface decisions in the Decision Inbox for supervised approval (escalate)",
+                    "Orchestrate work across agent sessions: list, view, start, message, and interrupt them (list_sessions, view_session, start_agent, send_message, interrupt_agent); inspect available workers (list_workers, check_worker); plan objectives and dispatch roadmap goals to worker agents (decompose_roadmap, create_roadmap, goal_advance, goal_status, steer_goal, pause_roadmap, resume_roadmap); and surface decisions in the Decision Inbox for supervised approval (escalate)",
                 default_enabled: true,
                 unprefixed_tools: false,
                 hidden: false,
@@ -580,6 +685,23 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 client_factory: |ctx| {
                     Box::new(model_manager::ModelManagerClient::new(ctx).unwrap())
                 },
+            },
+        );
+
+        map.insert(
+            finance::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: finance::EXTENSION_NAME,
+                display_name: "The Financier",
+                description:
+                    "Market research and the user's own finance tooling. research_ticker reads live prices, day and 52-week ranges and volume for any symbol — no setup, no key. If the user runs their own stock scanner, picker_status/picker_start/picker_scan/picker_top_picks drive it and record_trade/list_trades keep their trade history. Reports numbers; never sizes a position and cannot place an order",
+                default_enabled: false,
+                unprefixed_tools: true,
+                hidden: false,
+                why_it_matters:
+                    "Ground any claim about a price in a real, timestamped number instead of memory — and, for a user who runs their own picking algorithm, run it and keep the record their performance is measured against.",
+                teaching: &[],
+                client_factory: |ctx| Box::new(finance::FinanceClient::new(ctx).unwrap()),
             },
         );
 

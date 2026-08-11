@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use futures::stream::BoxStream;
-use futures::{stream, FutureExt, Stream, StreamExt, TryStreamExt};
+use futures::{stream, Stream, StreamExt, TryStreamExt};
 use tracing_futures::Instrument;
 use uuid::Uuid;
 
@@ -72,7 +72,53 @@ use tracing::{debug, error, info, instrument, warn};
 // this cap is the floor. Overridable per-session (`max_turns`) or via
 // `GOOSE_MAX_TURNS` for the rare legitimately-long autonomous run.
 const DEFAULT_MAX_TURNS: u32 = 50;
+/// Consecutive turns whose tool calls could not be parsed, before giving up.
+/// Two: one retry with the error echoed back fixes the ordinary malformed
+/// call; a model that cannot recover twice will not recover on the third.
+///
+/// CONSECUTIVE is the load-bearing word. The counter answers exactly one
+/// question — "did the model fail to recover from the parse error I just
+/// showed it?" — so a turn that parses clears it. A running total instead
+/// meant two unrelated malformed calls forty turns apart ended the session,
+/// which is the failure this guard was written to remove.
+const MAX_CONSECUTIVE_PARSE_FAILURE_TURNS: u32 = 2;
+
+/// Characters of the parse error echoed back to the model. The error embeds
+/// the model's own raw argument blob, which can run to hundreds of KB on a
+/// truncated call; unbounded, it is persisted into the conversation and
+/// re-sent on every subsequent turn. The log keeps the full text.
+const MAX_PARSE_ERROR_ECHO_CHARS: usize = 2_000;
+
 const COMPACTION_THINKING_TEXT: &str = "goose is compacting the conversation...";
+
+/// The recovery observation handed back after an unparseable tool call.
+///
+/// Elides the MIDDLE rather than the tail: the dominant failure mode is a
+/// response cut off by the output window, so the malformed region is at the
+/// END of the blob — head-only truncation would keep the harmless opening and
+/// discard the one part the model needs in order to correct itself.
+fn parse_recovery_text(parse_err: &str) -> String {
+    const HEAD: usize = 1_200;
+    const TAIL: usize = MAX_PARSE_ERROR_ECHO_CHARS - HEAD;
+    let total = parse_err.chars().count();
+    let shown = if total > MAX_PARSE_ERROR_ECHO_CHARS {
+        let head: String = parse_err.chars().take(HEAD).collect();
+        let tail: String = parse_err.chars().skip(total - TAIL).collect();
+        format!(
+            "{head}\n[… truncated: {} of {total} characters omitted …]\n{tail}",
+            total - MAX_PARSE_ERROR_ECHO_CHARS
+        )
+    } else {
+        parse_err.to_string()
+    };
+    format!(
+        "Your last tool call could not be parsed and did not run.\n\n\
+         Parse error: {shown}\n\n\
+         Nothing was executed. Re-issue exactly one tool call, with valid JSON \
+         arguments matching the tool's schema. If the arguments were long, \
+         shorten them or split the work into smaller calls."
+    )
+}
 
 fn redacted_tool_input_summary(
     tool_name: &str,
@@ -85,6 +131,27 @@ fn redacted_tool_input_summary(
         })
         .to_string(),
     )
+}
+
+/// Best-effort error text from a tool result that carries `is_error`.
+///
+/// The failure is in the CONTENT, not the transport, so there is no `Err` to
+/// stringify. Falls back to a named placeholder rather than an empty string —
+/// `tasks.error_message` is a diagnostic column and a blank one is the same
+/// error-dilution this whole change exists to remove.
+fn tool_error_text(result: &rmcp::model::CallToolResult) -> String {
+    let joined = result
+        .content
+        .iter()
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let trimmed = joined.trim();
+    if trimmed.is_empty() {
+        "tool reported is_error with no text content".to_string()
+    } else {
+        trimmed.chars().take(2000).collect()
+    }
 }
 
 fn tool_task_description(
@@ -738,25 +805,12 @@ impl Agent {
             result,
         );
 
-        // Task logging: completion/failure. The result is a ToolCallResult containing
-        // a boxed future, so we log at this point with best-effort output capture.
-        if let Some(ref tid) = task_id {
+        // Auto-skills: repetition detection keys on the argument SHAPE, which is
+        // known at dispatch and does not depend on how the call turns out.
+        // Deliberately left here rather than moved into the resolved future,
+        // which cannot hold `&self`.
+        if task_id.is_some() {
             if let Some(logger) = crate::tasks::global() {
-                let duration_ms = task_start.elapsed().as_millis() as u64;
-                // We don't have the resolved result yet (it's a future), so log
-                // completion with empty output. The actual result is consumed later
-                // by the agent loop. This is a Phase 1 trade-off.
-                logger
-                    .log_task_completed(
-                        tid,
-                        Some(&tool_name_str),
-                        args_value.as_ref(),
-                        &serde_json::json!({}),
-                        duration_ms,
-                    )
-                    .await;
-
-                // Auto-skills: check for repetition patterns after completion
                 let skills_config = crate::tasks::SkillsConfig::from_config();
                 if let Some(proposal_prompt) =
                     logger.check_repetition_candidates(&skills_config).await
@@ -769,15 +823,82 @@ impl Agent {
 
         debug!("WAITING_TOOL_END: {}", tool_call.name);
 
+        // Task outcome is recorded when the result RESOLVES, from the result
+        // itself.
+        //
+        // This used to log `completed` unconditionally at dispatch, before the
+        // boxed future had run, with an empty output blob — annotated in-source
+        // as a Phase 1 trade-off. The consequence reached much further than the
+        // tasks table: `log_task_completed` drives
+        // `recognition::write_back_task_outcome`, which stamps `Positive` over
+        // every still-unattributed recall in the session. So a failing tool call
+        // recorded a success, and `recognition_events.outcome_label` — the
+        // useful/ignored/wrong column that is the closest thing to ground truth
+        // about whether recall helped — could essentially never become `wrong`.
+        // Any evaluation or training signal built on that label was reading a
+        // constant.
+        //
+        // A tool call counts as failed when the future errors OR the result
+        // carries `is_error` (the MCP-level failure the transport reports as a
+        // successful round-trip — the case a naive `Result` check misses).
+        let task_outcome = task_id.map(|tid| (tid, tool_name_str.clone(), args_value.clone()));
+        // Split the stream off before the future moves into the async block.
+        let ToolCallResult {
+            notification_stream,
+            result: result_future,
+        } = result;
+        let resolved = async move {
+            let out = result_future.await;
+            let out = super::large_response_handler::process_tool_response(out);
+
+            if let Some((tid, tool_name, args)) = task_outcome {
+                if let Some(logger) = crate::tasks::global() {
+                    let duration_ms = task_start.elapsed().as_millis() as u64;
+                    match &out {
+                        Ok(call_result) if call_result.is_error != Some(true) => {
+                            logger
+                                .log_task_completed(
+                                    &tid,
+                                    Some(&tool_name),
+                                    args.as_ref(),
+                                    &serde_json::json!({}),
+                                    duration_ms,
+                                )
+                                .await;
+                        }
+                        Ok(call_result) => {
+                            logger
+                                .log_task_failed_with_shape(
+                                    &tid,
+                                    Some(&tool_name),
+                                    args.as_ref(),
+                                    &tool_error_text(call_result),
+                                )
+                                .await;
+                        }
+                        Err(e) => {
+                            logger
+                                .log_task_failed_with_shape(
+                                    &tid,
+                                    Some(&tool_name),
+                                    args.as_ref(),
+                                    &e.to_string(),
+                                )
+                                .await;
+                        }
+                    }
+                }
+            }
+            out
+        };
+
         (
             request_id,
             Ok(ToolCallResult {
-                notification_stream: result.notification_stream,
-                result: Box::new(
-                    result
-                        .result
-                        .map(super::large_response_handler::process_tool_response),
-                ),
+                notification_stream,
+                // The slot wants `Unpin`; an async block is not, so pin it first
+                // (`Pin<Box<F>>` is both `Future` and `Unpin`).
+                result: Box::new(Box::pin(resolved)),
             }),
         )
     }
@@ -1460,6 +1581,14 @@ impl Agent {
             let mut prev_monologue_text = String::new();
             let mut consecutive_monologue_turns = 0u32;
             let mut monologue_nudged = false;
+            // Consecutive turns whose tool calls could not be parsed. A
+            // malformed call used to END the session — the single most common
+            // weak-model failure mode, terminating instead of being corrected.
+            // It is now an observation the model can retry against, bounded so
+            // a model that cannot recover still stops, and cleared by any turn
+            // that parses (the same shape as `compaction_attempts` at the
+            // provider round-trip and the S5 monologue counter below).
+            let mut consecutive_parse_failure_turns = 0u32;
 
             loop {
                 if is_token_cancelled(&cancel_token) {
@@ -1523,6 +1652,11 @@ impl Agent {
                 );
 
                 let mut no_tools_called = true;
+                // One strike and one recovery observation per turn: a single
+                // truncated response can carry several malformed calls, and
+                // three near-identical "could not be parsed" messages in one
+                // turn is noise the model pays for on every turn after.
+                let mut saw_parse_failure_this_turn = false;
                 let mut messages_to_add = Conversation::default();
                 let mut tools_updated = false;
                 let mut did_recovery_compact_this_iteration = false;
@@ -1813,17 +1947,43 @@ impl Agent {
                                         yield AgentEvent::Message(final_response.clone());
                                         messages_to_add.push(final_response);
                                     } else {
-                                        error!(
-                                            "Tool call could not be parsed: {}",
-                                            request.tool_call.as_ref().unwrap_err(),
-                                        );
-                                        yield AgentEvent::Message(
-                                            Message::assistant().with_text(
-                                                "A tool call could not be parsed — the response may have been truncated. Try breaking the task into smaller steps or resending your message."
-                                            )
-                                        );
-                                        exit_chat = true;
-                                        break;
+                                        let parse_err = request
+                                            .tool_call
+                                            .as_ref()
+                                            .err()
+                                            .map(|e| e.to_string())
+                                            .unwrap_or_default();
+                                        // The log keeps the whole thing — it is
+                                        // neither billed nor replayed.
+                                        error!("Tool call could not be parsed: {}", parse_err);
+                                        if saw_parse_failure_this_turn {
+                                            // Already struck and already told. A
+                                            // truncated response can carry several
+                                            // malformed calls; they are one event.
+                                            continue;
+                                        }
+                                        saw_parse_failure_this_turn = true;
+                                        consecutive_parse_failure_turns += 1;
+                                        if consecutive_parse_failure_turns >= MAX_CONSECUTIVE_PARSE_FAILURE_TURNS {
+                                            yield AgentEvent::Message(
+                                                Message::assistant().with_text(
+                                                    "A tool call could not be parsed — the response may have been truncated. Try breaking the task into smaller steps or resending your message."
+                                                )
+                                            );
+                                            exit_chat = true;
+                                            break;
+                                        }
+                                        // Hand the failure back as an observation: what
+                                        // broke, so the model can correct the ONE
+                                        // malformed argument rather than losing the
+                                        // session. Echoing the received call is what
+                                        // makes a retry land — bounded, because that
+                                        // echo contains the model's own raw arguments.
+                                        let recovery =
+                                            Message::user().with_text(parse_recovery_text(&parse_err));
+                                        yield AgentEvent::Message(recovery.clone());
+                                        messages_to_add.push(recovery);
+                                        continue;
                                     }
                                 }
 
@@ -1989,6 +2149,16 @@ impl Agent {
                     consecutive_monologue_turns = 0;
                     monologue_nudged = false;
                     prev_monologue_text.clear();
+                }
+
+                // The model produced a turn with nothing unparseable in it, so
+                // it recovered — the strike count starts again. This has to be
+                // end-of-TURN: resetting per parsed request would let a model
+                // that emits [valid, malformed] every turn (the ordinary
+                // truncation shape) run forever without ever reaching the
+                // bound.
+                if !saw_parse_failure_this_turn {
+                    consecutive_parse_failure_turns = 0;
                 }
 
                 if no_tools_called {
@@ -2891,6 +3061,70 @@ mod tests {
         for logged in [&tracing_input, &task_description] {
             assert!(logged.contains("[REDACTED]"));
             assert!(!logged.contains(secret), "Bearer token must not be logged");
+        }
+    }
+
+    /// The recovery observation carries the model's own raw arguments back
+    /// into the conversation, where it is persisted and re-sent every turn.
+    mod parse_recovery {
+        use super::*;
+
+        fn huge_parse_error() -> String {
+            // The real shape: serde's complaint, then the whole blob.
+            format!(
+                "Could not interpret tool use parameters for id call_1: EOF while parsing a \
+                 string. Raw arguments: '{}MALFORMED_TAIL'",
+                "x".repeat(400_000)
+            )
+        }
+
+        #[test]
+        fn bounds_a_huge_raw_argument_echo() {
+            let msg = parse_recovery_text(&huge_parse_error());
+            assert!(
+                msg.chars().count() < MAX_PARSE_ERROR_ECHO_CHARS + 500,
+                "echo not bounded: {} chars",
+                msg.chars().count()
+            );
+            assert!(
+                msg.contains("truncated"),
+                "the cut must be stated, not silent"
+            );
+            assert!(
+                msg.contains("Re-issue exactly one tool call"),
+                "the instruction must survive truncation"
+            );
+        }
+
+        #[test]
+        fn keeps_the_end_of_the_blob_where_the_break_is() {
+            // A truncated response is malformed at its TAIL. Head-only
+            // elision would keep the harmless opening and discard the one
+            // region the model needs in order to correct itself.
+            let msg = parse_recovery_text(&huge_parse_error());
+            assert!(msg.contains("MALFORMED_TAIL"), "tail elided away");
+            assert!(
+                msg.contains("Could not interpret tool use parameters"),
+                "serde's own complaint elided away"
+            );
+        }
+
+        #[test]
+        fn echoes_a_short_error_verbatim_with_no_marker() {
+            let err = "Could not interpret tool use parameters for id call_1: \
+                       expected value at line 1 column 1";
+            let msg = parse_recovery_text(err);
+            assert!(msg.contains(err));
+            assert!(!msg.contains("truncated"));
+        }
+
+        #[test]
+        fn multibyte_text_never_splits_a_character() {
+            // Transcripts and tool arguments carry arbitrary UTF-8; a byte
+            // slice here would panic on the boundary.
+            let err = "\u{3042}".repeat(200_000);
+            let msg = parse_recovery_text(&err);
+            assert!(msg.chars().count() < MAX_PARSE_ERROR_ECHO_CHARS + 500);
         }
     }
 }

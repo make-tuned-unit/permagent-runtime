@@ -50,14 +50,14 @@ async fn run_once(state: &Arc<AppState>) -> Result<(), String> {
         if insights_on_day(&project, &today) >= PER_DAY {
             continue;
         }
-        let signals = gather_signals(&pool, &project.id).await;
+        let (signals, card_refs) = gather_signals(&pool, &project.id).await;
         if signals.is_empty() {
             continue; // nothing real happened — the Watcher stays silent
         }
         let Some(text) = compose(&project.name, &signals).await else {
             continue;
         };
-        if let Err(e) = append_insight(&pool, &project, &text).await {
+        if let Err(e) = append_insight(&pool, &project, &text, &card_refs).await {
             tracing::debug!(project = %project.name, "watcher insight write failed: {e}");
         } else {
             tracing::info!(
@@ -112,8 +112,9 @@ fn insights_on_day(project: &Project, day: &str) -> usize {
 
 /// Real 7-day activity signals, each phrased for the composer. Unknown /
 /// missing tables and zero counts contribute nothing.
-async fn gather_signals(pool: &Pool<Sqlite>, project_id: &str) -> Vec<String> {
+async fn gather_signals(pool: &Pool<Sqlite>, project_id: &str) -> (Vec<String>, Vec<CardRef>) {
     let mut out = Vec::new();
+    let mut refs: Vec<CardRef> = Vec::new();
     let count = |sql: &str| {
         let sql = sql.to_string();
         let pool = pool.clone();
@@ -141,12 +142,30 @@ async fn gather_signals(pool: &Pool<Sqlite>, project_id: &str) -> Vec<String> {
     if cards_moved > 0 {
         out.push(format!("{cards_moved} kanban card(s) touched this week"));
     }
-    let cards_stale = count(
-        "SELECT count(*) FROM cards WHERE project_id = ?1 AND updated_at < datetime('now','-14 days')",
+    // Name the stalled cards, don't just count them.
+    //
+    // This was `SELECT count(*)`, which produced the signal "1 card(s)
+    // untouched for 14+ days" — so the composer could only ever write "One card
+    // stalled 14+ days", with no way for the reader to learn WHICH card. An
+    // observation you cannot act on is not an observation, and repeated daily
+    // it reads as noise. The titles cost nothing extra to fetch and make the
+    // insight answer its own question.
+    let stale_cards: Vec<(String, String)> = sqlx::query_as(
+        "SELECT id, title FROM cards \
+         WHERE project_id = ?1 AND updated_at < datetime('now','-14 days') \
+           AND archived_at IS NULL \
+         ORDER BY updated_at ASC LIMIT 3",
     )
-    .await;
-    if cards_stale > 0 {
-        out.push(format!("{cards_stale} card(s) untouched for 14+ days"));
+    .bind(project_id)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    if let Some(signal) = format_stale_signal(&stale_cards) {
+        out.push(signal);
+        refs.extend(stale_cards.iter().map(|(id, title)| CardRef {
+            id: id.clone(),
+            title: title.clone(),
+        }));
     }
     let stack = count("SELECT count(*) FROM project_stack_entries WHERE project_id = ?1").await;
     if stack > 0 {
@@ -159,7 +178,37 @@ async fn gather_signals(pool: &Pool<Sqlite>, project_id: &str) -> Vec<String> {
     if pageviews > 0 {
         out.push(format!("{pageviews} site pageview(s) in the last 7 days"));
     }
-    out
+    (out, refs)
+}
+
+/// Phrase the stalled-card signal so the composer can NAME what stalled.
+///
+/// Pure, so the one property that matters is testable without a pool: the
+/// signal must carry titles, never just a number. A bare count is what produced
+/// "One card stalled 14+ days" — true, unactionable, and indistinguishable from
+/// the same sentence the day before.
+fn format_stale_signal(cards: &[(String, String)]) -> Option<String> {
+    if cards.is_empty() {
+        return None;
+    }
+    let titles = cards
+        .iter()
+        .map(|(_, t)| format!("\"{t}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "{} card(s) untouched for 14+ days, oldest first: {titles}",
+        cards.len()
+    ))
+}
+
+/// A card an insight is ABOUT. Carried on the insight so the Overview can link
+/// straight to it — the difference between "one card stalled" and a row the
+/// reader can click.
+#[derive(Clone, serde::Serialize)]
+struct CardRef {
+    id: String,
+    title: String,
 }
 
 /// One short observation via the configured provider's fast model. None on
@@ -179,7 +228,15 @@ async fn compose(project_name: &str, signals: &[String]) -> Option<String> {
     let system = "You are the Watcher — a quiet observer who leaves one useful note a day on a \
                   project's overview. Given real activity signals, write ONE specific, grounded \
                   observation or gentle suggestion (max 25 words). Never invent facts beyond the \
-                  signals. Reply ONLY as JSON: {\"insight\": \"<text, or empty if nothing worth saying>\"}";
+                  signals.\n\
+                  \n\
+                  NAME THE THING. When a signal quotes a card title, use that title in your \
+                  sentence. \"One card stalled 14+ days\" is useless — the reader cannot tell \
+                  which card, so there is nothing they can do. \"Onboarding copy has sat 3 weeks\" \
+                  is the same length and actually actionable. Never write \"one card\", \"a card\" \
+                  or \"some cards\" when you were given titles.\n\
+                  \n\
+                  Reply ONLY as JSON: {\"insight\": \"<text, or empty if nothing worth saying>\"}";
     let user = Message::user().with_text(format!(
         "Project: {project_name}\nSignals this week:\n- {}",
         signals.join("\n- ")
@@ -198,7 +255,12 @@ async fn compose(project_name: &str, signals: &[String]) -> Option<String> {
     Some(insight)
 }
 
-async fn append_insight(pool: &Pool<Sqlite>, project: &Project, text: &str) -> Result<(), String> {
+async fn append_insight(
+    pool: &Pool<Sqlite>,
+    project: &Project,
+    text: &str,
+    cards: &[CardRef],
+) -> Result<(), String> {
     let mut metadata = if project.metadata_json.is_object() {
         project.metadata_json.clone()
     } else {
@@ -215,6 +277,10 @@ async fn append_insight(pool: &Pool<Sqlite>, project: &Project, text: &str) -> R
         serde_json::json!({
             "text": text,
             "created_at": chrono::Utc::now().to_rfc3339(),
+            // The cards this insight is about. Older rows have no `cards` key;
+            // the Overview treats absent and empty identically, so the panel
+            // keeps rendering historical insights as plain text.
+            "cards": cards,
         }),
     );
     list.truncate(MAX_KEPT);
@@ -229,4 +295,51 @@ async fn append_insight(pool: &Pool<Sqlite>, project: &Project, text: &str) -> R
     )
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn card(id: &str, title: &str) -> (String, String) {
+        (id.to_string(), title.to_string())
+    }
+
+    /// The regression this file exists to prevent: the signal used to be a bare
+    /// `count(*)`, so the composer had nothing to name and could only ever
+    /// write "One card stalled 14+ days".
+    #[test]
+    fn stale_signal_names_the_cards_it_counts() {
+        let signal =
+            format_stale_signal(&[card("c1", "Onboarding copy"), card("c2", "Pricing page")])
+                .expect("two stale cards produce a signal");
+
+        assert!(
+            signal.contains("Onboarding copy"),
+            "signal must name the card: {signal}"
+        );
+        assert!(
+            signal.contains("Pricing page"),
+            "signal must name every card: {signal}"
+        );
+        assert!(
+            signal.contains('2'),
+            "the count is still useful alongside the names"
+        );
+    }
+
+    /// A single stalled card is the case that produced the useless message, so
+    /// it gets its own assertion rather than riding on the plural one.
+    #[test]
+    fn a_single_stale_card_is_still_named() {
+        let signal = format_stale_signal(&[card("c1", "Ship the changelog")]).unwrap();
+        assert!(signal.contains("Ship the changelog"));
+    }
+
+    /// Nothing stalled means no signal at all — the Watcher's honesty law is
+    /// silence over filler, so an empty list must not produce "0 card(s)".
+    #[test]
+    fn no_stale_cards_produces_no_signal() {
+        assert!(format_stale_signal(&[]).is_none());
+    }
 }

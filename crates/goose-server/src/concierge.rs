@@ -189,6 +189,9 @@ pub async fn triage_once(
         &digest,
         recorded.len() as i64,
         &Utc::now().to_rfc3339(),
+        // No external link: the drafts live in-app, so the notification's
+        // `target` navigation is the right destination, not a URL.
+        None,
     ));
     tracing::info!(
         target: "permagentd::concierge",

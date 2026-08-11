@@ -14,6 +14,7 @@ import { ChatInput } from './components/chat/ChatInput';
 import type { ChatInputHandle } from './components/chat/ChatInput';
 import { DropZone } from './components/chat/DropZone';
 import { ModelPicker } from './components/chat/ModelPicker';
+import { SessionPicker } from './components/chat/SessionPicker';
 import { InspectionPanel } from './components/inspection/InspectionPanel';
 import { AwarenessIndicator } from './components/awareness/AwarenessIndicator';
 import { PreTurnPreview } from './components/awareness/PreTurnPreview';
@@ -22,21 +23,9 @@ import { VoiceOrb } from './components/voice/VoiceOrb';
 import { readLiveConversation, requestVoiceEnd } from './lib/voiceHandoff';
 // VoiceButton moved to ChatInput row (beside send button)
 
-function timeAgo(dateStr: string): string {
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.floor(hrs / 24)}d ago`;
-}
-
 export default function ChatApp() {
   const { gradient, colors, theme } = useTheme();
-  const agentName = useCommandCenter(s => s.agentName);
   const setAgentName = useCommandCenter(s => s.setAgentName);
-  const [sessionsOpen, setSessionsOpen] = useState(false);
   const [inspectionOpen, setInspectionOpen] = useState(false);
   const [inputFocused, setInputFocused] = useState(false);
 
@@ -76,14 +65,9 @@ export default function ChatApp() {
   const ensureSession = useCommandCenter(s => s.ensureSession);
   const connectSession = useCommandCenter(s => s.connectSession);
   const loadSessionMessages = useCommandCenter(s => s.loadSessionMessages);
-  const sessions = useCommandCenter(s => s.sessions);
-  const loadSessions = useCommandCenter(s => s.loadSessions);
-  const switchToSession = useCommandCenter(s => s.switchToSession);
-  const chatSessionId = useCommandCenter(s => s.chatSessionId);
 
   const chatInputRef = useRef<ChatInputHandle>(null);
   const connectedRef = useRef(false);
-  const sessionsRef = useRef<HTMLDivElement>(null);
 
   const handleDrop = useCallback((files: File[]) => {
     chatInputRef.current?.addFiles(files);
@@ -122,6 +106,14 @@ export default function ChatApp() {
     if (connectedRef.current) return;
     connectedRef.current = true;
     (async () => {
+      // Adopt the session the main window handed over (see createChatWindow).
+      // Without this the pop-out would ensureSession() a NEW one and replay the
+      // greeting over the dock conversation the user was mid-way through.
+      const handedOff = new URLSearchParams(location.search).get('session');
+      if (handedOff) {
+        useCommandCenter.setState({ chatSessionId: handedOff });
+        try { localStorage.setItem('permagent-chat-session-id', handedOff); } catch { /* */ }
+      }
       const sid = await ensureSession();
       if (sid) {
         await loadSessionMessages(sid);
@@ -129,32 +121,6 @@ export default function ChatApp() {
       }
     })();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    if (sessionsOpen) loadSessions();
-  }, [sessionsOpen, loadSessions]);
-
-  useEffect(() => {
-    if (!sessionsOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (sessionsRef.current && !sessionsRef.current.contains(e.target as Node)) setSessionsOpen(false);
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [sessionsOpen]);
-
-  const handleSelectSession = async (sessionId: string) => {
-    setSessionsOpen(false);
-    await switchToSession(sessionId);
-  };
-
-  const handleNewSession = async () => {
-    setSessionsOpen(false);
-    try {
-      const session = await api.createSession();
-      await switchToSession(session.id);
-    } catch { /* ignore */ }
-  };
 
   return (
     <div style={{
@@ -173,66 +139,16 @@ export default function ChatApp() {
         padding: '0 12px', gap: 8,
         borderBottom: `1px solid ${colors.border}`,
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0, overflow: 'hidden' }}>
+        {/* NO `overflow: hidden` on this row. It is the positioning ancestor
+            of the session dropdown, which opens BELOW the 36px toolbar — so
+            clipping the row hides the panel entirely and the sessions list
+            becomes unreachable. A long agent name is kept from pushing the
+            model picker off the bar by truncating the NAME (below), which is
+            the only thing that can grow, rather than by clipping the row. */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 }}>
           <Mobius size={16} state="idle" glow={0.6} />
 
-          {/* Session selector */}
-          <div ref={sessionsRef} style={{ position: 'relative' }}>
-            <button
-              onClick={() => setSessionsOpen(!sessionsOpen)}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 4,
-                background: 'transparent', border: 'none', cursor: 'pointer',
-                color: colors.text, fontSize: 13, fontWeight: 600, fontFamily: font.body,
-              }}
-            >
-              {agentName}
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}><path d="M6 9l6 6 6-6" /></svg>
-            </button>
-
-            {sessionsOpen && (
-              <div style={{
-                position: 'absolute', top: '100%', left: 0, marginTop: 4,
-                width: 260, maxHeight: 300, overflow: 'auto',
-                background: gradient.dropdown, backdropFilter: 'blur(16px)',
-                border: `1px solid ${colors.borderHi}`, borderRadius: 8,
-                boxShadow: '0 12px 40px rgba(0,0,0,0.6)', zIndex: 100,
-                padding: '4px 0',
-              }}>
-                <button
-                  onClick={handleNewSession}
-                  style={{
-                    width: '100%', padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 6,
-                    background: 'transparent', border: 'none', cursor: 'pointer',
-                    color: colors.cyan, fontSize: 12, fontFamily: font.body, fontWeight: 500,
-                    borderBottom: `1px solid ${colors.border}`,
-                  }}
-                >
-                  + New session
-                </button>
-                {sessions.map(s => (
-                  <button
-                    key={s.id}
-                    onClick={() => handleSelectSession(s.id)}
-                    style={{
-                      width: '100%', padding: '6px 12px', display: 'flex', flexDirection: 'column', gap: 1,
-                      background: s.id === chatSessionId ? colors.cyanSoft : 'transparent',
-                      border: 'none', cursor: 'pointer', textAlign: 'left',
-                    }}
-                  >
-                    <span style={{ fontSize: 12, color: s.id === chatSessionId ? colors.cyan : colors.text, fontFamily: font.body }}>
-                      {s.name || `Session ${s.id}`}
-                    </span>
-                    {s.updated_at && (
-                      <span style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono }}>
-                        {s.message_count} msgs · {timeAgo(s.updated_at)}
-                      </span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+          <SessionPicker />
 
           <div style={{ flex: 1 }} />
 

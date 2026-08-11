@@ -178,11 +178,23 @@ pub fn check_provider_configured(metadata: &ProviderMetadata, provider_type: Pro
 
     // If there are no non-default keys, this provider needs at least one key explicitly set
     if required_non_default_keys.is_empty() {
-        return required_keys.iter().any(|key| {
+        let any_required_explicit = required_keys.iter().any(|key| {
             let is_set_in_env = env::var(&key.name).is_ok();
             let is_set_in_config = config.get(&key.name, key.secret).is_ok();
 
             is_set_in_env || is_set_in_config
+        });
+        if any_required_explicit {
+            return true;
+        }
+        // OpenAI (and similar) mark the API key optional so local compatible
+        // hosts work without auth — but Settings still needs "saved key ⇒
+        // configured". Count optional *_API_KEY secrets here.
+        return metadata.config_keys.iter().any(|key| {
+            key.secret
+                && !key.required
+                && key.name.ends_with("_API_KEY")
+                && (env::var(&key.name).is_ok() || config.get(&key.name, true).is_ok())
         });
     }
 

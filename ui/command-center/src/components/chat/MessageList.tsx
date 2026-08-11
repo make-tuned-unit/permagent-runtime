@@ -7,6 +7,22 @@ import { MessageBubble } from './MessageBubble';
 import { StreamingIndicator } from './StreamingIndicator';
 import { usePersona } from '../settings/useSettings';
 import { useVoicePreview } from '../../lib/useVoices';
+import { hasSpokenKey, markReplySpoken, replyDedupeKey } from '../../lib/speakReplies';
+import type { ChatMessage } from '../../lib/store';
+
+/** A contentless assistant message renders as a bare name-and-time bubble —
+ *  which is exactly what the streaming placeholder is before its first token,
+ *  sitting above the StreamingIndicator as a second empty bubble (reported
+ *  2026-08-06). Nothing to read ⇒ nothing to draw; the indicator alone
+ *  carries the in-flight state. Exported pure for the regression test. */
+export function isRenderableChatMessage(msg: ChatMessage): boolean {
+  return msg.role !== 'assistant'
+    || !!msg.content?.trim()
+    || !!msg.thinking?.trim()
+    || (msg.images?.length ?? 0) > 0
+    || (msg.tool_calls?.length ?? 0) > 0
+    || !!msg.context_attached;
+}
 
 export function MessageList() {
   const { colors } = useTheme();
@@ -28,7 +44,10 @@ export function MessageList() {
   // silently when voice assets are absent or autoplay is blocked); the speaker
   // button on the bubble is the gesture-driven replay/fallback.
   const { preview: speak, playingId: speaking } = useVoicePreview();
-  const spokenRef = useRef<string | null>(null);
+  // Greeting gating (pop-out regression, 2026-08-05): the history fetch races
+  // the (much cheaper) identity fetch, so a freshly popped-out window showed —
+  // and SPOKE — the greeting over an existing conversation every time.
+  const chatHistoryLoaded = useCommandCenter(s => s.chatHistoryLoaded);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -61,13 +80,19 @@ export function MessageList() {
     setShowJump(false);
   };
 
-  // Auto-speak the greeting once when the empty chat first shows it.
+  // Auto-speak the greeting once when the empty chat first shows it. Gated on
+  // history having SETTLED (not "list is momentarily empty"), and deduped via
+  // the cross-window spoken-reply ring — a per-mount ref is structurally
+  // incapable of surviving a pop-out, so the new window re-spoke it.
   useEffect(() => {
-    if (timeline.length === 0 && !isStreaming && greeting && spokenRef.current !== greeting) {
-      spokenRef.current = greeting;
-      void speak(persona?.voice_id, greeting);
+    if (timeline.length === 0 && !isStreaming && chatHistoryLoaded && greeting) {
+      const key = replyDedupeKey(chatSessionId, greeting);
+      if (!hasSpokenKey(key)) {
+        markReplySpoken(chatSessionId, greeting);
+        void speak(persona?.voice_id, greeting);
+      }
     }
-  }, [timeline.length, isStreaming, greeting, persona?.voice_id, speak]);
+  }, [timeline.length, isStreaming, chatHistoryLoaded, greeting, chatSessionId, persona?.voice_id, speak]);
 
   // Visible for the WHOLE in-flight turn — not just before the first token —
   // so mid-turn tool-use silences still read as alive ("Thinking…" escalates
@@ -106,7 +131,7 @@ export function MessageList() {
           </div>
         )}
 
-        {timeline.length === 0 && !isStreaming && !sessionLoadError && (
+        {timeline.length === 0 && !isStreaming && chatHistoryLoaded && !sessionLoadError && (
           greeting ? (
             // Agent's in-character opening, rendered as a top-left assistant
             // bubble (matches MessageBubble's assistant styling) — the identity
@@ -150,7 +175,7 @@ export function MessageList() {
           )
         )}
 
-        {timeline.map((msg) => (
+        {timeline.filter(isRenderableChatMessage).map((msg) => (
           <MessageBubble key={msg.id} message={msg} />
         ))}
 

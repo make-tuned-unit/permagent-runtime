@@ -6,6 +6,8 @@ import { useBrowserContentBridge } from '../../hooks/useBrowserContentBridge';
 import { useBrowserActBridge } from '../../hooks/useBrowserActBridge';
 import {
   FiRefreshCw,
+  FiChevronLeft,
+  FiChevronRight,
   FiLock,
   FiAlertTriangle,
   FiShield,
@@ -13,6 +15,13 @@ import {
 } from 'react-icons/fi';
 import { BrowserTabs, type BrowserTab } from './BrowserTabs';
 import { BookmarksBar } from './BookmarksBar';
+import {
+  applyEvent,
+  bufferEvent,
+  extractTitle,
+  replayEvents,
+  type PendingEvent,
+} from './tabIdentity';
 import { CHAT_LAUNCHER_MARGIN } from '../chat/ChatLauncher';
 import { nextPaneTabId, usePaneTabCycling } from '../build/paneTabCycling';
 
@@ -127,13 +136,139 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
   // Stable handle to syncBounds for effects registered before its definition
   // (the pane_redock listener needs to snap bounds on arrival).
   const syncBoundsRef = useRef<(() => void) | null>(null);
+  // Events that arrived for a webview React does not know about yet.
+  // `create_browser_webview` starts loading the page before it returns, so the
+  // first `browser_page_load` can beat the `setTabs` that records the
+  // webviewId — and a handler that `map`s over tabs matches nothing, drops the
+  // update, and never sees it again because these events are not replayed.
+  // The tab then sits on "New Tab" forever, which also blinds the agent: it
+  // picks tabs by label (reported 2026-08-04). See tabIdentity.ts.
+  const pendingEventsRef = useRef<Map<string, PendingEvent[]>>(new Map());
+
+  /** Apply an event to the tab owning `webviewId`, or buffer it if no tab has
+   *  claimed that id yet. The single entry point for every identity update. */
+  const ingest = useCallback((webviewId: string, ev: PendingEvent) => {
+    setTabs((prev) => {
+      if (!prev.some((t) => t.webviewId === webviewId)) {
+        bufferEvent(pendingEventsRef.current, webviewId, ev);
+        return prev;
+      }
+      let changed = false;
+      const next = prev.map((t) => {
+        if (t.webviewId !== webviewId) return t;
+        const updated = applyEvent(t, ev);
+        if (updated !== t) changed = true;
+        return updated;
+      });
+      return changed ? next : prev;
+    });
+  }, []);
+
+  // Reap browser webviews the shell has forgotten (#548).
+  //
+  // BrowserSessions and the native children live for the PROCESS; this
+  // component's memory of their ids dies with the page. After a shell reload
+  // (or a dev hot-reload) every previously-open child keeps compositing above
+  // the DOM — native webviews always render over HTML — while nothing left
+  // running can address them. That is the "force-quit required" state.
+  //
+  // Mount-once, with whatever ids we still believe in. Right after a reload
+  // that is the empty list, so everything native is orphaned and gets closed.
+  const reapedRef = useRef(false);
+  useEffect(() => {
+    if (reapedRef.current) return;
+    reapedRef.current = true;
+    const inv = apiRef.current;
+    if (!inv) return;
+    const keep = tabsRef.current.map(t => t.webviewId).filter((id): id is string => !!id);
+    inv.invoke('reap_orphan_browsers', { keep })
+      .catch(() => { /* older shell without the command — nothing to reap */ });
+  }, []);
+
+  // Replay buffered events onto tabs that have since registered their
+  // webviewId. Runs after every tabs change, so whichever of the two orderings
+  // happened, the tab ends up correct — and in event order, so a title that
+  // followed a page load still wins.
+  useEffect(() => {
+    if (pendingEventsRef.current.size === 0) return;
+    let changed = false;
+    const next = tabs.map((t) => {
+      if (!t.webviewId) return t;
+      const held = pendingEventsRef.current.get(t.webviewId);
+      if (!held) return t;
+      pendingEventsRef.current.delete(t.webviewId);
+      const updated = replayEvents(t, held);
+      if (updated !== t) changed = true;
+      return updated;
+    });
+    if (changed) setTabs(next);
+  }, [tabs]);
 
   const activeTab = tabs.find((t) => t.id === activeTabId);
+
+  // ── The address bar mirrors the ACTIVE TAB'S URL. One source of truth ──
+  //
+  // It used to be independent state written from a dozen call sites, one of
+  // which was the raw navigation event — so the bar could disagree with the
+  // tab it belongs to and nothing would ever bring them back together. CBC
+  // showed tab `cbc.ca` and status bar `cbc.ca/` while the address bar read
+  // `google.com/recaptcha/api2/aframe` (reported 2026-08-04). Now the bar is
+  // derived; the ONLY thing that can hold it away from the tab's URL is the
+  // user actively typing in it.
+  // A half-typed URL survives the page navigating under it, but NOT a switch to
+  // a different tab — that is a different address, so the edit is abandoned.
+  // Centralising the reset here means every path that changes the active tab
+  // (select, cycle, close, new, pop-out, redock, an agent opening a link) gets
+  // it without having to remember to.
+  const urlDirtyRef = useRef(false);
+  const mirroredTabRef = useRef<string | null>(null);
+  useEffect(() => {
+    const nextId = activeTab?.id ?? null;
+    if (mirroredTabRef.current !== nextId) {
+      mirroredTabRef.current = nextId;
+      urlDirtyRef.current = false;
+    }
+    if (urlDirtyRef.current) return;
+    setUrlInput(activeTab?.url ?? '');
+  }, [activeTab?.url, activeTab?.id]);
+
+  // Back/forward availability, straight from WKWebView. The buttons were
+  // removed in the 2026-07 audit for being permanently disabled with no
+  // handler; they only come back with the REAL history stack behind them, so
+  // this is never inferred from a URL list — a redirect or a fragment change
+  // would desync that immediately.
+  const [navState, setNavState] = useState<{ canGoBack: boolean; canGoForward: boolean }>({
+    canGoBack: false,
+    canGoForward: false,
+  });
+
+  /** Re-read the webview's real main-frame URL. WebKit fires no navigation
+   *  callback for a same-document change (`pushState`, hash, SPA route), so a
+   *  signal that the page probably moved — a title change, or a tab rejoining
+   *  the event stream — pulls the truth instead. Not a poll: event-driven. */
+  const resyncUrl = useCallback((webviewId: string) => {
+    const inv = apiRef.current;
+    if (!inv) return;
+    inv.invoke('browser_nav_state', { webviewId })
+      .then((s) => {
+        const st = s as { url?: string; canGoBack?: boolean; canGoForward?: boolean };
+        if (st?.url) ingest(webviewId, { kind: 'url', url: st.url });
+        if (webviewId === tabsRef.current.find(t => t.id === activeTabIdRef.current)?.webviewId) {
+          setNavState({ canGoBack: !!st?.canGoBack, canGoForward: !!st?.canGoForward });
+        }
+      })
+      .catch(() => { /* webview gone — the tab close path handles it */ });
+  }, [ingest]);
 
   // Bridge: daemon MCP tool → Tauri webview content extraction → daemon fulfillment
   useBrowserContentBridge(activeTab?.webviewId ?? null);
   // Bridge: daemon MCP tool → Tauri webview snapshot/act (#649) → daemon fulfillment
-  useBrowserActBridge(activeTab?.webviewId ?? null);
+  // Owned webviews (all tabs), not just the active one: the act event fans out
+  // to every client, so ownership decides who performs it (#939).
+  useBrowserActBridge(
+    activeTab?.webviewId ?? null,
+    tabs.map((t) => t.webviewId),
+  );
 
   // Initialize Tauri API
   useEffect(() => {
@@ -142,13 +277,32 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
     });
   }, []);
 
-  // ── Persist state and hide webviews on unmount (workspace switch) ──
+  // ── Persist CONTINUOUSLY, not on unmount ──
+  //
+  // Persisting in the unmount cleanup looks right and is a race React always
+  // wins. Toggling the terminal changes the PanelGroup's `key` in BuildView,
+  // which remounts this component — and React runs the RENDER phase before the
+  // COMMIT phase. The incoming instance's `useState` initializer (which reads
+  // `persistedTabs`) therefore executes BEFORE the outgoing instance's cleanup
+  // writes it. The new Browser read stale-or-null state, called `createTab()`,
+  // and rendered an empty "New Tab" — while the old native webview, which is
+  // Rust-side and outlives React, kept compositing on top. That is the
+  // reported "browser lost the page": a fresh tab with an orphaned surface
+  // over it (screenshot 2026-08-04 — tab "New Tab", url bar empty,
+  // `about:blank` in the status bar, Google still painted).
+  //
+  // Writing on every change means the value is always current before any
+  // remount, whatever order React chooses.
+  useEffect(() => {
+    if (!detached) {
+      persistedTabs = tabs;
+      persistedActiveTabId = activeTabId;
+    }
+  }, [tabs, activeTabId, detached]);
+
+  // ── Park webviews offscreen on unmount (workspace switch) ──
   useEffect(() => {
     return () => {
-      if (!detached) {
-        persistedTabs = tabsRef.current;
-        persistedActiveTabId = activeTabIdRef.current;
-      }
       // Move all child webviews offscreen
       const inv = apiRef.current;
       tabsRef.current.forEach((t) => {
@@ -173,19 +327,35 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
       if (e.payload.kind !== 'browser') return;
       setTabs(prev => [...prev.filter(t => t.id !== e.payload.tab.id), e.payload.tab]);
       setActiveTabId(e.payload.tab.id);
-      setUrlInput(e.payload.tab.url);
+      // The tab travelled as a snapshot; it may have navigated since. Pull the
+      // webview's real URL now that it is back on this window's event stream.
+      if (e.payload.tab.webviewId) resyncUrl(e.payload.tab.webviewId);
       // Place the incoming webview NOW — it arrives parked offscreen (the pane
       // hid it before reparenting) and waiting up to 500ms for the pump left a
       // visible gap (or, before the hide, a flash over the terminal panel).
       requestAnimationFrame(() => syncBoundsRef.current?.());
     })).then(fn => { unlisten = fn; });
     return () => unlisten?.();
-  }, [detached]);
+  }, [detached, resyncUrl]);
 
   // ── Sync active webview position with the container div ──
   const syncBounds = useCallback(() => {
     const inv = apiRef.current;
     if (!containerRef.current || !inv) return;
+
+    // A transient DOM overlay is up (record-meeting picker, modals): the
+    // native webview always composites above DOM, so the only correct bounds
+    // are offscreen. This must live HERE, not only in the overlay effect —
+    // the 500 ms pump and the ResizeObserver both call syncBounds, and
+    // without this check they snapped the webview back over the overlay
+    // within a tick of the hide (reported live 2026-08-06).
+    if (useCommandCenter.getState().overlayBlockingBrowser > 0) {
+      tabsRef.current.forEach((t) => {
+        if (t.webviewId) inv.invoke('hide_browser', { webviewId: t.webviewId }).catch(() => {});
+      });
+      return;
+    }
+
     const rect = containerRef.current.getBoundingClientRect();
 
     const currentTabs = tabsRef.current;
@@ -256,8 +426,22 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
   useEffect(() => {
     if (!containerRef.current || !api) return;
 
-    // Restore any persisted webviews on mount
+    // Restore any persisted webviews on mount.
+    //
+    // Retried, not fired once. Toggling the terminal changes the PanelGroup's
+    // `key` in BuildView, which REMOUNTS this component — and the outgoing
+    // instance's cleanup fires `hide_browser` (a move to -10000,-10000) for
+    // every tab without awaiting it. Those invokes can land AFTER the incoming
+    // instance's `update_browser_bounds`, which parks the webview offscreen
+    // and reads to the user as "the browser lost the page" (reported
+    // 2026-08-04 on exactly this sequence). The page is fine; the surface is
+    // just parked.
+    //
+    // A few cheap re-syncs cover the ordering window regardless of which side
+    // wins the race. They are idempotent — syncBounds only ever sets position
+    // and size — so an unnecessary one costs nothing.
     syncBounds();
+    const settleTimers = [50, 150, 400].map(ms => setTimeout(syncBounds, ms));
 
     const observer = new ResizeObserver(() => syncBounds());
     observer.observe(containerRef.current);
@@ -289,6 +473,7 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
     window.addEventListener('resize', syncBounds);
 
     return () => {
+      settleTimers.forEach(clearTimeout);
       observer.disconnect();
       stopPump();
       document.removeEventListener('visibilitychange', onVisibility);
@@ -327,46 +512,35 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
 
     let unlisten: (() => void) | null = null;
 
-    api.listen('browser_navigated', (e) => {
-      const payload = e.payload as { webview_id: string; url: string };
-      // Activity: browser navigated
-      const navTab = tabsRef.current.find((t) => t.webviewId === payload.webview_id);
-      emitActivity(api, 'browser_navigated', {
-        url: payload.url,
-        title: extractTitle(payload.url),
-        referrer: navTab?.url || '',
-        tab_id: navTab?.id || payload.webview_id,
-      });
-      setTabs((prev) =>
-        prev.map((t) =>
-          t.webviewId === payload.webview_id
-            ? { ...t, url: payload.url, label: extractTitle(payload.url), loading: false }
-            : t,
-        ),
-      );
-      // Update URL bar if this is the active tab
-      setTabs((prev) => {
-        const active = prev.find((t) => t.id === activeTabIdRef.current);
-        if (active?.webviewId === payload.webview_id) {
-          setUrlInput(payload.url);
-        }
-        return prev;
-      });
+    // MAIN-FRAME page loads. Emitted from Rust's `on_page_load`, which wraps
+    // WebKit's didCommit/didFinish — main-frame-only callbacks carrying the
+    // webview's own URL. Its predecessor (`on_navigation`) fired for every
+    // frame, so an ad iframe could rename the tab and rewrite the address bar.
+    api.listen('browser_page_load', (e) => {
+      const payload = e.payload as { webview_id: string; url: string; loading: boolean };
+      if (payload.loading) {
+        const navTab = tabsRef.current.find((t) => t.webviewId === payload.webview_id);
+        emitActivity(api, 'browser_navigated', {
+          url: payload.url,
+          title: extractTitle(payload.url),
+          referrer: navTab?.url || '',
+          tab_id: navTab?.id || payload.webview_id,
+        });
+      }
+      ingest(payload.webview_id, { kind: 'load', url: payload.url, loading: payload.loading });
     }).then((fn) => {
       unlisten = fn;
     });
 
-    // Listen for page title changes from the native webview
+    // Listen for page title changes from the native webview.
     let unlistenTitle: (() => void) | null = null;
     api.listen('browser_title_changed', (e) => {
       const payload = e.payload as { webview_id: string; title: string };
-      setTabs((prev) =>
-        prev.map((t) =>
-          t.webviewId === payload.webview_id
-            ? { ...t, label: payload.title }
-            : t,
-        ),
-      );
+      ingest(payload.webview_id, { kind: 'title', title: payload.title });
+      // A title change with no page load behind it means a same-document
+      // navigation — an SPA route, `pushState`, a hash. WebKit has no callback
+      // for those, so this is the moment to pull the real URL.
+      resyncUrl(payload.webview_id);
     }).then((fn) => {
       unlistenTitle = fn;
     });
@@ -421,16 +595,7 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
       unlistenOAuth?.();
       unlistenOAuthComplete?.();
     };
-  }, [api]);
-
-  function extractTitle(url: string): string {
-    try {
-      const u = new URL(url);
-      return u.hostname.replace(/^www\./, '');
-    } catch {
-      return url.slice(0, 30);
-    }
-  }
+  }, [api, ingest, resyncUrl]);
 
   const handleOpenUrl = useCallback(
     async (url: string, label?: string) => {
@@ -460,7 +625,6 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
 
       setTabs((prev) => [...prev, tab]);
       setActiveTabId(tab.id);
-      setUrlInput(url);
     },
     [ownerWindowLabel],
   );
@@ -488,6 +652,9 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
       const tab = tabs.find((t) => t.id === activeTabId);
       if (!tab) return;
 
+      // The edit is committed — hand the address bar back to the active tab,
+      // and show the normalized form now rather than after the round trip.
+      urlDirtyRef.current = false;
       setUrlInput(normalized);
 
       if (tab.webviewId) {
@@ -546,7 +713,6 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
     const tab = createTab();
     setTabs((prev) => [...prev, tab]);
     setActiveTabId(tab.id);
-    setUrlInput('');
     setTimeout(() => urlInputRef.current?.focus(), 50);
   }, []);
 
@@ -567,14 +733,12 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
           if (next.length === 0) {
             const newTab = createTab();
             setActiveTabId(newTab.id);
-            setUrlInput('');
             return [newTab];
           }
           if (tabId === activeTabIdRef.current) {
             const idx = prevTabs.findIndex((t) => t.id === tabId);
             const nextActive = next[Math.min(idx, next.length - 1)];
             setActiveTabId(nextActive.id);
-            setUrlInput(nextActive.url);
           }
           return next;
         });
@@ -588,13 +752,9 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
   const handleSelectTab = useCallback(
     (tabId: string) => {
       setActiveTabId(tabId);
-      const tab = tabs.find((t) => t.id === tabId);
-      if (tab) {
-        setUrlInput(tab.url);
-      }
-      // syncBounds will fire from the activeTabId effect
+      // The address bar and syncBounds both follow from activeTabId.
     },
-    [tabs],
+    [],
   );
 
   const cycleTabs = useCallback((backwards = false) => {
@@ -604,11 +764,28 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
       backwards,
     );
     if (!nextId) return;
-    const nextTab = tabsRef.current.find(tab => tab.id === nextId);
     setActiveTabId(nextId);
-    setUrlInput(nextTab?.url ?? '');
   }, []);
   const selectPane = usePaneTabCycling('browser', rootRef, cycleTabs);
+
+  // Any page load or tab switch can change what history holds.
+  useEffect(() => {
+    const id = activeTab?.webviewId;
+    if (!id) { setNavState({ canGoBack: false, canGoForward: false }); return; }
+    resyncUrl(id);
+  }, [activeTab?.webviewId, activeTab?.url, activeTab?.loading, resyncUrl]);
+
+  const goHistory = useCallback((forward: boolean) => {
+    const id = tabsRef.current.find(t => t.id === activeTabIdRef.current)?.webviewId;
+    if (!id || !apiRef.current) return;
+    apiRef.current.invoke('browser_go', { webviewId: id, forward })
+      .then(() => {
+        // WKWebView commits asynchronously; the page_load event will correct
+        // the URL, this just stops the buttons lagging a beat behind.
+        setTimeout(() => resyncUrl(id), 120);
+      })
+      .catch(() => {});
+  }, [resyncUrl]);
 
   const handleReload = useCallback(() => {
     if (!activeTab?.webviewId || !apiRef.current) return;
@@ -633,6 +810,8 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
       handleNavigate(urlInput);
       urlInputRef.current?.blur();
     } else if (e.key === 'Escape') {
+      // Abandon the edit; the mirror effect puts the tab's URL back.
+      urlDirtyRef.current = false;
       setUrlInput(activeTab?.url || '');
       urlInputRef.current?.blur();
     }
@@ -699,9 +878,9 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
       }
       setTabs(prev => {
         const next = prev.filter(t => t.id !== tab.id);
-        if (next.length) { setActiveTabId(next[0].id); setUrlInput(next[0].url); return next; }
+        if (next.length) { setActiveTabId(next[0].id); return next; }
         const replacement = createTab();
-        setActiveTabId(replacement.id); setUrlInput('');
+        setActiveTabId(replacement.id);
         return [replacement];
       });
     } catch (err) { console.error('[browser] pop-out failed:', err); }
@@ -723,11 +902,31 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
 
       {/* URL bar */}
       <div className="flex items-center gap-2 px-3 py-2" style={{ backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}` }}>
-        {/* Nav buttons. Back/Forward removed (2026-07 wiring audit): they were
-            permanently disabled with no handler and tooltips promising Cmd+[ /
-            Cmd+] shortcuts that never existed — the webview layer keeps no
-            history stack yet. They return when real history lands. */}
+        {/* Back/Forward act on WKWebView's own history via `browser_go`, and
+            their enabled state comes from canGoBack/canGoForward rather than a
+            URL list we keep ourselves — that is the "real history" the 2026-07
+            audit was waiting for before restoring these. */}
         <div className="flex items-center gap-1">
+          <button
+            onClick={() => goHistory(false)}
+            className="p-1.5 rounded hover:bg-white/5 transition-colors disabled:opacity-30 disabled:hover:bg-transparent"
+            style={{ color: colors.textMuted }}
+            title="Back"
+            aria-label="Back"
+            disabled={!navState.canGoBack}
+          >
+            <FiChevronLeft size={16} />
+          </button>
+          <button
+            onClick={() => goHistory(true)}
+            className="p-1.5 rounded hover:bg-white/5 transition-colors disabled:opacity-30 disabled:hover:bg-transparent"
+            style={{ color: colors.textMuted }}
+            title="Forward"
+            aria-label="Forward"
+            disabled={!navState.canGoForward}
+          >
+            <FiChevronRight size={16} />
+          </button>
           <button
             onClick={handleReload}
             className="p-1.5 rounded hover:bg-white/5 transition-colors"
@@ -761,7 +960,7 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
             ref={urlInputRef}
             type="text"
             value={urlInput}
-            onChange={(e) => setUrlInput(e.target.value)}
+            onChange={(e) => { urlDirtyRef.current = true; setUrlInput(e.target.value); }}
             onKeyDown={handleUrlKeyDown}
             onFocus={(e) => e.target.select()}
             placeholder="Search or enter URL..."

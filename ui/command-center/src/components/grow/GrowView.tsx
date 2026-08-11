@@ -12,7 +12,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { font, radius } from '../../styles/tokens';
+import { ease, font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/tokens';
 import { apiFetch } from '../../lib/api';
@@ -26,6 +26,14 @@ import type { Project } from '../projects/types';
 // names it and inlines the top AI tells so the draft is humanized even before
 // the skill loads. Strategy prompts (audience/positioning/channels) deliberately
 // omit it — they produce internal analysis, not copy the user will publish.
+/** How long the panel takes to fade out before the project actually changes,
+ *  and to fade back in after. Long enough to read as a transition, short
+ *  enough that switching never feels like waiting. */
+const SWAP_FADE_MS = 140;
+/** How long the outgoing height stays pinned after the swap, so a panel that
+ *  is still fetching cannot collapse the scroll container under the cursor. */
+const SWAP_SETTLE_MS = 600;
+
 const HUMANIZE_VOICE =
   ' Write it the way a sharp person actually writes: lead with the point, stay specific and concrete, keep sentences short, and cut every AI tell (no em-dashes, no hype words like "seamless" or "leverage" or "unlock", no throat-clearing openers). Apply your "humanize" skill for the full voice spec before you hand it back.';
 
@@ -222,6 +230,8 @@ interface FirstPartyStats {
   topEvents: { name: string; count: number }[];
   topSources: { name: string; count: number }[];
   topCampaigns: { name: string; count: number }[];
+  /** Answer-engine visits (medium=aeo / answer_engine_visit). */
+  aeoVisits?: number;
   sessions: number;
   bounceRate: number | null;
   pagesPerSession: number | null;
@@ -247,6 +257,21 @@ export function GrowView() {
   const [ctx, setCtx] = useState<{ people: number; goals: number } | null>(null);
   const [focusLens, setFocusLens] = useState<GrowLens | null>(null);
   const postsRequestGeneration = useRef(0);
+  // Project switching. Every panel refetches at once, so a bare `setActiveId`
+  // is a hard cut: the whole column drops to its loading states in one frame
+  // and springs back when the slowest request lands. Fading out BEFORE the
+  // switch — which we can do because we own the trigger — means the swap and
+  // the loading states happen while nothing is visible, and the new project
+  // arrives as one smooth rise instead of a flash.
+  const [swapping, setSwapping] = useState(false);
+  // What the user has chosen but the panel has not caught up to yet. The
+  // dropdown is bound to this, not to `activeId` — a control that springs back
+  // to the old value for the length of the fade reads as the app arguing with
+  // the click, which is worse than the flash we came here to remove.
+  const [pendingId, setPendingId] = useState<string | null>(null);
+  const [pinnedHeight, setPinnedHeight] = useState<number | undefined>(undefined);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const swapTimer = useRef<ReturnType<typeof setTimeout>>();
   const setActivePanel = useCommandCenter((st) => st.setActivePanel);
   const sendMessage = useCommandCenter((st) => st.sendMessage);
   const openChatDock = useCommandCenter((st) => st.openChatDock);
@@ -309,6 +334,28 @@ export function GrowView() {
 
   const active = projects.find((p) => p.id === activeId) ?? null;
 
+  /** Every project change goes through here — the dropdown and the cross-tab
+   *  deep link alike, so one of them can never feel different from the other. */
+  const switchProject = useCallback((id: string) => {
+    if (!id || id === activeId) return;
+    clearTimeout(swapTimer.current);
+    if (reduceMotion) { setActiveId(id); return; }
+    // Hold the height we are leaving so the scroll container cannot lurch
+    // while the new panel is still empty.
+    setPinnedHeight(panelRef.current?.offsetHeight);
+    setPendingId(id);
+    setSwapping(true);
+    swapTimer.current = setTimeout(() => {
+      setActiveId(id);
+      setPendingId(null);
+      setSwapping(false);
+      // Release the pin once the new content has had time to lay out.
+      swapTimer.current = setTimeout(() => setPinnedHeight(undefined), SWAP_SETTLE_MS);
+    }, SWAP_FADE_MS);
+  }, [activeId, reduceMotion]);
+
+  useEffect(() => () => clearTimeout(swapTimer.current), []);
+
   // Honor a cross-tab deep link (Projects → Grow this project), then CLEAR it
   // (the pendingProjectNavigation consume-then-clear pattern). Without the
   // clear, one agent-driven grow open stuck in the store forever: every later
@@ -316,10 +363,10 @@ export function GrowView() {
   // open for the same project was a silent no-op (same value → no re-render).
   useEffect(() => {
     if (openGrowForProject) {
-      setActiveId(openGrowForProject);
+      switchProject(openGrowForProject);
       setOpenGrowForProject(null);
     }
-  }, [openGrowForProject, setOpenGrowForProject]);
+  }, [openGrowForProject, setOpenGrowForProject, switchProject]);
 
   // Real project context — Grow feels connected because it shows the project's
   // actual state (people, shipped work), not a blank canvas.
@@ -395,9 +442,15 @@ export function GrowView() {
                   }}
                 >open project ↗</button>
               )}
-              {ctx && (
-                <span style={{ color: colors.textDim }}>{ctx.goals} {ctx.goals === 1 ? 'goal' : 'goals'} · {ctx.people} {ctx.people === 1 ? 'person' : 'people'}</span>
-              )}
+              {/* Always rendered so the count fades in rather than popping the
+                  header line around on every project change. */}
+              <span style={{
+                color: colors.textDim,
+                opacity: ctx ? 1 : 0,
+                transition: reduceMotion ? undefined : `opacity 220ms ${ease.out}`,
+              }}>
+                {ctx && `${ctx.goals} ${ctx.goals === 1 ? 'goal' : 'goals'} · ${ctx.people} ${ctx.people === 1 ? 'person' : 'people'}`}
+              </span>
             </span>
           }
           actions={<>
@@ -429,8 +482,8 @@ export function GrowView() {
           })}
         </div>
         <select
-          value={activeId ?? ''}
-          onChange={(e) => setActiveId(e.target.value)}
+          value={pendingId ?? activeId ?? ''}
+          onChange={(e) => switchProject(e.target.value)}
           aria-label="Select project"
           style={{
             background: colors.bgDeeper, color: colors.text, border: `1px solid ${colors.border}`,
@@ -453,9 +506,17 @@ export function GrowView() {
         <LoadingState colors={colors} label="Loading projects…" />
       ) : active ? (
         <div
+          ref={panelRef}
           role="tabpanel"
           aria-label={`${lens} view`}
-          style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 20 }}
+          aria-busy={swapping}
+          style={{
+            flex: 1, overflowY: 'auto', padding: '20px 24px',
+            display: 'flex', flexDirection: 'column', gap: 20,
+            minHeight: pinnedHeight,
+            opacity: swapping ? 0 : 1,
+            transition: reduceMotion ? undefined : `opacity ${SWAP_FADE_MS}ms ${ease.out}`,
+          }}
         >
           {lens === 'actions' && <GrowActions project={active} colors={colors} />}
           {lens === 'analytics' && <GrowAnalytics project={active} posts={posts} colors={colors} />}
@@ -706,6 +767,34 @@ function PillarCard({
 }
 
 // ── Shared async-state blocks ────────────────────────────────────────────────
+
+/**
+ * Placeholder cards that occupy roughly the space the real ones will.
+ *
+ * A one-line "Loading…" where a stack of cards is about to appear collapses
+ * the column and then springs it back open — the jolt reads as a flash even
+ * when the fetch is fast. Holding the shape costs nothing and the arrival
+ * becomes a fill rather than a jump.
+ */
+function SkeletonCards({ colors, count = 2, height = 76 }: { colors: ThemeColors; count?: number; height?: number }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }} aria-hidden>
+      <style>{'@keyframes pa-skeleton { 0%,100% { opacity: 0.5; } 50% { opacity: 0.85; } }'}</style>
+      {Array.from({ length: count }, (_, i) => (
+        <div
+          key={i}
+          className="pa-skeleton"
+          style={{
+            height, borderRadius: radius.lg,
+            background: colors.bgDeeper, border: `1px solid ${colors.border}`,
+            animation: `pa-skeleton 1.6s ${ease.out} ${i * 0.12}s infinite`,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
 function LoadingState({ colors, label, inline }: { colors: ThemeColors; label: string; inline?: boolean }) {
   const body = (
     <div style={{ fontSize: 12, color: colors.textDim }}>{label}</div>
@@ -900,9 +989,7 @@ function GrowActions({ project, colors }: { project: Project; colors: ThemeColor
           >{generating ? 'Reviewing…' : hasActions ? 'Review again' : 'Review my analytics'}</button>
         </div>
 
-        {actionsState === 'loading' && (
-          <div style={{ fontSize: 12, color: colors.textDim }}>Loading…</div>
-        )}
+        {actionsState === 'loading' && <SkeletonCards colors={colors} count={2} height={92} />}
         {actionsState === 'error' && (
           <div style={{ fontSize: 12, color: colors.danger }}>Couldn&rsquo;t load actions.</div>
         )}
@@ -1172,8 +1259,17 @@ function GrowAnalytics({
         it lives in <strong style={{ color: colors.text }}>Actions</strong>.
       </div>
 
-      {/* Self-hosted analytics (#23) — the daemon is the collector. */}
+      {/* Self-hosted analytics (#23) — the daemon is the collector.
+          KEYED ON THE PROJECT. `loadSetup` refetches on a projectId change and
+          guards stale responses with a generation counter, but the panel's
+          other state does not reset — so after verifying Evntally and switching
+          to GetLadle, the previous project's PASS was still on screen, telling
+          the user analytics was installed here when it was not (reported
+          2026-08-04). In a surface where every failure is silent, a false
+          "verified" is the worst thing this panel can say. Keying remounts it,
+          which clears the whole class rather than the one field that leaked. */}
       <FirstPartyAnalyticsPanel
+        key={project.id}
         colors={colors}
         projectId={project.id}
         stats={fpStats}
@@ -1194,6 +1290,7 @@ function GrowAnalytics({
         </button>
       ) : (
         <AnalyticsConnectionPanel
+          key={project.id}
           colors={colors}
           projectId={project.id}
           conn={conn}
@@ -1608,6 +1705,12 @@ function FirstPartyAnalyticsPanel({
               <> · {stats.botsExcluded.toLocaleString()} bot hits excluded</>
             )}
           </div>
+          {(stats.aeoVisits ?? 0) > 0 && (
+            <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 8 }}>
+              <span style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, letterSpacing: '0.08em', textTransform: 'uppercase' }}>AEO</span>
+              {' '}{(stats.aeoVisits ?? 0).toLocaleString()} answer-engine visit{(stats.aeoVisits === 1) ? '' : 's'}
+            </div>
+          )}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
             {([
               ['Top pages', stats.topPages],
@@ -1978,7 +2081,7 @@ function GrowthInboxSection({
       {state === 'error' ? (
         <ErrorState colors={colors} inline message="Couldn't load your growth moves." onRetry={onRetry} />
       ) : state === 'loading' ? (
-        <LoadingState colors={colors} inline label="Ranking your growth moves…" />
+        <SkeletonCards colors={colors} count={3} height={68} />
       ) : !inbox ? null : empty ? (
         <div style={{
           border: `1px dashed ${colors.border}`, borderRadius: radius.lg, padding: 28,

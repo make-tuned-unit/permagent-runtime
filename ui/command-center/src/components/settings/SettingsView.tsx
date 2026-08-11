@@ -16,36 +16,22 @@ import { usePersona } from './useSettings';
 import { resolveSettingsSection } from './sections';
 import { trustEnvOverrideNotice } from './autonomy';
 import { VoicePicker } from '../voice/VoicePicker';
-import { H1, Section, Row, TextInput, Chip, Toggle, Slider, Kbd, SaveButton } from './atoms';
+import { H1, Section, Row, TextInput, Chip, Toggle, Slider, Kbd, SaveButton, StatRow } from './atoms';
+import { makeQrMatrix } from '../../lib/qrMatrix';
+import { SessionsList } from '../sessions/SessionsList';
+import { InboxPanel } from '../inbox/InboxPanel';
+import { ExecutionTrace } from '../trace/ExecutionTrace';
+import { SpendPanel } from './SpendPanel';
+import { timeAgo } from './format';
+import { useDecisions } from '../dashboard/decisions/useDecisions';
+import { DecisionInbox } from '../dashboard/decisions/DecisionInbox';
+import { formatAge } from '../dashboard/decisions/format';
+import { getOpenOnLaunch, setOpenOnLaunch, OPEN_ON_LAUNCH_OPTIONS, type OpenOnLaunch } from '../../lib/openOnLaunch';
+import type { WorkerInfo } from '../../lib/api';
 
-function PreviewBadge() {
-  const { colors } = useThemeHook();
-  return (
-    <span style={{
-      fontSize: 10, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase',
-      padding: '3px 8px', borderRadius: 999, marginLeft: 10,
-      background: colors.purpleSoft, color: colors.purpleBright,
-      border: `1px solid ${colors.purple}40`,
-    }}>preview</span>
-  );
-}
-
-/** The 2026-07-10 settings audit rule: a control that does nothing must SAY
- *  so. Preview sections render this banner and their controls disabled until
- *  each is wired end to end. */
-function PreviewNotice() {
-  const { colors } = useThemeHook();
-  return (
-    <div style={{
-      padding: '10px 14px', borderRadius: 10, margin: '4px 0 18px',
-      background: colors.purpleSoft, border: `1px solid ${colors.purple}40`,
-      color: colors.textMuted, fontSize: 12, lineHeight: 1.5,
-    }}>
-      This section is a design preview — these controls aren't wired up yet and
-      changing them has no effect. They'll activate as each lands.
-    </div>
-  );
-}
+// The PreviewBadge/PreviewNotice machinery (2026-07-10 audit) is gone: every
+// preview-only control has been either wired to real state or removed
+// (2026-08 finish-the-settings ruling). Controls that exist here do things.
 
 // ── Shared button styles (theme-aware via colors param) ─────────────
 type C = ReturnType<typeof useThemeHook>['colors'];
@@ -68,13 +54,21 @@ const selectStyle = (colors: C): React.CSSProperties => ({
 
 const CATEGORIES = [
   { group: 'You', items: [
-    { key: 'profile',     label: 'Profile',          icon: 'M12 12a4 4 0 100-8 4 4 0 000 8zM4 21a8 8 0 0116 0' },
     { key: 'preferences', label: 'Preferences',      icon: 'M3 6h18M6 12h12M10 18h4' },
   ]},
   { group: 'Agent', items: [
     { key: 'agent',       label: 'Persona',          icon: 'M12 2a4 4 0 014 4v3a4 4 0 11-8 0V6a4 4 0 014-4zM4 21v-2a6 6 0 016-6h4a6 6 0 016 6v2' },
     { key: 'memory',      label: 'Memory',           icon: 'M9 4a4 4 0 00-4 4 3 3 0 00-1 5.5A3 3 0 005 18a4 4 0 004 3M15 4a4 4 0 014 4 3 3 0 011 5.5A3 3 0 0119 18a4 4 0 01-4 3' },
     { key: 'autonomy',    label: 'Autonomy & guardrails', icon: 'M12 2l9 4v6c0 5-4 9-9 10-5-1-9-5-9-10V6l9-4z' },
+  ]},
+  // The former Console overlay (Sessions / Inbox / Trace / Governance) folded
+  // into Settings — 2026-08 ruling. Governance's panels merged into Spend,
+  // Sovereignty, Models, and Autonomy.
+  { group: 'Console', items: [
+    { key: 'sessions',    label: 'Sessions',         icon: 'M3 12a9 9 0 109-9 9.75 9.75 0 00-6.74 2.74L3 8M3 3v5h5M12 7v5l4 2' },
+    { key: 'inbox',       label: 'Inbox',            icon: 'M22 12h-6l-2 3h-4l-2-3H2M5.45 5.11L2 12v6a2 2 0 002 2h16a2 2 0 002-2v-6l-3.45-6.89A2 2 0 0016.76 4H7.24a2 2 0 00-1.79 1.11z' },
+    { key: 'activity',    label: 'Activity',         icon: 'M22 12h-4l-3 9L9 3l-3 9H2' },
+    { key: 'spend',       label: 'Spend',            icon: 'M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6' },
   ]},
   { group: 'Connections', items: [
     { key: 'tools',       label: 'Tools & MCPs',     icon: 'M14.7 6.3a1 1 0 011.4 0l1.6 1.6a1 1 0 010 1.4l-9 9-3 .6.6-3 9-9.6zM3 21h18' },
@@ -195,46 +189,34 @@ function PersonaPanel() {
   );
 }
 
-export function ProfilePanel() {
-  const { colors } = useThemeHook();
-  return (
-    <div>
-      <H1 sub="Your account — visible to your agent and to anyone you share a workspace with."><>Profile<PreviewBadge /></></H1>
-      <PreviewNotice />
-      <Section title="Account">
-        <Row label="Display name"><TextInput value="Jesse Sharratt" disabled /></Row>
-        <Row label="Email" hint="Used for sign-in and notifications."><TextInput value="" placeholder="email@example.com" disabled /></Row>
-        <Row label="Workspace">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div style={{ width: 28, height: 28, borderRadius: 6, background: `linear-gradient(135deg, ${colors.purple}, ${colors.cyan})` }} />
-            <TextInput value="Personal" disabled />
-          </div>
-        </Row>
-      </Section>
-    </div>
-  );
-}
+// The Profile panel (hardcoded name/email/workspace mockup) was removed in the
+// 2026-08 finish-the-settings ruling: nothing read any of it and no account
+// subsystem exists. It returns when there is a real account to show.
 
 export function PreferencesPanel() {
   const { colors } = useThemeHook();
-  const prefs = [false, true, true, true];
+  // "Open on launch" is LIVE: persisted locally and consumed once by App.tsx
+  // after workspaces load. The old preview list ("agent should…" toggles) was
+  // removed — two duplicated GOOSE_MODE semantics, two had no backing key.
+  const [launch, setLaunch] = useState<OpenOnLaunch>(() => getOpenOnLaunch());
   return (
     <div>
-      <H1 sub="Defaults that follow you across sessions. Changes saved locally."><>Preferences<PreviewBadge /></></H1>
-      <PreviewNotice />
+      <H1 sub="Defaults that follow you across sessions. Changes saved locally.">Preferences</H1>
       <Section title="Defaults">
-        <Row label="Open on launch" hint="Where Permagent lands when you open the app.">
-          <select style={selectStyle(colors)} disabled><option>Mission control</option><option>Last open task</option><option>Build</option><option>Brain</option></select>
-        </Row>
-        <Row label="When you ask, agent should…">
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {['Always confirm before running tools that change state', 'Show me the plan before starting', "Stream replies as they're generated", 'Read recent memory at start of every session'].map((l, i) => (
-              <div key={l} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <Toggle on={prefs[i]} disabled />
-                <span style={{ fontSize: 13 }}>{l}</span>
-              </div>
+        <Row label="Open on launch" hint="Where Permagent lands when you open the app. Applied on the next launch.">
+          <select
+            style={selectStyle(colors)}
+            value={launch}
+            onChange={e => {
+              const v = e.target.value as OpenOnLaunch;
+              setOpenOnLaunch(v);
+              setLaunch(v);
+            }}
+          >
+            {OPEN_ON_LAUNCH_OPTIONS.map(o => (
+              <option key={o.value} value={o.value}>{o.label}</option>
             ))}
-          </div>
+          </select>
         </Row>
       </Section>
       <NotificationSettings />
@@ -267,34 +249,27 @@ function NotificationSettings() {
   );
 }
 
-export function MemoryPanel() {
+export function MemoryPanel({ goto }: { goto?: (key: string) => void }) {
   const { colors } = useThemeHook();
-  const maxMem = 1200;
-  const forget = 45;
-  const rememberFlags = [true, true, true, true, false];
-  const rememberItems = ['Names of people I\'ve introduced', 'Project goals and deadlines', 'Code style preferences from feedback', 'Things I dismissed or pushed back on', 'Sensitive context (medical, financial)'];
+  // The preview "memory budget" sliders and "what to remember" toggles were
+  // removed (2026-08 finish-the-settings ruling): no backing subsystem reads
+  // them. What remains is real: the Brain view, and the Librarian's nightly
+  // pruning setting (in Models), which is the live retention control.
   return (
     <div>
-      <H1 sub="What your agent remembers about you, your projects, and the people in your world."><>Memory<PreviewBadge /></></H1>
-      <PreviewNotice />
-      <Section title="Memory budget" sub="When the brain gets too full, the agent will compress or forget the lowest-signal items first.">
-        <Row label="Max memory" hint="Soft cap. The agent prefers to keep things small."><Slider value={maxMem} min={200} max={5000} suffix=" nodes" disabled /></Row>
-        <Row label="Forget threshold" hint="Items not touched in this many days become candidates for compression."><Slider value={forget} min={7} max={365} suffix="d" disabled /></Row>
-      </Section>
-      <Section title="What to remember">
-        {rememberItems.map((l, i) => (
-          <div key={l} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '10px 0', borderTop: `1px solid ${colors.border}` }}>
-            <Toggle on={rememberFlags[i]} disabled />
-            <span style={{ fontSize: 13, flex: 1 }}>{l}</span>
-          </div>
-        ))}
-      </Section>
+      <H1 sub="What your agent remembers about you, your projects, and the people in your world.">Memory</H1>
       <Section title="Manage">
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button style={ghost(colors)} onClick={() => navigateToTool('memory')}>Open Brain view</button>
+          <button style={ghost(colors)} onClick={() => goto?.('models')}>Nightly pruning (Librarian schedule) →</button>
           {/* Export/Forget removed (2026-07-10 audit): a destructive-styled
               button with no handler is worse than no button. They return
               with real endpoints behind them. */}
+        </div>
+        <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 12, lineHeight: 1.5 }}>
+          Browse and audit everything remembered in the Brain view. Retirement
+          of stale, low-signal memories is handled by the Librarian's nightly
+          pruning — configure it under Models.
         </div>
       </Section>
     </div>
@@ -309,7 +284,41 @@ export function MemoryPanel() {
 // a user is already there (e.g. via env or old YAML), so they can switch back.
 const SELECTABLE_TRUST_MODES = new Set(['auto', 'chat']);
 
-export function AutonomyPanel() {
+/** Compact pending-approvals strip (Settings → Autonomy). Reuses the shared
+ *  Decision-Inbox data hook + overlay — never forks that surface. Replaces the
+ *  old Governance → Approvals panel; its "posture" card is gone because
+ *  Autonomy IS the writer of that mode. */
+export function ApprovalsStrip() {
+  const { colors } = useThemeHook();
+  const inbox = useDecisions();
+  const { data } = inbox;
+  const [open, setOpen] = useState(false);
+  const pending = data?.total_pending ?? 0;
+  const oldest = data?.oldest_pending_at ?? null;
+  return (
+    <>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+        padding: '9px 12px', marginBottom: 12, borderRadius: 8,
+        background: colors.bgDeeper, border: `1px solid ${colors.border}`,
+      }}>
+        <span style={{ fontSize: 12, color: pending > 0 ? colors.text : colors.textMuted }}>
+          {data === null
+            ? 'Checking the Decision Inbox…'
+            : `Pending approvals: ${pending}`}
+          {data !== null && pending > 0 && oldest && (
+            <span style={{ color: colors.textDim }}> · oldest {formatAge(oldest)}</span>
+          )}
+        </span>
+        <div style={{ flex: 1 }} />
+        <button style={ghost(colors)} onClick={() => setOpen(true)}>Open Decision Inbox →</button>
+      </div>
+      {open && <DecisionInbox inbox={inbox} onClose={() => setOpen(false)} />}
+    </>
+  );
+}
+
+export function AutonomyPanel({ goto }: { goto?: (key: string) => void }) {
   const { colors } = useThemeHook();
   // Trust level is REAL (2026-07-10 audit): it reads/writes the daemon's
   // GOOSE_MODE, which gates tool-call approval in the agent loop.
@@ -346,43 +355,20 @@ export function AutonomyPanel() {
       setTrustError(`Couldn't save trust level: ${err instanceof Error ? err.message : String(err)}`);
     });
   };
-  const confirms = [true, true, true, true, false];
-  const [perSession, setPerSession] = useState<number | null>(null);
-  const [perTask, setPerTask] = useState<number | null>(null);
-  const [budgetError, setBudgetError] = useState<string | null>(null);
-  useEffect(() => {
-    api.getBudget().then(budget => {
-      setPerSession(budget.session.hard);
-      setPerTask(budget.task.hard);
-      setBudgetError(null);
-    }).catch(() => setBudgetError('Could not load spend caps.'));
-  }, []);
-  const saveCap = (scope: 'session' | 'task', value: number) => {
-    const previous = scope === 'session' ? perSession : perTask;
-    if (scope === 'session') setPerSession(value); else setPerTask(value);
-    setBudgetError(null);
-    api.setBudget({ [scope]: { hard: value } }).then(budget => {
-      setPerSession(budget.session.hard);
-      setPerTask(budget.task.hard);
-    }).catch(() => {
-      if (scope === 'session') setPerSession(previous); else setPerTask(previous);
-      setBudgetError('Could not save spend cap.');
-    });
-  };
   const trustLevels = [
     { v: 'auto', l: 'Automatic', d: 'Run tool calls without asking (default)' },
     { v: 'chat', l: 'Chat only', d: 'No tool calls at all' },
     { v: 'approve', l: 'Ask every time', d: 'Confirm before every tool call' },
     { v: 'smart_approve', l: 'Smart approve', d: 'Confirm only sensitive calls' },
   ];
-  const confirmItems = ['Sending email or messages', 'Spending money', 'Deleting files or records', 'Pushing to main / production', 'Reading sensitive memory'];
   return (
     <div>
-      <H1 sub="How much your agent can do without checking in. Higher autonomy = faster, but more rope."><>Autonomy &amp; guardrails<PreviewBadge /></></H1>
+      <H1 sub="How much your agent can do without checking in. Higher autonomy = faster, but more rope.">Autonomy &amp; guardrails</H1>
       <Section title="Default autonomy" sub="Live — this writes the daemon's tool-approval mode (GOOSE_MODE) and applies to new turns.">
         {trustError && (
           <div style={{ fontSize: 12, color: colors.danger, padding: '4px 0 8px' }}>{trustError}</div>
         )}
+        <ApprovalsStrip />
         {(() => {
           // Env-override honesty (re-enable-gate epic part B): with GOOSE_MODE
           // set in the daemon's environment, these buttons write YAML the env
@@ -438,40 +424,51 @@ export function AutonomyPanel() {
           </div>
         )}
       </Section>
-      <Section title="Always confirm before…">
-        <PreviewNotice />
-        {confirmItems.map((l, i) => (
-          <div key={l} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '10px 0', borderTop: `1px solid ${colors.border}` }}>
-            <Toggle on={confirms[i]} disabled />
-            <span style={{ fontSize: 13, flex: 1 }}>{l}</span>
-          </div>
-        ))}
-      </Section>
-      <Section title="Spend cap" sub="Live hard ceilings enforced by the cost router. The agent stops before exceeding them.">
-        {budgetError && <div style={{ fontSize: 12, color: colors.danger, paddingBottom: 8 }}>{budgetError}</div>}
-        {perSession === null || perTask === null ? (
-          <div style={{ color: colors.textDim, fontSize: 13 }}>Loading spend caps…</div>
-        ) : (
-          <>
-            <Row label="Per session"><Slider value={perSession} onChange={v => saveCap('session', v)} min={0} max={50} suffix=" USD" /></Row>
-            <Row label="Per task"><Slider value={perTask} onChange={v => saveCap('task', v)} min={0} max={200} suffix=" USD" /></Row>
-          </>
-        )}
+      {/* Spend caps moved to Settings → Spend (which supersedes the old
+          sliders here with the full soft/gate/hard ceilings for both scopes),
+          so there is exactly one writer of the budget. */}
+      <Section title="Spend caps" sub="The session and per-task ceilings the cost router enforces now live on the Spend page, alongside everything you have spent.">
+        <button style={ghost(colors)} onClick={() => goto?.('spend')}>Set spend caps in Spend →</button>
       </Section>
     </div>
   );
 }
 
-function ToolsPanel() {
+export interface ToolExtension {
+  enabled: boolean;
+  type: string;
+  name: string;
+  description?: string;
+  display_name?: string | null;
+  bundled?: boolean | null;
+  available_tools?: string[];
+  env_keys?: string[];
+}
+
+/** What to show as an extension's title. `display_name` is absent on stdio
+ *  servers, so the identifying `name` is the fallback — never a blank tile. */
+export function extensionLabel(ext: ToolExtension): string {
+  const label = (ext.display_name ?? '').trim();
+  return label || ext.name || 'Unnamed extension';
+}
+
+function ToolsPanel({ goto }: PanelProps) {
   const { colors } = useThemeHook();
-  const [extensions, setExtensions] = useState<Array<{ enabled: boolean; type: string; name: string; description: string; display_name: string; bundled: boolean; available_tools: string[] }>>([]);
+  const [extensions, setExtensions] = useState<ToolExtension[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api.getExtensions().then(r => { setExtensions(r.extensions); setLoading(false); }).catch(() => setLoading(false));
+    api.getExtensions()
+      // Never hand a non-array to the render path: `.filter` on undefined is
+      // the same class of crash this panel just had.
+      .then(r => { setExtensions(Array.isArray(r?.extensions) ? r.extensions : []); setLoading(false); })
+      .catch(() => setLoading(false));
   }, []);
 
   const enabledCount = extensions.filter(e => e.enabled).length;
+  // stdio servers that declare required env vars are the ones with API keys —
+  // the panel points at where those are actually managed.
+  const needKeys = extensions.filter(e => (e.env_keys?.length ?? 0) > 0);
 
   return (
     <div>
@@ -480,18 +477,38 @@ function ToolsPanel() {
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: 12, color: colors.textMuted }}>{enabledCount} of {extensions.length} enabled</span>
       </div>
+      {needKeys.length > 0 && (
+        // API keys are managed in Search & tools, not here. Without this the
+        // only way to find that out is to guess — which is how someone ends up
+        // on this tab looking for their Brave key.
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+          padding: '9px 12px', marginBottom: 14, borderRadius: 8,
+          background: colors.bgDeeper, border: `1px solid ${colors.border}`,
+        }}>
+          <span style={{ fontSize: 12, color: colors.textMuted }}>
+            {needKeys.map(extensionLabel).join(' and ')} need API keys.
+          </span>
+          <button style={ghost(colors)} onClick={() => goto('search')}>
+            Manage keys in Search &amp; tools
+          </button>
+        </div>
+      )}
       {loading ? (
         <div style={{ color: colors.textDim, fontSize: 13 }}>Loading extensions...</div>
       ) : extensions.length === 0 ? (
         <Section title="No extensions"><div style={{ color: colors.textMuted, fontSize: 13 }}>No MCP tools or extensions configured.</div></Section>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
-          {extensions.map(ext => (
-            <div key={ext.name} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: 14, borderRadius: 10, background: colors.bgDeeper, border: `1px solid ${colors.border}` }}>
-              <div style={{ width: 32, height: 32, borderRadius: 8, background: ext.enabled ? colors.cyanSoft : colors.surfaceHi, border: `1px solid ${ext.enabled ? colors.borderHi : colors.border}`, display: 'grid', placeItems: 'center', fontFamily: font.display, fontSize: 13, fontWeight: 700, color: ext.enabled ? colors.cyan : colors.textMuted }}>{ext.display_name[0]?.toUpperCase()}</div>
+          {extensions.map((ext, i) => (
+            <div key={ext.name || `ext-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: 14, borderRadius: 10, background: colors.bgDeeper, border: `1px solid ${colors.border}` }}>
+              <div style={{ width: 32, height: 32, borderRadius: 8, background: ext.enabled ? colors.cyanSoft : colors.surfaceHi, border: `1px solid ${ext.enabled ? colors.borderHi : colors.border}`, display: 'grid', placeItems: 'center', fontFamily: font.display, fontSize: 13, fontWeight: 700, color: ext.enabled ? colors.cyan : colors.textMuted, flexShrink: 0 }}>{extensionLabel(ext).charAt(0).toUpperCase() || '?'}</div>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13, fontWeight: 600 }}>{ext.display_name}</div>
-                <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ext.type}{ext.bundled ? ' · bundled' : ''} · {ext.available_tools.length} tools</div>
+                <div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{extensionLabel(ext)}</div>
+                <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {ext.type}{ext.bundled ? ' · bundled' : ''} · {ext.available_tools?.length ?? 0} tools
+                  {(ext.env_keys?.length ?? 0) > 0 && ` · needs ${ext.env_keys!.join(', ')}`}
+                </div>
               </div>
               <div style={{ width: 8, height: 8, borderRadius: '50%', background: ext.enabled ? colors.success : colors.textDim, flexShrink: 0 }} />
             </div>
@@ -552,6 +569,73 @@ function ModelsPanel({ goto }: PanelProps) {
   const [runningNow, setRunningNow] = useState(false);
   const [libError, setLibError] = useState<string | null>(null);
 
+  // Primary-model readout + worker roster (merged from the retired Governance
+  // → Models panel; GET /api/agent/workers is its unique surface). Read-only:
+  // the model/provider switch itself lives in the provider modal on API keys.
+  const [primary, setPrimary] = useState<{ model: string | null; provider: string | null; mode: string | null } | null>(null);
+  const [workers, setWorkers] = useState<WorkerInfo[] | null>(null);
+  useEffect(() => {
+    let active = true;
+    api.getConfig().then(cfg => {
+      if (!active) return;
+      const map = ((cfg as Record<string, unknown>)['config'] ?? cfg) as Record<string, unknown>;
+      setPrimary({
+        model: (map['GOOSE_MODEL'] as string) ?? null,
+        provider: (map['GOOSE_PROVIDER'] as string) ?? null,
+        mode: ((cfg as Record<string, unknown>)['effective_goose_mode'] as string) ?? null,
+      });
+    }).catch(() => {});
+    api.getWorkers()
+      .then(ws => { if (active) setWorkers(Object.values(ws)); })
+      .catch(() => { if (active) setWorkers([]); });
+    return () => { active = false; };
+  }, []);
+
+  // Strix — the security sweep loop (crate::strix). The daemon re-reads
+  // `strix_enabled` every tick, so a flip here takes effect at the next tick
+  // without a restart.
+  const [strix, setStrix] = useState<boolean | null>(null);
+  const [strixError, setStrixError] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    api.readConfig('strix_enabled')
+      .then(r => { if (active) setStrix(r === true); })
+      .catch(() => { if (active) setStrix(false); });
+    return () => { active = false; };
+  }, []);
+  const saveStrix = (v: boolean) => {
+    const prev = strix;
+    setStrix(v);
+    setStrixError(null);
+    api.upsertConfig('strix_enabled', v).catch(err => {
+      setStrix(prev);
+      setStrixError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  };
+  // Sweep cadence (strix_sweep_hours) — each sweep is a real agentic scan of
+  // every active project on the user's API credits, so the cadence is theirs
+  // to set. Daemon default is daily; changes apply within ~15 minutes.
+  const [strixHours, setStrixHours] = useState<number>(24);
+  useEffect(() => {
+    let active = true;
+    api.readConfig('strix_sweep_hours')
+      .then(r => {
+        const v = Number(r);
+        if (active && Number.isFinite(v) && v > 0) setStrixHours(v);
+      })
+      .catch(() => { /* unset — daemon default (24h) applies */ });
+    return () => { active = false; };
+  }, []);
+  const saveStrixHours = (v: number) => {
+    const prev = strixHours;
+    setStrixHours(v);
+    setStrixError(null);
+    api.upsertConfig('strix_sweep_hours', v).catch(err => {
+      setStrixHours(prev);
+      setStrixError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  };
+
   // Poll Ollama status while panel is visible
   useEffect(() => {
     let active = true;
@@ -606,11 +690,48 @@ function ModelsPanel({ goto }: PanelProps) {
     <div>
       <H1 sub="Pick the brains behind the agent. Use stronger models when stakes are high; cheaper for routine work.">Models</H1>
       <Section title="Providers" sub="Provider credentials live in the API keys tab — add or update a key there, then route to it below.">
+        {/* One-line primary readout (condensed from Governance → Models; the
+            full editor is redundant with the provider modal on API keys). */}
+        <div style={{ fontSize: 13, color: colors.text, fontFamily: font.mono, marginBottom: 12 }}>
+          {primary === null
+            ? 'Loading primary model…'
+            : `${primary.model ?? '—'} · provider: ${primary.provider ?? 'default'}${primary.mode ? ` · mode: ${primary.mode}` : ''}`}
+        </div>
         <button style={ghost(colors)} onClick={() => goto('keys')}>Manage API keys</button>
       </Section>
       {/* The old Routing/Behavior selects were decorative — hardcoded options
           wired to nothing (2026-07-10 settings audit). The real model/default
           switch lives in the provider modal on the API keys tab. */}
+
+      {/* ── Worker roster (GET /api/agent/workers) ───────────────── */}
+      <Section title="Worker roster" sub="The models each role can dispatch to, with live availability.">
+        {workers === null ? (
+          <div style={{ color: colors.textDim, fontSize: 13 }}>Loading roster…</div>
+        ) : workers.length === 0 ? (
+          <div style={{ color: colors.textMuted, fontSize: 13 }}>
+            No workers configured. The primary model handles every role.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {workers.map(w => (
+              <StatRow
+                key={w.key}
+                left={w.display_name}
+                sub={`${w.role} · ${w.engine}`}
+                right={
+                  <span style={{
+                    fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 999,
+                    border: `1px solid ${colors.border}`,
+                    color: w.available ? colors.success : colors.textDim,
+                  }} title={w.reason ?? undefined}>
+                    {w.available ? 'available' : 'unavailable'}
+                  </span>
+                }
+              />
+            ))}
+          </div>
+        )}
+      </Section>
 
       {/* ── Ollama Status ────────────────────────────────────────── */}
       <Section title="Local models (Ollama)">
@@ -725,6 +846,38 @@ function ModelsPanel({ goto }: PanelProps) {
           {saving && <div style={{ fontSize: 10, color: colors.textDim, textAlign: 'right', padding: '4px 0' }}>Saving...</div>}
         </Section>
       )}
+
+      {/* ── The Guard security sweeps ────────────────────────────── */}
+      <Section
+        title="Security sweeps (The Guard)"
+        sub="The Guard — born of the Strix pentest engine — probes your own projects for security flaws. Each sweep scans ONE active project (rotating through them, least-recently-scanned first) and files a security report with a fix plan as a note on that project, plus a findings checklist on its Overview. Requires the external `strix` scanner and Docker installed. Scans run on your API credits, so the cadence below is a cost dial. Changes apply within ~15 minutes — no restart needed."
+      >
+        {strixError && (
+          <div style={{ fontSize: 12, color: colors.danger, padding: '4px 0 8px' }}>{strixError}</div>
+        )}
+        <Row label="Enable the Guard" hint="Off by default — a scanner that runs live exploit tooling is switched on deliberately, never by upgrade.">
+          {strix === null ? (
+            <span style={{ fontSize: 12, color: colors.textDim }}>Loading…</span>
+          ) : (
+            <Toggle on={strix} onChange={saveStrix} />
+          )}
+        </Row>
+        <Row label="Sweep every" hint="How often the Guard scans the next project in the rotation. Daily is the cost-effective default.">
+          <select
+            value={strixHours}
+            onChange={e => saveStrixHours(Number(e.target.value))}
+            style={{
+              background: colors.inputBg, color: colors.text, fontSize: 12,
+              border: `1px solid ${colors.border}`, borderRadius: 6, padding: '4px 8px',
+            }}
+          >
+            <option value={12}>12 hours</option>
+            <option value={24}>24 hours (recommended)</option>
+            <option value={72}>3 days</option>
+            <option value={168}>Weekly</option>
+          </select>
+        </Row>
+      </Section>
     </div>
   );
 }
@@ -862,66 +1015,53 @@ function ShortcutsPanel() {
   );
 }
 
-export function DataPanel() {
+export function DataPanel({ goto }: { goto?: (key: string) => void } = {}) {
   const { colors } = useThemeHook();
-  const localFirst = true;
-  const e2e = true;
 
-  // Crash-report + product-analytics consent are TWO independent, REAL backend
-  // gates (#327 split; #845 fix). Each must render from the backend (off by
-  // default, explicit opt-in), never a hardcoded UI default. `null` = not
-  // loaded; the toggle reads false until the true value arrives so it can never
-  // flash ON.
-  const [diagnostics, setDiagnostics] = useState<boolean | null>(null);
+  // Product-analytics consent is a REAL backend gate (#327 split; #845 fix).
+  // It must render from the backend (off by default, explicit opt-in), never a
+  // hardcoded UI default. `null` = not loaded; the toggle reads false until
+  // the true value arrives so it can never flash ON.
+  //
+  // Removed in the 2026-08 finish-the-settings ruling:
+  //  - "Share anonymous diagnostics": it persisted crash_reports_consent,
+  //    which nothing reads — there is no ambient upload path, and the export
+  //    below is explicitly not gated on it.
+  //  - "Share prompts to improve models": it flipped this SAME analytics
+  //    consent; no prompt-sharing pipeline exists.
+  //  - The disabled "Keep everything on this device" / "End-to-end
+  //    encryption" toggles: the real local-only control is Sovereignty.
   const [analytics, setAnalytics] = useState<boolean | null>(null);
-  const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
-  const diagnosticsGeneration = useRef(0);
+  const [consentError, setConsentError] = useState<string | null>(null);
   const analyticsGeneration = useRef(0);
 
   useEffect(() => {
-    const diagnosticsRequest = ++diagnosticsGeneration.current;
     const analyticsRequest = ++analyticsGeneration.current;
     api.getCrashConsent()
       .then(s => {
-        if (diagnosticsRequest === diagnosticsGeneration.current) setDiagnostics(s.crashReportsConsented);
         if (analyticsRequest === analyticsGeneration.current) setAnalytics(s.analyticsConsented);
       })
       .catch(() => {
-        if (diagnosticsRequest === diagnosticsGeneration.current || analyticsRequest === analyticsGeneration.current) {
-          setDiagnosticsError('Could not load diagnostics consent.');
+        if (analyticsRequest === analyticsGeneration.current) {
+          setConsentError('Could not load analytics consent.');
         }
       });
     return () => {
-      ++diagnosticsGeneration.current;
       ++analyticsGeneration.current;
     };
   }, []);
 
-  const saveDiagnostics = useCallback((v: boolean) => {
-    const generation = ++diagnosticsGeneration.current;
-    setDiagnosticsError(null);
-    const prev = diagnostics;
-    setDiagnostics(v); // optimistic; the daemon echoes the authoritative value back
-    api.setCrashConsent(v)
-      .then(s => { if (generation === diagnosticsGeneration.current) setDiagnostics(s.crashReportsConsented); })
-      .catch(err => {
-        if (generation !== diagnosticsGeneration.current) return;
-        setDiagnostics(prev); // roll back on failure — never claim consent we didn't persist
-        setDiagnosticsError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
-      });
-  }, [diagnostics]);
-
   const saveAnalytics = useCallback((v: boolean) => {
     const generation = ++analyticsGeneration.current;
-    setDiagnosticsError(null);
+    setConsentError(null);
     const prev = analytics;
     setAnalytics(v); // optimistic
     api.setAnalyticsConsent(v)
       .then(s => { if (generation === analyticsGeneration.current) setAnalytics(s.analyticsConsented); })
       .catch(err => {
         if (generation !== analyticsGeneration.current) return;
-        setAnalytics(prev);
-        setDiagnosticsError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
+        setAnalytics(prev); // roll back on failure — never claim consent we didn't persist
+        setConsentError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
       });
   }, [analytics]);
 
@@ -944,19 +1084,21 @@ export function DataPanel() {
 
   return (
     <div>
-      <H1 sub="Your data is yours. Everything is local-first today; these controls activate as remote features land."><>Data &amp; privacy<PreviewBadge /></></H1>
-      <PreviewNotice />
+      <H1 sub="Your data is yours. Everything is local-first today.">Data &amp; privacy</H1>
       <Section title="Local-first">
-        <Row label="Keep everything on this device" hint="Memory and traces never leave your machine. Cloud sync turns off."><Toggle on={localFirst} disabled /></Row>
-        <Row label="End-to-end encryption" hint="Required when you have external collaborators."><Toggle on={e2e} disabled /></Row>
+        <div style={{ fontSize: 13, color: colors.textMuted, lineHeight: 1.6, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span>
+            Memory and traces live on this machine. To make the boundary
+            enforced — blocking every cloud inference call — use Sovereignty.
+          </span>
+          <button style={ghost(colors)} onClick={() => goto?.('sovereignty')}>Open Sovereignty →</button>
+        </div>
       </Section>
-      <Section title="Diagnostics" sub="Live — two separate, off-by-default opt-ins written to the daemon's consent gates.">
-        <Row label="Share anonymous diagnostics" hint="Crash reports. Never your prompts."><Toggle on={!!diagnostics} onChange={saveDiagnostics} /></Row>
-        <Row label="Share product analytics" hint="Anonymous usage and timing. Separate from crash reports."><Toggle on={!!analytics} onChange={saveAnalytics} /></Row>
-        {diagnosticsError && (
-          <div style={{ fontSize: 12, color: colors.danger, padding: '2px 0 8px' }}>{diagnosticsError}</div>
+      <Section title="Diagnostics" sub="Live — an off-by-default opt-in written to the daemon's consent gate.">
+        <Row label="Share product analytics" hint="Anonymous usage and timing. Never your prompts."><Toggle on={!!analytics} onChange={saveAnalytics} /></Row>
+        {consentError && (
+          <div style={{ fontSize: 12, color: colors.danger, padding: '2px 0 8px' }}>{consentError}</div>
         )}
-        <Row label="Share prompts to improve models" hint="Off by default. Opt in at your own risk."><Toggle on={!!analytics} onChange={saveAnalytics} /></Row>
       </Section>
       <Section title="Crash report" sub="Export a redacted crash report to attach to a support message. Written locally — home paths, keys, tokens, emails, and UUIDs are redacted first. Nothing is uploaded.">
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -996,10 +1138,16 @@ export function DataPanel() {
 
 // ── Panel router ─────────────────────────────────────────────────────
 
+/** Grid columns for the egress-audit table (ported from the retired
+ *  Governance → Sovereignty panel — the table read better than stacked rows). */
+const EGRESS_COLS = '150px 1fr 90px 80px';
+
 /** Sovereignty — the data boundary. The toggle writes the daemon's global
  *  sovereign flag (enforced fail-closed at the provider choke point); the
  *  egress log shows every cloud inference call this machine has made or
- *  blocked. Live end-to-end (2026-07 sovereignty-router build). */
+ *  blocked. Live end-to-end (2026-07 sovereignty-router build). Absorbed the
+ *  Governance → Sovereignty panel (same endpoints): its "Pull the cable"
+ *  button and its egress TABLE layout now live here. */
 function SovereigntyPanel() {
   const { colors } = useThemeHook();
   const [status, setStatus] = useState<SovereigntyStatus | null>(null);
@@ -1037,8 +1185,26 @@ function SovereigntyPanel() {
       )}
 
       <Section title="Sovereign mode" sub="Live — writes the daemon's global sovereign flag, enforced at the provider choke point for every session.">
-        <Row label="Local-only inference" hint="Block all cloud providers. Nothing leaves this machine for inference.">
-          <Toggle on={!!status?.enabled} onChange={v => save({ enabled: v })} />
+        <Row
+          label="Data boundary"
+          hint={status?.enabled
+            ? 'All cloud inference is blocked before any data leaves this machine. Only local models run.'
+            : 'Cloud inference is allowed. Every cloud call is still recorded in the audit log below.'}
+        >
+          <button
+            onClick={() => save({ enabled: !status?.enabled })}
+            disabled={status === null}
+            style={{
+              height: 32, padding: '0 18px', borderRadius: 8,
+              background: status?.enabled ? 'transparent' : colors.cyan,
+              border: status?.enabled ? `1px solid ${colors.borderHi}` : 'none',
+              color: status?.enabled ? colors.cyan : colors.textOnCyan,
+              cursor: status === null ? 'default' : 'pointer',
+              fontFamily: font.body, fontSize: 12, fontWeight: 600,
+            }}
+          >
+            {status === null ? '…' : status.enabled ? 'Allow cloud again' : 'Pull the cable'}
+          </button>
         </Row>
         {status?.enabled && !status.localProviderAvailable && (
           <div style={{ fontSize: 12, color: colors.warning, padding: '2px 0 8px' }}>
@@ -1050,7 +1216,7 @@ function SovereigntyPanel() {
         </Row>
       </Section>
 
-      <Section title="Egress log" sub="Everything that has left this machine for cloud inference, and when — newest first. BLOCKED means sovereign mode refused it.">
+      <Section title="Egress audit" sub="Every cloud call, allowed or blocked — newest first. BLOCKED means sovereign mode refused it before anything left this machine.">
         <Row label="Cloud inference calls" hint={`${log?.length ?? 0} recorded`}>
           <button
             onClick={refreshLog}
@@ -1060,34 +1226,135 @@ function SovereigntyPanel() {
             }}
           >Refresh</button>
         </Row>
-        {log && log.length === 0 && (
+        {log === null ? (
+          <div style={{ fontSize: 12, color: colors.textDim, padding: '6px 0' }}>Loading audit log…</div>
+        ) : log.length === 0 ? (
           <div style={{ fontSize: 12, color: colors.textDim, padding: '6px 0' }}>
-            Nothing has left this machine yet.
+            Nothing has left this machine yet. Every cloud call will be recorded here.
+          </div>
+        ) : (
+          <div style={{ marginTop: 12, overflowX: 'auto' }}>
+            <div style={{ minWidth: 460 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: EGRESS_COLS, gap: 12, padding: '0 10px 8px', fontSize: 10, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: colors.textDim }}>
+                <div>When</div><div>Provider · Model</div><div>Kind</div><div>Result</div>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {log.map(e => (
+                  <div key={e.id} style={{ display: 'grid', gridTemplateColumns: EGRESS_COLS, gap: 12, alignItems: 'center', padding: '8px 10px', borderRadius: 8, background: colors.bgDeeper, border: `1px solid ${colors.border}` }}>
+                    <div style={{ fontSize: 12, color: colors.textMuted, fontFamily: font.mono }} title={`${new Date(e.ts).toLocaleString()}${e.sessionId ? ' · ' + e.sessionId : ''} · ${e.contentHash.slice(0, 12)}…`}>
+                      {timeAgo(e.ts) || e.ts}
+                    </div>
+                    <div style={{ fontSize: 12, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${e.provider} · ${e.model}`}>
+                      <span style={{ color: colors.textMuted }}>{e.provider}</span> · {e.model}
+                    </div>
+                    <div style={{ fontSize: 12, color: colors.textMuted }}>{e.kind}</div>
+                    <div>
+                      <span style={{
+                        fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase',
+                        padding: '2px 8px', borderRadius: 999, border: `1px solid ${colors.border}`,
+                        color: e.blocked ? colors.warning : colors.success,
+                      }}>
+                        {e.blocked ? 'blocked' : 'allowed'}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         )}
-        {log?.map(e => (
-          <Row
-            key={e.id}
-            label={`${e.provider} · ${e.model}`}
-            hint={`${new Date(e.ts).toLocaleString()} · ${e.kind}${e.sessionId ? ' · ' + e.sessionId : ''} · ${e.contentHash.slice(0, 12)}…`}
-          >
-            <span style={{ fontSize: 11, fontWeight: 600, color: e.blocked ? colors.danger : colors.textDim }}>
-              {e.blocked ? 'BLOCKED' : 'sent'}
-            </span>
-          </Row>
-        ))}
       </Section>
     </div>
   );
 }
 
+// ── Console pages folded into Settings (2026-08 ruling) ─────────────
+// Each pane embeds the SAME component the Console overlay hosted — only the
+// chrome changed. Selecting a session (or any action that navigates to chat)
+// closes Settings, because those components call setActivePanel('chat').
+
+function SessionsPane() {
+  const { colors } = useThemeHook();
+  return (
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      <H1 sub="Your past conversations — reopen one to pick up where you left off, or rename and delete old ones. Picking a session opens it in the chat.">Sessions</H1>
+      <div style={{ flex: 1, minHeight: 320, border: `1px solid ${colors.border}`, borderRadius: 12, overflow: 'hidden' }}>
+        <SessionsList />
+      </div>
+    </div>
+  );
+}
+
+function InboxPane() {
+  const { colors } = useThemeHook();
+  return (
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      <H1 sub="Files you download in the in-app browser land here — send them to the Brain, a project, or the post scheduler. You choose; nothing is routed for you.">Inbox</H1>
+      <div style={{ flex: 1, minHeight: 320, border: `1px solid ${colors.border}`, borderRadius: 12, overflow: 'hidden' }}>
+        <InboxPanel embedded />
+      </div>
+    </div>
+  );
+}
+
+function ActivityPane() {
+  const { colors } = useThemeHook();
+  return (
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      <H1 sub="The runtime's most recent events, live off the running system's event streams — tool calls, worker activity, navigations, and lifecycle signals as they happen.">Activity</H1>
+      <div style={{ flex: 1, minHeight: 320, border: `1px solid ${colors.border}`, borderRadius: 12, overflow: 'hidden' }}>
+        <ExecutionTrace />
+      </div>
+    </div>
+  );
+}
+
+function SpendPane() {
+  return (
+    <div>
+      <H1 sub="What you run costs money — everything you have spent, per project and per session, plus the caps the cost router enforces. Enforced locally, not by a cloud admin.">Spend</H1>
+      <SpendPanel />
+    </div>
+  );
+}
+
 const PANELS: Record<string, (props: PanelProps) => JSX.Element> = {
-  agent: PersonaPanel, profile: ProfilePanel, preferences: PreferencesPanel,
+  agent: PersonaPanel, preferences: PreferencesPanel,
   memory: MemoryPanel, autonomy: AutonomyPanel, tools: ToolsPanel,
   models: ModelsPanel, keys: KeysPanel, devices: DevicesPanel, search: SearchPanel,
   appearance: AppearancePanel, shortcuts: ShortcutsPanel, data: DataPanel,
   sovereignty: SovereigntyPanel,
+  sessions: SessionsPane, inbox: InboxPane, activity: ActivityPane, spend: SpendPane,
 };
+
+
+function PairingQrCode({ value, size = 112 }: { value: string; size?: number }) {
+  let matrix: boolean[][];
+  try {
+    matrix = makeQrMatrix(value);
+  } catch {
+    return <span style={{ fontSize: 11 }}>QR unavailable — shorten the hub address or copy the link.</span>;
+  }
+  const quiet = 4;
+  // Module extent of the symbol itself, in QR modules — distinct from `size`,
+  // which is the rendered pixel width.
+  const extent = matrix.length + quiet * 2;
+  const path = matrix.flatMap((row, y) => row.map((dark, x) => dark ? `M${x + quiet},${y + quiet}h1v1h-1z` : '')).join('');
+  return (
+    <svg
+      role="img"
+      aria-label="Pairing QR code"
+      viewBox={`0 0 ${extent} ${extent}`}
+      width={size}
+      height={size}
+      style={{ display: 'block', background: '#fff', borderRadius: 8 }}
+      shapeRendering="crispEdges"
+    >
+      <rect width={extent} height={extent} fill="#fff" />
+      <path d={path} fill="#000" />
+    </svg>
+  );
+}
 
 /** Devices — hub-and-spoke pairing (MULTI_DEVICE.md, #628). The hub (this
  *  machine) holds the one Brain; every other device connects to it over the
@@ -1100,6 +1367,15 @@ function DevicesPanel() {
   const [host, setHost] = useState('your-mac.tailnet-name.ts.net');
   const [copied, setCopied] = useState(false);
   const [tailnet, setTailnet] = useState<{ installed: boolean; running: boolean; magic_dns_name: string | null } | null>(null);
+  // Reachability is TWO facts: what the user asked for (`enabled`, persisted)
+  // and whether the running daemon is actually on the tailnet (`effective`).
+  // They diverge whenever a restart is pending or Tailscale is down, and the
+  // panel has to show the difference — a green toggle over an unreachable
+  // daemon is exactly the lie that made pairing fail silently.
+  const [access, setAccess] = useState<{
+    enabled: boolean; serve_url: string | null; available: boolean;
+  } | null>(null);
+  const [accessBusy, setAccessBusy] = useState(false);
 
   // ── Device registry (#628) ──
   const [devices, setDevices] = useState<DeviceInfo[] | null>(null);
@@ -1123,6 +1399,9 @@ function DevicesPanel() {
   // Deterministic detection: when the hub is on a tailnet, the address fills
   // itself — the user types nothing (Jesse's zero-strain rule, 2026-07-11).
   useEffect(() => {
+    apiFetch<{ enabled: boolean; serve_url: string | null; available: boolean }>(
+      '/api/tailnet/access',
+    ).then(setAccess).catch(() => {});
     apiFetch<{ installed: boolean; running: boolean; magic_dns_name: string | null }>('/api/tailnet/status')
       .then(t => {
         setTailnet(t);
@@ -1132,7 +1411,8 @@ function DevicesPanel() {
   }, []);
   // The pairing URL carries a one-time claim code — never a bearer token
   // (#628). It is minted on demand below and goes inert after one use.
-  const pairingUrl = claim ? `http://${host}:3001/ui/#claim=${claim.code}` : null;
+  const remoteBase = access?.serve_url ?? (host ? `http://${host}:3001` : null);
+  const pairingUrl = claim && remoteBase ? `${remoteBase}/ui/#claim=${claim.code}` : null;
   const isHub = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const [detail, setDetail] = useState(0); // progressive disclosure depth
   const [hubUp, setHubUp] = useState<boolean | null>(null);
@@ -1250,8 +1530,43 @@ function DevicesPanel() {
         ))}
       </Section>
 
-      <Section title="Pair a device" sub="Live — requires the daemon bound to your tailnet (HOST=0.0.0.0 or your Tailscale IP in the daemon environment) and Tailscale on both devices.">
-
+      <Section title="Pair a device" sub="Turn on tailnet access below, then scan the QR code with the device you are adding. Both devices must be on your tailnet.">
+        <Row
+          label="Remote access"
+          hint={
+            access?.available === false
+              ? 'Tailscale is not installed. Permagent does not require it — any tunnel that gives this Mac a reachable address works, and the hub address below accepts it.'
+              : access?.enabled
+                ? `Your devices can reach this hub at ${access.serve_url}. Tailscale publishes it to your private network only — the daemon itself still listens on localhost, so nothing is exposed to the Wi-Fi you are joined to, or to the internet.`
+                : 'Off — this hub is only reachable from this machine, so no phone can pair with it.'
+          }
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <Toggle
+              on={!!access?.enabled}
+              disabled={accessBusy || access?.available === false}
+              onChange={(next) => {
+                setAccessBusy(true);
+                apiFetch<{ enabled: boolean; serve_url: string | null; available: boolean }>(
+                  '/api/tailnet/access',
+                  {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: next }),
+                  },
+                )
+                  .then(setAccess)
+                  .catch(e => setPairError(e instanceof Error ? e.message : 'Could not change remote access'))
+                  .finally(() => setAccessBusy(false));
+              }}
+            />
+            <span style={{ fontSize: 12, color: colors.textMuted }}>
+              {accessBusy ? 'Applying…'
+                : access?.enabled ? `Live at ${access.serve_url}`
+                : 'This machine only'}
+            </span>
+          </div>
+        </Row>
         <Row label="Tailnet" hint={tailnet?.running ? 'Detected — address filled in automatically.' : tailnet?.installed ? 'Tailscale is installed but not connected.' : 'Tailscale not detected on this machine.'}>
           {tailnet?.running ? (
             <span style={{ fontSize: 12, color: colors.cyan }}>● Connected{tailnet.magic_dns_name ? ` — ${tailnet.magic_dns_name}` : ''}</span>
@@ -1271,8 +1586,21 @@ function DevicesPanel() {
             >Have Henry set it up</button>
           )}
         </Row>
-        <Row label="Hub address" hint="Your machine's Tailscale MagicDNS name (auto-filled when the tailnet is detected).">
-          <TextInput value={host} onChange={setHost} placeholder="my-mac.tailnet-name.ts.net" />
+        <Row
+          label="Hub address"
+          hint={access?.serve_url
+            ? 'Using the detected tailnet address — the pairing URL is built from it, so there is nothing to type here.'
+            : "Your machine's Tailscale MagicDNS name (auto-filled when the tailnet is detected)."}
+        >
+          {/* With tailnet access on, remoteBase prefers access.serve_url and
+              this input is inert — disable it and say why, instead of letting
+              edits silently do nothing. */}
+          <TextInput
+            value={access?.serve_url ?? host}
+            onChange={setHost}
+            placeholder="my-mac.tailnet-name.ts.net"
+            disabled={!!access?.serve_url}
+          />
         </Row>
         <Row label="Device name" hint="Name the device you are pairing — this is how it appears in the registry above.">
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -1296,33 +1624,50 @@ function DevicesPanel() {
           ? `Open this on the new device's browser. One-time: it goes inert after first use, and expires ${new Date(claim.expiresAt).toLocaleTimeString()}.`
           : 'Name the device and create a link — the URL carries a one-time claim code, not a token.'}>
           {pairingUrl ? (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-              <code style={{
-                fontFamily: font.mono, fontSize: 10, color: colors.cyan,
-                background: colors.bgDeeper, padding: '6px 8px', borderRadius: 6,
-                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 320,
-              }}>{pairingUrl}</code>
-              <button
-                style={ghost(colors)}
-                onClick={() => {
-                  navigator.clipboard.writeText(pairingUrl).then(() => {
-                    setCopied(true);
-                    setTimeout(() => setCopied(false), 1600);
-                    // Copying the pairing URL is deliberate engagement with the
-                    // Devices feature — but it is *intent*, not a completed
-                    // pairing, so this stays Ephemeral (never a Brain memory).
-                    // The real `devices_paired` signal is emitted by the new
-                    // device itself when it claims the code and receives its
-                    // own token (see exchangeClaim in lib/api.ts). No secret
-                    // in the payload.
-                    emitActivity('pairing_link_copied', 'settings');
-                  });
-                }}
-              >{copied ? 'Copied ✓' : 'Copy'}</button>
+            // Scanning is the point: pairing a phone by retyping a MagicDNS
+            // hostname and a 16-character claim code is miserable. The QR was
+            // originally squeezed in beside the URL at 112px, which read as a
+            // decoration and is small for a phone to acquire — it leads now,
+            // at a size that scans from a comfortable distance.
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, minWidth: 0 }}>
+              <div style={{ flexShrink: 0, textAlign: 'center' }}>
+                <PairingQrCode value={pairingUrl} size={196} />
+                <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 6 }}>
+                  Scan with your iPhone
+                </div>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0, paddingTop: 2 }}>
+                <span style={{ fontSize: 11, color: colors.textDim }}>
+                  Open Permagent on the phone and scan this. No typing.
+                </span>
+                <code style={{
+                  fontFamily: font.mono, fontSize: 10, color: colors.cyan,
+                  background: colors.bgDeeper, padding: '6px 8px', borderRadius: 6,
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 320,
+                }}>{pairingUrl}</code>
+                <button
+                  style={{ ...ghost(colors), alignSelf: 'flex-start' }}
+                  onClick={() => {
+                    navigator.clipboard.writeText(pairingUrl).then(() => {
+                      setCopied(true);
+                      setTimeout(() => setCopied(false), 1600);
+                      // Copying the pairing URL is deliberate engagement with the
+                      // Devices feature — but it is *intent*, not a completed
+                      // pairing, so this stays Ephemeral (never a Brain memory).
+                      // The real `devices_paired` signal is emitted by the new
+                      // device itself when it claims the code and receives its
+                      // own token (see exchangeClaim in lib/api.ts). No secret
+                      // in the payload.
+                      emitActivity('pairing_link_copied', 'settings');
+                    });
+                  }}
+                >{copied ? 'Copied ✓' : 'Copy link instead'}</button>
+              </div>
             </div>
           ) : (
             <span style={{ fontSize: 12, color: colors.textDim }}>
-              No active pairing link.
+              No active pairing link — name the device above and create one; the
+              QR code to scan appears here.
             </span>
           )}
         </Row>

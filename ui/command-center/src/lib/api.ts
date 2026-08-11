@@ -566,12 +566,18 @@ export function buildUserMessage(
   };
 }
 
-/** Extract the first text content from a DaemonMessage */
+/** Extract the text content from a DaemonMessage.
+ *
+ * Distinct text blocks within one stored message are distinct SEGMENTS — the
+ * model spoke, used a tool, spoke again — so they join with a paragraph
+ * break, never glued ("…works.Let me dig deeper…"). Streamed delta frames
+ * carry a single block, so the separator is inert on the live path. */
 export function extractText(msg: DaemonMessage): string {
   return msg.content
     .filter((c): c is TextContent => c.type === 'text')
     .map(c => c.text)
-    .join('');
+    .filter(t => t.length > 0)
+    .join('\n\n');
 }
 
 /**
@@ -585,7 +591,18 @@ export function extractThinking(msg: DaemonMessage): string {
     .filter((c): c is { type: 'thinking'; thinking: string } =>
       c.type === 'thinking' && typeof (c as { thinking?: unknown }).thinking === 'string')
     .map(c => c.thinking)
-    .join('');
+    .filter(t => t.length > 0)
+    .join('\n\n');
+}
+
+/** True when a frame carries tool activity — the boundary between one text
+ *  segment and the next. Requests ride assistant frames; results come back on
+ *  user-role frames. The streaming path uses this to owe the next text delta
+ *  a paragraph break, so the live render matches the settled transcript
+ *  instead of snapping into shape on Finish. */
+export function hasToolActivity(msg: DaemonMessage): boolean {
+  return msg.content.some(c =>
+    c.type === 'toolRequest' || c.type === 'toolResponse' || c.type === 'toolConfirmationRequest');
 }
 
 /**
@@ -976,19 +993,60 @@ export const api = {
   // Config
   getConfig: () => apiFetch<PermagentConfig>('/config'),
 
-  readConfig: (key: string, isSecret?: boolean) =>
-    apiFetch<{ value?: unknown; masked_value?: string }>('/config/read', {
-      method: 'POST', body: JSON.stringify({ key, is_secret: isSecret ?? false }),
+  /**
+   * Read a NON-SECRET config value. The daemon answers with the **bare JSON
+   * value** — `true`, `24`, `"anthropic"` — or `null` when the key is unset.
+   *
+   * There is no envelope. `ConfigValueResponse` is an untagged enum, so the
+   * only shape carrying a `value` key is one nobody sends. Every call site that
+   * reached for `.value` read `undefined`: that is why the Guard toggle saved
+   * correctly and then read back as OFF forever, whatever the config said.
+   * Secrets answer differently and have their own reader below — the two
+   * shapes are separate functions precisely so this cannot be confused again.
+   */
+  readConfig: (key: string) =>
+    apiFetch<unknown>('/config/read', {
+      method: 'POST', body: JSON.stringify({ key, is_secret: false }),
+    }),
+
+  /** Read a SECRET config key. Answers `{"maskedValue": "…"}` — camelCase on
+   *  the wire (`MaskedSecret` is `rename_all = "camelCase"`) — or `null` when
+   *  unset. Never returns the secret itself. */
+  readSecretConfig: (key: string) =>
+    apiFetch<{ maskedValue?: string } | null>('/config/read', {
+      method: 'POST', body: JSON.stringify({ key, is_secret: true }),
     }),
 
   // Extensions / MCP tools
+  /**
+   * Extension list for the Tools & MCPs panel.
+   *
+   * These fields are OPTIONAL on the wire and the types must say so. The Rust
+   * side flattens ExtensionConfig, whose variants differ: `display_name` is an
+   * `Option<String>` that the `stdio` variant omits entirely, and `bundled`
+   * serializes as null. Declaring them required is what crashed the panel —
+   * `ext.display_name[0]` on an absent field threw and took the app down, for
+   * exactly the two stdio servers (Brave, Tavily) the user came to look at.
+   */
   getExtensions: () => apiFetch<{
     extensions: Array<{
       enabled: boolean; type: string; name: string;
-      description: string; display_name: string;
-      bundled: boolean; available_tools: string[];
-    }>; warnings: string[];
+      description?: string; display_name?: string | null;
+      bundled?: boolean | null; available_tools?: string[];
+      /** Names (never values) of env vars the server needs, e.g. BRAVE_API_KEY. */
+      env_keys?: string[];
+    }>; warnings?: string[];
   }>('/config/extensions'),
+
+  /** Actually start a configured extension and ask it for its tools. "Key
+   *  saved" only proves a string reached the keychain; this proves the key
+   *  WORKS. Always resolves (a failed probe is a result, not an error).
+   *  camelCase on the wire — see the `maskedValue` regression. */
+  probeExtension: (name: string) =>
+    apiFetch<{ ok: boolean; toolCount: number; tools: string[]; error?: string | null }>(
+      '/config/extensions/probe',
+      { method: 'POST', body: JSON.stringify({ name }) },
+    ),
 
   upsertConfig: (key: string, value: unknown, isSecret?: boolean) =>
     apiFetch<unknown>('/config/upsert', {
@@ -1103,6 +1161,15 @@ export const api = {
 
   reloadConfig: () =>
     apiFetch<{ provider: string; keyTail: string }>('/config/reload', { method: 'POST' }),
+
+  /** Ship a finished coding-harness session's transcript tail; the daemon
+   *  summarizes it and the Brain remembers what the user was building. */
+  codingSessionSummary: (payload: {
+    transcript: string; cwd?: string; command?: string; duration_secs?: number;
+  }) =>
+    apiFetch<{ stored: boolean; summary: string | null }>('/api/coding-sessions/summary', {
+      method: 'POST', body: JSON.stringify(payload),
+    }),
 
   setProvider: async (provider: string, model: string): Promise<void> => {
     const url = `${API_BASE_URL}/config/set_provider`;
@@ -1316,7 +1383,7 @@ export const api = {
 
   /** Create a note on a project. The backend indexes its text into the Brain
    *  (best-effort) and returns the saved note. */
-  createProjectNote: (projectId: string, note: { title?: string; body: string }) =>
+  createProjectNote: (projectId: string, note: { title?: string; body: string; kind?: 'meeting' }) =>
     apiFetch<ProjectNote>(`/api/projects/${encodeURIComponent(projectId)}/notes`, {
       method: 'POST',
       body: JSON.stringify(note),

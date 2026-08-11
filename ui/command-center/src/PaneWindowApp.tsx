@@ -37,10 +37,57 @@ export default function PaneWindowApp() {
     // blank tabs simply close with the window, redock failures fall back to
     // the atomic native teardown (`destroy_pane_window`) so no child webview
     // is left stranded offscreen, and the finally destroys unconditionally.
+    // Redocking moves live webviews back to the main window before the pane
+    // dies — but reparent/emit are main-thread native ops, and if the main
+    // window is busy (e.g. its bounds pump is churning) they can stall. The
+    // pane window's own teardown doc (browser.rs) warns that awaiting per-tab
+    // IPC before destroy() is exactly what makes the window refuse to close.
+    // So the redock is best-effort under a hard deadline: whatever hasn't
+    // handed over in time is torn down atomically instead, and the window is
+    // ALWAYS destroyed. A pane that won't close is a worse bug than a browser
+    // tab that closes with its window.
+    const withDeadline = <T,>(p: Promise<T>, ms: number): Promise<T | undefined> =>
+      Promise.race([
+        p,
+        new Promise<undefined>(resolve => setTimeout(() => resolve(undefined), ms)),
+      ]);
+
     const redockAndClose = async () => {
       if (closing) return;
       closing = true;
       try {
+        await withDeadline(redockAll(), 2000);
+      } finally {
+        // `destroy()` MUST be bounded too. It was the one await in this path
+        // without a deadline, and it is the one that strands a window: after
+        // `redockAll` reparents the native child webviews out of this window,
+        // destroying it can stall on the same main-thread contention the
+        // redock was already guarded against. Observed 2026-08-04 — the tab
+        // came back to the main app, its content flashed behind, and the now
+        // EMPTY pane window refused to close. A bounded redock followed by an
+        // unbounded destroy just moves the hang one line down.
+        //
+        // So: try the JS teardown briefly, then fall back to the atomic native
+        // one (`destroy_pane_window`), which does not depend on this webview's
+        // IPC round-trip completing. No child webview ids — `redockAll` has
+        // already moved them to the main window and destroying them here would
+        // kill the tabs the user just got back.
+        const destroyed = await withDeadline(
+          win.destroy().then(() => true).catch(() => true),
+          1200,
+        );
+        if (!destroyed) {
+          await invoke('destroy_pane_window', {
+            windowLabel: win.label,
+            webviewIds: [],
+          }).catch(() => { /* nothing left that can close it */ });
+        }
+        closing = false;
+      }
+    };
+
+    const redockAll = async () => {
+      {
         if (kind === 'browser') {
           // Hand EVERY loaded tab back (the old active-tab-only redock leaked
           // the rest). Reparent moves the native webview — DOM, history,
@@ -80,9 +127,6 @@ export default function PaneWindowApp() {
             }
           }
         }
-      } finally {
-        try { await win.destroy(); } catch { /* already gone */ }
-        closing = false;
       }
     };
 

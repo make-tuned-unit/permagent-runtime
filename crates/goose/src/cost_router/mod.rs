@@ -35,6 +35,7 @@
 //! `budget::load_budget_config` touch IO, and each is a thin wrapper over a pure
 //! core.
 
+pub mod assess;
 pub mod best_of_n;
 pub mod budget;
 pub mod cache;
@@ -48,6 +49,7 @@ pub mod review_gate;
 pub mod role_map;
 pub mod tier;
 
+pub use assess::{assess_goal, Assessment};
 pub use best_of_n::{
     best_of_n_enabled, best_of_n_from, difficulty, load_best_of_n, plan_candidates, run_best_of_n,
     select as select_candidate, BestOfNOutcome, BestOfNPlan, CandidateSource, CandidateVerdict,
@@ -57,8 +59,8 @@ pub use budget::{
     budget_verdict, BudgetBand, BudgetCeilings, BudgetConfig, BudgetScope, BudgetVerdict,
 };
 pub use cache::{
-    may_swap_main_loop_model, model_change_breaks_cache, prefix_is_cache_stable, PrefixSegment,
-    CANONICAL_PREFIX, HARNESS_PREFIX,
+    may_swap_main_loop_model, model_change_breaks_cache, prefix_is_cache_stable, ModelKey,
+    PrefixSegment, CANONICAL_PREFIX, HARNESS_PREFIX,
 };
 pub use cheap::{
     build_ladder, default_anchor, discover_priced_candidates, is_key_configured, load_ladder,
@@ -117,9 +119,19 @@ pub const COST_OPTIMIZER_FEATURE: crate::agents::self_knowledge::FeatureDescript
              never silently falls back to a built-in Opus/Sonnet/Haiku pack. The interactive main \
              loop stays on one stable model to keep its prompt cache warm, mechanical \
              latency-tolerant sub-work is dispatched to SEPARATE cheaper-tier subagents, and a \
-             cache-heavy role routed to a non-caching provider is flagged at dispatch. A live \
-             cost meter is always on — a cache-aware, single-source running total with a per-call \
-             ledger — and spend caps route any overage to the Decision Inbox for approval",
+             cache-heavy role routed to a non-caching provider is flagged at dispatch. Every \
+             dispatched GOAL is additionally assessed to a starting tier before any model runs: \
+             a deterministic, zero-LLM read of the goal's structure (acceptance-criteria count, \
+             breadth) and kind-of-work vocabulary — never its self-declared difficulty, so a \
+             goal cannot talk itself onto an expensive model. Simple work starts cheap; a \
+             verify failure climbs the configured escalation ladder carrying the prior \
+             attempt's diff, and the user can pin a tier explicitly with metadata.tier on the \
+             goal. Worker selection ranks by real marginal cost (local free, then flat-rate \
+             subscription CLIs, then metered APIs) and goal_advance's worker parameter pins a \
+             named worker outright — a pin is honoured or refused loudly, never silently \
+             rerouted. A live cost meter is always on — a cache-aware, single-source running \
+             total with a per-call ledger — and spend caps route any overage to the Decision \
+             Inbox for approval",
         why_it_matters: "It is why running Permagent's own harness is cheaper per outcome than a \
              subscription, with no surprise bills and no vendor lock-in: each piece of work runs \
              on the cheapest model that can do it correctly, the recommender carries no bias \
@@ -127,7 +139,12 @@ pub const COST_OPTIMIZER_FEATURE: crate::agents::self_knowledge::FeatureDescript
              not choose. When the user asks what a build will cost, worries about spend, or asks \
              which models to use where, point them at the live meter and the objective per-role \
              recommendation (`permagent packs recommend`), and explain that setting no mapping \
-             keeps everything on their one model",
+             keeps everything on their one model. When you dispatch work of ANY kind — a blog \
+             post, a lookup, a refactor, a build from scratch — you can state with confidence \
+             HOW the path was chosen: which worker won and why (cost rank or an explicit pin), \
+             which tier the goal was assessed to and the recorded reason, and that escalation \
+             is earned by a measured verify failure rather than guessed up front. Say so \
+             plainly; the routing snapshot on each goal card is the receipt",
         state_source: crate::agents::self_knowledge::StateSource::Static,
         teaching: &[
             crate::agents::self_knowledge::TeachingStep {

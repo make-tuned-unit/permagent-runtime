@@ -102,10 +102,15 @@ pub async fn seed_presets_if_empty(pool: &Pool<Sqlite>) -> Result<bool, String> 
     // Keep in lockstep with CANONICAL_WORKSPACE_ORDER below.
     let presets = [
         ("Home", "home", 0, home_layout(), true),
-        ("Projects", "columns", 1, projects_layout(), false),
-        ("Build", "code", 2, build_layout(), false),
+        // Icon keys renamed 2026-08-03: three tabs carried glyphs whose names
+        // lied about what they drew — "code" was a four-rectangle mosaic and
+        // "layout-dashboard" was a hamburger — so Build, Automate and Projects
+        // were three interchangeable abstract shapes. See ICON_PATHS in
+        // Sidebar.tsx, which still aliases the old keys for existing rows.
+        ("Projects", "folder", 1, projects_layout(), false),
+        ("Build", "brackets", 2, build_layout(), false),
         ("Grow", "trending-up", 3, grow_layout(), false),
-        ("Automate", "layout-dashboard", 4, automate_layout(), false),
+        ("Automate", "bolt", 4, automate_layout(), false),
         ("World", "globe", 5, world_layout(), false),
         ("Brain", "brain", 6, brain_layout(), false),
     ];

@@ -66,6 +66,7 @@ export function ProjectOverview({ project, onProjectUpdated }: {
             ProjectDetails header for the ruled division. */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
           <SummaryPanel project={project} onProjectUpdated={onProjectUpdated} />
+          <StrixFindingsPanel project={project} />
           <WatcherInsightsPanel project={project} />
           <KeyFactsPanel project={project} />
           <ActivityPanel project={project} />
@@ -214,7 +215,14 @@ function SummaryPanel({ project, onProjectUpdated }: {
 // design: no badge, no notification — read them as you browse. Renders
 // nothing until the first insight exists.
 
-interface WatcherInsight { text: string; created_at: string }
+interface WatcherInsightCard { id: string; title: string }
+interface WatcherInsight {
+  text: string;
+  created_at: string;
+  /** The cards this insight is about. Absent on rows written before the
+   *  Watcher started naming them — absent and empty render identically. */
+  cards?: WatcherInsightCard[];
+}
 
 function readWatcherInsights(metadata: Record<string, unknown>): WatcherInsight[] {
   const raw = metadata?.watcher_insights;
@@ -227,8 +235,9 @@ function readWatcherInsights(metadata: Record<string, unknown>): WatcherInsight[
     .slice(0, 3);
 }
 
-function WatcherInsightsPanel({ project }: { project: Project }) {
+export function WatcherInsightsPanel({ project }: { project: Project }) {
   const { colors } = useTheme();
+  const openCardOnBoard = useCommandCenter(s => s.openCardOnBoard);
   const insights = readWatcherInsights(project.metadataJson);
   if (insights.length === 0) return null;
   return (
@@ -239,10 +248,103 @@ function WatcherInsightsPanel({ project }: { project: Project }) {
             <span style={{ color: colors.purpleBright, fontSize: 11, flexShrink: 0, lineHeight: '18px' }}>◆</span>
             <div style={{ minWidth: 0 }}>
               <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.55 }}>{i.text}</div>
-              <div style={{ fontSize: 10, color: colors.textDim, marginTop: 2 }}>{formatDate(i.created_at)}</div>
+              {/* The cards the observation is about. Without these the reader
+                  is told something stalled and given no way to reach it. */}
+              {(i.cards ?? []).length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 5 }}>
+                  {(i.cards ?? []).map(c => (
+                    <button
+                      key={c.id}
+                      onClick={() => openCardOnBoard(project.id, c.id)}
+                      title={`Open "${c.title}" on the board`}
+                      style={{
+                        fontSize: 10, color: colors.cyan, background: colors.cyanSoft,
+                        border: 'none', borderRadius: 4, padding: '2px 7px',
+                        cursor: 'pointer', fontFamily: font.body, maxWidth: 260,
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {c.title}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div style={{ fontSize: 10, color: colors.textDim, marginTop: 4 }}>{formatDate(i.created_at)}</div>
             </div>
           </div>
         ))}
+      </div>
+    </Panel>
+  );
+}
+
+// ── The Guard's findings ─────────────────────────────────────────────────────
+// The security checklist the Guard's sweep loop keeps on the project
+// (daemon strix loop → metadata_json.strix_findings). Each item carries its
+// severity, CWE, location, and how to fix it. Renders nothing until the first
+// finding exists — a clean project shows no security section at all.
+
+interface StrixFinding {
+  id: string;
+  title: string;
+  severity: string;
+  cwe?: string | null;
+  location?: string | null;
+  remediation?: string | null;
+  found_at: string;
+}
+
+const STRIX_SHOWN = 8;
+
+function readStrixFindings(metadata: Record<string, unknown>): StrixFinding[] {
+  const raw = metadata?.strix_findings;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((f): f is StrixFinding =>
+    typeof f === 'object' && f !== null &&
+    typeof (f as StrixFinding).id === 'string' &&
+    typeof (f as StrixFinding).title === 'string' &&
+    typeof (f as StrixFinding).severity === 'string');
+}
+
+function StrixFindingsPanel({ project }: { project: Project }) {
+  const { colors } = useTheme();
+  const findings = readStrixFindings(project.metadataJson);
+  if (findings.length === 0) return null;
+  const severityColor = (s: string) =>
+    s === 'high' ? colors.danger : s === 'medium' ? colors.warning : colors.textDim;
+  const shown = findings.slice(0, STRIX_SHOWN);
+  return (
+    <Panel title="Security — from the Guard">
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {shown.map(f => (
+          <div key={f.id} style={{ display: 'flex', gap: 10, alignItems: 'baseline' }}>
+            <span style={{
+              fontSize: 9, fontWeight: 700, letterSpacing: 0.6, flexShrink: 0,
+              textTransform: 'uppercase', color: severityColor(f.severity),
+              lineHeight: '18px', width: 52,
+            }}>
+              {f.severity}
+            </span>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 12, color: colors.text, lineHeight: 1.5 }}>{f.title}</div>
+              <div style={{ fontSize: 10, color: colors.textDim, marginTop: 2, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {f.cwe && <span>{f.cwe}</span>}
+                {f.location && <span style={{ fontFamily: font.mono }}>{f.location}</span>}
+                <span>{formatDate(f.found_at)}</span>
+              </div>
+              {f.remediation && (
+                <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 3, lineHeight: 1.5 }}>
+                  {f.remediation}
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+        {findings.length > STRIX_SHOWN && (
+          <div style={{ fontSize: 10, color: colors.textDim }}>
+            +{findings.length - STRIX_SHOWN} more on the checklist
+          </div>
+        )}
       </div>
     </Panel>
   );

@@ -10,29 +10,163 @@ targets:
     platform: iOS
     sources:
       - path: PermagentMobile
+        excludes:
+          - "Permagent.icon/**"
+      # The Icon Composer package must land as a SINGLE file reference. Left to
+      # recurse, xcodegen would add its icon.json and Assets/ as loose files and
+      # actool would never see a .icon at all.
+      - path: PermagentMobile/Permagent.icon
+        type: file
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ai.permagent.mobile
         SWIFT_VERSION: "6.0"
         TARGETED_DEVICE_FAMILY: "1,2"
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        CODE_SIGNING_ALLOWED: "NO"
+        ENABLE_USER_SCRIPT_SANDBOXING: "YES"
+        # Points at Permagent.icon (Icon Composer), not the old appiconset:
+        # macOS 26 / iOS 26 render the tile themselves and Xcode back-fills the
+        # legacy PNG sizes for the 17.0 floor from the same source.
+        ASSETCATALOG_COMPILER_APPICON_NAME: Permagent
         # Written into the .xcodeproj by Xcode on first open; kept here because
         # the project is xcodegen-generated and a regen would otherwise drop
         # them. Deliberately NOT mirroring the IPHONEOS_DEPLOYMENT_TARGET 18.6
         # that Xcode also wrote — the 17.0 floor above is intentional (liquid
         # glass on 26 with a 17–25 fallback), and 18.6 would silently drop it.
         DEVELOPMENT_TEAM: GANM22MFCH
-        CURRENT_PROJECT_VERSION: 1
+        # ── Versioning ──────────────────────────────────────────────────────
+        # EDIT THESE HERE, NOT IN XCODE. The .xcodeproj AND Info.plist are both
+        # generated from this file, so anything Xcode's General tab writes is
+        # discarded by the next `xcodegen generate`. That is half of why the
+        # version kept reverting.
+        #
+        # The other half: Info.plist used to hard-code CFBundleVersion "1" and
+        # CFBundleShortVersionString "1.0" (xcodegen's defaults when the keys
+        # are absent). Literal values mean the build settings below were never
+        # consulted at all — every build shipped as 1.0 (1) no matter what
+        # Xcode showed. The info.properties block now points both keys at these
+        # settings, so this is the single source of truth.
+        #
+        # MARKETING_VERSION tracks the product version in
+        # ui/desktop/package.json — one product, one number.
+        MARKETING_VERSION: "1.31.0"
+        # Build number must be unique and INCREASING for every TestFlight
+        # upload. `scripts/ios_build_number.sh` sets it from the git commit
+        # count, which is monotonic and needs no bookkeeping.
+        CURRENT_PROJECT_VERSION: 928
+      configs:
+        # Simulator/dev builds stay signing-free so a plain `xcodebuild build`
+        # needs no certificate. This MUST NOT reach Release: an archive built
+        # with signing disabled carries no team, and Organizer refuses it with
+        # "No Team Found in Archive" — which is exactly how TestFlight upload
+        # failed on 2026-08-02. Release signs normally via automatic signing.
+        Debug:
+          CODE_SIGNING_ALLOWED: "NO"
+        Release:
+          CODE_SIGN_STYLE: Automatic
     info:
       path: PermagentMobile/Info.plist
       properties:
         CFBundleDisplayName: Permagent
+        # Reference the build settings rather than literals — see the comment
+        # on MARKETING_VERSION above. Without these two lines nothing else here
+        # has any effect on the shipped bundle.
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSMicrophoneUsageDescription: Permagent uses the microphone to dictate notes and talk with Henry.
+        NSCameraUsageDescription: Permagent uses the camera to scan the pairing QR code displayed on your Mac.
         NSLocalNetworkUsageDescription: Permagent connects to your Permagent hub on your local network or tailnet.
+        # App Transport Security. NSAllowsArbitraryLoads used to sit here beside
+        # NSAllowsLocalNetworking, which does NOT mean "allow everything": from
+        # iOS 10 a granular subkey wins and the blanket key is IGNORED, so the
+        # effective policy was local-networking-only. A tailnet hub is neither —
+        # Tailscale is CGNAT (100.64.0.0/10), not RFC1918, and MagicDNS names end
+        # in .ts.net, not .local — so cleartext HTTP to the hub was refused and
+        # the phone reported "blocked as insecure (TLS)".
+        #
+        # Scoped exception instead: tailnet traffic is already WireGuard-encrypted
+        # end to end, so HTTP over it is not plaintext on the wire, and every
+        # other host stays under full ATS. Delete this once Tailscale HTTPS certs
+        # are enabled and Serve moves to 443.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
-          NSAllowsArbitraryLoads: true
-        UILaunchScreen: {}
+          NSExceptionDomains:
+            ts.net:
+              NSExceptionAllowsInsecureHTTPLoads: true
+              NSIncludesSubdomains: true
+        # Export compliance, declared up front so App Store Connect stops asking
+        # on every upload. FALSE is the correct answer here and was verified
+        # against the source, not assumed: the app implements no cryptography of
+        # its own — no CryptoKit, no CommonCrypto, no custom cipher. It uses only
+        # Apple-provided TLS (URLSession/wss) and the Keychain, which are exempt.
+        # If custom crypto is ever added, this MUST be revisited — it is a legal
+        # declaration, not a build setting.
+        ITSAppUsesNonExemptEncryption: false
+        # An EMPTY UILaunchScreen dict means a WHITE launch screen, and this app
+        # is deep-void dark end to end — the simulator showed over a second of
+        # white flashing before the splash faded in (screenshots, 2026-08-04).
+        # Naming a colour asset is the only way to tint it; a launch screen
+        # cannot run code, so it must be a static colour, not the shell gradient.
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         UIBackgroundModes:
           - audio
+        # Brand fonts (PermagentMobile/Fonts/, bundled as resources via the
+        # sources path above). Filenames, not paths — resources copy flat into
+        # the bundle. Mirrors the desktop ramp: Manrope display, Inter body,
+        # JetBrains Mono code. OFL license texts ship alongside in Fonts/.
+        UIAppFonts:
+          - Inter-Regular.otf
+          - Inter-Medium.otf
+          - Inter-SemiBold.otf
+          - Inter-Bold.otf
+          - Manrope-SemiBold.ttf
+          - Manrope-Bold.ttf
+          - Manrope-ExtraBold.ttf
+          - JetBrainsMono-Regular.ttf
+          - JetBrainsMono-Medium.ttf
+  # Hosted-app-free logic tests (currently the VoiceVAD turn machine). The
+  # target compiles the files under test directly instead of depending on the
+  # app target, so `xcodebuild test` needs no signing and no app install —
+  # keep it that way; anything needing the full app belongs in a UI-test
+  # target, not here.
+  PermagentTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: PermagentMobileTests
+      - path: PermagentMobile/VoiceVAD.swift
+      - path: PermagentMobile/ChatStream.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.permagent.mobile.tests
+        SWIFT_VERSION: "6.0"
+        # Test bundles have no checked-in plist; without generation, code
+        # signing (now that the target has a team) fails with "does not have
+        # an Info.plist file and one is not being generated".
+        GENERATE_INFOPLIST_FILE: "YES"
+        # Same team as the app target: without it, any non-Debug build (or a
+        # device destination) fails signing — Debug-only CODE_SIGNING_ALLOWED
+        # NO covered the simulator but left Xcode's other paths teamless.
+        DEVELOPMENT_TEAM: GANM22MFCH
+        CODE_SIGN_STYLE: Automatic
+      configs:
+        Debug:
+          CODE_SIGNING_ALLOWED: "NO"
+schemes:
+  PermagentTests:
+    build:
+      targets:
+        PermagentTests: test
+    test:
+      config: Debug
+      targets:
+        - PermagentTests

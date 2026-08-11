@@ -156,7 +156,10 @@ impl Agent {
             cron: cron_expression.to_string(),
             last_run: None,
             currently_running: false,
-            paused: false,
+            // Agent-created: lands paused pending user approval (see
+            // recipe_author::handle_create_recipe for the rationale).
+            paused: true,
+            requires_approval: true,
             current_session_id: None,
             process_start_time: None,
             worker_persona: None,
@@ -196,6 +199,34 @@ impl Agent {
                     None,
                 )
             })?;
+
+        // Agent path: refuse to fire paused jobs (user's choice or pending
+        // approval). Scheduler::run_now independently refuses
+        // requires_approval jobs; this widens the agent-side refusal to any
+        // paused job, matching recipe_author::handle_run_recipe.
+        if let Some(job) = scheduler
+            .list_scheduled_jobs()
+            .await
+            .iter()
+            .find(|j| j.id == job_id)
+        {
+            if job.paused {
+                return Err(ErrorData::new(
+                    ErrorCode::INVALID_PARAMS,
+                    format!(
+                        "Job '{}' is paused{} and cannot be run by an agent; the user can \
+                         run or resume it from Automate",
+                        job_id,
+                        if job.requires_approval {
+                            " awaiting the user's approval"
+                        } else {
+                            ""
+                        }
+                    ),
+                    None,
+                ));
+            }
+        }
 
         match scheduler.run_now(job_id).await {
             Ok(session_id) => Ok(vec![Content::text(format!(
@@ -256,6 +287,28 @@ impl Agent {
                     None,
                 )
             })?;
+
+        // Agent path: an approval-pending job may only be resumed by the user
+        // (the scheduler's unpause clears the flag, so an agent reaching it
+        // would silently self-approve).
+        if let Some(job) = scheduler
+            .list_scheduled_jobs()
+            .await
+            .iter()
+            .find(|j| j.id == job_id)
+        {
+            if job.requires_approval {
+                return Err(ErrorData::new(
+                    ErrorCode::INVALID_PARAMS,
+                    format!(
+                        "Job '{}' is awaiting the user's approval and cannot be resumed by \
+                         an agent; the user approves it from Automate",
+                        job_id
+                    ),
+                    None,
+                ));
+            }
+        }
 
         match scheduler.unpause_schedule(job_id).await {
             Ok(()) => Ok(vec![Content::text(format!(

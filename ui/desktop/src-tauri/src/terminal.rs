@@ -133,6 +133,9 @@ struct PtySession {
     writer: Box<dyn Write + Send>,
     _child: Box<dyn portable_pty::Child + Send>,
     output: Arc<Mutex<String>>,
+    /// Stream position matching `PtyDataPayload::seq`, so a replay can say
+    /// exactly which emitted chunks it already contains.
+    produced: Arc<std::sync::atomic::AtomicU64>,
 }
 
 pub struct PtySessions(Mutex<HashMap<String, PtySession>>);
@@ -147,6 +150,14 @@ impl PtySessions {
 struct PtyDataPayload {
     session_id: String,
     data: String,
+    /// Total bytes this session has produced, INCLUDING this chunk.
+    ///
+    /// The replay buffer and this event stream carry the same bytes, so a
+    /// client that subscribes and then fetches the replay would write the
+    /// overlap twice — splicing stale output into whatever the TUI is drawing
+    /// now. `seq` lets the client discard exactly the chunks the replay
+    /// already contains. See `get_pty_output`.
+    seq: u64,
 }
 
 #[derive(Clone, Serialize)]
@@ -239,6 +250,10 @@ pub async fn spawn_pty_session(
     let app_handle = app.clone();
     let output = Arc::new(Mutex::new(String::new()));
     let reader_output = output.clone();
+    // Monotonic byte count, never reset by replay-buffer truncation — it is a
+    // stream POSITION, not a length.
+    let produced = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let reader_produced = produced.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
         loop {
@@ -246,6 +261,9 @@ pub async fn spawn_pty_session(
                 Ok(0) => break,
                 Ok(n) => {
                     let data = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let seq = reader_produced
+                        .fetch_add(data.len() as u64, std::sync::atomic::Ordering::SeqCst)
+                        + data.len() as u64;
                     if let Ok(mut replay) = reader_output.lock() {
                         replay.push_str(&data);
                         const MAX_REPLAY_BYTES: usize = 2 * 1024 * 1024;
@@ -266,6 +284,7 @@ pub async fn spawn_pty_session(
                         PtyDataPayload {
                             session_id: sid.clone(),
                             data,
+                            seq,
                         },
                     );
                 }
@@ -316,6 +335,7 @@ pub async fn spawn_pty_session(
         writer,
         _child: child,
         output,
+        produced,
     };
 
     app.state::<PtySessions>()
@@ -330,18 +350,37 @@ pub async fn spawn_pty_session(
     })
 }
 
+/// The bounded scrollback, plus the stream position it covers.
+///
+/// A reattaching terminal subscribes to `pty_data` BEFORE calling this (so no
+/// bytes are missed during the round trip) and then drops every queued chunk
+/// whose `seq` is <= `seq` here. Without that the client wrote the overlap
+/// twice: live output first, then the replay containing the same bytes on top
+/// of it, splicing stale text into the line the TUI was drawing — reported
+/// 2026-08-04 as harness text stuck in Claude Code's input box.
+#[derive(Clone, Serialize)]
+pub struct PtyReplay {
+    data: String,
+    seq: u64,
+}
+
 #[tauri::command]
-pub async fn get_pty_output(app: AppHandle, session_id: String) -> Result<String, String> {
+pub async fn get_pty_output(app: AppHandle, session_id: String) -> Result<PtyReplay, String> {
     let sessions = app.state::<PtySessions>();
     let map = sessions.0.lock().unwrap();
     let session = map
         .get(&session_id)
         .ok_or_else(|| "Session not found".to_string())?;
-    session
+    // Read the position FIRST. If a chunk lands between these two reads the
+    // replay contains bytes beyond `seq`, so the client re-writes a little —
+    // harmless. The reverse order could drop bytes entirely.
+    let seq = session.produced.load(std::sync::atomic::Ordering::SeqCst);
+    let data = session
         .output
         .lock()
         .map(|s| s.clone())
-        .map_err(|_| "Output buffer unavailable".to_string())
+        .map_err(|_| "Output buffer unavailable".to_string())?;
+    Ok(PtyReplay { data, seq })
 }
 
 #[tauri::command]

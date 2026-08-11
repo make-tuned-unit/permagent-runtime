@@ -21,9 +21,9 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
         id: "scheduler",
         display_name: "Scheduler",
         category: crate::agents::self_knowledge::FeatureCategory::Worker,
-        what_it_does: "Runs saved recipes and reminders in the background on cron, one-time, or interval schedules — retrying transient failures, recovering runs missed during downtime, and escalating repeated failures to the Decision Inbox",
+        what_it_does: "Runs saved recipes and reminders in the background on cron, one-time, or interval schedules — retrying transient failures, recovering runs missed during downtime, and escalating repeated failures to the Decision Inbox. Guardrails are enforced, not advisory: schedules cannot fire more often than every 15 minutes; automations YOU create land paused until the user approves them in Automate (never resume or re-run one yourself, never recreate one the user deleted, never create a variant because one looks inactive); a job that fails three fires in a row auto-pauses; and headless scheduled runs get a minimal toolset unless the recipe declares extensions explicitly",
         why_it_matters:
-            "Lets you promise recurring or future work and actually deliver it without the user re-asking",
+            "Lets you promise recurring or future work and actually deliver it without the user re-asking — within limits that exist because an unguarded automation loop once burned real money overnight; work with the approval gate, not around it",
         state_source: crate::agents::self_knowledge::StateSource::Queryable,
         // Queryable → the cleanest read-back loop in the tour: HasScheduledJob is
         // visible directly in the brief (the Scheduler line goes 0 → 1).
@@ -237,12 +237,25 @@ pub struct ScheduledJob {
     /// True if the user has manually edited this starter recipe.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_customized: Option<bool>,
+
+    // ── Runaway guardrails (2026-08-05 credit-burn incident) ──
+    /// Failures since the last successful fire. Reset on success; at
+    /// `AUTO_PAUSE_AFTER_CONSECUTIVE_FAILURES` the job is auto-paused.
+    #[serde(default)]
+    pub consecutive_failures: u32,
+    /// True when this job was created by an agent and the user has not yet
+    /// approved it. Such jobs are created paused; agent tools refuse to
+    /// unpause them — only the user's unpause (Automate UI) clears the flag.
+    #[serde(default)]
+    pub requires_approval: bool,
 }
 
 /// Reliability + kind constants. Retry backoff is exponential and capped so a
 /// flapping job cannot storm.
 const RETRY_BASE_SECS: u64 = 10;
 const RETRY_MAX_SECS: u64 = 300;
+/// Fires that fail back-to-back before the job is auto-paused.
+const AUTO_PAUSE_AFTER_CONSECUTIVE_FAILURES: u32 = 3;
 /// Interval bounds (seconds): reject 0/absurd values. One year ceiling.
 const MIN_INTERVAL_SECS: u64 = 1;
 const MAX_INTERVAL_SECS: u64 = 31_536_000;
@@ -352,7 +365,74 @@ fn validate_schedule_spec(job: &ScheduledJob) -> Result<(), String> {
             ));
         }
     }
+    if let Some(violation) = schedule_floor_violation(job) {
+        return Err(violation);
+    }
     Ok(())
+}
+
+/// Minimum allowed firing interval for any schedule, in seconds. Every-minute
+/// agent-created crons burned ~$20 of API credits overnight on 2026-08-05; a
+/// floor makes that class of runaway impossible to install. Overridable for
+/// tests and deliberate power use via `PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS`.
+const DEFAULT_MIN_SCHEDULE_INTERVAL_SECS: u64 = 900;
+
+fn min_schedule_interval_secs() -> u64 {
+    std::env::var("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_MIN_SCHEDULE_INTERVAL_SECS)
+}
+
+/// `Some(reason)` when the job would fire more often than the interval floor.
+/// Cron cadence is measured empirically: the minimum gap over the next several
+/// occurrences (catches `*/1 * * * *` and dense field lists alike). `at` jobs
+/// fire once and are exempt.
+fn schedule_floor_violation(job: &ScheduledJob) -> Option<String> {
+    let floor = min_schedule_interval_secs();
+    if floor == 0 {
+        return None;
+    }
+    if let Some(secs) = job.every_seconds {
+        if secs < floor {
+            return Some(format!(
+                "interval every_seconds={} is below the minimum of {}s \
+                 (set PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS to override)",
+                secs, floor
+            ));
+        }
+    }
+    let cron_text = job.cron.trim();
+    if !cron_text.is_empty() {
+        if let Some(cron) = parse_cron_schedule(cron_text) {
+            // Only gaps BETWEEN occurrences measure cadence; the lead-in from
+            // "now" to the first fire does not.
+            let mut cursor = Utc::now();
+            let mut prev: Option<DateTime<Utc>> = None;
+            let mut min_gap: Option<i64> = None;
+            for _ in 0..8 {
+                let Some(next) = cron.find_next_occurrence(&cursor, false).ok() else {
+                    break;
+                };
+                if let Some(p) = prev {
+                    let gap = next.signed_duration_since(p).num_seconds();
+                    min_gap = Some(min_gap.map_or(gap, |m: i64| m.min(gap)));
+                }
+                prev = Some(next);
+                cursor = next;
+            }
+            if let Some(gap) = min_gap {
+                if gap > 0 && (gap as u64) < floor {
+                    return Some(format!(
+                        "cron '{}' fires every {}s — below the minimum of {}s \
+                         (set PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS to override)",
+                        cron_text, gap, floor
+                    ));
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Pure missed-run predicate: was a scheduled fire due in the window since
@@ -683,10 +763,33 @@ impl Scheduler {
                                 job.last_status = Some(ScheduleRunStatus::Ok);
                                 job.last_error = None;
                                 job.retry_count = 0;
+                                job.consecutive_failures = 0;
                             }
                             Err(e) => {
                                 job.last_status = Some(ScheduleRunStatus::Error);
                                 job.last_error = Some(e.to_string());
+                                job.consecutive_failures =
+                                    job.consecutive_failures.saturating_add(1);
+                                // Circuit breaker: a job that fails every fire
+                                // burns provider spend for nothing (5,110
+                                // credit-error retries in 2.5h on 2026-08-05).
+                                // Pause it; the user resumes from Automate.
+                                if job.consecutive_failures >= AUTO_PAUSE_AFTER_CONSECUTIVE_FAILURES
+                                    && !job.paused
+                                {
+                                    job.paused = true;
+                                    job.last_error = Some(format!(
+                                        "auto-paused after {} consecutive failures \
+                                         (resume from Automate once fixed). Last error: {}",
+                                        job.consecutive_failures, e
+                                    ));
+                                    tracing::error!(
+                                        target: "durability",
+                                        job = %task_job_id,
+                                        "scheduled job auto-paused after {} consecutive failures",
+                                        job.consecutive_failures
+                                    );
+                                }
                             }
                         }
                         (job.max_retries, job.retry_count)
@@ -967,6 +1070,25 @@ impl Scheduler {
         let mut reconciled = false;
 
         for mut job_to_load in list {
+            // Interval floor applies to persisted jobs too: add-time validation
+            // only covers jobs created after the guard shipped, and schedule.json
+            // is hand-editable. Violators are paused (not dropped) so the user
+            // sees them in Automate with the reason, instead of them firing.
+            if !job_to_load.paused {
+                if let Some(violation) = schedule_floor_violation(&job_to_load) {
+                    job_to_load.paused = true;
+                    job_to_load.last_error = Some(format!(
+                        "paused at load: {} — edit the schedule, then resume",
+                        violation
+                    ));
+                    reconciled = true;
+                    tracing::warn!(
+                        "Scheduled job '{}' paused at load: {}",
+                        job_to_load.id,
+                        violation
+                    );
+                }
+            }
             if !Path::new(&job_to_load.source).exists() {
                 tracing::warn!(
                     "Recipe file {} not found, skipping job '{}'",
@@ -1212,6 +1334,20 @@ impl Scheduler {
             let mut jobs_guard = self.jobs.lock().await;
             match jobs_guard.get_mut(sched_id) {
                 Some((_, job)) => {
+                    // Approval gate backstop: run_now used to fire an
+                    // approval-pending job directly, bypassing the paused
+                    // state entirely — an agent could create_recipe (lands
+                    // paused) then run_recipe it on demand. Enforced HERE so
+                    // every caller (HTTP route, recipe_author, schedule_tool)
+                    // inherits it; the user approves by unpausing, which
+                    // clears the flag.
+                    if job.requires_approval {
+                        return Err(SchedulerError::AnyhowError(anyhow!(
+                            "Job '{}' is awaiting the user's approval and cannot be run \
+                             until the user resumes it from Automate",
+                            sched_id
+                        )));
+                    }
                     if job.currently_running {
                         return Err(SchedulerError::AnyhowError(anyhow!(
                             "Job '{}' is already running",
@@ -1243,7 +1379,12 @@ impl Scheduler {
         let brain_snapshot = self.brain.read().await.clone();
         let persona_snapshot = self.persona.read().await.clone();
         let ac_snapshot = self.agent_config.read().await.clone();
-        let result = execute_job(
+        // Contain a panic exactly like the cron path does: an unwinding
+        // execute_job used to skip everything below — the token stayed in
+        // running_tasks and `currently_running` stayed true, wedging the
+        // schedule as "running" with a Stop button that cancelled a token
+        // nobody was watching.
+        let result = std::panic::AssertUnwindSafe(execute_job(
             job_to_run,
             self.jobs.clone(),
             sched_id.to_string(),
@@ -1251,8 +1392,22 @@ impl Scheduler {
             brain_snapshot,
             persona_snapshot,
             ac_snapshot,
-        )
-        .await;
+        ))
+        .catch_unwind()
+        .await
+        .unwrap_or_else(|panic| {
+            let msg = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "<non-string panic payload>".to_string());
+            tracing::error!(
+                target: "durability",
+                job = %sched_id,
+                "run_now job panicked (contained, cleanup still runs): {msg}"
+            );
+            Err(anyhow!("job '{}' panicked: {}", sched_id, msg))
+        });
 
         {
             let mut tasks = self.running_tasks.lock().await;
@@ -1268,6 +1423,42 @@ impl Scheduler {
                 job.current_session_id = None;
                 job.process_start_time = None;
                 job.last_run = Some(Utc::now());
+                // Manual runs record their outcome like cron fires do — a
+                // failed Run Now used to leave last_status untouched, so the
+                // Automate view showed stale health for exactly the runs the
+                // user was watching most closely.
+                match &result {
+                    Ok(_) => {
+                        job.last_status = Some(ScheduleRunStatus::Ok);
+                        job.last_error = None;
+                        job.consecutive_failures = 0;
+                    }
+                    Err(e) => {
+                        job.last_status = Some(ScheduleRunStatus::Error);
+                        job.last_error = Some(e.to_string());
+                        job.consecutive_failures = job.consecutive_failures.saturating_add(1);
+                        // The breaker applies here too: without it, repeated
+                        // run_now calls could drive a failing job past the
+                        // 3-strike limit indefinitely (agent-reachable via
+                        // run_recipe).
+                        if job.consecutive_failures >= AUTO_PAUSE_AFTER_CONSECUTIVE_FAILURES
+                            && !job.paused
+                        {
+                            job.paused = true;
+                            job.last_error = Some(format!(
+                                "auto-paused after {} consecutive failures \
+                                 (resume from Automate once fixed). Last error: {}",
+                                job.consecutive_failures, e
+                            ));
+                            tracing::error!(
+                                target: "durability",
+                                job = %sched_id,
+                                "scheduled job auto-paused after {} consecutive failures (run_now)",
+                                job.consecutive_failures
+                            );
+                        }
+                    }
+                }
             }
         }
 
@@ -1327,7 +1518,14 @@ impl Scheduler {
         {
             let mut jobs_guard = self.jobs.lock().await;
             match jobs_guard.get_mut(sched_id) {
-                Some((_, job)) => job.paused = false,
+                Some((_, job)) => {
+                    job.paused = false;
+                    // Unpausing IS the approval: the only route here for an
+                    // approval-pending job is the user's Automate UI — the
+                    // agent-facing resume path refuses while the flag is set.
+                    job.requires_approval = false;
+                    job.consecutive_failures = 0;
+                }
                 None => return Err(SchedulerError::JobNotFound(sched_id.to_string())),
             }
         }
@@ -1453,6 +1651,14 @@ impl Scheduler {
         persist_jobs(&self.storage_path, &self.jobs).await
     }
 
+    /// How long a cancelled run gets to observe its token and clean up before
+    /// Stop force-clears the schedule state. Short in tests so the watchdog is
+    /// testable without a 15-second sleep.
+    #[cfg(not(test))]
+    const KILL_FORCE_CLEAR_GRACE: std::time::Duration = std::time::Duration::from_secs(15);
+    #[cfg(test)]
+    const KILL_FORCE_CLEAR_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
+
     pub async fn kill_running_job(&self, sched_id: &str) -> Result<(), SchedulerError> {
         {
             let jobs_guard = self.jobs.lock().await;
@@ -1468,11 +1674,97 @@ impl Scheduler {
             }
         }
 
-        {
+        let cancelled_live_token = {
             let tasks = self.running_tasks.lock().await;
-            if let Some(token) = tasks.get(sched_id) {
-                token.cancel();
+            match tasks.get(sched_id) {
+                Some(token) => {
+                    token.cancel();
+                    true
+                }
+                None => false,
             }
+        };
+
+        // `currently_running` with no cancel token means the run is DEAD — it
+        // died without reaching its cleanup (e.g. a process restart mid-run
+        // before boot reconciliation existed). Returning Ok while clearing
+        // nothing left the schedule wedged as "running" forever, with Stop and
+        // Delete both bouncing off it. Clear the run state here so Stop always
+        // means stopped; a live run's own teardown path is untouched.
+        if !cancelled_live_token {
+            tracing::warn!(
+                "Stop requested for schedule '{}' but no live run exists — clearing wedged \
+                 running state",
+                sched_id
+            );
+            {
+                let mut jobs_guard = self.jobs.lock().await;
+                if let Some((_, job)) = jobs_guard.get_mut(sched_id) {
+                    job.currently_running = false;
+                    job.current_session_id = None;
+                    job.process_start_time = None;
+                    job.last_status = Some(ScheduleRunStatus::Error);
+                    job.last_error = Some("run died without cleanup; cleared by Stop".to_string());
+                }
+            }
+            persist_jobs(&self.storage_path, &self.jobs).await?;
+        } else {
+            // A cancelled run normally observes its token between steps and
+            // cleans up within moments. A run parked inside an await that
+            // never checks the token — a hung provider call, observed live
+            // 2026-08-06 after 40 stalled minutes — never does, and Stop
+            // reported success while the schedule stayed "running" forever.
+            // Watchdog: after a grace period, force-clear so Stop always
+            // converges to stopped. If the zombie ever wakes, its own teardown
+            // re-clears idempotently (the small overwrite window for a
+            // freshly-started next run is the same one slow teardowns always
+            // had — see the claim guard in create_job_task).
+            let jobs = self.jobs.clone();
+            let tasks = self.running_tasks.clone();
+            let storage_path = self.storage_path.clone();
+            let id = sched_id.to_string();
+            // Identity of the run being stopped. Without it the watchdog clears
+            // whatever is running when it fires — including a DIFFERENT, healthy
+            // run started during the grace window (a cron fire, or the user
+            // pressing Run now). Killing that one and recording "ignored
+            // cancellation" would be a lie about the wrong run.
+            let stopping = {
+                let g = self.jobs.lock().await;
+                g.get(sched_id).and_then(|(_, j)| j.process_start_time)
+            };
+            tokio::spawn(async move {
+                tokio::time::sleep(Self::KILL_FORCE_CLEAR_GRACE).await;
+                let still_running = {
+                    let g = jobs.lock().await;
+                    match g.get(&id) {
+                        // Ours to clear only if the SAME run is still in flight.
+                        Some((_, j)) => j.currently_running && j.process_start_time == stopping,
+                        None => false,
+                    }
+                };
+                if !still_running {
+                    return;
+                }
+                tracing::warn!(
+                    "schedule '{}' did not observe cancellation within {:?} — force-clearing \
+                     the wedged run",
+                    id,
+                    Self::KILL_FORCE_CLEAR_GRACE
+                );
+                tasks.lock().await.remove(&id);
+                {
+                    let mut g = jobs.lock().await;
+                    if let Some((_, job)) = g.get_mut(&id) {
+                        job.currently_running = false;
+                        job.current_session_id = None;
+                        job.process_start_time = None;
+                        job.last_status = Some(ScheduleRunStatus::Error);
+                        job.last_error =
+                            Some("run ignored cancellation; force-cleared by Stop".to_string());
+                    }
+                }
+                let _ = persist_jobs(&storage_path, &jobs).await;
+            });
         }
 
         Ok(())
@@ -1684,7 +1976,32 @@ async fn execute_job(
         )
         .await?;
 
-    let extensions = resolve_extensions_for_new_session(recipe.extensions.as_deref(), None);
+    // A recipe that declares no `extensions:` used to inherit the user's ENTIRE
+    // enabled set — including `orchestrator` (dispatch goals, spawn agents) and
+    // `recipe_author` (create more schedules via its process-global scheduler
+    // handle). That closed the self-replication loop behind the 2026-08-05
+    // frenzy: a scheduled session recreated deleted schedules and dispatched
+    // goals unattended. Headless sessions now get those only when the recipe
+    // declares them explicitly (and agent-created recipes land paused pending
+    // user approval, so the declaration is user-visible before the first run).
+    const HEADLESS_DENYLIST: &[&str] = &["orchestrator", "recipe_author"];
+    let declared = recipe.extensions.is_some();
+    let extensions: Vec<_> = resolve_extensions_for_new_session(recipe.extensions.as_deref(), None)
+        .into_iter()
+        .filter(|ext| {
+            let key = crate::config::extensions::name_to_key(&ext.name());
+            let denied = !declared && HEADLESS_DENYLIST.contains(&key.as_str());
+            if denied {
+                tracing::info!(
+                    "Scheduled job '{}': withholding inherited extension '{}' \
+                     (declare it in the recipe's `extensions:` to grant it)",
+                    job_id,
+                    key
+                );
+            }
+            !denied
+        })
+        .collect();
     for ext in &extensions {
         agent.add_extension(ext.clone(), &session.id).await?;
     }
@@ -1735,7 +2052,7 @@ async fn execute_job(
         }
     });
 
-    let prompt_text = recipe
+    let raw_prompt = recipe
         .prompt
         .as_deref()
         .filter(|s| !s.trim().is_empty())
@@ -1748,6 +2065,45 @@ async fn execute_job(
         .ok_or_else(|| {
             anyhow!("Recipe must specify at least one of `instructions` or `prompt`.")
         })?;
+
+    // A scheduled run has nobody to fill parameters interactively, so declared
+    // parameter defaults must be rendered into the prompt here. Without this,
+    // `{{ repo_path }}` reached the model verbatim and the git-steward spent
+    // eight consecutive mornings asking an empty room which repository to
+    // steward — every run "ok", ~22k tokens, zero output.
+    let prompt_text: String = {
+        let mut params: HashMap<String, String> = HashMap::new();
+        for p in recipe.parameters.as_deref().unwrap_or_default() {
+            let value = p.default.clone().unwrap_or_default();
+            if p.default.is_none() {
+                tracing::warn!(
+                    "Scheduled job '{}': parameter '{}' has no default; rendering as empty",
+                    job.id,
+                    p.key
+                );
+            }
+            params.insert(p.key.clone(), value);
+        }
+        if params.is_empty() {
+            raw_prompt.to_string()
+        } else {
+            match crate::recipe::template_recipe::render_recipe_content_with_params(
+                raw_prompt, &params,
+            ) {
+                Ok(rendered) => rendered,
+                Err(e) => {
+                    // A template the renderer cannot handle must not kill the
+                    // job — fall back to the raw prompt and say so.
+                    tracing::warn!(
+                        "Scheduled job '{}': parameter rendering failed ({e}); using raw prompt",
+                        job.id
+                    );
+                    raw_prompt.to_string()
+                }
+            }
+        }
+    };
+    let prompt_text = prompt_text.as_str();
 
     let user_message = Message::user().with_text(prompt_text);
     let mut conversation = Conversation::new_unvalidated(vec![user_message.clone()]);
@@ -1822,7 +2178,7 @@ async fn execute_job(
     use futures::StreamExt;
     let mut stream = std::pin::pin!(stream);
 
-    let mut stream_error = false;
+    let mut stream_error: Option<String> = None;
     while let Some(message_result) = stream.next().await {
         tokio::task::yield_now().await;
 
@@ -1836,7 +2192,7 @@ async fn execute_job(
             Ok(_) => {}
             Err(e) => {
                 tracing::error!("Error in agent stream: {}", e);
-                stream_error = true;
+                stream_error = Some(e.to_string());
                 break;
             }
         }
@@ -1969,7 +2325,11 @@ async fn execute_job(
 
     {
         let session_duration = start_time.elapsed();
-        let exit_type = if stream_error { "error" } else { "normal" };
+        let exit_type = if stream_error.is_some() {
+            "error"
+        } else {
+            "normal"
+        };
         let (total_tokens, message_count) = agent
             .config
             .session_manager
@@ -2027,6 +2387,21 @@ async fn execute_job(
                 tracing::debug!("Failed to send schedule telemetry: {}", e);
             }
         });
+    }
+
+    // A mid-stream failure (provider 400, network death) used to return Ok
+    // here, so the job was stamped last_status=ok with no assistant reply —
+    // during the 2026-08-05 credit exhaustion every run "succeeded" while
+    // producing nothing. Surface it: last_status/last_error, the failure
+    // activity event, retries, and escalation all key off this Err.
+    if let Some(err) = stream_error {
+        return Err(anyhow!(
+            "agent stream failed for scheduled job '{}' (session {} was created but the \
+             turn did not complete): {}",
+            job_id,
+            session.id,
+            err
+        ));
     }
 
     Ok(session.id)
@@ -2178,6 +2553,73 @@ mod tests {
     fn scheduled_job_agents_are_headless() {
         let agent = new_scheduled_job_agent();
         assert!(agent.is_headless(), "scheduled-job agents must be headless");
+    }
+
+    /// The approval gate must hold on the run_now path: an agent could
+    /// otherwise create_recipe (lands paused + requires_approval) and fire it
+    /// immediately via run_recipe, bypassing the pause entirely.
+    #[tokio::test]
+    async fn run_now_refuses_approval_pending_job() {
+        let _guard = env_lock::lock_env([("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0"))]);
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let recipe_path = create_test_recipe(temp_dir.path(), "pending_job");
+        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let scheduler = Scheduler::new(storage_path, session_manager).await.unwrap();
+
+        let job = ScheduledJob {
+            id: "pending_job".to_string(),
+            source: recipe_path.to_string_lossy().to_string(),
+            cron: "0 0 * * * *".to_string(),
+            paused: true,
+            requires_approval: true,
+            ..Default::default()
+        };
+        scheduler.add_scheduled_job(job, true).await.unwrap();
+
+        let err = scheduler
+            .run_now("pending_job")
+            .await
+            .expect_err("run_now must refuse an approval-pending job");
+        assert!(
+            err.to_string().contains("approval"),
+            "refusal must name the approval gate, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn interval_floor_rejects_runaway_schedules() {
+        let _guard = env_lock::lock_env([("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", None::<&str>)]);
+        // Every-minute cron — the exact shape that burned credits on 2026-08-05.
+        let every_minute = ScheduledJob {
+            cron: "0 */1 * * * *".to_string(),
+            ..Default::default()
+        };
+        assert!(validate_schedule_spec(&every_minute).is_err());
+        // Sub-floor fixed interval.
+        let every_minute_secs = ScheduledJob {
+            every_seconds: Some(60),
+            ..Default::default()
+        };
+        assert!(validate_schedule_spec(&every_minute_secs).is_err());
+        // Hourly cron and daily cron stay legal.
+        let hourly = ScheduledJob {
+            cron: "0 0 * * * *".to_string(),
+            ..Default::default()
+        };
+        assert!(validate_schedule_spec(&hourly).is_ok());
+        let weekdays_6am = ScheduledJob {
+            cron: "0 0 6 * * 1-5".to_string(),
+            ..Default::default()
+        };
+        assert!(validate_schedule_spec(&weekdays_6am).is_ok());
+        // One-time jobs are exempt (they fire once).
+        let one_shot = ScheduledJob {
+            at: Some(Utc::now() + chrono::Duration::seconds(30)),
+            ..Default::default()
+        };
+        assert!(validate_schedule_spec(&one_shot).is_ok());
     }
 
     #[test]
@@ -2401,6 +2843,111 @@ mod tests {
         );
     }
 
+    /// The Automate Stop wedge (2026-08-06): a run that died without cleanup
+    /// leaves `currently_running=true` with no cancel token. Stop used to
+    /// return Ok while clearing nothing — the schedule stayed "running"
+    /// forever. Stop must clear the wedged state so the job is re-runnable.
+    #[tokio::test]
+    async fn kill_clears_wedged_running_state_when_no_live_run_exists() {
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let recipe_path = create_test_recipe(temp_dir.path(), "wedged_job");
+        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let scheduler = Scheduler::new(storage_path, session_manager).await.unwrap();
+
+        let job = ScheduledJob {
+            id: "wedged_job".to_string(),
+            source: recipe_path.to_string_lossy().to_string(),
+            cron: "0 0 0 1 1 *".to_string(),
+            paused: true,
+            ..Default::default()
+        };
+        scheduler.add_scheduled_job(job, true).await.unwrap();
+
+        // Wedge it the way a dead run does: running per the job record, but no
+        // entry in running_tasks.
+        {
+            let mut jobs_guard = scheduler.jobs.lock().await;
+            let (_, job) = jobs_guard.get_mut("wedged_job").unwrap();
+            job.currently_running = true;
+            job.current_session_id = None;
+            job.process_start_time = Some(Utc::now());
+        }
+
+        scheduler
+            .kill_running_job("wedged_job")
+            .await
+            .expect("Stop on a wedged schedule must succeed");
+
+        let jobs = scheduler.list_scheduled_jobs().await;
+        let job = jobs.iter().find(|j| j.id == "wedged_job").unwrap();
+        assert!(
+            !job.currently_running,
+            "Stop must clear the wedged running flag"
+        );
+        assert!(job.process_start_time.is_none());
+
+        // And a second Stop now reports the truth: nothing is running.
+        assert!(scheduler.kill_running_job("wedged_job").await.is_err());
+    }
+
+    /// The live-but-deaf wedge (2026-08-06, observed in production): the run
+    /// task exists and its token is cancelled, but it is parked inside an
+    /// await that never checks the token (a hung provider call), so its own
+    /// teardown never runs. Stop must force-clear after the grace period.
+    #[tokio::test]
+    async fn kill_force_clears_a_run_that_ignores_cancellation() {
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let recipe_path = create_test_recipe(temp_dir.path(), "deaf_job");
+        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let scheduler = Scheduler::new(storage_path, session_manager).await.unwrap();
+
+        let job = ScheduledJob {
+            id: "deaf_job".to_string(),
+            source: recipe_path.to_string_lossy().to_string(),
+            cron: "0 0 0 1 1 *".to_string(),
+            paused: true,
+            ..Default::default()
+        };
+        scheduler.add_scheduled_job(job, true).await.unwrap();
+
+        // Simulate a live run that will never observe cancellation: running
+        // per the job record, with a real token in running_tasks and no task
+        // watching it.
+        {
+            let mut jobs_guard = scheduler.jobs.lock().await;
+            jobs_guard.get_mut("deaf_job").unwrap().1.currently_running = true;
+        }
+        scheduler
+            .running_tasks
+            .lock()
+            .await
+            .insert("deaf_job".to_string(), CancellationToken::new());
+
+        scheduler.kill_running_job("deaf_job").await.unwrap();
+
+        // Immediately after Stop the run may legitimately still be winding
+        // down — force-clear only fires after the grace period (200ms in
+        // tests).
+        sleep(Duration::from_millis(600)).await;
+
+        let jobs = scheduler.list_scheduled_jobs().await;
+        let job = jobs.iter().find(|j| j.id == "deaf_job").unwrap();
+        assert!(
+            !job.currently_running,
+            "Stop must force-clear a run that ignores cancellation"
+        );
+        assert!(
+            !scheduler
+                .running_tasks
+                .lock()
+                .await
+                .contains_key("deaf_job"),
+            "the orphaned token must be removed"
+        );
+    }
+
     #[tokio::test]
     async fn test_job_runs_on_schedule() {
         let _guard = env_lock::lock_env([
@@ -2408,6 +2955,9 @@ mod tests {
             ("GOOSE_MODEL", Some("gpt-4o")),
             ("OPENAI_API_KEY", Some("fake-openai-no-keyring")),
             ("OPENAI_CUSTOM_HEADERS", Some("")),
+            // These tests fire every second; disable the production interval
+            // floor (which would reject the job at add time).
+            ("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0")),
         ]);
         let temp_dir = tempdir().unwrap();
         let storage_path = temp_dir.path().join("schedule.json");
@@ -2446,6 +2996,9 @@ mod tests {
             ("GOOSE_MODEL", Some("gpt-4o")),
             ("OPENAI_API_KEY", Some("fake-openai-no-keyring")),
             ("OPENAI_CUSTOM_HEADERS", Some("")),
+            // These tests fire every second; disable the production interval
+            // floor (which would reject the job at add time).
+            ("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0")),
         ]);
         let temp_dir = tempdir().unwrap();
         let storage_path = temp_dir.path().join("schedule.json");
@@ -2485,6 +3038,9 @@ mod tests {
             ("GOOSE_MODEL", Some("gpt-4o")),
             ("OPENAI_API_KEY", Some("fake-openai-no-keyring")),
             ("OPENAI_CUSTOM_HEADERS", Some("")),
+            // These tests fire every second; disable the production interval
+            // floor (which would reject the job at add time).
+            ("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", Some("0")),
         ]);
         let temp_dir = tempdir().unwrap();
         let recipe_path = temp_dir.path().join("no_prompt.yaml");

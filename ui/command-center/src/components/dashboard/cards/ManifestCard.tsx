@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { radius, font } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
-import { Stat, SectionTitle } from '../atoms';
+import { Stat, SectionTitle, EmptyNote } from '../atoms';
 import { apiFetch } from '../../../lib/api';
 import type { CardManifest } from './registry';
+import { CardIcon } from './cardIcons';
 
 /**
  * The normalized payload every manifest-card data endpoint returns. Layout is
@@ -17,8 +18,17 @@ export interface CardCell {
   sub?: string;
   /** Small trailing delta badge. */
   delta?: string;
+  /**
+   * Grouping hint from the data source, e.g. `'forecast'`. The source names
+   * the meaning; this component decides the drawing. Cells with no group get
+   * the dense inline treatment, which is right for a humidity reading and
+   * useless for four days of weather — those need their day labels.
+   */
+  group?: string;
   /** Render the value in the accent colour. */
   accent?: boolean;
+  /** Glyph name from the daemon (see cardIcons.tsx). */
+  icon?: string;
 }
 
 export interface CardData {
@@ -99,9 +109,11 @@ export function ManifestCard({ manifest }: Props) {
     }
   }, [manifest.configure, configValue, fetchData]);
 
+  const isCompact = manifest.layout === 'compact';
+
   const shell = (children: React.ReactNode) => (
     <div style={{
-      padding: 24, borderRadius: radius.lg,
+      padding: isCompact ? 14 : 24, borderRadius: radius.lg,
       background: colors.surface,
       border: `1px solid ${colors.border}`,
       boxShadow: [colors.cardShadow, colors.cardHighlight].filter(Boolean).join(', '),
@@ -118,7 +130,7 @@ export function ManifestCard({ manifest }: Props) {
     return shell(
       <>
         <SectionTitle title={manifest.name} />
-        <CenteredNote color={colors.textDim}>Loading…</CenteredNote>
+        <EmptyNote>Loading…</EmptyNote>
       </>,
     );
   }
@@ -187,7 +199,7 @@ export function ManifestCard({ manifest }: Props) {
     return shell(
       <>
         <SectionTitle title={manifest.name} />
-        <CenteredNote color={colors.textDim}>{data?.note || "Couldn't load this card"}</CenteredNote>
+        <EmptyNote>{data?.note || "Couldn't load this card"}</EmptyNote>
       </>,
     );
   }
@@ -195,12 +207,110 @@ export function ManifestCard({ manifest }: Props) {
     return shell(
       <>
         <SectionTitle title={manifest.name} />
-        <CenteredNote color={colors.textDim}>{data?.note || 'Nothing to show'}</CenteredNote>
+        <EmptyNote>{data?.note || 'Nothing to show'}</EmptyNote>
       </>,
     );
   }
 
   // ── Populated layouts ──────────────────────────────────────────────────────
+  if (isCompact) {
+    // Ambient tile. Three rules, all learned from the first attempt:
+    //
+    //  1. NO vertical void. The first version pinned the hero to the top and
+    //     the detail rows to the bottom with `marginTop: auto`, which in a
+    //     tile taller than its content opened a dead gap down the middle.
+    //     Content now stacks from the top and the tile is sized to fit it.
+    //  2. An icon carries the meaning faster than the words do — you read
+    //     "rain" from the glyph before parsing "Drizzle".
+    //  3. Supporting values sit on ONE dense row, not one row each.
+    //  4. A group the source named gets its own treatment. The forecast is
+    //     labelled days, not more supporting values — dropped into the inline
+    //     row it renders as three anonymous temperature pairs.
+    const [hero, ...rest] = cells;
+    const inline = rest.filter(c => c.group !== 'forecast');
+    const forecast = rest.filter(c => c.group === 'forecast');
+    return shell(
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minHeight: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: colors.textDim }}>
+          <CardIcon name={hero.icon} size={13} />
+          <span style={{
+            fontFamily: font.body, fontSize: 10, fontWeight: 600, letterSpacing: '0.08em',
+            textTransform: 'uppercase',
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+          }}>
+            {hero.label || manifest.name}
+          </span>
+        </div>
+
+        <div style={{
+          fontFamily: font.display, fontSize: 22, fontWeight: 600, lineHeight: 1.1,
+          color: hero.accent ? colors.cyan : colors.text,
+          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+          fontVariantNumeric: 'tabular-nums',
+        }}>
+          {hero.value}
+        </div>
+
+        {inline.length > 0 && (
+          <div style={{
+            display: 'flex', flexWrap: 'wrap', gap: '3px 10px',
+            fontFamily: font.body, fontSize: 10.5, lineHeight: 1.45, minWidth: 0,
+          }}>
+            {inline.map((c, i) => (
+              <span
+                key={i}
+                title={`${c.label}: ${c.value}`}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: colors.textDim }}
+              >
+                <CardIcon name={c.icon} size={11} />
+                <span style={{
+                  color: c.accent ? colors.cyan : colors.textMuted, fontWeight: 500,
+                  fontVariantNumeric: 'tabular-nums',
+                }}>{c.value}</span>
+              </span>
+            ))}
+          </div>
+        )}
+
+        {forecast.length > 0 && (
+          <div
+            role="list"
+            aria-label="Forecast"
+            style={{
+              display: 'flex', gap: 4, marginTop: 2, minWidth: 0,
+              borderTop: `1px solid ${colors.border}`, paddingTop: 7,
+            }}
+          >
+            {forecast.map((c, i) => (
+              <div
+                key={i}
+                role="listitem"
+                title={c.sub ? `${c.label}: ${c.value} · ${c.sub}` : `${c.label}: ${c.value}`}
+                style={{
+                  flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column',
+                  alignItems: 'center', gap: 2, fontFamily: font.body,
+                }}
+              >
+                <span style={{
+                  fontSize: 9.5, fontWeight: 600, letterSpacing: '0.06em',
+                  textTransform: 'uppercase', color: colors.textDim,
+                }}>{c.label}</span>
+                <CardIcon name={c.icon} size={13} />
+                <span style={{
+                  fontSize: 10.5, color: colors.textMuted, fontVariantNumeric: 'tabular-nums',
+                  whiteSpace: 'nowrap',
+                }}>{c.value}</span>
+                {c.sub && (
+                  <span style={{ fontSize: 9, color: colors.textDim, whiteSpace: 'nowrap' }}>{c.sub}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>,
+    );
+  }
+
   return shell(
     <>
       <SectionTitle title={manifest.name} />
@@ -244,13 +354,3 @@ export function ManifestCard({ manifest }: Props) {
   );
 }
 
-function CenteredNote({ children, color }: { children: React.ReactNode; color: string }) {
-  return (
-    <div style={{
-      flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
-      fontFamily: font.body, fontSize: 12, color, textAlign: 'center',
-    }}>
-      {children}
-    </div>
-  );
-}

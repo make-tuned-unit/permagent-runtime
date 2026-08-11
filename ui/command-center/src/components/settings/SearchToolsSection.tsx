@@ -12,12 +12,20 @@ interface ProviderRowState {
   enabled: boolean;
   input: string;
   busy: boolean;
+  /** The stored key, masked by the daemon (e.g. `BSAArB-L***…`). A boolean
+   *  "Key saved" asks the user to take our word for it; showing the real prefix
+   *  lets them recognize the key they pasted. Empty when nothing is stored. */
+  masked: string;
+  /** Result of the last "Test" probe. `null` = never tested this session — the
+   *  honest default, since a stored key says nothing about whether it works. */
+  probe: { ok: boolean; message: string } | null;
+  probing: boolean;
   /** Last save/toggle failure — rendered inline (2026-07 wiring audit: the
    *  old console-only error made a failed key save look like a stuck form). */
   error: string;
 }
 
-const blank = (): ProviderRowState => ({ configured: false, enabled: false, input: '', busy: false, error: '' });
+const blank = (): ProviderRowState => ({ configured: false, enabled: false, input: '', busy: false, masked: '', probe: null, probing: false, error: '' });
 
 /**
  * Generic "Search & tools" credential section — the bridge from #226/#352,
@@ -46,11 +54,13 @@ export function SearchToolsSection() {
 
     await Promise.all(SEARCH_PROVIDERS.map(async p => {
       let configured = false;
+      let masked = '';
       try {
-        const r = await api.readConfig(p.keyName, true);
-        configured = !!(r.masked_value || r.value);
+        const r = await api.readSecretConfig(p.keyName);
+        masked = r?.maskedValue ?? '';
+        configured = masked.length > 0;
       } catch { /* key not set */ }
-      patch(p.id, { configured, enabled: enabledNames.has(p.displayName) });
+      patch(p.id, { configured, masked, enabled: enabledNames.has(p.displayName) });
     }));
   }, []);
 
@@ -65,11 +75,34 @@ export function SearchToolsSection() {
       // connector — it reads the key back through env_keys.
       await saveAndEnableSearchProvider(p, value);
       patch(p.id, { input: '', configured: true, enabled: true });
+      // Re-read so the badge shows the key the DAEMON actually stored, not what
+      // we optimistically assumed — the save is only real once it reads back.
+      await refresh();
     } catch (e) {
       console.error('Failed to save search key:', e);
       patch(p.id, { error: `Couldn't save the key: ${e instanceof Error ? e.message : String(e)}` });
     } finally {
       patch(p.id, { busy: false });
+    }
+  };
+
+  /** Start the provider for real and report what it answered. A stored key and
+   *  a WORKING key are different claims; only this can make the second one. */
+  const testProvider = async (p: SearchProvider) => {
+    patch(p.id, { probing: true, probe: null, error: '' });
+    try {
+      const r = await api.probeExtension(p.displayName);
+      patch(p.id, {
+        probe: r.ok
+          ? { ok: true, message: `Working — ${r.toolCount} tool${r.toolCount === 1 ? '' : 's'} available` }
+          : { ok: false, message: r.error || 'The provider did not answer.' },
+      });
+    } catch (e) {
+      patch(p.id, {
+        probe: { ok: false, message: `Couldn't run the test: ${e instanceof Error ? e.message : String(e)}` },
+      });
+    } finally {
+      patch(p.id, { probing: false });
     }
   };
 
@@ -112,8 +145,12 @@ export function SearchToolsSection() {
                   <span
                     className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded"
                     style={{ backgroundColor: `${colors.success}26`, color: colors.success }}
+                    title={r.masked ? `Stored in your keychain as ${r.masked}` : undefined}
                   >
                     <FiCheck size={10} /> Key saved
+                    {r.masked && (
+                      <span style={{ fontFamily: font.mono, opacity: 0.8 }}>{r.masked}</span>
+                    )}
                   </span>
                 ) : (
                   <span
@@ -143,6 +180,15 @@ export function SearchToolsSection() {
                 {r.busy ? 'Saving…' : 'Save'}
               </button>
               <button
+                onClick={() => testProvider(p)}
+                disabled={r.probing || !r.configured}
+                title={r.configured ? 'Start the provider and list its tools' : 'Add a key first'}
+                className="text-[11px] px-3 py-1.5 rounded transition disabled:opacity-40"
+                style={{ border: `1px solid ${colors.border}`, color: colors.textMuted }}
+              >
+                {r.probing ? 'Testing…' : 'Test'}
+              </button>
+              <button
                 onClick={() => openInBrowser(p.keyPageUrl)}
                 title={`Open ${p.keyPageLabel} in the browser`}
                 className="flex items-center gap-1 text-[11px] px-3 py-1.5 rounded hover:bg-white/5 transition"
@@ -151,6 +197,15 @@ export function SearchToolsSection() {
                 <FiExternalLink size={11} /> Get key
               </button>
             </div>
+            {r.probe && (
+              <div
+                role="status"
+                className="text-[11px] mt-2"
+                style={{ fontFamily: font.body, color: r.probe.ok ? colors.success : colors.danger }}
+              >
+                {r.probe.ok ? '✓ ' : '✕ '}{r.probe.message}
+              </div>
+            )}
             {r.error && (
               <div role="alert" className="text-[11px] mt-2" style={{ fontFamily: font.body, color: colors.danger }}>
                 {r.error}

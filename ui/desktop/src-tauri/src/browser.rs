@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
+use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Emitter, Manager, WebviewBuilder, WebviewUrl};
 
 // ── File-intake inbox (epic #392 / #393) ────────────────────────────────────
@@ -173,10 +174,24 @@ impl BrowserSessions {
 
 static WEBVIEW_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// A MAIN-FRAME page-load transition. `url` is read from the WKWebView itself
+/// (`WKWebView.URL`), so it is the main frame's URL by construction — a
+/// subframe can never appear here.
+///
+/// This replaced an `on_navigation` emit, which was the wrong source: that hook
+/// wraps `decidePolicyForNavigationAction`, which fires for EVERY frame and
+/// hands the callback only a URL — no way to tell an ad iframe from the page.
+/// CBC embeds Google's `/api2/aframe`, so the last iframe to load renamed the
+/// tab `google.com` and put the ad frame's path in the address bar (reported
+/// 2026-08-04). `on_page_load` maps to `didCommitNavigation` /
+/// `didFinishNavigation`, which WebKit only calls for the main frame.
 #[derive(Clone, Serialize)]
-struct BrowserNavigatedPayload {
+struct BrowserPageLoadPayload {
     webview_id: String,
     url: String,
+    /// `true` at commit (the page's identity is now this URL), `false` at
+    /// finish. Drives the reload spinner as well as the address bar.
+    loading: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -255,15 +270,15 @@ pub async fn create_browser_webview(
                 _ => true,
             }
         })
-        .on_navigation(move |nav_url: &url::Url| {
+        .on_page_load(move |_webview, payload| {
             let _ = nav_app.emit(
-                "browser_navigated",
-                BrowserNavigatedPayload {
+                "browser_page_load",
+                BrowserPageLoadPayload {
                     webview_id: nav_id.clone(),
-                    url: nav_url.to_string(),
+                    url: payload.url().to_string(),
+                    loading: matches!(payload.event(), PageLoadEvent::Started),
                 },
             );
-            true
         })
         .on_document_title_changed(move |_webview, title| {
             let _ = title_app.emit(
@@ -278,9 +293,24 @@ pub async fn create_browser_webview(
     let position = tauri::Position::Logical(tauri::LogicalPosition::new(x, y));
     let size = tauri::Size::Logical(tauri::LogicalSize::new(width, height));
 
-    window
+    let child = window
         .add_child(builder, position, size)
         .map_err(|e| format!("Failed to create webview: {e}"))?;
+
+    // Media capture (getUserMedia) for the in-app browser.
+    //
+    // Without this a Zoom / Google Meet / Teams call cannot run here at all:
+    // WKWebView hides navigator.mediaDevices unless the private
+    // `_mediaCaptureEnabled` preference is set. The main and chat WINDOWS get
+    // it by invoking `enable_media_capture_cmd` from their own JS on mount —
+    // a route unavailable to this webview, whose JS belongs to the remote
+    // page and has no Tauri bridge. So it must be applied here, at creation,
+    // from the Rust side. Best-effort and non-fatal, exactly like the window
+    // path: a failure means no camera/mic in the browser, not a dead tab.
+    #[cfg(target_os = "macos")]
+    {
+        let _ = child.with_webview(|w| crate::apply_media_capture(&w));
+    }
 
     app.state::<BrowserSessions>().0.lock().unwrap().insert(
         label.clone(),
@@ -309,7 +339,29 @@ pub async fn reparent_browser(
         .ok_or_else(|| format!("Window {window_label} not found"))?;
     webview
         .reparent(&window)
-        .map_err(|e| format!("Reparent failed: {e}"))
+        .map_err(|e| format!("Reparent failed: {e}"))?;
+
+    // RE-PARK after reparenting, in the same call.
+    //
+    // The caller hides the webview before handing it over, but `hide_browser`
+    // parks it at (-10000,-10000) in the OLD window's coordinate space. Once
+    // `reparent` re-hosts the WKWebView under a new parent that offset no
+    // longer means "offscreen", so the webview paints — at the PANE window's
+    // size — until the receiving window's bounds pump corrects it a frame or
+    // two later. That is the full-screen flash seen when closing a popped-out
+    // browser (reported 2026-08-04, intermittent because it depends on whether
+    // a compositor frame lands in the gap).
+    //
+    // Re-parking here closes the gap entirely: there is no JS round-trip
+    // between the reparent and the park, so nothing can be painted in
+    // between. The receiving side reveals it by setting real bounds, which is
+    // already what `syncBounds` does on arrival.
+    webview
+        .set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
+            -10000.0, -10000.0,
+        )))
+        .map_err(|e| format!("Re-park after reparent failed: {e}"))?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -372,6 +424,67 @@ pub async fn close_browser(app: AppHandle, webview_id: String) -> Result<(), Str
         webview.close().map_err(|e| format!("Close failed: {e}"))?;
     }
     Ok(())
+}
+
+/// Close every browser webview the UI no longer knows about.
+///
+/// Why this exists: `BrowserSessions` and the native child webviews live for
+/// the lifetime of the PROCESS, but the React shell's memory of which
+/// `webview_id`s exist dies with the page. Reload the shell (or hot-reload in
+/// dev) and every open browser child keeps compositing above the DOM — native
+/// child webviews always render over HTML — while the only code that could
+/// address them has forgotten their ids. The result is a UI buried under
+/// webviews nothing can close, and the only way out is force-quitting the app.
+///
+/// The shell calls this once on mount with the ids it still believes in
+/// (normally none, right after a reload). Anything labelled `browser-*` that
+/// is not in `keep` is orphaned by definition and gets closed.
+///
+/// Safe as a prefix sweep because these labels come from a single
+/// process-static counter (`WEBVIEW_COUNTER`) and no other webview in the app
+/// uses the `browser-` prefix. Returns the number reaped so a caller — or a
+/// human reading the log — can tell the difference between "nothing was
+/// orphaned" and "the sweep never ran".
+#[tauri::command]
+pub async fn reap_orphan_browsers(app: AppHandle, keep: Vec<String>) -> Result<usize, String> {
+    // Take the full label set first, then close outside the lock: closing a
+    // webview can re-enter, and holding the mutex across that is how the pane
+    // teardown deadlocked before.
+    let orphans: Vec<String> = {
+        let sessions = app.state::<BrowserSessions>();
+        let map = sessions.0.lock().unwrap();
+        map.keys()
+            .filter(|label| !keep.contains(*label))
+            .cloned()
+            .collect()
+    };
+
+    let mut reaped = 0usize;
+    for label in &orphans {
+        if let Some(webview) = app.get_webview(label) {
+            // Best-effort: a webview that is already gone is exactly the
+            // outcome we want, so a close error must not abort the sweep and
+            // strand the remaining orphans.
+            if let Err(e) = webview.close() {
+                eprintln!("[permagent-app] reap: close {label} failed: {e}");
+                continue;
+            }
+        }
+        app.state::<BrowserSessions>()
+            .0
+            .lock()
+            .unwrap()
+            .remove(label);
+        reaped += 1;
+    }
+
+    if reaped > 0 {
+        eprintln!(
+            "[permagent-app] reap: closed {reaped} orphaned browser webview(s), kept {}",
+            keep.len()
+        );
+    }
+    Ok(reaped)
 }
 
 /// Tear down a detached pane window and its child browser webviews in ONE
@@ -554,6 +667,10 @@ pub struct PageSnapshot {
     /// "ok", "refused_scheme" (non-http(s) page), or "error".
     #[serde(default = "default_status")]
     pub status: String,
+    /// The generation these refs were stamped in. An act must present it back,
+    /// so a snapshot taken by another session invalidates these refs (#939).
+    #[serde(default)]
+    pub generation: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -579,15 +696,27 @@ struct ActArgs<'a> {
     value: Option<&'a str>,
 }
 
-fn snapshot_js(cap: usize) -> String {
+/// A fresh snapshot generation token. Refs are only valid within the generation
+/// they were stamped in, so every snapshot mints a new one (#939).
+fn new_generation() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+fn snapshot_js(cap: usize, generation_json: &str) -> String {
     format!(
-        "(function(){{\n{GROUNDING_JS}\nreturn JSON.stringify(__permagentSnapshot({cap}));\n}})()"
+        "(function(){{\n{GROUNDING_JS}\nreturn JSON.stringify(__permagentSnapshot({cap}, {generation_json}));\n}})()"
     )
 }
 
-fn act_js(args_json: &str, expected_url_json: &str, cap: usize) -> String {
+fn act_js(
+    args_json: &str,
+    expected_url_json: &str,
+    expected_generation_json: &str,
+    next_generation_json: &str,
+    cap: usize,
+) -> String {
     format!(
-        "(function(){{\n{GROUNDING_JS}\nif (String(window.location.href) !== {expected_url_json}) return JSON.stringify({{ok:false,error:'The page changed since the snapshot. Take a fresh snapshot before acting.'}});\nreturn JSON.stringify(__permagentAct({args_json}, {cap}));\n}})()"
+        "(function(){{\n{GROUNDING_JS}\nif (String(window.location.href) !== {expected_url_json}) return JSON.stringify({{ok:false,error:'The page changed since the snapshot. Take a fresh snapshot before acting.'}});\nreturn JSON.stringify(__permagentAct({args_json}, {cap}, {expected_generation_json}, {next_generation_json}));\n}})()"
     )
 }
 
@@ -620,7 +749,9 @@ pub async fn get_page_snapshot(app: AppHandle, webview_id: String) -> Result<Pag
     let webview = app
         .get_webview(&webview_id)
         .ok_or_else(|| "Webview not found".to_string())?;
-    let js = snapshot_js(MAX_SNAPSHOT_ELEMENTS);
+    let generation_json = serde_json::to_string(&new_generation())
+        .map_err(|e| format!("Serialize generation failed: {e}"))?;
+    let js = snapshot_js(MAX_SNAPSHOT_ELEMENTS, &generation_json);
     eval_returning_json(&webview, &js, std::time::Duration::from_secs(5))
 }
 
@@ -629,6 +760,7 @@ pub async fn get_page_snapshot(app: AppHandle, webview_id: String) -> Result<Pag
 /// depth — the daemon route validates too). The in-page scheme guard in
 /// `__permagentAct` refuses non-http(s) pages.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn act_on_ref(
     app: AppHandle,
     webview_id: String,
@@ -636,6 +768,7 @@ pub async fn act_on_ref(
     action: String,
     value: Option<String>,
     expected_url: String,
+    expected_generation: Option<String>,
 ) -> Result<ActResult, String> {
     if !matches!(action.as_str(), "click" | "type" | "select") {
         return Err(format!("Unsupported action: {action}"));
@@ -652,7 +785,17 @@ pub async fn act_on_ref(
         serde_json::to_string(&args).map_err(|e| format!("Serialize args failed: {e}"))?;
     let expected_url_json = serde_json::to_string(&expected_url)
         .map_err(|e| format!("Serialize expected URL failed: {e}"))?;
-    let js = act_js(&args_json, &expected_url_json, MAX_SNAPSHOT_ELEMENTS);
+    let expected_generation_json = serde_json::to_string(&expected_generation.unwrap_or_default())
+        .map_err(|e| format!("Serialize expected generation failed: {e}"))?;
+    let next_generation_json = serde_json::to_string(&new_generation())
+        .map_err(|e| format!("Serialize generation failed: {e}"))?;
+    let js = act_js(
+        &args_json,
+        &expected_url_json,
+        &expected_generation_json,
+        &next_generation_json,
+        MAX_SNAPSHOT_ELEMENTS,
+    );
     eval_returning_json(&webview, &js, std::time::Duration::from_secs(8))
 }
 
@@ -665,12 +808,52 @@ mod tests {
         let js = act_js(
             r#"{"ref":1,"action":"click"}"#,
             r#""https://example.com/form""#,
+            r#""gen-a""#,
+            r#""gen-b""#,
             MAX_SNAPSHOT_ELEMENTS,
         );
         let guard = js.find("window.location.href").unwrap();
         let act = js.find("__permagentAct({").unwrap();
         assert!(guard < act);
         assert!(js.contains("The page changed since the snapshot"));
+    }
+
+    /// #939: the act carries the generation its refs were stamped in, plus a
+    /// fresh one for the post-action snapshot. Without this a second session
+    /// snapshotting the same tab restamps every ref from 0 and the first
+    /// session's "ref 3" silently resolves to a different element.
+    #[test]
+    fn act_script_passes_the_expected_and_next_generations() {
+        let js = act_js(
+            r#"{"ref":3,"action":"click"}"#,
+            r#""https://example.com/form""#,
+            r#""gen-expected""#,
+            r#""gen-next""#,
+            MAX_SNAPSHOT_ELEMENTS,
+        );
+        assert!(
+            js.contains("gen-expected"),
+            "expected generation is injected"
+        );
+        assert!(js.contains("gen-next"), "next generation is injected");
+        // Order matters: __permagentAct(args, cap, expectedGen, nextGen).
+        let call = js.find("__permagentAct({").unwrap();
+        let expected_at = js[call..].find("gen-expected").unwrap();
+        let next_at = js[call..].find("gen-next").unwrap();
+        assert!(expected_at < next_at);
+    }
+
+    /// Every snapshot mints a distinct generation — the whole point is that a
+    /// later snapshot supersedes an earlier one's refs.
+    #[test]
+    fn each_snapshot_generation_is_unique() {
+        assert_ne!(new_generation(), new_generation());
+    }
+
+    #[test]
+    fn snapshot_script_stamps_the_generation() {
+        let js = snapshot_js(MAX_SNAPSHOT_ELEMENTS, r#""gen-1""#);
+        assert!(js.contains("__permagentSnapshot(150, \"gen-1\")"));
     }
 
     #[test]
@@ -692,6 +875,77 @@ mod tests {
         );
     }
 
+    // ── Tab identity may only come from a MAIN-FRAME source ─────────────────
+    //
+    // These are source guards, not behavioural tests, because the thing being
+    // protected is a choice of WebKit callback: `on_navigation` wraps
+    // `decidePolicyForNavigationAction` (fires for EVERY frame, and hands the
+    // callback nothing but a URL), while `on_page_load` wraps
+    // didCommit/didFinish (main frame only, URL read from the webview itself).
+    // No test that can run in CI has a WKWebView to prove the difference, and
+    // the wrong choice is invisible until a page with ad iframes relabels its
+    // own tab — which is exactly what shipped: CBC embeds Google's
+    // `/api2/aframe`, and the last iframe to load renamed the tab `google.com`
+    // and rewrote the address bar (reported 2026-08-04).
+    //
+    // The needles are assembled with `concat!` so they do not appear literally
+    // in this file — otherwise every one of these assertions would match its
+    // own source text and pass no matter what the wiring above actually says.
+
+    #[test]
+    fn identity_events_come_from_the_main_frame_hook() {
+        let src = include_str!("browser.rs");
+        assert!(
+            src.contains(concat!(".on_", "page_load(")),
+            "create_browser_webview must wire the main-frame page-load hook. \
+             Tab identity and the address bar are fed from it; it is the only \
+             navigation callback WebKit restricts to the main frame."
+        );
+    }
+
+    #[test]
+    fn the_all_frames_navigation_hook_is_not_wired() {
+        let src = include_str!("browser.rs");
+        assert!(
+            !src.contains(concat!(".on_", "navigation(")),
+            "This hook fires for SUBFRAMES too, so anything derived from it can \
+             be an ad iframe's URL rather than the page's. It was removed on \
+             purpose. If you need to intercept or block navigations, do that \
+             here — but never emit tab identity from it, and update this test \
+             deliberately rather than deleting it."
+        );
+    }
+
+    /// The event name is a contract with Browser.tsx, which has a matching
+    /// guard. Renaming one side silently stops every tab updating.
+    #[test]
+    fn page_load_event_name_and_shape_are_pinned() {
+        let src = include_str!("browser.rs");
+        assert!(
+            src.contains(concat!("\"browser_", "page_load\"")),
+            "The frontend listens for this exact event name (see \
+             browserRegressions.test.ts). Rename both sides together."
+        );
+        assert!(
+            src.contains("loading: matches!("),
+            "The payload carries the commit/finish distinction: the label is \
+             only re-derived on a commit onto a new page, so that a real page \
+             title is not clobbered when the load finishes."
+        );
+    }
+
+    /// The pull channel for same-document navigation must exist — WebKit fires
+    /// no callback for `pushState`, a hash change or an SPA route.
+    #[test]
+    fn same_document_pull_channel_exists() {
+        let src = include_str!("browser.rs");
+        assert!(
+            src.contains(concat!("fn browser_", "current_url")),
+            "Without this the address bar goes stale on every SPA route change, \
+             and the only alternative anyone reaches for is a poll."
+        );
+    }
+
     #[test]
     fn short_content_is_unchanged() {
         let original = "Short page with valid UTF-8: 🪿".to_string();
@@ -700,4 +954,129 @@ mod tests {
         assert!(!truncate_page_content(&mut content));
         assert_eq!(content, original);
     }
+}
+
+/// Main-frame URL plus whether the webview can move through its own history.
+#[derive(Clone, Serialize)]
+pub struct BrowserNavState {
+    pub url: String,
+    pub can_go_back: bool,
+    pub can_go_forward: bool,
+}
+
+/// Read navigation state from the platform webview.
+///
+/// The back/forward buttons were removed in the 2026-07 wiring audit because
+/// they were permanently disabled with no handler behind them — a control that
+/// cannot act is worse than no control. Restoring them needs the REAL history
+/// stack, and WKWebView owns it: `canGoBack`/`canGoForward` are the only honest
+/// source for whether the buttons should be live. Guessing from a URL list
+/// would desync the moment a page redirects or a fragment changes.
+#[tauri::command]
+pub fn browser_nav_state(app: AppHandle, webview_id: String) -> Result<BrowserNavState, String> {
+    let webview = app
+        .get_webview(&webview_id)
+        .ok_or_else(|| "Webview not found".to_string())?;
+    let url = webview.url().map(|u| u.to_string()).unwrap_or_default();
+
+    #[cfg(target_os = "macos")]
+    {
+        let flags = std::sync::Arc::new(std::sync::Mutex::new((false, false)));
+        let out = flags.clone();
+        let _ = webview.with_webview(move |w| {
+            // Best-effort and exception-guarded, like apply_media_capture: a
+            // failure here must grey the buttons out, never kill the app.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                objc2::exception::catch(std::panic::AssertUnwindSafe(|| unsafe {
+                    use objc2::msg_send;
+                    use objc2::runtime::AnyObject;
+                    let wk: *mut AnyObject = w.inner() as *mut _ as *mut AnyObject;
+                    if wk.is_null() {
+                        return;
+                    }
+                    let back: bool = msg_send![wk, canGoBack];
+                    let fwd: bool = msg_send![wk, canGoForward];
+                    if let Ok(mut g) = out.lock() {
+                        *g = (back, fwd);
+                    }
+                }))
+            }));
+        });
+        let (can_go_back, can_go_forward) = *flags.lock().unwrap();
+        return Ok(BrowserNavState {
+            url,
+            can_go_back,
+            can_go_forward,
+        });
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    Ok(BrowserNavState {
+        url,
+        can_go_back: false,
+        can_go_forward: false,
+    })
+}
+
+/// Step the webview's own history. `forward` selects the direction.
+///
+/// Uses WKWebView's goBack/goForward rather than `history.back()` in the page:
+/// the JS call is same-document only and a cross-origin page can refuse it,
+/// which is exactly when a user reaches for the button.
+#[tauri::command]
+pub fn browser_go(app: AppHandle, webview_id: String, forward: bool) -> Result<(), String> {
+    let webview = app
+        .get_webview(&webview_id)
+        .ok_or_else(|| "Webview not found".to_string())?;
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = webview.with_webview(move |w| {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                objc2::exception::catch(std::panic::AssertUnwindSafe(|| unsafe {
+                    use objc2::msg_send;
+                    use objc2::runtime::AnyObject;
+                    let wk: *mut AnyObject = w.inner() as *mut _ as *mut AnyObject;
+                    if wk.is_null() {
+                        return;
+                    }
+                    if forward {
+                        let _: *mut AnyObject = msg_send![wk, goForward];
+                    } else {
+                        let _: *mut AnyObject = msg_send![wk, goBack];
+                    }
+                }))
+            }));
+        });
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let js = if forward {
+            "history.forward()"
+        } else {
+            "history.back()"
+        };
+        webview.eval(js).map_err(|e| format!("eval failed: {e}"))
+    }
+}
+
+/// The webview's current main-frame URL, on demand.
+///
+/// `browser_page_load` is the push channel and covers every real navigation,
+/// but WebKit fires no navigation callback for a SAME-DOCUMENT change —
+/// `history.pushState`, a hash change, an SPA route. `WKWebView.URL` tracks
+/// those, so the frontend re-reads it when a signal implies the page moved
+/// (a title change) or when a tab reattaches after being detached from the
+/// event stream. Pull, not poll: this is called on an event, never on a timer.
+#[tauri::command]
+pub fn browser_current_url(app: AppHandle, webview_id: String) -> Result<String, String> {
+    let webview = app
+        .get_webview(&webview_id)
+        .ok_or_else(|| "Webview not found".to_string())?;
+    webview
+        .url()
+        .map(|u| u.to_string())
+        .map_err(|e| format!("Read url failed: {e}"))
 }

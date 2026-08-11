@@ -36,21 +36,33 @@ const OPEN_AI_PROVIDER_NAME: &str = "openai";
 const OPEN_AI_DEFAULT_BASE_PATH: &str = "v1/chat/completions";
 const OPEN_AI_DEFAULT_RESPONSES_PATH: &str = "v1/responses";
 const OPEN_AI_DEFAULT_MODELS_PATH: &str = "v1/models";
-pub const OPEN_AI_DEFAULT_MODEL: &str = "gpt-4o";
-pub const OPEN_AI_DEFAULT_FAST_MODEL: &str = "gpt-4o-mini";
+pub const OPEN_AI_DEFAULT_MODEL: &str = "gpt-5.6-terra";
+pub const OPEN_AI_DEFAULT_FAST_MODEL: &str = "gpt-5.6-luna";
 pub const OPEN_AI_KNOWN_MODELS: &[(&str, usize)] = &[
-    ("gpt-4o", 128_000),
-    ("gpt-4o-mini", 128_000),
-    ("gpt-4.1", 128_000),
-    ("gpt-4.1-mini", 128_000),
-    ("o1", 200_000),
-    ("o3", 200_000),
-    ("gpt-3.5-turbo", 16_385),
-    ("gpt-4-turbo", 128_000),
-    ("o4-mini", 128_000),
-    ("gpt-5-nano", 400_000),
+    // GPT-5.6 family (Sol / Terra / Luna capability tiers)
+    ("gpt-5.6-sol", 1_000_000),
+    ("gpt-5.6-terra", 1_000_000),
+    ("gpt-5.6-luna", 1_000_000),
+    ("gpt-5.6", 1_000_000),
+    ("gpt-5.6-mini", 1_000_000),
+    // GPT-5.4 / 5.3 / 5.2
+    ("gpt-5.4", 1_000_000),
+    ("gpt-5.4-mini", 400_000),
+    ("gpt-5.4-nano", 400_000),
+    ("gpt-5.4-pro", 1_000_000),
+    ("gpt-5.3-codex", 400_000),
+    ("gpt-5.2", 400_000),
+    ("gpt-5.2-codex", 400_000),
     ("gpt-5.1-codex", 400_000),
     ("gpt-5-codex", 400_000),
+    ("gpt-5-nano", 400_000),
+    // Reasoning / prior gen still useful as fallbacks
+    ("o3", 200_000),
+    ("o4-mini", 128_000),
+    ("gpt-4.1", 128_000),
+    ("gpt-4.1-mini", 128_000),
+    ("gpt-4o", 128_000),
+    ("gpt-4o-mini", 128_000),
 ];
 
 pub const OPEN_AI_DOC_URL: &str = "https://platform.openai.com/docs/models";
@@ -287,6 +299,7 @@ impl OpenAiProvider {
         (normalized_model.starts_with("gpt-5") && normalized_model.contains("codex"))
             || normalized_model.starts_with("gpt-5.2-pro")
             || normalized_model.starts_with("gpt-5.4")
+            || normalized_model.starts_with("gpt-5.6")
     }
 
     fn should_use_responses_api(model_name: &str, base_path: &str) -> bool {
@@ -400,7 +413,7 @@ impl ProviderDef for OpenAiProvider {
         ProviderMetadata::with_models(
             OPEN_AI_PROVIDER_NAME,
             "OpenAI",
-            "GPT-4 and other OpenAI models, including OpenAI compatible ones",
+            "GPT-5.6 and other OpenAI models, including OpenAI compatible ones",
             OPEN_AI_DEFAULT_MODEL,
             models,
             OPEN_AI_DOC_URL,
@@ -877,6 +890,14 @@ mod tests {
     fn gpt_5_4_with_date_uses_responses() {
         assert!(OpenAiProvider::should_use_responses_api(
             "gpt-5.4-2026-03-01",
+            "v1/chat/completions"
+        ));
+    }
+
+    #[test]
+    fn gpt_5_6_terra_uses_responses_when_base_path_is_default() {
+        assert!(OpenAiProvider::should_use_responses_api(
+            "gpt-5.6-terra",
             "v1/chat/completions"
         ));
     }

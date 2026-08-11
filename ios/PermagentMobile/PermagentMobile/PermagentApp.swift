@@ -8,18 +8,32 @@ import SwiftUI
 @main
 struct PermagentApp: App {
     @StateObject private var session = HubSession()
+    @State private var splashDone = false
+
     var body: some Scene {
         WindowGroup {
             ZStack {
-                Brand.shell.ignoresSafeArea()
+                ChatSurface.bg.ignoresSafeArea()
                 if session.isPaired {
                     MainTabs().environmentObject(session)
                 } else {
                     PairingView().environmentObject(session)
                 }
+                // Splash sits OVER the real UI rather than gating it, so
+                // `bootstrap()` (Keychain read, hub reconnect) runs during the
+                // 2.5s instead of after it — the animation costs no launch time.
+                if !splashDone {
+                    SplashView { splashDone = true }
+                        .transition(.opacity)
+                        .zIndex(1)
+                }
             }
-            .preferredColorScheme(.dark)
-            .tint(Brand.cyan)
+            // No `.preferredColorScheme` — the app follows the system
+            // appearance, as the desktop app does with its `system` theme
+            // preference. Brand tokens are dynamic colors (Theme.swift), so
+            // both palettes are already in place. The tab bar (and every
+            // stock control) tints to the spark accent.
+            .tint(ChatSurface.spark)
             .task { await session.bootstrap() }
         }
     }
@@ -27,25 +41,54 @@ struct PermagentApp: App {
 
 @MainActor
 final class HubSession: ObservableObject {
+    enum PairingError: Error {
+        case malformedURL
+        // Carries the underlying URLSession failure so the UI can name the real
+        // cause (DNS vs. connection refused vs. offline vs. TLS) instead of a
+        // single catch-all — the difference is exactly what tells us whether a
+        // pairing failure is the phone, the tailnet, or the hub.
+        case hubUnreachable(detail: String?)
+        case claimRejected(statusCode: Int)
+        case unexpectedResponse(statusCode: Int?)
+    }
+
     @Published var isPaired = false
     @Published var unread = 0
 
     func bootstrap() async {
         await APIClient.shared.loadSavedPairing()
         isPaired = await APIClient.shared.isPaired
-        if isPaired { await listen() }
+        if isPaired {
+            // The agent's name comes from the hub, never a literal — see
+            // AgentIdentity. Fetched before `listen()` so the first render of
+            // any surface already has the real name rather than the generic
+            // fallback flashing to it.
+            await AgentIdentity.shared.refresh()
+            await listen()
+        }
     }
 
     /// Pair from a scanned/pasted URL. Two forms:
-    /// - current hub: http://<hub>:3001/ui/#claim=<code> — a one-time claim code
+    /// - current hub: http://<hub>/ui/#claim=<code> — a one-time claim code
     ///   exchanged for this device's own bearer token via the public
     ///   `POST /pair/claim` (routes/devices.rs, #628)
     /// - legacy:      http://<hub>:3001/ui/#token=<token> — a raw bearer token
-    func pair(from url: String) async -> Bool {
+    ///
+    /// **Never default the port.** The hub's own pairing URL comes from
+    /// `tailscale serve`, which fronts the daemon on the scheme's default port
+    /// (80) and carries no explicit port at all — the daemon itself stays bound
+    /// to 127.0.0.1:3001 and is NOT reachable on 3001 from the tailnet. Filling
+    /// in 3001 when the URL omits a port rewrites a working serve URL into the
+    /// one address that is guaranteed to refuse the connection. An absent port
+    /// means the scheme default, which is what every other HTTP client does.
+    func pair(from url: String) async -> Result<Void, PairingError> {
         guard let comps = URLComponents(string: url.trimmingCharacters(in: .whitespaces)),
+              let scheme = comps.scheme,
+              scheme == "http" || scheme == "https",
               let host = comps.host,
-              let base = URL(string: "\(comps.scheme ?? "http")://\(host):\(comps.port ?? 3001)")
-        else { return false }
+              let base = URL(string: comps.port.map { "\(scheme)://\(host):\($0)" }
+                  ?? "\(scheme)://\(host)")
+        else { return .failure(.malformedURL) }
         func fragmentValue(_ key: String) -> String? {
             comps.fragment?
                 .split(separator: "&")
@@ -55,37 +98,78 @@ final class HubSession: ObservableObject {
 
         let token: String
         if let code = fragmentValue("claim"), !code.isEmpty {
-            guard let minted = await Self.exchangeClaim(code: code, base: base) else { return false }
-            token = minted
+            switch await Self.exchangeClaim(code: code, base: base) {
+            case .success(let minted): token = minted
+            case .failure(let error): return .failure(error)
+            }
         } else if let legacy = fragmentValue("token"), !legacy.isEmpty {
             token = legacy
         } else {
-            return false
+            return .failure(.malformedURL)
         }
         await APIClient.shared.pair(HubConfig(baseURL: base, token: token))
         isPaired = true
         await listen()
-        return true
+        return .success(())
+    }
+
+    /// Turn a URLSession failure into a short, specific phrase. The URLError
+    /// code is what disambiguates the four ways pairing "can't connect": name
+    /// resolution, a refused connection, no network at all, or a TLS problem.
+    private static func describeConnectionError(_ error: Error) -> String {
+        guard let urlError = error as? URLError else {
+            return error.localizedDescription
+        }
+        switch urlError.code {
+        case .cannotFindHost, .dnsLookupFailed:
+            return "the hub's name could not be resolved (DNS) — is MagicDNS on for this device?"
+        case .cannotConnectToHost:
+            return "the connection was refused — the hub is reachable but nothing is answering on that port."
+        case .notConnectedToInternet, .networkConnectionLost:
+            return "this device has no network connection."
+        case .timedOut:
+            return "the connection timed out — the hub did not respond."
+        case .appTransportSecurityRequiresSecureConnection, .secureConnectionFailed:
+            return "the connection was blocked as insecure (TLS)."
+        default:
+            return "\(urlError.localizedDescription) [URLError \(urlError.errorCode)]"
+        }
     }
 
     /// `POST /pair/claim` `{"code": …}` → `{"token": …, "device": {…}}`.
     /// The code is 128-bit random, single-use, 10-min lived; unknown/expired
     /// codes answer 404. Only `token` is needed here — the device name was
     /// fixed when the hub minted the code.
-    private static func exchangeClaim(code: String, base: URL) async -> String? {
+    private static func exchangeClaim(code: String, base: URL) async -> Result<String, PairingError> {
         struct Req: Encodable { let code: String }
         struct Resp: Decodable { let token: String }
         var req = URLRequest(url: base.appendingPathComponent("/pair/claim"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        guard let body = try? JSONEncoder().encode(Req(code: code)) else { return nil }
+        guard let body = try? JSONEncoder().encode(Req(code: code)) else {
+            return .failure(.unexpectedResponse(statusCode: nil))
+        }
         req.httpBody = body
-        guard let (data, resp) = try? await URLSession.shared.data(for: req),
-              let http = resp as? HTTPURLResponse,
-              (200..<300).contains(http.statusCode),
-              let decoded = try? JSONDecoder().decode(Resp.self, from: data)
-        else { return nil }
-        return decoded.token
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: req)
+        } catch {
+            return .failure(.hubUnreachable(detail: describeConnectionError(error)))
+        }
+        guard let http = response as? HTTPURLResponse else {
+            return .failure(.unexpectedResponse(statusCode: nil))
+        }
+        if http.statusCode == 404 || http.statusCode == 410 {
+            return .failure(.claimRejected(statusCode: http.statusCode))
+        }
+        guard (200..<300).contains(http.statusCode),
+              let decoded = try? JSONDecoder().decode(Resp.self, from: data),
+              !decoded.token.isEmpty
+        else {
+            return .failure(.unexpectedResponse(statusCode: http.statusCode))
+        }
+        return .success(decoded.token)
     }
 
     private func listen() async {
@@ -98,17 +182,40 @@ final class HubSession: ObservableObject {
     }
 }
 
+/// The app's top-level surfaces. Hashable tags so any card, row, or agent
+/// nudge can LAND somewhere: Home's tiles jump straight to their section
+/// instead of being read-only numbers.
+enum AppTab: Hashable {
+    case home, chat, notes, decisions, goals, control
+}
+
 struct MainTabs: View {
     @EnvironmentObject var session: HubSession
+    // MUST observe, not just read. `AgentIdentity.shared.displayName` read
+    // without an observer renders once — at the generic fallback — and never
+    // updates when the hub answers, so the tab said "your agent" while the
+    // chat header (which does observe) correctly said the real name
+    // (reported 2026-08-04).
+    @ObservedObject private var identity = AgentIdentity.shared
+    @State private var tab: AppTab = .home
     var body: some View {
-        TabView {
-            HomeView().tabItem { Label("Home", systemImage: "circle.hexagongrid.fill") }
-            ChatView().tabItem { Label("Henry", systemImage: "bubble.left.and.bubble.right.fill") }
-            DictateView().tabItem { Label("Dictate", systemImage: "mic.fill") }
+        TabView(selection: $tab) {
+            HomeView(tab: $tab).tabItem { Label("Home", systemImage: "circle.hexagongrid.fill") }
+                .tag(AppTab.home)
+            ChatView().tabItem { Label(identity.displayName, systemImage: "bubble.left.and.bubble.right.fill") }
+                .tag(AppTab.chat)
+            // "Notes" — the tab owns dictation AND the notes library. The mic
+            // icon stays because one tap on this tab still starts a note by
+            // voice; browsing is the secondary path inside it.
+            DictateView().tabItem { Label("Notes", systemImage: "mic.fill") }
+                .tag(AppTab.notes)
             InboxView().tabItem { Label("Decisions", systemImage: "tray.full.fill") }
                 .badge(session.unread)
+                .tag(AppTab.decisions)
             GoalsView().tabItem { Label("In Flight", systemImage: "bolt.fill") }
+                .tag(AppTab.goals)
             ControlHubView().tabItem { Label("Control", systemImage: "slider.horizontal.3") }
+                .tag(AppTab.control)
         }
         .liquidGlassTabMinimize()
     }

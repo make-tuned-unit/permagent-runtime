@@ -43,18 +43,21 @@ export function StewardHUD({ visible, onClose }: StewardHUDProps) {
     <HudShell visible={visible} onClose={onClose} title="THE STEWARD" statusPill={statusPill}>
       <div style={{ padding: '4px 14px 8px' }}>
         <span style={{ fontSize: 11, color: '#9CA3AF', lineHeight: 1.5 }}>
-          The groundskeeper of your repositories — scheduled hygiene passes,
-          never a loose cannon. Proposes; does not destroy.
+          The groundskeeper of your repositories — every weekday morning it
+          sweeps every repo under your dev root using your own git and GitHub
+          login, then files one fleet-health report to the board and the Brain.
+          Proposes; does not destroy.
         </span>
       </div>
 
       <Section title="TENDS" trimColor={STEWARD_TRIM}>
-        <Bullet>Commit messages, changelogs, PR descriptions</Bullet>
-        <Bullet>Stale-branch and repo-health reports</Bullet>
+        <Bullet>Fleet sweep: branch drift, uncommitted work, stale branches in every repo</Bullet>
+        <Bullet>Orphaned worktrees and red CI, flagged for attention</Bullet>
+        <Bullet>Commit messages, changelogs, PR descriptions for the primary repo</Bullet>
         <Bullet>CI-failure investigation</Bullet>
       </Section>
 
-      <Section title="THE GUARD" trimColor={COLORS.neonAmber}>
+      <Section title="THE SAFETY CORE" trimColor={COLORS.neonAmber}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <span style={{ fontSize: 11, color: '#D1D5DB', lineHeight: 1.5 }}>
             Destructive git ops (branch deletes, history rewrites, force

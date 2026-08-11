@@ -19,5 +19,10 @@
 	     of Info.plist's NSMicrophoneUsageDescription. -->
 	<key>com.apple.security.device.audio-input</key>
 	<true/>
+
+	<!-- Video calls in the in-app browser need the camera under the hardened
+	     runtime, on top of Info.plist's NSCameraUsageDescription. -->
+	<key>com.apple.security.device.camera</key>
+	<true/>
 </dict>
 </plist>

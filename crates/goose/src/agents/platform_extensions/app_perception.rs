@@ -304,6 +304,17 @@ impl AppPerceptionClient {
                     "bot_events": summary.bot_events,
                     "bots_excluded_from_headline": summary.bot_events
                 },
+                // The day-by-day series. Without this the agent saw only window
+                // totals and could not answer "which day did it dip" — the
+                // drilldown gap reported 2026-08-04. Capped so a 365-day window
+                // cannot flood the context; the totals above stay authoritative.
+                "daily": summary.daily.iter().rev().take(90).rev().map(|d| json!({
+                    "date": d.date,
+                    "pageviews": d.pageviews,
+                    "visitors": d.visitors,
+                    "events": d.events
+                })).collect::<Vec<_>>(),
+                "daily_note": "one row per day WITH traffic, ascending; absent days had none",
                 "top_paths": analytics_ranked(&summary.top_paths, "path", "views"),
                 "utm": {
                     "sources": analytics_ranked(&summary.top_utm_sources, "name", "events"),
@@ -731,9 +742,19 @@ impl AppPerceptionClient {
              briefings, or what is happening overall. It does not require navigation and \
              never use get_page_snapshot for this job: browser snapshots describe a website, \
              not the Permagent app.\n\n\
+             ANALYTICS IS THE USER'S OWN WEBSITE TRAFFIC, not Permagent usage stats. \
+             Permagent self-hosts a first-party analytics collector, so THIS is the first \
+             place to look for pageviews, visitors, referrers, UTM campaigns and custom \
+             events for a project — check here before suggesting Google Analytics, \
+             Plausible, Fathom or any other third-party tool, and before saying analytics \
+             are unavailable. If a project returns no events, say the collector is not \
+             installed for it rather than that the data does not exist.\n\n\
              surface: analytics | projects | goals | cards | spend | sessions | briefings | \
              overview. analytics and cards require scope = project name, slug, or id; goals \
              accepts an optional project scope. window supports 7d, 30d, 90d, 365d, or all. \
+             The analytics surface returns window totals AND a per-day series (`daily`), so \
+             answer day-level questions — which day dipped, whether a campaign spiked — from \
+             that series rather than declining for lack of granularity. \
              Results are privacy-redacted aggregates with lists capped at five and explicit \
              availability, empty, and truncation states."
                 .to_string(),

@@ -5,7 +5,8 @@ import { useTheme } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 import { useDashboard } from './useDashboard';
 import { useLiveGoals } from '../../lib/useLiveGoals';
-import { useLayout, DEFAULT_LAYOUT, type DashboardLayoutData, type DashboardCardLayout } from './useLayout';
+import { useDueTodos } from '../../lib/useDueTodos';
+import { useLayout, reflow, DEFAULT_LAYOUT, type DashboardLayoutData, type DashboardCardLayout } from './useLayout';
 import { useCardRegistry } from './cards/useCardRegistry';
 import { AddCardPicker } from './AddCardPicker';
 import { DashboardOverflowMenu } from './DashboardOverflowMenu';
@@ -29,26 +30,6 @@ function persistAndNotify(
     .catch(() => { setSaveState('error'); setTimeout(() => setSaveState('idle'), 2000); });
 }
 
-/** Recompute grid positions from array order, packing cards into rows. */
-function reflow(cards: DashboardCardLayout[]): DashboardCardLayout[] {
-  let x = 0;
-  let y = 0;
-  let rowHeight = 0;
-  return cards.map(card => {
-    const w = card.size.w;
-    const h = card.size.h;
-    if (x + w > 12) {
-      x = 0;
-      y += rowHeight;
-      rowHeight = 0;
-    }
-    const placed = { ...card, position: { x, y } };
-    x += w;
-    rowHeight = Math.max(rowHeight, h);
-    return placed;
-  });
-}
-
 const ROW_HEIGHT = 60;
 const GAP = 16;
 
@@ -61,6 +42,10 @@ export function Dashboard() {
   // Stable props identity for the memoized InFlightCard — only changes when the
   // (deduped) goal list actually changes, so a benign refetch never re-renders it.
   const inFlightProps = useMemo(() => ({ goals: activeGoals }), [activeGoals]);
+  // Dated to-dos across every board. Fetched once here and passed down, like
+  // the goal subscription above — the card must not fetch per render.
+  const dueTodos = useDueTodos();
+  const todosProps = useMemo(() => ({ todos: dueTodos }), [dueTodos]);
   const { layout, persistLayout } = useLayout();
   // Rendered registry = first-party code cards + daemon-served manifest cards.
   const registry = useCardRegistry();
@@ -219,6 +204,7 @@ export function Dashboard() {
     in_flight: inFlightProps,
     decisions: { activeCount },
     recent: { items: data.recent },
+    todos: todosProps,
   };
 
   const visibleCards = layout.cards.filter(c => c.visible);
@@ -262,6 +248,25 @@ export function Dashboard() {
         </button>
         </>}
       />
+
+      {isEditMode && (
+        // The resize/reorder affordances are only discoverable once you know
+        // they exist — the corner grip is small and drag-to-move has no
+        // chrome. This names both so "shape cards into columns or rows" is not
+        // a hidden feature.
+        <div style={{
+          flexShrink: 0, padding: '8px 32px',
+          background: colors.cyanSoft, borderBottom: `1px solid ${colors.border}`,
+          fontFamily: font.body, fontSize: 12, color: colors.cyan,
+          display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          <FiEdit2 size={12} />
+          <span>
+            Drag a card to move it · drag the corner grip to resize — wider for a
+            row, taller for a column. Changes save automatically.
+          </span>
+        </div>
+      )}
 
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: '28px 32px 40px' }}>
 
@@ -460,14 +465,16 @@ function ResizeHandle({ onPointerDown }: { onPointerDown: (e: React.PointerEvent
   return (
     <div
       onPointerDown={onPointerDown}
+      title="Drag to resize — wider for a row, taller for a column"
       style={{
-        position: 'absolute', bottom: 0, right: 0, width: 20, height: 20,
-        cursor: 'nwse-resize', zIndex: 5,
+        position: 'absolute', bottom: 4, right: 4, width: 22, height: 22,
+        cursor: 'nwse-resize', zIndex: 5, borderRadius: 6,
+        background: colors.cyanSoft, border: `1px solid ${colors.cyan}`,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}
     >
-      <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-        <path d="M9 1L1 9M9 5L5 9M9 9L9 9" stroke={colors.textDim} strokeWidth={1.5} strokeLinecap="round" />
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+        <path d="M11 3L3 11M11 7L7 11" stroke={colors.cyan} strokeWidth={1.6} strokeLinecap="round" />
       </svg>
     </div>
   );

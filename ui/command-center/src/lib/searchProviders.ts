@@ -41,6 +41,11 @@ export interface SearchProvider {
   entryPath: string;
   /** npx args used only in browser dev (no bundled runtime). */
   npxArgs: string[];
+  /** One-line free-tier note, shown before the user commits to the trip. */
+  freeTierNote: string;
+  /** Novice-level walkthrough of the provider's key page, shown alongside the
+   *  paste field while the page is open in the browser. Numbered in render. */
+  setupSteps: string[];
 }
 
 export const SEARCH_PROVIDERS: SearchProvider[] = [
@@ -53,6 +58,13 @@ export const SEARCH_PROVIDERS: SearchProvider[] = [
     keyPageLabel: 'Brave Search API keys',
     entryPath: 'node_modules/@brave/brave-search-mcp-server/dist/index.js',
     npxArgs: ['-y', '@brave/brave-search-mcp-server'],
+    freeTierNote: 'Free plan: 2,000 searches/month. Brave asks for a card at signup but the free plan is not charged.',
+    setupSteps: [
+      'Sign in, or click "Sign up" to create a free account (email + password).',
+      'If asked to pick a plan, choose the Free plan.',
+      'On the API Keys page, click "Add API key", give it any name (e.g. "Permagent").',
+      'Click the copy icon next to your new key, then come back here and paste it.',
+    ],
   },
   {
     id: 'tavily',
@@ -63,6 +75,12 @@ export const SEARCH_PROVIDERS: SearchProvider[] = [
     keyPageLabel: 'Tavily API keys',
     entryPath: 'node_modules/tavily-mcp/build/index.js',
     npxArgs: ['-y', 'tavily-mcp'],
+    freeTierNote: 'Free plan: 1,000 searches/month. No card needed — sign in with Google or GitHub in one click.',
+    setupSteps: [
+      'Sign up or sign in — Google or GitHub is the fastest, no card required.',
+      'You land on the dashboard; your key is right there under "API Keys".',
+      'Click the copy icon next to the key, then come back here and paste it.',
+    ],
   },
 ];
 
