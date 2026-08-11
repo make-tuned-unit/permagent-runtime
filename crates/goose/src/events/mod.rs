@@ -864,6 +864,7 @@ pub fn proactive_nudge(
     count: i64,
     last_ts: &str,
     url: Option<&str>,
+    project: Option<(&str, &str)>,
 ) -> PermagentEvent {
     PermagentEvent::new(
         PermagentEventType::ProactiveNudge,
@@ -873,6 +874,11 @@ pub fn proactive_nudge(
             "message": message,
             "count": count,
             "last_ts": last_ts,
+            // The active project this nudge is grounded in, when there is one
+            // (project-news grounding, audit 2026-08-11) — lets a client
+            // deep-link to the project rather than a generic tab.
+            "project_id": project.map(|(id, _)| id),
+            "project_name": project.map(|(_, name)| name),
             // The thing the nudge is ABOUT. A news nudge that cannot be opened
             // is a strictly worse version of not being told: it spends the
             // user's attention and gives them nowhere to put it. The client has
@@ -999,12 +1005,15 @@ mod tests {
             1,
             "2026-08-08T08:35:00Z",
             Some("https://example.com/article"),
+            Some(("proj-1", "Job search")),
         );
         let v = serde_json::to_value(&event).unwrap();
         assert_eq!(
             v["payload"]["url"], "https://example.com/article",
             "the client reads payload.url; anything else is a dead-end nudge"
         );
+        assert_eq!(v["payload"]["project_id"], "proj-1");
+        assert_eq!(v["payload"]["project_name"], "Job search");
     }
 
     /// A nudge with nothing to open must send `url: null`, not omit it — an
@@ -1019,10 +1028,12 @@ mod tests {
             3,
             "t",
             None,
+            None,
         );
         let v = serde_json::to_value(&event).unwrap();
         assert!(v["payload"].get("url").is_some());
         assert!(v["payload"]["url"].is_null());
+        assert!(v["payload"]["project_id"].is_null());
     }
 
     #[test]

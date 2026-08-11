@@ -29,7 +29,9 @@ import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
 
 vi.mock('../../lib/api', () => ({
-  api: {},
+  // StrixFindingsPanel reads `strix_enabled` on mount (honest empty state);
+  // an unresolved read keeps the panel in its "unknown" state, which is fine.
+  api: { readConfig: vi.fn(() => new Promise(() => {})) },
   apiFetch: vi.fn(),
   extractText: vi.fn(() => ''),
   extractThinking: vi.fn(() => ''),

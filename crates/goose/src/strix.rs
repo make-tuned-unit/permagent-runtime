@@ -14,9 +14,12 @@
 //! 1. **Scope.** Only paths inside the user's own registered project roots are
 //!    scannable. Anything else — a URL, a neighbour's checkout, a system
 //!    directory — is refused before the scanner is invoked.
-//! 2. **Reporting, not remediation.** The Guard files findings. It never edits code
-//!    to "fix" what it found, and anything intrusive routes to the Decision
-//!    Inbox for the user rather than executing.
+//! 2. **Reporting, not remediation.** The Guard files findings. It never edits
+//!    code to "fix" what it found. Sweeps are instructed static-only (no live
+//!    traffic, no target modification) via the engine's instruction channel —
+//!    an instruction, not an enforced code path. `classify`/`ScanPosture`
+//!    exist for a future active-scan gate but are not wired at runtime, so no
+//!    claim of "intrusive ops are proposed for approval" is made anywhere.
 
 use std::path::{Path, PathBuf};
 
@@ -116,7 +119,8 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
             "Security review that happens on its own cadence instead of when someone remembers \
              to ask. When the user asks what is wrong with a project, the Guard's findings are the \
              standing answer — and it only ever reports: it never edits code to fix what it \
-             found, and anything intrusive is proposed for approval rather than performed",
+             found, and every sweep is instructed to stay static-only, sending no live traffic \
+             at the target and modifying nothing",
         state_source: crate::agents::self_knowledge::StateSource::Queryable,
         // The setup lesson: run it FOR the user through the shell — nobody
         // should have to visit a website or edit a plist to arm the Guard.

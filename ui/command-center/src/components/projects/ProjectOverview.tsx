@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, type ReactNode } from 'react';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
-import { apiFetch } from '../../lib/api';
+import { apiFetch, api } from '../../lib/api';
 import { useGoalEvents } from '../../lib/useGoalEvents';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
@@ -281,8 +281,10 @@ export function WatcherInsightsPanel({ project }: { project: Project }) {
 // ── The Guard's findings ─────────────────────────────────────────────────────
 // The security checklist the Guard's sweep loop keeps on the project
 // (daemon strix loop → metadata_json.strix_findings). Each item carries its
-// severity, CWE, location, and how to fix it. Renders nothing until the first
-// finding exists — a clean project shows no security section at all.
+// severity, CWE, location, and how to fix it. With no findings the panel says
+// WHY there are none — off / never scanned / scanned clean — because silence
+// used to read as "secure" whether or not the Guard had ever run (audit
+// 2026-08-11).
 
 interface StrixFinding {
   id: string;
@@ -309,7 +311,34 @@ function readStrixFindings(metadata: Record<string, unknown>): StrixFinding[] {
 function StrixFindingsPanel({ project }: { project: Project }) {
   const { colors } = useTheme();
   const findings = readStrixFindings(project.metadataJson);
-  if (findings.length === 0) return null;
+
+  // The honesty gate the HUD uses: `null` = unknown (loading / failed read) —
+  // never claim OFF on a failed read.
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  useEffect(() => {
+    let active = true;
+    api.readConfig('strix_enabled')
+      .then(r => { if (active) setEnabled(r === true); })
+      .catch(() => { /* unknown stays unknown */ });
+    return () => { active = false; };
+  }, []);
+
+  const rawLastScan = (project.metadataJson as Record<string, unknown>)?.strix_last_scan;
+  const lastScan = typeof rawLastScan === 'string' && rawLastScan ? rawLastScan : null;
+
+  if (findings.length === 0) {
+    // Honest empty state: say why there is nothing, instead of nothing.
+    const text = lastScan
+      ? `Scanned ${formatDate(lastScan)} — no open findings.${enabled === false ? ' The Guard is currently off.' : ''}`
+      : enabled === false
+        ? 'The Guard is off — enable security sweeps in Settings → Models to scan this project.'
+        : 'Never scanned — waiting on the Guard’s first sweep of this project.';
+    return (
+      <Panel title="Security — from the Guard">
+        <div style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>{text}</div>
+      </Panel>
+    );
+  }
   const severityColor = (s: string) =>
     s === 'high' ? colors.danger : s === 'medium' ? colors.warning : colors.textDim;
   const shown = findings.slice(0, STRIX_SHOWN);

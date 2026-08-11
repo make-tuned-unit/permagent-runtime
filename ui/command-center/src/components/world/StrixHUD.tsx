@@ -98,9 +98,9 @@ export function StrixHUD({ visible, onClose }: StrixHUDProps) {
         <div style={{ fontSize: 11, color: '#D1D5DB', lineHeight: 1.5 }}>
           Scope is enforced in code, not prompt: only your own project roots
           are scannable — URLs, foreign paths and directory traversal are
-          refused before the scanner runs. Passive inspection is autonomous;
-          anything intrusive is proposed for your approval, and nothing is
-          ever remediated automatically.
+          refused before the scanner runs. Sweeps are instructed static-only
+          — no live traffic, no modification — and nothing is ever remediated
+          automatically.
         </div>
       </Section>
     </HudShell>

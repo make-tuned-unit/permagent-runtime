@@ -636,6 +636,31 @@ function ModelsPanel({ goto }: PanelProps) {
     });
   };
 
+  // The Watcher (daemon proactive.rs) — teachability keys. `watcher_topics` =
+  // subjects to follow (relevant by the user's say-so); `watcher_muted_subjects`
+  // = subjects never to nudge about. Comma-separated in the UI, stored as
+  // string arrays; the daemon re-reads both on every news check.
+  const [watcherTopics, setWatcherTopics] = useState<string>('');
+  const [watcherMuted, setWatcherMuted] = useState<string>('');
+  const [watcherError, setWatcherError] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    api.readConfig('watcher_topics')
+      .then(r => { if (active && Array.isArray(r)) setWatcherTopics((r as string[]).join(', ')); })
+      .catch(() => { /* unset — no topics taught yet */ });
+    api.readConfig('watcher_muted_subjects')
+      .then(r => { if (active && Array.isArray(r)) setWatcherMuted((r as string[]).join(', ')); })
+      .catch(() => { /* unset — nothing muted */ });
+    return () => { active = false; };
+  }, []);
+  const saveWatcherList = (key: 'watcher_topics' | 'watcher_muted_subjects', raw: string) => {
+    setWatcherError(null);
+    const list = raw.split(',').map(s => s.trim()).filter(Boolean);
+    api.upsertConfig(key, list).catch(err => {
+      setWatcherError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  };
+
   // Poll Ollama status while panel is visible
   useEffect(() => {
     let active = true;
@@ -876,6 +901,44 @@ function ModelsPanel({ goto }: PanelProps) {
             <option value={72}>3 days</option>
             <option value={168}>Weekly</option>
           </select>
+        </Row>
+      </Section>
+
+      {/* ── The Watcher proactive nudges ─────────────────────────── */}
+      <Section
+        title="Proactive nudges (The Watcher)"
+        sub="The Watcher reaches out at most about once a day with the ONE thing genuinely worth your attention — news grounded in your active projects, or a memory thread that went quiet. Teach it here: topics you want followed, and subjects it should never raise again. Changes apply at its next check — no restart needed."
+      >
+        {watcherError && (
+          <div style={{ fontSize: 12, color: colors.danger, padding: '4px 0 8px' }}>{watcherError}</div>
+        )}
+        <Row label="Topics to follow" hint="Comma-separated. Treated as relevant by your say-so, alongside subjects inferred from your active projects.">
+          <input
+            value={watcherTopics}
+            onChange={e => setWatcherTopics(e.target.value)}
+            onBlur={() => saveWatcherList('watcher_topics', watcherTopics)}
+            onKeyDown={e => { if (e.key === 'Enter') saveWatcherList('watcher_topics', watcherTopics); }}
+            placeholder="e.g. local-first software, prediction markets"
+            style={{
+              width: 260, fontFamily: font.body, fontSize: 12, color: colors.text,
+              background: colors.inputBg, border: `1px solid ${colors.border}`,
+              borderRadius: 6, padding: '6px 10px', outline: 'none',
+            }}
+          />
+        </Row>
+        <Row label="Muted subjects" hint="Comma-separated. The Watcher never nudges about these again.">
+          <input
+            value={watcherMuted}
+            onChange={e => setWatcherMuted(e.target.value)}
+            onBlur={() => saveWatcherList('watcher_muted_subjects', watcherMuted)}
+            onKeyDown={e => { if (e.key === 'Enter') saveWatcherList('watcher_muted_subjects', watcherMuted); }}
+            placeholder="e.g. crypto prices"
+            style={{
+              width: 260, fontFamily: font.body, fontSize: 12, color: colors.text,
+              background: colors.inputBg, border: `1px solid ${colors.border}`,
+              borderRadius: 6, padding: '6px 10px', outline: 'none',
+            }}
+          />
         </Row>
       </Section>
     </div>

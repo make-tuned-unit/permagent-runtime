@@ -603,6 +603,7 @@ mod tests {
             4,
             "2026-06-19T10:00:00.000Z",
             None,
+            None,
         );
         let entry = entry_from_event(&e).expect("proactive_nudge is journaled");
         assert_eq!(entry.kind, "proactive_nudge");
@@ -620,6 +621,7 @@ mod tests {
             1,
             "2026-07-10T10:00:00.000Z",
             Some("https://example.com/kuzu-0-11"),
+            Some(("proj-brain", "Brain")),
         ))
         .unwrap();
         assert_eq!(news.title, "News: kuzu 0.11");
