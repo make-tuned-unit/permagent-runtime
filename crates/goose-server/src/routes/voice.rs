@@ -1303,6 +1303,19 @@ async fn stream_reply_with_tts(
                             continue;
                         }
 
+                        // A screen can show an identifier harmlessly; a speaker
+                        // cannot. Escalation payloads have reached TTS verbatim
+                        // and been read out as UUIDs and JSON keys — 37s of
+                        // audio in one turn. Speak prose, skip the rest.
+                        let Some(speech) = crate::voice::speakable::speakable(&sentence) else {
+                            tracing::debug!(
+                                target: "permagentd::voice",
+                                "skipping unspeakable fragment: \"{}\"",
+                                truncate_str(&sentence, 60)
+                            );
+                            continue;
+                        };
+
                         sentence_num += 1;
 
                         // Guard: skip TTS if the socket closed (prevents
@@ -1314,7 +1327,7 @@ async fn stream_reply_with_tts(
                         }
 
                         let tts_ref = tts.clone();
-                        let sent = sentence.clone();
+                        let sent = speech.clone();
                         let cancel_flag = cancelled.clone();
                         let voice_id = voice_id.clone();
                         let tts_start = std::time::Instant::now();

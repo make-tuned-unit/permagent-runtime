@@ -347,9 +347,15 @@ pub fn validate_escalation(raw: &serde_json::Value) -> EscalationOutcome {
 
     // options: required iff kind == decision.
     match (&params.kind, &params.options) {
-        (EscalationKind::Decision, None) => {
-            errors.push("kind=decision requires options (2 to 5)".to_string());
-        }
+        // Absent options are NOT malformed — see `default_decision_options`.
+        // Everything the human needs (the ask, the reasoning, the evidence) is
+        // already validated above; only the choice list is missing, and it is
+        // reconstructible. Filing this as `malformed` produced a decision card
+        // that neither approve nor reject could act on.
+        (EscalationKind::Decision, None) => {}
+        // An explicitly empty list is the same recoverable case as `null`:
+        // it would render a choice card with no buttons.
+        (EscalationKind::Decision, Some(opts)) if opts.is_empty() => {}
         (EscalationKind::Decision, Some(opts)) => {
             if opts.len() < MIN_OPTIONS || opts.len() > MAX_OPTIONS {
                 errors.push(format!(
@@ -406,6 +412,33 @@ pub fn validate_escalation(raw: &serde_json::Value) -> EscalationOutcome {
 }
 
 /// Map an escalation kind to its decisions-table kind (Phase 0 table).
+/// The choice list to use when a `kind=decision` escalation arrives without
+/// one.
+///
+/// Observed 2026-08-11: a worker escalated "Cancel 9 stale goal cards stuck
+/// with no progress" with a full `why_blocked` and nine `evidence_refs`, but
+/// `options: null`. That single omission routed the whole thing to
+/// `DecisionKind::Malformed`, which has no effect arm — so the human approved
+/// it eleven times and nothing could ever happen, while the worker retried the
+/// identical call until the runaway-loop guard tripped.
+///
+/// A decision escalation that names its ask is answerable with proceed/decline.
+/// Reconstructing that beats discarding a validated ask into a dead card.
+pub fn default_decision_options() -> Vec<EscalationOption> {
+    vec![
+        EscalationOption {
+            id: "proceed".to_string(),
+            label: "Proceed".to_string(),
+            consequence: "Carry out the requested action as described above.".to_string(),
+        },
+        EscalationOption {
+            id: "decline".to_string(),
+            label: "Don't proceed".to_string(),
+            consequence: "Leave things as they are; the worker stops and reports back.".to_string(),
+        },
+    ]
+}
+
 pub fn map_kind(kind: EscalationKind) -> DecisionKind {
     match kind {
         EscalationKind::Approval => DecisionKind::ApproveReview,
@@ -430,7 +463,14 @@ pub fn draft_from_payload(raw: serde_json::Value, source: &DraftSource) -> Decis
                 detail: params.why_blocked.trim().to_string(),
                 evidence_refs: params.evidence_refs.clone(),
                 options: match kind {
-                    DecisionKind::Choice => params.options.clone().unwrap_or_default(),
+                    // `unwrap_or_default()` would yield an EMPTY choice list —
+                    // a decision card with no buttons. Fall back to the
+                    // reconstructed proceed/decline pair instead.
+                    DecisionKind::Choice => params
+                        .options
+                        .clone()
+                        .filter(|o| !o.is_empty())
+                        .unwrap_or_else(default_decision_options),
                     _ => Vec::new(),
                 },
                 resume: params.resume,
@@ -702,11 +742,51 @@ mod tests {
         assert_malformed(payload, "does not match the escalate schema");
     }
 
+    /// Regression (2026-08-11): a decision escalation whose only defect was a
+    /// missing `options` list used to become `DecisionKind::Malformed`, which
+    /// has no effect arm — the human approved it eleven times and nothing could
+    /// happen. A validated ask must stay answerable.
     #[test]
-    fn decision_without_options_is_malformed() {
+    fn decision_without_options_gets_default_choices_not_malformed() {
+        for payload in [
+            {
+                let mut p = valid_decision();
+                p.as_object_mut().unwrap().remove("options");
+                p
+            },
+            {
+                // `"options": null` is the exact shape seen in the wild.
+                let mut p = valid_decision();
+                p.as_object_mut()
+                    .unwrap()
+                    .insert("options".to_string(), serde_json::Value::Null);
+                p
+            },
+        ] {
+            let draft = draft_from_payload(payload, &source());
+            assert_eq!(
+                draft.kind,
+                DecisionKind::Choice,
+                "must stay an answerable choice, not Malformed"
+            );
+            assert!(draft.validation_errors.is_empty());
+            let ids: Vec<&str> = draft.options.iter().map(|o| o.id.as_str()).collect();
+            assert_eq!(ids, vec!["proceed", "decline"]);
+        }
+    }
+
+    /// An explicitly empty list is the same dead end as a missing one: a choice
+    /// card with no buttons.
+    #[test]
+    fn decision_with_empty_options_still_gets_default_choices() {
         let mut payload = valid_decision();
-        payload.as_object_mut().unwrap().remove("options");
-        assert_malformed(payload, "kind=decision requires options");
+        payload
+            .as_object_mut()
+            .unwrap()
+            .insert("options".to_string(), serde_json::json!([]));
+        let draft = draft_from_payload(payload, &source());
+        assert_eq!(draft.kind, DecisionKind::Choice);
+        assert_eq!(draft.options.len(), 2);
     }
 
     #[test]
