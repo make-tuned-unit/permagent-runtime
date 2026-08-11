@@ -83,6 +83,24 @@ export function MeetingRecorder({ open }: { open: boolean }) {
 
   const busy = state === 'recording' || state === 'finishing';
 
+  // Dock the live panel into the chat sidebar when it's open: the dock is a
+  // flex SIBLING of <main>, so it sits beside the native browser webview
+  // rather than under it — the floating bottom-right card was invisible
+  // during a web call (the corner-cede trap) and collided with the chat pill.
+  const chatDockOpen = useCommandCenter(s => s.chatDockOpen);
+  const [dockSlot, setDockSlot] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    const wantDock = chatDockOpen && (busy || state === 'error');
+    if (!wantDock) { setDockSlot(null); return; }
+    // The dock mounts in the same commit as chatDockOpen flips — look for the
+    // slot now and once more on the next tick.
+    const find = () => setDockSlot(document.getElementById('meeting-dock-slot'));
+    find();
+    const t = setTimeout(find, 50);
+    return () => clearTimeout(t);
+  }, [chatDockOpen, busy, state]);
+  const docked = dockSlot !== null;
+
   const loadProjects = useCallback(() => {
     setLoadError(false);
     apiFetch<Project[]>('/api/projects')
@@ -132,23 +150,35 @@ export function MeetingRecorder({ open }: { open: boolean }) {
   }, [pickerOpen, projects]);
 
   const onButton = () => {
-    if (state === 'recording') { void handleStop(); return; }
+    if (state === 'recording') {
+      // While recording, the rail button SURFACES the panel (docked in the
+      // chat sidebar) instead of stop-saving — a collapsed-rail misclick must
+      // never end a live meeting. Stop & save lives on the panel.
+      useCommandCenter.getState().openChatDock();
+      return;
+    }
     if (state === 'finishing') return; // saving — let it finish
     setPickerOpen(true);
   };
 
+  /** Deep-link toast: clicking it lands on the note, expanded, in Projects. */
+  const savedToast = (body: string, saved: { projectId: string; noteId: string }) => {
+    toast('Meeting note saved', body, () =>
+      useCommandCenter.getState().focusProjectNote(saved.projectId, saved.noteId));
+  };
+
   const handleStop = async () => {
     const name = target?.projectName;
-    const ok = await stop();
-    if (ok && name) {
-      toast('Meeting note saved', `Writing up the notes for "${name}" now — they'll appear on the project in a moment.`);
+    const saved = await stop();
+    if (saved && name) {
+      savedToast(`Writing up the notes for "${name}" now — click to open the note.`, saved);
     }
   };
 
   const handleRetry = async () => {
     const name = target?.projectName;
-    const ok = await retrySave();
-    if (ok && name) toast('Meeting note saved', `The transcript was saved as a note on "${name}".`);
+    const saved = await retrySave();
+    if (saved && name) savedToast(`The transcript was saved as a note on "${name}" — click to open it.`, saved);
   };
 
   const active = busy || state === 'error';
@@ -224,6 +254,15 @@ export function MeetingRecorder({ open }: { open: boolean }) {
               : state === 'finishing' ? 'Saving…'
               : 'Record'}
           </span>
+        )}
+        {/* Collapsed-rail REC beacon: the rail is real DOM outside <main>, so
+            unlike a floating chip it can never be buried by the browser. */}
+        {!open && state === 'recording' && (
+          <span className="pa-rec-dot" style={{
+            position: 'absolute', top: 5, right: 5, width: 7, height: 7,
+            borderRadius: '50%', background: colors.danger,
+            animation: 'pa-rec-pulse 1.4s ease-in-out infinite',
+          }} />
         )}
       </button>
 
@@ -409,9 +448,9 @@ export function MeetingRecorder({ open }: { open: boolean }) {
             <button
               onClick={async () => {
                 setRecovering(newestDraft.startedAt);
-                const ok = await recoverDraft(newestDraft);
+                const saved = await recoverDraft(newestDraft);
                 setRecovering(null);
-                if (ok) toast('Meeting note saved', `The recovered transcript was saved as a note on "${newestDraft.projectName}".`);
+                if (saved) savedToast(`The recovered transcript was saved as a note on "${newestDraft.projectName}" — click to open it.`, saved);
               }}
               disabled={recovering === newestDraft.startedAt}
               style={{ ...btn('primary'), cursor: recovering ? 'default' : 'pointer' }}
@@ -426,13 +465,18 @@ export function MeetingRecorder({ open }: { open: boolean }) {
         document.body,
       )}
 
-      {/* Always-visible recording / saving / error panel. */}
+      {/* Always-visible recording / saving / error panel. Docks into the chat
+          sidebar's slot when the dock is open; floats bottom-right otherwise. */}
       {(busy || state === 'error') && createPortal(
         <div style={{
           ...cardStyle(state === 'recording' ? colors.danger : colors.borderHi),
           width: state === 'recording' ? panelWidth : 340,
           maxWidth: 'calc(100vw - 32px)',
           transition: `width 220ms ${ease.out}`,
+          ...(docked ? {
+            position: 'relative' as const, right: 'auto', bottom: 'auto', zIndex: 1,
+            width: '100%', maxWidth: '100%', boxShadow: 'none', borderRadius: 10,
+          } : null),
         }}>
           <style>{
             '@keyframes pa-rec-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }' +
@@ -455,7 +499,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
                 → {target.projectName}
               </span>
             )}
-            {state === 'recording' && (
+            {state === 'recording' && !docked && (
               <button
                 onClick={() => setExpanded(v => !v)}
                 aria-label={expanded ? 'Collapse the notepad' : 'Expand the notepad'}
@@ -546,7 +590,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
             )}
           </div>
         </div>,
-        document.body,
+        dockSlot ?? document.body,
       )}
     </>
   );

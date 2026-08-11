@@ -37,6 +37,13 @@ export function ProjectWorkspace({ project, projects, onSwitchProject, onBack, o
     if (pendingCard && pendingCard.projectId === project.id) setLens('kanban');
   }, [pendingCard, project.id]);
 
+  // Same contract for the "note saved" deep link: notes render on the Details
+  // lens only, so force it when the pending note belongs to THIS project.
+  const pendingNote = useCommandCenter(s => s.pendingNoteNavigation);
+  useEffect(() => {
+    if (pendingNote && pendingNote.projectId === project.id) setLens('details');
+  }, [pendingNote, project.id]);
+
   return (
     <div style={{
       width: '100%', height: '100%', display: 'flex', flexDirection: 'column',

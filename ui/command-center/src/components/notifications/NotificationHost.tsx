@@ -41,10 +41,12 @@ export function NotificationHost() {
     setToastIds((prev) => prev.filter((tid) => tid !== id));
 
   const activate = (n: AppNotification) => {
-    // A notification carrying a link (e.g. a Watcher nudge's source article)
-    // opens it in the in-app browser on the Build tab; otherwise fall back to
-    // the target tab.
-    if (n.url) {
+    // A custom action (e.g. "note saved" → the exact note) wins; a notification
+    // carrying a link (e.g. a Watcher nudge's source article) opens it in the
+    // in-app browser on the Build tab; otherwise fall back to the target tab.
+    if (n.onActivate) {
+      n.onActivate();
+    } else if (n.url) {
       useCommandCenter.getState().openInBrowser(n.url);
     } else if (n.target) {
       navigateToTool(n.target);
