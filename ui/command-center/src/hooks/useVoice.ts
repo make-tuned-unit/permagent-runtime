@@ -150,6 +150,11 @@ export function useVoice(options: UseVoiceOptions = {}) {
   onEventRef.current = onEvent;
   const activeRef = useRef(false);
   const connectingRef = useRef(false);
+  /// Last `error` frame the daemon sent on THIS socket. The server states the
+  /// real diagnosis (e.g. "Voice providers not available — models not loaded")
+  /// and then closes; the close arrives as 1006, whose generic label would
+  /// otherwise bury the actual reason. Cleared on every fresh connect.
+  const serverErrorRef = useRef<string | null>(null);
   const readyResolveRef = useRef<(() => void) | null>(null);
   const readyRejectRef = useRef<((err: Error) => void) | null>(null);
   const stateRef = useRef<VoiceState>('idle');
@@ -392,6 +397,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
             flushNavIfIdle();
             break;
           case 'error':
+            serverErrorRef.current = msg.message ?? null;
             setError(msg.message ?? 'Unknown voice error');
             emit({ type: 'error', error: msg.message ?? 'Unknown voice error' });
             setStateAndEmit('error');
@@ -468,6 +474,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
       readyResolveRef.current = resolve;
       readyRejectRef.current = reject;
 
+      serverErrorRef.current = null;
       const ws = new WebSocket(url);
       ws.binaryType = 'arraybuffer';
       wsRef.current = ws;
@@ -489,6 +496,12 @@ export function useVoice(options: UseVoiceOptions = {}) {
         if (ev.code !== 1000 && ev.code !== 1005) {
           let msg = 'Voice connection lost';
           if (ev.code === 1006) msg = `Connection refused (${token ? 'token sent' : 'NO TOKEN'})`;
+          // The daemon states the real cause in an `error` frame and then closes
+          // (models not loaded, no provider, …). That close lands as a bare 1006,
+          // so the label above would replace a precise diagnosis with a network
+          // red herring — "Connection refused" sent us hunting ports for a
+          // missing-model problem. Server truth outranks the generic label.
+          if (serverErrorRef.current) msg = serverErrorRef.current;
           if (ev.reason) msg = ev.reason;
           setError(msg);
           setStateAndEmit('error');

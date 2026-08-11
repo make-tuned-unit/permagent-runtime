@@ -73,7 +73,11 @@ fi
 echo ""
 
 # 4. Stale daemon processes
-DAEMON_COUNT=$(pgrep -f "permagentd agent" 2>/dev/null | wc -l | tr -d ' ')
+# `|| true`: pgrep exits 1 when nothing matches, and under `set -o pipefail`
+# that failure propagates out of the pipeline and aborts the whole script —
+# so a clean build with the daemon simply stopped used to exit 1 before ever
+# printing the result summary, and checks 4-5 never ran.
+DAEMON_COUNT=$( (pgrep -f "permagentd agent" 2>/dev/null || true) | wc -l | tr -d ' ')
 echo "Daemon PIDs: $DAEMON_COUNT"
 if [ "$DAEMON_COUNT" -gt 1 ]; then
     echo "!! WARN: multiple daemon processes — stale daemon likely"

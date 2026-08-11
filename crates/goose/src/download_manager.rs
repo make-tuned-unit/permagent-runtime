@@ -11,10 +11,26 @@ use utoipa::ToSchema;
 /// artifacts (GGUF weights, ONNX models, voice packs) are parsed by native
 /// code (llama.cpp, candle, onnxruntime), so a malicious artifact is
 /// arbitrary-code-execution: every download must originate from a trusted,
-/// explicitly listed host. Matching is exact (no subdomains) — the initial
-/// request URL is what gets validated; HTTPS redirects issued by a trusted
-/// host (e.g. huggingface.co -> its LFS CDN) are that host's responsibility.
+/// explicitly listed host. Matching is exact (no subdomains) — this governs the
+/// INITIAL request URL. Redirect hops are governed by [`validate_redirect_url`].
 const ALLOWED_HOSTS: &[&str] = &["huggingface.co"];
+
+/// CDN hosts our allowlisted origins hand the transfer off to. Both of them do:
+/// a github.com release asset 302s to `release-assets.githubusercontent.com`,
+/// and huggingface.co 302s to its Xet/LFS CDN (`us.aws.cdn.hf.co`,
+/// `cas-bridge.xethub.hf.co`, `cdn-lfs*.hf.co`, …), whose exact subdomain varies
+/// by region and account — so these are matched by domain SUFFIX rather than
+/// exact host.
+///
+/// Every entry begins with a dot, which is what makes suffix matching safe: a
+/// sibling registration like `evil-hf.co` does not end with `.hf.co`, so it
+/// cannot slip through.
+///
+/// These apply to REDIRECT HOPS ONLY — an initial download URL must still name
+/// an allowlisted origin, and content integrity is still the SHA-256 pin
+/// verified as the bytes land.
+const ALLOWED_REDIRECT_HOST_SUFFIXES: &[&str] =
+    &[".githubusercontent.com", ".hf.co", ".huggingface.co"];
 
 /// github.com is not generally trusted — only these exact release-asset path
 /// prefixes are (third-party projects we intentionally pin, e.g. the
@@ -65,6 +81,48 @@ pub fn validate_download_url(raw: &str) -> Result<()> {
         "Refusing download from untrusted host '{}': allowed hosts are {:?} plus pinned github.com release paths",
         host,
         ALLOWED_HOSTS
+    );
+}
+
+/// Validate a REDIRECT target. Accepts anything [`validate_download_url`] would
+/// accept, plus the CDN suffixes in [`ALLOWED_REDIRECT_HOST_SUFFIXES`].
+///
+/// Applying the initial-URL policy verbatim to redirect hops made every real
+/// download impossible: github.com release assets and huggingface.co both 302
+/// to a CDN host that is not (and cannot sensibly be) in the origin allowlist,
+/// so the voice models, the wake-word models and GGUF weights were all refused
+/// at the first hop with "redirect to non-allowlisted URL".
+pub fn validate_redirect_url(raw: &str) -> Result<()> {
+    if validate_download_url(raw).is_ok() {
+        return Ok(());
+    }
+
+    let url = reqwest::Url::parse(raw)
+        .map_err(|e| anyhow::anyhow!("Invalid redirect URL '{}': {}", raw, e))?;
+
+    if url.scheme() != "https" {
+        anyhow::bail!(
+            "Refusing non-HTTPS redirect to '{}': downloads must stay on https://",
+            raw
+        );
+    }
+
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("Redirect URL '{}' has no host", raw))?
+        .to_ascii_lowercase();
+
+    if ALLOWED_REDIRECT_HOST_SUFFIXES
+        .iter()
+        .any(|suffix| host.ends_with(suffix))
+    {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "Refusing redirect to untrusted host '{}': allowed CDN suffixes are {:?}",
+        host,
+        ALLOWED_REDIRECT_HOST_SUFFIXES
     );
 }
 
@@ -506,10 +564,13 @@ impl DownloadManager {
         model_id: &str,
         allow_insecure_loopback: bool,
     ) -> Result<(), anyhow::Error> {
-        // Re-validate every redirect hop under the same policy as the initial
-        // URL: reqwest's default policy follows cross-host and https->http
-        // redirects, which would let an allowlisted host hand the transfer to
-        // an arbitrary origin — fatal for files downloaded without a pin.
+        // Re-validate every redirect hop: reqwest's default policy follows
+        // cross-host and https->http redirects, which would let an allowlisted
+        // host hand the transfer to an arbitrary origin — fatal for files
+        // downloaded without a pin. Hops use the slightly wider
+        // `validate_redirect_url` (origin allowlist + the CDN suffixes those
+        // origins actually redirect to), because the initial-URL policy applied
+        // verbatim here refused every real download.
         let redirect_policy = reqwest::redirect::Policy::custom(move |attempt| {
             if attempt.previous().len() > 5 {
                 return attempt.error("too many redirects");
@@ -519,7 +580,7 @@ impl DownloadManager {
                     attempt.url().host_str(),
                     Some("127.0.0.1") | Some("localhost")
                 );
-            if loopback_ok || validate_download_url(attempt.url().as_str()).is_ok() {
+            if loopback_ok || validate_redirect_url(attempt.url().as_str()).is_ok() {
                 attempt.follow()
             } else {
                 let msg = format!("redirect to non-allowlisted URL '{}'", attempt.url());
@@ -918,6 +979,63 @@ mod tests {
         let mut hasher = Sha256::new();
         hasher.update(data);
         hex::encode(hasher.finalize())
+    }
+
+    // ── Redirect-hop policy ────────────────────────────────────────────────
+
+    /// The regression this policy exists for: both allowlisted origins hand the
+    /// transfer to a CDN, so applying the initial-URL rule to hops refused every
+    /// real download ("redirect to non-allowlisted URL"). These are the exact
+    /// hosts observed in the wild on 2026-08-11.
+    #[test]
+    fn allows_redirect_to_origin_cdns() {
+        for url in [
+            // github.com release asset -> GitHub's release-asset CDN
+            "https://release-assets.githubusercontent.com/github-production-release-asset/911666237/abc",
+            "https://objects.githubusercontent.com/github-production-release-asset/1/2",
+            // huggingface.co -> Xet / LFS CDN (subdomain varies by region)
+            "https://us.aws.cdn.hf.co/xet-bridge-us/697c69e5/64cd2138",
+            "https://cas-bridge.xethub.hf.co/xet-bridge-us/abc",
+            "https://cdn-lfs.huggingface.co/repos/aa/bb/model.gguf",
+        ] {
+            assert!(
+                validate_redirect_url(url).is_ok(),
+                "redirect hop should be allowed: {url}"
+            );
+        }
+    }
+
+    /// The leading dot on every suffix is load-bearing: a sibling registration
+    /// must not satisfy `.hf.co`.
+    #[test]
+    fn refuses_redirect_to_lookalike_sibling_domain() {
+        for url in [
+            "https://evil-hf.co/model.bin",
+            "https://hf.co.evil.example/model.bin",
+            "https://notgithubusercontent.com/model.bin",
+            "https://evil.example/model.bin",
+        ] {
+            assert!(
+                validate_redirect_url(url).is_err(),
+                "redirect hop must be refused: {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_non_https_redirect_even_to_allowed_suffix() {
+        assert!(validate_redirect_url("http://us.aws.cdn.hf.co/model.bin").is_err());
+    }
+
+    /// The widened list is for HOPS only — a download must still *start* at an
+    /// allowlisted origin, never at a CDN host directly.
+    #[test]
+    fn cdn_suffix_does_not_widen_initial_url_policy() {
+        assert!(validate_download_url(
+            "https://release-assets.githubusercontent.com/github-production-release-asset/1/2"
+        )
+        .is_err());
+        assert!(validate_download_url("https://us.aws.cdn.hf.co/xet-bridge-us/abc").is_err());
     }
 
     // ── URL allowlist / scheme policy ──────────────────────────────────────
