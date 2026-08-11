@@ -205,6 +205,29 @@ pub struct ChoicePayload {
     pub proposal: Option<String>,
 }
 
+/// The concrete repo object a Steward git-health `risk_gate` targets
+/// (`action_class` `repo_worktree_reap` / `repo_branch_delete`). Carried in the
+/// payload so the effect arm can RE-VERIFY every safety predicate against this
+/// exact target at apply time (the second-look contract) — the approval
+/// authorises the intent, never a stale snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepoTarget {
+    /// Absolute path of the primary repository.
+    pub repo_path: String,
+    /// Absolute path of the worktree to remove (worktree_reap only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
+    /// Branch name (branch_delete target; optional context for worktree_reap —
+    /// goal worktrees are detached and carry none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// Human-readable evidence lines recorded at proposal time (branch, sha,
+    /// merged-via, age) — shown to the approver, never trusted at apply time.
+    #[serde(default)]
+    pub evidence: Vec<String>,
+}
+
 /// Payload for `kind='risk_gate'` — permission to perform a risky action class.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -212,6 +235,11 @@ pub struct RiskGatePayload {
     pub action_class: String,
     pub description: String,
     pub requested_by: String,
+    /// Steward git-health target (repo_worktree_reap / repo_branch_delete).
+    /// `#[serde(default)]` + skip-when-absent keeps every pre-existing
+    /// risk_gate payload parsing and byte-identical on the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_target: Option<RepoTarget>,
 }
 
 /// Payload for `kind='automation_proposal'` — the Initiative layer (#360) noticed
@@ -2507,6 +2535,56 @@ mod tests {
         let d = create_decision(&pool, req).await.unwrap();
         assert_eq!(d.kind, "risk_gate");
         assert_eq!(d.tier, 2, "unknown action_class must fail closed");
+    }
+
+    // ── Steward git-health repo_target (RiskGatePayload compatibility) ──
+
+    #[test]
+    fn risk_gate_payload_without_repo_target_still_parses() {
+        // Every pre-existing risk_gate payload must keep parsing unchanged.
+        let old = serde_json::json!({
+            "action_class": "merge_to_main",
+            "description": "merge it",
+            "requested_by": "henry"
+        });
+        let p: RiskGatePayload = serde_json::from_value(old).unwrap();
+        assert!(p.repo_target.is_none());
+        // And it re-serializes without the field — byte-identical wire shape.
+        let out = serde_json::to_value(&p).unwrap();
+        assert!(out.get("repo_target").is_none());
+    }
+
+    #[test]
+    fn risk_gate_payload_with_repo_target_round_trips() {
+        let full = serde_json::json!({
+            "action_class": "repo_worktree_reap",
+            "description": "remove a merged, clean worktree",
+            "requested_by": "steward",
+            "repo_target": {
+                "repo_path": "/tmp/proj",
+                "worktree_path": "/tmp/wt/one",
+                "branch": "feature/done",
+                "evidence": ["merged via gh pr list", "clean tree"]
+            }
+        });
+        let p: RiskGatePayload = serde_json::from_value(full.clone()).unwrap();
+        let t = p.repo_target.as_ref().expect("repo_target parsed");
+        assert_eq!(t.repo_path, "/tmp/proj");
+        assert_eq!(t.worktree_path.as_deref(), Some("/tmp/wt/one"));
+        assert_eq!(t.branch.as_deref(), Some("feature/done"));
+        assert_eq!(t.evidence.len(), 2);
+        assert_eq!(serde_json::to_value(&p).unwrap(), full);
+    }
+
+    #[test]
+    fn repo_target_denies_unknown_fields() {
+        let bad = serde_json::json!({
+            "action_class": "repo_branch_delete",
+            "description": "?",
+            "requested_by": "steward",
+            "repo_target": { "repo_path": "/tmp/proj", "force": true }
+        });
+        assert!(serde_json::from_value::<RiskGatePayload>(bad).is_err());
     }
 
     // ── Enrichment proposals (#495 slice 4) ──

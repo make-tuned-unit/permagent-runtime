@@ -61,7 +61,12 @@ interface PendingAnswer {
  * documented gated effect (routes/decisions.rs:176-334) — never derived from
  * decision content (A1).
  */
-function effectTextFor(kind: string, answer: 'approve' | 'reject', agentName: string): string {
+function effectTextFor(
+  kind: string,
+  answer: 'approve' | 'reject',
+  agentName: string,
+  actionClass?: string,
+): string {
   if (kind === 'approve_review') {
     return answer === 'approve'
       ? `Confirm approve — ${agentName} will mark this goal complete and start anything waiting on it.`
@@ -73,6 +78,19 @@ function effectTextFor(kind: string, answer: 'approve' | 'reject', agentName: st
       : 'Confirm reject — the goal stays parked.';
   }
   if (kind === 'risk_gate') {
+    // Steward git-health cleanup (decisions_effects.rs repo-hygiene arm):
+    // informed-consent copy — the effect is a real removal, and every safety
+    // check re-runs at the moment it happens.
+    if (actionClass === 'repo_worktree_reap') {
+      return answer === 'approve'
+        ? `Confirm approve — ${agentName} removes this worktree folder. Anything with uncommitted or unpushed work is skipped, and every check is re-run at the moment of removal.`
+        : 'Confirm reject — the worktree stays, and this cleanup will not be suggested again.';
+    }
+    if (actionClass === 'repo_branch_delete') {
+      return answer === 'approve'
+        ? `Confirm approve — ${agentName} deletes this local branch (safe delete only: git refuses if it stopped being merged). Every check is re-run at the moment of deletion.`
+        : 'Confirm reject — the branch stays, and this cleanup will not be suggested again.';
+    }
     return answer === 'approve'
       ? `Confirm approve — ${agentName} may go ahead with this action.`
       : `Confirm reject — ${agentName} will not go ahead with this.`;
@@ -237,6 +255,12 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
   // The agent's original draft, when this decision carries one (payload.draft):
   // enables "approve with edits" — revise the text, then accept (answer='edit').
   const draft = draftText(d);
+  // risk_gate confirm copy varies by action class (Steward repo hygiene has
+  // its own informed-consent wording). Read defensively — payload is untrusted.
+  const riskActionClass =
+    d.kind === 'risk_gate' && d.payload && typeof d.payload === 'object'
+      ? String((d.payload as { action_class?: unknown }).action_class ?? '')
+      : undefined;
   const options = choiceOptions(d);
   const recommendedId = recommendedChoiceId(d);
   const recommended = options.find(o => o.id === recommendedId) ?? null;
@@ -498,7 +522,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
                 onClick={() => setPending({
                   body: { answer: 'approve' },
                   confirmLabel: 'Confirm approve',
-                  effectText: effectTextFor(d.kind, 'approve', agentName),
+                  effectText: effectTextFor(d.kind, 'approve', agentName, riskActionClass),
                 })}
               >
                 Approve
@@ -508,7 +532,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
                 onClick={() => setPending({
                   body: { answer: 'reject' },
                   confirmLabel: 'Confirm reject',
-                  effectText: effectTextFor(d.kind, 'reject', agentName),
+                  effectText: effectTextFor(d.kind, 'reject', agentName, riskActionClass),
                 })}
               >
                 Reject

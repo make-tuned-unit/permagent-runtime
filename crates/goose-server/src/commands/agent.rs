@@ -164,6 +164,11 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
     // says so in the log either way.
     crate::strix::spawn(app_state.clone());
 
+    // The Steward's git-health sweep. Detect/propose only (cleanup is
+    // Jesse-only via the Decision Inbox); no-ops unless `steward_scan_enabled`
+    // is set, and says so in the log either way.
+    crate::steward_sweep::spawn(app_state.clone());
+
     // Central notification policy (#66): classify workflow facts once, then
     // route them according to the user's channel thresholds.
     crate::notification_router::spawn(app_state.clone());

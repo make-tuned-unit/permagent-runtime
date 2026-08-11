@@ -1640,7 +1640,15 @@ mod tests {
     ///   They are recipe schema keys, not callable tools.
     // `strix_llm` is a config.yaml key (the Guard's scanner model), named in
     // the Guard's cost teaching step — a setting, not a tool.
-    const NON_TOOL_PROSE_TOKENS: &[&str] = &["sub_recipes", "worker_persona", "strix_llm"];
+    // `steward_scan_enabled` is the git-health sweep's config flag
+    // (~/.permagent/config.yaml), named in the git_steward descriptor so the
+    // agent can tell the user how to turn the sweep on — a setting, not a tool.
+    const NON_TOOL_PROSE_TOKENS: &[&str] = &[
+        "sub_recipes",
+        "worker_persona",
+        "strix_llm",
+        "steward_scan_enabled",
+    ];
 
     /// Every tool name that exists in the runtime: the statically-derived
     /// per-extension inventories, hidden-but-real extensions (Git Steward),

@@ -2579,7 +2579,9 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
     // Seeds. Unknown action_class resolves to Tier 2 (fail-closed) in code.
     // The `cc_*` classes are the S4 (#430) supervised-CC-gate policy — kept in
     // sync with `platform_extensions::gate_classifier::SEEDED_CLASSES` and
-    // reconciled onto existing DBs by `migrate_v31_to_v32`.
+    // reconciled onto existing DBs by `migrate_v31_to_v32`. The `repo_*`
+    // classes are the Steward git-health lane (Tier 2, Jesse-only) —
+    // reconciled onto existing DBs by `migrate_v40_to_v41`.
     sqlx::query(
         "INSERT OR IGNORE INTO risk_policy (action_class, tier, rationale) VALUES
             ('goal_ready', 0, 'Triage->Ready promotion is reversible'),
@@ -2601,7 +2603,9 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
             ('policy_edit', 2, 'Changes to this table are themselves Tier 2'),
             ('cc_read_only', 0, 'Supervised CC read-only tool (Read/Glob/Grep/LS/NotebookRead/BashOutput/TodoWrite) — no effect outside the session'),
             ('cc_workspace_edit', 1, 'Supervised CC file edit (Write/Edit/MultiEdit/NotebookEdit) — confined, git-reversible; recorded decision'),
-            ('cc_shell', 2, 'Supervised CC shell (Bash/KillBash) — arbitrary command surface; Jesse-only')",
+            ('cc_shell', 2, 'Supervised CC shell (Bash/KillBash) — arbitrary command surface; Jesse-only'),
+            ('repo_worktree_reap', 2, 'Removes a merged, clean worktree directory — Jesse-only'),
+            ('repo_branch_delete', 2, 'Deletes a local branch merged into the trunk — Jesse-only')",
     )
     .execute(&mut *tx)
     .await?;
@@ -2823,6 +2827,28 @@ pub async fn migrate_v39_to_v40(pool: &Pool<Sqlite>) -> Result<()> {
         .execute(pool)
         .await?;
     info!("Spectral schema migrated to v40 (analytics dimensions)");
+    Ok(())
+}
+
+/// v41: reconcile the Steward git-health `risk_policy` classes onto existing
+/// DBs (`repo_worktree_reap`, `repo_branch_delete` — both Tier 2, Jesse-only,
+/// so henry-policy can never auto-approve a deletion). Same posture as the v32
+/// reconcile: `INSERT OR IGNORE` so any user tier customization on an
+/// already-present row survives; purely additive to a free-text-PK table and
+/// base-independent. Records v41 in `schema_version`.
+pub async fn migrate_v40_to_v41(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v40 -> v41 (seed Steward git-health risk_policy classes)");
+    sqlx::query(
+        "INSERT OR IGNORE INTO risk_policy (action_class, tier, rationale) VALUES
+            ('repo_worktree_reap', 2, 'Removes a merged, clean worktree directory — Jesse-only'),
+            ('repo_branch_delete', 2, 'Deletes a local branch merged into the trunk — Jesse-only')",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (41)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v41 (Steward git-health risk_policy classes seeded)");
     Ok(())
 }
 
@@ -4222,6 +4248,68 @@ mod inbox_schema_tests {
                 .await
                 .unwrap();
         assert_eq!(count, 3, "exactly the three cc_* rows, no duplicates");
+    }
+
+    /// migrate_v40_to_v41: a pre-Steward-git-health DB has no `repo_*`
+    /// risk_policy rows, so the classes fail closed to Tier 2 anyway — but the
+    /// seed makes the Jesse-only intent explicit and user-tunable. After v41
+    /// both classes exist at Tier 2, a user customization survives a re-run,
+    /// and no duplicates appear.
+    #[tokio::test]
+    async fn migrate_v40_to_v41_seeds_steward_git_health_classes() {
+        let pool = mem_pool().await;
+        init_spectral_db(&pool).await.unwrap();
+
+        // Simulate a pre-lane DB: drop the fresh-install repo_* seed, stamp v40.
+        sqlx::query("DELETE FROM risk_policy WHERE action_class LIKE 'repo_%'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (40)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let before: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM risk_policy WHERE action_class LIKE 'repo_%'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(before, 0, "repo_* classes absent on a pre-lane DB");
+
+        migrate_v40_to_v41(&pool).await.unwrap();
+        assert_eq!(current_version(&pool).await, 41);
+
+        for class in ["repo_worktree_reap", "repo_branch_delete"] {
+            let tier: i64 =
+                sqlx::query_scalar("SELECT tier FROM risk_policy WHERE action_class = ?")
+                    .bind(class)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(tier, 2, "{class} must be Tier 2 (Jesse-only)");
+        }
+
+        // A user customization survives a re-run (INSERT OR IGNORE posture).
+        sqlx::query("UPDATE risk_policy SET tier = 1 WHERE action_class = 'repo_branch_delete'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        migrate_v40_to_v41(&pool).await.unwrap();
+        let tier: i64 = sqlx::query_scalar(
+            "SELECT tier FROM risk_policy WHERE action_class = 'repo_branch_delete'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(tier, 1, "user-customized tier preserved, not reset to seed");
+
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM risk_policy WHERE action_class LIKE 'repo_%'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 2, "exactly the two repo_* rows, no duplicates");
     }
 
     /// v33 (#66) is additive, seeds every existing user without overwriting a
