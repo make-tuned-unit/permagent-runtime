@@ -1049,13 +1049,36 @@ impl Config {
     }
 
     /// Check if an error string indicates a keyring availability issue that should trigger fallback
-    fn is_keyring_availability_error(&self, error_str: &str) -> bool {
-        let lower = error_str.to_lowercase();
-        lower.contains("keyring")
-            || lower.contains("dbus")
-            || lower.contains("org.freedesktop.secrets")
-            || lower.contains("platform secure storage")
-            || lower.contains("no secret service")
+    /// Is there NO usable secret store on this machine at all?
+    ///
+    /// Only that case may fall back to file storage. It is a narrow question,
+    /// and it must not be confused with "the store exists but refused us" —
+    /// see [`Self::handle_keyring_fallback_error`] for what that confusion
+    /// cost.
+    ///
+    /// Matching is on the keyring crate's TYPED variant, because the two
+    /// variants that matter render almost identical text and the previous
+    /// substring match could not tell them apart:
+    ///
+    /// | variant            | Display                                        |
+    /// |--------------------|------------------------------------------------|
+    /// | `PlatformFailure`  | "Platform secure storage failure: …"           |
+    /// | `NoStorageAccess`  | "Couldn't access platform secure storage: …"   |
+    ///
+    /// Both contain "platform secure storage", so both fell back. Only the
+    /// first should.
+    fn is_keyring_availability_error(&self, error: &keyring::Error) -> bool {
+        match error {
+            // The platform layer itself failed: no usable store here. Covers a
+            // Linux box with no secret service and a sandboxed/headless
+            // environment with no keychain. Falling back keeps those working.
+            keyring::Error::PlatformFailure(_) => true,
+            // A store exists and refused us — a locked keychain, or an ACL that
+            // does not list this build. The secrets are real and still there,
+            // so substituting empty file storage would hide them.
+            keyring::Error::NoStorageAccess(_) => false,
+            _ => false,
+        }
     }
 
     /// Get a keyring entry for the specified service
@@ -1063,17 +1086,45 @@ impl Config {
         Entry::new(service, KEYRING_USERNAME)
     }
 
-    /// Handle keyring errors with automatic fallback to file storage
+    /// Handle keyring errors, falling back to file storage ONLY when there is
+    /// no secret store to talk to.
+    ///
+    /// Observed 2026-08-12, and the reason this is not a one-line predicate:
+    /// rebuilding the desktop app changes its ad-hoc code signature, macOS
+    /// binds keychain ACLs to that signature, and the new binary was refused
+    /// access to the existing item. The old string match treated that denial
+    /// as "keyring unavailable", silently swapped in an EMPTY secrets file,
+    /// and every cloud provider then read as unconfigured. Requests went out
+    /// with no auth header and the user saw `401 Missing bearer` — concluding
+    /// their API keys had been deleted. All 25 were sitting in the keychain
+    /// the whole time.
+    ///
+    /// The rule that prevents a repeat: a PERMISSION error must never be
+    /// reported as ABSENCE, and must never cause an empty config to be
+    /// synthesised on top of real saved data. Silently substituting empty
+    /// state for unreadable state is indistinguishable from data loss, and it
+    /// sends the user looking in the wrong place.
     fn handle_keyring_fallback_error<T>(
         &self,
         keyring_err: &keyring::Error,
         fallback_values: Option<&HashMap<String, Value>>,
     ) -> Result<T, ConfigError> {
-        if self.is_keyring_availability_error(&keyring_err.to_string()) {
-            self.activate_file_fallback(fallback_values)
-        } else {
-            Err(ConfigError::KeyringError(keyring_err.to_string()))
+        if self.is_keyring_availability_error(keyring_err) {
+            return self.activate_file_fallback(fallback_values);
         }
+
+        if matches!(keyring_err, keyring::Error::NoStorageAccess(_)) {
+            // Loud on purpose: this is recoverable, but only by a human who
+            // knows what to do — and they cannot know while it presents as
+            // "no keys configured".
+            tracing::error!(
+                "Secret store refused access — your saved keys still exist but cannot be read, \
+                 so every provider will look unconfigured. On macOS this usually means the app \
+                 was rebuilt or updated and its new code signature is not on the keychain item's \
+                 access list. Underlying error: {keyring_err}"
+            );
+        }
+        Err(ConfigError::KeyringError(keyring_err.to_string()))
     }
 
     fn activate_file_fallback<T>(
@@ -1202,6 +1253,66 @@ pub fn load_init_config_from_workspace() -> Result<Mapping, ConfigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression, 2026-08-12. Rebuilding the desktop app changed its ad-hoc
+    /// code signature; macOS binds keychain ACLs to that signature, so the new
+    /// binary was refused the existing item. The old classifier matched the
+    /// bare substring "keyring" against the error text — which is present in
+    /// essentially every error the crate emits — so a PERMISSION DENIAL was
+    /// treated as "no keyring on this machine". An empty secrets file was
+    /// synthesised over 25 real saved keys, every provider read as
+    /// unconfigured, and requests went out with no auth header.
+    ///
+    /// A denial must never fall back: doing so is indistinguishable from data
+    /// loss and sends the user hunting for keys that were never gone.
+    #[test]
+    fn access_denied_is_not_treated_as_missing_keyring() {
+        let cfg = Config::new(
+            tempfile::NamedTempFile::new().unwrap().path(),
+            "acl-denial-test",
+        )
+        .unwrap();
+
+        let denied = keyring::Error::NoStorageAccess(Box::new(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "SecKeychainSearchCopyNext: The user name or passphrase you entered is not correct",
+        )));
+        assert!(
+            !cfg.is_keyring_availability_error(&denied),
+            "an ACL denial is a permission problem, never an availability one"
+        );
+
+        let res: Result<String, _> = cfg.handle_keyring_fallback_error(&denied, None);
+        assert!(
+            matches!(res, Err(ConfigError::KeyringError(_))),
+            "must surface the real error, not FallbackToFileStorage"
+        );
+        assert!(
+            !cfg.keyring_fallback_active.load(Ordering::Acquire),
+            "must NOT switch to file storage and hide the saved keys"
+        );
+    }
+
+    /// The case the fallback genuinely exists for: a Linux box with no secret
+    /// service running. That must still fall back, or headless installs break.
+    #[test]
+    fn absent_secret_service_still_falls_back() {
+        let cfg = Config::new(
+            tempfile::NamedTempFile::new().unwrap().path(),
+            "no-service-test",
+        )
+        .unwrap();
+
+        let absent = keyring::Error::PlatformFailure(Box::new(std::io::Error::other(
+            "dbus: org.freedesktop.secrets not provided by any .service files",
+        )));
+        assert!(cfg.is_keyring_availability_error(&absent));
+
+        let res: Result<String, _> = cfg.handle_keyring_fallback_error(&absent, None);
+        assert!(matches!(res, Err(ConfigError::FallbackToFileStorage)));
+        assert!(cfg.keyring_fallback_active.load(Ordering::Acquire));
+    }
+
     use serial_test::serial;
     use tempfile::{NamedTempFile, TempDir};
     #[test]

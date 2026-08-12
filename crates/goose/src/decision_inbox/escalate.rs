@@ -31,7 +31,13 @@ pub const MAX_OPTION_CONSEQUENCE_CHARS: usize = 280;
 pub const MAX_HEADLINE_CHARS: usize = 80;
 
 /// Amendment A2: user-facing fallback when no roster name is known.
-pub const ANONYMOUS_WORKER_DISPLAY: &str = "one of Henry's workers";
+///
+/// Deliberately does not name the primary agent. This string is rendered into
+/// Decision-Inbox headlines the user reads ("… sent an escalation that needs
+/// review"), and every user's agent carries their own configured name — the
+/// default is not universal. Phrased from the user's side so it reads
+/// correctly whatever they called it.
+pub const ANONYMOUS_WORKER_DISPLAY: &str = "one of your workers";
 
 // ── Tool parameters (Phase 0 schema, emitted via schemars) ──────────────
 

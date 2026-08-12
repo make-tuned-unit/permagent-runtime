@@ -39,11 +39,16 @@ vi.mock('@xterm/xterm', () => {
     onData() { return disposable(); }
     onTitleChange() { return disposable(); }
     onResize() { return disposable(); }
+    // Real xterm exposes this; the component activates Unicode 11 width
+    // tables through it. Without it the fake throws on assignment and every
+    // test in this file fails for a reason unrelated to what it asserts.
+    unicode = { activeVersion: '6' };
   }
   return { Terminal: FakeXTerm };
 });
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit() {} } }));
 vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: class {} }));
+vi.mock('@xterm/addon-unicode11', () => ({ Unicode11Addon: class {} }));
 
 // ── Tauri API stand-in ───────────────────────────────────────────────────────
 type Invocation = { cmd: string; args?: Record<string, unknown> };

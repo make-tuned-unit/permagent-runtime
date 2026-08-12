@@ -411,8 +411,11 @@ fn security_report_markdown(project_name: &str, current: &[Finding], fresh: &[Fi
                 .unwrap_or("review the finding location and remove the exposure"),
         ));
     }
+    // Addressed to the user, so it must not name the agent: every user's agent
+    // carries their own configured name. "your agent" reads correctly whatever
+    // they called it.
     out.push_str(
-        "\nTo act on this: ask Henry to read this report and dispatch a fix goal \
+        "\nTo act on this: ask your agent to read this report and dispatch a fix goal \
          (Claude Code or Codex) for the plan above.\n",
     );
     out

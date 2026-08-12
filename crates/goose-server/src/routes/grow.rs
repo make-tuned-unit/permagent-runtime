@@ -171,7 +171,11 @@ fn levers(s: &GrowthSignals) -> Vec<Lever> {
             score,
             move_title: format!("Post again — it's been {days} days"),
             move_why:
-                "Momentum comes from cadence. Draft the next post with Henry before the gap widens."
+                // No persona name here: this is a pure function with no access
+                // to the configured identity, and every user's agent has a
+                // different name. Dropping the self-reference is also better
+                // copy — the agent is the one saying this.
+                "Momentum comes from cadence. Draft the next post before the gap widens."
                     .to_string(),
             win_title: "Posting consistently".to_string(),
             win_why: format!("Last post {days} days ago — keep the rhythm going."),
@@ -225,7 +229,7 @@ fn levers(s: &GrowthSignals) -> Vec<Lever> {
             ),
             win_title: "Momentum on the board".to_string(),
             win_why: format!(
-                "{active} goal(s) in flight — Henry's driving the work forward.",
+                "{active} goal(s) in flight — the work is moving.",
                 active = s.active_goals
             ),
         });
