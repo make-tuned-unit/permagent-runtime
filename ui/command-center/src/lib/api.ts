@@ -782,6 +782,21 @@ export interface ProjectSpend {
 }
 
 /** The Spend panel's snapshot (GET /api/governance/spend). */
+/** An open failure incident (wave-1 triage surface; snake_case wire). */
+export interface IncidentView {
+  id: string;
+  created_at: string;
+  session_id: string | null;
+  surface: string;
+  user_goal: string;
+  observation: string;
+  mechanism: string;
+  artifact_kind: string;
+  artifact_ref: string;
+  status: string;
+  resolved_at: string | null;
+}
+
 export interface SpendSnapshot {
   runningTotalUsd: number;
   totalTokens: number;
@@ -1090,6 +1105,26 @@ export const api = {
   /** Recent cloud-egress audit entries (everything that has left this machine). */
   getEgressLog: (limit = 100) =>
     apiFetch<EgressLogEntry[]>(`/api/security/egress-log?limit=${limit}`),
+
+  // ── Briefings ─────────────────────────────────────────────────────────
+  /** Mark briefings as seen ("ack" = seen, never approval). */
+  ackBriefings: (ids: string[]) =>
+    apiFetch<{ acknowledged: number }>('/api/henry/briefings/ack', {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
+    }),
+
+  // ── Incidents (failure-learning triage) ───────────────────────────────
+  /** Open incidents, newest first. */
+  getIncidents: (limit = 50) =>
+    apiFetch<IncidentView[]>(`/api/incidents?limit=${limit}`),
+
+  /** Resolve an incident (idempotent — `changed:false` when already closed). */
+  resolveIncident: (id: string) =>
+    apiFetch<{ incident: IncidentView | null; changed: boolean }>(
+      `/api/incidents/${id}/resolve`,
+      { method: 'POST' },
+    ),
 
   // ── Governance / spend ────────────────────────────────────────────────
   /** Per-session + per-project spend, running total, and the current budget. */

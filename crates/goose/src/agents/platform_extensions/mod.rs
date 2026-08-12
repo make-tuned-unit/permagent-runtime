@@ -253,7 +253,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                            they actually are, or how their machine is doing — so they see you \
                            looking at the same screen they are.",
                     open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
-                        tab: "Home",
+                        tab: "Dashboard",
                         section: None,
                     }),
                     confirm: None,

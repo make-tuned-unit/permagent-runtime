@@ -152,9 +152,12 @@ export function HenryHUD({ visible, onClose }: HenryHUDProps) {
 // ── Status tab body (pixel-identical to previous full HUD) ──────────
 
 function HenryStatusBody({ status }: { status: HenryStatus | null }) {
+  // Locally hide acked briefings until the next status poll confirms.
+  const [ackedIds, setAckedIds] = useState<string[]>([]);
   if (!status) return null;
 
   const { today_totals: today, lifetime_stats: lt } = status;
+  const briefings = (status.briefings ?? []).filter((b) => !ackedIds.includes(b.id));
 
   return (
     <>
@@ -203,9 +206,9 @@ function HenryStatusBody({ status }: { status: HenryStatus | null }) {
           the only panel that can be waiting on someone — the same reason it
           renders first in Henry's own brief. Omitted entirely when nothing is
           unread rather than showing an empty box. */}
-      {status.briefings && status.briefings.length > 0 && (
+      {briefings.length > 0 && (
         <Section title="BRIEFINGS" trimColor={COLORS.neonAmber}>
-          {status.briefings.map((b) => (
+          {briefings.map((b) => (
             <div key={b.id} style={briefingRowStyle}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span
@@ -221,6 +224,24 @@ function HenryStatusBody({ status }: { status: HenryStatus | null }) {
                   {b.severity}
                 </span>
                 <span style={briefingFromStyle}>{b.from}</span>
+                {/* Ack = "seen", never approval (briefings.rs contract).
+                    Wave-1 item 5: the unacked list previously grew forever —
+                    no route, no button. */}
+                <button
+                  title="Mark as seen"
+                  onClick={() => {
+                    void api.ackBriefings([b.id])
+                      .then(() => setAckedIds((ids) => [...ids, b.id]))
+                      .catch(() => { /* row stays; next status load retells the truth */ });
+                  }}
+                  style={{
+                    marginLeft: 'auto', background: 'none', border: 'none',
+                    color: COLORS.marbleVeining, cursor: 'pointer',
+                    fontSize: 11, lineHeight: 1, padding: '2px 4px',
+                  }}
+                >
+                  ✓
+                </button>
               </div>
               <div style={briefingSummaryStyle}>{b.summary}</div>
             </div>

@@ -238,6 +238,42 @@ pub async fn list_open_incidents(
     rows.into_iter().map(incident_from_row).collect()
 }
 
+/// Resolve an open incident. Returns the updated row, or `Ok(None)` when the
+/// id doesn't exist or is already resolved (idempotent — resolving twice is
+/// not an error, it's a no-op the caller can report honestly).
+///
+/// Wave-1 item 2: without this, `incidents` was insert-only — every worker
+/// prompt accrued the same stale open incidents forever.
+pub async fn resolve_incident(
+    pool: &Pool<Sqlite>,
+    id: &str,
+) -> Result<Option<Incident>, IncidentError> {
+    let resolved_at = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+    let changed = sqlx::query(
+        "UPDATE incidents SET status = 'resolved', resolved_at = ?
+          WHERE id = ? AND status = 'open'",
+    )
+    .bind(&resolved_at)
+    .bind(id)
+    .execute(pool)
+    .await?
+    .rows_affected();
+
+    if changed == 0 {
+        return Ok(None);
+    }
+
+    let row = sqlx::query_as::<_, IncidentRow>(
+        "SELECT id, created_at, session_id, surface, user_goal, observation,
+                mechanism, artifact_kind, artifact_ref, status, resolved_at
+           FROM incidents WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await?;
+    incident_from_row(row).map(Some)
+}
+
 /// How many open incidents may ride into a decompose context. Mirrors the
 /// lesson pool's MAX_INJECTED_LESSONS: a cap this small keeps the block an
 /// aside, not a second briefing.
@@ -391,6 +427,33 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["new-open", "old-open"]
         );
+    }
+
+    #[tokio::test]
+    async fn resolve_incident_closes_it_and_is_idempotent() {
+        let pool = test_pool().await;
+        let created = create_incident(
+            &pool,
+            new_incident(Mechanism::Unclassified, "user message 42"),
+        )
+        .await
+        .unwrap();
+
+        let resolved = resolve_incident(&pool, &created.id).await.unwrap();
+        let resolved = resolved.expect("first resolve must return the updated row");
+        assert_eq!(resolved.status, "resolved");
+        assert!(resolved.resolved_at.is_some());
+
+        // It must leave the open list — the accrual bug this fixes.
+        assert!(list_open_incidents(&pool, 10).await.unwrap().is_empty());
+
+        // Second resolve: no-op, not an error.
+        assert!(resolve_incident(&pool, &created.id)
+            .await
+            .unwrap()
+            .is_none());
+        // Unknown id: same.
+        assert!(resolve_incident(&pool, "nope").await.unwrap().is_none());
     }
 
     fn incident_fixture(n: usize) -> Incident {

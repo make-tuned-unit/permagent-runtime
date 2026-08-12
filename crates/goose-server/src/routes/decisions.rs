@@ -52,6 +52,9 @@ impl InboxQuery {
 struct InboxResponse {
     items: Vec<decisions::OpenDecisionItem>,
     summary: decisions::InboxSummary,
+    /// Goals parked `needs_human_attention` — the bucket that makes the flag
+    /// mean what it says (wave-1 item 1: previously it only hid the goal).
+    attention_goals: Vec<decisions::AttentionGoal>,
 }
 
 #[derive(Deserialize)]
@@ -122,7 +125,14 @@ async fn list_decisions_handler(
         items.truncate(DEFAULT_INBOX_LIMIT);
     }
     let summary = decisions::inbox_summary(&pool).await.map_err(internal)?;
-    Ok(Json(InboxResponse { items, summary }))
+    let attention_goals = decisions::list_attention_goals(&pool)
+        .await
+        .map_err(internal)?;
+    Ok(Json(InboxResponse {
+        items,
+        summary,
+        attention_goals,
+    }))
 }
 
 async fn answer_decision_handler(

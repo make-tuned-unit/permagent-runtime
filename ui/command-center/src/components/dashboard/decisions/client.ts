@@ -26,6 +26,7 @@ import { getApiBaseUrl, loadDaemonToken } from '../../../lib/api';
 import type {
   AnswerBody,
   AnswerOutcome,
+  AttentionGoal,
   Decision,
   DecisionHistoryResponse,
   DecisionsClient,
@@ -42,6 +43,8 @@ import { DecisionConflictError } from './types';
 interface WireInboxResponse {
   items: Decision[];
   summary: InboxSummary;
+  /** Absent on daemons older than wave 1 — flatten to []. */
+  attentionGoals?: AttentionGoal[];
 }
 
 interface WireAnswerResponse {
@@ -78,7 +81,7 @@ async function decisionsFetch<T>(endpoint: string, options?: RequestInit): Promi
 
 export const realDecisionsClient: DecisionsClient = {
   async list(opts?: { all?: boolean }): Promise<DecisionsResponse> {
-    const { items, summary } = await decisionsFetch<WireInboxResponse>(
+    const { items, summary, attentionGoals } = await decisionsFetch<WireInboxResponse>(
       `/api/decisions${opts?.all ? '?all=1' : ''}`,
     );
     return {
@@ -86,6 +89,8 @@ export const realDecisionsClient: DecisionsClient = {
       total_pending: summary.total_pending,
       handled_count: summary.handled_count,
       goals_in_flight: summary.goals_in_flight,
+      goals_needing_attention: summary.goals_needing_attention ?? 0,
+      attention_goals: attentionGoals ?? [],
       oldest_pending_at: summary.oldest_pending_at,
     };
   },

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { emitActivity } from '../../lib/emitActivity';
-import { api, apiFetch, type SovereigntyStatus, type EgressLogEntry, type DeviceInfo, type CrashExportResponse } from '../../lib/api';
+import { api, apiFetch, type SovereigntyStatus, type EgressLogEntry, type DeviceInfo, type CrashExportResponse, type IncidentView } from '../../lib/api';
 import { relativeTimeAgo } from '../../lib/time-decay';
 import { font, ease, setTheme as setThemeFn, setMobiusGlow, setIdleAnim, setShowHeroMobius, setDensity as setDensityFn, setReduceMotion as setReduceMotionFn, type ThemePref, type IdleAnim, type UIDensity } from '../../styles/tokens';
 import { useTheme as useThemeHook } from '../../styles/useTheme';
@@ -1360,11 +1360,61 @@ function InboxPane() {
   );
 }
 
+/** Open-incident triage (wave-1 item 2): the failure-learning loop files
+ *  incidents, workers read them into every plan — this is the missing half
+ *  where a human closes them out. Honest quiet state: renders nothing when
+ *  there are none. */
+function IncidentsStrip() {
+  const { colors } = useThemeHook();
+  const [incidents, setIncidents] = useState<IncidentView[] | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    api.getIncidents().then(i => { if (live) setIncidents(i); }).catch(() => { if (live) setIncidents([]); });
+    return () => { live = false; };
+  }, []);
+
+  const resolve = async (id: string) => {
+    setBusy(id);
+    try {
+      await api.resolveIncident(id);
+      setIncidents(prev => (prev ?? []).filter(i => i.id !== id));
+    } catch { /* leave the row; the next load retells the truth */ }
+    setBusy(null);
+  };
+
+  if (!incidents || incidents.length === 0) return null;
+  return (
+    <div style={{ marginBottom: 12, border: `1px solid ${colors.border}`, borderRadius: 12, padding: '10px 14px' }}>
+      <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: '#e8a33d', marginBottom: 6 }}>
+        Open incidents — feeding every worker plan until resolved
+      </div>
+      {incidents.map(i => (
+        <div key={i.id} style={{ display: 'flex', alignItems: 'baseline', gap: 10, padding: '5px 0', borderBottom: `1px solid ${colors.border}` }}>
+          <span style={{ fontSize: 12, color: colors.text, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${i.user_goal} — ${i.observation}`}>
+            [{i.surface}] {i.observation}
+          </span>
+          <span style={{ fontSize: 10, color: colors.textDim, fontFamily: 'monospace' }}>{i.mechanism}</span>
+          <button
+            onClick={() => resolve(i.id)}
+            disabled={busy === i.id}
+            style={{ fontSize: 11, color: colors.cyan, background: 'none', border: `1px solid ${colors.borderHi}`, borderRadius: 6, padding: '2px 10px', cursor: 'pointer' }}
+          >
+            {busy === i.id ? '…' : 'Resolve'}
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ActivityPane() {
   const { colors } = useThemeHook();
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <H1 sub="The runtime's most recent events, live off the running system's event streams — tool calls, worker activity, navigations, and lifecycle signals as they happen.">Activity</H1>
+      <IncidentsStrip />
       <div style={{ flex: 1, minHeight: 320, border: `1px solid ${colors.border}`, borderRadius: 12, overflow: 'hidden' }}>
         <ExecutionTrace />
       </div>

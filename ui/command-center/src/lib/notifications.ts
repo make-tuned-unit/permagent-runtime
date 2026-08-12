@@ -236,47 +236,69 @@ async function connect(): Promise<void> {
 
         const prefs = getNotificationPrefs();
         switch (wireEventType(evt)) {
-          case 'decision_created': {
-            const kind = (evt.payload?.kind ?? '') as string;
-            if (kind === 'automation_proposal' || kind === 'initiative') {
-              if (prefs.initiative) {
-                push({
-                  kind: 'initiative',
-                  title: 'Henry has a proposal',
-                  body: titleFor(evt, 'An initiative proposal is waiting in the Decision Inbox'),
-                  target: 'dashboard',
-                });
+          // Wave-1 item 4: decision/goal/task notifications consume the
+          // ROUTER's verdict (`notification_routed`, channel=in_app), not the
+          // raw facts. Before this, the UI re-derived from raw events, so the
+          // per-user thresholds and the digest channel silently did nothing —
+          // the router computed a routing and nobody read it. Raw-event kinds
+          // the router doesn't classify (librarian, echo) keep their own
+          // handling below.
+          case 'notification_routed': {
+            const p = (evt.payload ?? {}) as {
+              channel?: string;
+              source_type?: string;
+              source_payload?: Record<string, unknown>;
+            };
+            if (p.channel !== 'in_app') break;
+            const src = { payload: p.source_payload ?? {} };
+            switch (p.source_type) {
+              case 'decision_created': {
+                const kind = (src.payload.kind ?? '') as string;
+                if (kind === 'automation_proposal' || kind === 'initiative') {
+                  if (prefs.initiative) {
+                    push({
+                      kind: 'initiative',
+                      title: 'Henry has a proposal',
+                      body: titleFor(src, 'An initiative proposal is waiting in the Decision Inbox'),
+                      target: 'dashboard',
+                    });
+                  }
+                } else if (prefs.decision) {
+                  push({
+                    kind: 'decision',
+                    title: 'Decision needed',
+                    body: titleFor(src, 'A decision is waiting in the Decision Inbox'),
+                    target: 'dashboard',
+                  });
+                }
+                break;
               }
-            } else if (prefs.decision) {
-              push({
-                kind: 'decision',
-                title: 'Decision needed',
-                body: titleFor(evt, 'A decision is waiting in the Decision Inbox'),
-                target: 'dashboard',
-              });
-            }
-            break;
-          }
-          case 'goal_state_changed': {
-            const to = (evt.payload?.to ?? '') as string;
-            if (to === 'review' && prefs.goal_review) {
-              push({
-                kind: 'goal_review',
-                title: 'Goal ready for review',
-                body: titleFor(evt, 'A goal finished and wants your eyes'),
-                target: 'dashboard',
-              });
-            }
-            break;
-          }
-          case 'task_failed': {
-            if (prefs.goal_failure) {
-              push({
-                kind: 'goal_failure',
-                title: 'Something failed',
-                body: titleFor(evt, 'A background task failed'),
-                target: 'dashboard',
-              });
+              case 'goal_state_changed': {
+                const to = (src.payload.to ?? '') as string;
+                if (to === 'review' && prefs.goal_review) {
+                  push({
+                    kind: 'goal_review',
+                    title: 'Goal ready for review',
+                    body: titleFor(src, 'A goal finished and wants your eyes'),
+                    target: 'dashboard',
+                  });
+                }
+                break;
+              }
+              case 'task_failed':
+              case 'integration_error': {
+                if (prefs.goal_failure) {
+                  push({
+                    kind: 'goal_failure',
+                    title: 'Something failed',
+                    body: titleFor(src, 'A background task failed'),
+                    target: 'dashboard',
+                  });
+                }
+                break;
+              }
+              default:
+                break;
             }
             break;
           }

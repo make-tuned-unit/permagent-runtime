@@ -861,12 +861,76 @@ pub async fn apply_incidents_schema(pool: &Pool<Sqlite>) -> Result<()> {
             )),
             artifact_ref  TEXT NOT NULL,
             status        TEXT NOT NULL DEFAULT 'open'
-                          CHECK (status IN ('open','triaged','regressed','dismissed')),
+                          CHECK (status IN ('open','triaged','regressed','dismissed','resolved')),
             resolved_at   TEXT
         )",
     )
     .execute(pool)
     .await?;
+
+    // Reconcile pre-wave-1 DBs whose CHECK lacks 'resolved' (the table was
+    // insert-only; incidents could never close). SQLite cannot alter a CHECK,
+    // so this is the documented in-place rebuild — run every boot,
+    // version-independent, idempotent via the sqlite_master DDL probe (the
+    // same posture the cfg-gated-migration trap demands).
+    let ddl: Option<String> = sqlx::query_scalar(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'incidents'",
+    )
+    .fetch_optional(pool)
+    .await?;
+    if let Some(ddl) = ddl {
+        if !ddl.contains("'resolved'") {
+            let mut conn = pool.acquire().await?;
+            sqlx::query("PRAGMA foreign_keys = OFF")
+                .execute(&mut *conn)
+                .await?;
+            let rebuild: Result<()> = async {
+                sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+                sqlx::query(
+                    "CREATE TABLE incidents_new (
+                        id            TEXT PRIMARY KEY,
+                        created_at    TEXT NOT NULL,
+                        session_id    TEXT REFERENCES sessions(id),
+                        surface       TEXT NOT NULL,
+                        user_goal     TEXT NOT NULL,
+                        observation   TEXT NOT NULL,
+                        mechanism     TEXT NOT NULL CHECK (mechanism IN (
+                            'A_environment', 'B_design_assumption', 'C_error_swallowing',
+                            'D_fail_plausible', 'E_operational_omission', 'unclassified'
+                        )),
+                        artifact_kind TEXT NOT NULL CHECK (artifact_kind IN (
+                            'user_report', 'tool_error', 'exit_code', 'http_status',
+                            'run_diff', 'recognition_record'
+                        )),
+                        artifact_ref  TEXT NOT NULL,
+                        status        TEXT NOT NULL DEFAULT 'open'
+                                      CHECK (status IN ('open','triaged','regressed','dismissed','resolved')),
+                        resolved_at   TEXT
+                    )",
+                )
+                .execute(&mut *conn)
+                .await?;
+                sqlx::query("INSERT INTO incidents_new SELECT * FROM incidents")
+                    .execute(&mut *conn)
+                    .await?;
+                sqlx::query("DROP TABLE incidents").execute(&mut *conn).await?;
+                sqlx::query("ALTER TABLE incidents_new RENAME TO incidents")
+                    .execute(&mut *conn)
+                    .await?;
+                sqlx::query("COMMIT").execute(&mut *conn).await?;
+                Ok(())
+            }
+            .await;
+            if rebuild.is_err() {
+                let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+            }
+            sqlx::query("PRAGMA foreign_keys = ON")
+                .execute(&mut *conn)
+                .await?;
+            rebuild?;
+        }
+    }
+
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_incidents_status_created
          ON incidents(status, created_at)",

@@ -317,6 +317,8 @@ export const mockDecisionsClient: DecisionsClient = {
       total_pending: pending.length,
       handled_count: resolved.length,
       goals_in_flight: 6,
+      goals_needing_attention: 0,
+      attention_goals: [],
       oldest_pending_at: oldest,
     };
   },
