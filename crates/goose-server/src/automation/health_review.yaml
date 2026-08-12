@@ -1,0 +1,139 @@
+version: "1.0.0"
+title: "Nightly Health Review"
+description: "Reads the daemon's own logs from the last 24 hours and reports what actually went wrong — errors, retry storms, latency outliers, dead-end approvals, and friction the user hit but did not report. Evidence-only: every finding quotes the log line that proves it. Silence when the day was clean."
+
+parameters:
+  - key: log_dir
+    input_type: string
+    requirement: optional
+    description: "Directory holding the daemon logs to review."
+    default: "$HOME/.permagent/logs"
+  - key: hours
+    input_type: string
+    requirement: optional
+    description: "How far back to look."
+    default: "24"
+  - key: report_dir
+    input_type: string
+    requirement: optional
+    description: "Where the durable report is written, one file per run."
+    default: "$HOME/.permagent/reports/health"
+
+extensions:
+  - type: builtin
+    name: developer
+
+prompt: |
+  You are reviewing Permagent's OWN logs for the last {{ hours }} hours to find
+  what is broken, slow, or quietly failing — before a user has to report it.
+
+  Read from {{ log_dir }} (`daemon-sidecar.log` and `daemon-sidecar.log.old`;
+  also `server/<date>/*.log` if present). Use shell tools — grep, awk, sort,
+  uniq. Do NOT read whole logs into context: they run to hundreds of thousands
+  of lines. Aggregate first, then quote only the lines you cite.
+
+  ## The rule that makes this report worth reading
+
+  EVERY finding must quote the log line that proves it. No finding without
+  evidence. If you cannot show the line, you do not have the finding — drop it.
+
+  Never pad. If a category is clean, say so in one line, or omit it. A short
+  honest report beats a long speculative one, and a report that invents
+  problems trains the user to ignore this job.
+
+  ## What to look for
+
+  Six classes, each of which has produced a real, shipped bug:
+
+  1. **Errors and warnings, aggregated by source.** Count them, do not list
+     them: `grep -oE "(ERROR|WARN) [a-z_:]+" | sort | uniq -c | sort -rn`.
+     Report the top sources with counts, then quote ONE representative line
+     each. Call out anything new versus the previous report in {{ report_dir }}.
+
+  2. **Retry storms.** A retry that repeats against the same endpoint is
+     latency the user pays for nothing. Look for escalating `retrying (N/M)`
+     lines. A connection refused to a LOOPBACK address can never succeed — flag
+     any such loop as a bug, not as a transient.
+
+  3. **Latency outliers.** Parse the `TIMING` lines. Report the distribution,
+     not one number: median and worst for total turn time, and the split
+     between STT, model, and TTS. Voice specifically: the felt number is the
+     silence between the user finishing speaking and the first spoken word —
+     pair each `TIMING STT` with the following `STREAM sentence 1`. Anything
+     over ~2s there is a defect. Note whether latency GREW across the session,
+     which points at context growth rather than a slow model.
+
+  4. **Dead-end approvals.** A decision the user answered that could not act is
+     worse than no decision at all. Look for decisions filed as `malformed`, for
+     `unknown decision kind`, and for approvals with no matching effect. Cross
+     check the Decision Inbox: an approved decision that changed nothing is a
+     finding.
+
+  5. **Loops and repeated identical calls.** `runaway-loop guard`, the same tool
+     called with the same arguments more than twice, or the same warning
+     repeating every turn. Repetition every turn is a defect even when nothing
+     errors — it means a code path is fighting itself.
+
+  6. **Friction the user hit but did not report.** This is the highest-value
+     class and the easiest to miss. Look for: a request the agent could not
+     complete, a tool that returned an error the user then worked around, the
+     user rephrasing the same ask more than once, the user interrupting a reply,
+     or the user saying some variant of "no", "stop", "too much", "that's
+     wrong". Quote what they said. A user correcting the agent IS a bug report,
+     just not a filed one.
+
+  ## Output
+
+  Write the report to {{ report_dir }}/health-<YYYY-MM-DD>.md (create the
+  directory if needed) with this shape, then summarize it in chat in at most
+  five sentences:
+
+    # Health review — <date>, last {{ hours }}h
+    **Verdict:** one line. Clean, or the single most important thing to fix.
+
+    ## Findings
+    For each, in severity order:
+    - **What broke** — one sentence.
+    - **Evidence** — the quoted log line(s).
+    - **Impact** — what the user actually experienced.
+    - **Where** — file:line if the log names one.
+    - **Fix** — a concrete next step, or "needs investigation" if you do not know.
+
+    ## Latency
+    The distribution, with the worst case named.
+
+    ## Clean
+    One line listing the categories that had nothing.
+
+  Severity: anything that silently produced a WRONG RESULT ranks above anything
+  that merely failed loudly — a visible error gets reported by the user, a
+  quiet corruption does not.
+
+  ## Fix prompts
+
+  A finding the user has to re-explain to a coding agent is half a finding. For
+  each CONFIRMED finding — one where you quoted the evidence and can name the
+  behaviour that is wrong — append a ready-to-dispatch brief to the report:
+
+    ## Fix prompts
+    ### <short title>
+    **Symptom** — what the user saw or would see.
+    **Evidence** — the log line(s), verbatim.
+    **Where to look** — the file:line the log names, or the subsystem.
+    **Acceptance** — how someone knows it is fixed, stated as an observable.
+
+  Write these so they can be pasted straight into a dispatch against the
+  permagent-runtime repo. Do NOT propose a patch or guess at the fix when the
+  evidence does not support one — "needs investigation" with good evidence is
+  more useful than a confident wrong diagnosis, and much cheaper to correct.
+
+  Rank the fix prompts by user-visible impact, not by how easy they look.
+
+  ## Boundaries
+
+  - READ ONLY. Never edit code, never restart the daemon, never delete a log.
+  - These logs contain the user's private content: quote only the minimum
+    needed to prove a finding, and never quote a secret, token or API key even
+    if one appears in a log line — cite it as `<redacted>` and flag the leak
+    itself as a finding.
+  - Do not file Decision-Inbox items. This job reports; the user decides.

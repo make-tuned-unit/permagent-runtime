@@ -15,6 +15,7 @@ use std::path::PathBuf;
 const WORKSPACE_SNAPSHOT_YAML: &str = include_str!("workspace_snapshot.yaml");
 const STORAGE_INSIGHTS_YAML: &str = include_str!("storage_insights.yaml");
 const STEWARD_YAML: &str = include_str!("steward.yaml");
+const HEALTH_REVIEW_YAML: &str = include_str!("health_review.yaml");
 
 struct StarterRecipe {
     id: &'static str,
@@ -52,6 +53,19 @@ const STARTERS: &[StarterRecipe] = &[
         cron: "0 0 6 * * 1-5",
         yaml: STEWARD_YAML,
         owner: Some("steward"),
+    },
+    // 03:20 daily: after the day's work is in the log and before the morning
+    // jobs (workspace-snapshot 08:00, git-steward 06:00) add noise of their
+    // own. Off-hour so a long log sweep never competes with a live session.
+    //
+    // Reviews the daemon's own logs for what broke, what was slow, and what
+    // the user worked around without filing anything. Read-only, and it files
+    // no Decision-Inbox items — it reports, the user decides.
+    StarterRecipe {
+        id: "health-review",
+        cron: "0 20 3 * * *",
+        yaml: HEALTH_REVIEW_YAML,
+        owner: None,
     },
 ];
 
