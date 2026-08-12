@@ -38,6 +38,28 @@ static ID_LIKE: LazyLock<Regex> = LazyLock::new(|| {
 static LONG_HEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\b[0-9a-f]{16,}\b").expect("LONG_HEX regex is valid"));
 
+/// Candidate hex-ish token, 6+ chars. Whether it is actually an identifier is
+/// decided by [`is_hex_identifier`] — the `regex` crate has no lookaround, so
+/// the digit/letter test happens in code.
+///
+/// This exists because [`ID_LIKE`] requires a hyphen group and [`LONG_HEX`]
+/// requires 16 chars, which let the *last* element of a truncated UUID list
+/// (`019fee68` — 8 chars, no hyphen) through to the synthesizer. Caught by the
+/// test pinning the exact strings that were spoken aloud.
+static HEXISH: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\b[0-9a-f]{6,}\b").expect("HEXISH regex is valid"));
+
+/// Is this all-hex token an identifier rather than a word or a number?
+///
+/// Requires BOTH a digit and an a-f letter, which is what separates the three
+/// cases: `019fee68` is an id (both), `123456` is a quantity (no letters), and
+/// `deadbeef` is a word someone may well have typed on purpose (no digits).
+fn is_hex_identifier(token: &str) -> bool {
+    let has_digit = token.chars().any(|c| c.is_ascii_digit());
+    let has_hex_letter = token.chars().any(|c| c.is_ascii_alphabetic());
+    has_digit && has_hex_letter
+}
+
 /// A JSON object key at the start of a fragment: `"evidence_refs":`.
 static JSON_KEY: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#""[A-Za-z_][A-Za-z0-9_]*"\s*:"#).expect("JSON_KEY regex is valid")
@@ -65,6 +87,13 @@ const MIN_ALPHA_RUN: usize = 2;
 pub fn speakable(text: &str) -> Option<String> {
     let stripped = ID_LIKE.replace_all(text, " ");
     let stripped = LONG_HEX.replace_all(&stripped, " ");
+    let stripped = HEXISH.replace_all(&stripped, |caps: &regex::Captures| {
+        if is_hex_identifier(&caps[0]) {
+            " ".to_string()
+        } else {
+            caps[0].to_string()
+        }
+    });
     let stripped = JSON_KEY.replace_all(&stripped, " ");
     let stripped = STRUCTURAL.replace_all(&stripped, " ");
     let stripped = ORPHAN_SEPARATORS.replace_all(&stripped, ", ");
@@ -148,13 +177,32 @@ mod tests {
         assert!(out.contains("landed"));
     }
 
-    /// Short hex-ish words in prose are not identifiers.
+    /// Short hex-ish words in prose are not identifiers. `deadbeef` has no
+    /// digit and `123456` has no hex letter — only tokens with BOTH are ids.
     #[test]
     fn does_not_eat_short_hex_words_or_numbers() {
-        assert_eq!(
-            speakable("The deadbeef case returns 42 rows."),
-            Some("The deadbeef case returns 42 rows.".to_string())
-        );
+        for prose in [
+            "The deadbeef case returns 42 rows.",
+            "The file is 123456 bytes on disk.",
+            "Version 2026 shipped with 100000 users.",
+        ] {
+            assert_eq!(
+                speakable(prose),
+                Some(prose.to_string()),
+                "mangled: {prose}"
+            );
+        }
+    }
+
+    /// The last element of a truncated UUID list is a bare 8-char hex token
+    /// with no hyphen — it slipped past the hyphen-anchored and 16-char rules
+    /// and would still have been read aloud.
+    #[test]
+    fn drops_bare_short_hex_identifiers() {
+        assert_eq!(speakable("019fee68"), None);
+        let out = speakable("Card 019fee68 is stuck.").unwrap();
+        assert!(!out.contains("019fee68"), "id survived: {out}");
+        assert!(out.contains("is stuck"));
     }
 
     #[test]
