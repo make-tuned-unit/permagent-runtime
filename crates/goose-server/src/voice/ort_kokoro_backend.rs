@@ -593,6 +593,11 @@ impl TextToSpeech for OrtKokoroTts {
             // Tokenize
             let t_tok = std::time::Instant::now();
             let tokens = phonemes_to_tokens(&phonemes, &self.vocab);
+            // Captured before `tokens` is moved into the input tensor below —
+            // the log used to hardcode 0 for this, so every chunk reported
+            // "0 tokens" and the phoneme count was useless exactly where it
+            // would diagnose a G2P failure.
+            let token_count = tokens.len();
             let style_index = (tokens.len().saturating_sub(2)).min(509);
             let tok_ms = t_tok.elapsed().as_millis();
 
@@ -646,7 +651,7 @@ impl TextToSpeech for OrtKokoroTts {
                  {} tokens \"{}\"",
                 i + 1, sentences.len(), chunk_ms, chunk_dur, rtf,
                 g2p_ms, tok_ms, style_ms, tensor_ms, lock_ms, run_ms, extract_ms,
-                0, // token count consumed by Tensor::from_array
+                token_count,
                 &sentence.chars().take(40).collect::<String>()
             );
 

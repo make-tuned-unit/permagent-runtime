@@ -13,6 +13,7 @@ pub mod ort_kokoro_backend;
 pub mod proper_noun_corrector;
 pub mod provider;
 pub mod sherpa_backend;
+pub mod speakable;
 pub mod user_lexicon;
 
 pub use provider::{SpeechToText, TextToSpeech};

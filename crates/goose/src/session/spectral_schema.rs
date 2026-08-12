@@ -2906,9 +2906,14 @@ pub async fn verify_schema_version(pool: &Pool<Sqlite>) -> Result<i32> {
         .fetch_one(pool)
         .await?;
 
-    if version != SPECTRAL_SCHEMA_VERSION {
+    // SPECTRAL_SCHEMA_VERSION is the fresh-init BASE stamp, not "latest" (see its
+    // doc comment). Every migrated database legitimately sits *above* it once the
+    // hardcoded `version < N` chain in `SessionStorage::pool` has run, so `!=`
+    // fired on every real install — a permanent false alarm. Only a DB *below*
+    // the base is genuinely behind.
+    if version < SPECTRAL_SCHEMA_VERSION {
         warn!(
-            "Spectral schema version mismatch: found v{}, expected v{}",
+            "Spectral schema below the fresh-init base: found v{}, expected at least v{}",
             version, SPECTRAL_SCHEMA_VERSION
         );
     }

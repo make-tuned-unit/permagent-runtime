@@ -12,7 +12,9 @@
     "build:whisper-model": "scripts/copy-whisper-model.sh",
     "build:icons": "cd ../.. && bash scripts/generate_icons.sh",
     "build:all": "npm run build:icons && npm run build:ui && npm run build:daemon && npm run build:sidecar && npm run build:mcp-runtime && npm run build:audiocap && npm run build:whisper-model && npm run tauri build",
+    "build:all:local": "npm run build:icons && npm run build:ui && npm run build:daemon && npm run build:sidecar && npm run build:mcp-runtime && npm run build:audiocap && npm run build:whisper-model && npm run build:local",
     "build": "npm run tauri build",
+    "build:local": "tauri build --config '{\"bundle\":{\"createUpdaterArtifacts\":false}}'",
     "build:audiocap": "scripts/build-audiocap.sh"
   },
   "devDependencies": {

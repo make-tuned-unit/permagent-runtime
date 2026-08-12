@@ -454,9 +454,13 @@ fn check_permagent_db() -> CheckResult {
             let db_version = sqlite_scalar_i32(&conn, "SELECT MAX(version) FROM schema_version");
 
             let detail = match db_version {
-                Some(v) if v == SPECTRAL_SCHEMA_VERSION => {
+                // SPECTRAL_SCHEMA_VERSION is the fresh-init BASE stamp, not
+                // "latest": a migrated DB sits above it and is healthy. Comparing
+                // with `==` flagged every real install as a mismatch and told the
+                // user to restart, which could never clear it.
+                Some(v) if v >= SPECTRAL_SCHEMA_VERSION => {
                     format!(
-                        "ok, journal={journal}, schema v{v} (matches compiled v{SPECTRAL_SCHEMA_VERSION})"
+                        "ok, journal={journal}, schema v{v} (fresh-init base v{SPECTRAL_SCHEMA_VERSION})"
                     )
                 }
                 Some(v) => {
@@ -464,7 +468,7 @@ fn check_permagent_db() -> CheckResult {
                         name: "permagent-db".into(),
                         status: CheckStatus::Warn,
                         detail: format!(
-                            "schema v{v} != compiled v{SPECTRAL_SCHEMA_VERSION}, journal={journal}"
+                            "schema v{v} is below the fresh-init base v{SPECTRAL_SCHEMA_VERSION}, journal={journal}"
                         ),
                         remediation: Some("Restart the daemon to apply pending migrations.".into()),
                     };
@@ -1658,8 +1662,10 @@ mod tests {
         let conn = open_readonly_sqlite(&db_path).unwrap();
         let db_version = sqlite_scalar_i32(&conn, "SELECT MAX(version) FROM schema_version");
         assert_eq!(db_version, Some(5));
-        // Should NOT match the compiled constant (currently 10)
-        assert_ne!(db_version.unwrap(), SPECTRAL_SCHEMA_VERSION);
+        // v5 is BELOW the fresh-init base stamp, which is the only genuinely
+        // wrong state. A DB *above* the base is a normal migrated install and
+        // must not be reported as a mismatch.
+        assert!(db_version.unwrap() < SPECTRAL_SCHEMA_VERSION);
     }
 
     #[test]

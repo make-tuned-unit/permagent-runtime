@@ -81,11 +81,31 @@ impl RetryConfig {
     }
 }
 
+/// Is this network error a refused connection to a loopback endpoint?
+///
+/// Observed 2026-08-11: with no Ollama installed, a single background request
+/// burned all ten retries against `localhost:11434` on exponential backoff —
+/// minutes of wall-clock spent re-dialling a port that could not answer, and
+/// ten identical WARN lines that drowned out the real ones.
+///
+/// A remote host can be down transiently and is worth retrying. "Connection
+/// refused" from loopback means nothing is *listening on this machine*: no
+/// amount of waiting starts a service that was never installed. Fail fast and
+/// let the caller surface the real problem.
+fn is_local_connection_refused(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    let looks_like_connect_failure = m.contains("could not connect")
+        || m.contains("connection refused")
+        || m.contains("tcp connect error");
+    looks_like_connect_failure
+        && (m.contains("localhost") || m.contains("127.0.0.1") || m.contains("[::1]"))
+}
+
 pub fn should_retry(error: &ProviderError, config: &RetryConfig) -> bool {
     match error {
-        ProviderError::RateLimitExceeded { .. }
-        | ProviderError::ServerError(_)
-        | ProviderError::NetworkError(_) => true,
+        ProviderError::RateLimitExceeded { .. } | ProviderError::ServerError(_) => true,
+        // Deterministic locally: retrying cannot make a missing local service appear.
+        ProviderError::NetworkError(msg) => !is_local_connection_refused(msg),
         ProviderError::RequestFailed(_) => !config.transient_only,
         _ => false,
     }
@@ -298,5 +318,40 @@ mod tests {
             &ProviderError::Authentication("invalid key".into()),
             &config
         ));
+    }
+
+    /// Regression (2026-08-11): with no Ollama installed, one background
+    /// request burned all ten retries on exponential backoff against a port
+    /// nothing was listening on. This is the exact message that did it.
+    #[test]
+    fn local_connection_refused_is_not_retried() {
+        let config = RetryConfig::default();
+        for msg in [
+            "Could not connect to localhost:11434 — check your network connection and try again.",
+            "Connection refused (os error 61) to 127.0.0.1:11434",
+            "tcp connect error: [::1]:8080",
+        ] {
+            assert!(
+                !should_retry(&ProviderError::NetworkError(msg.into()), &config),
+                "must fail fast: {msg}"
+            );
+        }
+    }
+
+    /// A REMOTE host can be transiently down — that is what retries are for.
+    /// This is the case that must not regress when fixing the local one.
+    #[test]
+    fn remote_network_errors_are_still_retried() {
+        let config = RetryConfig::default();
+        for msg in [
+            "Could not connect to api.example.com — check your network connection and try again.",
+            "Connection refused (os error 61) to 100.74.232.95:11434",
+            "dns error: failed to lookup address",
+        ] {
+            assert!(
+                should_retry(&ProviderError::NetworkError(msg.into()), &config),
+                "must still retry: {msg}"
+            );
+        }
     }
 }
