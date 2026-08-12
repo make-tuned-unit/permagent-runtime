@@ -1056,23 +1056,26 @@ impl Config {
     /// see [`Self::handle_keyring_fallback_error`] for what that confusion
     /// cost.
     ///
-    /// Matching is on the keyring crate's TYPED variant plus, within
-    /// `PlatformFailure`, the signatures of a missing Linux secret service.
-    /// The previous implementation matched the bare substring "keyring"
-    /// against the error text, which is present in essentially every error the
-    /// crate produces — including a permission denial.
+    /// Matching is on the keyring crate's TYPED variant, because the two
+    /// variants that matter render almost identical text and the previous
+    /// substring match could not tell them apart:
+    ///
+    /// | variant            | Display                                        |
+    /// |--------------------|------------------------------------------------|
+    /// | `PlatformFailure`  | "Platform secure storage failure: …"           |
+    /// | `NoStorageAccess`  | "Couldn't access platform secure storage: …"   |
+    ///
+    /// Both contain "platform secure storage", so both fell back. Only the
+    /// first should.
     fn is_keyring_availability_error(&self, error: &keyring::Error) -> bool {
         match error {
-            // The platform layer itself failed. On Linux this is where an
-            // absent secret service shows up; those signatures are the only
-            // ones that mean "no store here".
-            keyring::Error::PlatformFailure(cause) => {
-                let lower = cause.to_string().to_lowercase();
-                lower.contains("dbus")
-                    || lower.contains("org.freedesktop.secrets")
-                    || lower.contains("no secret service")
-            }
-            // A store exists and said no. NOT an availability problem.
+            // The platform layer itself failed: no usable store here. Covers a
+            // Linux box with no secret service and a sandboxed/headless
+            // environment with no keychain. Falling back keeps those working.
+            keyring::Error::PlatformFailure(_) => true,
+            // A store exists and refused us — a locked keychain, or an ACL that
+            // does not list this build. The secrets are real and still there,
+            // so substituting empty file storage would hide them.
             keyring::Error::NoStorageAccess(_) => false,
             _ => false,
         }
