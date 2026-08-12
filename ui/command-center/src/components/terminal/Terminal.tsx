@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
+import { Unicode11Addon } from '@xterm/addon-unicode11';
 import '@xterm/xterm/css/xterm.css';
 import { useEventBus } from '../../lib/eventBus';
 import { useTheme } from '../../styles/useTheme';
@@ -125,6 +126,24 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
       const fitAddon = new FitAddon();
       term.loadAddon(fitAddon);
       term.loadAddon(new WebLinksAddon());
+
+      // Unicode 11 width tables. xterm.js ships Unicode 6 by default, which
+      // gets the width of modern symbols wrong — and a coding harness's UI is
+      // built almost entirely from them (✻ ⏵⏵ ⎿ ✱ ⚠).
+      //
+      // A width disagreement is not a cosmetic problem. The program counts a
+      // glyph as one cell, the renderer draws two (or the reverse), and from
+      // that point the two disagree about which column the cursor is in. The
+      // next redraw that moves the cursor up to rewrite a line then lands on
+      // the WRONG ROW: a second input line prints on top of the first instead
+      // of below it, interleaving both into gibberish. Reported 2026-08-12
+      // with the prompt rendered as "drivacyhcommissionerlicy analytics …" —
+      // two lines occupying one row.
+      //
+      // Must be loaded AND activated: loading only registers the provider.
+      const unicode11 = new Unicode11Addon();
+      term.loadAddon(unicode11);
+      term.unicode.activeVersion = '11';
 
       term.open(containerRef.current!);
 
