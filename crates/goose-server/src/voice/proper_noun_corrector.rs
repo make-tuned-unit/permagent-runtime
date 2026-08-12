@@ -19,7 +19,19 @@ use std::collections::HashSet;
 use std::sync::LazyLock;
 
 /// Minimum Jaro-Winkler similarity to consider a correction.
-/// Real proper-noun hits sit at 0.97+; false positives cluster 0.85–0.94.
+///
+/// The original note here claimed "real proper-noun hits sit at 0.97+; false
+/// positives cluster 0.85–0.94". Measured against a real session on
+/// 2026-08-12, that is not true and cannot be made true by tuning:
+///
+/// | heard    | corrected to | score  | verdict     |
+/// |----------|--------------|--------|-------------|
+/// | `alifax` | `Halifax`    | 0.9524 | correct     |
+/// | `Chart`  | `chat`       | 0.9533 | **wrong**   |
+///
+/// The genuine correction scored *lower* than the corruption. Score alone
+/// cannot separate them, which is why the real guard is the shape of the
+/// correction TARGET — see [`is_proper_noun_shaped`].
 const SIMILARITY_THRESHOLD: f64 = 0.95;
 
 /// Minimum token length (chars) to consider for correction.
@@ -40,6 +52,12 @@ impl EntityDictionary {
             // Exclude common English words from the dictionary — they should
             // never be correction targets (e.g. "click", "drive", "graph").
             .filter(|n| !is_common_word(n))
+            // …and exclude anything that is not shaped like a proper noun. The
+            // hand-maintained list above cannot keep up with what the brain
+            // harvests: `chat`, `loop` and `date` all reached the dictionary as
+            // "entities" and each one corrupted a real word (see
+            // `is_proper_noun_shaped`).
+            .filter(|n| is_proper_noun_shaped(n))
             .map(|n| {
                 let lower = n.to_lowercase();
                 (n, lower)
@@ -55,6 +73,33 @@ impl EntityDictionary {
     pub fn len(&self) -> usize {
         self.entries.len()
     }
+}
+
+/// Is this entity name shaped like a proper noun, and therefore safe to rewrite
+/// a user's spoken word INTO?
+///
+/// The brain harvests entity names from graph canonicals and annotation
+/// display-names, and that harvest includes ordinary lowercase words. In one
+/// real session those junk entities produced three corruptions and one genuine
+/// fix:
+///
+/// ```text
+///   Chart -> chat     (broke a web-search request for tide charts)
+///   loops -> loop
+///   dated -> date
+///   alifax -> Halifax (the only correct one)
+/// ```
+///
+/// Every corruption pointed at an all-lowercase target; the correct one pointed
+/// at a capitalized name. Requiring at least one uppercase character keeps real
+/// proper nouns — `Halifax`, `Kinrows`, and inner-capital brands like `iPhone`
+/// or `eBay` — while dropping `chat`, `loop` and `date` at the source.
+///
+/// The asymmetry justifies erring this way: a missed correction costs the agent
+/// a slightly odd word it can usually read through, while a wrong one silently
+/// rewrites the user's intent and can misdirect an entire turn.
+fn is_proper_noun_shaped(name: &str) -> bool {
+    name.chars().any(|c| c.is_uppercase())
 }
 
 /// Load entity names from the Brain for use as a proper-noun dictionary.
@@ -2095,5 +2140,51 @@ mod tests {
             correct_proper_nouns("talking about Kinrows", &dict),
             "talking about Kinrows"
         );
+    }
+
+    /// Regression, 2026-08-12 voice session. Four corrections fired; three
+    /// corrupted the user's words. `Chart -> chat` is the one that mattered:
+    /// the user said "use your web search tool to look up the Tide Chart",
+    /// received "Tide chat", and the agent spent the turn floundering into the
+    /// browser and 404s. The same request typed as text worked perfectly,
+    /// because text never passes through this corrector.
+    #[test]
+    fn junk_lowercase_entities_no_longer_corrupt_real_words() {
+        // Exactly the entity names the brain had harvested, junk and all.
+        let dict = EntityDictionary::new(
+            ["chat", "loop", "date", "Halifax", "Kinrows"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        );
+
+        for phrase in [
+            "look up the Tide Chart for tomorrow",
+            "you can run agentic loops to build code",
+            "the file is dated yesterday",
+        ] {
+            assert_eq!(
+                correct_proper_nouns(phrase, &dict),
+                phrase,
+                "must not rewrite ordinary words: {phrase}"
+            );
+        }
+
+        // …while the one correction that WAS right still happens.
+        assert_eq!(
+            correct_proper_nouns("the tides for alifax harbor", &dict),
+            "the tides for Halifax harbor"
+        );
+    }
+
+    /// Inner-capital brands are proper nouns even though they start lowercase.
+    #[test]
+    fn proper_noun_shape_accepts_inner_capitals_rejects_plain_words() {
+        for good in ["Halifax", "Kinrows", "iPhone", "eBay", "McDonald"] {
+            assert!(is_proper_noun_shaped(good), "should be kept: {good}");
+        }
+        for junk in ["chat", "loop", "date", "graph", "webhook"] {
+            assert!(!is_proper_noun_shaped(junk), "should be dropped: {junk}");
+        }
     }
 }

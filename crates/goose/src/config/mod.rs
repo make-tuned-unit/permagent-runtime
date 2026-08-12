@@ -42,8 +42,23 @@ pub use extensions::DEFAULT_EXTENSION_TIMEOUT;
 /// the mesh-inference epic (#306). Fully reversible: unset ⇒ localhost, i.e.
 /// today's behavior exactly. A trailing slash is trimmed so callers can append
 /// `/api/generate` uniformly.
+/// Resolution order is ENV first, then `~/.permagent/config.yaml` — which is
+/// what `Config::get_param` does for the uppercased key. An existing
+/// `PERMAGENT_OLLAMA_HOST` export therefore behaves exactly as before; the
+/// config file is a new, additional place to set it.
+///
+/// That second route is the one that actually works on macOS. The daemon is
+/// spawned by Permagent.app, which launchd starts without ever reading a shell
+/// profile, so an `export` in `.zshrc` can never reach it. The only env route
+/// was `launchctl setenv`, which does not survive a reboot — meaning the
+/// Librarian would silently fall back to `http://localhost:11434` and retry a
+/// port with nothing behind it. A config key is durable.
 pub fn ollama_host() -> String {
-    resolve_ollama_host(std::env::var("PERMAGENT_OLLAMA_HOST").ok())
+    resolve_ollama_host(
+        Config::global()
+            .get_param::<String>("PERMAGENT_OLLAMA_HOST")
+            .ok(),
+    )
 }
 
 /// Pure core of [`ollama_host`], split out so it is unit-testable without
