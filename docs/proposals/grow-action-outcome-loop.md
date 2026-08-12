@@ -149,6 +149,98 @@ Two guards on the feedback:
 - **Say the sample size.** "Worked once" is not "works". The prompt should
   carry the count so the model does not over-generalise from a single result.
 
+## How much confidence the traffic actually buys
+
+Projects differ by orders of magnitude — some sit near `MIN_PAGEVIEWS`, others
+run ~1000 views/week. The verdict a project can support scales with that.
+Taking week-over-week noise as Poisson with a 1.5× overdispersion allowance
+(bursts, referral spikes, bot leakage), the smallest change distinguishable
+from normal variance:
+
+| weekly views | min detectable change |
+|---:|---:|
+| 40 | ~66% |
+| 100 | ~42% |
+| 300 | ~24% |
+| **1000** | **~13%** |
+| 3000 | ~8% |
+
+So the rule is not one threshold, it is: **each project contributes at the
+level of confidence its own traffic supports.**
+
+- **≳300 views/week** — per-project verdicts are meaningful. A 13-24% lift on a
+  1000-view project is a real signal and should be reported as one.
+- **≲100 views/week** — per-project verdicts stay `inconclusive` essentially
+  always. These projects still contribute: they feed the pooled signal below,
+  where N comes from the number of projects rather than the number of views.
+
+The power check computes this per project from its own baseline variance
+rather than reading a table — the table is the intuition, not the
+implementation.
+
+## Cross-project learning
+
+This is what rescues the low-traffic projects. One action on one small project
+is underpowered forever; the *same strategy* tried across nineteen projects has
+N=19, and that is a sample worth reasoning about.
+
+Pool outcomes by `category` (the field already on `GrowthAction`) across all
+active projects:
+
+```
+Strategy: "FAQ / answer-engine schema"  (seo)
+  tried on 11 projects · helped 7 · no effect 3 · hindered 1
+  median lift where measurable: +18% sessions (4 projects ≳300 views/wk)
+  weakest on: single-page sites (2 of the 3 no-effects)
+```
+
+**The trap, and it is a real one: projects are not exchangeable.** A tactic
+that lifts a B2B SaaS landing page can do nothing for a community site or a
+local-services page. Pooling naively produces textbook Simpson's paradox — an
+aggregate that says "helped" while quietly failing on the segment you are about
+to apply it to.
+
+Two guards:
+
+- **Segment before pooling.** Group by the attributes that plausibly moderate
+  the effect: traffic tier, whether the site is content-heavy or single-page,
+  and dominant acquisition channel (`top_sources` already gives this). Report
+  the aggregate *and* the segment.
+- **State transfer explicitly.** When a strategy is proposed for project B
+  because it worked on A and C, the card says so — "worked on 3 similar
+  projects (content sites, ~500 views/wk)". A recommendation the user cannot
+  audit is one they cannot overrule.
+
+## Grading itself
+
+The generator already emits `impact` and `confidence` on every action. Those
+are **predictions**, and predictions can be scored — which means the system can
+grade its own strategy-making rather than only its actions.
+
+Track calibration: of the actions it labelled high-confidence, what fraction
+actually helped?
+
+```
+Strategy calibration — last 90 days, all projects
+  said high confidence   -> helped 9/22  (41%)
+  said medium confidence -> helped 6/19  (32%)
+  said low confidence    -> helped 2/8   (25%)
+  → confidence is weakly discriminating; treat "high" as ~40%, not ~80%
+```
+
+This is the most robust number in the whole feature, because it aggregates
+across every project and every category — it stays meaningful exactly where
+individual verdicts do not. Two uses:
+
+1. **Show it to the user.** "When I say high confidence I am right about 40% of
+   the time" is honest, and it tells them how much weight to give the next card.
+2. **Feed it back as a discount, not a silencer.** If high-confidence claims
+   land at 41%, the generator is overconfident and its labels should be
+   recalibrated — not its advice suppressed.
+
+Grading must never be self-assessed prose. It is computed from
+`growth_action_outcomes`, or it is not a grade.
+
 ## Non-goals
 
 - Causal inference. This is a before/after with an honesty gate, not an
@@ -166,3 +258,11 @@ Two guards on the feedback:
    early windows explicitly labelled provisional, is the honest compromise.
 3. **Does an unverified action still get measured?** I would say no: without
    knowing the change landed, a delta is unattributable to anything.
+4. **Where does the cross-project comparison run?** It is a nightly aggregate
+   over every active project, which is the `health-review` starter's shape
+   exactly — a scheduled recipe that reads durable state and writes a report.
+   Reusing that seam beats a bespoke loop.
+5. **Does a pooled result auto-propose to other projects?** I would surface it
+   as a suggestion carrying its provenance, never as an auto-created action.
+   "Worked on 3 similar projects" is an argument the user can weigh; a card
+   that silently appeared because of a correlation elsewhere is not.
