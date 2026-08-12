@@ -1065,6 +1065,29 @@ fn truncate_str(s: &str, max_chars: usize) -> &str {
     }
 }
 
+/// Default cap on how many sentences are SPOKEN in one turn.
+///
+/// The full reply always reaches the client as `ReplyText` and is rendered on
+/// screen, so this caps talking, never information. Eight sentences is roughly
+/// 40 seconds of Kokoro speech — long for a spoken answer, and well past the
+/// "1-3 sentences" the system prompt asks for.
+const DEFAULT_MAX_SPOKEN_SENTENCES: u32 = 8;
+
+/// Config key (`~/.permagent/config.yaml`) overriding the spoken-length budget.
+/// Clamped to [1, 100]; 0 would mute replies entirely, which is never intended.
+const MAX_SPOKEN_SENTENCES_KEY: &str = "voice_max_spoken_sentences";
+
+fn max_spoken_sentences() -> u32 {
+    permagent::config::Config::global()
+        .get_param::<u32>(MAX_SPOKEN_SENTENCES_KEY)
+        .unwrap_or(DEFAULT_MAX_SPOKEN_SENTENCES)
+        .clamp(1, 100)
+}
+
+/// Spoken once when the budget runs out, so the turn ends deliberately rather
+/// than just stopping mid-thought.
+const BUDGET_NOTICE: &str = "There's more — I've put the rest on screen.";
+
 /// Context for a voice reply exchange (reduces arg count for stream_reply_with_tts).
 struct VoiceReplyCtx<'a> {
     state: &'a AppState,
@@ -1254,6 +1277,12 @@ async fn stream_reply_with_tts(
     let mut text_buf = String::new();
     let mut full_reply = String::new();
     let mut sentence_num = 0u32;
+    // Spoken-length budget for this turn. The system prompt already asks for
+    // "1-3 sentences"; on 2026-08-11 a turn came back with 27, about 145
+    // seconds of speech, and the user interrupted to say it was too much. An
+    // instruction the model can ignore is not a budget — this is.
+    let max_spoken = max_spoken_sentences();
+    let mut budget_notice_spoken = false;
     let mut total_tts_ms: u128 = 0;
     let mut first_audio_sent = false;
     let mut first_token_logged = false;
@@ -1315,6 +1344,43 @@ async fn stream_reply_with_tts(
                             );
                             continue;
                         };
+
+                        // Spoken-length budget. Keep draining the stream so
+                        // `full_reply` stays complete for ReplyText — the user
+                        // still gets every word on screen; they just stop being
+                        // read the whole essay aloud.
+                        if sentence_num >= max_spoken {
+                            if !budget_notice_spoken {
+                                budget_notice_spoken = true;
+                                tracing::info!(
+                                    target: "permagentd::voice",
+                                    "spoken budget reached ({} sentences) — remaining reply is text-only",
+                                    max_spoken
+                                );
+                                let tts_ref = tts.clone();
+                                let voice_id = voice_id.clone();
+                                if let Ok(Ok(audio)) = tokio::task::spawn_blocking(move || {
+                                    tts_ref.synthesize(
+                                        BUDGET_NOTICE,
+                                        &TtsConfig {
+                                            voice_id,
+                                            lexicon: crate::voice::user_lexicon::current(),
+                                            ..TtsConfig::default()
+                                        },
+                                    )
+                                })
+                                .await
+                                {
+                                    let bytes: Vec<u8> = audio
+                                        .samples
+                                        .iter()
+                                        .flat_map(|s| s.to_le_bytes())
+                                        .collect();
+                                    let _ = socket.send(Message::Binary(bytes.into())).await;
+                                }
+                            }
+                            continue;
+                        }
 
                         sentence_num += 1;
 
@@ -1426,9 +1492,15 @@ async fn stream_reply_with_tts(
         let _ = socket.send(send_json(&ServerMessage::Stopped)).await;
     }
 
-    // Synthesize any remaining text after the stream ends
-    let remainder = text_buf.trim().to_string();
+    // Synthesize any remaining text after the stream ends.
+    //
+    // This tail runs the SAME two guards as the streaming loop above: the
+    // speakability filter (it previously synthesized raw, so an identifier
+    // landing in the final fragment would still have been read aloud) and the
+    // spoken-length budget.
+    let remainder = crate::voice::speakable::speakable(text_buf.trim()).unwrap_or_default();
     if !remainder.is_empty()
+        && sentence_num < max_spoken
         && !spoken_stop
         && !cancelled.load(std::sync::atomic::Ordering::Relaxed)
     {
