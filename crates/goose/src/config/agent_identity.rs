@@ -483,6 +483,55 @@ pub fn default_roster() -> HashMap<String, WorkerPersona> {
     );
 
     roster.insert(
+        "cursor".to_string(),
+        WorkerPersona {
+            first_name: "Cursor".to_string(),
+            role: "Coding agent — implements a goal in an isolated git worktree using the \
+                   Cursor CLI"
+                .to_string(),
+            tool_kinds: vec![
+                "code_edit".to_string(),
+                "shell".to_string(),
+                "git".to_string(),
+            ],
+            // `cursor-agent`, NOT the `agent` symlink the installer also drops
+            // in ~/.local/bin. "agent" is generic enough to collide with an
+            // unrelated binary already on a user's PATH, and dispatching a
+            // coding goal into the wrong program is not a failure we could
+            // detect from the outside.
+            availability_check: "bin_exists:cursor-agent".to_string(),
+            cost_tier: "subscription".to_string(),
+            engine: WorkerEngineKind::ExternalCli {
+                bin: "cursor-agent".to_string(),
+                // Flags verified against cursor-agent 2026.08.11-e8db854.
+                //
+                // `-p` is NOT the prompt flag it is in Claude Code — here it is
+                // a boolean ("print responses to console, non-interactive") and
+                // the prompt is POSITIONAL, which is why {prompt} sits last and
+                // unflagged. Copying the claude arg shape would silently launch
+                // an interactive session with no prompt.
+                //
+                // `--force` is this CLI's "allow commands unless explicitly
+                // denied". It is the same trade Claude Code's
+                // --dangerously-skip-permissions makes, and it is needed for
+                // the same reason: an unattended worker cannot answer approval
+                // prompts. Unlike Codex there is no sandbox flag to confine it
+                // instead, so the isolated dispatch worktree is the only
+                // boundary — worth knowing before enabling this for a goal that
+                // matters.
+                args: vec![
+                    "-p".to_string(),
+                    "--force".to_string(),
+                    "--output-format".to_string(),
+                    "text".to_string(),
+                    "{prompt}".to_string(),
+                ],
+            },
+            ..Default::default()
+        },
+    );
+
+    roster.insert(
         "librarian".to_string(),
         WorkerPersona {
             first_name: "Librarian".to_string(),
@@ -1061,6 +1110,7 @@ workers:
             vec![
                 "claude_code",
                 "codex",
+                "cursor",
                 "librarian",
                 "permagent",
                 "reviewer",

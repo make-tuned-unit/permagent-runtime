@@ -1082,20 +1082,70 @@ pub fn parse_structured_description(raw: &str) -> Option<String> {
     }
 
     let facts = facts?;
-    let terms = terms?;
-    let categories = categories?;
+    let terms = clean_index_list(&terms?, MAX_TERMS);
+    let categories = clean_index_list(&categories?, MAX_CATEGORIES);
 
-    // Validate minimum counts
-    let term_count = terms.split(',').count();
-    let cat_count = categories.split(',').count();
-    if term_count < 4 || cat_count < 2 {
+    // Validate minimum counts AFTER cleaning — a list padded with duplicates or
+    // bare numbers has fewer usable terms than it appears to.
+    if terms.len() < MIN_TERMS || categories.len() < MIN_CATEGORIES {
         return None;
     }
 
     Some(format!(
         "{} Related terms: {}. Categories: {}.",
-        facts, terms, categories
+        facts,
+        terms.join(", "),
+        categories.join(", ")
     ))
+}
+
+/// Upper bounds, enforced here rather than merely requested in the prompt.
+///
+/// The system prompt asks for 4-10 terms and 2-5 categories, and a strong model
+/// obeys. A locally-hosted, heavily quantised one does not: measured 2026-08-13,
+/// qwen3-coder:30b at IQ2_M returned 18-23 comma-separated items for a single
+/// memory while ignoring the stated range.
+///
+/// That directly degrades what this field exists for. The description is the
+/// retrieval surface, so every marginal term is another way for an unrelated
+/// memory to match — bloating the list trades precision for nothing, and the
+/// tail terms are the least discriminating ones.
+const MAX_TERMS: usize = 10;
+const MAX_CATEGORIES: usize = 5;
+const MIN_TERMS: usize = 4;
+const MIN_CATEGORIES: usize = 2;
+
+/// Normalise one comma-separated index list: trim, drop noise, de-duplicate
+/// case-insensitively while preserving order, then cap.
+///
+/// Order is preserved rather than sorted because models emit their most
+/// salient terms first — so truncation keeps the discriminating ones and drops
+/// the tail, which is the opposite of what an arbitrary cut would do.
+fn clean_index_list(raw: &str, cap: usize) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for item in raw.split(',') {
+        let item = item.trim().trim_matches(|c: char| c == '.' || c == '"');
+        if item.is_empty() {
+            continue;
+        }
+        // Bare numbers index nothing useful: "2733" and "19" were both emitted
+        // as "terms" for a memory about a migration.
+        if item.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        // A single character cannot discriminate between memories.
+        if item.chars().count() < 2 {
+            continue;
+        }
+        if seen.insert(item.to_lowercase()) {
+            out.push(item.to_string());
+            if out.len() == cap {
+                break;
+            }
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -1569,6 +1619,73 @@ fn schema<T: JsonSchema>() -> JsonObject {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod index_quality_tests {
+    use super::*;
+
+    /// Verbatim output from qwen3-coder:30b (IQ2_M) on 2026-08-13 for a single
+    /// memory. The prompt asked for 4-10 terms and 2-5 categories; it returned
+    /// 18 terms including two bare numbers. Everything past the cap is index
+    /// noise that costs retrieval precision.
+    #[test]
+    fn a_local_models_overlong_list_is_trimmed_to_the_spec() {
+        let raw = "FACTS: Jesse migrated his brain between two Macs.\n\
+TERMS: migrated, Permagent, brain, older, Mac, mini, new, Tailscale, 2733, memories, 19, projects, device, pairings, repointed, Librarian, Ollama, endpoint\n\
+CATEGORIES: technology migration, digital identity transfer, data migration, networking, infrastructure, devops, sync";
+
+        let out = parse_structured_description(raw).expect("valid three-field output");
+
+        let terms: Vec<&str> = out
+            .split("Related terms: ")
+            .nth(1)
+            .unwrap()
+            .split(". Categories:")
+            .next()
+            .unwrap()
+            .split(", ")
+            .collect();
+        assert_eq!(terms.len(), MAX_TERMS, "terms capped: {terms:?}");
+        assert!(!out.contains("2733"), "bare numbers index nothing: {out}");
+        assert!(!out.contains(" 19,"), "bare numbers index nothing: {out}");
+        // The salient early terms survive; the tail is what gets dropped.
+        assert!(out.contains("migrated") && out.contains("Tailscale"));
+        assert!(!out.contains("endpoint"), "tail term should be dropped");
+
+        let cats: Vec<&str> = out
+            .rsplit("Categories: ")
+            .next()
+            .unwrap()
+            .trim_end_matches('.')
+            .split(", ")
+            .collect();
+        assert!(cats.len() <= MAX_CATEGORIES, "categories capped: {cats:?}");
+    }
+
+    /// Duplicates inflate the apparent count while adding no retrieval value,
+    /// so the minimum is checked AFTER cleaning.
+    #[test]
+    fn duplicates_do_not_satisfy_the_minimum() {
+        let raw = "FACTS: A note.\n\
+TERMS: alpha, Alpha, ALPHA, alpha\n\
+CATEGORIES: notes, Notes";
+        assert!(
+            parse_structured_description(raw).is_none(),
+            "one distinct term and one distinct category is not enough"
+        );
+    }
+
+    /// A well-behaved model's output must pass through unchanged.
+    #[test]
+    fn a_compliant_response_is_untouched() {
+        let raw = "FACTS: Jesse transferred data between computers using Tailscale.\n\
+TERMS: Jesse, Permagent, Mac mini, Tailscale, memories, projects, device, pairings, Librarian, Ollama\n\
+CATEGORIES: Technology, Data Migration, Networking";
+        let out = parse_structured_description(raw).expect("compliant output parses");
+        assert!(out.contains("Ollama"), "all ten terms kept: {out}");
+        assert!(out.contains("Networking"));
+    }
+}
 
 #[cfg(test)]
 mod tests {
