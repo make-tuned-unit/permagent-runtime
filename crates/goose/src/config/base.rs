@@ -1063,6 +1063,15 @@ impl Config {
             || lower.contains("user interaction is not allowed")
             || lower.contains("interactionnotallowed")
             || lower.contains("errsecauthfailed")
+            // Transient, and the most damaging to get wrong. Observed verbatim
+            // on 2026-08-13: "In dark wake, no UI possible" — the display was
+            // asleep, so macOS could not show a consent prompt. The store is
+            // present and the keys are readable again moments later, but
+            // `keyring_fallback_active` is sticky per Config instance: treating
+            // this as absence silently degrades the whole process to an empty
+            // secrets file until the daemon restarts.
+            || lower.contains("dark wake")
+            || lower.contains("no ui possible")
     }
 
     /// Is there NO usable secret store on this machine at all?
@@ -1369,6 +1378,35 @@ mod tests {
             !cfg.keyring_fallback_active.load(Ordering::Acquire),
             "must not hide 25 readable keys behind empty file storage"
         );
+    }
+
+    /// A transient inability to prompt must not poison the process.
+    /// `keyring_fallback_active` is sticky per Config instance, so treating a
+    /// momentary "cannot show UI" as absence swaps in an empty secrets file
+    /// until the daemon restarts — even though the keys become readable again
+    /// seconds later. Verbatim cause observed 2026-08-13 with the display
+    /// asleep.
+    #[test]
+    fn transient_no_ui_is_not_treated_as_missing_keyring() {
+        let cfg = Config::new(
+            tempfile::NamedTempFile::new().unwrap().path(),
+            "dark-wake-test",
+        )
+        .unwrap();
+
+        for cause in ["In dark wake, no UI possible", "No UI possible right now"] {
+            let err = keyring::Error::PlatformFailure(Box::new(std::io::Error::other(cause)));
+            assert!(
+                !cfg.is_keyring_availability_error(&err),
+                "transient prompt failure is not absence: {cause}"
+            );
+            let res: Result<String, _> = cfg.handle_keyring_fallback_error(&err, None);
+            assert!(matches!(res, Err(ConfigError::KeyringError(_))));
+            assert!(
+                !cfg.keyring_fallback_active.load(Ordering::Acquire),
+                "must stay on the keyring so a later read can succeed"
+            );
+        }
     }
 
     /// The case the fallback genuinely exists for: a Linux box with no secret
