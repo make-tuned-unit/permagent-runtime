@@ -24,6 +24,9 @@ use std::time::Duration;
 
 /// Config key overriding where the scanner lives.
 pub const PICKER_URL_KEY: &str = "picker_url";
+/// Explicit override for the Picker checkout location, for a layout the
+/// conventional search below does not cover.
+pub const PICKER_ROOT_KEY: &str = "picker_root";
 
 /// Loopback by default. The service has no authentication and its API can
 /// modify the trade history and start expensive scans, so it should not be
@@ -36,10 +39,37 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const CALL_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Where the user's Picker checkout lives, for bringing the service up.
+/// Locate the Picker checkout.
+///
+/// `~/dev/Picker` was hardcoded, which is only true on a machine whose repos
+/// live directly under $HOME. On 2026-08-13 this made the Financier report
+/// "nothing to start" on a machine where the checkout was sitting in
+/// `~/Documents/dev/Picker/pre_surge_scanner` — the third place in this
+/// codebase where a `~/dev` assumption survived a move between Macs (the
+/// storage scanner and the project root_paths were the others).
+///
+/// `picker_root` config key wins, so a checkout anywhere can be named
+/// explicitly rather than requiring a conventional layout.
 fn picker_root() -> Option<std::path::PathBuf> {
+    if let Ok(configured) = crate::config::Config::global().get_param::<String>(PICKER_ROOT_KEY) {
+        let p = std::path::PathBuf::from(shellexpand::tilde(&configured).into_owned());
+        if p.is_dir() {
+            return Some(p);
+        }
+    }
+
     let home = dirs::home_dir()?;
-    let root = home.join("dev/Picker/pre_surge_scanner");
-    root.is_dir().then_some(root)
+    [
+        "dev",
+        "Documents/dev",
+        "code",
+        "Documents/code",
+        "projects",
+        "src",
+    ]
+    .iter()
+    .map(|base| home.join(base).join("Picker/pre_surge_scanner"))
+    .find(|p| p.is_dir())
 }
 
 pub fn base_url() -> String {
