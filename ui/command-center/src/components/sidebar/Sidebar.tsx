@@ -147,10 +147,6 @@ export function Sidebar() {
   const activePanel = useCommandCenter(s => s.activePanel);
   const switchWorkspace = useCommandCenter(s => s.switchWorkspace);
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
-  const connectionStatus = useCommandCenter(s => s.connectionStatus);
-  // "No stream yet" is the normal state before a session exists and says
-  // nothing about backend health, so it must not render as a fault.
-  const hasStream = useCommandCenter(s => s._lastEventSessionId !== null);
 
   const { target: tooltipTarget, show: showTooltip, hide: hideTooltip } = useSidebarTooltip();
 
@@ -200,42 +196,13 @@ export function Sidebar() {
         justifyContent: open ? 'flex-start' : 'center',
       }}>
         <Mobius size={14} state="idle" glow={0.7} />
-        {/* Event-stream dot.
-            connectionStatus tracks the PER-SESSION SSE stream, not the daemon:
-            it starts 'disconnected' and only opens when a session does. Wired
-            straight to a "daemon offline" label it therefore accused a
-            perfectly healthy backend every launch, until the user opened chat
-            and it went green — reported 2026-08-13.
-            The daemon is now supervised by the shell and restarted if it dies
-            (see ui/desktop/src-tauri/src/daemon.rs), so its health is not
-            something the user should be asked to watch. This dot speaks only
-            about the stream, and only once there IS a stream to speak about. */}
-        <span
-          title={`Event stream ${connectionStatus}`}
-          style={{
-            width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
-            marginLeft: open ? 8 : 4,
-            background:
-              connectionStatus === 'connected' ? colors.success
-                : connectionStatus === 'connecting' ? '#e8a33d'
-                // No stream yet is not a fault: stay quiet rather than glow red
-                // at a healthy backend.
-                : hasStream ? '#e05252'
-                : colors.textDim,
-            boxShadow:
-              connectionStatus === 'connected' || !hasStream ? 'none' : '0 0 6px currentColor',
-            transition: 'background 300ms',
-          }}
-        />
-        {open && connectionStatus !== 'connected' && hasStream && (
-          <span style={{
-            marginLeft: 6, fontSize: 10, fontFamily: font.body,
-            color: connectionStatus === 'connecting' ? '#e8a33d' : '#e05252',
-            letterSpacing: '0.04em',
-          }}>
-            {connectionStatus === 'connecting' ? 'reconnecting…' : 'connection lost'}
-          </span>
-        )}
+        {/* No connection indicator here by design.
+            A green dot next to the logo asks the user to supervise something
+            they cannot act on, and the honest states are not worth their
+            attention: the shell now restarts the daemon if it dies (see
+            ui/desktop/src-tauri/src/daemon.rs), and a closed per-session event
+            stream is normal before a chat is open. Genuine, actionable
+            failures surface as messages, not as a light to interpret. */}
       </div>
 
       {/* Workspace items */}
