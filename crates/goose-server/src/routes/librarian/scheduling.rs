@@ -454,6 +454,19 @@ async fn resolve_atom_provider() -> Option<std::sync::Arc<dyn permagent::provide
         .ok()
 }
 
+/// Backoff after `n` consecutive failed Librarian batch runs.
+///
+/// Doubles from one minute and caps at 30, so a window with a dead endpoint
+/// costs a handful of attempts instead of one per minute for four hours, while
+/// an endpoint that returns mid-window is still picked up the same day.
+fn librarian_retry_backoff(consecutive_failures: u32) -> std::time::Duration {
+    const BASE_SECS: u64 = 60;
+    const MAX_SECS: u64 = 30 * 60;
+    let shift = consecutive_failures.saturating_sub(1).min(20);
+    let secs = BASE_SECS.saturating_mul(1u64 << shift).min(MAX_SECS);
+    std::time::Duration::from_secs(secs)
+}
+
 /// Background loop: ticks once per minute, warm-loads if in window.
 pub async fn librarian_scheduler_loop() {
     // #387 v2 — re-seed the "entities awaiting your context" live count from
@@ -472,6 +485,21 @@ pub async fn librarian_scheduler_loop() {
     );
 
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+
+    // Bounded backoff after a failed warm+run.
+    //
+    // The loop ticks every 60s and only `mark_warmed_today()` on SUCCESS, so a
+    // persistently unreachable batch endpoint used to be re-dialled once a
+    // minute for the entire window. Observed 2026-08-13: 82 consecutive
+    // failures against a localhost Ollama that was not running — no work done,
+    // and 82 WARN lines that buried everything else in the log.
+    //
+    // Retrying is still right (the endpoint may come back mid-window), but it
+    // has to decay. Resets on success and whenever the window closes, so each
+    // day starts clean.
+    let mut consecutive_failures: u32 = 0;
+    let mut next_attempt: Option<tokio::time::Instant> = None;
+
     loop {
         interval.tick().await;
 
@@ -481,8 +509,16 @@ pub async fn librarian_scheduler_loop() {
         }
 
         let in_window = is_in_window(&schedule);
+        if !in_window {
+            // Outside the window: forget the backoff so tomorrow is not
+            // penalised for yesterday's outage.
+            consecutive_failures = 0;
+            next_attempt = None;
+        }
 
-        if in_window && !already_warmed_today() {
+        let backoff_elapsed = next_attempt.is_none_or(|t| tokio::time::Instant::now() >= t);
+
+        if in_window && !already_warmed_today() && backoff_elapsed {
             tracing::info!(
                 model = %schedule.model,
                 duration = schedule.duration_minutes,
@@ -494,10 +530,20 @@ pub async fn librarian_scheduler_loop() {
             match warm_and_run(&schedule, keep_alive_secs).await {
                 Ok(n) => {
                     mark_warmed_today();
+                    consecutive_failures = 0;
+                    next_attempt = None;
                     tracing::info!(described = n, "Librarian scheduled batch complete");
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "Librarian scheduled batch failed");
+                    consecutive_failures = consecutive_failures.saturating_add(1);
+                    let delay = librarian_retry_backoff(consecutive_failures);
+                    next_attempt = Some(tokio::time::Instant::now() + delay);
+                    tracing::warn!(
+                        error = %e,
+                        consecutive_failures,
+                        retry_in_secs = delay.as_secs(),
+                        "Librarian scheduled batch failed — backing off"
+                    );
                 }
             }
         }
@@ -722,6 +768,42 @@ pub(super) async fn run_librarian_now(
         StatusCode::ACCEPTED,
         Json(LibrarianRunStarted { status: "started" }),
     ))
+}
+
+#[cfg(test)]
+mod backoff_tests {
+    use super::librarian_retry_backoff;
+
+    /// Regression, 2026-08-13: the loop ticks every 60s and only marks success,
+    /// so an unreachable batch endpoint was re-dialled once a minute for the
+    /// whole window — 82 consecutive failures in one night, no work done, and
+    /// the log buried under identical warnings.
+    #[test]
+    fn backoff_doubles_then_caps() {
+        let secs = |n| librarian_retry_backoff(n).as_secs();
+        assert_eq!(secs(1), 60, "first retry after a minute");
+        assert_eq!(secs(2), 120);
+        assert_eq!(secs(3), 240);
+        assert_eq!(secs(5), 960);
+        assert_eq!(secs(6), 1800, "caps at 30 minutes");
+        assert_eq!(secs(50), 1800, "stays capped, and never overflows");
+    }
+
+    /// A four-hour window with a dead endpoint should cost a handful of
+    /// attempts, not one per minute.
+    #[test]
+    fn a_dead_window_costs_far_fewer_attempts() {
+        let window = 240 * 60u64;
+        let (mut elapsed, mut attempts) = (0u64, 0u32);
+        while elapsed < window {
+            attempts += 1;
+            elapsed += librarian_retry_backoff(attempts).as_secs();
+        }
+        assert!(
+            attempts <= 12,
+            "expected roughly a dozen attempts across the window, got {attempts}"
+        );
+    }
 }
 
 #[cfg(test)]

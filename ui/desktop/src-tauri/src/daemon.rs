@@ -64,9 +64,25 @@ const SIDECAR_LOG_NAME: &str = "daemon-sidecar.log";
 /// on us.)
 static DAEMON_CHILD: Mutex<Option<CommandChild>> = Mutex::new(None);
 
-/// One spawn attempt per app process, ever — makes `start_daemon` idempotent
-/// even if a future caller re-invokes it mid-startup.
+/// Guards the INITIAL spawn so `start_daemon` is idempotent mid-startup. The
+/// supervisor clears it before each deliberate restart — see
+/// [`supervise_sidecar`].
 static SPAWN_ATTEMPTED: AtomicBool = AtomicBool::new(false);
+
+/// Set by [`stop_daemon`] so the supervisor can tell "the app is quitting"
+/// from "the daemon fell over" and not fight app shutdown by respawning.
+static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+
+/// How often the supervisor checks whether the child is still alive.
+const SUPERVISE_POLL_MS: u64 = 500;
+/// Consecutive restarts before we stop trying. A daemon that cannot stay up is
+/// a real fault; restarting it forever would hide that and burn CPU.
+const MAX_RESTARTS: u32 = 5;
+/// Restart backoff, indexed by consecutive failure count.
+const RESTART_BACKOFF_SECS: [u64; MAX_RESTARTS as usize] = [1, 2, 5, 15, 30];
+/// A daemon that stayed up this long is considered recovered, so the next
+/// crash starts from a clean budget rather than the tail of an old one.
+const HEALTHY_RUN_SECS: u64 = 120;
 
 /// Handles to a spawned sidecar for health monitoring.
 struct SpawnedDaemon {
@@ -112,7 +128,9 @@ pub fn start_daemon(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Er
     // Mode 3: fresh machine — spawn the bundled sidecar.
     match spawn_sidecar(app) {
         Ok(spawned) => match wait_for_spawned(&spawned) {
-            PollOutcome::Healthy => {}
+            PollOutcome::Healthy => {
+                supervise_sidecar(app.clone(), spawned);
+            }
             PollOutcome::Aborted => {
                 eprintln!(
                     "[permagent-app] ERROR: spawned daemon exited before becoming healthy; stderr tail:"
@@ -152,12 +170,94 @@ pub fn start_daemon(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
+/// Keep the sidecar alive for as long as the app is.
+///
+/// Mode 3 spawned the daemon once and never looked again. If it died
+/// mid-session the app simply reported a dead backend and the user had to
+/// restart the whole thing — and because the status the sidebar renders is
+/// really the per-session event stream, they were told "daemon offline" in
+/// cases where nothing was wrong at all. Neither is something a user should
+/// ever have to reason about: if the app is running, the backend is running.
+///
+/// Deliberately bounded. Unlimited restarts would turn a genuine crash loop
+/// into a silent CPU burn and hide the fault; after [`MAX_RESTARTS`]
+/// consecutive failures the supervisor stops and surfaces it. A child that
+/// stays up for [`HEALTHY_RUN_SECS`] resets the budget, so an unrelated crash
+/// weeks later is not charged against an old one.
+fn supervise_sidecar(app: tauri::AppHandle, spawned: SpawnedDaemon) {
+    std::thread::spawn(move || {
+        let mut exited = spawned.exited;
+        let mut consecutive: u32 = 0;
+
+        loop {
+            let started = std::time::Instant::now();
+            // Wait for this child to die (or the app to quit).
+            while !exited.load(Ordering::SeqCst) {
+                if SHUTTING_DOWN.load(Ordering::SeqCst) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(SUPERVISE_POLL_MS));
+            }
+            if SHUTTING_DOWN.load(Ordering::SeqCst) {
+                return; // expected: the app is quitting
+            }
+
+            if started.elapsed().as_secs() >= HEALTHY_RUN_SECS {
+                consecutive = 0;
+            }
+            if consecutive >= MAX_RESTARTS {
+                eprintln!(
+                    "[permagent-app] daemon exited {MAX_RESTARTS}x in a row; not restarting again"
+                );
+                surface_daemon_failure(
+                    &app,
+                    "backend keeps stopping (see ~/.permagent/logs/daemon-sidecar.log)",
+                );
+                return;
+            }
+
+            let wait = RESTART_BACKOFF_SECS[consecutive as usize];
+            consecutive += 1;
+            eprintln!(
+                "[permagent-app] daemon exited unexpectedly; restarting in {wait}s (attempt {consecutive})"
+            );
+            std::thread::sleep(std::time::Duration::from_secs(wait));
+            if SHUTTING_DOWN.load(Ordering::SeqCst) {
+                return;
+            }
+
+            // Another daemon may have taken :3001 in the meantime (a user ran
+            // one by hand, or launchd stepped in). That one wins — the module
+            // contract is that a user-managed daemon is never fought over.
+            if is_daemon_running() {
+                eprintln!("[permagent-app] :3001 is served again; supervisor standing down");
+                return;
+            }
+
+            SPAWN_ATTEMPTED.store(false, Ordering::SeqCst);
+            match spawn_sidecar(&app) {
+                Ok(next) => {
+                    eprintln!("[permagent-app] daemon restarted");
+                    exited = next.exited;
+                }
+                Err(e) => {
+                    eprintln!("[permagent-app] daemon restart failed: {e}");
+                    return;
+                }
+            }
+        }
+    });
+}
+
 /// Stop the sidecar we spawned, if any. Called from `RunEvent::Exit` in
 /// `main.rs`. SIGTERM first so the daemon shuts down gracefully (WAL settle,
 /// `daemon_stopped` event — the same signal `launchctl unload` sends), with a
 /// bounded grace period and a SIGKILL backstop. No-op when the daemon is
 /// launchd/user-managed (we never stored a child).
 pub fn stop_daemon(_app: &tauri::AppHandle) {
+    // Tell the supervisor this exit is intentional before we signal the child,
+    // or it would race us and start a replacement as the app quits.
+    SHUTTING_DOWN.store(true, Ordering::SeqCst);
     let child = DAEMON_CHILD.lock().unwrap().take();
     let Some(child) = child else {
         return;

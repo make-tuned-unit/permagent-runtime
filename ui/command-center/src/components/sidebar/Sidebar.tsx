@@ -148,6 +148,9 @@ export function Sidebar() {
   const switchWorkspace = useCommandCenter(s => s.switchWorkspace);
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
   const connectionStatus = useCommandCenter(s => s.connectionStatus);
+  // "No stream yet" is the normal state before a session exists and says
+  // nothing about backend health, so it must not render as a fault.
+  const hasStream = useCommandCenter(s => s._lastEventSessionId !== null);
 
   const { target: tooltipTarget, show: showTooltip, hide: hideTooltip } = useSidebarTooltip();
 
@@ -197,29 +200,40 @@ export function Sidebar() {
         justifyContent: open ? 'flex-start' : 'center',
       }}>
         <Mobius size={14} state="idle" glow={0.7} />
-        {/* Daemon connection dot — connectionStatus was written to the store
-            but never rendered, so a dead daemon looked identical to a healthy
-            one (wave-1 item 6). Green stays quiet; anything else speaks up. */}
+        {/* Event-stream dot.
+            connectionStatus tracks the PER-SESSION SSE stream, not the daemon:
+            it starts 'disconnected' and only opens when a session does. Wired
+            straight to a "daemon offline" label it therefore accused a
+            perfectly healthy backend every launch, until the user opened chat
+            and it went green — reported 2026-08-13.
+            The daemon is now supervised by the shell and restarted if it dies
+            (see ui/desktop/src-tauri/src/daemon.rs), so its health is not
+            something the user should be asked to watch. This dot speaks only
+            about the stream, and only once there IS a stream to speak about. */}
         <span
-          title={`Daemon ${connectionStatus}`}
+          title={`Event stream ${connectionStatus}`}
           style={{
             width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
             marginLeft: open ? 8 : 4,
             background:
               connectionStatus === 'connected' ? colors.success
                 : connectionStatus === 'connecting' ? '#e8a33d'
-                : '#e05252',
-            boxShadow: connectionStatus === 'connected' ? 'none' : '0 0 6px currentColor',
+                // No stream yet is not a fault: stay quiet rather than glow red
+                // at a healthy backend.
+                : hasStream ? '#e05252'
+                : colors.textDim,
+            boxShadow:
+              connectionStatus === 'connected' || !hasStream ? 'none' : '0 0 6px currentColor',
             transition: 'background 300ms',
           }}
         />
-        {open && connectionStatus !== 'connected' && (
+        {open && connectionStatus !== 'connected' && hasStream && (
           <span style={{
             marginLeft: 6, fontSize: 10, fontFamily: font.body,
             color: connectionStatus === 'connecting' ? '#e8a33d' : '#e05252',
             letterSpacing: '0.04em',
           }}>
-            {connectionStatus === 'connecting' ? 'reconnecting…' : 'daemon offline'}
+            {connectionStatus === 'connecting' ? 'reconnecting…' : 'connection lost'}
           </span>
         )}
       </div>

@@ -1068,11 +1068,11 @@ pub fn browser_nav_state(app: AppHandle, webview_id: String) -> Result<BrowserNa
             }));
         });
         let (can_go_back, can_go_forward) = *flags.lock().unwrap();
-        return Ok(BrowserNavState {
+        Ok(BrowserNavState {
             url,
             can_go_back,
             can_go_forward,
-        });
+        })
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -1113,7 +1113,7 @@ pub fn browser_go(app: AppHandle, webview_id: String, forward: bool) -> Result<(
                 }))
             }));
         });
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(target_os = "macos"))]

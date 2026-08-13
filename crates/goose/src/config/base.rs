@@ -1049,6 +1049,22 @@ impl Config {
     }
 
     /// Check if an error string indicates a keyring availability issue that should trigger fallback
+    /// Does this platform error mean the store REFUSED us, rather than being absent?
+    ///
+    /// macOS reports a keychain authorization refusal as a generic platform
+    /// failure, so the variant alone cannot distinguish "no store" from "store said
+    /// no". These substrings are the refusal signatures seen from the Security
+    /// framework; anything else is treated as genuine unavailability, which keeps
+    /// headless and Linux installs falling back as before.
+    fn is_authorization_refusal(cause: &str) -> bool {
+        let lower = cause.to_ascii_lowercase();
+        lower.contains("unable to obtain authorization")
+            || lower.contains("authorization denied")
+            || lower.contains("user interaction is not allowed")
+            || lower.contains("interactionnotallowed")
+            || lower.contains("errsecauthfailed")
+    }
+
     /// Is there NO usable secret store on this machine at all?
     ///
     /// Only that case may fall back to file storage. It is a narrow question,
@@ -1069,10 +1085,22 @@ impl Config {
     /// first should.
     fn is_keyring_availability_error(&self, error: &keyring::Error) -> bool {
         match error {
-            // The platform layer itself failed: no usable store here. Covers a
-            // Linux box with no secret service and a sandboxed/headless
-            // environment with no keychain. Falling back keeps those working.
-            keyring::Error::PlatformFailure(_) => true,
+            // The platform layer failed. Usually that means no usable store
+            // (a Linux box with no secret service), and falling back keeps
+            // those installs working — but macOS routes an AUTHORIZATION
+            // refusal through this same variant, so the cause has to be read.
+            //
+            // Observed 2026-08-13, app-spawned daemon:
+            //   "Platform secure storage failure: Unable to obtain
+            //    authorization for this operation."
+            // The keychain is present, unlocked, and its ACL allows all
+            // applications; macOS still refuses because the item's PARTITION
+            // LIST does not admit an ad-hoc-signed binary and the daemon is
+            // non-interactive, so the consent prompt cannot be shown. The
+            // secrets are real and reachable — falling back would hide them.
+            keyring::Error::PlatformFailure(cause) => {
+                !Self::is_authorization_refusal(&cause.to_string())
+            }
             // A store exists and refused us — a locked keychain, or an ACL that
             // does not list this build. The secrets are real and still there,
             // so substituting empty file storage would hide them.
@@ -1110,10 +1138,28 @@ impl Config {
         fallback_values: Option<&HashMap<String, Value>>,
     ) -> Result<T, ConfigError> {
         if self.is_keyring_availability_error(keyring_err) {
+            // Log the UNDERLYING platform cause, not just the variant. Without
+            // this the daemon said only "Keyring unavailable" — true, useless,
+            // and impossible to act on. The `source()` chain is where the real
+            // OS status lives (errSec*, dbus detail); the outer Display is
+            // always the same generic sentence.
+            let mut cause = keyring_err.to_string();
+            let mut src: Option<&(dyn std::error::Error + 'static)> =
+                std::error::Error::source(keyring_err);
+            while let Some(e) = src {
+                cause.push_str(&format!(" <- {e}"));
+                src = e.source();
+            }
+            tracing::warn!(
+                "Secret store unavailable; falling back to file storage. Cause: {cause}"
+            );
             return self.activate_file_fallback(fallback_values);
         }
 
-        if matches!(keyring_err, keyring::Error::NoStorageAccess(_)) {
+        let refused = matches!(keyring_err, keyring::Error::NoStorageAccess(_))
+            || matches!(keyring_err, keyring::Error::PlatformFailure(c)
+                if Self::is_authorization_refusal(&c.to_string()));
+        if refused {
             // Loud on purpose: this is recoverable, but only by a human who
             // knows what to do — and they cannot know while it presents as
             // "no keys configured".
@@ -1290,6 +1336,38 @@ mod tests {
         assert!(
             !cfg.keyring_fallback_active.load(Ordering::Acquire),
             "must NOT switch to file storage and hide the saved keys"
+        );
+    }
+
+    /// Regression, 2026-08-13. macOS routes a keychain AUTHORIZATION refusal
+    /// through `PlatformFailure`, the same variant a genuinely absent store
+    /// uses — so the variant alone was not enough and the daemon silently fell
+    /// back while 25 real keys sat readable in an unlocked keychain. This is
+    /// the verbatim cause string the app-spawned daemon logged.
+    #[test]
+    fn macos_authorization_refusal_is_not_treated_as_missing_keyring() {
+        let cfg = Config::new(
+            tempfile::NamedTempFile::new().unwrap().path(),
+            "authz-refusal-test",
+        )
+        .unwrap();
+
+        let refused = keyring::Error::PlatformFailure(Box::new(std::io::Error::other(
+            "Unable to obtain authorization for this operation.",
+        )));
+        assert!(
+            !cfg.is_keyring_availability_error(&refused),
+            "a refusal is not an absent store"
+        );
+
+        let res: Result<String, _> = cfg.handle_keyring_fallback_error(&refused, None);
+        assert!(
+            matches!(res, Err(ConfigError::KeyringError(_))),
+            "must surface the refusal, not FallbackToFileStorage"
+        );
+        assert!(
+            !cfg.keyring_fallback_active.load(Ordering::Acquire),
+            "must not hide 25 readable keys behind empty file storage"
         );
     }
 
