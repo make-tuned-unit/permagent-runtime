@@ -12,6 +12,7 @@ use crate::config::base::ConfigValue;
 use crate::config::{Config, ExtensionConfig, GooseMode};
 use crate::conversation::message::{Message, MessageContent};
 use crate::conversation::Conversation;
+use crate::cost_router::cache::SystemPromptParts;
 use crate::model::ModelConfig;
 use crate::permission::PermissionConfirmation;
 use crate::utils::safe_truncate;
@@ -559,6 +560,29 @@ pub trait Provider: Send + Sync {
         messages: &[Message],
         tools: &[Tool],
     ) -> Result<MessageStream, ProviderError>;
+
+    /// Stream with the system prompt split into its byte-stable prefix and its
+    /// turn-volatile suffix, so a provider that supports prompt caching can place
+    /// its `cache_control` breakpoint on the prefix alone.
+    ///
+    /// Additive on purpose: the default flattens the split and calls [`stream`],
+    /// so a provider that ignores it is byte-for-byte unchanged. Overriding it
+    /// without prompt-cache support would be pure ceremony, and changing
+    /// [`stream`]'s signature would touch ~40 provider impls for a property only
+    /// a handful of them can act on.
+    ///
+    /// [`stream`]: Provider::stream
+    async fn stream_split(
+        &self,
+        model_config: &ModelConfig,
+        session_id: &str,
+        system: &SystemPromptParts,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<MessageStream, ProviderError> {
+        self.stream(model_config, session_id, &system.render(), messages, tools)
+            .await
+    }
 
     /// Complete with a specific model config.
     #[tracing::instrument(

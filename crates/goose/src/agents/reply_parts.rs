@@ -12,6 +12,7 @@ use super::super::agents::Agent;
 use crate::agents::platform_extensions::code_execution;
 use crate::conversation::message::{Message, MessageContent, ToolRequest};
 use crate::conversation::Conversation;
+use crate::cost_router::cache::SystemPromptParts;
 #[cfg(test)]
 use crate::providers::base::stream_from_single_message;
 use crate::providers::base::{MessageStream, Provider, ProviderUsage};
@@ -141,7 +142,7 @@ impl Agent {
         &self,
         session_id: &str,
         working_dir: &std::path::Path,
-    ) -> Result<(Vec<Tool>, Vec<Tool>, String)> {
+    ) -> Result<(Vec<Tool>, Vec<Tool>, SystemPromptParts)> {
         // Get tools from extension manager
         let mut tools = self.list_tools(session_id, None).await;
 
@@ -351,13 +352,17 @@ impl Agent {
             .with_scheduled_job_count(scheduled_job_count)
             .with_dispatchable_workers(dispatchable_workers)
             .with_agent_briefings(agent_briefings)
-            .build();
+            .build_parts();
 
         // Handle toolshim if enabled
         let mut toolshim_tools = vec![];
         if model_config.toolshim {
-            // If tool interpretation is enabled, modify the system prompt
-            system_prompt = modify_system_prompt_for_tool_json(&system_prompt, &tools);
+            // If tool interpretation is enabled, modify the system prompt. The
+            // tool-JSON instructions are as stable as the tool list itself, so
+            // they belong in the cached prefix — `map_stable` keeps the volatile
+            // tail behind them rather than folding it in.
+            system_prompt =
+                system_prompt.map_stable(|s| modify_system_prompt_for_tool_json(&s, &tools));
             // Make a copy of tools before emptying
             toolshim_tools = tools.clone();
             // Empty the tools vector for provider completion
@@ -374,7 +379,7 @@ impl Agent {
     pub(crate) async fn stream_response_from_provider(
         provider: Arc<dyn Provider>,
         session_id: &str,
-        system_prompt: &str,
+        system_prompt: &SystemPromptParts,
         messages: &[Message],
         tools: &[Tool],
         toolshim_tools: &[Tool],
@@ -405,10 +410,10 @@ impl Agent {
         let model_config = provider.get_model_config();
         debug!("WAITING_LLM_STREAM_START");
         let stream_result = provider
-            .stream(
+            .stream_split(
                 &model_config,
                 session_id,
-                system_prompt.as_str(),
+                &system_prompt,
                 messages_for_provider.messages(),
                 &tools,
             )

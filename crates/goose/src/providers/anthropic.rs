@@ -12,7 +12,7 @@ use super::api_client::{ApiClient, AuthMethod};
 use super::base::{ConfigKey, MessageStream, ModelInfo, Provider, ProviderDef, ProviderMetadata};
 use super::errors::ProviderError;
 use super::formats::anthropic::{
-    cache_ttl, create_request_cached, response_to_streaming_message, thinking_type, ThinkingType,
+    cache_ttl, create_request_split, response_to_streaming_message, thinking_type, ThinkingType,
 };
 use super::inventory::{config_secret_value, serialize_string_map, InventoryIdentityInput};
 use super::openai_compatible::handle_status_openai_compat;
@@ -20,6 +20,7 @@ use super::openai_compatible::map_http_error_to_provider_error;
 use super::retry::ProviderRetry;
 use crate::config::declarative_providers::DeclarativeProviderConfig;
 use crate::conversation::message::Message;
+use crate::cost_router::cache::SystemPromptParts;
 use crate::model::ModelConfig;
 use crate::providers::utils::RequestLog;
 use futures::future::BoxFuture;
@@ -305,6 +306,25 @@ impl Provider for AnthropicProvider {
         messages: &[Message],
         tools: &[Tool],
     ) -> Result<MessageStream, ProviderError> {
+        // A caller with no split to offer: treat the whole prompt as stable.
+        self.stream_split(
+            model_config,
+            session_id,
+            &SystemPromptParts::all_stable(system.to_string()),
+            messages,
+            tools,
+        )
+        .await
+    }
+
+    async fn stream_split(
+        &self,
+        model_config: &ModelConfig,
+        session_id: &str,
+        system: &SystemPromptParts,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<MessageStream, ProviderError> {
         // Select the prompt-cache TTL from config (default 5-minute; opt into
         // 1-hour for long interactive sessions — see `cache_ttl`). Read-only
         // context is not pinned here yet: the pinning machinery, placement, and
@@ -312,7 +332,7 @@ impl Provider for AnthropicProvider {
         // the producer that decides WHICH files a session pins is a separate
         // follow-up, so the slice is empty and behavior is unchanged until then.
         let ttl = cache_ttl(model_config);
-        let mut payload = create_request_cached(model_config, system, messages, tools, &[], ttl)?;
+        let mut payload = create_request_split(model_config, system, messages, tools, &[], ttl)?;
         payload
             .as_object_mut()
             .unwrap()
