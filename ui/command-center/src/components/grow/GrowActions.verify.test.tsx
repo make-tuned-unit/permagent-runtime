@@ -140,6 +140,67 @@ function select(label: string, value: string) {
 }
 
 describe('Verify change', () => {
+  // ── The agent owns the prediction ──────────────────────────────────
+  //
+  // Pre-registration is unchanged; WHO writes it is the point. The agent
+  // recommended the action, so the agent states what it expects to move — that
+  // is the claim the 7/14/28-day sweep grades it against. Asking the user for
+  // it left no prediction of the agent's to be right or wrong.
+
+  it('states the agent’s own prediction instead of asking the user for one', async () => {
+    routeTo(actionsPayload({ targetMetric: 'sessions', targetDir: 'up' }));
+    await render(<GrowActions project={project} colors={colors} />);
+
+    expect(container.textContent).toContain('I expect this to move');
+    expect(container.textContent).not.toContain('Say what this should move');
+    expect(
+      container.querySelector('select[aria-label="Target metric"]'),
+      'the user must not be asked to author a prediction the agent already made',
+    ).toBeNull();
+  });
+
+  it('verifies against the agent’s prediction, not a user-entered one', async () => {
+    routeTo(actionsPayload({ targetMetric: 'bounce_rate', targetDir: 'down' }), {
+      verified: true,
+      identity: {
+        id: 'act-1', status: 'measuring',
+        targetMetric: 'bounce_rate', targetDir: 'down',
+        verifiedBy: 'self', verifiedAt: '2026-08-14T10:00:00Z', outcomes: [],
+      },
+    });
+    await render(<GrowActions project={project} colors={colors} />);
+
+    await act(async () => { button('I did this').click(); });
+
+    const call = apiFetch.mock.calls.find(([url]: [string]) => url.includes('/verify'));
+    expect(call, 'no verify request was sent').toBeTruthy();
+    expect(JSON.parse(call![1].body)).toMatchObject({
+      targetMetric: 'bounce_rate',
+      targetDir: 'down',
+    });
+  });
+
+  /// A metric with no direction is not a prediction — "bounce rate moves" is
+  /// true whichever way it goes. A half-filled pair must fall back to asking
+  /// rather than silently assuming "up", which would score a worsening bounce
+  /// rate as a success.
+  it('falls back to asking when the agent named a metric but no direction', async () => {
+    routeTo(actionsPayload({ targetMetric: 'sessions', targetDir: null }));
+    await render(<GrowActions project={project} colors={colors} />);
+
+    expect(container.textContent).not.toContain('I expect this to move');
+    expect(container.querySelector('select[aria-label="Target direction"]')).toBeTruthy();
+  });
+
+  it('lets the user overrule the agent and measure something else', async () => {
+    routeTo(actionsPayload({ targetMetric: 'sessions', targetDir: 'up' }));
+    await render(<GrowActions project={project} colors={colors} />);
+
+    expect(container.querySelector('select[aria-label="Target metric"]')).toBeNull();
+    await act(async () => { button('Measure something else').click(); });
+    expect(container.querySelector('select[aria-label="Target metric"]')).toBeTruthy();
+  });
+
   it('will not check anything until the claim is pre-registered', async () => {
     routeTo(actionsPayload({}));
     await render(<GrowActions project={project} colors={colors} />);

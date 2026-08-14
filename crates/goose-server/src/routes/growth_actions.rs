@@ -102,6 +102,25 @@ pub struct GrowthAction {
     pub impact: String,
     /// high | medium | low — how confident the evidence makes this.
     pub confidence: String,
+    /// What this action should move: pageviews | sessions | aeo_visits |
+    /// bounce_rate. The agent's PREDICTION, made when it recommends the action.
+    ///
+    /// This exists because the verify form used to ask the USER "what should
+    /// move, and which way?" — which inverted the loop. The agent recommends
+    /// the strategy, so the agent owns the claim about what it will do;
+    /// otherwise there is no prediction to grade the agent against, and the
+    /// user is answering the question they came here to be advised on.
+    ///
+    /// The set is closed (see `growth::metrics::TargetMetric`) because a target
+    /// nothing can measure produces a verdict nothing can check. An unparseable
+    /// value is dropped rather than stored, and the action falls back to asking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_metric: Option<String>,
+    /// up | down — which way the agent expects `target_metric` to move.
+    /// "Bounce rate goes up" and "bounce rate goes down" are opposite claims,
+    /// and without this one of them would score as a success either way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_dir: Option<String>,
     /// Filled in from `growth_actions` on read, never from the model. Absent
     /// only when the row could not be reached.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -326,11 +345,21 @@ const SYSTEM: &str = "You are a growth analyst reviewing one product's own first
     on one engine suggest the others are unindexed; a referral from an ANSWER ENGINE means the \
     content is being cited and is worth making more quotable (clear headings, direct answers, \
     FAQ and structured data); an entry page with high bounce needs its first screen rewritten.\n\n\
+    State what each action should MOVE, and which way, as `targetMetric` and `targetDir`. This \
+    is your prediction and it is how your advice gets graded: the change is measured against \
+    that metric over 7, 14 and 28 days, and the verdict feeds back into how future strategies \
+    are ranked. Pick the one metric the action most directly targets, from exactly \
+    pageviews | sessions | aeo_visits | bounce_rate — nothing else can be measured. Mind the \
+    direction: for bounce_rate an improvement is DOWN. If an action genuinely does not target \
+    any of these, omit both fields rather than guessing; an unmeasurable prediction is worse \
+    than none, because it produces a verdict that cannot be checked.\n\n\
     Reply ONLY with JSON:\n\
     {\"actions\":[{\"title\":\"...\",\"evidence\":\"...\",\"recommendation\":\"...\",\
     \"steps\":[\"...\"],\"artifactKind\":\"prompt|post|none\",\"artifact\":\"...\",\
     \"category\":\"conversion|retention|churn|ux|acquisition|measurement|content|seo|aeo\",\
-    \"impact\":\"high|medium|low\",\"confidence\":\"high|medium|low\"}]}";
+    \"impact\":\"high|medium|low\",\"confidence\":\"high|medium|low\",\
+    \"targetMetric\":\"pageviews|sessions|aeo_visits|bounce_rate\",\
+    \"targetDir\":\"up|down\"}]}";
 
 /// Parse and sanitize the model's reply.
 ///
@@ -426,6 +455,22 @@ pub fn parse_actions(text: &str) -> Vec<GrowthAction> {
                 ),
                 impact: norm(item.get("impact"), &["high", "medium", "low"], "medium"),
                 confidence: norm(item.get("confidence"), &["high", "medium", "low"], "medium"),
+                // Unlike the fields above, these do NOT get a default. `norm`
+                // substitutes a fallback when the model omits or garbles a
+                // value, which is right for impact ("medium" is a fair guess)
+                // and wrong here: defaulting the prediction would invent a
+                // claim the agent never made and then grade it against that.
+                // Absent stays absent, and the card asks instead.
+                target_metric: item
+                    .get("targetMetric")
+                    .and_then(|v| v.as_str())
+                    .and_then(|m| TargetMetric::parse(m).ok())
+                    .map(|m| m.as_str().to_string()),
+                target_dir: item
+                    .get("targetDir")
+                    .and_then(|v| v.as_str())
+                    .and_then(|d| TargetDir::parse(d).ok())
+                    .map(|d| d.as_str().to_string()),
                 identity: None,
             })
         })
@@ -504,6 +549,23 @@ async fn persist(
             category: Some(action.category.clone()),
             artifact_kind: Some(action.artifact_kind.clone()),
             artifact: action.artifact.clone(),
+            // Validated here, not trusted: a model that invents a metric the
+            // sweep cannot read would pre-register a target that can never be
+            // measured, producing an action stuck in "measuring" forever. An
+            // unparseable value is dropped so the UI falls back to asking,
+            // which is honest, rather than stored so it can fail silently.
+            target_metric: action
+                .target_metric
+                .as_deref()
+                .and_then(|m| permagent::growth::metrics::TargetMetric::parse(m).ok())
+                .map(|m| m.as_str().to_string()),
+            target_dir: action.target_dir.as_deref().and_then(|d| {
+                match d.trim().to_ascii_lowercase().as_str() {
+                    "up" => Some("up".to_string()),
+                    "down" => Some("down".to_string()),
+                    _ => None,
+                }
+            }),
         };
         match growth_store::upsert_suggested(pool, project_id, &seed).await {
             Ok(row) => {
@@ -1369,6 +1431,8 @@ mod tests {
             category: category.into(),
             impact: impact.into(),
             confidence: confidence.into(),
+            target_metric: None,
+            target_dir: None,
             identity: None,
         }
     }
