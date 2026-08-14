@@ -1,15 +1,27 @@
+import { memo, useCallback } from 'react';
+import { FiAlertCircle, FiCheck, FiCopy } from 'react-icons/fi';
 import { useCommandCenter, type ChatMessage } from '../../lib/store';
 import { MessageRenderer } from './MessageRenderer';
 import { CitationMarker } from '../awareness/CitationMarker';
+import { useCopyToClipboard } from '../../lib/clipboard';
+import { dispatchBody } from './dispatchBody';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
-export function MessageBubble({ message }: { message: ChatMessage }) {
+function MessageBubbleInner({ message }: { message: ChatMessage }) {
   const { colors } = useTheme();
   const agentName = useCommandCenter(s => s.agentName);
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
   const ctx = message.context_attached;
+
+  const { state: copyState, copy } = useCopyToClipboard();
+  const handleCopy = useCallback(() => {
+    void copy(dispatchBody(message.content));
+  }, [copy, message.content]);
+  // The reader wrote their own messages; the thing worth lifting out of the
+  // transcript is what the agent drafted for them.
+  const canCopy = !isUser && !!message.content?.trim();
 
   const bubbleStyle = isUser
     ? { backgroundColor: colors.userBubble, border: `1px solid ${colors.purple}30` }
@@ -30,6 +42,43 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
             style={{ fontFamily: font.mono, color: colors.textDim }}
           >
             {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          </span>
+
+          {canCopy && (
+            <button
+              type="button"
+              onClick={handleCopy}
+              aria-label="Copy message"
+              title="Copy message"
+              className="ml-auto flex shrink-0 items-center gap-1 rounded text-[10px] transition-opacity"
+              style={{
+                fontFamily: font.mono,
+                background: 'none',
+                border: 'none',
+                padding: 0,
+                cursor: 'pointer',
+                color: copyState === 'failed' ? colors.danger : copyState === 'copied' ? colors.success : colors.textDim,
+                // Dim rather than hidden. A hover-only control is the house
+                // pattern for code blocks, but the report here was "I have to
+                // select it and then copy" — an affordance nobody found. It has
+                // to be visible without knowing to hover for it.
+                opacity: copyState === 'idle' ? 0.55 : 1,
+              }}
+              onMouseEnter={e => (e.currentTarget.style.opacity = '1')}
+              onMouseLeave={e => (e.currentTarget.style.opacity = copyState === 'idle' ? '0.55' : '1')}
+            >
+              {copyState === 'copied' ? <><FiCheck size={11} /> Copied</>
+                : copyState === 'failed' ? <><FiAlertCircle size={11} /> Copy failed</>
+                : <FiCopy size={11} />}
+            </button>
+          )}
+
+          {/* Announced to screen readers, which cannot see the icon swap above.
+              Outside the button so its accessible name stays stable. */}
+          <span role="status" aria-live="polite" className="sr-only">
+            {copyState === 'copied' ? 'Message copied to clipboard'
+              : copyState === 'failed' ? 'Could not copy the message'
+              : ''}
           </span>
         </div>
 
@@ -53,3 +102,12 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
     </div>
   );
 }
+
+/** Every streamed delta replaces ONE message object; the store's `.map` hands
+ *  back the same object for every other message. Without this memo React still
+ *  re-rendered all of them, and each assistant bubble re-ran react-markdown over
+ *  its whole body — measured at 5 full markdown parses per delta in an 8-message
+ *  conversation, growing linearly with history length. Reference equality is the
+ *  right comparator precisely because the store never mutates a message in
+ *  place; a custom comparator would only mask a store that started to. */
+export const MessageBubble = memo(MessageBubbleInner);

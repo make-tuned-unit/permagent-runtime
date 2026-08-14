@@ -24,6 +24,26 @@ export function isRenderableChatMessage(msg: ChatMessage): boolean {
     || !!msg.context_attached;
 }
 
+/** Slack, in pixels, that still counts as "reading the live end" — someone a
+ *  line or two off the bottom is following the stream, not browsing history. */
+const BOTTOM_SLACK_PX = 60;
+
+/** Exported pure for the autoscroll regression test: jsdom reports every box as
+ *  0x0, so the decision has to be testable apart from a real scroll container. */
+export function isAtBottom(box: { scrollHeight: number; scrollTop: number; clientHeight: number }): boolean {
+  return box.scrollHeight - box.scrollTop - box.clientHeight < BOTTOM_SLACK_PX;
+}
+
+/** True when a scroll event carries a position WE wrote, not one the reader
+ *  chose. Exact-match works only because the pin below writes `scrollTop`
+ *  directly; a `behavior: 'smooth'` scroll reports dozens of intermediate
+ *  positions we never wrote, and every one of them would read as "the reader
+ *  scrolled away" — which is precisely how autoscroll used to disengage
+ *  mid-stream and flash the jump pill on. */
+export function isSelfScroll(observedTop: number, lastWrittenTop: number | null): boolean {
+  return lastWrittenTop !== null && Math.abs(observedTop - lastWrittenTop) <= 1;
+}
+
 export function MessageList() {
   const { colors } = useTheme();
   const chatMessages = useCommandCenter(s => s.chatMessages);
@@ -50,14 +70,29 @@ export function MessageList() {
   const chatHistoryLoaded = useCommandCenter(s => s.chatHistoryLoaded);
 
   const scrollRef = useRef<HTMLDivElement>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const [showJump, setShowJump] = useState(false);
+  // Where our own last scroll write landed, so the scroll event it provokes is
+  // not mistaken for the reader scrolling away. Null ⇒ the next event is theirs.
+  const selfScrollTop = useRef<number | null>(null);
+  const pinFrame = useRef<number | null>(null);
+
+  const pinToBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight - el.clientHeight;
+    selfScrollTop.current = el.scrollTop; // read back: the assignment clamps
+  }, []);
 
   const handleScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+    if (isSelfScroll(el.scrollTop, selfScrollTop.current)) {
+      selfScrollTop.current = null; // consumed — the next event is the reader's
+      return;
+    }
+    selfScrollTop.current = null;
+    const atBottom = isAtBottom(el);
     setAutoScroll(atBottom);
     setShowJump(!atBottom);
   }, []);
@@ -68,14 +103,34 @@ export function MessageList() {
     );
   }, [chatMessages]);
 
+  // Keep the live end in view while the reply streams.
+  //
+  // This used to call `scrollIntoView({ behavior: 'smooth' })` on every store
+  // change — measured at one call per streamed delta. Each call cancels the
+  // in-flight smooth animation and restarts it from wherever it had got to, so
+  // at delta rates the scroll never settles: that restart-per-token IS the
+  // reported stutter. Two changes fix it: coalesce to at most one write per
+  // animation frame (deltas can land several times a frame), and write
+  // `scrollTop` directly so there is no animation to restart. The pin lands on
+  // the same frame the new text paints, so nothing is delayed to buy this.
   useEffect(() => {
-    if (autoScroll) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [timeline.length, autoScroll, chatMessages]);
+    if (!autoScroll) return;
+    if (pinFrame.current !== null) return; // a write is already queued this frame
+    pinFrame.current = requestAnimationFrame(() => {
+      pinFrame.current = null;
+      pinToBottom();
+    });
+  }, [chatMessages, autoScroll, isStreaming, pinToBottom]);
+
+  useEffect(() => () => {
+    if (pinFrame.current !== null) cancelAnimationFrame(pinFrame.current);
+  }, []);
 
   const jumpToBottom = () => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    // Instant, not smooth, for the same reason as the pin: a smooth animation
+    // would report intermediate positions through onScroll and immediately
+    // flip the pill it was pressed to dismiss back on.
+    pinToBottom();
     setAutoScroll(true);
     setShowJump(false);
   };
@@ -103,6 +158,7 @@ export function MessageList() {
     <div className="relative flex-1 overflow-hidden">
       <div
         ref={scrollRef}
+        data-testid="message-scroller"
         onScroll={handleScroll}
         // overflow-x-hidden is load-bearing: with only overflow-y-auto set,
         // CSS promotes overflow-x from visible to auto, so any wide child gave
@@ -180,8 +236,6 @@ export function MessageList() {
         ))}
 
         {showStreamingIndicator && <StreamingIndicator />}
-
-        <div ref={bottomRef} />
       </div>
 
       {showJump && (
