@@ -65,6 +65,14 @@ use tracing::{info, warn};
 /// third-party dependency). New table + index, additive and idempotent.
 /// `migrate_v37_to_v38` applies it.
 ///
+/// v42 = durable growth actions + pre-registered outcomes (`growth_actions`,
+/// `growth_action_outcomes`; docs/proposals/grow-action-outcome-loop.md). Until
+/// this existed a growth action had no identity — it was recomputed on every
+/// load and cached as JSON under `projects.metadata_json`'s "growth_actions"
+/// key (crates/goose-server/src/routes/growth_actions.rs:44), so nothing could
+/// be attached to it. New tables + index only, additive and base-independent.
+/// `migrate_v41_to_v42` applies it.
+///
 /// NOTE on the version drift: this constant intentionally stays at 14 even though
 /// the migration chain now runs to v19 (`migrate_v14_to_v15` … `migrate_v18_to_v19`).
 /// It is the stamp `init_spectral_db` applies to a *fresh* DB — those later steps
@@ -754,6 +762,15 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // First-party analytics events (schema v38). Idempotent; shared with
     // migrate_v37_to_v38 so fresh installs get it on first boot.
     apply_analytics_events_schema(pool).await?;
+
+    // Durable growth actions + pre-registered outcomes (schema v42).
+    // Idempotent; shared with migrate_v41_to_v42. Required here because the
+    // `version < N` ladder in `SessionStorage::pool` sits inside the
+    // is_schema_initialized branch (session_manager.rs:799) and never runs on
+    // a fresh DB — migration-only wiring would leave a first-boot install
+    // failing every Grow write with `no such table: growth_actions` until the
+    // second daemon boot.
+    apply_growth_actions_schema(pool).await?;
 
     // Failure-learning incident capture. Version-independent, additive, and
     // idempotent so the pinned fresh-init base stamp remains unchanged.
@@ -2880,6 +2897,99 @@ pub async fn apply_analytics_events_schema(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
+/// Apply the durable growth action + outcome schema (v42, ratified in
+/// docs/proposals/grow-action-outcome-loop.md). Shared by `migrate_v41_to_v42`
+/// (existing DBs) and `init_spectral_db` (fresh installs) so a brand-new
+/// database gets the tables on its first boot — the `version < N` ladder in
+/// `SessionStorage::pool` only runs under `is_schema_initialized`
+/// (session_manager.rs:799), so a fresh DB would otherwise not see them until
+/// the second boot. Fully idempotent (IF NOT EXISTS).
+pub async fn apply_growth_actions_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    // `growth_actions` is created FIRST: `growth_action_outcomes.action_id`
+    // REFERENCES it (proposal "Schema" section) and the pool is opened with
+    // `.foreign_keys(true)` (session_manager.rs:750), the same ordering
+    // constraint that puts apply_incidents_schema before apply_lessons_schema.
+    //
+    // UNIQUE(project_id, fingerprint) is the whole point of the table: both
+    // producers recompute their advice on every load, so without it the same
+    // suggestion regenerated tomorrow would insert a duplicate card and orphan
+    // the outcome rows already attached to yesterday's copy. fingerprint is
+    // hash(project_id, title, recommendation).
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS growth_actions (
+            id             TEXT PRIMARY KEY,
+            project_id     TEXT NOT NULL,
+            fingerprint    TEXT NOT NULL,
+            title          TEXT NOT NULL,
+            recommendation TEXT NOT NULL,
+            category       TEXT,
+            artifact_kind  TEXT,
+            artifact       TEXT,
+            target_metric  TEXT,
+            target_dir     TEXT,
+            baseline_json  TEXT,
+            status         TEXT NOT NULL,
+            verified_by    TEXT,
+            verified_at    TEXT,
+            created_at     TEXT NOT NULL,
+            UNIQUE(project_id, fingerprint)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // The Grow board lists one project's cards split by status, so that is the
+    // index — mirrors idx_project_intel_project.
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_growth_actions_project
+         ON growth_actions(project_id, status)",
+    )
+    .execute(pool)
+    .await?;
+
+    // PRIMARY KEY(action_id, window_days): the proposal measures the same
+    // action over several whole-week windows (7/14/28) and a nightly job
+    // re-evaluates open ones, so a re-judge must overwrite that window's row
+    // rather than append a second verdict for it.
+    //
+    // `rationale` is NOT NULL by design — the proposal requires a verdict to
+    // always carry its one-sentence why, including for `inconclusive`, which is
+    // the expected outcome at MIN_PAGEVIEWS=20 traffic
+    // (growth_actions.rs:147), not a failure.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS growth_action_outcomes (
+            action_id      TEXT NOT NULL REFERENCES growth_actions(id),
+            window_days    INTEGER NOT NULL,
+            before_json    TEXT NOT NULL,
+            after_json     TEXT NOT NULL,
+            delta_pct      REAL,
+            verdict        TEXT NOT NULL,
+            rationale      TEXT NOT NULL,
+            confounders    TEXT,
+            judged_at      TEXT NOT NULL,
+            PRIMARY KEY(action_id, window_days)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+/// v42: durable growth actions + pre-registered outcomes. New tables and index
+/// only; safe to run repeatedly on every database.
+pub async fn migrate_v41_to_v42(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v41 -> v42 (growth actions + outcomes)");
+    apply_growth_actions_schema(pool).await?;
+    // Hardcoded literal, never SPECTRAL_SCHEMA_VERSION: that const is the
+    // fresh-init base stamp (14), not "latest" — see its doc comment.
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (42)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v42 (growth actions + outcomes)");
+    Ok(())
+}
+
 /// v40: analytics dimensions — event `properties`, `is_bot`, `session_id`,
 /// `utm_*` and `country`. All additive (PRAGMA-guarded ADD COLUMN); the work is
 /// in `apply_analytics_events_schema`, which runs on EVERY boot, so a database
@@ -4531,6 +4641,153 @@ mod inbox_schema_tests {
         assert_eq!(current_version(&pool).await, 38);
         assert!(object_exists(&pool, "analytics_events").await);
         assert!(object_exists(&pool, "idx_analytics_events_project_time").await);
+    }
+
+    #[tokio::test]
+    async fn migrate_v41_to_v42_adds_growth_actions_idempotently() {
+        let pool = mem_pool().await;
+        init_spectral_db(&pool).await.unwrap();
+        // Fresh-install proof: init alone must yield the tables. The
+        // `version < 42` ladder never runs on a fresh DB
+        // (session_manager.rs:1084), so if this fails a first-boot install
+        // spends its whole first session failing on `no such table`.
+        assert!(object_exists(&pool, "growth_actions").await);
+        assert!(object_exists(&pool, "growth_action_outcomes").await);
+        assert!(object_exists(&pool, "idx_growth_actions_project").await);
+
+        migrate_v41_to_v42(&pool).await.unwrap();
+        migrate_v41_to_v42(&pool).await.unwrap();
+
+        assert_eq!(current_version(&pool).await, 42);
+        assert!(object_exists(&pool, "growth_actions").await);
+        assert!(object_exists(&pool, "growth_action_outcomes").await);
+        assert!(object_exists(&pool, "idx_growth_actions_project").await);
+
+        // mem_pool() does not set `.foreign_keys(true)` the way
+        // SessionStorage::pool does (session_manager.rs:750), and SQLite
+        // defaults the pragma OFF, so enable it here or the FK assertion below
+        // would pass vacuously.
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // The full ratified column list must actually accept a row.
+        sqlx::query(
+            "INSERT INTO growth_actions
+             (id, project_id, fingerprint, title, recommendation, category,
+              artifact_kind, artifact, target_metric, target_dir, baseline_json,
+              status, verified_by, verified_at, created_at)
+             VALUES ('act-1','project-1','fp-1','Add FAQ schema','Ship an FAQ block',
+                     'seo','prompt','Write an FAQ...','sessions','up','{}',
+                     'suggested',NULL,NULL,'2026-08-11T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO growth_action_outcomes
+             (action_id, window_days, before_json, after_json, delta_pct,
+              verdict, rationale, confounders, judged_at)
+             VALUES ('act-1',28,'{}','{}',NULL,'inconclusive',
+                     '30 pageviews/week; a change under ~40% is indistinguishable from variance.',
+                     NULL,'2026-09-08T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // UNIQUE(project_id, fingerprint): regenerated advice must collide with
+        // the existing row instead of duplicating the card.
+        let dup = sqlx::query(
+            "INSERT INTO growth_actions
+             (id, project_id, fingerprint, title, recommendation, status, created_at)
+             VALUES ('act-2','project-1','fp-1','Add FAQ schema','Ship an FAQ block',
+                     'suggested','2026-08-12T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await;
+        assert!(dup.is_err(), "duplicate (project_id, fingerprint) accepted");
+
+        // Same fingerprint under a different project is a different action.
+        sqlx::query(
+            "INSERT INTO growth_actions
+             (id, project_id, fingerprint, title, recommendation, status, created_at)
+             VALUES ('act-3','project-2','fp-1','Add FAQ schema','Ship an FAQ block',
+                     'suggested','2026-08-12T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // PRIMARY KEY(action_id, window_days): one verdict per window, so the
+        // nightly re-judge overwrites rather than appending a second verdict.
+        let dup_window = sqlx::query(
+            "INSERT INTO growth_action_outcomes
+             (action_id, window_days, before_json, after_json, verdict, rationale, judged_at)
+             VALUES ('act-1',28,'{}','{}','helped','sessions +34%','2026-09-09T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await;
+        assert!(
+            dup_window.is_err(),
+            "duplicate (action_id, window_days) accepted"
+        );
+
+        // FK is live: an outcome cannot dangle off an action that never existed.
+        let orphan = sqlx::query(
+            "INSERT INTO growth_action_outcomes
+             (action_id, window_days, before_json, after_json, verdict, rationale, judged_at)
+             VALUES ('no-such-action',7,'{}','{}','helped','x','2026-09-09T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await;
+        assert!(orphan.is_err(), "outcome accepted for unknown action_id");
+    }
+
+    /// migrate_v41_to_v42 is base-independent: it must reach the same shape and
+    /// stamp v42 over any earlier recorded base, and be a no-op on a re-run.
+    #[tokio::test]
+    async fn migrate_v41_to_v42_is_base_independent() {
+        for base in [38, 40, 41] {
+            let pool = mem_pool().await;
+            sqlx::query(
+                "CREATE TABLE schema_version (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO schema_version (version) VALUES (?)")
+                .bind(base)
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            assert!(
+                !object_exists(&pool, "growth_actions").await,
+                "base v{base}: pre"
+            );
+
+            migrate_v41_to_v42(&pool).await.unwrap();
+
+            assert!(
+                object_exists(&pool, "growth_actions").await,
+                "base v{base}: growth_actions"
+            );
+            assert!(
+                object_exists(&pool, "growth_action_outcomes").await,
+                "base v{base}: growth_action_outcomes"
+            );
+            assert_eq!(current_version(&pool).await, 42, "base v{base}: version");
+
+            // Idempotent: a second run is a no-op, not an error.
+            migrate_v41_to_v42(&pool).await.unwrap();
+            assert_eq!(current_version(&pool).await, 42, "base v{base}: rerun");
+        }
     }
 
     /// Count schema objects (table/view/trigger) by exact name.

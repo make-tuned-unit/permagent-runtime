@@ -31,6 +31,7 @@ pub mod governance;
 pub mod grow;
 pub mod grow_analytics;
 pub mod growth_actions;
+pub mod growth_verify;
 pub mod henry_status;
 pub mod identity;
 pub mod inbox;

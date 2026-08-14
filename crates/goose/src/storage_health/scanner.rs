@@ -478,7 +478,9 @@ mod tests {
         let mut counter = 0;
         let findings = scan_dev_caches_in_roots(&[root.path().to_path_buf()], &mut counter);
         assert!(
-            findings.iter().any(|f| f.path.contains("permagent-runtime")),
+            findings
+                .iter()
+                .any(|f| f.path.contains("permagent-runtime")),
             "a repo directly inside a confirmed root must be found: {findings:?}"
         );
     }

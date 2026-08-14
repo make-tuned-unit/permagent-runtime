@@ -524,7 +524,13 @@ export function GrowView() {
             transition: reduceMotion ? undefined : `opacity ${SWAP_FADE_MS}ms ${ease.out}`,
           }}
         >
-          {lens === 'actions' && <GrowActions project={active} colors={colors} />}
+          {/* Keyed for the same reason the analytics panels are: the load
+              effect refetches on project.id but never clears local state, so
+              without a remount project A's verify results and outcomes stay on
+              screen over project B's cards for as long as the refetch is in
+              flight. That leak was a reported bug on the analytics panels
+              (2026-08-04) — see analyticsPanelScope.test.ts. */}
+          {lens === 'actions' && <GrowActions key={active.id} project={active} colors={colors} />}
           {lens === 'analytics' && <GrowAnalytics project={active} posts={posts} colors={colors} />}
           {lens === 'strategy' && (
           <section>
@@ -850,6 +856,54 @@ function ErrorState({ colors, message, onRetry, inline }: { colors: ThemeColors;
 // exposes without goal config (signups, retention) keep their honest "no
 // source" hints rather than faking a number.
 
+/** Another action verified inside the same comparison window. */
+interface Confounder {
+  id: string;
+  title: string;
+}
+
+/** One judged window. Mirrors `OutcomeView` in routes/growth_actions.rs:49. */
+interface ActionOutcome {
+  windowDays: number;
+  /** helped | hindered | no_effect | inconclusive | confounded */
+  verdict: string;
+  /** One sentence carrying the numbers the verdict rests on. The column is NOT
+   *  NULL by design (growth_actions.rs:55), so this always renders. */
+  rationale: string;
+  deltaPct: number | null;
+  confounders: Confounder[];
+  judgedAt: string;
+}
+
+/**
+ * The durable half of an action. Absent when the row could not be persisted —
+ * `persist` swallows database failures so a hiccup costs a Verify button rather
+ * than the advice itself (growth_actions.rs:492-493), which is exactly the case
+ * the "cannot be verified" branch below renders.
+ */
+interface ActionIdentity {
+  id: string;
+  /** suggested | dismissed | done | verified | measuring | judged */
+  status: string;
+  /** pageviews | sessions | aeo_visits | bounce_rate */
+  targetMetric: string | null;
+  /** up | down */
+  targetDir: string | null;
+  /** git | content | event | self */
+  verifiedBy: string | null;
+  verifiedAt: string | null;
+  outcomes: ActionOutcome[];
+}
+
+interface GrowthVerifyResponse {
+  verified: boolean;
+  identity: ActionIdentity | null;
+  /** Every strategy that was tried, passed or not, so a card can say why it
+   *  could not confirm rather than reading as "not done". */
+  checks: VerifyCheck[];
+  reason: string | null;
+}
+
 interface GrowthAction {
   title: string;
   evidence: string;
@@ -861,6 +915,7 @@ interface GrowthAction {
   category: string;
   impact: string;
   confidence: string;
+  identity?: ActionIdentity | null;
 }
 
 interface GrowthActionsData {
@@ -868,6 +923,320 @@ interface GrowthActionsData {
   generatedAt: string | null;
   reason: string | null;
   periodDays: number | null;
+}
+
+/** The closed set an action may pre-register against (metrics.rs:41-47). Kept
+ *  in the same order and spelling the backend parses, so a select can only ever
+ *  produce a value `TargetMetric::parse` accepts. */
+const TARGET_METRICS: { value: string; label: string }[] = [
+  { value: 'pageviews', label: 'pageviews' },
+  { value: 'sessions', label: 'sessions' },
+  { value: 'aeo_visits', label: 'answer-engine visits' },
+  { value: 'bounce_rate', label: 'bounce rate' },
+];
+
+/**
+ * Verdict → label and colour.
+ *
+ * `inconclusive` is the one case that must NOT be tinted like a problem. The
+ * proposal makes it the expected outcome at this traffic — "≲100 views/week —
+ * per-project verdicts stay `inconclusive` essentially always" — and states the
+ * rule directly: "It must be the visually neutral default, not a sad grey
+ * state, or there is pressure to manufacture verdicts"
+ * (docs/proposals/grow-action-outcome-loop.md:46-48, :173-175). So it borrows
+ * the same `textMuted` the body copy uses rather than `danger` or a dimmer grey
+ * than the settled `no_effect`.
+ */
+function verdictMeta(verdict: string, colors: ThemeColors): { label: string; color: string } {
+  switch (verdict) {
+    case 'helped': return { label: 'Helped', color: colors.success };
+    case 'hindered': return { label: 'Hindered', color: colors.danger };
+    case 'no_effect': return { label: 'No detectable change', color: colors.textDim };
+    case 'confounded': return { label: 'Overlapped another change', color: colors.textDim };
+    default: return { label: 'Not enough data to say', color: colors.textMuted };
+  }
+}
+
+/**
+ * How the change was confirmed, in words that say what was actually checked.
+ *
+ * The proposal's requirement, and the reason `verified_by` is a column at all:
+ * "'Verified from a commit' and 'you told me so' are different claims and must
+ * not look identical" (proposal:107-109). `checked` drives the styling apart as
+ * well as the wording — self-attestation gets a dashed rule and the warning
+ * tint, so the two are distinguishable at a glance and not only on a careful
+ * read.
+ */
+function verifiedByMeta(how: string | null | undefined): { label: string; checked: boolean } {
+  switch (how) {
+    case 'git': return { label: 'Verified from a commit in this project’s repo', checked: true };
+    case 'content': return { label: 'Verified on the live page', checked: true };
+    case 'event': return { label: 'Verified from a traffic source that was not there before', checked: true };
+    case 'self': return { label: 'You told me it landed — your word, not a check', checked: false };
+    default: return { label: 'Not verified', checked: false };
+  }
+}
+
+/**
+ * When a window can first be judged.
+ *
+ * The pivot is the day AFTER verification, and the window completes once `days`
+ * have fully elapsed from it (`pivot_date` at metrics.rs:156-157,
+ * `window_is_complete` at :191-192). Rendering the date is what stops an empty
+ * outcome list reading as "it found nothing" when the truth is "it is not due
+ * yet".
+ */
+function windowDueAt(verifiedAt: string | null, days: number): Date | null {
+  if (!verifiedAt) return null;
+  const at = new Date(verifiedAt);
+  if (Number.isNaN(at.getTime())) return null;
+  const due = new Date(at);
+  due.setUTCDate(due.getUTCDate() + 1 + days);
+  return due;
+}
+
+/** The shortest window is 7 days (metrics.rs WINDOW_DAYS), the longest 28. */
+const FIRST_WINDOW_DAYS = 7;
+const FINAL_WINDOW_DAYS = 28;
+
+/**
+ * "Verify change" plus everything the verdict has to say — the honest half of
+ * the card.
+ *
+ * Its own component, with its own state, for the reason
+ * `analyticsPanelScope.test.ts` exists: a verify result that outlives the thing
+ * it was about is the most damaging thing this surface can show. Keyed on the
+ * action id by the caller, it is remounted whenever the action it describes
+ * changes, so no stale verdict can be inherited.
+ */
+function ActionVerify({
+  projectId, action, colors,
+}: {
+  projectId: string;
+  action: GrowthAction;
+  colors: ThemeColors;
+}) {
+  const [result, setResult] = useState<GrowthVerifyResponse | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [metric, setMetric] = useState('');
+  const [dir, setDir] = useState('');
+
+  const identity = result?.identity ?? action.identity ?? null;
+
+  const verify = useCallback((body: Record<string, unknown>) => {
+    if (!identity) return;
+    setBusy(true);
+    apiFetch<GrowthVerifyResponse>(
+      `/api/projects/${encodeURIComponent(projectId)}/growth-actions/`
+      + `${encodeURIComponent(identity.id)}/verify`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+    )
+      .then(setResult)
+      // A thrown fetch becomes a rendered, honest result rather than a dead
+      // button — the rule the first-party install check already follows
+      // (runVerify's catch, this file). A verify control that silently does
+      // nothing is worse than one that says it failed.
+      .catch((e) => setResult({
+        verified: false,
+        identity: null,
+        checks: [],
+        reason: `Could not run the check: ${e instanceof Error ? e.message : String(e)}`,
+      }))
+      .finally(() => setBusy(false));
+  }, [projectId, identity]);
+
+  const rule: CSSProperties = {
+    marginTop: 10, paddingTop: 8, borderTop: `1px solid ${colors.border}`,
+    display: 'flex', flexDirection: 'column', gap: 8,
+  };
+  const label: CSSProperties = {
+    fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em',
+    textTransform: 'uppercase', color: colors.textDim,
+  };
+  const button: CSSProperties = {
+    background: colors.surface, border: `1px solid ${colors.border}`,
+    borderRadius: radius.sm, padding: '3px 10px', cursor: busy ? 'default' : 'pointer',
+    color: colors.text, fontFamily: font.body, fontSize: 11, opacity: busy ? 0.6 : 1,
+  };
+  const select: CSSProperties = {
+    background: colors.bgDeeper, border: `1px solid ${colors.border}`,
+    borderRadius: radius.sm, padding: '3px 6px', color: colors.text,
+    fontFamily: font.body, fontSize: 11,
+  };
+
+  // No row, no identity, nothing to attach a verdict to. Said out loud rather
+  // than rendered as a missing button, which is indistinguishable from a
+  // feature that was never built.
+  if (!identity) {
+    return (
+      <div style={rule}>
+        <span style={{ fontSize: 11, color: colors.textDim }}>
+          This action has no saved record yet, so it can’t be verified. Run “Review again” to
+          save it.
+        </span>
+      </div>
+    );
+  }
+
+  const provenance = verifiedByMeta(identity.verifiedBy);
+  const target = identity.targetMetric
+    ? TARGET_METRICS.find((m) => m.value === identity.targetMetric)?.label ?? identity.targetMetric
+    : null;
+
+  return (
+    <div style={rule}>
+      {identity.verifiedBy ? (
+        <>
+          {/* HOW it was checked, never just THAT it was. A commit and a
+              self-report are different claims, so they get different colour,
+              different border and different words. */}
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 6, alignSelf: 'flex-start',
+            border: `1px ${provenance.checked ? 'solid' : 'dashed'} ${provenance.checked ? colors.success : colors.warning}`,
+            borderRadius: radius.sm, padding: '2px 8px',
+            color: provenance.checked ? colors.success : colors.warning,
+            ...label,
+          }}>
+            <span>{provenance.checked ? '✓' : '✎'}</span>
+            <span>{provenance.label}</span>
+          </div>
+          {target && identity.targetDir && (
+            <span style={{ fontSize: 11, color: colors.textDim }}>
+              Pre-registered before the baseline was frozen: {target} should go{' '}
+              {identity.targetDir}
+              {identity.verifiedAt && ` · verified ${new Date(identity.verifiedAt).toLocaleDateString()}`}
+            </span>
+          )}
+
+          {identity.outcomes.map((o) => {
+            const meta = verdictMeta(o.verdict, colors);
+            // A percentage next to "not enough data to say" is the exact
+            // failure the proposal names — "'this helped, +12%' off 40
+            // pageviews is not measuring; it is pattern-matching noise and
+            // presenting it as evidence" (proposal:35-39). So the number only
+            // appears where a verdict actually rests on it.
+            const showsDelta = (o.verdict === 'helped' || o.verdict === 'hindered')
+              && o.deltaPct !== null;
+            return (
+              <div key={o.windowDays} style={{
+                background: colors.bgDeeper, border: `1px solid ${colors.border}`,
+                borderRadius: radius.md, padding: 10,
+                display: 'flex', flexDirection: 'column', gap: 4,
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{
+                    ...label, color: meta.color, border: `1px solid ${meta.color}`,
+                    borderRadius: 999, padding: '1px 7px',
+                  }}>{meta.label}</span>
+                  <span style={{ ...label }}>{o.windowDays}-day window</span>
+                  {o.windowDays < FINAL_WINDOW_DAYS && (
+                    // Proposal open decision 2: early windows are read, but
+                    // labelled provisional rather than presented as settled.
+                    <span style={{ ...label, color: colors.textDim }}>provisional</span>
+                  )}
+                  {showsDelta && (
+                    <span style={{ fontFamily: font.mono, fontSize: 11, color: meta.color }}>
+                      {o.deltaPct! > 0 ? '+' : ''}{(o.deltaPct! * 100).toFixed(0)}%
+                    </span>
+                  )}
+                </div>
+                {/* The rationale is body text, always. It carries the numbers
+                    the verdict rests on, and a verdict whose reasoning is
+                    hidden in a tooltip cannot be argued with. */}
+                <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>
+                  {o.rationale}
+                </div>
+                {o.confounders.length > 0 && (
+                  <div style={{ fontSize: 11, color: colors.textDim }}>
+                    Overlapping changes: {o.confounders.map((c) => c.title).join(', ')}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          {identity.outcomes.length === 0 && (() => {
+            // Empty here means "not due yet", not "nothing found". Saying which
+            // is the difference between a feature that is working and one that
+            // looks broken.
+            const due = windowDueAt(identity.verifiedAt, FIRST_WINDOW_DAYS);
+            return (
+              <span style={{ fontSize: 11, color: colors.textDim }}>
+                Measuring. The first {FIRST_WINDOW_DAYS}-day reading is due
+                {due ? ` ${due.toLocaleDateString()}` : ''}, then {14} and {FINAL_WINDOW_DAYS} days.
+              </span>
+            );
+          })()}
+        </>
+      ) : (
+        <>
+          {/* Pre-registration is a gate, not a form field. The backend refuses
+              a verify without it (growth_actions.rs:1011-1018) precisely so the
+              metric cannot be chosen once the result is visible, and the UI
+              says why rather than surfacing a 400. */}
+          <span style={{ fontSize: 11, color: colors.textDim }}>
+            Say what this should move before checking it — a metric picked after the result is
+            known can’t be wrong.
+          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            <select
+              aria-label="Target metric"
+              value={metric}
+              onChange={(e) => setMetric(e.target.value)}
+              style={select}
+            >
+              <option value="">what should move…</option>
+              {TARGET_METRICS.map((m) => (
+                <option key={m.value} value={m.value}>{m.label}</option>
+              ))}
+            </select>
+            <select
+              aria-label="Target direction"
+              value={dir}
+              onChange={(e) => setDir(e.target.value)}
+              style={select}
+            >
+              <option value="">which way…</option>
+              <option value="up">should go up</option>
+              <option value="down">should go down</option>
+            </select>
+            <button
+              onClick={() => verify({ targetMetric: metric, targetDir: dir })}
+              disabled={busy || !metric || !dir}
+              style={{ ...button, opacity: busy || !metric || !dir ? 0.5 : 1 }}
+            >{busy ? 'Checking…' : 'Verify change'}</button>
+          </div>
+
+          {result && !result.verified && (
+            <div style={{
+              background: colors.bgDeeper, border: `1px solid ${colors.border}`,
+              borderRadius: radius.md, padding: 10,
+              display: 'flex', flexDirection: 'column', gap: 6,
+            }}>
+              {/* "Could not confirm" is not "not done", and the checks say
+                  which one it was (growth_verify.rs:9-11). */}
+              <span style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>
+                {result.reason ?? 'Nothing could confirm the change landed.'}
+              </span>
+              {result.checks.map((c) => (
+                <div key={c.id} style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>
+                  <span style={{ color: c.passed ? colors.success : colors.textDim }}>
+                    {c.passed ? '✓' : '·'}
+                  </span>{' '}
+                  {c.label} — {c.detail}
+                </div>
+              ))}
+              <button
+                onClick={() => verify({ targetMetric: metric, targetDir: dir, selfAttested: true })}
+                disabled={busy}
+                style={{ ...button, alignSelf: 'flex-start' }}
+              >It did land — record my word</button>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
 }
 
 /**
@@ -881,7 +1250,7 @@ interface GrowthActionsData {
  * was drawn from, because an ungrounded suggestion that looks like analysis is
  * worse than no suggestion.
  */
-function GrowActions({ project, colors }: { project: Project; colors: ThemeColors }) {
+export function GrowActions({ project, colors }: { project: Project; colors: ThemeColors }) {
   const [inbox, setInbox] = useState<GrowthInboxData | null>(null);
   const [inboxState, setInboxState] = useState<LoadState>('loading');
   const inboxGen = useRef(0);
@@ -1013,7 +1382,10 @@ function GrowActions({ project, colors }: { project: Project; colors: ThemeColor
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {actions?.actions?.map((a, i) => (
-            <div key={`${a.title}-${i}`} style={{
+            // Identity first: the durable id survives a regeneration that
+            // rewords the title, so an in-flight verify stays attached to the
+            // card it was started from rather than jumping to a neighbour.
+            <div key={a.identity?.id ?? `${a.title}-${i}`} style={{
               background: colors.surface, border: `1px solid ${colors.border}`,
               borderRadius: radius.lg, padding: 14,
             }}>
@@ -1076,6 +1448,18 @@ function GrowActions({ project, colors }: { project: Project; colors: ThemeColor
                   }}>{a.artifact}</pre>
                 </div>
               )}
+
+              {/* OUTSIDE the artifact block on purpose. Verification applies to
+                  every action including artifactKind "none" — that is the
+                  `self` fallback row of the proposal's table (proposal:105) —
+                  and putting this beside Copy would hide it for exactly the
+                  actions with no deliverable to copy. */}
+              <ActionVerify
+                key={a.identity?.id ?? `${a.title}-${i}`}
+                projectId={project.id}
+                action={a}
+                colors={colors}
+              />
             </div>
           ))}
         </div>
