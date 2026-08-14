@@ -15,6 +15,9 @@ import { act } from 'react-dom/test-utils';
 vi.mock('../../lib/api', () => ({
   api: {
     getCrashConsent: vi.fn(() => new Promise(() => {})),
+    getDevRoots: vi.fn(() => Promise.resolve({ confirmed: [], discovered: [], home: '/Users/x' })),
+    checkDevRoot: vi.fn(),
+    upsertConfig: vi.fn(),
     setCrashConsent: vi.fn(),
     setAnalyticsConsent: vi.fn(),
     exportCrashReport: vi.fn(),
@@ -52,8 +55,19 @@ async function render(panel: React.ReactNode) {
   await act(async () => { root.render(panel); });
 }
 
+/**
+ * Disabled controls that do NOT declare why they are disabled.
+ *
+ * The rule this guards is "no dead mockup controls", not "nothing is ever
+ * disabled" — a submit button greyed out until you type something is honest and
+ * ordinary. So a control may be disabled only if it carries a
+ * `data-disabled-reason`; anything disabled without one is the leftover-preview
+ * shape the 2026-08 ruling removed, and fails here.
+ */
 function disabledControls(): HTMLElement[] {
-  return Array.from(container.querySelectorAll('button:disabled, input:disabled, select:disabled'));
+  return Array.from(container.querySelectorAll(
+    'button:disabled:not([data-disabled-reason]), input:disabled:not([data-disabled-reason]), select:disabled:not([data-disabled-reason])',
+  ));
 }
 
 describe('settings preview controls are gone', () => {

@@ -1544,6 +1544,23 @@ export const api = {
       disk_free_bytes: number | null;
     }>('/api/system_info'),
 
+  // ── Dev roots: where THIS user keeps their code ─────────────────
+
+  /** Discovered (evidence-based: a `.git` was actually found) and already-
+   *  confirmed code directories. Callers must keep the two apart — overwriting
+   *  a confirmed answer with a fresh guess is the bug this endpoint exists to
+   *  prevent. Written back via `upsertConfig('dev_roots', [...])`. */
+  getDevRoots: () =>
+    apiFetch<{ confirmed: string[]; discovered: string[]; home: string }>('/api/dev-roots'),
+
+  /** Validate a hand-typed directory BEFORE confirming it. `dev_roots()` drops
+   *  paths that aren't directories, so an unchecked typo would be silently
+   *  discarded at read time — the original bug, re-entered through the fix. */
+  checkDevRoot: (path: string) =>
+    apiFetch<{ resolved: string; exists: boolean; has_repositories: boolean }>(
+      `/api/dev-roots/check?path=${encodeURIComponent(path)}`,
+    ),
+
   // ── Ollama + Librarian ──────────────────────────────────────────
 
   /** Pull an Ollama model with SSE progress streaming (#381). Each event's

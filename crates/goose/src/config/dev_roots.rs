@@ -60,7 +60,7 @@ pub fn dev_roots() -> Vec<PathBuf> {
     {
         let confirmed: Vec<PathBuf> = configured
             .iter()
-            .map(|s| PathBuf::from(shellexpand::tilde(s).into_owned()))
+            .map(|s| expand(s))
             .filter(|p| p.is_dir())
             .collect();
         if !confirmed.is_empty() {
@@ -68,6 +68,16 @@ pub fn dev_roots() -> Vec<PathBuf> {
         }
     }
     discover_dev_roots(&home())
+}
+
+/// Expand a user-supplied path the same way [`dev_roots`] will when it reads
+/// the stored value back.
+///
+/// Shared on purpose: a setup-time check that expanded `~` differently from the
+/// resolver would validate one directory and store another, which is a silent
+/// failure dressed up as a confirmation.
+pub fn expand(path: &str) -> PathBuf {
+    PathBuf::from(shellexpand::tilde(path.trim()).into_owned())
 }
 
 fn home() -> PathBuf {
@@ -102,6 +112,16 @@ pub fn discover_dev_roots(home: &Path) -> Vec<PathBuf> {
         }
     }
     found
+}
+
+/// Does `dir` hold repositories at the same depth discovery uses?
+///
+/// Exposed for the setup-time check on a hand-typed path: a directory the user
+/// names is accepted either way, but "I see no repositories in there" has to be
+/// said out loud at the moment of typing rather than discovered months later as
+/// a feature that mysteriously never has anything to report.
+pub fn contains_repo_at(dir: &Path) -> bool {
+    contains_repo(dir, REPO_PROBE_DEPTH)
 }
 
 /// Does `dir` contain a git repository within `depth` levels?
