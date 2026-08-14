@@ -58,18 +58,13 @@ fn picker_root() -> Option<std::path::PathBuf> {
         }
     }
 
-    let home = dirs::home_dir()?;
-    [
-        "dev",
-        "Documents/dev",
-        "code",
-        "Documents/code",
-        "projects",
-        "src",
-    ]
-    .iter()
-    .map(|base| home.join(base).join("Picker/pre_surge_scanner"))
-    .find(|p| p.is_dir())
+    // Shared resolver: onboarding asks where this user keeps code, and every
+    // path-guessing feature must read the same answer rather than inventing its
+    // own (see config::dev_roots for the four that did).
+    crate::config::dev_roots::dev_roots()
+        .into_iter()
+        .map(|root| root.join("Picker/pre_surge_scanner"))
+        .find(|p| p.is_dir())
 }
 
 pub fn base_url() -> String {

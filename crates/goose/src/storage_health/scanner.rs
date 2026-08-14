@@ -113,7 +113,26 @@ fn should_skip_dev_dir(path: &Path, home: &Path) -> bool {
 /// Scan for cargo target/ directories (with Cargo.toml sibling)
 /// and node_modules/ directories (with package.json sibling).
 pub fn scan_dev_caches(counter: &mut u32) -> Vec<ScanFinding> {
+    // Confirmed roots are resolved HERE, at the impure entry point, and never
+    // inside `scan_dev_caches_in` — that function takes its root as a
+    // parameter precisely so tests are hermetic (see the note above its tests
+    // about injection removing shared global state). Reading Config::global()
+    // or the real $HOME from inside it made three tests depend on the machine
+    // they ran on.
+    let confirmed = crate::config::dev_roots::dev_roots();
+    if !confirmed.is_empty() {
+        return scan_dev_caches_in_roots(&confirmed, counter);
+    }
     scan_dev_caches_in(&home_dir(), counter)
+}
+
+/// Scan an explicit set of roots — the user's confirmed code directories.
+fn scan_dev_caches_in_roots(roots: &[PathBuf], counter: &mut u32) -> Vec<ScanFinding> {
+    let mut findings = Vec::new();
+    for root in roots {
+        findings.extend(scan_dev_caches_in(root, counter));
+    }
+    findings
 }
 
 fn scan_dev_caches_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> {
@@ -443,6 +462,26 @@ mod tests {
     // (the config/provider `env_lock` mutex) could clobber `HOME` mid-scan.
     // Injecting the root removes the shared global state instead of trying to
     // lock it — the race is gone by construction.
+
+    /// A CONFIRMED root (what onboarding stores) is scanned directly, and does
+    /// not have to look like a home directory. Without this the behaviour held
+    /// only by accident: `scan_dev_caches_in` treats its argument as a home,
+    /// finds no conventional child inside it, and survives via the fallback.
+    #[test]
+    fn a_confirmed_root_is_scanned_directly() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("permagent-runtime");
+        fs::create_dir_all(project.join("target/debug")).unwrap();
+        fs::write(project.join("Cargo.toml"), "[package]").unwrap();
+        fs::write(project.join("target/debug/big.o"), vec![0u8; 11_000_000]).unwrap();
+
+        let mut counter = 0;
+        let findings = scan_dev_caches_in_roots(&[root.path().to_path_buf()], &mut counter);
+        assert!(
+            findings.iter().any(|f| f.path.contains("permagent-runtime")),
+            "a repo directly inside a confirmed root must be found: {findings:?}"
+        );
+    }
 
     /// Regression, 2026-08-13. Repos lived in ~/Documents/dev, which matched no
     /// conventional root, and the $HOME fallback only walked 3 deep — one level
