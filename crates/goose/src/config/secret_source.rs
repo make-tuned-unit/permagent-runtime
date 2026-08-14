@@ -569,6 +569,13 @@ fn run_cli(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command.set_no_window();
+    // Own process group, so the deadline below can kill the whole tree. `op`
+    // and `bw` are frequently shell shims that exec the real binary as a child.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
 
     let mut child = command.spawn().map_err(|e| SecretSourceError::Failed {
         backend,
@@ -613,6 +620,15 @@ fn run_cli(
     };
 
     let Some(status) = exit else {
+        // Kill the process GROUP, not just the child. A shim that exec'd the
+        // real CLI as its own child leaves that grandchild holding these pipes,
+        // so killing only the shim lets the reader joins below block until the
+        // grandchild exits on its own — the deadline gets reported but never
+        // enforced, which is the bug this replaced.
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(-(child.id() as i32), libc::SIGKILL);
+        }
         // Kill, then reap, then let the readers finish — in that order, or the
         // joins block on pipes the dead child still owns.
         let _ = child.kill();
