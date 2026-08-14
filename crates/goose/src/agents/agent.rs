@@ -271,6 +271,11 @@ pub struct Agent {
     pub(super) retry_manager: RetryManager,
     pub(super) tool_inspection_manager: ToolInspectionManager,
     container: Mutex<Option<Container>>,
+    /// mtime of the config file at the last extension sync. Lets the
+    /// resident-agent path answer "anything new?" with a `stat` instead of a
+    /// full config read + YAML parse on every request. See
+    /// `sync_extensions_with_config`.
+    last_extension_config_mtime: Mutex<Option<std::time::SystemTime>>,
 }
 
 #[derive(Clone, Debug)]
@@ -372,6 +377,7 @@ impl Agent {
                 session_manager_for_inspectors,
             ),
             container: Mutex::new(None),
+            last_extension_config_mtime: Mutex::new(None),
         }
     }
 
@@ -1043,12 +1049,34 @@ impl Agent {
     /// deliberately disabled one keeps that choice. Returns the keys newly
     /// registered, for logging — silence here would recreate the original bug
     /// in a quieter form.
+    ///
+    /// Called from the resident-agent path of `get_or_create_agent`, which
+    /// every agent-fetching route hits, so it is gated on the config file's
+    /// mtime. `Config::get_param` has no cache — it re-reads and re-parses the
+    /// ~16 KB config (plus the defaults file) on every call — so reading the
+    /// enabled set unconditionally would put two file reads and a YAML parse on
+    /// every request. One `stat` answers "did anything change?" instead.
     pub async fn sync_extensions_with_config(self: &Arc<Self>, session_id: &str) -> Vec<String> {
-        let enabled =
-            crate::config::extensions::get_enabled_extensions_with_config(Config::global());
+        let config = Config::global();
+        let mtime = std::fs::metadata(config.path())
+            .and_then(|m| m.modified())
+            .ok();
+        {
+            let mut last = self.last_extension_config_mtime.lock().await;
+            // `None` means the stat failed; fall through and do the real work
+            // rather than treating an unreadable config as "unchanged".
+            if let Some(mtime) = mtime {
+                if *last == Some(mtime) {
+                    return Vec::new();
+                }
+                *last = Some(mtime);
+            }
+        }
 
-        // Cheap gate first: the common case is that nothing changed, and that
-        // case must not cost a session read or an extension-manager write.
+        let enabled = crate::config::extensions::get_enabled_extensions_with_config(config);
+
+        // Second gate: the file may have changed for an unrelated key, so only
+        // pay for extension work when something is genuinely missing.
         let mut missing = Vec::new();
         for cfg in enabled {
             if !self
