@@ -68,6 +68,27 @@ pub struct ActionSeed {
     pub category: Option<String>,
     pub artifact_kind: Option<String>,
     pub artifact: Option<String>,
+    /// What the agent expects this action to move, and which way — its
+    /// PREDICTION, recorded when the action is suggested.
+    ///
+    /// This used to be absent, so the only place a target could be set was the
+    /// verify form, which asked the USER "what should move, and which way?".
+    /// That inverted the loop. The agent is the one recommending the strategy,
+    /// so the agent is the one making a claim about what it will do; a user
+    /// filling that in is answering a question they came here to be advised on,
+    /// and there is no prediction left to grade the agent against.
+    ///
+    /// Pre-registration is preserved and still enforced — the target must exist
+    /// before any measurement is taken (`growth_actions.rs` refuses a verify
+    /// without one) so a metric cannot be chosen once the result is visible.
+    /// The change is only WHO writes it, and when: the agent, at suggestion
+    /// time, before anything has happened at all.
+    ///
+    /// `None` stays legal. Actions suggested before this field existed have no
+    /// prediction, and an agent that genuinely cannot predict an effect should
+    /// say so rather than invent one — both fall back to asking the user.
+    pub target_metric: Option<String>,
+    pub target_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -137,14 +158,22 @@ pub async fn upsert_suggested(
     sqlx::query(
         "INSERT INTO growth_actions
             (id, project_id, fingerprint, title, recommendation, category,
-             artifact_kind, artifact, status, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'suggested', ?9)
+             artifact_kind, artifact, target_metric, target_dir, status, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'suggested', ?11)
          ON CONFLICT(project_id, fingerprint) DO UPDATE SET
             title          = excluded.title,
             recommendation = excluded.recommendation,
             category       = excluded.category,
             artifact_kind  = excluded.artifact_kind,
-            artifact       = excluded.artifact
+            artifact       = excluded.artifact,
+            -- Re-suggesting refreshes the prediction, but only while the action
+            -- is still `suggested`: the WHERE below already blocks any update
+            -- once it is verified, so a target can never be rewritten after
+            -- measurement has begun. `coalesce` keeps an existing prediction
+            -- when a later suggestion omits one, rather than silently clearing
+            -- the pre-registered target and reopening the verify form.
+            target_metric  = coalesce(excluded.target_metric, growth_actions.target_metric),
+            target_dir     = coalesce(excluded.target_dir, growth_actions.target_dir)
          WHERE growth_actions.status = 'suggested'",
     )
     .bind(&id)
@@ -155,6 +184,8 @@ pub async fn upsert_suggested(
     .bind(seed.category.as_deref())
     .bind(seed.artifact_kind.as_deref())
     .bind(seed.artifact.as_deref())
+    .bind(seed.target_metric.as_deref())
+    .bind(seed.target_dir.as_deref())
     .bind(&now)
     .execute(pool)
     .await?;
@@ -501,6 +532,8 @@ mod tests {
             category: Some("seo".into()),
             artifact_kind: Some("prompt".into()),
             artifact: Some("do the thing".into()),
+            target_metric: None,
+            target_dir: None,
         }
     }
 
@@ -573,6 +606,8 @@ mod tests {
                 category: Some("ux".into()),
                 artifact_kind: None,
                 artifact: None,
+                target_metric: None,
+                target_dir: None,
             },
         )
         .await

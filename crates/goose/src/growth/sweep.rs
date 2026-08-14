@@ -324,6 +324,8 @@ mod tests {
                 category: Some("seo".into()),
                 artifact_kind: Some("prompt".into()),
                 artifact: None,
+                target_metric: None,
+                target_dir: None,
             },
         )
         .await

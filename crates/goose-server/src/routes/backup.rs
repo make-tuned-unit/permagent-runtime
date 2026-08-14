@@ -58,7 +58,12 @@ async fn run_backup(State(_state): State<Arc<AppState>>) -> Json<RunResponse> {
         let backup_root = backup_root.clone();
         move || {
             let source = permagent::config::paths::Paths::brain_dir().join("memory.db");
-            backup::force_snapshot(&source, &backup_root, DbTarget::Brain)
+            backup::force_snapshot(
+                &source,
+                &backup_root,
+                DbTarget::Brain,
+                backup::SnapshotMode::Compacted,
+            )
         }
     })
     .await;
@@ -67,7 +72,12 @@ async fn run_backup(State(_state): State<Arc<AppState>>) -> Json<RunResponse> {
         let backup_root = backup_root.clone();
         move || {
             let source = permagent::config::paths::Paths::spectral_db();
-            backup::force_snapshot(&source, &backup_root, DbTarget::Spectral)
+            backup::force_snapshot(
+                &source,
+                &backup_root,
+                DbTarget::Spectral,
+                backup::SnapshotMode::Compacted,
+            )
         }
     })
     .await;

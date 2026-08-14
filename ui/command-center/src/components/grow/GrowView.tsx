@@ -1019,6 +1019,10 @@ function ActionVerify({
   const [result, setResult] = useState<GrowthVerifyResponse | null>(null);
   const [busy, setBusy] = useState(false);
   const [metric, setMetric] = useState('');
+  // Set when the user rejects the agent's prediction and picks their own
+  // target. One-way for the life of the card: re-hiding their choice behind
+  // the agent's would discard what they just typed.
+  const [overriding, setOverriding] = useState(false);
   const [dir, setDir] = useState('');
 
   const identity = result?.identity ?? action.identity ?? null;
@@ -1082,6 +1086,12 @@ function ActionVerify({
   const target = identity.targetMetric
     ? TARGET_METRICS.find((m) => m.value === identity.targetMetric)?.label ?? identity.targetMetric
     : null;
+
+  // The agent predicted this only when BOTH halves are present. A metric with
+  // no direction is not a prediction — "bounce rate moves" is true either way —
+  // so a half-filled pair falls back to asking rather than guessing "up".
+  const predicted = !overriding && !!identity.targetMetric && !!identity.targetDir;
+  const predictedLabel = target ?? identity.targetMetric;
 
   return (
     <div style={rule}>
@@ -1170,42 +1180,80 @@ function ActionVerify({
         </>
       ) : (
         <>
-          {/* Pre-registration is a gate, not a form field. The backend refuses
-              a verify without it (growth_actions.rs:1011-1018) precisely so the
-              metric cannot be chosen once the result is visible, and the UI
-              says why rather than surfacing a 400. */}
-          <span style={{ fontSize: 11, color: colors.textDim }}>
-            Say what this should move before checking it — a metric picked after the result is
-            known can’t be wrong.
-          </span>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-            <select
-              aria-label="Target metric"
-              value={metric}
-              onChange={(e) => setMetric(e.target.value)}
-              style={select}
-            >
-              <option value="">what should move…</option>
-              {TARGET_METRICS.map((m) => (
-                <option key={m.value} value={m.value}>{m.label}</option>
-              ))}
-            </select>
-            <select
-              aria-label="Target direction"
-              value={dir}
-              onChange={(e) => setDir(e.target.value)}
-              style={select}
-            >
-              <option value="">which way…</option>
-              <option value="up">should go up</option>
-              <option value="down">should go down</option>
-            </select>
-            <button
-              onClick={() => verify({ targetMetric: metric, targetDir: dir })}
-              disabled={busy || !metric || !dir}
-              style={{ ...button, opacity: busy || !metric || !dir ? 0.5 : 1 }}
-            >{busy ? 'Checking…' : 'Verify change'}</button>
-          </div>
+          {/* Pre-registration is a gate, not a form field: the backend refuses a
+              verify without a target (growth_actions.rs) so a metric cannot be
+              chosen once the result is visible.
+
+              WHO fills it in is the point. The agent recommended this action, so
+              the agent states what it expects to move — that claim is what the
+              7/14/28-day sweep grades it against. Asking the user to supply it
+              inverted the loop: they would be answering the question they came
+              here to be advised on, and there would be no prediction of the
+              agent's left to be right or wrong. The selects below are now the
+              FALLBACK, for an action whose agent declined to predict (or one
+              suggested before predictions existed). */}
+          {predicted ? (
+            <>
+              <span style={{ fontSize: 11, color: colors.textDim }}>
+                I expect this to move{' '}
+                <strong style={{ color: colors.text }}>{predictedLabel}</strong>{' '}
+                <strong style={{ color: colors.text }}>
+                  {identity.targetDir === 'down' ? 'down' : 'up'}
+                </strong>. I’ll check at 7, 14 and 28 days and record whether I was right.
+              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                <button
+                  onClick={() => verify({
+                    targetMetric: identity.targetMetric!,
+                    targetDir: identity.targetDir!,
+                  })}
+                  disabled={busy}
+                  style={{ ...button, opacity: busy ? 0.5 : 1 }}
+                >{busy ? 'Checking…' : 'I did this — start measuring'}</button>
+                <button
+                  onClick={() => setOverriding(true)}
+                  disabled={busy}
+                  style={{ ...button, opacity: busy ? 0.5 : 1 }}
+                >Measure something else</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <span style={{ fontSize: 11, color: colors.textDim }}>
+                {identity.targetMetric || identity.targetDir
+                  ? 'I couldn’t say what this should move, so pick the metric before checking it.'
+                  : 'Say what this should move before checking it — a metric picked after the result is known can’t be wrong.'}
+              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                <select
+                  aria-label="Target metric"
+                  value={metric}
+                  onChange={(e) => setMetric(e.target.value)}
+                  style={select}
+                >
+                  <option value="">what should move…</option>
+                  {TARGET_METRICS.map((m) => (
+                    <option key={m.value} value={m.value}>{m.label}</option>
+                  ))}
+                </select>
+                <select
+                  aria-label="Target direction"
+                  value={dir}
+                  onChange={(e) => setDir(e.target.value)}
+                  style={select}
+                >
+                  <option value="">which way…</option>
+                  <option value="up">should go up</option>
+                  <option value="down">should go down</option>
+                </select>
+                <button
+                  onClick={() => verify({ targetMetric: metric, targetDir: dir })}
+                  disabled={busy || !metric || !dir}
+                  style={{ ...button, opacity: busy || !metric || !dir ? 0.5 : 1 }}
+                >{busy ? 'Checking…' : 'Verify change'}</button>
+              </div>
+            </>
+          )}
 
           {result && !result.verified && (
             <div style={{
