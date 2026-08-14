@@ -101,3 +101,6 @@ ui/command-center/dist/
 
 # Xcode per-user state (schemes, breakpoints, window layout) — never shared
 **/xcuserdata/
+
+# insta pending snapshots — artifacts of a failed snapshot test, never committed
+*.snap.new
