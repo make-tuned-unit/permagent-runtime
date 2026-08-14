@@ -1,10 +1,11 @@
+import { memo } from 'react';
 import { useCommandCenter, type ChatMessage } from '../../lib/store';
 import { MessageRenderer } from './MessageRenderer';
 import { CitationMarker } from '../awareness/CitationMarker';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
-export function MessageBubble({ message }: { message: ChatMessage }) {
+function MessageBubbleInner({ message }: { message: ChatMessage }) {
   const { colors } = useTheme();
   const agentName = useCommandCenter(s => s.agentName);
   const isUser = message.role === 'user';
@@ -53,3 +54,12 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
     </div>
   );
 }
+
+/** Every streamed delta replaces ONE message object; the store's `.map` hands
+ *  back the same object for every other message. Without this memo React still
+ *  re-rendered all of them, and each assistant bubble re-ran react-markdown over
+ *  its whole body — measured at 5 full markdown parses per delta in an 8-message
+ *  conversation, growing linearly with history length. Reference equality is the
+ *  right comparator precisely because the store never mutates a message in
+ *  place; a custom comparator would only mask a store that started to. */
+export const MessageBubble = memo(MessageBubbleInner);
