@@ -132,10 +132,25 @@ mod tests {
         /// data, and will either say so or, worse, guess.
         const NOT_YET_OBSERVABLE: &[(&str, &str)] = &[];
 
+        /// Tab name → surface name, where the two differ. The Dashboard tab is
+        /// the home view and is read through the `overview` aspect; an alias
+        /// here asserts that mapping instead of letting the tab fall through
+        /// the check as unreadable.
+        const TAB_SURFACE_ALIASES: &[(&str, &str)] = &[("dashboard", "overview")];
+
         let catalog = crate::app_catalog::init();
         let observable: std::collections::HashSet<String> = OBSERVABLE_SURFACES
             .iter()
             .map(|s| s.to_lowercase())
+            .chain(
+                TAB_SURFACE_ALIASES
+                    .iter()
+                    // The alias only counts if its target surface really exists
+                    // — otherwise it would exempt a tab on the strength of a
+                    // typo.
+                    .filter(|(_, surface)| OBSERVABLE_SURFACES.contains(surface))
+                    .map(|(tab, _)| tab.to_string()),
+            )
             .collect();
         let exempt: std::collections::HashSet<String> = NOT_YET_OBSERVABLE
             .iter()

@@ -204,6 +204,9 @@ fn table_has_column(conn: &rusqlite::Connection, table: &str, column: &str) -> b
     let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(1)) else {
         return false;
     };
+    // The binding is load-bearing, not style: as a tail expression the iterator
+    // chain's temporaries would drop after `stmt` and fail borrowck (E0597).
+    #[allow(clippy::let_and_return)]
     let found = rows.flatten().any(|name| name == column);
     found
 }
