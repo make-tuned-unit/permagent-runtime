@@ -137,6 +137,10 @@ impl AppState {
                 &source,
                 &backup_root,
                 crate::backup::DbTarget::Spectral,
+                // Fast: this is on the path between launch and serving
+                // requests. Compaction here cost 12.5s and pushed startup past
+                // the desktop shell's health-wait budget.
+                crate::backup::SnapshotMode::Fast,
             ) {
                 tracing::error!(
                     target: "permagentd::backup",
@@ -228,6 +232,7 @@ impl AppState {
                         &source,
                         &backup_root,
                         crate::backup::DbTarget::Brain,
+                        crate::backup::SnapshotMode::Fast,
                     ) {
                         tracing::error!(
                             target: "permagentd::backup",

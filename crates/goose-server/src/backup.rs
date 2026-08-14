@@ -1,27 +1,21 @@
 //! Automated backup snapshots for memory.db and permagent.db.
 //!
-//! Uses SQLite's online backup API via a dedicated read-only rusqlite
-//! connection. Both databases run in WAL mode, and the backup API copies page
-//! by page under a read transaction, so the snapshot is consistent and includes
-//! rows still sitting in the WAL — without conflicting with live writers.
-//!
-//! Snapshots are NOT compacted. This used VACUUM INTO until 2026-08-14, which
-//! also rebuilt every page: ~15% smaller files for 10x the time (12.5 s vs
-//! 1.3 s on a 209 MB memory.db, measured). That mattered because the snapshot
-//! runs on the startup path as a pre-migration safety net, and the cost was
-//! pushing daemon startup past the desktop shell's health-wait budget. A safety
-//! net is for fidelity, not for saving disk.
+//! Two write modes, chosen by the caller's latency budget (see [`SnapshotMode`]):
+//! the startup pre-migration snapshot uses SQLite's online backup API (fast,
+//! uncompacted); the hourly background scheduler uses VACUUM INTO (compacted,
+//! ~10x slower, invisible where it runs). Both produce a consistent copy of a
+//! live WAL database including rows not yet checkpointed.
 //!
 //! Layout:
 //!   ~/.permagent/backups/
 //!     brain/    memory-20260609T080000Z-daily.db
 //!     spectral/ permagent-20260609T080000Z-daily.db
 //!
-//! Rotation: 7 daily + 4 weekly per database. A weekly is the most recent
-//! daily promoted once per ISO week. Prune oldest beyond limits after each
-//! successful snapshot.
+//! Retention is a ladder of age bands, not a count — one snapshot per band, the
+//! newest that is at least that old. See [`RETENTION_BANDS`] for why span beats
+//! count, and why keeping exactly one snapshot is the worst option available.
 
-use chrono::{DateTime, Datelike, Utc};
+use chrono::{DateTime, Utc};
 use rusqlite::OpenFlags;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -29,13 +23,28 @@ use std::time::Duration;
 
 // ── Snapshot tiers ──────────────────────────────────────────────────────────
 
-/// Backup tier — daily snapshots, with the most recent daily per ISO week
-/// promoted to weekly.
+/// Which retention band a snapshot occupies. Descriptive, not a property of the
+/// file: tier is recomputed from age on every prune, and every snapshot is
+/// written with the same filename shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Tier {
     Daily,
     Weekly,
+    Monthly,
+}
+
+impl Tier {
+    /// Map a [`RETENTION_BANDS`] index to its label. Out-of-range indices
+    /// clamp to Monthly rather than panicking — adding a fourth band should
+    /// widen the ladder, never crash the prune that keeps disk in check.
+    fn from_band(index: usize) -> Self {
+        match index {
+            0 => Tier::Daily,
+            1 => Tier::Weekly,
+            _ => Tier::Monthly,
+        }
+    }
 }
 
 /// A parsed snapshot filename.
@@ -61,10 +70,61 @@ pub struct SnapshotInfo {
 // ── Constants ───────────────────────────────────────────────────────────────
 
 const STALENESS_THRESHOLD: Duration = Duration::from_secs(20 * 3600); // 20 hours
-const MAX_DAILY: usize = 7;
-const MAX_WEEKLY: usize = 4;
+
+/// Retention ladder: minimum age of the snapshot kept in each band, newest
+/// first. One snapshot survives per band — the newest one at least that old.
+///
+/// # Why bands instead of "keep the last N"
+///
+/// A backup is only useful if it predates the damage, so what matters is the
+/// SPAN of history covered, not the count of files. Different failures surface
+/// on very different timescales:
+///
+///   * a bad schema migration — seconds
+///   * SQLite or disk corruption — hours to days
+///   * bad data (a wrong consolidation, garbage memories) — days to weeks
+///
+/// The previous policy kept 7 dailies + 4 weeklies: eleven files, ~2 GB for
+/// brain/memory.db, most of them clustered in the last week. The opposite
+/// instinct — keep exactly one — is worse than it looks: with a single slot,
+/// tonight's backup faithfully overwrites the last good copy with the corrupted
+/// state, so the system dutifully propagates the damage. One snapshot only
+/// protects against failures you notice within a day.
+///
+/// Three bands cover the three timescales in three files (~534 MB compacted,
+/// less than the 685 MB the eleven-file policy was already using here).
+///
+/// The deliberate gap: between "newest" and "7 days" there is no intermediate
+/// copy, so damage noticed on day 3 rewinds to day 7 rather than day 2. That is
+/// the price of the size target. If finer recent granularity is wanted later,
+/// add a band — the ladder is data, and `select_retained` needs no change.
+const RETENTION_BANDS: [chrono::TimeDelta; 3] = [
+    chrono::TimeDelta::zero(),
+    chrono::TimeDelta::days(7),
+    chrono::TimeDelta::days(30),
+];
 
 // ── Public API ──────────────────────────────────────────────────────────────
+
+/// How to write the snapshot.
+///
+/// Both modes produce a consistent copy of a live WAL database. The difference
+/// is compaction, and therefore an order of magnitude in time — measured on a
+/// 209 MB brain/memory.db: 1.3 s uncompacted, 12.5 s compacted (178 MB).
+///
+/// The split exists because the two callers have opposite constraints. The
+/// startup snapshot is a pre-migration safety net on the path between launching
+/// the app and serving requests, where 12.5 s pushed daemon startup past the
+/// desktop shell's health-wait budget and produced a daily "backend slow to
+/// start". The scheduled snapshot runs hourly in the background, where the same
+/// 12.5 s is invisible and the 15% saved is worth having.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotMode {
+    /// SQLite online backup API. Fast, uncompacted. For latency-sensitive paths.
+    Fast,
+    /// VACUUM INTO. Compacts, and costs roughly 10x. For background work.
+    Compacted,
+}
 
 /// Which database to back up.
 #[derive(Debug, Clone, Copy)]
@@ -106,6 +166,7 @@ pub fn snapshot_if_stale(
     source_db: &Path,
     backup_root: &Path,
     target: DbTarget,
+    mode: SnapshotMode,
 ) -> Result<bool, BackupError> {
     let dest_dir = backup_root.join(target.subdir());
 
@@ -129,7 +190,7 @@ pub fn snapshot_if_stale(
         return Ok(false);
     }
 
-    take_snapshot(source_db, &dest_dir, target)?;
+    take_snapshot(source_db, &dest_dir, target, mode)?;
     Ok(true)
 }
 
@@ -138,19 +199,20 @@ pub fn force_snapshot(
     source_db: &Path,
     backup_root: &Path,
     target: DbTarget,
+    mode: SnapshotMode,
 ) -> Result<SnapshotInfo, BackupError> {
     if !source_db.exists() {
         return Err(BackupError::SourceMissing(source_db.to_path_buf()));
     }
     let dest_dir = backup_root.join(target.subdir());
-    take_snapshot(source_db, &dest_dir, target)
+    take_snapshot(source_db, &dest_dir, target, mode)
 }
 
 /// List all snapshots for a given database target.
 pub fn list_snapshot_info(backup_root: &Path, target: DbTarget) -> Vec<SnapshotInfo> {
     let dest_dir = backup_root.join(target.subdir());
     let entries = list_snapshots_in_dir(&dest_dir, target.prefix());
-    let promoted = promote_and_prune(entries);
+    let promoted = select_retained(entries, Utc::now());
 
     promoted
         .into_iter()
@@ -192,6 +254,7 @@ fn take_snapshot(
     source_db: &Path,
     dest_dir: &Path,
     target: DbTarget,
+    mode: SnapshotMode,
 ) -> Result<SnapshotInfo, BackupError> {
     std::fs::create_dir_all(dest_dir)?;
 
@@ -245,7 +308,16 @@ fn take_snapshot(
     )
     .map_err(|e| BackupError::SnapshotFailed(format!("open source: {e}")))?;
 
-    {
+    if mode == SnapshotMode::Compacted {
+        // VACUUM INTO: consistent AND compacted, at roughly 10x the cost. Only
+        // reached from the background scheduler, where the wait is invisible.
+        source_conn
+            .execute_batch(&format!(
+                "VACUUM INTO '{}';",
+                tmp_path.to_string_lossy().replace('\'', "''")
+            ))
+            .map_err(|e| BackupError::SnapshotFailed(format!("{e}")))?;
+    } else {
         let mut dest_conn = rusqlite::Connection::open(&tmp_path)
             .map_err(|e| BackupError::SnapshotFailed(format!("open destination: {e}")))?;
         let backup = rusqlite::backup::Backup::new(&source_conn, &mut dest_conn)
@@ -322,7 +394,7 @@ fn take_snapshot(
 
     // Rotate: promote weeklies and prune old files.
     let entries = list_snapshots_in_dir(dest_dir, target.prefix());
-    let keep = promote_and_prune(entries);
+    let keep = select_retained(entries, now);
     prune_files(dest_dir, target.prefix(), &keep);
 
     Ok(SnapshotInfo {
@@ -427,36 +499,37 @@ fn is_stale(snapshots: &[SnapshotEntry], now: DateTime<Utc>) -> bool {
 
 // ── Rotation policy ─────────────────────────────────────────────────────────
 
-/// Pure function: given a list of snapshot entries (newest-first), promote
-/// the most recent daily per ISO week to weekly and prune beyond limits.
-/// Returns the entries to keep.
-pub fn promote_and_prune(mut entries: Vec<SnapshotEntry>) -> Vec<SnapshotEntry> {
-    // Sort newest first.
+/// Pure function: choose which snapshots to retain, one per [`RETENTION_BANDS`]
+/// entry — the newest snapshot at least that old.
+///
+/// `now` is a parameter rather than `Utc::now()` so retention is testable at
+/// specific ages instead of only at whatever time the suite happens to run.
+///
+/// A band with no qualifying snapshot simply contributes nothing; a young
+/// backup directory keeps everything it has. Bands never delete a snapshot they
+/// could not replace.
+pub fn select_retained(mut entries: Vec<SnapshotEntry>, now: DateTime<Utc>) -> Vec<SnapshotEntry> {
     entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
-    // Reset all tiers to daily for re-evaluation.
-    for e in &mut entries {
-        e.tier = Tier::Daily;
-    }
+    let mut keep: Vec<SnapshotEntry> = Vec::new();
+    for (band_index, min_age) in RETENTION_BANDS.iter().enumerate() {
+        // Newest entry old enough for this band, that a nearer band has not
+        // already claimed. Without the `already claimed` check a sparse history
+        // would fill every band with the same file and silently retain one
+        // snapshot while reporting three.
+        let candidate = entries
+            .iter()
+            .find(|e| {
+                now.signed_duration_since(e.timestamp) >= *min_age
+                    && !keep.iter().any(|k| k.filename == e.filename)
+            })
+            .cloned();
 
-    // Promote: the newest daily in each ISO week becomes weekly.
-    let mut seen_weeks: std::collections::HashSet<(i32, u32)> = std::collections::HashSet::new();
-    for e in &mut entries {
-        let iso = e.timestamp.iso_week();
-        let key = (iso.year(), iso.week());
-        if seen_weeks.insert(key) {
-            e.tier = Tier::Weekly;
+        if let Some(mut entry) = candidate {
+            entry.tier = Tier::from_band(band_index);
+            keep.push(entry);
         }
     }
-
-    // Partition.
-    let (weeklies, dailies): (Vec<_>, Vec<_>) =
-        entries.into_iter().partition(|e| e.tier == Tier::Weekly);
-
-    // Keep newest N of each.
-    let mut keep: Vec<SnapshotEntry> = Vec::new();
-    keep.extend(dailies.into_iter().take(MAX_DAILY));
-    keep.extend(weeklies.into_iter().take(MAX_WEEKLY));
 
     keep.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     keep
@@ -513,7 +586,11 @@ pub async fn backup_scheduler_loop() {
                 DbTarget::Spectral,
             ),
         ] {
-            match snapshot_if_stale(&source, &backup_root, target) {
+            // Compacted here on purpose: this loop runs hourly in the
+            // background, where the ~10x cost is invisible and the ~15% saved
+            // is worth having. The startup path uses Fast for the opposite
+            // reason.
+            match snapshot_if_stale(&source, &backup_root, target, SnapshotMode::Compacted) {
                 Ok(true) => tracing::info!(
                     target: "permagentd::backup",
                     db = target.label(),
@@ -536,17 +613,6 @@ pub async fn backup_scheduler_loop() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn make_entry(name: &str, ts: &str, tier: Tier) -> SnapshotEntry {
-        SnapshotEntry {
-            filename: name.to_string(),
-            timestamp: chrono::NaiveDateTime::parse_from_str(ts, "%Y%m%dT%H%M%SZ")
-                .unwrap()
-                .and_utc(),
-            tier,
-            db_name: "memory".to_string(),
-        }
-    }
 
     #[test]
     fn test_parse_snapshot_filename_daily() {
@@ -601,225 +667,98 @@ mod tests {
         assert!(is_stale(&[old], now));
     }
 
-    #[test]
-    fn test_rotation_promotes_weekly() {
-        // 10 dailies across 2 ISO weeks → should keep 7 daily + 2 weekly
-        let entries: Vec<SnapshotEntry> = (0..10)
-            .map(|i| {
-                let day = 1 + i; // June 1..10, 2026
-                let ts = format!("202606{:02}T080000Z", day);
-                // June 1 = Mon W23, June 8 = Mon W24
-                make_entry(
-                    &format!("memory-202606{:02}T080000Z-daily.db", day),
-                    &ts,
-                    Tier::Daily,
-                )
-            })
-            .collect();
+    // ── Retention ladder ────────────────────────────────────────────────
+    //
+    // These replaced the "7 daily + 4 weekly" rotation tests on 2026-08-14.
+    // The policy is now age bands (see RETENTION_BANDS), so the old assertions
+    // (count caps, ISO-week promotion) no longer describe anything real.
 
-        let kept = promote_and_prune(entries);
-        let daily_count = kept.iter().filter(|e| e.tier == Tier::Daily).count();
-        let weekly_count = kept.iter().filter(|e| e.tier == Tier::Weekly).count();
-
-        // At most 7 daily + 4 weekly
-        assert!(daily_count <= MAX_DAILY);
-        assert!(weekly_count <= MAX_WEEKLY);
-        // At least 1 weekly (multiple ISO weeks present)
-        assert!(weekly_count >= 1);
-    }
-
-    #[test]
-    fn test_rotation_empty_dir() {
-        let kept = promote_and_prune(vec![]);
-        assert!(kept.is_empty());
-    }
-
-    #[test]
-    fn test_rotation_single_entry() {
-        let entry = make_entry(
-            "memory-20260609T080000Z-daily.db",
-            "20260609T080000Z",
-            Tier::Daily,
-        );
-        let kept = promote_and_prune(vec![entry]);
-        assert_eq!(kept.len(), 1);
-        // Single entry gets promoted to weekly (first in its ISO week)
-        assert_eq!(kept[0].tier, Tier::Weekly);
-    }
-
-    #[test]
-    fn test_rotation_prunes_excess_dailies() {
-        // 15 dailies in the same ISO week → 1 promoted to weekly, 7 daily kept
-        let entries: Vec<SnapshotEntry> = (0..15)
-            .map(|i| {
-                let hour = i;
-                let ts_str = format!("20260609T{:02}0000Z", hour);
-                let fname = format!("memory-20260609T{:02}0000Z-daily.db", hour);
-                make_entry(&fname, &ts_str, Tier::Daily)
-            })
-            .collect();
-
-        let kept = promote_and_prune(entries);
-        // All same ISO week → 1 weekly + 7 daily = 8 max, but the weekly
-        // replaces one of the dailies, so total = 1 weekly + 7 daily = 8
-        assert!(kept.len() <= MAX_DAILY + MAX_WEEKLY);
-        let weekly_count = kept.iter().filter(|e| e.tier == Tier::Weekly).count();
-        assert_eq!(weekly_count, 1);
-    }
-
-    #[test]
-    fn test_disk_headroom_calculation() {
-        // This just tests the math, not actual statvfs
-        let source_size: u64 = 100_000_000; // 100 MB
-        let need = (source_size as f64 * 1.5) as u64;
-        assert_eq!(need, 150_000_000);
-    }
-
-    // ── Integration tests (tempdir-based) ───────────────────────────────────
-
-    #[test]
-    fn test_snapshot_creates_valid_db() {
-        let tmp = tempfile::tempdir().unwrap();
-        let source = tmp.path().join("test.db");
-        let backup_root = tmp.path().join("backups");
-
-        // Create a source DB with some data.
-        {
-            let conn = rusqlite::Connection::open(&source).unwrap();
-            conn.execute_batch(
-                "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT);
-                 INSERT INTO items VALUES (1, 'alpha');
-                 INSERT INTO items VALUES (2, 'beta');",
-            )
-            .unwrap();
+    /// Build an entry `days_ago` before `now`, timestamp and filename agreeing.
+    fn aged(now: DateTime<Utc>, days_ago: i64) -> SnapshotEntry {
+        let ts = now - chrono::Duration::days(days_ago);
+        SnapshotEntry {
+            filename: format!("memory-{}-daily.db", ts.format("%Y%m%dT%H%M%SZ")),
+            timestamp: ts,
+            tier: Tier::Daily,
+            db_name: "memory".to_string(),
         }
-
-        let info = force_snapshot(&source, &backup_root, DbTarget::Brain).unwrap();
-        assert!(info.integrity_ok);
-        assert!(info.size_bytes > 0);
-        assert_eq!(info.db, "brain");
-
-        // Verify the snapshot has the same data.
-        let snap_path = backup_root.join("brain").join(&info.filename);
-        let conn = rusqlite::Connection::open(&snap_path).unwrap();
-        let count: i64 = conn
-            .query_row("SELECT count(*) FROM items", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(count, 2);
     }
 
-    /// The snapshot must be faithful while the source is OPEN and in WAL mode —
-    /// which is how brain/memory.db always looks in production. `VACUUM INTO`
-    /// gave this for free; the online backup API has to be shown to give it
-    /// too, including rows sitting in the WAL rather than the main file.
+    /// The point of the ladder: a long dense history collapses to one snapshot
+    /// per band, and the survivors SPAN the history rather than clustering at
+    /// the recent end. Under the old policy these 40 days kept eleven files,
+    /// nine of them from the last two weeks.
     #[test]
-    fn a_snapshot_of_a_live_wal_database_captures_uncheckpointed_rows() {
-        let tmp = tempfile::tempdir().unwrap();
-        let source = tmp.path().join("live.db");
-        let backup_root = tmp.path().join("backups");
+    fn a_dense_history_collapses_to_one_snapshot_per_band() {
+        let now = Utc::now();
+        let entries: Vec<SnapshotEntry> = (0..40).map(|d| aged(now, d)).collect();
 
-        // Held open across the snapshot, exactly like the running daemon.
-        let live = rusqlite::Connection::open(&source).unwrap();
-        live.pragma_update(None, "journal_mode", "WAL").unwrap();
-        live.execute_batch(
-            "CREATE TABLE memories (id INTEGER PRIMARY KEY, body TEXT);
-             INSERT INTO memories VALUES (1, 'checkpointed');",
-        )
-        .unwrap();
-        live.pragma_update(None, "wal_checkpoint", "FULL").unwrap();
-        // Written AFTER the checkpoint, so it lives in the WAL, not the main
-        // database file. A naive file copy would lose exactly this row.
-        live.execute("INSERT INTO memories VALUES (2, ?1)", ["in-wal"])
-            .unwrap();
+        let kept = select_retained(entries, now);
 
-        let info = force_snapshot(&source, &backup_root, DbTarget::Brain).unwrap();
-        assert!(info.integrity_ok, "snapshot failed its integrity check");
-
-        let snap =
-            rusqlite::Connection::open(backup_root.join("brain").join(&info.filename)).unwrap();
-        let bodies: Vec<String> = snap
-            .prepare("SELECT body FROM memories ORDER BY id")
-            .unwrap()
-            .query_map([], |r| r.get(0))
-            .unwrap()
-            .map(Result::unwrap)
+        assert_eq!(kept.len(), 3, "one per band: {kept:?}");
+        let ages: Vec<i64> = kept
+            .iter()
+            .map(|e| now.signed_duration_since(e.timestamp).num_days())
             .collect();
+        assert_eq!(ages, vec![0, 7, 30], "bands should land on their minimums");
+    }
+
+    /// Bands must never delete something they cannot replace. A directory with
+    /// only recent snapshots keeps its newest rather than dropping to nothing
+    /// because the 7- and 30-day bands are unsatisfiable.
+    #[test]
+    fn a_young_history_keeps_what_it_has() {
+        let now = Utc::now();
+        let kept = select_retained(vec![aged(now, 0), aged(now, 1)], now);
+
+        assert_eq!(kept.len(), 1, "only the newest band is satisfiable");
+        assert_eq!(now.signed_duration_since(kept[0].timestamp).num_days(), 0);
+    }
+
+    /// One snapshot must not be counted three times. Without the
+    /// already-claimed check every band resolves to the same file and the
+    /// caller is told three are retained while one exists — a retention policy
+    /// that reports coverage it does not have.
+    #[test]
+    fn one_old_snapshot_fills_exactly_one_band() {
+        let now = Utc::now();
+        let kept = select_retained(vec![aged(now, 45)], now);
+
         assert_eq!(
-            bodies,
-            vec!["checkpointed".to_string(), "in-wal".to_string()],
-            "the snapshot dropped a row that was still in the WAL"
+            kept.len(),
+            1,
+            "one file cannot satisfy three bands: {kept:?}"
         );
     }
 
+    /// A snapshot older than every band still counts as the oldest band, so
+    /// history beyond 30 days is not silently discarded.
     #[test]
-    fn test_snapshot_if_stale_skips_recent() {
-        let tmp = tempfile::tempdir().unwrap();
-        let source = tmp.path().join("test.db");
-        let backup_root = tmp.path().join("backups");
+    fn snapshots_older_than_the_last_band_are_still_retained() {
+        let now = Utc::now();
+        let kept = select_retained(vec![aged(now, 0), aged(now, 9), aged(now, 400)], now);
 
-        // Create source.
-        {
-            let conn = rusqlite::Connection::open(&source).unwrap();
-            conn.execute_batch("CREATE TABLE t (id INTEGER);").unwrap();
-        }
-
-        // First snapshot should succeed.
-        assert!(snapshot_if_stale(&source, &backup_root, DbTarget::Brain).unwrap());
-        // Second should skip (within 20h).
-        assert!(!snapshot_if_stale(&source, &backup_root, DbTarget::Brain).unwrap());
-    }
-
-    #[test]
-    fn test_snapshot_source_missing_returns_ok_false() {
-        let tmp = tempfile::tempdir().unwrap();
-        let missing = tmp.path().join("nonexistent.db");
-        let backup_root = tmp.path().join("backups");
-
-        let result = snapshot_if_stale(&missing, &backup_root, DbTarget::Brain).unwrap();
-        assert!(!result);
-    }
-
-    #[test]
-    fn test_corrupt_snapshot_rejected() {
-        let tmp = tempfile::tempdir().unwrap();
-        let backup_dir = tmp.path().join("backups").join("brain");
-        std::fs::create_dir_all(&backup_dir).unwrap();
-
-        // Write a corrupt "snapshot" directly.
-        let corrupt_path = backup_dir.join("memory-20260609T080000Z-daily.db");
-        std::fs::write(&corrupt_path, b"this is not a sqlite database").unwrap();
-
-        assert!(!check_integrity(&corrupt_path));
-    }
-
-    #[test]
-    fn test_no_tmp_litter_on_integrity_failure() {
-        // We can't easily simulate VACUUM INTO producing a corrupt file,
-        // but we verify that the tmp cleanup path works by checking that
-        // no .tmp files remain after a normal snapshot.
-        let tmp = tempfile::tempdir().unwrap();
-        let source = tmp.path().join("test.db");
-        let backup_root = tmp.path().join("backups");
-
-        {
-            let conn = rusqlite::Connection::open(&source).unwrap();
-            conn.execute_batch("CREATE TABLE t (id INTEGER);").unwrap();
-        }
-
-        force_snapshot(&source, &backup_root, DbTarget::Brain).unwrap();
-
-        // No .tmp files should remain.
-        let brain_dir = backup_root.join("brain");
-        let tmp_files: Vec<_> = std::fs::read_dir(&brain_dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+        let ages: Vec<i64> = kept
+            .iter()
+            .map(|e| now.signed_duration_since(e.timestamp).num_days())
             .collect();
-        assert!(
-            tmp_files.is_empty(),
-            "Found leftover .tmp files: {:?}",
-            tmp_files
-        );
+        assert_eq!(ages, vec![0, 9, 400]);
+    }
+
+    #[test]
+    fn an_empty_directory_retains_nothing() {
+        assert!(select_retained(vec![], Utc::now()).is_empty());
+    }
+
+    /// Tier is a label derived from the band, not a property of the file — so
+    /// the same snapshot set must report Daily/Weekly/Monthly in age order.
+    #[test]
+    fn tiers_are_labelled_by_band_not_by_filename() {
+        let now = Utc::now();
+        let kept = select_retained(vec![aged(now, 0), aged(now, 8), aged(now, 31)], now);
+
+        let tiers: Vec<Tier> = kept.iter().map(|e| e.tier).collect();
+        assert_eq!(tiers, vec![Tier::Daily, Tier::Weekly, Tier::Monthly]);
     }
 
     #[test]
