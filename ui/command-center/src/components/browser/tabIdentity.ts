@@ -125,3 +125,24 @@ export function bufferEvent(
   if (held.length > MAX_PENDING_EVENTS) held.splice(0, held.length - MAX_PENDING_EVENTS);
   pending.set(webviewId, held);
 }
+
+/**
+ * Whether THIS Browser instance should open a tab for a `browser_new_window_request`.
+ *
+ * Rust denies the native popup and emits globally. Two gates keep that from
+ * either doing nothing useful or opening N tabs:
+ *   1. ownership — only the instance whose tab strip already hosts
+ *      `source_webview_id` may act (Build + detached panes both listen);
+ *   2. placeholder URL — `window.open()` often starts at about:blank; opening
+ *      that as a tab littered the strip with empty "New Tab"s while real
+ *      target=_blank hrefs arrive as absolute http(s) and pass.
+ */
+export function shouldOpenPopupTab(
+  ownedWebviewIds: ReadonlyArray<string | null | undefined>,
+  sourceWebviewId: string,
+  url: string,
+): boolean {
+  if (!sourceWebviewId || !ownedWebviewIds.includes(sourceWebviewId)) return false;
+  if (isPlaceholderUrl(url)) return false;
+  return true;
+}

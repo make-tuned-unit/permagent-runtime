@@ -19,7 +19,9 @@ import {
   applyEvent,
   bufferEvent,
   extractTitle,
+  isPlaceholderUrl,
   replayEvents,
+  shouldOpenPopupTab,
   type PendingEvent,
 } from './tabIdentity';
 import { CHAT_LAUNCHER_MARGIN } from '../chat/ChatLauncher';
@@ -506,6 +508,13 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
     }
   }, [overlayBlocking, syncBounds]);
 
+  // Stable open-URL handle for Tauri event listeners registered in an effect
+  // that must NOT re-subscribe every time handleOpenUrl's identity changes.
+  // Calling a stale closure after a remount is how a popup click can create a
+  // native webview whose setTabs never lands in the live tab strip — the click
+  // then looks like it did nothing.
+  const openUrlRef = useRef<(url: string, label?: string) => Promise<void>>(async () => {});
+
   // Listen for navigation events from Tauri
   useEffect(() => {
     if (!api) return;
@@ -545,11 +554,15 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
       unlistenTitle = fn;
     });
 
-    // Listen for new-window requests (target=_blank, window.open) from child webviews
+    // target=_blank / window.open from a child webview. Rust denies the native
+    // popup and emits here; without this listener the click is a no-op
+    // (WKWebView returns nil from createWebViewWithConfiguration).
     let unlistenNewWindow: (() => void) | null = null;
     api.listen('browser_new_window_request', (e) => {
       const payload = e.payload as { source_webview_id: string; url: string };
-      handleOpenUrl(payload.url);
+      const owned = tabsRef.current.map((t) => t.webviewId);
+      if (!shouldOpenPopupTab(owned, payload.source_webview_id, payload.url)) return;
+      void openUrlRef.current(payload.url);
     }).then((fn) => {
       unlistenNewWindow = fn;
     });
@@ -558,7 +571,10 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
     let unlistenOAuth: (() => void) | null = null;
     api.listen('browser_open_url', (e) => {
       const payload = e.payload as { url: string; oauth?: boolean; provider?: string };
-      handleOpenUrl(payload.url, payload.oauth ? `OAuth: ${payload.provider || ''}` : undefined);
+      void openUrlRef.current(
+        payload.url,
+        payload.oauth ? `OAuth: ${payload.provider || ''}` : undefined,
+      );
     }).then((fn) => {
       unlistenOAuth = fn;
     });
@@ -600,6 +616,7 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
   const handleOpenUrl = useCallback(
     async (url: string, label?: string) => {
       if (!apiRef.current) return;
+      if (isPlaceholderUrl(url)) return;
 
       const rect = containerRef.current?.getBoundingClientRect();
       const tab = createTab();
@@ -628,6 +645,7 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
     },
     [ownerWindowLabel],
   );
+  openUrlRef.current = handleOpenUrl;
 
   // ── Open a URL pushed from elsewhere (chat-link click, agent tour #353) ──
   // Waits for the Tauri API to be ready, opens it in a new tab, then clears the

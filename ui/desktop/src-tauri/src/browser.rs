@@ -205,7 +205,8 @@ struct BrowserTitleChangedPayload {
 /// listener predates this emitter's return — the original emitter (#240,
 /// 9c856568e) lived in the old command-center shell and was deleted with it
 /// (#709), leaving every popup link silently dead. Field name is
-/// `source_webview_id` because that is what Browser.tsx already reads.
+/// `source_webview_id` because that is what Browser.tsx already reads (and
+/// filters on, so a global emit does not open one tab per live Browser).
 #[derive(Clone, Serialize)]
 struct BrowserNewWindowPayload {
     source_webview_id: String,
@@ -238,7 +239,6 @@ pub async fn create_browser_webview(
     let title_app = app.clone();
     let popup_id = label.clone();
     let popup_app = app.clone();
-    let popup_owner = owner.clone();
     // Pending downloads keyed by source URL, carried Requested -> Finished.
     let pending: Arc<Mutex<HashMap<String, PendingInboxDownload>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -305,18 +305,24 @@ pub async fn create_browser_webview(
             );
         })
         // Popups become tabs: deny the native window, hand the URL to the tab
-        // strip. Scoped to the OWNING window (`emit_to`) — a global emit would
-        // open the link once per live Browser instance (BuildView + any
-        // detached pane both run the listener).
+        // strip. Global `emit` (same channel as page_load/title) — `emit_to`
+        // was tried to scope by window, but Browser.tsx listens with the
+        // default `event.listen` target (`Any`), and the ownership filter on
+        // `source_webview_id` is what actually prevents Build + detached
+        // panes from each opening a tab. Matching page_load's emit path keeps
+        // popup delivery on the channel that is known to reach the shell.
         .on_new_window(move |url, _features| {
-            let _ = popup_app.emit_to(
-                popup_owner.as_str(),
+            let _ = popup_app.emit(
                 "browser_new_window_request",
                 BrowserNewWindowPayload {
                     source_webview_id: popup_id.clone(),
                     url: url.to_string(),
                 },
             );
+            // Returning Deny is load-bearing: without a Create/Allow response
+            // WKWebView cancels the navigation, so the emit above is the ONLY
+            // way the URL survives. A missing listener looks like "click did
+            // nothing" — the historical #240 / #709 / #973 failure mode.
             tauri::webview::NewWindowResponse::Deny
         });
 
@@ -985,17 +991,27 @@ mod tests {
         assert!(
             src.contains(concat!("source_", "webview_id")),
             "Browser.tsx reads `source_webview_id` — every other payload uses \
-             `webview_id`, so this mismatch would fail silently."
+             `webview_id`, so this mismatch would fail silently. The frontend \
+             also filters on it so a global emit does not open one tab per \
+             live Browser instance."
         );
         assert!(
             src.contains("NewWindowResponse::Deny"),
             "The native popup window must be denied; the tab strip owns the URL."
         );
+        // Pin global emit (same path as page_load). emit_to was a regressing
+        // alternative: the shell listens with event.listen's default Any
+        // target, and delivery must not depend on window-label matching.
         assert!(
-            src.contains(concat!("emit_", "to(")),
-            "The event must be scoped to the owning window — a global emit \
-             opens the link once per live Browser instance (BuildView + any \
-             detached pane)."
+            src.contains("popup_app.emit("),
+            "Popup routing must use AppHandle::emit like page_load/title — \
+             that is the channel the shell's listen() is proven to receive."
+        );
+        assert!(
+            !src.contains(concat!("emit_", "to(")),
+            "Do not switch popup routing back to emit_to without also changing \
+             the frontend listener to a labeled target (getCurrentWindow).\
+             listen) and updating this guard deliberately."
         );
     }
 
