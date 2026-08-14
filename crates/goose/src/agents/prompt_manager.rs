@@ -231,6 +231,7 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
         let permagent_self_block = crate::agents::self_knowledge::SelfKnowledgeBuilder {
             agent_display_name: display_name.clone(),
             scheduled_job_count: self.scheduled_job_count,
+            flags: crate::agents::self_knowledge::FeatureFlags::from_live_config(),
             dispatchable_workers: self.dispatchable_workers.clone(),
             agent_briefings: self.agent_briefings.clone(),
         }
