@@ -9,7 +9,7 @@ use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
 use crate::agents::tool_execution::ToolCallContext;
 use crate::app_views::{self, AnalyticsWindow};
-use crate::{briefings, cards, projects};
+use crate::{activity_journal, briefings, cards, decisions, projects, scheduler, skills};
 use anyhow::Result as AnyResult;
 use async_trait::async_trait;
 use rmcp::model::{
@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{Pool, Sqlite};
 use std::collections::BTreeMap;
+use std::path::Path;
 use tokio_util::sync::CancellationToken;
 
 pub static EXTENSION_NAME: &str = "app_perception";
@@ -47,6 +48,10 @@ pub const OBSERVABLE_SURFACES: &[&str] = &[
     "briefings",
     "grow",
     "overview",
+    "inbox",
+    "skills",
+    "automate",
+    "trace",
 ];
 const LIST_LIMIT: usize = 5;
 
@@ -61,7 +66,7 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
         what_it_does:
             "You can directly perceive the aggregate data your Permagent home renders by \
              calling observe_app for analytics, projects, goals, cards, spend, sessions, \
-             briefings, grow, or an overview. This is structured local state, not screenshot \
+             briefings, grow, inbox, skills, automate, trace, or an overview. This is structured local state, not screenshot \
              vision and not the website in the Build browser. `grow` returns the growth actions \
              YOU recommended for a project, what you predicted each would move, and how the \
              7/14/28-day sweep judged it — you have no memory of those recommendations, so read \
@@ -78,7 +83,7 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ObserveAppParams {
     /// Room of the app to observe: analytics, projects, goals, cards, spend,
-    /// sessions, briefings, grow, or overview.
+    /// sessions, briefings, grow, inbox, skills, automate, trace, or overview.
     surface: String,
     /// Narrow scope. Required for analytics/cards; optional project name, slug,
     /// or id for goals. Never returned as a raw join id.
@@ -245,7 +250,8 @@ impl AppPerceptionClient {
             .with_instructions(
                 "Read the structured data behind the Permagent app. Use observe_app directly \
                  when the user asks what is happening in analytics, projects, goals/cards, \
-                 spend, sessions, growth actions you have recommended, agent briefings, or the \
+                 spend, sessions, growth actions you have recommended, agent briefings, the \
+                 Decision Inbox, skills, scheduled automations, execution trace, or the \
                  overall home. Do not navigate first \
                  and do not use browser snapshots: browser tools see websites, not this app. \
                  This extension is read-only and returns aggregate answers with bounded lists.",
@@ -726,6 +732,206 @@ impl AppPerceptionClient {
         available("briefings", json!({"briefings": ranked(items, total)}))
     }
 
+    async fn observe_inbox(&self, pool: &Pool<Sqlite>) -> Value {
+        let summary = match decisions::inbox_summary(pool).await {
+            Ok(summary) => summary,
+            Err(e) => return unavailable("inbox", format!("decision inbox query failed: {e}")),
+        };
+        let rows = match decisions::list_open_decisions(pool).await {
+            Ok(rows) => rows,
+            Err(e) => return unavailable("inbox", format!("open decisions query failed: {e}")),
+        };
+        let total = rows.len();
+        let items = rows
+            .into_iter()
+            .take(LIST_LIMIT)
+            .map(|item| {
+                json!({
+                    "headline": safe_text(&item.decision.headline, 120),
+                    "kind": safe_text(&item.decision.kind, 80),
+                    "tier": item.decision.tier,
+                    "goal": item.goal_title.map(|v| safe_text(&v, 160)),
+                    "created_at": safe_text(&item.decision.created_at, 80),
+                })
+            })
+            .collect();
+        let data = json!({
+            "pending": summary.total_pending,
+            "handled": summary.handled_count,
+            "oldest_pending_at": summary.oldest_pending_at.map(|v| safe_text(&v, 80)),
+            "goals_in_flight": summary.goals_in_flight,
+            "goals_needing_attention": summary.goals_needing_attention,
+            "decisions": ranked(items, total),
+        });
+        if total == 0 {
+            empty(
+                "inbox",
+                "query succeeded; there are no open decisions",
+                data,
+            )
+        } else {
+            available("inbox", data)
+        }
+    }
+
+    async fn observe_skills(&self, pool: &Pool<Sqlite>) -> Value {
+        let saved = match skills::list_skills(pool).await {
+            Ok(rows) => rows,
+            Err(e) => return unavailable("skills", format!("saved skills query failed: {e}")),
+        };
+        let proposals = match skills::list_proposals(pool, 2).await {
+            Ok(rows) => rows,
+            Err(e) => return unavailable("skills", format!("skill proposals query failed: {e}")),
+        };
+        let saved_total = saved.len();
+        let proposal_total = proposals.len();
+        let saved_items = saved
+            .into_iter()
+            .take(LIST_LIMIT)
+            .map(|skill| {
+                json!({
+                    "name": safe_text(&skill.name, 120),
+                    "description": skill.description.map(|v| safe_text(&v, 240)),
+                    "tool": skill.tool_used.map(|v| safe_text(&v, 120)),
+                    "status": safe_text(&skill.status, 40),
+                    "trigger_count": skill.trigger_count,
+                    "usage_count": skill.usage_count,
+                    "last_triggered_at": skill.last_triggered_at.map(|v| safe_text(&v, 80)),
+                })
+            })
+            .collect();
+        let proposal_items = proposals
+            .into_iter()
+            .take(LIST_LIMIT)
+            .map(|proposal| {
+                json!({
+                    "tool": safe_text(&proposal.tool_used, 120),
+                    "description": safe_text(&proposal.latest_description, 240),
+                    "occurrence_count": proposal.occurrence_count,
+                })
+            })
+            .collect();
+        let data = json!({
+            "saved": ranked(saved_items, saved_total),
+            "proposed": ranked(proposal_items, proposal_total),
+        });
+        if saved_total + proposal_total == 0 {
+            empty(
+                "skills",
+                "query succeeded; there are no saved or proposed skills",
+                data,
+            )
+        } else {
+            available("skills", data)
+        }
+    }
+
+    async fn observe_automate(&self) -> Value {
+        // Do not call `get_default_scheduler_storage_path`: that helper creates
+        // the parent directory, while perception must remain strictly read-only.
+        let path = crate::config::paths::Paths::data_dir().join("schedule.json");
+        Self::observe_automate_path(&path).await
+    }
+
+    async fn observe_automate_path(path: &Path) -> Value {
+        let raw = match tokio::fs::read_to_string(path).await {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return empty(
+                    "automate",
+                    "query succeeded; no scheduler store exists because no jobs have been created",
+                    json!({"jobs": ranked(Vec::new(), 0)}),
+                );
+            }
+            Err(e) => {
+                return unavailable("automate", format!("could not read scheduler store: {e}"))
+            }
+        };
+        let jobs: Vec<scheduler::ScheduledJob> = match serde_json::from_str(&raw) {
+            Ok(jobs) => jobs,
+            Err(e) => {
+                return unavailable("automate", format!("scheduler store is unreadable: {e}"))
+            }
+        };
+        let total = jobs.len();
+        let failing = jobs
+            .iter()
+            .filter(|job| matches!(job.last_status, Some(scheduler::ScheduleRunStatus::Error)))
+            .count();
+        let missed = jobs
+            .iter()
+            .filter(|job| matches!(job.last_status, Some(scheduler::ScheduleRunStatus::Missed)))
+            .count();
+        let items = jobs
+            .into_iter()
+            .take(LIST_LIMIT)
+            .map(|job| {
+                json!({
+                    "name": safe_text(&job.id, 120),
+                    "cron": safe_text(&job.cron, 120),
+                    "at": job.at.map(|v| v.to_rfc3339()),
+                    "every_seconds": job.every_seconds,
+                    "timezone": job.tz.map(|v| safe_text(&v, 80)),
+                    "last_run": job.last_run.map(|v| v.to_rfc3339()),
+                    "last_status": job.last_status,
+                    "failing": matches!(job.last_status, Some(scheduler::ScheduleRunStatus::Error)),
+                    "missed": matches!(job.last_status, Some(scheduler::ScheduleRunStatus::Missed)),
+                    "paused": job.paused,
+                    "currently_running": job.currently_running,
+                })
+            })
+            .collect();
+        let data = json!({"failing": failing, "missed": missed, "jobs": ranked(items, total)});
+        if total == 0 {
+            empty(
+                "automate",
+                "query succeeded; there are no scheduled jobs",
+                data,
+            )
+        } else {
+            available("automate", data)
+        }
+    }
+
+    async fn observe_trace(&self, pool: &Pool<Sqlite>) -> Value {
+        let rows = match activity_journal::page(pool, None, (LIST_LIMIT + 1) as i64, None, None)
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) => return unavailable("trace", format!("activity journal query failed: {e}")),
+        };
+        let truncated = rows.len() > LIST_LIMIT;
+        let total = if truncated {
+            LIST_LIMIT + 1
+        } else {
+            rows.len()
+        };
+        let items: Vec<Value> = rows
+            .into_iter()
+            .take(LIST_LIMIT)
+            .map(|item| {
+                json!({
+                    "timestamp": safe_text(&item.ts, 80),
+                    "kind": safe_text(&item.kind, 80),
+                    "actor": safe_text(&item.actor, 80),
+                    "title": safe_text(&item.title, 160),
+                    "has_detail": item.detail.is_some(),
+                    "reference_kind": item.ref_kind.map(|v| safe_text(&v, 80)),
+                })
+            })
+            .collect();
+        let trace = json!({"items": items, "returned": total.min(LIST_LIMIT), "total": if truncated { Value::Null } else { Value::from(total) }, "limit": LIST_LIMIT, "truncated": truncated});
+        if total == 0 {
+            empty(
+                "trace",
+                "query succeeded; the activity journal is empty",
+                json!({"activity": trace}),
+            )
+        } else {
+            available("trace", json!({"activity": trace}))
+        }
+    }
+
     async fn observe_overview(&self, pool: &Pool<Sqlite>) -> Value {
         let projects = projects::list_projects(pool, None).await;
         let goals = cards::list_active_goals(pool).await;
@@ -815,6 +1021,10 @@ impl AppPerceptionClient {
             "sessions" => self.observe_sessions(args.window.as_deref()).await,
             "briefings" => self.observe_briefings(&pool).await,
             "grow" => self.observe_grow(&pool, args.scope.as_deref()).await,
+            "inbox" => self.observe_inbox(&pool).await,
+            "skills" => self.observe_skills(&pool).await,
+            "automate" => self.observe_automate().await,
+            "trace" => self.observe_trace(&pool).await,
             "overview" => self.observe_overview(&pool).await,
             _ => {
                 return Err(format!(
@@ -838,7 +1048,7 @@ impl AppPerceptionClient {
             "Read aggregate state from the data behind the Permagent app. Call this directly \
              when asked about analytics, projects, goals/cards, spend, sessions, growth \
              actions you recommended, agent \
-             briefings, or what is happening overall. It does not require navigation and \
+             briefings, Decision Inbox, skills, scheduled automations, execution trace, or what is happening overall. It does not require navigation and \
              never use get_page_snapshot for this job: browser snapshots describe a website, \
              not the Permagent app.\n\n\
              ANALYTICS IS THE USER'S OWN WEBSITE TRAFFIC, not Permagent usage stats. \
@@ -849,7 +1059,7 @@ impl AppPerceptionClient {
              are unavailable. If a project returns no events, say the collector is not \
              installed for it rather than that the data does not exist.\n\n\
              surface: analytics | projects | goals | cards | spend | sessions | briefings | \
-             overview. analytics and cards require scope = project name, slug, or id; goals \
+             grow | inbox | skills | automate | trace | overview. analytics and cards require scope = project name, slug, or id; goals \
              accepts an optional project scope. window supports 7d, 30d, 90d, 365d, or all. \
              The analytics surface returns window totals AND a per-day series (`daily`), so \
              answer day-level questions — which day dipped, whether a campaign spiked — from \
@@ -906,6 +1116,23 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    fn test_client(data_dir: PathBuf) -> AppPerceptionClient {
+        AppPerceptionClient::new(PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: std::sync::Arc::new(crate::session::SessionManager::new(data_dir)),
+            session: None,
+        })
+        .unwrap()
+    }
+
+    async fn memory_pool() -> Pool<Sqlite> {
+        sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap()
+    }
+
     #[test]
     fn parses_only_bounded_windows() {
         assert_eq!(parse_window(Some("30d"), 7).unwrap().1, "30d");
@@ -932,6 +1159,109 @@ mod tests {
         assert_eq!(value["limit"], LIST_LIMIT);
         assert_eq!(value["total"], 54);
         assert_eq!(value["truncated"], true);
+    }
+
+    #[tokio::test]
+    async fn inbox_is_bounded_and_missing_schema_is_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = test_client(dir.path().to_path_buf());
+        let pool = memory_pool().await;
+        assert_eq!(client.observe_inbox(&pool).await["status"], "unavailable");
+        sqlx::query("CREATE TABLE decisions (id TEXT, kind TEXT, goal_id TEXT, project_id TEXT, tier INTEGER, headline TEXT, detail TEXT, payload_json TEXT, rank REAL, status TEXT, answer TEXT, answer_note TEXT, answer_choice_id TEXT, answer_input TEXT, acted_by TEXT, created_at TEXT, resolved_at TEXT)").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE cards (id TEXT, title TEXT, project_id TEXT, card_type TEXT, column_id TEXT, archived_at TEXT, metadata_json TEXT)").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE board_columns (id TEXT, state_binding TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        for i in 0..(LIST_LIMIT + 1) {
+            sqlx::query("INSERT INTO decisions VALUES (?, 'choice', NULL, NULL, 1, ?, 'private detail', '{}', 1, 'open', NULL, NULL, NULL, NULL, NULL, '2026-08-14T00:00:00Z', NULL)")
+                .bind(format!("d{i}")).bind(format!("Decision {i}"))
+                .execute(&pool).await.unwrap();
+        }
+        let value = client.observe_inbox(&pool).await;
+        assert_eq!(value["data"]["decisions"]["returned"], LIST_LIMIT);
+        assert_eq!(value["data"]["decisions"]["truncated"], true);
+        assert!(!value.to_string().contains("private detail"));
+    }
+
+    #[tokio::test]
+    async fn skills_are_bounded_and_missing_schema_is_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = test_client(dir.path().to_path_buf());
+        let pool = memory_pool().await;
+        assert_eq!(client.observe_skills(&pool).await["status"], "unavailable");
+        sqlx::query("CREATE TABLE skills (id TEXT, user_id TEXT, name TEXT, description TEXT, trigger_value TEXT, status TEXT, created_at TEXT)").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE skill_triggers (id TEXT, skill_id TEXT, last_triggered_at TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE skill_executions (id TEXT, skill_id TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE repetition_candidates (tool_used TEXT, argument_shape_hash TEXT, occurrence_count INTEGER, latest_description TEXT, user_id TEXT)").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE skill_dismissals (user_id TEXT, argument_shape_hash TEXT, tool_used TEXT, dismissed_at TEXT)").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE tasks (id TEXT, user_id TEXT, tool_used TEXT, argument_shape_hash TEXT, status TEXT, completed_at TEXT)").execute(&pool).await.unwrap();
+        for i in 0..(LIST_LIMIT + 1) {
+            sqlx::query("INSERT INTO skills VALUES (?, 'default', ?, 'aggregate only', '{}', 'active', '2026-08-14T00:00:00Z')")
+                .bind(format!("s{i}")).bind(format!("Skill {i}"))
+                .execute(&pool).await.unwrap();
+        }
+        let value = client.observe_skills(&pool).await;
+        assert_eq!(value["data"]["saved"]["returned"], LIST_LIMIT);
+        assert_eq!(value["data"]["saved"]["truncated"], true);
+    }
+
+    #[tokio::test]
+    async fn automate_is_bounded_and_unreadable_store_is_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("schedule.json");
+        tokio::fs::write(&path, "not json").await.unwrap();
+        assert_eq!(
+            AppPerceptionClient::observe_automate_path(&path).await["status"],
+            "unavailable"
+        );
+        let jobs: Vec<scheduler::ScheduledJob> = (0..(LIST_LIMIT + 1))
+            .map(|i| scheduler::ScheduledJob {
+                id: format!("Job {i}"),
+                cron: "0 * * * * *".to_string(),
+                last_status: Some(if i == 0 {
+                    scheduler::ScheduleRunStatus::Missed
+                } else {
+                    scheduler::ScheduleRunStatus::Ok
+                }),
+                ..Default::default()
+            })
+            .collect();
+        tokio::fs::write(&path, serde_json::to_vec(&jobs).unwrap())
+            .await
+            .unwrap();
+        let value = AppPerceptionClient::observe_automate_path(&path).await;
+        assert_eq!(value["data"]["jobs"]["returned"], LIST_LIMIT);
+        assert_eq!(value["data"]["jobs"]["truncated"], true);
+        assert_eq!(value["data"]["missed"], 1);
+    }
+
+    #[tokio::test]
+    async fn trace_is_bounded_and_missing_schema_is_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = test_client(dir.path().to_path_buf());
+        let pool = memory_pool().await;
+        assert_eq!(client.observe_trace(&pool).await["status"], "unavailable");
+        sqlx::query("CREATE TABLE activity_journal (id TEXT, ts TEXT, kind TEXT, actor TEXT, title TEXT, detail TEXT, ref_kind TEXT, ref_id TEXT)").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE cards (id TEXT, project_id TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        for i in 0..(LIST_LIMIT + 1) {
+            sqlx::query("INSERT INTO activity_journal VALUES (?, ?, 'task_failed', 'henry', ?, 'private trace detail', NULL, NULL)")
+                .bind(format!("a{i}")).bind(format!("2026-08-14T00:00:0{i}Z")).bind(format!("Activity {i}"))
+                .execute(&pool).await.unwrap();
+        }
+        let value = client.observe_trace(&pool).await;
+        assert_eq!(value["data"]["activity"]["returned"], LIST_LIMIT);
+        assert_eq!(value["data"]["activity"]["truncated"], true);
+        assert!(!value.to_string().contains("private trace detail"));
     }
 
     /// Reproducible acceptance harness for a copied production database.
