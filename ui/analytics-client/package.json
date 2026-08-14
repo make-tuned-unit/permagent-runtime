@@ -1,0 +1,17 @@
+{
+  "name": "@permagent/analytics-client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Batching, retrying trackEvent() client for the Permagent first-party analytics collector. Zero dependencies; browser and Node.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "sideEffects": false
+}

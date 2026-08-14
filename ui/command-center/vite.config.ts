@@ -1,4 +1,9 @@
-import { defineConfig } from 'vite';
+// `vitest/config` rather than `vite` so the `test` block below is typed. The
+// only reason it exists: the shared analytics client lives in a sibling
+// package (ui/analytics-client) and the repo's frontend gates — `npx tsc
+// --noEmit` and `npx vitest run` — are run from here. A shared package that
+// no gate executes is a shared package nobody can trust.
+import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 
 const isTauri = !!process.env.TAURI_ENV_PLATFORM;
@@ -26,5 +31,11 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+  },
+  test: {
+    include: [
+      'src/**/*.{test,spec}.{ts,tsx}',
+      '../analytics-client/src/**/*.{test,spec}.ts',
+    ],
   },
 });
