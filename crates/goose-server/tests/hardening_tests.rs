@@ -122,29 +122,86 @@ mod annotation_parser {
         assert!(parse_structured_description("   \n\n  \t  ").is_none());
     }
 
+    // These boundary cases used `a, b, c, d` / `x, y` as placeholders. Index
+    // cleaning now drops single-character items — one letter cannot
+    // discriminate between memories — so those inputs produced ZERO usable
+    // terms and the count boundary was never actually being tested. Two of
+    // them failed outright; `one_category_rejected` kept passing for the wrong
+    // reason (rejected as noise, not as too-few). Real words restore the
+    // stated intent, and the noise rules get their own tests below.
+
     #[test]
     fn missing_facts_returns_none() {
-        let raw = "TERMS: a, b, c, d\nCATEGORIES: x, y";
+        let raw = "TERMS: alpha, beta, gamma, delta\nCATEGORIES: work, notes";
         assert!(parse_structured_description(raw).is_none());
     }
 
     #[test]
     fn exactly_four_terms_accepted() {
-        let raw = "FACTS: Something happened.\nTERMS: a, b, c, d\nCATEGORIES: x, y";
+        let raw =
+            "FACTS: Something happened.\nTERMS: alpha, beta, gamma, delta\nCATEGORIES: work, notes";
         assert!(parse_structured_description(raw).is_some());
     }
 
     #[test]
     fn exactly_two_categories_accepted() {
-        let raw = "FACTS: Something happened.\nTERMS: a, b, c, d\nCATEGORIES: x, y";
+        let raw =
+            "FACTS: Something happened.\nTERMS: alpha, beta, gamma, delta\nCATEGORIES: work, notes";
         let result = parse_structured_description(raw).unwrap();
-        assert!(result.contains("Categories: x, y."));
+        assert!(result.contains("Categories: work, notes."));
     }
 
     #[test]
     fn one_category_rejected() {
-        let raw = "FACTS: Something happened.\nTERMS: a, b, c, d\nCATEGORIES: x";
+        let raw = "FACTS: Something happened.\nTERMS: alpha, beta, gamma, delta\nCATEGORIES: work";
         assert!(parse_structured_description(raw).is_none());
+    }
+
+    // ── Index-quality rules (2026-08-13: a quantised 30B model padded these
+    //    lists with digits, single letters, and duplicates) ──
+
+    #[test]
+    fn single_character_terms_do_not_count_toward_the_minimum() {
+        // Four "terms", none of which can discriminate anything.
+        let raw = "FACTS: Something happened.\nTERMS: a, b, c, d\nCATEGORIES: work, notes";
+        assert!(parse_structured_description(raw).is_none());
+    }
+
+    #[test]
+    fn bare_numbers_do_not_count_toward_the_minimum() {
+        let raw =
+            "FACTS: A migration ran.\nTERMS: migration, 2733, 19, 41\nCATEGORIES: work, notes";
+        assert!(
+            parse_structured_description(raw).is_none(),
+            "one real term plus three numbers is not four terms"
+        );
+    }
+
+    #[test]
+    fn duplicates_do_not_pad_a_list_to_the_minimum() {
+        let raw =
+            "FACTS: Something happened.\nTERMS: alpha, Alpha, ALPHA, beta\nCATEGORIES: work, notes";
+        assert!(
+            parse_structured_description(raw).is_none(),
+            "case-insensitive duplicates collapse to two distinct terms"
+        );
+    }
+
+    #[test]
+    fn a_long_list_is_capped_without_being_rejected() {
+        let terms = (1..=20)
+            .map(|i| format!("term{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let raw = format!("FACTS: Something happened.\nTERMS: {terms}\nCATEGORIES: work, notes");
+        let result =
+            parse_structured_description(&raw).expect("over-long lists are trimmed, not refused");
+        // Leading terms are the model's most salient, so the cap keeps the head.
+        assert!(result.contains("term1, term2"), "got: {result}");
+        assert!(
+            !result.contains("term11"),
+            "cap of 10 not applied: {result}"
+        );
     }
 
     #[test]

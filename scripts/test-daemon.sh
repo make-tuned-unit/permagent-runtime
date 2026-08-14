@@ -20,8 +20,17 @@
 #      diagnostic"); cargo re-links the dylibs unsigned on every rebuild, so
 #      signing has to happen after the build, every time.
 #
+# Scope: `--lib --tests`, matching what CI runs for this package.
+#
+# It ran `--lib` alone until 2026-08-14, while already BUILDING `--tests` two
+# lines above — so the integration suites in crates/goose-server/tests/ were
+# compiled here and then never executed. A green run reported "589 passed" and
+# read as full daemon coverage; the tests/ directory was not in it, and a
+# librarian change that broke hardening_tests passed this gate and failed CI.
+# A gate whose scope is narrower than it appears is worse than no gate.
+#
 # Usage:
-#   scripts/test-daemon.sh                    # all daemon lib tests
+#   scripts/test-daemon.sh                    # all daemon lib + integration tests
 #   scripts/test-daemon.sh voice::speakable   # filter, as passed to cargo test
 set -euo pipefail
 
@@ -33,7 +42,7 @@ FILTER="${1:-}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   # Only macOS needs the signing dance; elsewhere plain cargo works.
-  exec cargo test -p permagent-daemon --lib ${FILTER:+"$FILTER"}
+  exec cargo test -p permagent-daemon --lib --tests ${FILTER:+"$FILTER"}
 fi
 
 echo "[test-daemon] building test binary…"
@@ -56,4 +65,4 @@ echo "[test-daemon] signed $signed dylib(s)"
 export DYLD_LIBRARY_PATH="$PROFILE_DIR${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
 
 echo "[test-daemon] running tests${FILTER:+ (filter: $FILTER)}"
-exec cargo test -p permagent-daemon --lib ${FILTER:+"$FILTER"}
+exec cargo test -p permagent-daemon --lib --tests ${FILTER:+"$FILTER"}
