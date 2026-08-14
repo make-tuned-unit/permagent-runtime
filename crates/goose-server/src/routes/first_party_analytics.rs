@@ -9,6 +9,10 @@
 //!        setup payload (snippet + coding-agent prompt).
 //!   GET  /api/projects/{id}/analytics/first_party        — status + setup payload
 //!   GET  /api/projects/{id}/analytics/first_party/stats  — ?days=30 aggregates
+//!   GET  /api/projects/{id}/analytics/first_party/funnel — ordered funnel
+//!   GET  /api/projects/{id}/analytics/first_party/step_options — the event
+//!        names and paths this project has actually recorded, so the funnel
+//!        builder offers real steps rather than a guessed list
 //!   POST /collect/{site_key}                             — the beacon endpoint
 //!
 //! The collect endpoint is deliberately **outside** both the bearer middleware
@@ -974,6 +978,106 @@ struct FunnelQuery {
     source: Option<String>,
     /// Optional first-touch medium filter (e.g. `organic`, `aeo`, `social`).
     medium: Option<String>,
+    /// What one "user" IS: `session` (default, first-party session id) or
+    /// `visitor` (daily-rotating device hash). Explicit because the two give
+    /// materially different numbers and a funnel with an unnamed denominator
+    /// cannot be checked by anyone.
+    identity: Option<String>,
+}
+
+/// Query for `/analytics/first_party/step_options`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StepOptionsQuery {
+    days: Option<i64>,
+    include_bots: Option<bool>,
+}
+
+/// The event names and paths this project has ACTUALLY recorded, so the funnel
+/// builder offers real steps.
+///
+/// A hardcoded list of "common" event names is worse than useless here: every
+/// project names its own events (`list_item_added`, `shopping_plan_viewed`,
+/// `cta_click`), and offering names that were never sent produces funnels that
+/// are empty for reasons the user cannot see.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StepOptions {
+    /// Distinct `kind='event'` names, most frequent first.
+    events: Vec<NamedCount>,
+    /// Distinct pageview paths, most frequent first.
+    paths: Vec<NamedCount>,
+    period_days: i64,
+    including_bots: bool,
+}
+
+async fn first_party_step_options(
+    State(state): State<Arc<AppState>>,
+    Path(project_id): Path<String>,
+    Query(q): Query<StepOptionsQuery>,
+) -> Result<Json<StepOptions>, StatusCode> {
+    let (pool, _project) = project_and_pool(&state, &project_id).await?;
+    let days = q.days.unwrap_or(30).clamp(1, 365);
+    let since = format!("-{days} days");
+    let including_bots = q.include_bots.unwrap_or(false);
+    // Fixed fragment chosen from two literals, never user input.
+    let bot_filter = if including_bots {
+        ""
+    } else {
+        " AND is_bot = 0"
+    };
+
+    async fn options(
+        pool: &Pool<Sqlite>,
+        sql: &str,
+        project_id: &str,
+        since: &str,
+    ) -> Vec<NamedCount> {
+        sqlx::query_as::<_, (String, i64)>(sql)
+            .bind(project_id)
+            .bind(since)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(name, count)| NamedCount { name, count })
+            .collect()
+    }
+
+    // 200 is a deliberate ceiling, not a round number: it is far past what any
+    // real site names by hand, and it keeps a runaway autocapture bug from
+    // rendering a dropdown with ten thousand entries.
+    let events = options(
+        &pool,
+        &format!(
+            "SELECT name, count(*) FROM analytics_events
+             WHERE project_id = ?1 AND kind = 'event' AND name IS NOT NULL AND name <> ''
+               AND created_at >= datetime('now', ?2){bot_filter}
+             GROUP BY name ORDER BY count(*) DESC LIMIT 200"
+        ),
+        &project_id,
+        &since,
+    )
+    .await;
+    let paths = options(
+        &pool,
+        &format!(
+            "SELECT path, count(*) FROM analytics_events
+             WHERE project_id = ?1 AND kind = 'pageview'
+               AND created_at >= datetime('now', ?2){bot_filter}
+             GROUP BY path ORDER BY count(*) DESC LIMIT 200"
+        ),
+        &project_id,
+        &since,
+    )
+    .await;
+
+    Ok(Json(StepOptions {
+        events,
+        paths,
+        period_days: days,
+        including_bots,
+    }))
 }
 
 /// Where visitors drop out of a funnel, and what completing it is worth.
@@ -999,30 +1103,30 @@ async fn first_party_funnel(
 
     let days = q.days.unwrap_or(30).clamp(1, 365);
     let since = format!("-{days} days");
-    let bot_filter = if q.include_bots.unwrap_or(false) {
-        ""
-    } else {
-        " AND is_bot = 0"
-    };
+    let include_bots = q.include_bots.unwrap_or(false);
+    let identity = funnel::Identity::parse(q.identity.as_deref().unwrap_or("session"));
 
     // One scan for all steps; the step each row satisfies is resolved in Rust.
-    let sql = format!(
-        "SELECT session_id, kind, path, name, created_at, properties
+    // `is_bot` comes back rather than being filtered in SQL so the bot rows that
+    // WOULD have matched a step can be counted and reported — an excluded row
+    // nobody can see is how a filtered funnel starts reading as a real one.
+    let sql = "SELECT session_id, visitor_hash, kind, path, name, created_at, properties, is_bot
          FROM analytics_events
-         WHERE project_id = ?1 AND created_at >= datetime('now', ?2){bot_filter}
-         ORDER BY created_at"
-    );
+         WHERE project_id = ?1 AND created_at >= datetime('now', ?2)
+         ORDER BY created_at";
     let rows = sqlx::query_as::<
         _,
         (
             Option<String>,
+            Option<String>,
             String,
             String,
             Option<String>,
             String,
             Option<String>,
+            i64,
         ),
-    >(&sql)
+    >(sql)
     .bind(&project_id)
     .bind(&since)
     .fetch_all(&pool)
@@ -1031,13 +1135,8 @@ async fn first_party_funnel(
 
     // First-touch source/medium per session — same map as Traffic sources —
     // so funnels can slice by traffic source for every drained project.
-    let traffic = attribution::rollup_traffic_sources(
-        &pool,
-        &project_id,
-        &since,
-        q.include_bots.unwrap_or(false),
-    )
-    .await;
+    let traffic =
+        attribution::rollup_traffic_sources(&pool, &project_id, &since, include_bots).await;
     let allowed = attribution::sessions_matching(
         &traffic.by_session,
         q.source.as_deref(),
@@ -1046,9 +1145,9 @@ async fn first_party_funnel(
 
     let value_key = q.value_key.unwrap_or_else(|| "value".to_string());
     let mut touches = Vec::new();
-    let mut excluded_sessionless: u64 = 0;
+    let mut excluded = funnel::Excluded::default();
 
-    for (session_id, kind, path, name, created_at, properties) in rows {
+    for (session_id, visitor_hash, kind, path, name, created_at, properties, is_bot) in rows {
         let matched = steps.iter().position(|s| match s {
             funnel::Step::Path { value } => kind == "pageview" && &path == value,
             funnel::Step::Event { value } => {
@@ -1056,35 +1155,49 @@ async fn first_party_funnel(
             }
         });
         let Some(step_index) = matched else { continue };
-        // Only count a sessionless row against the exclusion if it would
-        // otherwise have mattered — counting every unrelated pageview would
-        // make the figure meaningless as a confidence signal.
-        let Some(session_id) = session_id else {
-            excluded_sessionless += 1;
+        // Counted only for rows that would OTHERWISE have mattered — tallying
+        // every unrelated pageview would make both exclusion figures useless as
+        // confidence signals.
+        if is_bot != 0 && !include_bots {
+            excluded.bots += 1;
+            continue;
+        }
+        let id = match identity {
+            funnel::Identity::Session => session_id.clone(),
+            funnel::Identity::Visitor => visitor_hash,
+        };
+        let Some(id) = id else {
+            excluded.no_identity += 1;
             continue;
         };
+        // Traffic-source attribution is keyed by SESSION, so it can only filter
+        // rows that have one — regardless of which identity sequences the funnel.
         if let Some(ref allow) = allowed {
-            if !allow.contains(&session_id) {
-                continue;
+            match session_id {
+                Some(ref s) if allow.contains(s) => {}
+                _ => continue,
             }
         }
         let value = properties
             .as_deref()
             .and_then(|p| serde_json::from_str::<serde_json::Value>(p).ok())
             .and_then(|v| v.get(&value_key).and_then(|n| n.as_f64()));
+        // Timestamps are stored RFC3339 (both `…Z` and `…+00:00` appear, from
+        // direct collect and from drained relays). An unparseable one costs the
+        // time-between-steps figure for that row, never its place in the order.
+        let at_ms = chrono::DateTime::parse_from_rfc3339(&created_at)
+            .ok()
+            .map(|dt| dt.timestamp_millis());
         touches.push(funnel::Touch {
-            session_id,
+            identity: id,
             step_index,
             at: created_at,
+            at_ms,
             value,
         });
     }
 
-    Ok(Json(funnel::compute(
-        &steps,
-        &touches,
-        excluded_sessionless,
-    )))
+    Ok(Json(funnel::compute(&steps, &touches, excluded, identity)))
 }
 
 async fn first_party_stats(
@@ -1731,6 +1844,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
             get(first_party_funnel),
         )
         .route(
+            "/api/projects/{project_id}/analytics/first_party/step_options",
+            get(first_party_step_options),
+        )
+        .route(
             "/api/projects/{project_id}/analytics/first_party/drain",
             post(set_drain),
         )
@@ -2140,5 +2257,336 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    /// Insert a row the way a drained relay does — full control over identity,
+    /// timestamp and bot flag, which the beacon path deliberately does not give.
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_event(
+        pool: &Pool<Sqlite>,
+        project_id: &str,
+        kind: &str,
+        path: &str,
+        name: Option<&str>,
+        session: Option<&str>,
+        visitor: &str,
+        at: &str,
+        is_bot: i64,
+    ) {
+        sqlx::query(
+            "INSERT INTO analytics_events
+               (project_id, kind, path, name, visitor_hash, session_id, created_at, is_bot)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )
+        .bind(project_id)
+        .bind(kind)
+        .bind(path)
+        .bind(name)
+        .bind(visitor)
+        .bind(session)
+        .bind(at)
+        .bind(is_bot)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// Timestamps are derived from ONE base instant, not from `now()` per row:
+    /// two `Utc::now()` calls are microseconds apart, and a 20.0003-second gap
+    /// would make every median assertion below flaky rather than exact.
+    fn stamp(base: chrono::DateTime<chrono::Utc>, plus_seconds: i64) -> String {
+        (base + chrono::Duration::seconds(plus_seconds))
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string()
+    }
+
+    /// The builder's dropdown must come from what this project ACTUALLY sent —
+    /// a hardcoded list of "common" event names produces funnels that are empty
+    /// for reasons the user cannot see.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn step_options_come_from_real_rows_and_exclude_bots() {
+        let root = crate::test_support::test_root();
+        let home = tempfile::tempdir().unwrap();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(home.path().to_str().unwrap())),
+            ("PERMAGENT_PATH_ROOT", Some(root.to_str().unwrap())),
+        ]);
+        let (app, _collect_app, pool, _state) = test_app().await;
+        let project = seed_project(&pool, "fp-step-options").await;
+        // One base instant for every row in this test — see `stamp`.
+        let base = chrono::Utc::now() - chrono::Duration::minutes(60);
+
+        for i in 0..3 {
+            insert_event(
+                &pool,
+                &project.id,
+                "event",
+                "/p",
+                Some("cta_click"),
+                Some(&format!("s{i}")),
+                &format!("v{i}"),
+                &stamp(base, i),
+                0,
+            )
+            .await;
+        }
+        insert_event(
+            &pool,
+            &project.id,
+            "event",
+            "/p",
+            Some("rare_event"),
+            Some("s9"),
+            "v9",
+            &stamp(base, 9),
+            0,
+        )
+        .await;
+        insert_event(
+            &pool,
+            &project.id,
+            "pageview",
+            "/pricing",
+            None,
+            Some("s1"),
+            "v1",
+            &stamp(base, 60),
+            0,
+        )
+        .await;
+        // A crawler's event name must not be offered as a funnel step.
+        insert_event(
+            &pool,
+            &project.id,
+            "event",
+            "/p",
+            Some("bot_only_event"),
+            Some("sb"),
+            "vb",
+            &stamp(base, 120),
+            1,
+        )
+        .await;
+
+        let (status, opts) = request(
+            &app,
+            "GET",
+            &format!(
+                "/api/projects/{}/analytics/first_party/step_options",
+                project.id
+            ),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let events = opts["events"].as_array().unwrap();
+        // Ordered by frequency, so the step people mean is the first one offered.
+        assert_eq!(events[0]["name"], serde_json::json!("cta_click"));
+        assert_eq!(events[0]["count"], serde_json::json!(3));
+        let names: Vec<&str> = events.iter().map(|e| e["name"].as_str().unwrap()).collect();
+        assert!(names.contains(&"rare_event"));
+        assert!(
+            !names.contains(&"bot_only_event"),
+            "bot rows are excluded by default: {names:?}"
+        );
+        assert_eq!(opts["paths"][0]["name"], serde_json::json!("/pricing"));
+        assert_eq!(opts["includingBots"], serde_json::json!(false));
+    }
+
+    /// The funnel's numbers have to say what they count and what they left out.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn funnel_counts_by_identity_excludes_bots_and_times_the_median_gap() {
+        let root = crate::test_support::test_root();
+        let home = tempfile::tempdir().unwrap();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(home.path().to_str().unwrap())),
+            ("PERMAGENT_PATH_ROOT", Some(root.to_str().unwrap())),
+        ]);
+        let (app, _collect_app, pool, _state) = test_app().await;
+        let project = seed_project(&pool, "fp-funnel-identity").await;
+        // One base instant for every row in this test — see `stamp`.
+        let base = chrono::Utc::now() - chrono::Duration::minutes(60);
+
+        // Three sessions walk /pricing → cta_click, taking 10s, 20s and 600s.
+        // Mean: 210s, a wait no visitor had. Median: 20s.
+        for (i, gap) in [10i64, 20, 600].iter().enumerate() {
+            let s = format!("s{i}");
+            let v = format!("v{i}");
+            insert_event(
+                &pool,
+                &project.id,
+                "pageview",
+                "/pricing",
+                None,
+                Some(&s),
+                &v,
+                &stamp(base, 0),
+                0,
+            )
+            .await;
+            insert_event(
+                &pool,
+                &project.id,
+                "event",
+                "/pricing",
+                Some("cta_click"),
+                Some(&s),
+                &v,
+                &stamp(base, *gap),
+                0,
+            )
+            .await;
+        }
+        // A crawler that walked the whole funnel. Counting it inflates every step.
+        insert_event(
+            &pool,
+            &project.id,
+            "pageview",
+            "/pricing",
+            None,
+            Some("sbot"),
+            "vbot",
+            &stamp(base, 60),
+            1,
+        )
+        .await;
+        insert_event(
+            &pool,
+            &project.id,
+            "event",
+            "/pricing",
+            Some("cta_click"),
+            Some("sbot"),
+            "vbot",
+            &stamp(base, 80),
+            1,
+        )
+        .await;
+        // A relay that never sent session ids: sequenceable by visitor, not by
+        // session. Same 20s gap, so it cannot move the median either way.
+        insert_event(
+            &pool,
+            &project.id,
+            "pageview",
+            "/pricing",
+            None,
+            None,
+            "vnosession",
+            &stamp(base, 120),
+            0,
+        )
+        .await;
+        insert_event(
+            &pool,
+            &project.id,
+            "event",
+            "/pricing",
+            Some("cta_click"),
+            None,
+            "vnosession",
+            &stamp(base, 140),
+            0,
+        )
+        .await;
+
+        let uri = |identity: &str| {
+            format!(
+                "/api/projects/{}/analytics/first_party/funnel?steps={}&identity={identity}",
+                project.id, "path:/pricing,event:cta_click"
+            )
+        };
+
+        let (status, f) = request(&app, "GET", &uri("session"), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(f["identity"], serde_json::json!("session"));
+        assert_eq!(f["steps"][0]["sessions"], serde_json::json!(3));
+        assert_eq!(f["steps"][1]["sessions"], serde_json::json!(3));
+        // Median, not mean: 20s, not 210s.
+        assert_eq!(
+            f["steps"][1]["medianSecondsFromPrev"],
+            serde_json::json!(20.0)
+        );
+        assert_eq!(
+            f["steps"][0]["medianSecondsFromPrev"],
+            serde_json::json!(null)
+        );
+        // Both exclusions travel with the numbers they shaped.
+        assert_eq!(f["excludedBots"], serde_json::json!(2));
+        assert_eq!(f["excludedNoIdentity"], serde_json::json!(2));
+        assert_eq!(f["conversionRate"], serde_json::json!(1.0));
+
+        // Counting visitors instead: the sessionless rows can now be sequenced,
+        // so the funnel is one identity wider and nothing is excluded for want
+        // of an id. Same denominator question, different — and stated — answer.
+        let (status, f) = request(&app, "GET", &uri("visitor"), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(f["identity"], serde_json::json!("visitor"));
+        assert_eq!(f["steps"][0]["sessions"], serde_json::json!(4));
+        assert_eq!(f["steps"][1]["sessions"], serde_json::json!(4));
+        assert_eq!(f["excludedNoIdentity"], serde_json::json!(0));
+        assert_eq!(
+            f["steps"][1]["medianSecondsFromPrev"],
+            serde_json::json!(20.0)
+        );
+    }
+
+    /// Order is what separates a funnel from a bar chart.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn funnel_refuses_to_credit_a_step_reached_out_of_order() {
+        let root = crate::test_support::test_root();
+        let home = tempfile::tempdir().unwrap();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(home.path().to_str().unwrap())),
+            ("PERMAGENT_PATH_ROOT", Some(root.to_str().unwrap())),
+        ]);
+        let (app, _collect_app, pool, _state) = test_app().await;
+        let project = seed_project(&pool, "fp-funnel-order").await;
+        // One base instant for every row in this test — see `stamp`.
+        let base = chrono::Utc::now() - chrono::Duration::minutes(60);
+
+        // Landed on the confirmation first (a bookmark), saw pricing after.
+        insert_event(
+            &pool,
+            &project.id,
+            "event",
+            "/thanks",
+            Some("purchase"),
+            Some("s1"),
+            "v1",
+            &stamp(base, 0),
+            0,
+        )
+        .await;
+        insert_event(
+            &pool,
+            &project.id,
+            "pageview",
+            "/pricing",
+            None,
+            Some("s1"),
+            "v1",
+            &stamp(base, 60),
+            0,
+        )
+        .await;
+
+        let (status, f) = request(
+            &app,
+            "GET",
+            &format!(
+                "/api/projects/{}/analytics/first_party/funnel?steps={}",
+                project.id, "path:/pricing,event:purchase"
+            ),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(f["steps"][0]["sessions"], serde_json::json!(1));
+        // A GROUP BY name would report 1 here and a 100% conversion rate.
+        assert_eq!(f["steps"][1]["sessions"], serde_json::json!(0));
+        assert_eq!(f["conversionRate"], serde_json::json!(0.0));
     }
 }
