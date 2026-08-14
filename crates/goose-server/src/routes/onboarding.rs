@@ -130,15 +130,7 @@ mod tests {
         /// An entry here is a promise not kept, not a design decision — the
         /// agent cannot answer questions about these surfaces from its own
         /// data, and will either say so or, worse, guess.
-        const NOT_YET_OBSERVABLE: &[(&str, &str)] = &[
-            (
-                "build",
-                "coding sessions + browser state have no aspect yet",
-            ),
-            ("brain", "memory/recall state has no aspect yet"),
-            ("world", "world-view worker state has no aspect yet"),
-            ("settings", "configuration state has no aspect yet"),
-        ];
+        const NOT_YET_OBSERVABLE: &[(&str, &str)] = &[];
 
         let catalog = crate::app_catalog::init();
         let observable: std::collections::HashSet<String> = OBSERVABLE_SURFACES

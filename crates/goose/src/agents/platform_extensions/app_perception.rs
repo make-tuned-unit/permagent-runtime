@@ -47,6 +47,10 @@ pub const OBSERVABLE_SURFACES: &[&str] = &[
     "sessions",
     "briefings",
     "grow",
+    "brain",
+    "build",
+    "world",
+    "settings",
     "overview",
     "inbox",
     "skills",
@@ -66,11 +70,16 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
         what_it_does:
             "You can directly perceive the aggregate data your Permagent home renders by \
              calling observe_app for analytics, projects, goals, cards, spend, sessions, \
-             briefings, grow, inbox, skills, automate, trace, or an overview. This is structured local state, not screenshot \
-             vision and not the website in the Build browser. `grow` returns the growth actions \
-             YOU recommended for a project, what you predicted each would move, and how the \
-             7/14/28-day sweep judged it — you have no memory of those recommendations, so read \
-             them rather than saying you do not know",
+             briefings, grow, inbox, skills, automate, trace, brain, build, world, settings, \
+             or an overview. This is structured local state, not screenshot vision and not the \
+             website in the Build browser. \
+             `grow` returns the growth actions YOU recommended for a project, what you predicted \
+             each would move, and how the 7/14/28-day sweep judged it — you have no memory of \
+             those recommendations, so read them rather than saying you do not know. `brain` is \
+             memory counts, recall health, and librarian schedule/phase — never memory contents. \
+             `build` is coding-session summaries and the in-app browser bookmarks/tab sets. \
+             `world` is the worker roster and availability. `settings` is which providers and \
+             extensions are configured/enabled — never secret values, only whether a key is present",
         why_it_matters:
             "Treat the app as your home: answer questions about what is happening here from \
              observe_app without navigating, taking screenshots, or calling browser page tools. \
@@ -83,7 +92,8 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ObserveAppParams {
     /// Room of the app to observe: analytics, projects, goals, cards, spend,
-    /// sessions, briefings, grow, inbox, skills, automate, trace, or overview.
+    /// sessions, briefings, grow, inbox, skills, automate, trace, brain,
+    /// build, world, settings, or overview.
     surface: String,
     /// Narrow scope. Required for analytics/cards; optional project name, slug,
     /// or id for goals. Never returned as a raw join id.
@@ -171,6 +181,190 @@ fn ranked(items: Vec<Value>, total: usize) -> Value {
     })
 }
 
+fn brain_db_path() -> std::path::PathBuf {
+    crate::config::paths::Paths::brain_dir().join("memory.db")
+}
+
+fn open_brain_db_readonly() -> Result<rusqlite::Connection, String> {
+    let db_path = brain_db_path();
+    if !db_path.exists() {
+        return Err("Brain memory database is not available on disk".to_string());
+    }
+    rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| format!("could not open Brain memory database: {e}"))
+}
+
+fn table_has_column(conn: &rusqlite::Connection, table: &str, column: &str) -> bool {
+    let Ok(mut stmt) = conn.prepare(&format!("PRAGMA table_info({table})")) else {
+        return false;
+    };
+    let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(1)) else {
+        return false;
+    };
+    let found = rows.flatten().any(|name| name == column);
+    found
+}
+
+/// Aggregate memory counts only — never row contents. Missing DB is an error;
+/// a present empty table is a successful zero.
+fn query_memory_counts(conn: &rusqlite::Connection) -> Result<(usize, usize), String> {
+    let total: usize = conn
+        .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
+        .map_err(|e| format!("memory count query failed: {e}"))?;
+    let described = if table_has_column(conn, "memories", "description") {
+        conn.query_row(
+            "SELECT COUNT(*) FROM memories WHERE description IS NOT NULL AND description != ''",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| format!("described memory count query failed: {e}"))?
+    } else {
+        0
+    };
+    Ok((total, described))
+}
+
+fn load_librarian_schedule_summary() -> Value {
+    let path = crate::config::paths::Paths::in_data_dir("librarian_schedule.json");
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => match serde_json::from_str::<Value>(&contents) {
+            Ok(schedule) => {
+                let enabled = schedule
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                let start = schedule
+                    .get("start_time")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("02:00");
+                let duration = schedule
+                    .get("duration_minutes")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(240);
+                let model = schedule
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("qwen2.5:7b");
+                json!({
+                    "status": "available",
+                    "enabled": enabled,
+                    "start_time": safe_text(start, 16),
+                    "duration_minutes": duration,
+                    "model": safe_text(model, 64)
+                })
+            }
+            Err(e) => json!({
+                "status": "unavailable",
+                "reason": safe_text(&format!("librarian schedule file is malformed: {e}"), 200)
+            }),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({
+            "status": "available",
+            "enabled": true,
+            "start_time": "02:00",
+            "duration_minutes": 240,
+            "model": "qwen2.5:7b",
+            "note": "no schedule file yet; using Librarian defaults"
+        }),
+        Err(e) => json!({
+            "status": "unavailable",
+            "reason": safe_text(&format!("could not read librarian schedule: {e}"), 200)
+        }),
+    }
+}
+
+async fn query_recall_health(pool: &Pool<Sqlite>) -> Value {
+    // recognition_events lives in the session DB (instrumentation), not memory.db.
+    // A missing table is "could not read" — not the same as zero recalls.
+    let table_ok: Result<bool, sqlx::Error> = sqlx::query_scalar(
+        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = 'recognition_events'",
+    )
+    .fetch_one(pool)
+    .await;
+    match table_ok {
+        Ok(false) => {
+            return json!({
+                "status": "unavailable",
+                "reason": "recognition_events table is not present in the session database"
+            })
+        }
+        Err(e) => {
+            return json!({
+                "status": "unavailable",
+                "reason": safe_text(&format!("could not check recognition_events: {e}"), 200)
+            })
+        }
+        Ok(true) => {}
+    }
+
+    let cutoff = (chrono::Utc::now() - chrono::Duration::days(7))
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string();
+    let events_7d: Result<i64, sqlx::Error> =
+        sqlx::query_scalar("SELECT COUNT(*) FROM recognition_events WHERE retrieved_at >= ?")
+            .bind(&cutoff)
+            .fetch_one(pool)
+            .await;
+    let with_outcome: Result<i64, sqlx::Error> = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM recognition_events
+          WHERE retrieved_at >= ?
+            AND outcome_label IS NOT NULL",
+    )
+    .bind(&cutoff)
+    .fetch_one(pool)
+    .await;
+    match (events_7d, with_outcome) {
+        (Ok(events), Ok(labeled)) => {
+            if events == 0 {
+                json!({
+                    "status": "empty",
+                    "window": "7d",
+                    "events": 0,
+                    "with_outcome_label": 0,
+                    "reason": "query succeeded; no recall events in this window"
+                })
+            } else {
+                json!({
+                    "status": "available",
+                    "window": "7d",
+                    "events": events,
+                    "with_outcome_label": labeled
+                })
+            }
+        }
+        (Err(e), _) | (_, Err(e)) => json!({
+            "status": "unavailable",
+            "reason": safe_text(&format!("recall health query failed: {e}"), 200)
+        }),
+    }
+}
+
+fn read_json_file_or_default<T: Default + serde::de::DeserializeOwned>(
+    path: &std::path::Path,
+) -> Result<T, String> {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => serde_json::from_str(&contents)
+            .map_err(|e| format!("could not parse {}: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
+        Err(e) => Err(format!("could not read {}: {e}", path.display())),
+    }
+}
+
+fn config_key_present(name: &str, secret: bool) -> bool {
+    let config = crate::config::Config::global();
+    if std::env::var(name).is_ok() {
+        return true;
+    }
+    if secret {
+        config.get_secret::<serde_json::Value>(name).is_ok()
+    } else {
+        config.get_param::<serde_json::Value>(name).is_ok() || config.get(name, false).is_ok()
+    }
+}
+
 fn analytics_ranked(counts: &app_views::RankedCounts, name_key: &str, count_key: &str) -> Value {
     let items: Vec<Value> = counts
         .items
@@ -251,8 +445,9 @@ impl AppPerceptionClient {
                 "Read the structured data behind the Permagent app. Use observe_app directly \
                  when the user asks what is happening in analytics, projects, goals/cards, \
                  spend, sessions, growth actions you have recommended, agent briefings, the \
-                 Decision Inbox, skills, scheduled automations, execution trace, or the \
-                 overall home. Do not navigate first \
+                 Decision Inbox, skills, scheduled automations, execution trace, brain memory \
+                 health, build coding sessions or browser bookmarks, world workers, settings \
+                 configuration, or the overall home. Do not navigate first \
                  and do not use browser snapshots: browser tools see websites, not this app. \
                  This extension is read-only and returns aggregate answers with bounded lists.",
             );
@@ -932,6 +1127,490 @@ impl AppPerceptionClient {
         }
     }
 
+    /// Memory system health — counts, recall instrumentation, Librarian phase.
+    ///
+    /// Added so the agent can answer "is my brain working / how big is memory /
+    /// is the librarian catching up" without browsing the Brain tab or dumping
+    /// memory contents into the conversation (tool output persists forever).
+    async fn observe_brain(&self, pool: &Pool<Sqlite>) -> Value {
+        let mut partial = false;
+
+        let memories = match open_brain_db_readonly() {
+            Ok(conn) => match query_memory_counts(&conn) {
+                Ok((total, described)) => {
+                    if total == 0 {
+                        json!({
+                            "status": "empty",
+                            "total": 0,
+                            "described": 0,
+                            "pending": 0,
+                            "reason": "query succeeded; Brain has no memories yet"
+                        })
+                    } else {
+                        json!({
+                            "status": "available",
+                            "total": total,
+                            "described": described,
+                            "pending": total.saturating_sub(described)
+                        })
+                    }
+                }
+                Err(e) => {
+                    partial = true;
+                    json!({
+                        "status": "unavailable",
+                        "total": null,
+                        "described": null,
+                        "pending": null,
+                        "reason": safe_text(&e, 200)
+                    })
+                }
+            },
+            Err(e) => {
+                partial = true;
+                json!({
+                    "status": "unavailable",
+                    "total": null,
+                    "described": null,
+                    "pending": null,
+                    "reason": safe_text(&e, 200)
+                })
+            }
+        };
+
+        let recall = query_recall_health(pool).await;
+        if recall.get("status").and_then(|s| s.as_str()) == Some("unavailable") {
+            partial = true;
+        }
+
+        let librarian_rt = super::librarian_state::get_state();
+        let phase = match librarian_rt.phase {
+            super::librarian_state::LibrarianPhase::Idle => "idle",
+            super::librarian_state::LibrarianPhase::Warming => "warming",
+            super::librarian_state::LibrarianPhase::Describing => "describing",
+            super::librarian_state::LibrarianPhase::BatchComplete => "batch_complete",
+            super::librarian_state::LibrarianPhase::Error => "error",
+        };
+        let schedule = load_librarian_schedule_summary();
+        if schedule.get("status").and_then(|s| s.as_str()) == Some("unavailable") {
+            partial = true;
+        }
+        let librarian = json!({
+            "phase": phase,
+            "current_task": safe_text(&librarian_rt.current_task, 160),
+            "entities_awaiting_context": librarian_rt.entities_awaiting_context,
+            "lifetime": {
+                "total": librarian_rt.lifetime_stats.total_memories,
+                "described": librarian_rt.lifetime_stats.described,
+                "pending": librarian_rt.lifetime_stats.pending
+            },
+            "session_described": librarian_rt.session_stats.memories_described_this_session,
+            "schedule": schedule
+            // Deliberately omit current_memory content_preview — that is a
+            // memory dump, and this aspect never dumps memory contents.
+        });
+
+        let memories_empty = memories.get("status").and_then(|s| s.as_str()) == Some("empty");
+        let status = if partial {
+            "partial"
+        } else if memories_empty {
+            "empty"
+        } else {
+            "available"
+        };
+
+        json!({
+            "surface": "brain",
+            "status": status,
+            "queried": true,
+            "data": {
+                "memories": memories,
+                "recall": recall,
+                "librarian": librarian
+            }
+        })
+    }
+
+    /// Coding-session memory + Build-tab browser bookmarks/tab sets.
+    ///
+    /// The Build tab is where the user codes and browses; without this aspect
+    /// the agent could not answer "what have I been building" or "what is
+    /// bookmarked in the in-app browser" from local state.
+    async fn observe_build(&self) -> Value {
+        let mut partial = false;
+
+        let coding_sessions = match open_brain_db_readonly() {
+            Ok(conn) => {
+                let has_source = table_has_column(&conn, "memories", "source");
+                let count_sql = if has_source {
+                    "SELECT COUNT(*) FROM memories WHERE source = 'coding-session' OR key LIKE 'coding-session-%'"
+                } else {
+                    "SELECT COUNT(*) FROM memories WHERE key LIKE 'coding-session-%'"
+                };
+                let total: Result<usize, _> = conn.query_row(count_sql, [], |r| r.get(0));
+                match total {
+                    Ok(0) => json!({
+                        "status": "empty",
+                        "sessions": ranked(Vec::new(), 0),
+                        "reason": "query succeeded; no coding-session memories stored yet"
+                    }),
+                    Ok(total) => {
+                        let has_created = table_has_column(&conn, "memories", "created_at");
+                        let list_sql = match (has_source, has_created) {
+                            (true, true) => {
+                                "SELECT key, created_at FROM memories
+                                  WHERE source = 'coding-session' OR key LIKE 'coding-session-%'
+                                  ORDER BY created_at DESC LIMIT ?1"
+                            }
+                            (true, false) => {
+                                "SELECT key, NULL FROM memories
+                                  WHERE source = 'coding-session' OR key LIKE 'coding-session-%'
+                                  ORDER BY rowid DESC LIMIT ?1"
+                            }
+                            (false, true) => {
+                                "SELECT key, created_at FROM memories
+                                  WHERE key LIKE 'coding-session-%'
+                                  ORDER BY created_at DESC LIMIT ?1"
+                            }
+                            (false, false) => {
+                                "SELECT key, NULL FROM memories
+                                  WHERE key LIKE 'coding-session-%'
+                                  ORDER BY rowid DESC LIMIT ?1"
+                            }
+                        };
+                        let mut items = Vec::new();
+                        match conn.prepare(list_sql).and_then(|mut stmt| {
+                            let rows = stmt.query_map([LIST_LIMIT as i64], |row| {
+                                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                            })?;
+                            for row in rows.flatten() {
+                                let (key, created_at) = row;
+                                // key shape: coding-session-{project}-{stamp}
+                                let project = key
+                                    .strip_prefix("coding-session-")
+                                    .and_then(|rest| rest.rsplit_once('-'))
+                                    .map(|(project, _)| project)
+                                    .unwrap_or("unknown");
+                                items.push(json!({
+                                    "project": safe_text(project, 80),
+                                    "created_at": created_at.map(|s| safe_text(&s, 40)),
+                                    // Keys are opaque ids; do not echo full keys.
+                                    "has_summary": true
+                                }));
+                            }
+                            Ok(())
+                        }) {
+                            Ok(()) => json!({
+                                "status": "available",
+                                "sessions": ranked(items, total)
+                            }),
+                            Err(e) => {
+                                partial = true;
+                                json!({
+                                    "status": "unavailable",
+                                    "sessions": null,
+                                    "reason": safe_text(
+                                        &format!("coding-session list query failed: {e}"),
+                                        200
+                                    )
+                                })
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        partial = true;
+                        json!({
+                            "status": "unavailable",
+                            "sessions": null,
+                            "reason": safe_text(
+                                &format!("coding-session count query failed: {e}"),
+                                200
+                            )
+                        })
+                    }
+                }
+            }
+            Err(e) => {
+                partial = true;
+                json!({
+                    "status": "unavailable",
+                    "sessions": null,
+                    "reason": safe_text(&e, 200)
+                })
+            }
+        };
+
+        let bookmarks_path = crate::config::paths::Paths::in_data_dir("browser_bookmarks.json");
+        let tab_sets_path = crate::config::paths::Paths::in_data_dir("browser_tab_sets.json");
+
+        let browser = match (
+            read_json_file_or_default::<Value>(&bookmarks_path),
+            read_json_file_or_default::<Value>(&tab_sets_path),
+        ) {
+            (Ok(bookmarks_file), Ok(tab_sets_file)) => {
+                let bookmarks = bookmarks_file
+                    .get("bookmarks")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                let tab_sets = tab_sets_file
+                    .get("tabSets")
+                    .or_else(|| tab_sets_file.get("tab_sets"))
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                let bookmark_total = bookmarks.len();
+                let bookmark_items: Vec<Value> = bookmarks
+                    .into_iter()
+                    .take(LIST_LIMIT)
+                    .map(|b| {
+                        json!({
+                            "title": safe_text(
+                                b.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+                                80
+                            ),
+                            // Host only — full URLs are private browsing state.
+                            "host": b.get("url").and_then(|v| v.as_str()).and_then(|u| {
+                                url::Url::parse(u).ok().and_then(|parsed| {
+                                    parsed.host_str().map(|h| safe_text(h, 80))
+                                })
+                            })
+                        })
+                    })
+                    .collect();
+                let set_total = tab_sets.len();
+                let set_items: Vec<Value> = tab_sets
+                    .into_iter()
+                    .take(LIST_LIMIT)
+                    .map(|s| {
+                        json!({
+                            "name": safe_text(
+                                s.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                                80
+                            ),
+                            "tab_count": s.get("tabs").and_then(|v| v.as_array()).map(|t| t.len()).unwrap_or(0)
+                        })
+                    })
+                    .collect();
+                if bookmark_total == 0 && set_total == 0 {
+                    json!({
+                        "status": "empty",
+                        "bookmarks": ranked(Vec::new(), 0),
+                        "tab_sets": ranked(Vec::new(), 0),
+                        "reason": "query succeeded; no browser bookmarks or tab sets saved"
+                    })
+                } else {
+                    json!({
+                        "status": "available",
+                        "bookmarks": ranked(bookmark_items, bookmark_total),
+                        "tab_sets": ranked(set_items, set_total)
+                    })
+                }
+            }
+            (Err(e), _) | (_, Err(e)) => {
+                partial = true;
+                json!({
+                    "status": "unavailable",
+                    "bookmarks": null,
+                    "tab_sets": null,
+                    "reason": safe_text(&e, 200)
+                })
+            }
+        };
+
+        let coding_empty = coding_sessions.get("status").and_then(|s| s.as_str()) == Some("empty");
+        let browser_empty = browser.get("status").and_then(|s| s.as_str()) == Some("empty");
+        let status = if partial {
+            "partial"
+        } else if coding_empty && browser_empty {
+            "empty"
+        } else {
+            "available"
+        };
+
+        json!({
+            "surface": "build",
+            "status": status,
+            "queried": true,
+            "data": {
+                "coding_sessions": coding_sessions,
+                "browser": browser
+            }
+        })
+    }
+
+    /// World-view worker roster — who is on stage and whether they can run.
+    ///
+    /// The World tab is a visual of the agent ecosystem; without this the agent
+    /// could describe the scene editorially while being unable to say which
+    /// workers exist or are available on this machine.
+    async fn observe_world(&self) -> Value {
+        let config = crate::config::agent_identity::load_agent_config();
+        let mut workers: Vec<(String, crate::config::agent_identity::WorkerPersona)> =
+            config.workers.into_iter().collect();
+        workers.sort_by(|a, b| a.0.cmp(&b.0));
+
+        if workers.is_empty() {
+            return empty(
+                "world",
+                "query succeeded; no workers are configured",
+                json!({"workers": ranked(Vec::new(), 0)}),
+            );
+        }
+
+        let total = workers.len();
+        // Probe off the async runtime — model_loaded does blocking HTTP.
+        let probed = tokio::task::spawn_blocking(move || {
+            workers
+                .into_iter()
+                .map(|(key, worker)| {
+                    let (available, reason) =
+                        crate::config::worker_probe::probe_worker(&worker.availability_check);
+                    (key, worker, available, reason)
+                })
+                .collect::<Vec<_>>()
+        })
+        .await;
+
+        let probed = match probed {
+            Ok(rows) => rows,
+            Err(e) => {
+                return unavailable("world", format!("worker probe task failed: {e}"));
+            }
+        };
+
+        let available_count = probed.iter().filter(|(_, _, a, _)| *a).count();
+        let items: Vec<Value> = probed
+            .iter()
+            .take(LIST_LIMIT)
+            .map(|(key, worker, available, reason)| {
+                json!({
+                    "key": safe_text(key, 64),
+                    "name": safe_text(&worker.display_name(), 80),
+                    "role": safe_text(&worker.role, 80),
+                    "engine": worker.engine.label(),
+                    "available": available,
+                    "unavailable_reason": reason.as_ref().map(|r| safe_text(r, 120))
+                })
+            })
+            .collect();
+
+        available(
+            "world",
+            json!({
+                "worker_count": total,
+                "available_count": available_count,
+                "workers": ranked(items, total)
+            }),
+        )
+    }
+
+    /// Configuration state — which providers/extensions are set up.
+    ///
+    /// Never returns a secret value, not even masked: only whether a key is
+    /// present. Without this the agent could not answer "do I have Anthropic
+    /// configured" without guessing or reading raw config into the chat.
+    async fn observe_settings(&self) -> Value {
+        let config = crate::config::Config::global();
+        // Prove we can read config at all — a broken store must not look like
+        // "no providers configured".
+        if let Err(e) = config.all_values() {
+            return unavailable(
+                "settings",
+                format!("could not read configuration store: {e}"),
+            );
+        }
+
+        let default_provider = config.get_goose_provider().ok();
+        let default_model = config.get_goose_model().ok();
+
+        let providers_list = crate::providers::providers().await;
+        let provider_total = providers_list.len();
+        let mut configured_count = 0usize;
+        let mut provider_items = Vec::new();
+        for (metadata, _) in providers_list {
+            let configured = match crate::providers::get_from_registry(&metadata.name).await {
+                Ok(entry) => entry.inventory_configured(),
+                Err(_) => false,
+            };
+            if configured {
+                configured_count += 1;
+            }
+            // Only list configured providers in the bounded list — the full
+            // catalog is huge and mostly "not set up"; totals stay authoritative.
+            if !configured {
+                continue;
+            }
+            if provider_items.len() >= LIST_LIMIT {
+                continue;
+            }
+            let secret_keys: Vec<Value> = metadata
+                .config_keys
+                .iter()
+                .filter(|k| k.secret)
+                .map(|k| {
+                    json!({
+                        "name": safe_text(&k.name, 64),
+                        "present": config_key_present(&k.name, true)
+                        // NEVER include the value.
+                    })
+                })
+                .collect();
+            provider_items.push(json!({
+                "name": safe_text(&metadata.name, 64),
+                "display_name": safe_text(&metadata.display_name, 80),
+                "configured": true,
+                "is_default": default_provider.as_deref() == Some(metadata.name.as_str()),
+                "secret_keys": secret_keys
+            }));
+        }
+
+        let extensions = crate::config::get_all_extensions()
+            .into_iter()
+            .filter(|ext| {
+                !crate::agents::extension_manager::is_hidden_extension(&ext.config.name())
+            })
+            .collect::<Vec<_>>();
+        let extension_total = extensions.len();
+        let enabled_count = extensions.iter().filter(|e| e.enabled).count();
+        let extension_items: Vec<Value> = extensions
+            .into_iter()
+            .take(LIST_LIMIT)
+            .map(|ext| {
+                json!({
+                    "name": safe_text(&ext.config.name(), 80),
+                    "enabled": ext.enabled
+                })
+            })
+            .collect();
+
+        if configured_count == 0 && extension_total == 0 {
+            return empty(
+                "settings",
+                "query succeeded; no providers configured and no extensions registered",
+                json!({
+                    "default_provider": default_provider.map(|s| safe_text(&s, 64)),
+                    "default_model": default_model.map(|s| safe_text(&s, 80)),
+                    "providers": ranked(Vec::new(), 0),
+                    "extensions": ranked(Vec::new(), 0)
+                }),
+            );
+        }
+
+        available(
+            "settings",
+            json!({
+                "default_provider": default_provider.map(|s| safe_text(&s, 64)),
+                "default_model": default_model.map(|s| safe_text(&s, 80)),
+                "providers_configured": configured_count,
+                "providers_total": provider_total,
+                "providers": ranked(provider_items, configured_count),
+                "extensions_enabled": enabled_count,
+                "extensions": ranked(extension_items, extension_total)
+            }),
+        )
+    }
+
     async fn observe_overview(&self, pool: &Pool<Sqlite>) -> Value {
         let projects = projects::list_projects(pool, None).await;
         let goals = cards::list_active_goals(pool).await;
@@ -1025,6 +1704,10 @@ impl AppPerceptionClient {
             "skills" => self.observe_skills(&pool).await,
             "automate" => self.observe_automate().await,
             "trace" => self.observe_trace(&pool).await,
+            "brain" => self.observe_brain(&pool).await,
+            "build" => self.observe_build().await,
+            "world" => self.observe_world().await,
+            "settings" => self.observe_settings().await,
             "overview" => self.observe_overview(&pool).await,
             _ => {
                 return Err(format!(
@@ -1047,8 +1730,10 @@ impl AppPerceptionClient {
             "observe_app".to_string(),
             "Read aggregate state from the data behind the Permagent app. Call this directly \
              when asked about analytics, projects, goals/cards, spend, sessions, growth \
-             actions you recommended, agent \
-             briefings, Decision Inbox, skills, scheduled automations, execution trace, or what is happening overall. It does not require navigation and \
+             actions you recommended, agent briefings, Decision Inbox, skills, scheduled \
+             automations, execution trace, brain memory health, build coding sessions or \
+             browser bookmarks, world workers, settings configuration, or what \
+             is happening overall. It does not require navigation and \
              never use get_page_snapshot for this job: browser snapshots describe a website, \
              not the Permagent app.\n\n\
              ANALYTICS IS THE USER'S OWN WEBSITE TRAFFIC, not Permagent usage stats. \
@@ -1059,11 +1744,18 @@ impl AppPerceptionClient {
              are unavailable. If a project returns no events, say the collector is not \
              installed for it rather than that the data does not exist.\n\n\
              surface: analytics | projects | goals | cards | spend | sessions | briefings | \
-             grow | inbox | skills | automate | trace | overview. analytics and cards require scope = project name, slug, or id; goals \
-             accepts an optional project scope. window supports 7d, 30d, 90d, 365d, or all. \
+             grow | inbox | skills | automate | trace | brain | build | world | settings | \
+             overview. analytics and cards require \
+             scope = project name, slug, or id; goals accepts an optional project scope; grow \
+             requires a project scope. window supports 7d, 30d, 90d, 365d, or all. \
              The analytics surface returns window totals AND a per-day series (`daily`), so \
              answer day-level questions — which day dipped, whether a campaign spiked — from \
              that series rather than declining for lack of granularity. \
+             brain reports memory counts, recall health, and librarian schedule/phase — never \
+             memory contents. build reports coding-session aggregates and browser bookmarks \
+             (hosts only). world reports the worker roster and availability. settings reports \
+             which providers/extensions are configured or enabled — never secret values, only \
+             whether a key is present. \
              Results are privacy-redacted aggregates with lists capped at five and explicit \
              availability, empty, and truncation states."
                 .to_string(),
@@ -1115,14 +1807,64 @@ impl McpClientTrait for AppPerceptionClient {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::sync::Arc;
+
+    fn seed_memory_db(path: &std::path::Path, rows: &[(&str, &str, Option<&str>)]) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE memories (
+                id TEXT PRIMARY KEY,
+                key TEXT NOT NULL,
+                content TEXT NOT NULL,
+                description TEXT,
+                source TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .unwrap();
+        for (i, (key, content, source)) in rows.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO memories (id, key, content, source, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![
+                    format!("m{i}"),
+                    key,
+                    content,
+                    source,
+                    format!("2026-08-0{}T12:00:00Z", (i % 9) + 1)
+                ],
+            )
+            .unwrap();
+        }
+    }
 
     fn test_client(data_dir: PathBuf) -> AppPerceptionClient {
-        AppPerceptionClient::new(PlatformExtensionContext {
+        let context = PlatformExtensionContext {
             extension_manager: None,
-            session_manager: std::sync::Arc::new(crate::session::SessionManager::new(data_dir)),
+            session_manager: Arc::new(crate::session::SessionManager::new(data_dir)),
             session: None,
-        })
-        .unwrap()
+        };
+        AppPerceptionClient::new(context).unwrap()
+    }
+
+    async fn observe(client: &AppPerceptionClient, surface: &str) -> Value {
+        let arguments = json!({ "surface": surface }).as_object().unwrap().clone();
+        let result = client
+            .call_tool(
+                &ToolCallContext::new("test".to_string(), None, None),
+                "observe_app",
+                Some(arguments),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+        result
+            .structured_content
+            .expect("observe_app must return structured JSON")
     }
 
     async fn memory_pool() -> Pool<Sqlite> {
@@ -1262,6 +2004,216 @@ mod tests {
         assert_eq!(value["data"]["activity"]["returned"], LIST_LIMIT);
         assert_eq!(value["data"]["activity"]["truncated"], true);
         assert!(!value.to_string().contains("private trace detail"));
+    }
+
+    #[test]
+    fn missing_brain_db_is_unavailable_not_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().display().to_string();
+        let _env = env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(root.as_str()))]);
+        let err = open_brain_db_readonly().unwrap_err();
+        assert!(
+            err.contains("not available"),
+            "missing DB must not look like an empty Brain: {err}"
+        );
+    }
+
+    #[test]
+    fn memory_counts_are_aggregates_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().display().to_string();
+        let _env = env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(root.as_str()))]);
+        let db = brain_db_path();
+        seed_memory_db(
+            &db,
+            &[
+                ("k1", "SECRET memory body one", Some("chat")),
+                ("k2", "SECRET memory body two", Some("chat")),
+                ("k3", "SECRET memory body three", None),
+            ],
+        );
+        // Mark one described.
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute(
+                "UPDATE memories SET description = 'a short card' WHERE key = 'k1'",
+                [],
+            )
+            .unwrap();
+        }
+        let conn = open_brain_db_readonly().unwrap();
+        let (total, described) = query_memory_counts(&conn).unwrap();
+        assert_eq!(total, 3);
+        assert_eq!(described, 1);
+        // The helper must never return contents — only counts.
+        let encoded = format!("{total}:{described}");
+        assert!(!encoded.contains("SECRET"));
+    }
+
+    #[tokio::test]
+    async fn observe_brain_degrades_when_memory_db_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().display().to_string();
+        let _env = env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(root.as_str()))]);
+        let client = test_client(tmp.path().to_path_buf());
+        let payload = observe(&client, "brain").await;
+        assert_eq!(payload["surface"], "brain");
+        assert_eq!(payload["queried"], true);
+        // Missing DB is unavailable for memories — not an empty Brain.
+        assert_eq!(payload["data"]["memories"]["status"], "unavailable");
+        assert!(payload["data"]["memories"]["reason"].as_str().is_some());
+        // Librarian phase is always local; still present.
+        assert!(payload["data"]["librarian"]["phase"].is_string());
+        let encoded = payload.to_string();
+        assert!(!encoded.contains("content"));
+        assert_ne!(payload["data"]["memories"]["status"], "empty");
+    }
+
+    #[tokio::test]
+    async fn observe_brain_bounds_and_hides_memory_bodies() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().display().to_string();
+        let _env = env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(root.as_str()))]);
+        seed_memory_db(
+            &brain_db_path(),
+            &[("k1", "PRIVATE body must never appear", Some("chat"))],
+        );
+        let client = test_client(tmp.path().to_path_buf());
+        let payload = observe(&client, "brain").await;
+        assert_eq!(payload["data"]["memories"]["status"], "available");
+        assert_eq!(payload["data"]["memories"]["total"], 1);
+        let encoded = payload.to_string();
+        assert!(
+            !encoded.contains("PRIVATE body"),
+            "brain aspect must never dump memory contents: {encoded}"
+        );
+    }
+
+    #[tokio::test]
+    async fn observe_build_degrades_when_memory_db_missing_and_bounds_browser() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().display().to_string();
+        let _env = env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(root.as_str()))]);
+        // Browser state present; brain DB absent → partial, not empty-as-broken.
+        let bookmarks = json!({
+            "bookmarks": (0..8).map(|i| json!({
+                "url": format!("https://example{i}.com/path"),
+                "title": format!("Bookmark {i}"),
+                "createdAt": "2026-08-01T00:00:00Z"
+            })).collect::<Vec<_>>()
+        });
+        std::fs::write(
+            tmp.path().join("browser_bookmarks.json"),
+            serde_json::to_string(&bookmarks).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("browser_tab_sets.json"),
+            r#"{"tabSets":[]}"#,
+        )
+        .unwrap();
+
+        let client = test_client(tmp.path().to_path_buf());
+        let payload = observe(&client, "build").await;
+        assert_eq!(payload["surface"], "build");
+        assert_eq!(payload["data"]["coding_sessions"]["status"], "unavailable");
+        assert_eq!(payload["data"]["browser"]["status"], "available");
+        assert_eq!(payload["data"]["browser"]["bookmarks"]["truncated"], true);
+        assert_eq!(
+            payload["data"]["browser"]["bookmarks"]["returned"],
+            LIST_LIMIT
+        );
+        assert_eq!(payload["data"]["browser"]["bookmarks"]["total"], 8);
+        // Host only — no full URLs in the aggregate.
+        let encoded = payload.to_string();
+        assert!(!encoded.contains("/path"));
+        assert!(encoded.contains("example0.com") || encoded.contains("example"));
+    }
+
+    #[tokio::test]
+    async fn observe_build_reports_empty_coding_sessions_honestly() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().display().to_string();
+        let _env = env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(root.as_str()))]);
+        seed_memory_db(
+            &brain_db_path(),
+            &[("other-key", "not a coding session", None)],
+        );
+        let client = test_client(tmp.path().to_path_buf());
+        let payload = observe(&client, "build").await;
+        assert_eq!(payload["data"]["coding_sessions"]["status"], "empty");
+        assert_eq!(payload["data"]["coding_sessions"]["sessions"]["total"], 0);
+        // Empty is not unavailable.
+        assert_ne!(payload["data"]["coding_sessions"]["status"], "unavailable");
+    }
+
+    #[tokio::test]
+    async fn observe_world_returns_bounded_worker_roster() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().display().to_string();
+        let _env = env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(root.as_str()))]);
+        // No agent.yaml → default roster is merged in; still a real aggregate.
+        let client = test_client(tmp.path().to_path_buf());
+        let payload = observe(&client, "world").await;
+        assert_eq!(payload["surface"], "world");
+        assert_eq!(payload["status"], "available");
+        assert!(payload["data"]["worker_count"].as_u64().unwrap() > 0);
+        let workers = &payload["data"]["workers"];
+        assert!(workers["returned"].as_u64().unwrap() <= LIST_LIMIT as u64);
+        assert_eq!(workers["limit"], LIST_LIMIT);
+        if workers["total"].as_u64().unwrap() > LIST_LIMIT as u64 {
+            assert_eq!(workers["truncated"], true);
+        }
+        // No secret-looking fields.
+        let encoded = payload.to_string();
+        assert!(!encoded.contains("api_key"));
+        assert!(!encoded.contains("API_KEY"));
+    }
+
+    /// NOT hermetic, so ignored by default: `observe_settings` reads the LIVE
+    /// global config, and `Config::global()`'s keyring choice is baked in at
+    /// first access — `PERMAGENT_DISABLE_KEYRING` set per-test cannot undo it.
+    /// On macOS, `all_secrets` then calls SecKeychainFindGenericPassword, which
+    /// blocks forever on an authorization dialog a headless test cannot show
+    /// (observed hanging the suite >10 min, and stalling every later env_lock
+    /// test behind its mutex). Run explicitly on a machine where the test
+    /// binary may read the keychain:
+    /// `cargo test -p permagent observe_settings -- --ignored`
+    #[tokio::test]
+    #[ignore = "reads the live keychain via Config::global(); hangs headless"]
+    async fn observe_settings_never_emits_secret_values() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().display().to_string();
+        let _env = env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(root.as_str()))]);
+        let client = test_client(tmp.path().to_path_buf());
+        let payload = observe(&client, "settings").await;
+        assert_eq!(payload["surface"], "settings");
+        assert!(payload["queried"].as_bool().unwrap());
+        // Status is available or empty — never a fabricated secret dump.
+        assert!(
+            matches!(
+                payload["status"].as_str(),
+                Some("available") | Some("empty") | Some("unavailable")
+            ),
+            "unexpected status: {}",
+            payload["status"]
+        );
+        let encoded = payload.to_string();
+        // Secret *names* may appear; values must not. A sk- style token is a
+        // value leak; a present:bool is fine.
+        assert!(!encoded.contains("sk-"));
+        assert!(!encoded.contains("\"value\""));
+        if let Some(providers) = payload["data"]["providers"]["items"].as_array() {
+            assert!(providers.len() <= LIST_LIMIT);
+            for p in providers {
+                if let Some(keys) = p["secret_keys"].as_array() {
+                    for k in keys {
+                        assert!(k.get("value").is_none());
+                        assert!(k["present"].is_boolean());
+                    }
+                }
+            }
+        }
     }
 
     /// Reproducible acceptance harness for a copied production database.
