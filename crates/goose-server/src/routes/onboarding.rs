@@ -135,15 +135,8 @@ mod tests {
                 "build",
                 "coding sessions + browser state have no aspect yet",
             ),
-            (
-                "automate",
-                "scheduled jobs and their run history have no aspect yet",
-            ),
             ("brain", "memory/recall state has no aspect yet"),
             ("world", "world-view worker state has no aspect yet"),
-            ("inbox", "decision inbox has no aspect yet"),
-            ("skills", "installed/proposed skills have no aspect yet"),
-            ("trace", "execution trace has no aspect yet"),
             ("settings", "configuration state has no aspect yet"),
         ];
 
