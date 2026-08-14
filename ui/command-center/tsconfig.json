@@ -16,8 +16,15 @@
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+    // The shared analytics client (ui/analytics-client) is typechecked as part
+    // of this program — see "include" — but it has no node_modules of its own,
+    // so bare specifiers in its tests resolve from here.
+    "baseUrl": ".",
+    "paths": {
+      "vitest": ["./node_modules/vitest"]
+    }
   },
-  "include": ["src"],
+  "include": ["src", "../analytics-client/src"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }
