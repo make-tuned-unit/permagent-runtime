@@ -101,9 +101,18 @@ impl AgentManager {
 
     pub async fn get_or_create_agent(&self, session_id: String) -> Result<Arc<Agent>> {
         {
-            let mut sessions = self.sessions.write().await;
-            if let Some(existing) = sessions.get(&session_id) {
-                return Ok(Arc::clone(existing));
+            let existing = {
+                let mut sessions = self.sessions.write().await;
+                sessions.get(&session_id).map(Arc::clone)
+            };
+            if let Some(existing) = existing {
+                // A resident agent keeps the extension set it was built with.
+                // Enabling one in Settings would otherwise never reach an open
+                // chat — see Agent::sync_extensions_with_config for the tide
+                // failure that exposed this. Cloned out of the map FIRST so the
+                // sessions lock is not held across the extension work.
+                existing.sync_extensions_with_config(&session_id).await;
+                return Ok(existing);
             }
         }
 

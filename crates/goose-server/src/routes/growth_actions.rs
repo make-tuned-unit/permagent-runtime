@@ -20,6 +20,8 @@
 //! on rather than reshuffling on every render.
 
 use crate::routes::analytics_attribution as attribution;
+use crate::routes::analytics_verify::Check;
+use crate::routes::growth_verify;
 use crate::state::AppState;
 use axum::{
     extract::{Path, State},
@@ -28,15 +30,51 @@ use axum::{
     Json, Router,
 };
 use permagent::conversation::message::Message;
+use permagent::growth::metrics::{TargetDir, TargetMetric};
+use permagent::growth::power::Confounder;
+use permagent::growth::store::{self as growth_store, ActionSeed};
+use permagent::growth::sweep::{self, Baseline};
 use permagent::projects::{self, Project, UpdateProject};
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Sqlite};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Metadata bag key holding the cached actions.
 const METADATA_KEY: &str = "growth_actions";
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// One judged window, as the card renders it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OutcomeView {
+    pub window_days: i64,
+    /// helped | hindered | no_effect | inconclusive | confounded.
+    pub verdict: String,
+    /// One sentence carrying the numbers the verdict rests on. Always present —
+    /// the column is NOT NULL by design.
+    pub rationale: String,
+    pub delta_pct: Option<f64>,
+    pub confounders: Vec<Confounder>,
+    pub judged_at: String,
+}
+
+/// The durable half of an action: what the metadata cache cannot hold because
+/// `regenerate` overwrites it wholesale (see `store` below).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionIdentity {
+    pub id: String,
+    pub status: String,
+    pub target_metric: Option<String>,
+    pub target_dir: Option<String>,
+    /// git | content | event | self. Shown on the card: "verified from a commit"
+    /// and "you told me so" are different claims and must not look identical.
+    pub verified_by: Option<String>,
+    pub verified_at: Option<String>,
+    pub outcomes: Vec<OutcomeView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct GrowthAction {
     /// Short imperative headline.
@@ -64,6 +102,10 @@ pub struct GrowthAction {
     pub impact: String,
     /// high | medium | low — how confident the evidence makes this.
     pub confidence: String,
+    /// Filled in from `growth_actions` on read, never from the model. Absent
+    /// only when the row could not be reached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<ActionIdentity>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -384,26 +426,156 @@ pub fn parse_actions(text: &str) -> Vec<GrowthAction> {
                 ),
                 impact: norm(item.get("impact"), &["high", "medium", "low"], "medium"),
                 confidence: norm(item.get("confidence"), &["high", "medium", "low"], "medium"),
+                identity: None,
             })
         })
         .take(5)
         .collect()
 }
 
-/// Rank so the most actionable surface first: impact, then confidence.
-pub fn rank(mut actions: Vec<GrowthAction>) -> Vec<GrowthAction> {
+/// Rank so the most actionable surface first: impact, then confidence, then
+/// what actually worked on this project.
+///
+/// `history` is a per-category net score: `+1` per `helped`, `-1` per
+/// `hindered`, from confirmed outcomes only. It enters as the LAST sort key, so
+/// it can reorder two equally-rated actions and nothing else.
+///
+/// That placement is the proposal's guard, not a detail: "Never suppress a
+/// category outright on one bad outcome; downweight it in `rank()` … rather
+/// than hiding advice the user can judge." A category with one bad result must
+/// still be able to outrank a low-impact suggestion.
+pub fn rank_with_history(
+    mut actions: Vec<GrowthAction>,
+    history: &HashMap<String, i32>,
+) -> Vec<GrowthAction> {
     let weight = |s: &str| match s {
         "high" => 0,
         "medium" => 1,
         _ => 2,
     };
-    actions.sort_by_key(|a| (weight(&a.impact), weight(&a.confidence)));
+    actions.sort_by_key(|a| {
+        (
+            weight(&a.impact),
+            weight(&a.confidence),
+            // Clamped so a category with nine wins cannot bury everything else:
+            // the sample sizes here are single digits.
+            -history.get(&a.category).copied().unwrap_or(0).clamp(-1, 1),
+        )
+    });
     actions
+}
+
+/// Net per-category score from this project's confirmed outcomes.
+async fn category_history(pool: &Pool<Sqlite>, project_id: &str) -> HashMap<String, i32> {
+    let mut out = HashMap::new();
+    let rows = growth_store::learnable_outcomes(pool, project_id, 50)
+        .await
+        .unwrap_or_default();
+    for (action, outcome) in rows {
+        let Some(category) = action.category else {
+            continue;
+        };
+        let delta = match outcome.verdict.as_str() {
+            "helped" => 1,
+            "hindered" => -1,
+            _ => 0,
+        };
+        *out.entry(category).or_insert(0) += delta;
+    }
+    out
+}
+
+/// Persist the generated list so each action has an identity, and hand back the
+/// rows keyed by fingerprint.
+///
+/// Failures are logged and swallowed: a database hiccup must not turn a
+/// successful model call into an empty panel. The consequence is a card without
+/// a Verify button, which is visible; losing the advice is not.
+async fn persist(
+    pool: &Pool<Sqlite>,
+    project_id: &str,
+    actions: &[GrowthAction],
+) -> HashMap<String, growth_store::GrowthActionRow> {
+    let mut rows = HashMap::new();
+    for action in actions {
+        let seed = ActionSeed {
+            title: action.title.clone(),
+            recommendation: action.recommendation.clone(),
+            category: Some(action.category.clone()),
+            artifact_kind: Some(action.artifact_kind.clone()),
+            artifact: action.artifact.clone(),
+        };
+        match growth_store::upsert_suggested(pool, project_id, &seed).await {
+            Ok(row) => {
+                rows.insert(row.fingerprint.clone(), row);
+            }
+            Err(e) => tracing::warn!(
+                target: "permagentd::growth",
+                "could not persist growth action \"{}\": {e}", action.title
+            ),
+        }
+    }
+    rows
+}
+
+/// Attach the durable half to each cached action, by fingerprint.
+///
+/// The metadata bag stays the render cache — it holds `evidence` and `steps`,
+/// which are not worth a column — and the table is the identity. They are
+/// joined here rather than merged into one store because `regenerate` overwrites
+/// the bag wholesale (see `store`), so anything durable kept in it would be
+/// destroyed by the next "Review again".
+async fn hydrate(pool: &Pool<Sqlite>, project_id: &str, data: &mut GrowthActionsData) {
+    let rows = match growth_store::list_for_project(pool, project_id).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(target: "permagentd::growth", "could not read growth actions: {e}");
+            return;
+        }
+    };
+    let by_fingerprint: HashMap<String, growth_store::GrowthActionRow> = rows
+        .into_iter()
+        .map(|r| (r.fingerprint.clone(), r))
+        .collect();
+
+    for action in &mut data.actions {
+        let fp = growth_store::fingerprint(project_id, &action.title, &action.recommendation);
+        let Some(row) = by_fingerprint.get(&fp) else {
+            continue;
+        };
+        let outcomes = growth_store::outcomes_for(pool, &row.id)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|o| OutcomeView {
+                window_days: o.window_days,
+                verdict: o.verdict,
+                rationale: o.rationale,
+                delta_pct: o.delta_pct,
+                confounders: o
+                    .confounders
+                    .as_deref()
+                    .and_then(|raw| serde_json::from_str(raw).ok())
+                    .unwrap_or_default(),
+                judged_at: o.judged_at,
+            })
+            .collect();
+        action.identity = Some(ActionIdentity {
+            id: row.id.clone(),
+            status: row.status.clone(),
+            target_metric: row.target_metric.clone(),
+            target_dir: row.target_dir.clone(),
+            verified_by: row.verified_by.clone(),
+            verified_at: row.verified_at.clone(),
+            outcomes,
+        });
+    }
 }
 
 async fn generate(
     project_name: &str,
     summary: &AnalyticsSummary,
+    learning: Option<String>,
 ) -> Result<Vec<GrowthAction>, String> {
     let config = permagent::config::Config::global();
     let provider_name = config
@@ -420,12 +592,21 @@ async fn generate(
             .await
             .map_err(|e| format!("Could not reach the model provider: {e}"))?;
 
-    let user = Message::user().with_text(render_summary(project_name, summary));
+    // Only confirmed outcomes reach the prompt, and they arrive with their count
+    // and an explicit "weak evidence" caveat attached (see
+    // `growth::store::render_learning`) — a model shown one result without its
+    // sample size will over-generalise from it.
+    let mut brief = render_summary(project_name, summary);
+    if let Some(learning) = learning {
+        brief.push('\n');
+        brief.push_str(&learning);
+    }
+    let user = Message::user().with_text(brief);
     let (response, _usage) = provider
         .complete_fast("growth-actions", SYSTEM, std::slice::from_ref(&user), &[])
         .await
         .map_err(|e| format!("The model call failed: {e}"))?;
-    Ok(rank(parse_actions(&response.as_concat_text())))
+    Ok(parse_actions(&response.as_concat_text()))
 }
 
 // ── HTTP ─────────────────────────────────────────────────────────────────────
@@ -578,7 +759,9 @@ async fn get_actions(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
-    Ok(Json(cached(&project).unwrap_or_default()))
+    let mut data = cached(&project).unwrap_or_default();
+    hydrate(&pool, &project.id, &mut data).await;
+    Ok(Json(data))
 }
 
 async fn regenerate(
@@ -598,15 +781,20 @@ async fn regenerate(
     let period_days = 30;
     let summary = load_summary(&pool, &project.id, period_days).await;
     let now = chrono::Utc::now().to_rfc3339();
+    let learning = growth_store::render_learning(
+        &growth_store::learnable_outcomes(&pool, &project.id, 8)
+            .await
+            .unwrap_or_default(),
+    );
 
-    let data = match readiness(&summary) {
+    let mut data = match readiness(&summary) {
         Err(reason) => GrowthActionsData {
             actions: Vec::new(),
             generated_at: Some(now),
             reason: Some(reason),
             period_days: Some(period_days),
         },
-        Ok(()) => match generate(&project.name, &summary).await {
+        Ok(()) => match generate(&project.name, &summary, learning).await {
             Ok(actions) if actions.is_empty() => GrowthActionsData {
                 actions,
                 generated_at: Some(now),
@@ -632,10 +820,330 @@ async fn regenerate(
         },
     };
 
+    // Identity first, then rank, then cache: ranking reads what actually worked
+    // on this project, which only exists once the rows are there.
+    persist(&pool, &project.id, &data.actions).await;
+    data.actions = rank_with_history(
+        std::mem::take(&mut data.actions),
+        &category_history(&pool, &project.id).await,
+    );
+
     if let Err(e) = store(&pool, &project, &data).await {
         tracing::warn!(target: "permagentd::growth", "could not cache growth actions: {e}");
     }
+    hydrate(&pool, &project.id, &mut data).await;
     Ok(Json(data))
+}
+
+// ── Pre-registration, verification, measurement ──────────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusRequest {
+    pub status: String,
+    /// pageviews | sessions | aeo_visits | bounce_rate.
+    pub target_metric: Option<String>,
+    /// up | down.
+    pub target_dir: Option<String>,
+}
+
+/// Parse a pre-registration, or explain why it is not one.
+///
+/// Both halves or neither: a metric with no direction cannot be scored, and a
+/// direction with no metric has nothing to score.
+fn parse_target(
+    metric: Option<&str>,
+    dir: Option<&str>,
+) -> Result<Option<(TargetMetric, TargetDir)>, String> {
+    match (metric, dir) {
+        (None, None) => Ok(None),
+        (Some(m), Some(d)) => Ok(Some((TargetMetric::parse(m)?, TargetDir::parse(d)?))),
+        (Some(_), None) => Err("A target metric needs a direction: \"up\" or \"down\".".into()),
+        (None, Some(_)) => Err("A direction needs a target metric to apply to.".into()),
+    }
+}
+
+/// Refuse a pre-registration that changes an action's claim after its baseline
+/// was frozen.
+///
+/// Without this the hypothesis is editable with the result already in view,
+/// which is the definition of the unfalsifiable verdict the proposal's first
+/// rule exists to prevent. Re-sending the SAME target is allowed — that is an
+/// idempotent retry, not a rewrite.
+fn reject_late_reregistration(
+    action: &growth_store::GrowthActionRow,
+    supplied: Option<(TargetMetric, TargetDir)>,
+) -> Result<(), (StatusCode, String)> {
+    let Some((metric, dir)) = supplied else {
+        return Ok(());
+    };
+    if action.baseline_json.is_none() {
+        return Ok(());
+    }
+    let unchanged = action.target_metric.as_deref() == Some(metric.as_str())
+        && action.target_dir.as_deref() == Some(dir.as_str());
+    if unchanged {
+        return Ok(());
+    }
+    Err((
+        StatusCode::CONFLICT,
+        format!(
+            "This action already pre-registered {} going {} and its baseline is frozen, so the \
+             claim cannot be changed now. Dismiss it and start a new action to measure something \
+             else.",
+            action.target_metric.as_deref().unwrap_or("a metric"),
+            action.target_dir.as_deref().unwrap_or("somewhere"),
+        ),
+    ))
+}
+
+/// Move an action through its lifecycle, pre-registering what it claims it will
+/// move.
+///
+/// Marking an action `done` without a target is refused. That is the
+/// proposal's first rule made unavoidable: "The metric, the direction, and the
+/// expected magnitude are recorded *before* the action is marked done. A verdict
+/// computed against a metric chosen afterwards is unfalsifiable."
+async fn set_action_status(
+    State(state): State<Arc<AppState>>,
+    Path((project_id, action_id)): Path<(String, String)>,
+    Json(body): Json<StatusRequest>,
+) -> Result<Json<ActionIdentity>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let project = projects::get_project_by_id_or_slug(&pool, &project_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "unknown project".to_string()))?;
+
+    let action = growth_store::get(&pool, &project.id, &action_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "unknown action".to_string()))?;
+
+    let target = parse_target(body.target_metric.as_deref(), body.target_dir.as_deref())
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    reject_late_reregistration(&action, target)?;
+
+    let will_have_target =
+        target.is_some() || (action.target_metric.is_some() && action.target_dir.is_some());
+    if body.status == growth_store::STATUS_DONE && !will_have_target {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Marking an action done pre-registers what it should move. Send targetMetric (one of \
+             pageviews, sessions, aeo_visits, bounce_rate) and targetDir (up or down) — a metric \
+             chosen after the result is known cannot be wrong."
+                .to_string(),
+        ));
+    }
+
+    let updated = growth_store::set_status(&pool, &project.id, &action_id, &body.status, target)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "unknown action".to_string()))?;
+    Ok(Json(identity_of(&pool, &updated).await))
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyRequest {
+    /// Record the user's word when nothing could be checked. Labelled as such.
+    #[serde(default)]
+    pub self_attested: bool,
+    /// Text to look for on the live page, for the `content` strategy.
+    #[serde(default)]
+    pub expect_substring: Option<String>,
+    #[serde(default)]
+    pub target_metric: Option<String>,
+    #[serde(default)]
+    pub target_dir: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyResponse {
+    pub verified: bool,
+    pub identity: ActionIdentity,
+    /// Every strategy that was tried, passed or not — so a card can say why it
+    /// could not confirm rather than reading as "not done".
+    pub checks: Vec<Check>,
+    /// The frozen before-windows and weekly history the verdicts will use.
+    pub baseline: Option<Baseline>,
+    /// Present when nothing could confirm the change.
+    pub reason: Option<String>,
+}
+
+/// Check that the change landed, record HOW, and freeze the baseline.
+async fn verify_action(
+    State(state): State<Arc<AppState>>,
+    Path((project_id, action_id)): Path<(String, String)>,
+    body: Option<Json<VerifyRequest>>,
+) -> Result<Json<VerifyResponse>, (StatusCode, String)> {
+    let body = body.map(|Json(b)| b).unwrap_or_default();
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let project = projects::get_project_by_id_or_slug(&pool, &project_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "unknown project".to_string()))?;
+    let action = growth_store::get(&pool, &project.id, &action_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "unknown action".to_string()))?;
+
+    // Pre-registration may arrive with the verify call, but it must exist before
+    // a baseline is frozen — otherwise the metric is chosen with the outcome
+    // already in view.
+    let supplied = parse_target(body.target_metric.as_deref(), body.target_dir.as_deref())
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    reject_late_reregistration(&action, supplied)?;
+    let existing = parse_target(
+        action.target_metric.as_deref(),
+        action.target_dir.as_deref(),
+    )
+    .unwrap_or(None);
+    let Some((metric, dir)) = supplied.or(existing) else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "This action has no pre-registered metric, so a verdict computed for it could not be \
+             wrong. Send targetMetric and targetDir first."
+                .to_string(),
+        ));
+    };
+    if supplied.is_some() {
+        growth_store::set_status(
+            &pool,
+            &project.id,
+            &action.id,
+            growth_store::STATUS_DONE,
+            supplied,
+        )
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    }
+
+    let outcome = growth_verify::verify(
+        &pool,
+        &project,
+        &action,
+        body.expect_substring.as_deref(),
+        body.self_attested,
+    )
+    .await;
+
+    let Some(verified_by) = outcome.verified_by else {
+        // Not an error: the change may simply not have shipped yet. The checks
+        // carry the reason, and self-attestation stays available.
+        return Ok(Json(VerifyResponse {
+            verified: false,
+            identity: identity_of(&pool, &action).await,
+            checks: outcome.checks,
+            baseline: None,
+            reason: Some(
+                "Nothing could confirm the change landed. The checks below say what was looked \
+                 for; if it did land, re-send with selfAttested: true and the card will show that \
+                 it was your word rather than a commit."
+                    .to_string(),
+            ),
+        }));
+    };
+
+    // A re-verification must not move the goalposts. Once a baseline is frozen
+    // the "before" windows and the variance history are fixed, and recomputing
+    // them against a later pivot would quietly re-run the comparison with the
+    // result already visible. `record_verification` coalesces for the same
+    // reason; this branch also stops the pointless recomputation.
+    let verified_at = chrono::Utc::now();
+    let existing_baseline = action
+        .baseline_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<Baseline>(raw).ok());
+    let (baseline, encoded) = match existing_baseline {
+        Some(frozen) => (frozen, None),
+        None => {
+            let fresh = sweep::snapshot_baseline(&pool, &project.id, metric, dir, verified_at)
+                .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            let encoded = serde_json::to_string(&fresh)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            (fresh, Some(encoded))
+        }
+    };
+
+    let updated = growth_store::record_verification(
+        &pool,
+        &project.id,
+        &action.id,
+        verified_by,
+        &verified_at.to_rfc3339(),
+        encoded.as_deref(),
+    )
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .ok_or((StatusCode::NOT_FOUND, "unknown action".to_string()))?;
+
+    Ok(Json(VerifyResponse {
+        verified: true,
+        identity: identity_of(&pool, &updated).await,
+        checks: outcome.checks,
+        baseline: Some(baseline),
+        reason: None,
+    }))
+}
+
+/// Judge every due window now instead of waiting for the nightly pass.
+async fn measure_now(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let report = sweep::run(&pool, chrono::Utc::now())
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({
+        "actionsConsidered": report.actions_considered,
+        "windowsJudged": report.windows_judged,
+        "actionsCompleted": report.actions_completed,
+        "errors": report.errors,
+    })))
+}
+
+async fn identity_of(pool: &Pool<Sqlite>, row: &growth_store::GrowthActionRow) -> ActionIdentity {
+    let outcomes = growth_store::outcomes_for(pool, &row.id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|o| OutcomeView {
+            window_days: o.window_days,
+            verdict: o.verdict,
+            rationale: o.rationale,
+            delta_pct: o.delta_pct,
+            confounders: o
+                .confounders
+                .as_deref()
+                .and_then(|raw| serde_json::from_str(raw).ok())
+                .unwrap_or_default(),
+            judged_at: o.judged_at,
+        })
+        .collect();
+    ActionIdentity {
+        id: row.id.clone(),
+        status: row.status.clone(),
+        target_metric: row.target_metric.clone(),
+        target_dir: row.target_dir.clone(),
+        verified_by: row.verified_by.clone(),
+        verified_at: row.verified_at.clone(),
+        outcomes,
+    }
 }
 
 pub fn routes(state: Arc<AppState>) -> Router {
@@ -648,6 +1156,15 @@ pub fn routes(state: Arc<AppState>) -> Router {
             "/api/projects/{project_id}/growth-actions/generate",
             post(regenerate),
         )
+        .route(
+            "/api/projects/{project_id}/growth-actions/{action_id}/status",
+            post(set_action_status),
+        )
+        .route(
+            "/api/projects/{project_id}/growth-actions/{action_id}/verify",
+            post(verify_action),
+        )
+        .route("/api/growth-actions/measure", post(measure_now))
         .with_state(state)
 }
 
@@ -841,27 +1358,129 @@ mod tests {
         assert_eq!(parse_actions(&reply).len(), 5);
     }
 
-    #[test]
-    fn ranks_high_impact_first_then_confidence() {
-        let a = |impact: &str, confidence: &str, title: &str| GrowthAction {
+    fn action(impact: &str, confidence: &str, category: &str, title: &str) -> GrowthAction {
+        GrowthAction {
             title: title.into(),
             evidence: "e".into(),
             recommendation: "r".into(),
             steps: Vec::new(),
             artifact_kind: "none".into(),
             artifact: None,
-            category: "ux".into(),
+            category: category.into(),
             impact: impact.into(),
             confidence: confidence.into(),
-        };
-        let ranked = rank(vec![
-            a("low", "high", "third"),
-            a("high", "low", "second"),
-            a("high", "high", "first"),
-        ]);
-        assert_eq!(
-            ranked.iter().map(|x| x.title.as_str()).collect::<Vec<_>>(),
-            vec!["first", "second", "third"]
+            identity: None,
+        }
+    }
+
+    fn titles(actions: &[GrowthAction]) -> Vec<&str> {
+        actions.iter().map(|a| a.title.as_str()).collect()
+    }
+
+    #[test]
+    fn ranks_high_impact_first_then_confidence() {
+        let ranked = rank_with_history(
+            vec![
+                action("low", "high", "ux", "third"),
+                action("high", "low", "ux", "second"),
+                action("high", "high", "ux", "first"),
+            ],
+            &HashMap::new(),
         );
+        assert_eq!(titles(&ranked), vec!["first", "second", "third"]);
+    }
+
+    /// What worked here breaks ties between equally-rated actions.
+    #[test]
+    fn a_category_that_worked_here_wins_a_tie() {
+        let history = HashMap::from([("seo".to_string(), 2), ("social".to_string(), -1)]);
+        let ranked = rank_with_history(
+            vec![
+                action("high", "high", "social", "hindered-here"),
+                action("high", "high", "ux", "never-tried"),
+                action("high", "high", "seo", "helped-here"),
+            ],
+            &history,
+        );
+        assert_eq!(
+            titles(&ranked),
+            vec!["helped-here", "never-tried", "hindered-here"]
+        );
+    }
+
+    /// The proposal's guard: "Never suppress a category outright on one bad
+    /// outcome … rather than hiding advice the user can judge." A bad result
+    /// must not push a high-impact action below a low-impact one.
+    #[test]
+    fn a_bad_outcome_downweights_a_category_it_does_not_bury_it() {
+        let history = HashMap::from([("social".to_string(), -9)]);
+        let ranked = rank_with_history(
+            vec![
+                action("low", "high", "ux", "low-impact"),
+                action("high", "high", "social", "burned-but-strong"),
+            ],
+            &history,
+        );
+        assert_eq!(titles(&ranked), vec!["burned-but-strong", "low-impact"]);
+    }
+
+    /// Both halves of a pre-registration or neither: a metric with no direction
+    /// cannot be scored and a direction with no metric has nothing to score.
+    #[test]
+    fn a_pre_registration_needs_a_metric_and_a_direction() {
+        assert!(parse_target(None, None).unwrap().is_none());
+        assert!(parse_target(Some("sessions"), Some("up"))
+            .unwrap()
+            .is_some());
+        assert!(parse_target(Some("sessions"), None).is_err());
+        assert!(parse_target(None, Some("up")).is_err());
+        // An unmeasurable target is refused rather than stored, or
+        // pre-registration is decorative.
+        let err = parse_target(Some("device_signatures"), Some("up")).unwrap_err();
+        assert!(err.contains("not a measurable target"), "{err}");
+    }
+
+    fn row(target: Option<(&str, &str)>, baseline: Option<&str>) -> growth_store::GrowthActionRow {
+        growth_store::GrowthActionRow {
+            id: "a1".into(),
+            project_id: "p1".into(),
+            fingerprint: "f".into(),
+            title: "t".into(),
+            recommendation: "r".into(),
+            category: Some("seo".into()),
+            artifact_kind: Some("prompt".into()),
+            artifact: None,
+            target_metric: target.map(|(m, _)| m.to_string()),
+            target_dir: target.map(|(_, d)| d.to_string()),
+            baseline_json: baseline.map(str::to_string),
+            status: growth_store::STATUS_VERIFIED.into(),
+            verified_by: Some(growth_store::VERIFIED_BY_GIT.into()),
+            verified_at: Some("2026-08-11T14:00:00Z".into()),
+            created_at: "2026-08-01T00:00:00Z".into(),
+        }
+    }
+
+    /// Once the baseline is frozen the claim is fixed. Editing it afterwards
+    /// would mean choosing the hypothesis with the result already in view.
+    #[test]
+    fn a_claim_cannot_be_rewritten_after_its_baseline_is_frozen() {
+        let frozen = row(Some(("sessions", "up")), Some("{}"));
+        let err =
+            reject_late_reregistration(&frozen, Some((TargetMetric::Pageviews, TargetDir::Up)))
+                .unwrap_err();
+        assert_eq!(err.0, StatusCode::CONFLICT);
+        assert!(err.1.contains("sessions"), "{}", err.1);
+
+        // Re-sending the same claim is an idempotent retry, not a rewrite.
+        assert!(
+            reject_late_reregistration(&frozen, Some((TargetMetric::Sessions, TargetDir::Up)))
+                .is_ok()
+        );
+        // And before a baseline exists, the claim is still being written.
+        assert!(reject_late_reregistration(
+            &row(Some(("sessions", "up")), None),
+            Some((TargetMetric::Pageviews, TargetDir::Down))
+        )
+        .is_ok());
     }
 }

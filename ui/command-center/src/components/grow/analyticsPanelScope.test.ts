@@ -36,4 +36,17 @@ describe('analytics panels are remounted per project', () => {
     const props = usage('FirstPartyAnalyticsPanel');
     expect(props.indexOf('key={project.id}')).toBeLessThan(props.indexOf('projectId='));
   });
+
+  // GrowActions joined this list when it gained per-card verify results and
+  // outcome verdicts. It takes `project` rather than `projectId`, so it cannot
+  // share the loop above, but it has the identical defect: its load effect
+  // refetches on `project.id` and never clears local state, so project A's
+  // verdicts would sit on project B's cards for the length of the refetch —
+  // the same false positive, on a claim about what actually worked.
+  it('GrowActions is keyed on the project id', () => {
+    const props = usage('GrowActions');
+    expect(props).toContain('project={active}');
+    expect(props).toMatch(/key=\{active\.id\}/);
+    expect(props.indexOf('key={active.id}')).toBeLessThan(props.indexOf('project='));
+  });
 });

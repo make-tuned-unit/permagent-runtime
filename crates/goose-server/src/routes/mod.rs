@@ -19,6 +19,7 @@ pub mod dashboard;
 pub mod dashboard_cards;
 pub mod decisions;
 pub mod desktop_control;
+pub mod dev_roots;
 pub mod devices;
 pub mod dictation;
 pub mod errors;
@@ -31,6 +32,7 @@ pub mod governance;
 pub mod grow;
 pub mod grow_analytics;
 pub mod growth_actions;
+pub mod growth_verify;
 pub mod henry_status;
 pub mod identity;
 pub mod inbox;
@@ -169,6 +171,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(gateway::routes(state.clone()))
         .merge(sampling::routes(state.clone()))
         .merge(features::routes())
+        .merge(dev_roots::routes())
         .merge(onboarding::routes())
         // Built-in browser bookmarks + saved tab sets (#790): small JSON state.
         .merge(browser_state::routes())

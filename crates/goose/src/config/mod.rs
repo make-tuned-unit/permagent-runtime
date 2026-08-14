@@ -1,6 +1,7 @@
 pub mod agent_identity;
 pub mod base;
 pub mod declarative_providers;
+pub mod dev_roots;
 mod experiments;
 pub mod extensions;
 pub mod gmail_oauth;

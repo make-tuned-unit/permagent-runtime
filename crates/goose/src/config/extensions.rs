@@ -188,6 +188,40 @@ pub fn resolve_extensions_for_new_session(
 mod tests {
     use super::*;
 
+    /// The config-sync path asks the extension manager "is `Brave Search`
+    /// loaded?" while the manager keys everything by `name_to_key`. If those two
+    /// ever disagree, a newly-enabled extension looks missing forever and gets
+    /// re-added on every reply — or looks present and never gets added at all.
+    ///
+    /// These are the real display names and the real keys from a config where a
+    /// resident session could not reach either search provider (2026-08-13).
+    #[test]
+    fn display_names_normalise_to_the_keys_config_stores_them_under() {
+        for (display, key) in [
+            ("Brave Search", "bravesearch"),
+            ("Tavily Web Search", "tavilywebsearch"),
+            ("Extension Manager", "extensionmanager"),
+            ("Computer Controller", "computercontroller"),
+        ] {
+            assert_eq!(name_to_key(display), key, "display name {display:?}");
+        }
+    }
+
+    /// Keying is idempotent: a key fed back through normalisation is unchanged.
+    /// Without this, a second sync pass could fail to recognise what the first
+    /// one registered.
+    #[test]
+    fn normalising_a_key_again_is_a_no_op() {
+        for key in [
+            "bravesearch",
+            "tavilywebsearch",
+            "developer",
+            "file_to_project",
+        ] {
+            assert_eq!(name_to_key(key), key);
+        }
+    }
+
     #[test]
     fn test_is_extension_available_filters_unknown_platform() {
         let unknown_platform = ExtensionConfig::Platform {

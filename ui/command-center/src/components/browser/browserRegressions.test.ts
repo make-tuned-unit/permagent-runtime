@@ -16,6 +16,7 @@ import {
   isPlaceholderUrl,
   pageLoadUpdate,
   replayEvents,
+  shouldOpenPopupTab,
   titleUpdate,
   urlOnlyUpdate,
   MAX_PENDING_EVENTS,
@@ -336,6 +337,7 @@ import { readFileSync } from 'node:fs';
 const BROWSER_TSX = readFileSync(new URL('./Browser.tsx', import.meta.url), 'utf8');
 const PAGE_LOAD_EVENT = 'browser_' + 'page_load';
 const LEGACY_EVENT = 'browser_' + 'navigated';
+const NEW_WINDOW_EVENT = 'browser_' + 'new_window_request';
 // The pull channel is now `browser_nav_state`: the same one round trip returns
 // the authoritative URL AND canGoBack/canGoForward, so the restored back and
 // forward buttons cannot disagree with the address bar. Renaming it is exactly
@@ -362,6 +364,41 @@ describe('browser event-source contract', () => {
     // NOT being pointed at the URL resync rather than banning timers.
     expect(BROWSER_TSX).not.toMatch(/set(Interval|Timeout)\(\s*(resyncUrl|reconcile)/);
     expect(BROWSER_TSX).not.toMatch(/setInterval\([^)]*\b(resync|reconcile)/i);
+  });
+
+  it('routes popup links through the deny-and-reroute event', () => {
+    // Without this listener, WKWebView's nil createWebView response makes
+    // every target=_blank / window.open click a silent no-op (#240 / #709).
+    expect(BROWSER_TSX).toContain(`api.listen('${NEW_WINDOW_EVENT}'`);
+    expect(BROWSER_TSX).toContain('shouldOpenPopupTab');
+    expect(BROWSER_TSX).toContain('openUrlRef');
+  });
+});
+
+// ── 9. Popup clicks become in-app tabs, not silent drops ────────────────────
+//
+// Matching browser.rs's deny-and-emit: the shell must accept the event only
+// for webviews it owns, and must refuse about:blank. Opening in the system
+// browser would leave the agent blind to the page; opening every emit in
+// every Browser instance doubles tabs across Build + detached panes.
+describe('popup → in-app tab gate', () => {
+  const owned = ['browser-0', 'browser-1'];
+
+  it('opens a real URL from a webview this instance owns', () => {
+    expect(shouldOpenPopupTab(owned, 'browser-0', 'https://example.com/meet')).toBe(true);
+  });
+
+  it('ignores a popup from a webview owned by another Browser instance', () => {
+    expect(shouldOpenPopupTab(owned, 'browser-99', 'https://example.com')).toBe(false);
+  });
+
+  it('ignores about:blank — window.open() handshake, not a destination', () => {
+    expect(shouldOpenPopupTab(owned, 'browser-0', 'about:blank')).toBe(false);
+    expect(shouldOpenPopupTab(owned, 'browser-0', '')).toBe(false);
+  });
+
+  it('ignores a missing source id rather than opening unbound', () => {
+    expect(shouldOpenPopupTab(owned, '', 'https://example.com')).toBe(false);
   });
 });
 

@@ -523,10 +523,20 @@ pub async fn session_reply(
                     current_provider.as_deref().unwrap_or("unknown"),
                     current_model.as_deref().unwrap_or("unknown")
                 );
-                provider_switch_notice = Some(format!(
-                    "Model switched: this session now uses {} (was {}).",
-                    new_label, old_label
-                ));
+                // Only a real SWITCH is worth announcing. A brand-new session
+                // has no recorded provider yet, so adopting the current model
+                // is not a change — reporting it as one produced
+                // "Model switched: ... (was unknown/unknown)" on the very first
+                // message of every session, which reads as a fault the user did
+                // not cause and did not ask about.
+                let had_previous =
+                    session_data.provider_name.is_some() && session_data.model_config.is_some();
+                if had_previous {
+                    provider_switch_notice = Some(format!(
+                        "Model switched: this session now uses {} (was {}).",
+                        new_label, old_label
+                    ));
+                }
                 // Evict cached agent so it gets recreated with the new provider
                 let _ = state.agent_manager.remove_session(&session_id).await;
             }

@@ -13,7 +13,11 @@ use std::collections::HashMap;
 
 /// Named event emitters may send once per browser session.
 pub const SESSION_ATTRIBUTION_EVENT: &str = "session_attribution";
-pub const ANSWER_ENGINE_VISIT_EVENT: &str = "answer_engine_visit";
+/// Re-exported rather than re-declared: `growth::metrics::load_window` counts
+/// rows by this name to measure the `aeo_visits` target, and two copies of the
+/// spelling would let the measured metric drift away from the recorded one
+/// without anything failing to compile.
+pub use permagent::growth::metrics::ANSWER_ENGINE_VISIT_EVENT;
 
 #[derive(Debug, Clone, Default)]
 pub struct TrafficSourceRollup {

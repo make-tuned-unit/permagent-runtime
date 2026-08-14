@@ -155,6 +155,9 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
     // Pull web analytics from each project's own site relay (outbound only —
     // the daemon is never reachable from the internet).
     crate::analytics_drain::spawn(app_state.clone());
+    // Re-evaluate open growth-action measurement windows. Local arithmetic over
+    // events the drain above already pulled; no model call, no network.
+    crate::growth_sweep::spawn(app_state.clone());
 
     // The Concierge (#640): flag-gated (default OFF), draft-only, local-tier
     // inbox triage. Spawns a loop only when PERMAGENT_CONCIERGE_ENABLED is on.

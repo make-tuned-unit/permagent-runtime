@@ -5,6 +5,7 @@ import { MomentWelcome } from './MomentWelcome';
 import { MomentHardware } from './MomentHardware';
 import { MomentCalibration } from './MomentCalibration';
 import { MomentIntent } from './MomentIntent';
+import { MomentCode } from './MomentCode';
 import { MomentMeet } from './MomentMeet';
 import { MomentWebSearch } from './MomentWebSearch';
 import { MomentChat } from './MomentChat';
@@ -60,12 +61,19 @@ export function WizardShell({ onComplete }: Props) {
     setStep(4);
   };
 
-  const handleMeetDone = () => {
+  // Where the user keeps their code. Asked rather than guessed: four features
+  // independently assumed `~/dev` and all four failed by finding NOTHING, which
+  // is indistinguishable from a clean machine. See config::dev_roots.
+  const handleCodeDone = () => {
     setStep(5);
   };
 
-  const handleWebSearchDone = () => {
+  const handleMeetDone = () => {
     setStep(6);
+  };
+
+  const handleWebSearchDone = () => {
+    setStep(7);
   };
 
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -111,6 +119,7 @@ export function WizardShell({ onComplete }: Props) {
     <MomentHardware key="hardware" onAdvance={handleHardwareDone} onBack={back} />,
     <MomentCalibration key="calibration" onAdvance={handleCalibrationDone} onBack={back} />,
     <MomentIntent key="intent" intent={intent} setIntent={setIntent} onAdvance={handleIntentDone} onBack={back} />,
+    <MomentCode key="code" personaName={persona.name} onAdvance={handleCodeDone} onBack={back} />,
     <MomentMeet key="meet" persona={persona} setPersona={setPersona} onAdvance={handleMeetDone} onBack={back} />,
     <MomentWebSearch key="websearch" personaName={persona.name} onAdvance={handleWebSearchDone} onBack={back} />,
     <MomentChat key="chat" persona={persona} onComplete={handleComplete} />,
@@ -124,13 +133,14 @@ export function WizardShell({ onComplete }: Props) {
       overflow: 'hidden',
     }}>
       {/* Top bar: back + dots */}
-      {step > 0 && step < 6 && (
+      {step > 0 && step < 7 && (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px' }}>
           <BackChevron onClick={back} />
-          {/* Dots track the 5 interior config steps (1–5); step 0 (welcome) and
-              step 6 (chat) show no bar. count was 6 → a 6th dot that `current`
-              (max step-1 = 4) could never light. */}
-          <ProgressDots count={5} current={step - 1} />
+          {/* Dots track the interior config steps (1–6); step 0 (welcome) and
+              the final chat step show no bar. Keep `count` equal to the number
+              of interior steps: an earlier version left a dot that `current`
+              (max step-1) could never light. */}
+          <ProgressDots count={6} current={step - 1} />
           <div style={{ width: 60 }} />
         </div>
       )}

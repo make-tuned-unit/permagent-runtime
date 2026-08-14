@@ -1031,6 +1031,14 @@ impl SessionStorage {
                     if version < 41 {
                         spectral_schema::migrate_v40_to_v41(&self.pool).await?;
                     }
+                    // v42: durable growth actions + pre-registered outcomes
+                    // (docs/proposals/grow-action-outcome-loop.md). New tables
+                    // + index only, additive and base-independent. Fresh
+                    // installs get the same tables from init_spectral_db,
+                    // which never reaches this ladder.
+                    if version < 42 {
+                        spectral_schema::migrate_v41_to_v42(&self.pool).await?;
+                    }
                     // Version-independent safety net for recognition columns.
                     // The always-on v23 above can stamp schema_version past the
                     // cfg-gated `version < 22` migration, leaving a feature-off DB

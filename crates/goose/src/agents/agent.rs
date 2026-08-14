@@ -271,6 +271,11 @@ pub struct Agent {
     pub(super) retry_manager: RetryManager,
     pub(super) tool_inspection_manager: ToolInspectionManager,
     container: Mutex<Option<Container>>,
+    /// mtime of the config file at the last extension sync. Lets the
+    /// resident-agent path answer "anything new?" with a `stat` instead of a
+    /// full config read + YAML parse on every request. See
+    /// `sync_extensions_with_config`.
+    last_extension_config_mtime: Mutex<Option<std::time::SystemTime>>,
 }
 
 #[derive(Clone, Debug)]
@@ -372,6 +377,7 @@ impl Agent {
                 session_manager_for_inspectors,
             ),
             container: Mutex::new(None),
+            last_extension_config_mtime: Mutex::new(None),
         }
     }
 
@@ -1018,6 +1024,112 @@ impl Agent {
         }
 
         results
+    }
+
+    /// Bring a RESIDENT agent's extension set up to date with config.
+    ///
+    /// `extensions_or_default` already merges config-enabled extensions into a
+    /// session's stored snapshot — but only when an agent is CONSTRUCTED. A
+    /// resident agent never re-reads config, so enabling an extension in
+    /// Settings does not reach a chat that is already open.
+    ///
+    /// Observed 2026-08-13: the user asked for tide data at 23:24 in a session
+    /// created at 22:44, having added Brave and Tavily keys in between. The
+    /// session's stored extension set had neither, and the agent had been
+    /// resident the whole time, so no refresh ever ran. What made it a bad
+    /// failure rather than a missing feature is that the model could still SEE
+    /// the tool names — `search_available_extensions` reads config, not session
+    /// state — so it called `tavilywebsearch__tavily_search`, got
+    /// `-32002 Tool not found`, looped on `search_available_extensions` until
+    /// the runaway guard blocked it, and then told the user web search wasn't
+    /// available. Two working search providers, a confident tool call, and no
+    /// route to recovery short of starting a new chat.
+    ///
+    /// Additive only: this never removes an extension, so a session that
+    /// deliberately disabled one keeps that choice. Returns the keys newly
+    /// registered, for logging — silence here would recreate the original bug
+    /// in a quieter form.
+    ///
+    /// Called from the resident-agent path of `get_or_create_agent`, which
+    /// every agent-fetching route hits, so it is gated on the config file's
+    /// mtime. `Config::get_param` has no cache — it re-reads and re-parses the
+    /// ~16 KB config (plus the defaults file) on every call — so reading the
+    /// enabled set unconditionally would put two file reads and a YAML parse on
+    /// every request. One `stat` answers "did anything change?" instead.
+    pub async fn sync_extensions_with_config(self: &Arc<Self>, session_id: &str) -> Vec<String> {
+        let config = Config::global();
+        let mtime = std::fs::metadata(config.path())
+            .and_then(|m| m.modified())
+            .ok();
+        {
+            let mut last = self.last_extension_config_mtime.lock().await;
+            // `None` means the stat failed; fall through and do the real work
+            // rather than treating an unreadable config as "unchanged".
+            if let Some(mtime) = mtime {
+                if *last == Some(mtime) {
+                    return Vec::new();
+                }
+                // Claimed BEFORE the work, not after, and the lock is released
+                // here rather than held across extension startup. A second
+                // request arriving mid-sync therefore returns immediately and
+                // may observe a partially-synced agent — if it dispatches a tool
+                // call for an extension still starting, it can see one more
+                // "tool not found" before the sync lands.
+                //
+                // The alternatives are worse: holding this lock across startup
+                // blocks every other request to the agent for as long as an MCP
+                // server takes to boot, and claiming afterwards lets concurrent
+                // callers race to spawn the same server twice. The window is one
+                // request wide, only after a config change, and self-heals on
+                // the next call.
+                *last = Some(mtime);
+            }
+        }
+
+        let enabled = crate::config::extensions::get_enabled_extensions_with_config(config);
+
+        // Second gate: the file may have changed for an unrelated key, so only
+        // pay for extension work when something is genuinely missing.
+        let mut missing = Vec::new();
+        for cfg in enabled {
+            if !self
+                .extension_manager
+                .is_extension_enabled(&cfg.name())
+                .await
+            {
+                missing.push(cfg);
+            }
+        }
+        if missing.is_empty() {
+            return Vec::new();
+        }
+
+        let mut added = Vec::new();
+        for cfg in missing {
+            let name = cfg.name().to_string();
+            match self.add_extension_inner(cfg, session_id).await {
+                Ok(_) => added.push(name),
+                // A failure here must not break the turn — the user asked a
+                // question, not to load an extension. It is logged at warn so
+                // it is findable, which is more than the old path offered.
+                Err(e) => warn!(
+                    "Could not add newly-enabled extension {} to running session {}: {}",
+                    name, session_id, e
+                ),
+            }
+        }
+
+        if !added.is_empty() {
+            info!(
+                session_id = %session_id,
+                extensions = %added.join(", "),
+                "Added newly-enabled extensions to a running session"
+            );
+            if let Err(e) = self.persist_extension_state(session_id).await {
+                warn!("Failed to persist extension state after config sync: {}", e);
+            }
+        }
+        added
     }
 
     pub async fn add_extension(

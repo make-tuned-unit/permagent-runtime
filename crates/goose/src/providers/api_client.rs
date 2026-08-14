@@ -276,13 +276,30 @@ pub struct ApiRequestBuilder<'a> {
     session_id: Option<&'a str>,
 }
 
+/// How long to wait for the TCP/TLS connection itself, independent of the
+/// request budget. Generous enough for a sleepy tailnet peer to answer, short
+/// enough that an endpoint which is simply gone fails while the user is still
+/// looking at the screen.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
 impl ApiClient {
     pub fn new(host: String, auth: AuthMethod) -> Result<Self> {
         Self::with_timeout(host, auth, Duration::from_secs(600))
     }
 
     pub fn with_timeout(host: String, auth: AuthMethod, timeout: Duration) -> Result<Self> {
-        let mut client_builder = Client::builder().timeout(timeout);
+        // Separate the CONNECT budget from the overall one. `timeout` covers a
+        // whole request and is legitimately long (600s by default) because
+        // generation is slow — but establishing a TCP connection is not, and
+        // without a separate bound an unreachable endpoint hangs for the full
+        // ten minutes before the caller learns anything.
+        //
+        // That is the difference between "my remote model is asleep, tell me"
+        // and a chat window that appears frozen. Matches the split already used
+        // by download_manager (30s connect) and the mesh prober (5s).
+        let mut client_builder = Client::builder()
+            .timeout(timeout)
+            .connect_timeout(CONNECT_TIMEOUT);
 
         // Configure TLS if needed
         let tls_config = TlsConfig::from_config()?;
@@ -632,6 +649,36 @@ ShGoCNbfNS+COlPMRAujyDlATZcLs9p4tA==
     fn test_invalid_pem() {
         let result = convert_key_to_pkcs8_pem("not a pem");
         assert!(result.is_err());
+    }
+}
+
+#[cfg(test)]
+mod connect_timeout_tests {
+    use super::*;
+
+    /// Hardening for the remote-Ollama path (a model served from another
+    /// machine over a tailnet): when that peer is asleep or gone, the user must
+    /// find out in seconds, not after the 600s request budget expires with a
+    /// frozen-looking chat.
+    #[tokio::test]
+    async fn unreachable_host_fails_fast_not_after_the_request_budget() {
+        // 203.0.113.0/24 is TEST-NET-3 (RFC 5737) — guaranteed unroutable, so
+        // this exercises connect failure without depending on the network.
+        let client = ApiClient::with_timeout(
+            "http://203.0.113.1:11434".to_string(),
+            AuthMethod::NoAuth,
+            Duration::from_secs(600),
+        )
+        .expect("client builds");
+
+        let started = std::time::Instant::now();
+        let _ = client.response_get(None, "api/tags").await;
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(60),
+            "connect must be bounded well under the request budget, took {elapsed:?}"
+        );
     }
 }
 

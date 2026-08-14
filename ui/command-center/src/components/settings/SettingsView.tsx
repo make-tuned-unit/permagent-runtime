@@ -11,6 +11,7 @@ import {
   setOsNotificationsEnabled, KIND_LABELS, type NotificationKind,
 } from '../../lib/notifications';
 import { ProvidersSection } from './ProvidersSection';
+import { DevRootsSection } from './DevRootsSection';
 import { SearchToolsSection } from './SearchToolsSection';
 import { usePersona } from './useSettings';
 import { resolveSettingsSection } from './sections';
@@ -218,6 +219,9 @@ export function PreferencesPanel() {
             ))}
           </select>
         </Row>
+      </Section>
+      <Section title="Your code" sub="Where you keep your repositories on this machine. Asked during setup; changeable here at any time.">
+        <DevRootsSection />
       </Section>
       <NotificationSettings />
     </div>

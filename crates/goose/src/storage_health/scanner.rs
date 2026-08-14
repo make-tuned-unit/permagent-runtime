@@ -54,26 +54,36 @@ fn home_dir() -> PathBuf {
 /// fall back to `home` itself.
 fn dev_scan_roots(home: &Path) -> Vec<(PathBuf, u32)> {
     let conventional = ["dev", "code", "src", "projects", "repos", "workspace"];
-    // Also check Documents/GitHub (common for GitHub Desktop users)
-    let extra = ["Documents/GitHub"];
 
     let mut roots: Vec<(PathBuf, u32)> = Vec::new();
     for name in &conventional {
-        let p = home.join(name);
-        if p.is_dir() {
-            roots.push((p, 4));
+        // Both ~/dev and ~/Documents/dev. Nesting the code directory under
+        // Documents is common, and on 2026-08-13 it made this scan report a
+        // clean machine while 96 GB of cargo `target/` sat in
+        // ~/Documents/dev/<repo>/target — the user's whole complaint was that
+        // the scan "found nothing", and it had simply never looked there.
+        for base in [home.to_path_buf(), home.join("Documents")] {
+            let p = base.join(name);
+            if p.is_dir() {
+                roots.push((p, 4));
+            }
         }
     }
-    for name in &extra {
-        let p = home.join(name);
+    // Xcode's default, and GitHub Desktop's.
+    for extra in ["Developer", "Documents/GitHub"] {
+        let p = home.join(extra);
         if p.is_dir() {
             roots.push((p, 4));
         }
     }
 
     if roots.is_empty() {
-        // Fallback: scan `home` itself with depth 3, skip irrelevant subdirs
-        roots.push((home.to_path_buf(), 3));
+        // Fallback: walk `home`, skipping irrelevant subdirs.
+        //
+        // Depth 4, not 3. A repo one folder deep — `Documents/dev/<repo>/target`
+        // — needs four levels, and at 3 the walk stopped one short of exactly
+        // the directories this scanner exists to find.
+        roots.push((home.to_path_buf(), 4));
     }
     roots
 }
@@ -103,7 +113,26 @@ fn should_skip_dev_dir(path: &Path, home: &Path) -> bool {
 /// Scan for cargo target/ directories (with Cargo.toml sibling)
 /// and node_modules/ directories (with package.json sibling).
 pub fn scan_dev_caches(counter: &mut u32) -> Vec<ScanFinding> {
+    // Confirmed roots are resolved HERE, at the impure entry point, and never
+    // inside `scan_dev_caches_in` — that function takes its root as a
+    // parameter precisely so tests are hermetic (see the note above its tests
+    // about injection removing shared global state). Reading Config::global()
+    // or the real $HOME from inside it made three tests depend on the machine
+    // they ran on.
+    let confirmed = crate::config::dev_roots::dev_roots();
+    if !confirmed.is_empty() {
+        return scan_dev_caches_in_roots(&confirmed, counter);
+    }
     scan_dev_caches_in(&home_dir(), counter)
+}
+
+/// Scan an explicit set of roots — the user's confirmed code directories.
+fn scan_dev_caches_in_roots(roots: &[PathBuf], counter: &mut u32) -> Vec<ScanFinding> {
+    let mut findings = Vec::new();
+    for root in roots {
+        findings.extend(scan_dev_caches_in(root, counter));
+    }
+    findings
 }
 
 fn scan_dev_caches_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> {
@@ -433,6 +462,72 @@ mod tests {
     // (the config/provider `env_lock` mutex) could clobber `HOME` mid-scan.
     // Injecting the root removes the shared global state instead of trying to
     // lock it — the race is gone by construction.
+
+    /// A CONFIRMED root (what onboarding stores) is scanned directly, and does
+    /// not have to look like a home directory. Without this the behaviour held
+    /// only by accident: `scan_dev_caches_in` treats its argument as a home,
+    /// finds no conventional child inside it, and survives via the fallback.
+    #[test]
+    fn a_confirmed_root_is_scanned_directly() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("permagent-runtime");
+        fs::create_dir_all(project.join("target/debug")).unwrap();
+        fs::write(project.join("Cargo.toml"), "[package]").unwrap();
+        fs::write(project.join("target/debug/big.o"), vec![0u8; 11_000_000]).unwrap();
+
+        let mut counter = 0;
+        let findings = scan_dev_caches_in_roots(&[root.path().to_path_buf()], &mut counter);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.path.contains("permagent-runtime")),
+            "a repo directly inside a confirmed root must be found: {findings:?}"
+        );
+    }
+
+    /// Regression, 2026-08-13. Repos lived in ~/Documents/dev, which matched no
+    /// conventional root, and the $HOME fallback only walked 3 deep — one level
+    /// short of `Documents/dev/<repo>/target`. The scan reported a clean machine
+    /// while 96 GB of build artifacts sat there.
+    #[test]
+    fn finds_cargo_target_when_repos_live_under_documents() {
+        let home = tempfile::tempdir().unwrap();
+        let project = home.path().join("Documents/dev/permagent-runtime");
+        fs::create_dir_all(project.join("target/debug")).unwrap();
+        fs::write(project.join("Cargo.toml"), "[package]").unwrap();
+        // Above the dev-cache reporting floor (see the sibling test).
+        let data = vec![0u8; 11_000_000];
+        fs::write(project.join("target/debug/big.o"), &data).unwrap();
+
+        let mut counter = 0;
+        let findings = scan_dev_caches_in(home.path(), &mut counter);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.path.contains("permagent-runtime")),
+            "a repo under Documents/dev must be found: {findings:?}"
+        );
+    }
+
+    /// The same layout must also be reachable through the bare-$HOME fallback,
+    /// which is what runs when no conventional root exists at all.
+    #[test]
+    fn home_fallback_reaches_one_folder_deeper_than_a_bare_repo() {
+        let home = tempfile::tempdir().unwrap();
+        // No conventional root anywhere, so dev_scan_roots falls back to $HOME.
+        let project = home.path().join("Code Projects/client-work/api");
+        fs::create_dir_all(project.join("target/debug")).unwrap();
+        fs::write(project.join("Cargo.toml"), "[package]").unwrap();
+        fs::write(project.join("target/debug/big.o"), vec![0u8; 11_000_000]).unwrap();
+
+        let roots = dev_scan_roots(home.path());
+        assert_eq!(roots.len(), 1, "expected the $HOME fallback: {roots:?}");
+        assert!(
+            roots[0].1 >= 4,
+            "fallback must reach depth 4, got {}",
+            roots[0].1
+        );
+    }
 
     #[test]
     fn test_dev_cache_finds_target_with_cargo_toml() {

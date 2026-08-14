@@ -175,6 +175,17 @@ project, onLaunch, onVisit }: {
             onClick={() => onLaunch(project, 'codex')}
           />
           <ActionBtn
+            label="Cursor"
+            disabled={!project.rootPath}
+            tooltip={!project.rootPath
+              ? 'Add a root path to launch a terminal here.'
+              : 'Cursor CLI — install with: curl https://cursor.com/install -fsS | bash'}
+            // `cursor-agent`, not the `agent` symlink its installer also drops
+            // in ~/.local/bin: "agent" is generic enough to collide with an
+            // unrelated binary already on PATH.
+            onClick={() => onLaunch(project, 'cursor-agent')}
+          />
+          <ActionBtn
             label="Permagent"
             disabled={!project.rootPath}
             tooltip={!project.rootPath

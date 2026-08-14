@@ -25,11 +25,66 @@ pub use super::openai::{
     create_request, format_messages, format_tools, get_usage, validate_tool_schemas,
 };
 
+/// Recover a tool call a model emitted as plain JSON text instead of through
+/// the structured `tool_calls` channel.
+///
+/// Reproduced 2026-08-13 against a local qwen3-coder:30b (IQ2_M) served by
+/// Ollama. With a small tool set the model returns proper `tool_calls`; with
+/// Permagent's real request — 91 tools, a 178 KB payload — it instead answers
+/// with `tool_calls: null` and the call as content:
+///
+/// ```text
+/// {"name": "review_struggles", "arguments": {}}
+/// ```
+///
+/// The user sees raw JSON where a reply should be, and the tool never runs.
+/// The JSON is perfectly well formed; only the channel is wrong. This is the
+/// same recovery [`parse_xml_tool_calls`] already performs for models that emit
+/// the XML/Hermes form.
+///
+/// Deliberately strict: the WHOLE trimmed text must be one object with a string
+/// `name` and an object (or absent) `arguments`. A reply that merely discusses
+/// JSON, or embeds some in prose, must never be swallowed and turned into a
+/// tool invocation — a false positive here executes something the user never
+/// asked for, which is far worse than showing the raw text.
+pub fn parse_json_tool_call(content: &str) -> Option<MessageContent> {
+    let trimmed = content.trim();
+    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+        return None;
+    }
+
+    let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
+    let obj = value.as_object()?;
+
+    // Exactly the call shape — nothing else may ride along.
+    if obj.keys().any(|k| k != "name" && k != "arguments") {
+        return None;
+    }
+
+    let name = obj.get("name")?.as_str()?.to_string();
+    if !is_valid_function_name(&name) {
+        return None;
+    }
+
+    let arguments = match obj.get("arguments") {
+        Some(serde_json::Value::Object(map)) => map.clone(),
+        None => serde_json::Map::new(),
+        // `arguments` present but not an object: not the shape we recognise.
+        Some(_) => return None,
+    };
+
+    Some(MessageContent::tool_request(
+        Uuid::new_v4().to_string(),
+        Ok(CallToolRequestParams::new(name)
+            .with_arguments(object(serde_json::Value::Object(arguments)))),
+    ))
+}
+
+/// Returns a tuple of (prefix_text, tool_calls) where prefix_text is any text before the first function tag.
 /// Parse XML-style tool calls from content (Ollama/Qwen3-coder fallback format).
 ///
 /// Format: `<function=name><parameter=key>value</parameter>...</function>`
 ///
-/// Returns a tuple of (prefix_text, tool_calls) where prefix_text is any text before the first function tag.
 pub fn parse_xml_tool_calls(content: &str) -> (Option<String>, Vec<MessageContent>) {
     let mut tool_calls = Vec::new();
 
@@ -168,6 +223,7 @@ where
 
         let mut accumulated_text = String::new();
         let mut xml_detected = false;
+        let mut json_candidate = false;
         let mut last_usage: Option<ProviderUsage> = None;
 
         while let Some(result) = base_stream.next().await {
@@ -186,7 +242,18 @@ where
                         xml_detected = true;
                     }
 
-                    if xml_detected {
+                    // A JSON-form tool call (see `parse_json_tool_call`) is only
+                    // recognisable once the whole object has arrived, so hold
+                    // the text back while it still could be one rather than
+                    // streaming half an object to the user and retracting it.
+                    if !xml_detected
+                        && !json_candidate
+                        && accumulated_text.trim_start().starts_with('{')
+                    {
+                        json_candidate = true;
+                    }
+
+                    if xml_detected || json_candidate {
                         continue;
                     }
                 }
@@ -197,7 +264,19 @@ where
             }
         }
 
-        if xml_detected && !accumulated_text.is_empty() {
+        // A held-back JSON candidate resolves here: either it really was a tool
+        // call, or it was ordinary text that merely began with '{' and must be
+        // delivered verbatim.
+        if json_candidate && !xml_detected && !accumulated_text.is_empty() {
+            let contents = match parse_json_tool_call(&accumulated_text) {
+                Some(tool_call) => vec![tool_call],
+                None => vec![MessageContent::text(&accumulated_text)],
+            };
+            yield (
+                Some(Message::new(Role::Assistant, chrono::Utc::now().timestamp(), contents)),
+                last_usage,
+            );
+        } else if xml_detected && !accumulated_text.is_empty() {
             let (prefix, xml_tool_calls) = parse_xml_tool_calls(&accumulated_text);
 
             if !xml_tool_calls.is_empty() {
@@ -231,6 +310,45 @@ where
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Reproduced 2026-08-13 against a local qwen3-coder:30b (IQ2_M): with
+    /// Permagent's real request (91 tools, 178 KB) the model answered with
+    /// `tool_calls: null` and put the call in the content, so the user saw raw
+    /// JSON in the chat and the tool never ran.
+    #[test]
+    fn json_tool_call_emitted_as_text_is_recovered() {
+        let recovered = parse_json_tool_call(r#"{"name": "review_struggles", "arguments": {}}"#)
+            .expect("a bare call object must be recovered");
+        assert!(matches!(recovered, MessageContent::ToolRequest(_)));
+
+        // Whitespace and a populated argument map are the common real shapes.
+        let with_args = parse_json_tool_call(
+            "  {\"name\": \"todo__todo_write\", \"arguments\": {\"content\": \"a\"}}  ",
+        );
+        assert!(with_args.is_some());
+    }
+
+    /// A false positive here EXECUTES something the user never asked for, so
+    /// the recogniser must stay strict. Ordinary replies that merely contain or
+    /// resemble JSON must pass through as text.
+    #[test]
+    fn ordinary_text_is_never_mistaken_for_a_tool_call() {
+        for text in [
+            "Here is some JSON: {\"name\": \"x\", \"arguments\": {}} — use it carefully.",
+            r#"{"name": "no_args_key", "extra": 1}"#,
+            r#"{"name": "bad name!", "arguments": {}}"#,
+            r#"{"arguments": {}}"#,
+            r#"{"name": 42, "arguments": {}}"#,
+            r#"{"name": "x", "arguments": "not an object"}"#,
+            "I think the answer is 4.",
+            "",
+        ] {
+            assert!(
+                parse_json_tool_call(text).is_none(),
+                "must not be treated as a tool call: {text}"
+            );
+        }
+    }
 
     #[test]
     fn test_parse_xml_tool_calls_single() {
