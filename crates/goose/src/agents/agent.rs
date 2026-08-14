@@ -1069,6 +1069,19 @@ impl Agent {
                 if *last == Some(mtime) {
                     return Vec::new();
                 }
+                // Claimed BEFORE the work, not after, and the lock is released
+                // here rather than held across extension startup. A second
+                // request arriving mid-sync therefore returns immediately and
+                // may observe a partially-synced agent — if it dispatches a tool
+                // call for an extension still starting, it can see one more
+                // "tool not found" before the sync lands.
+                //
+                // The alternatives are worse: holding this lock across startup
+                // blocks every other request to the agent for as long as an MCP
+                // server takes to boot, and claiming afterwards lets concurrent
+                // callers race to spawn the same server twice. The window is one
+                // request wide, only after a config change, and self-heals on
+                // the next call.
                 *last = Some(mtime);
             }
         }
