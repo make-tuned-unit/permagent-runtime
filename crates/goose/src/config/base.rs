@@ -142,7 +142,7 @@ fn test_config_root() -> PathBuf {
 /// `~/.permagent/config.yaml` — the Guard flag, the telemetry choice — and a
 /// green run proves only that it was green on that machine.
 #[cfg(test)]
-#[ctor::ctor]
+#[ctor::ctor(unsafe)]
 fn pin_config_to_temp_root_for_tests() {
     let root = test_config_root();
     // A pid can be reused; start from an empty directory so a previous run's
