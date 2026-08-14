@@ -613,6 +613,7 @@ pub async fn backup_scheduler_loop() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Datelike;
 
     #[test]
     fn test_parse_snapshot_filename_daily() {
