@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { FiCopy, FiCheck } from 'react-icons/fi';
+import { FiCopy, FiCheck, FiAlertCircle } from 'react-icons/fi';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { useCopyToClipboard } from '../../lib/clipboard';
 
 /** How long a block must stop growing before it is worth re-colouring. Well
  *  under the gap between a stream ending and the reader's eye reaching the
@@ -16,7 +17,7 @@ export function CodeBlock({ language, code }: { language: string; code: string }
   // streaming block stay on screen while the code kept growing — the block
   // would appear to freeze mid-stream, which is worse than no colour at all.
   const [highlight, setHighlight] = useState<{ code: string; theme: string; html: string } | null>(null);
-  const [copied, setCopied] = useState(false);
+  const { state: copyState, copy } = useCopyToClipboard();
   // Whether this block has been highlighted at least once — see the effect.
   const highlightedOnce = useRef(false);
 
@@ -54,12 +55,7 @@ export function CodeBlock({ language, code }: { language: string; code: string }
     return () => { cancelled = true; clearTimeout(timer); };
   }, [code, language, shikiTheme]);
 
-  const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(code).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  }, [code]);
+  const handleCopy = useCallback(() => { void copy(code); }, [copy, code]);
 
   return (
     <div
@@ -73,12 +69,17 @@ export function CodeBlock({ language, code }: { language: string; code: string }
         <span className="text-[10px]" style={{ fontFamily: font.mono, color: colors.textMuted }}>{language}</span>
         <button
           onClick={handleCopy}
-          className="flex items-center gap-1 text-[10px] transition opacity-0 group-hover:opacity-100"
+          aria-label={`Copy ${language} code`}
+          // focus-visible keeps the button reachable by keyboard: opacity-0
+          // alone made it tabbable-but-invisible, which is worse than absent.
+          className="flex items-center gap-1 text-[10px] transition opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
           style={{ fontFamily: font.mono, color: colors.textMuted }}
           onMouseEnter={e => (e.currentTarget.style.color = colors.text)}
           onMouseLeave={e => (e.currentTarget.style.color = colors.textMuted)}
         >
-          {copied ? <><FiCheck size={11} style={{ color: colors.success }} /> Copied</> : <><FiCopy size={11} /> Copy</>}
+          {copyState === 'copied' ? <><FiCheck size={11} style={{ color: colors.success }} /> Copied</>
+            : copyState === 'failed' ? <><FiAlertCircle size={11} style={{ color: colors.danger }} /> Copy failed</>
+            : <><FiCopy size={11} /> Copy</>}
         </button>
       </div>
       {html ? (
