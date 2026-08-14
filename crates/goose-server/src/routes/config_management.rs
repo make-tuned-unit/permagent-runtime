@@ -551,6 +551,12 @@ pub struct SetSecretSourceRequest {
 
 #[derive(Deserialize, ToSchema)]
 pub struct TestSecretSourceRequest {
+    /// Config key the candidate source is being tested FOR. Not needed to
+    /// perform the read — a reference resolves on its own — but it is named in
+    /// the failure so the message matches the one `Config::get_secret` will
+    /// produce later ("Couldn't read 'OPENAI_API_KEY' from 1Password: …").
+    /// Two different sentences for the same underlying failure is how a user
+    /// ends up believing they are looking at two different problems.
     pub key: String,
     pub source: String,
 }
@@ -765,13 +771,16 @@ pub async fn test_secret_source(
 ) -> Result<Json<TestSecretSourceResponse>, ErrorResponse> {
     use permagent::config::secret_source::{self, SecretSource};
 
-    let fail = |error: String| TestSecretSourceResponse {
-        ok: false,
-        masked_value: None,
-        error: Some(error),
-    };
-
     let outcome = bounded_secret_work("Testing the secret source", move || {
+        // Phrased like `ConfigError::SecretSource`, and naming the same key,
+        // so a reference that fails here and a reference that fails later
+        // during a chat turn read as ONE problem rather than two.
+        let fail = |detail: String| TestSecretSourceResponse {
+            ok: false,
+            masked_value: None,
+            error: Some(format!("Couldn't read '{}': {detail}", req.key)),
+        };
+
         let source = match SecretSource::parse(&req.source) {
             Ok(s) => s,
             Err(e) => return fail(e.to_string()),
@@ -1648,6 +1657,32 @@ mod tests {
         assert_eq!(v["ok"], true);
         assert!(v.get("masked_value").is_none(), "camelCase on the wire");
         assert!(v["maskedValue"].as_str().unwrap().contains('*'));
+    }
+
+    /// The request's `key` must reach the failure message.
+    ///
+    /// Caught by `-D dead-code` first: the field was accepted on the wire and
+    /// never read, so the endpoint answered "not a valid secret source" with no
+    /// indication of WHICH key was being tested — while the same failure later,
+    /// during a chat turn, would say "Couldn't read 'OPENAI_API_KEY' from …".
+    /// Two sentences for one problem is how a user concludes they have two.
+    #[tokio::test]
+    async fn secret_source_test_failure_names_the_key() {
+        let Json(response) = test_secret_source(Json(TestSecretSourceRequest {
+            key: "OPENAI_API_KEY".to_string(),
+            source: "1password".to_string(),
+        }))
+        .await
+        .expect("a failed test is a result, not a request error");
+
+        assert!(!response.ok, "'1password' is not a valid source spec");
+        let error = response.error.clone().expect("a failure must say why");
+        assert!(error.contains("OPENAI_API_KEY"), "{error}");
+        assert!(error.contains("not a valid secret source"), "{error}");
+        assert!(
+            response.masked_value.is_none(),
+            "a failed read has no value to show"
+        );
     }
 
     /// `bounded_secret_work` exists because a blocking secret read parks a
