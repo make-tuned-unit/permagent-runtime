@@ -380,19 +380,21 @@ pub const MESH_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
              the Librarian's memory descriptions and the Reader's document summaries — actually \
              runs: on this device by default, or on a larger machine when a trusted pool has been \
              configured for it. Interactive chat always stays on this machine; only batch \
-             inference is ever eligible to run elsewhere, and by construction only prompts and \
-             model computation can travel — the payload type that carries work to a peer cannot \
-             even represent the user's Brain, documents, or memories, so a memory store can never \
-             leave the device",
+             inference is ever eligible to run elsewhere, and what travels is a prompt plus \
+             sampling options — never a Brain, a document store, or a memory database as such. \
+             But the prompt itself carries the text being summarised: the memory's key and \
+             content, or up to 6000 characters of the document. So a configured pool does see \
+             that content",
         why_it_matters:
             "It is the safety model and forward seam for pooling compute across a user's own \
              trusted machines — a stronger device can host a larger model while a lighter one \
-             offloads its heavy passes — without the privacy cost that sinks a volunteer mesh: \
-             nothing but inference computation is representable on the wire, enforced by the type \
-             system rather than by policy. It stays local by default and activates only when a \
-             trusted pool is configured — there is no in-app pooling to switch on today — and it \
-             is the seam that later grows into split, hardware-attested, and fully-encrypted \
-             inference",
+             offloads its heavy passes. The wire carries inference requests only — no store is \
+             ever synced or handed over — but that is not the same as privacy: the memory or \
+             document text being summarised rides inside the prompt, so tell the user plainly \
+             that a machine they pool to reads what it summarises for them. It stays local by \
+             default and activates only when a trusted pool is configured — there is no in-app \
+             pooling to switch on today — and it is the seam that later grows into split, \
+             hardware-attested, and fully-encrypted inference",
         state_source: crate::agents::self_knowledge::StateSource::Static,
         // Describe-only: a pool is configured via env today (no in-app control),
         // so this surface carries no onboarding lesson — the agent explains what

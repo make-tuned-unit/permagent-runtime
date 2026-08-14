@@ -57,23 +57,36 @@ pub const SOVEREIGN_BLOCK_PREFIX: &str = "[sovereign]";
 ///
 /// Always-visible (NOT render-gated on the mode), matching the other guards:
 /// this machinery is standing policy, not a flag-gated experiment — the egress
-/// audit records every cloud call even with the mode off, and sovereignty is
-/// per-*context* (`is_context_sovereign` = global mode OR a session mark), so
-/// there is no single "off" bit to gate on; gating on the global toggle would
-/// hide exactly the knowledge needed to explain a session-sovereign
-/// `[sovereign]` refusal, or to offer the boundary when the user asks for it.
-/// Static (no live "currently on/off" line): the guard render path is
-/// editorial by design, and the honest live truth is per-context, which the
-/// brief builder cannot know — a global-only status line would over-claim in a
-/// sovereign session. The live signal is the refusal itself, which carries
+/// audit records cloud inference even with the mode off, so there is no single
+/// "off" bit to gate on, and gating on the toggle would hide exactly the
+/// knowledge needed to offer the boundary when the user asks for it. Static (no
+/// live "currently on/off" line): the guard render path is editorial by design.
+/// The live signal is the refusal itself, which carries
 /// [`SOVEREIGN_BLOCK_PREFIX`] and reaches the agent exactly when it matters.
+///
+/// The prose deliberately claims neither per-session sovereignty nor blanket
+/// egress auditing. [`mark_session_sovereign`] has no production caller (no
+/// route, no UI control, no project flag sets it) and three cloud paths — the
+/// Guard's code scanner and the two analytics paths — bypass the audit entirely.
+/// If either gap is closed, restore the corresponding sentence here.
 pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
     crate::agents::self_knowledge::FeatureDescriptor {
         id: "sovereignty_guard",
         display_name: "Sovereignty guard",
         category: crate::agents::self_knowledge::FeatureCategory::Guard,
         what_it_does:
-            "A fail-closed data boundary at the provider layer. When sovereign mode is on — the Sovereignty section in Settings, or SOVEREIGN_MODE=true in config — or the current session is individually marked sovereign, every cloud inference call is refused before any data leaves this machine, and only local models (the built-in local-inference provider, or Ollama on localhost) may run; the mesh side-path is refused the same way. Independently of the toggle, every cloud call — blocked or allowed — is recorded in an append-only local egress audit log the user can read in Settings, and a strict-audit option (SOVEREIGN_STRICT_AUDIT) refuses an allowed cloud call whose audit write failed rather than let egress go unlogged",
+            "A fail-closed data boundary at the provider layer. When sovereign mode is on — the \
+             Sovereignty section in Settings, or SOVEREIGN_MODE=true in config — every cloud \
+             inference call is refused before any data leaves this machine, and only local models \
+             (the built-in local-inference provider, or Ollama on localhost) may run; the mesh \
+             side-path is refused the same way. Independently of the toggle, every cloud \
+             inference call — blocked or allowed — is recorded in an append-only local egress \
+             audit log the user can read in Settings, and a strict-audit option \
+             (SOVEREIGN_STRICT_AUDIT) refuses an allowed cloud call whose audit write failed \
+             rather than let egress go unlogged. Provider inference is all that audit covers \
+             today: the Guard's own code scanner, which sends the user's source to a cloud model, \
+             and analytics egress both reach the network outside it — they honour the sovereign \
+             toggle but write no audit row, so a quiet audit log is not proof nothing left",
         why_it_matters:
             "A refusal starting with [sovereign] is this boundary working, not an outage: tell the user plainly that this context is sovereign so the request stayed on this machine, and offer the local routes — a local model through Ollama or the built-in local-inference provider — or the Settings toggle if they explicitly choose to allow cloud egress again. Never try to work around the block by re-sending the same content through another provider, session, or worker; the boundary is enforced in code at the single choke point every provider call flows through",
         state_source: crate::agents::self_knowledge::StateSource::Static,

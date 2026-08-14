@@ -555,8 +555,9 @@ impl RecipeAuthorClient {
                  New automations are created PAUSED and run only after the user approves them \
                  in Automate — never create a second variant because one appears inactive, and \
                  never recreate an automation the user deleted. Schedules may not fire more often \
-                 than every 15 minutes. Headless runs get a minimal toolset unless the recipe \
-                 declares `extensions` explicitly."
+                 than every 15 minutes. Headless runs inherit the user's enabled extensions \
+                 minus `orchestrator` and `recipe_author`, which a recipe must declare in \
+                 `extensions` to get."
                     .to_string(),
                 schema::<CreateRecipeParams>(),
             ),
