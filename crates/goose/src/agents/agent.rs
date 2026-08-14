@@ -1020,6 +1020,77 @@ impl Agent {
         results
     }
 
+    /// Bring a RESIDENT agent's extension set up to date with config.
+    ///
+    /// `extensions_or_default` already merges config-enabled extensions into a
+    /// session's stored snapshot — but only when an agent is CONSTRUCTED. A
+    /// resident agent never re-reads config, so enabling an extension in
+    /// Settings does not reach a chat that is already open.
+    ///
+    /// Observed 2026-08-13: the user asked for tide data at 23:24 in a session
+    /// created at 22:44, having added Brave and Tavily keys in between. The
+    /// session's stored extension set had neither, and the agent had been
+    /// resident the whole time, so no refresh ever ran. What made it a bad
+    /// failure rather than a missing feature is that the model could still SEE
+    /// the tool names — `search_available_extensions` reads config, not session
+    /// state — so it called `tavilywebsearch__tavily_search`, got
+    /// `-32002 Tool not found`, looped on `search_available_extensions` until
+    /// the runaway guard blocked it, and then told the user web search wasn't
+    /// available. Two working search providers, a confident tool call, and no
+    /// route to recovery short of starting a new chat.
+    ///
+    /// Additive only: this never removes an extension, so a session that
+    /// deliberately disabled one keeps that choice. Returns the keys newly
+    /// registered, for logging — silence here would recreate the original bug
+    /// in a quieter form.
+    pub async fn sync_extensions_with_config(self: &Arc<Self>, session_id: &str) -> Vec<String> {
+        let enabled =
+            crate::config::extensions::get_enabled_extensions_with_config(Config::global());
+
+        // Cheap gate first: the common case is that nothing changed, and that
+        // case must not cost a session read or an extension-manager write.
+        let mut missing = Vec::new();
+        for cfg in enabled {
+            if !self
+                .extension_manager
+                .is_extension_enabled(&cfg.name())
+                .await
+            {
+                missing.push(cfg);
+            }
+        }
+        if missing.is_empty() {
+            return Vec::new();
+        }
+
+        let mut added = Vec::new();
+        for cfg in missing {
+            let name = cfg.name().to_string();
+            match self.add_extension_inner(cfg, session_id).await {
+                Ok(_) => added.push(name),
+                // A failure here must not break the turn — the user asked a
+                // question, not to load an extension. It is logged at warn so
+                // it is findable, which is more than the old path offered.
+                Err(e) => warn!(
+                    "Could not add newly-enabled extension {} to running session {}: {}",
+                    name, session_id, e
+                ),
+            }
+        }
+
+        if !added.is_empty() {
+            info!(
+                session_id = %session_id,
+                extensions = %added.join(", "),
+                "Added newly-enabled extensions to a running session"
+            );
+            if let Err(e) = self.persist_extension_state(session_id).await {
+                warn!("Failed to persist extension state after config sync: {}", e);
+            }
+        }
+        added
+    }
+
     pub async fn add_extension(
         &self,
         extension: ExtensionConfig,
