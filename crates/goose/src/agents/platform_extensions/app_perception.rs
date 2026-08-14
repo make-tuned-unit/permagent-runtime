@@ -24,6 +24,30 @@ use std::collections::BTreeMap;
 use tokio_util::sync::CancellationToken;
 
 pub static EXTENSION_NAME: &str = "app_perception";
+
+/// Every surface `observe_app` can read.
+///
+/// A list rather than a bare `match` because coverage now has to be checkable.
+/// The ruling is that everything in the app is queryable by the agent, and the
+/// only way that stays true is if a new surface CANNOT ship without either
+/// gaining an aspect here or being explicitly exempted — see
+/// `every_shipped_tab_is_observable_or_exempt` in the daemon crate, which reads
+/// this list against the shipped app catalog.
+///
+/// The alternative is what produced the bug this list was added for: the agent
+/// could describe the Grow tab from an editorial descriptor while being
+/// structurally unable to read a single row in it, and nothing anywhere failed.
+pub const OBSERVABLE_SURFACES: &[&str] = &[
+    "analytics",
+    "projects",
+    "goals",
+    "cards",
+    "spend",
+    "sessions",
+    "briefings",
+    "grow",
+    "overview",
+];
 const LIST_LIMIT: usize = 5;
 
 /// A separate descriptor is intentional: the platform-extension descriptor
@@ -37,8 +61,11 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
         what_it_does:
             "You can directly perceive the aggregate data your Permagent home renders by \
              calling observe_app for analytics, projects, goals, cards, spend, sessions, \
-             briefings, or an overview. This is structured local state, not screenshot vision \
-             and not the website in the Build browser",
+             briefings, grow, or an overview. This is structured local state, not screenshot \
+             vision and not the website in the Build browser. `grow` returns the growth actions \
+             YOU recommended for a project, what you predicted each would move, and how the \
+             7/14/28-day sweep judged it — you have no memory of those recommendations, so read \
+             them rather than saying you do not know",
         why_it_matters:
             "Treat the app as your home: answer questions about what is happening here from \
              observe_app without navigating, taking screenshots, or calling browser page tools. \
@@ -51,7 +78,7 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ObserveAppParams {
     /// Room of the app to observe: analytics, projects, goals, cards, spend,
-    /// sessions, briefings, or overview.
+    /// sessions, briefings, grow, or overview.
     surface: String,
     /// Narrow scope. Required for analytics/cards; optional project name, slug,
     /// or id for goals. Never returned as a raw join id.
@@ -218,11 +245,81 @@ impl AppPerceptionClient {
             .with_instructions(
                 "Read the structured data behind the Permagent app. Use observe_app directly \
                  when the user asks what is happening in analytics, projects, goals/cards, \
-                 spend, sessions, agent briefings, or the overall home. Do not navigate first \
+                 spend, sessions, growth actions you have recommended, agent briefings, or the \
+                 overall home. Do not navigate first \
                  and do not use browser snapshots: browser tools see websites, not this app. \
                  This extension is read-only and returns aggregate answers with bounded lists.",
             );
         Ok(Self { info, context })
+    }
+
+    /// The growth actions THIS AGENT recommended, and how they are doing.
+    ///
+    /// Added 2026-08-14 after the user asked their agent about advice it had
+    /// given on the Grow tab and got nothing. That was not a memory failure:
+    /// `growth_actions` had four real rows and no tool could read them. The
+    /// agent could describe the Grow tab from a static self-knowledge
+    /// descriptor while being structurally unable to see a single thing in it.
+    ///
+    /// An agent that recommends a strategy and then cannot recall it can neither
+    /// follow up nor learn, which is the whole point of the verify → measure →
+    /// learn loop. Predictions are surfaced with the actions so the agent can
+    /// see what it CLAIMED as well as what it advised.
+    async fn observe_grow(&self, pool: &Pool<Sqlite>, scope: Option<&str>) -> Value {
+        let Some(scope) = scope.filter(|s| !s.trim().is_empty()) else {
+            return unavailable("grow", "grow requires a project name, slug, or id");
+        };
+        let project = match resolve_project(pool, scope).await {
+            Ok(p) => p,
+            Err(e) => return unavailable("grow", e),
+        };
+
+        let rows = match crate::growth::store::list_for_project(pool, &project.id).await {
+            Ok(r) => r,
+            Err(e) => return unavailable("grow", format!("could not read growth actions: {e}")),
+        };
+
+        let mut by_status: BTreeMap<String, i64> = BTreeMap::new();
+        for row in &rows {
+            *by_status.entry(row.status.clone()).or_insert(0) += 1;
+        }
+
+        // Bounded like every other aspect: tool output persists in the model
+        // conversation, so a full corpus would be paid for on every later turn.
+        let mut recent = Vec::new();
+        for row in rows.iter().take(LIST_LIMIT) {
+            let outcomes = crate::growth::store::outcomes_for(pool, &row.id)
+                .await
+                .unwrap_or_default();
+            recent.push(json!({
+                "title": safe_text(&row.title, 120),
+                "status": row.status,
+                // What the agent predicted. Null means it made no claim, which
+                // is different from "no result yet" and must not read the same.
+                "predicted": row.target_metric.as_ref().map(|m| json!({
+                    "metric": m,
+                    "direction": row.target_dir.clone(),
+                })),
+                "verifiedBy": row.verified_by,
+                "verifiedAt": row.verified_at,
+                "judged": outcomes.iter().map(|o| json!({
+                    "windowDays": o.window_days,
+                    "verdict": o.verdict,
+                    "deltaPct": o.delta_pct,
+                })).collect::<Vec<_>>(),
+            }));
+        }
+
+        json!({
+            "surface": "grow",
+            "status": "ok",
+            "queried": true,
+            "project": project.name,
+            "totalActions": rows.len(),
+            "byStatus": by_status,
+            "recent": recent,
+            "truncated": rows.len() > LIST_LIMIT,
+        })
     }
 
     async fn observe_analytics(
@@ -717,12 +814,13 @@ impl AppPerceptionClient {
             "spend" => self.observe_spend(&pool, args.scope.as_deref()).await,
             "sessions" => self.observe_sessions(args.window.as_deref()).await,
             "briefings" => self.observe_briefings(&pool).await,
+            "grow" => self.observe_grow(&pool, args.scope.as_deref()).await,
             "overview" => self.observe_overview(&pool).await,
             _ => {
                 return Err(format!(
-                    "Unknown surface \"{}\". Use analytics, projects, goals, cards, spend, \
-                     sessions, briefings, or overview.",
-                    safe_text(&args.surface, 80)
+                    "Unknown surface \"{}\". Use one of: {}.",
+                    safe_text(&args.surface, 80),
+                    OBSERVABLE_SURFACES.join(", ")
                 ))
             }
         };
@@ -738,7 +836,8 @@ impl AppPerceptionClient {
         vec![Tool::new(
             "observe_app".to_string(),
             "Read aggregate state from the data behind the Permagent app. Call this directly \
-             when asked about analytics, projects, goals/cards, spend, sessions, agent \
+             when asked about analytics, projects, goals/cards, spend, sessions, growth \
+             actions you recommended, agent \
              briefings, or what is happening overall. It does not require navigation and \
              never use get_page_snapshot for this job: browser snapshots describe a website, \
              not the Permagent app.\n\n\

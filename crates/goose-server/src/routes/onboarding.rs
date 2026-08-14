@@ -104,6 +104,87 @@ pub fn routes() -> Router {
 mod tests {
     use permagent::agents::self_knowledge::{find_descriptor, teachable};
 
+    /// Everything in the app must be queryable by the agent.
+    ///
+    /// This is the enforcement half of that ruling. Every tab the app actually
+    /// ships must either have an `observe_app` aspect or appear in
+    /// `NOT_YET_OBSERVABLE` with a reason — a new tab cannot ship without a
+    /// deliberate choice between the two, so coverage cannot rot quietly.
+    ///
+    /// It exists because of a real failure: the user asked their agent about
+    /// growth actions it had recommended and got nothing. `growth_actions` held
+    /// four rows; no tool could read them. The agent could DESCRIBE the Grow tab
+    /// from a static self-knowledge descriptor while being unable to see
+    /// anything in it, and no test anywhere objected. Editorial prose about a
+    /// surface is not the same as being able to read it, and only the prose was
+    /// ever checked.
+    ///
+    /// This is the mirror of `every_teachable_surface_is_in_the_shipped_catalog`
+    /// below: that one proves the agent never teaches a tab that does not exist;
+    /// this one proves the app never ships a tab the agent cannot read.
+    #[test]
+    fn every_shipped_tab_is_observable_or_exempt() {
+        use permagent::agents::platform_extensions::app_perception::OBSERVABLE_SURFACES;
+
+        /// Tabs with no `observe_app` aspect yet, and why. SHRINK THIS LIST.
+        /// An entry here is a promise not kept, not a design decision — the
+        /// agent cannot answer questions about these surfaces from its own
+        /// data, and will either say so or, worse, guess.
+        const NOT_YET_OBSERVABLE: &[(&str, &str)] = &[
+            (
+                "build",
+                "coding sessions + browser state have no aspect yet",
+            ),
+            (
+                "automate",
+                "scheduled jobs and their run history have no aspect yet",
+            ),
+            ("brain", "memory/recall state has no aspect yet"),
+            ("world", "world-view worker state has no aspect yet"),
+            ("inbox", "decision inbox has no aspect yet"),
+            ("skills", "installed/proposed skills have no aspect yet"),
+            ("trace", "execution trace has no aspect yet"),
+            ("settings", "configuration state has no aspect yet"),
+        ];
+
+        let catalog = crate::app_catalog::init();
+        let observable: std::collections::HashSet<String> = OBSERVABLE_SURFACES
+            .iter()
+            .map(|s| s.to_lowercase())
+            .collect();
+        let exempt: std::collections::HashSet<String> = NOT_YET_OBSERVABLE
+            .iter()
+            .map(|(t, _)| t.to_lowercase())
+            .collect();
+
+        for tab in &catalog.tabs {
+            let name = tab.name.to_lowercase();
+            assert!(
+                observable.contains(&name) || exempt.contains(&name),
+                "tab {:?} ships in the app but the agent cannot read it: add an observe_app \
+                 aspect, or add it to NOT_YET_OBSERVABLE with a reason. Everything in the app \
+                 is meant to be queryable by the agent.",
+                tab.name
+            );
+        }
+
+        // An exemption for a tab that no longer exists, or for one that HAS
+        // gained an aspect, is stale bookkeeping that hides real coverage.
+        let tabs: std::collections::HashSet<String> =
+            catalog.tabs.iter().map(|t| t.name.to_lowercase()).collect();
+        for (tab, _) in NOT_YET_OBSERVABLE {
+            let t = tab.to_lowercase();
+            assert!(
+                tabs.contains(&t),
+                "NOT_YET_OBSERVABLE lists {tab:?}, which is not a shipped tab — remove it"
+            );
+            assert!(
+                !observable.contains(&t),
+                "{tab:?} now has an observe_app aspect — remove it from NOT_YET_OBSERVABLE"
+            );
+        }
+    }
+
     /// The "no fake lesson" guarantee at the mounted-surface layer: every
     /// teachable capability's navigate target must be a tab in the **shipped**
     /// app catalog (parsed from catalog.yaml), not just the crate-local
