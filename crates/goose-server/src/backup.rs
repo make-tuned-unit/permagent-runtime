@@ -1,8 +1,16 @@
 //! Automated backup snapshots for memory.db and permagent.db.
 //!
-//! Uses VACUUM INTO via a dedicated read-only rusqlite connection. Both
-//! databases run in WAL mode, so VACUUM INTO produces a consistent,
-//! compacted single-file snapshot without conflicting with live writers.
+//! Uses SQLite's online backup API via a dedicated read-only rusqlite
+//! connection. Both databases run in WAL mode, and the backup API copies page
+//! by page under a read transaction, so the snapshot is consistent and includes
+//! rows still sitting in the WAL — without conflicting with live writers.
+//!
+//! Snapshots are NOT compacted. This used VACUUM INTO until 2026-08-14, which
+//! also rebuilt every page: ~15% smaller files for 10x the time (12.5 s vs
+//! 1.3 s on a 209 MB memory.db, measured). That mattered because the snapshot
+//! runs on the startup path as a pre-migration safety net, and the cost was
+//! pushing daemon startup past the desktop shell's health-wait budget. A safety
+//! net is for fidelity, not for saving disk.
 //!
 //! Layout:
 //!   ~/.permagent/backups/
@@ -170,8 +178,8 @@ pub enum BackupError {
     SourceMissing(PathBuf),
     #[error("insufficient disk space: need {need_bytes} bytes, have {free_bytes}")]
     InsufficientSpace { need_bytes: u64, free_bytes: u64 },
-    #[error("VACUUM INTO failed: {0}")]
-    VacuumFailed(String),
+    #[error("snapshot copy failed: {0}")]
+    SnapshotFailed(String),
     #[error("integrity check failed on snapshot: {0}")]
     IntegrityFailed(PathBuf),
     #[error("IO error: {0}")]
@@ -211,24 +219,77 @@ fn take_snapshot(
     let tmp_path = dest_dir.join(format!("{}.tmp", filename));
     let final_path = dest_dir.join(&filename);
 
-    // VACUUM INTO via a read-only connection. Safe under WAL.
+    // SQLite's online backup API via a read-only connection. Safe under WAL.
+    //
+    // This was `VACUUM INTO` until 2026-08-14. Both produce a consistent
+    // snapshot of a live database; the difference is that VACUUM also COMPACTS,
+    // rebuilding every page. On a 209 MB brain/memory.db that cost 12.5 s of a
+    // 15.4 s snapshot — and this runs on the STARTUP path, because the snapshot
+    // is a pre-migration safety net and has to precede schema migration.
+    //
+    // Measured on the user's machine: process start to `listening on :3001` was
+    // 21.4 s, against the desktop shell's 20 s health-wait budget. The app
+    // reported "backend slow to start" once a day, on the one launch where the
+    // 20-hour staleness check fired, for work that was proceeding correctly.
+    //
+    // Compaction is not what a safety net is for. It buys ~15% on disk (209 MB
+    // -> 178 MB per snapshot) and costs an order of magnitude in the one place
+    // where latency is visible to the user. Fidelity is unchanged: the backup
+    // API copies page by page under a read transaction, and the integrity check
+    // below still gates every snapshot.
     let t0 = std::time::Instant::now();
 
-    let conn = rusqlite::Connection::open_with_flags(
+    let source_conn = rusqlite::Connection::open_with_flags(
         source_db,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
-    .map_err(|e| BackupError::VacuumFailed(format!("open source: {e}")))?;
+    .map_err(|e| BackupError::SnapshotFailed(format!("open source: {e}")))?;
 
-    conn.execute_batch(&format!(
-        "VACUUM INTO '{}';",
-        tmp_path.to_string_lossy().replace('\'', "''")
-    ))
-    .map_err(|e| BackupError::VacuumFailed(format!("{e}")))?;
+    {
+        let mut dest_conn = rusqlite::Connection::open(&tmp_path)
+            .map_err(|e| BackupError::SnapshotFailed(format!("open destination: {e}")))?;
+        let backup = rusqlite::backup::Backup::new(&source_conn, &mut dest_conn)
+            .map_err(|e| BackupError::SnapshotFailed(format!("start backup: {e}")))?;
 
-    drop(conn);
+        // `step(-1)` is SQLite's documented "copy all remaining pages" form.
+        // Stepping in chunks exists to yield to concurrent writers mid-copy;
+        // this call blocks startup, so finishing promptly matters more than
+        // interleaving. The loop is belt-and-braces — one step should reach
+        // Done — and it must not spin: Busy and Locked are returned as errors
+        // rather than retried forever on the startup path.
+        loop {
+            match backup
+                .step(-1)
+                .map_err(|e| BackupError::SnapshotFailed(format!("{e}")))?
+            {
+                rusqlite::backup::StepResult::Done => break,
+                rusqlite::backup::StepResult::More => continue,
+                rusqlite::backup::StepResult::Busy => {
+                    return Err(BackupError::SnapshotFailed(
+                        "source database busy during snapshot".into(),
+                    ))
+                }
+                rusqlite::backup::StepResult::Locked => {
+                    return Err(BackupError::SnapshotFailed(
+                        "source database locked during snapshot".into(),
+                    ))
+                }
+                // StepResult is #[non_exhaustive]. An outcome this code does
+                // not recognise must not be read as success — a backup that
+                // silently isn't one is worse than a loud failure, and the
+                // caller already treats Err as non-fatal.
+                other => {
+                    return Err(BackupError::SnapshotFailed(format!(
+                        "unrecognised backup step result: {other:?}"
+                    )))
+                }
+            }
+        }
+    }
 
-    let vacuum_ms = t0.elapsed().as_millis();
+    drop(source_conn);
+
+    let copy_ms = t0.elapsed().as_millis();
 
     // Integrity check on the snapshot.
     if !check_integrity(&tmp_path) {
@@ -254,7 +315,7 @@ fn take_snapshot(
         path = %final_path.display(),
         source_bytes = source_size,
         size_bytes,
-        vacuum_ms,
+        copy_ms,
         total_ms,
         "Backup snapshot created"
     );
@@ -645,6 +706,49 @@ mod tests {
             .query_row("SELECT count(*) FROM items", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 2);
+    }
+
+    /// The snapshot must be faithful while the source is OPEN and in WAL mode —
+    /// which is how brain/memory.db always looks in production. `VACUUM INTO`
+    /// gave this for free; the online backup API has to be shown to give it
+    /// too, including rows sitting in the WAL rather than the main file.
+    #[test]
+    fn a_snapshot_of_a_live_wal_database_captures_uncheckpointed_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("live.db");
+        let backup_root = tmp.path().join("backups");
+
+        // Held open across the snapshot, exactly like the running daemon.
+        let live = rusqlite::Connection::open(&source).unwrap();
+        live.pragma_update(None, "journal_mode", "WAL").unwrap();
+        live.execute_batch(
+            "CREATE TABLE memories (id INTEGER PRIMARY KEY, body TEXT);
+             INSERT INTO memories VALUES (1, 'checkpointed');",
+        )
+        .unwrap();
+        live.pragma_update(None, "wal_checkpoint", "FULL").unwrap();
+        // Written AFTER the checkpoint, so it lives in the WAL, not the main
+        // database file. A naive file copy would lose exactly this row.
+        live.execute("INSERT INTO memories VALUES (2, ?1)", ["in-wal"])
+            .unwrap();
+
+        let info = force_snapshot(&source, &backup_root, DbTarget::Brain).unwrap();
+        assert!(info.integrity_ok, "snapshot failed its integrity check");
+
+        let snap =
+            rusqlite::Connection::open(backup_root.join("brain").join(&info.filename)).unwrap();
+        let bodies: Vec<String> = snap
+            .prepare("SELECT body FROM memories ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(
+            bodies,
+            vec!["checkpointed".to_string(), "in-wal".to_string()],
+            "the snapshot dropped a row that was still in the WAL"
+        );
     }
 
     #[test]
