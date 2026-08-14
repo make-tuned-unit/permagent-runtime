@@ -168,15 +168,15 @@ pub static WORKER_DESCRIPTORS: &[FeatureDescriptor] = &[
 /// exactly the one it can DO — and, with the flag off, the brief is byte-for-
 /// byte identical to before the descriptor existed (the canonical snapshots
 /// stay unchanged; a dedicated test covers the enabled rendering).
-fn worker_descriptor_visible(d: &FeatureDescriptor) -> bool {
+fn worker_descriptor_visible(d: &FeatureDescriptor, flags: FeatureFlags) -> bool {
     if d.id == crate::playbook::PLAYBOOK_FEATURE_ID {
-        return crate::playbook::is_enabled();
+        return flags.playbook_enabled;
     }
     if d.id == crate::concierge::CONCIERGE_FEATURE_ID {
-        return crate::concierge::is_enabled();
+        return flags.concierge_enabled;
     }
     if d.id == crate::strix::STRIX_FEATURE_ID {
-        return crate::strix::is_enabled();
+        return flags.strix_enabled;
     }
     true
 }
@@ -230,9 +230,31 @@ const fn librarian_state_id() -> &'static str {
 
 // ── Builder ────────────────────────────────────────────────────────────
 
-/// Assembles the `permagent_self` brief. Live state that requires async access
-/// (the scheduler) is fetched at the call site and passed in; everything else
-/// is read from process-global state inside [`build`](Self::build).
+/// The flags that gate what the brief renders. Read once by the caller and
+/// passed in, so the rendered brief is a pure function of its inputs: a test can
+/// render either state without the process-global config deciding for it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FeatureFlags {
+    pub playbook_enabled: bool,
+    pub concierge_enabled: bool,
+    pub strix_enabled: bool,
+    pub initiative_enabled: bool,
+}
+
+impl FeatureFlags {
+    /// The one place the renderer's flags are read from live process state.
+    pub fn from_live_config() -> Self {
+        Self {
+            playbook_enabled: crate::playbook::is_enabled(),
+            concierge_enabled: crate::concierge::is_enabled(),
+            strix_enabled: crate::strix::is_enabled(),
+            initiative_enabled: crate::initiative::driver::is_enabled(),
+        }
+    }
+}
+
+/// Assembles the `permagent_self` brief. Live state is fetched at the call site
+/// and passed in, keeping rendering deterministic for the supplied inputs.
 pub struct SelfKnowledgeBuilder {
     /// The agent's display name (persona-resolved; default "Aria"). Never
     /// hardcoded — interpolated from the resolved persona.
@@ -240,6 +262,8 @@ pub struct SelfKnowledgeBuilder {
     /// Live scheduled-job count (Queryable). `None` when the scheduler is not
     /// wired (e.g. tests) → rendered editorially.
     pub scheduled_job_count: Option<usize>,
+    /// Feature gates that determine which workers and live states are rendered.
+    pub flags: FeatureFlags,
     /// Workers the orchestrator can dispatch goals to, with live status.
     /// Pre-computed by the (async) caller so this builder stays pure and
     /// snapshot-stable. Empty → the section is omitted (e.g. tests, or when
@@ -420,7 +444,7 @@ impl SelfKnowledgeBuilder {
         for d in WORKER_DESCRIPTORS {
             // Flag-gated workers are omitted from the brief while disabled — off
             // is a byte-for-byte no-op (see `worker_descriptor_visible`).
-            if !worker_descriptor_visible(d) {
+            if !worker_descriptor_visible(d, self.flags) {
                 continue;
             }
             let live = self.worker_live_state(d);
@@ -500,12 +524,12 @@ impl SelfKnowledgeBuilder {
                     )
                 })
             }
-            "initiative" => Some(if crate::initiative::driver::is_enabled() {
+            "initiative" => Some(if self.flags.initiative_enabled {
                 "on — watching for repeated commands".to_string()
             } else {
                 "off (initiative_enabled=false)".to_string()
             }),
-            "strix" => Some(if crate::strix::is_enabled() {
+            "strix" => Some(if self.flags.strix_enabled {
                 "on — the Guard is sweeping your projects for security flaws".to_string()
             } else {
                 "off (strix_enabled=false)".to_string()
@@ -719,6 +743,7 @@ mod tests {
         let brief = SelfKnowledgeBuilder {
             agent_display_name: "Aria".to_string(),
             scheduled_job_count: None,
+            flags: FeatureFlags::default(),
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
         }
@@ -797,6 +822,7 @@ mod tests {
         let brief = SelfKnowledgeBuilder {
             agent_display_name: "Aria".to_string(),
             scheduled_job_count: Some(3),
+            flags: FeatureFlags::default(),
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
         }
@@ -822,24 +848,58 @@ mod tests {
         assert!(brief.contains("3 job(s) scheduled"));
     }
 
+    /// The two config-backed flags must reach the brief only through
+    /// [`FeatureFlags`]. Before this, the renderer read `Config::global()` itself,
+    /// so the brief — and the four canonical prompt snapshots taken from it —
+    /// encoded whether the developer running the suite had the Guard switched on.
+    #[test]
+    fn config_backed_flags_reach_the_brief_only_through_the_builder() {
+        let build = |flags| {
+            SelfKnowledgeBuilder {
+                agent_display_name: "Aria".to_string(),
+                scheduled_job_count: None,
+                flags,
+                dispatchable_workers: Vec::new(),
+                agent_briefings: None,
+            }
+            .build()
+        };
+        let off = build(FeatureFlags::default());
+        let guard_on = build(FeatureFlags {
+            strix_enabled: true,
+            ..FeatureFlags::default()
+        });
+        let initiative_on = build(FeatureFlags {
+            initiative_enabled: true,
+            ..FeatureFlags::default()
+        });
+
+        // Off, the Guard is render-gated out entirely (not rendered as "off").
+        assert!(!off.contains("The Guard"));
+        assert!(off.contains("off (initiative_enabled=false)"));
+
+        assert!(guard_on.contains("**The Guard**"));
+        assert!(guard_on.contains("on — the Guard is sweeping your projects"));
+        // One line added, and it is the Guard's: enabling the flag must not
+        // disturb anything else in the brief.
+        assert_eq!(off.lines().count() + 1, guard_on.lines().count());
+        assert_eq!(
+            guard_on.lines().filter(|l| l.contains("The Guard")).count(),
+            1
+        );
+
+        assert!(initiative_on.contains("on — watching for repeated commands"));
+    }
+
     /// B1 render-gate: the flag-gated Decision Playbook worker is HIDDEN from the
-    /// brief when `PERMAGENT_PLAYBOOK_ENABLED` is off. This is why the canonical
+    /// brief when `playbook_enabled` is off. This is why the canonical
     /// prompt_manager snapshots stay byte-for-byte unchanged — off is a no-op.
-    /// (Pins config to an empty temp root, like the snapshot tests, so the flag
-    /// is the only variable.)
     #[test]
     fn playbook_descriptor_hidden_when_flag_off() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().display().to_string();
-        let _guard = env_lock::lock_env([
-            ("HOME", Some(root.as_str())),
-            ("PERMAGENT_PATH_ROOT", Some(root.as_str())),
-            ("PERMAGENT_PLAYBOOK_ENABLED", None::<&str>),
-        ]);
-
         let brief = SelfKnowledgeBuilder {
             agent_display_name: "Aria".to_string(),
             scheduled_job_count: None,
+            flags: FeatureFlags::default(),
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
         }
@@ -851,23 +911,19 @@ mod tests {
         );
     }
 
-    /// B1 enabled rendering: when `PERMAGENT_PLAYBOOK_ENABLED` is on, the Decision
+    /// B1 enabled rendering: when `playbook_enabled` is on, the Decision
     /// Playbook worker renders in the brief with its hints-with-provenance
     /// framing — so the capability the agent can DO is exactly the one it can
     /// DESCRIBE. The dedicated guard the coordinator asked for.
     #[test]
     fn playbook_descriptor_shown_when_flag_on() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().display().to_string();
-        let _guard = env_lock::lock_env([
-            ("HOME", Some(root.as_str())),
-            ("PERMAGENT_PATH_ROOT", Some(root.as_str())),
-            ("PERMAGENT_PLAYBOOK_ENABLED", Some("1")),
-        ]);
-
         let brief = SelfKnowledgeBuilder {
             agent_display_name: "Aria".to_string(),
             scheduled_job_count: None,
+            flags: FeatureFlags {
+                playbook_enabled: true,
+                ..FeatureFlags::default()
+            },
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
         }
@@ -885,22 +941,15 @@ mod tests {
     }
 
     /// Concierge render-gate (#640): the flag-gated Concierge inbox-triage
-    /// character is HIDDEN from the brief when `PERMAGENT_CONCIERGE_ENABLED` is
-    /// off. This is why the canonical prompt_manager snapshots stay byte-for-byte
+    /// character is HIDDEN from the brief when `concierge_enabled` is off. This
+    /// is why the canonical prompt_manager snapshots stay byte-for-byte
     /// unchanged by this PR — off is a no-op.
     #[test]
     fn concierge_descriptor_hidden_when_flag_off() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().display().to_string();
-        let _guard = env_lock::lock_env([
-            ("HOME", Some(root.as_str())),
-            ("PERMAGENT_PATH_ROOT", Some(root.as_str())),
-            ("PERMAGENT_CONCIERGE_ENABLED", None::<&str>),
-        ]);
-
         let brief = SelfKnowledgeBuilder {
             agent_display_name: "Aria".to_string(),
             scheduled_job_count: None,
+            flags: FeatureFlags::default(),
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
         }
@@ -912,23 +961,19 @@ mod tests {
         );
     }
 
-    /// Concierge enabled rendering: when `PERMAGENT_CONCIERGE_ENABLED` is on, the
+    /// Concierge enabled rendering: when `concierge_enabled` is on, the
     /// character renders in the brief carrying its safe-by-construction framing
     /// (draft-only, read-only, local-tier) — so the capability the agent can DO is
     /// exactly the one it can DESCRIBE.
     #[test]
     fn concierge_descriptor_shown_when_flag_on() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().display().to_string();
-        let _guard = env_lock::lock_env([
-            ("HOME", Some(root.as_str())),
-            ("PERMAGENT_PATH_ROOT", Some(root.as_str())),
-            ("PERMAGENT_CONCIERGE_ENABLED", Some("1")),
-        ]);
-
         let brief = SelfKnowledgeBuilder {
             agent_display_name: "Aria".to_string(),
             scheduled_job_count: None,
+            flags: FeatureFlags {
+                concierge_enabled: true,
+                ..FeatureFlags::default()
+            },
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
         }
@@ -950,6 +995,7 @@ mod tests {
         let brief = SelfKnowledgeBuilder {
             agent_display_name: "Aria".to_string(),
             scheduled_job_count: None,
+            flags: FeatureFlags::default(),
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
         }
@@ -968,6 +1014,7 @@ mod tests {
         let brief = SelfKnowledgeBuilder {
             agent_display_name: "Aria".to_string(),
             scheduled_job_count: None,
+            flags: FeatureFlags::default(),
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
         }
@@ -995,6 +1042,7 @@ mod tests {
         let empty = SelfKnowledgeBuilder {
             agent_display_name: "Aria".to_string(),
             scheduled_job_count: None,
+            flags: FeatureFlags::default(),
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
         }
@@ -1005,6 +1053,7 @@ mod tests {
         let brief = SelfKnowledgeBuilder {
             agent_display_name: "Aria".to_string(),
             scheduled_job_count: None,
+            flags: FeatureFlags::default(),
             dispatchable_workers: vec![
                 DispatchableWorker {
                     display_name: "Claude Code".to_string(),
@@ -1033,6 +1082,7 @@ mod tests {
             SelfKnowledgeBuilder {
                 agent_display_name: "Henry".to_string(),
                 scheduled_job_count: None,
+                flags: FeatureFlags::default(),
                 dispatchable_workers: Vec::new(),
                 agent_briefings: briefings,
             }
@@ -1123,6 +1173,7 @@ mod tests {
         let brief = SelfKnowledgeBuilder {
             agent_display_name: "Aria".to_string(),
             scheduled_job_count: None,
+            flags: FeatureFlags::default(),
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
         }

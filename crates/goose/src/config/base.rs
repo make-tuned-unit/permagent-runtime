@@ -128,6 +128,31 @@ enum SecretStorage {
 // Global instance
 static GLOBAL_CONFIG: OnceCell<Config> = OnceCell::new();
 
+/// The directory every config read in this test binary resolves under.
+#[cfg(test)]
+fn test_config_root() -> PathBuf {
+    env::temp_dir().join(format!("permagent-test-config-{}", std::process::id()))
+}
+
+/// Pin every config read in this test binary to a per-run temp directory.
+///
+/// `Config::global()` is a `OnceCell`: the first touch fixes the path for the
+/// whole process, so a test that sets `PERMAGENT_PATH_ROOT` in its own body has
+/// already lost the race. Without this the suite reads the developer's real
+/// `~/.permagent/config.yaml` — the Guard flag, the telemetry choice — and a
+/// green run proves only that it was green on that machine.
+#[cfg(test)]
+#[ctor::ctor]
+fn pin_config_to_temp_root_for_tests() {
+    let root = test_config_root();
+    // A pid can be reused; start from an empty directory so a previous run's
+    // leftovers cannot decide this one's results.
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::create_dir_all(&root).expect("test config root");
+    env::set_var("PERMAGENT_PATH_ROOT", &root);
+    Config::init_for_tests(&root);
+}
+
 impl Default for Config {
     fn default() -> Self {
         let config_dir = Paths::config_dir();
@@ -268,6 +293,17 @@ impl Config {
     /// if it hasn't been initialized yet.
     pub fn global() -> &'static Config {
         GLOBAL_CONFIG.get_or_init(Config::default)
+    }
+
+    /// Pin the process-global config under `root`, with file-backed secrets so the
+    /// suite never reaches the developer's system keyring. Returns `false` if the
+    /// global was already initialised.
+    #[cfg(test)]
+    pub(crate) fn init_for_tests(root: &Path) -> bool {
+        let config =
+            Config::new_with_file_secrets(root.join(CONFIG_YAML_NAME), root.join("secrets.yaml"))
+                .expect("file-backed test config");
+        GLOBAL_CONFIG.set(config).is_ok()
     }
 
     /// Create a new configuration instance with custom paths
@@ -1308,6 +1344,20 @@ pub fn load_init_config_from_workspace() -> Result<Mapping, ConfigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The suite must never read the config of whoever launched it. If this
+    /// fails, `Config::global()` resolved to the developer's real
+    /// `~/.permagent/config.yaml` and every flag-sensitive test in this binary
+    /// is reporting on that machine rather than on the code.
+    #[test]
+    fn global_config_is_pinned_to_the_test_temp_root() {
+        assert_eq!(
+            Config::global().config_path,
+            test_config_root().join(CONFIG_YAML_NAME)
+        );
+        // Already initialised — proof the ctor, not some test body, won first access.
+        assert!(!Config::init_for_tests(&env::temp_dir().join("too-late")));
+    }
 
     /// Regression, 2026-08-12. Rebuilding the desktop app changed its ad-hoc
     /// code signature; macOS binds keychain ACLs to that signature, so the new
