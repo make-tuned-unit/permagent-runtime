@@ -4,7 +4,9 @@ import { useCommandCenter } from '../../lib/store';
 import { Mobius } from '../mobius/Mobius';
 import { PrimaryButton, GhostLink, Input, Select, Glass, Particles, type SelectOption } from './atoms';
 import { api } from '../../lib/api';
+import type { SecretBackendStatus } from '../../lib/api';
 import { useTheme } from '../../styles/useTheme';
+import { REFERENCE_HINTS, buildSpec, suggestedManager, type SourceKind } from '../settings/secretSource';
 
 const PROVIDERS: SelectOption[] = [
   { value: 'anthropic', label: 'Anthropic (Claude)', dot: '#00D5FF' },
@@ -99,9 +101,27 @@ export function MomentWelcome({ onAdvance }: Props) {
       .catch(() => { /* fresh install or daemon still starting — nothing to read back */ });
   }, []);
 
+  // A password manager that is installed AND unlocked right now. Offered, never
+  // required: the wizard must not stall because someone has `op` on their PATH.
+  // A missing route (older daemon) or any failure simply means no offer.
+  const [manager, setManager] = useState<SecretBackendStatus | null>(null);
+  const [useReference, setUseReference] = useState(false);
+  const [reference, setReference] = useState('');
+  useEffect(() => {
+    api.getSecretSources()
+      .then(r => setManager(suggestedManager(r.backends)))
+      .catch(() => { /* no manager offer — the keychain path is unchanged */ });
+  }, []);
+  const managerKind = manager?.id === 'bitwarden' ? 'bitwarden' : 'onepassword';
+  const referenceSpec = useReference
+    ? buildSpec(managerKind as SourceKind, reference)
+    : null;
+
   const isLocal = provider === 'ollama';
   const alreadyConfigured = configured.has(provider);
-  const canContinue = isLocal || alreadyConfigured || key.trim().length > 8;
+  const canContinue = isLocal
+    || alreadyConfigured
+    || (useReference ? !!referenceSpec && 'spec' in referenceSpec : key.trim().length > 8);
 
   const handleSubmit = async () => {
     if (!canContinue) return;
@@ -112,7 +132,19 @@ export function MomentWelcome({ onAdvance }: Props) {
       const providerMeta = await api.getProviders();
       const match = providerMeta.find(p => p.name === provider);
       const secretKey = match?.metadata.config_keys.find(k => k.secret);
-      if (secretKey && key.trim()) {
+      if (secretKey && useReference && referenceSpec && 'spec' in referenceSpec && referenceSpec.spec) {
+        // Prove the reference RESOLVES before committing to it. Onboarding is
+        // the worst possible place to accept a plausible-looking typo: the user
+        // would finish the wizard believing they were set up and hit an
+        // unexplained provider error on their first message.
+        const probe = await api.testSecretSource(secretKey.name, referenceSpec.spec);
+        if (!probe.ok) {
+          setError(probe.error || `Couldn't read that reference from ${manager?.displayName}.`);
+          setValidating(false);
+          return;
+        }
+        await api.setSecretSource(secretKey.name, referenceSpec.spec);
+      } else if (secretKey && key.trim()) {
         await api.upsertConfig(secretKey.name, key.trim(), true);
       }
       const defaultModel = match?.metadata.default_model || '';
@@ -143,13 +175,35 @@ export function MomentWelcome({ onAdvance }: Props) {
 
       <div style={{ width: 360, display: 'flex', flexDirection: 'column', gap: 14 }}>
         <Select value={provider} onChange={setProvider} options={PROVIDERS} />
-        {!isLocal && (
+        {!isLocal && !useReference && (
           <Input
             value={key}
             onChange={setKey}
             placeholder={alreadyConfigured ? 'Key saved — enter a new one to replace' : 'Paste your API key'}
             type="password"
           />
+        )}
+        {!isLocal && useReference && (
+          <Input
+            value={reference}
+            onChange={setReference}
+            placeholder={REFERENCE_HINTS[managerKind as SourceKind].placeholder}
+          />
+        )}
+        {/* Offered only when a manager is installed AND unlocked. An offer the
+            user cannot act on is worse than no offer, and this step must never
+            wait on a password manager to proceed. */}
+        {!isLocal && manager && (
+          <GhostLink onClick={() => { setUseReference(!useReference); setError(''); }} style={{ textAlign: 'center' }}>
+            {useReference
+              ? 'Paste an API key instead'
+              : `${manager.displayName} is unlocked — use a reference instead of pasting a key`}
+          </GhostLink>
+        )}
+        {!isLocal && useReference && (
+          <p style={{ fontFamily: font.body, fontSize: 12, color: colors.textMuted, margin: 0 }}>
+            {REFERENCE_HINTS[managerKind as SourceKind].help} The key stays in {manager?.displayName} — nothing is written to the keychain.
+          </p>
         )}
         {!isLocal && alreadyConfigured && (
           <p style={{ fontFamily: font.body, fontSize: 12, color: colors.success, margin: 0 }}>

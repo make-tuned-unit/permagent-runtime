@@ -1,4 +1,7 @@
 use crate::config::paths::Paths;
+use crate::config::secret_source::{
+    self, SecretSource, SECRET_SOURCES_KEY, SECRET_SOURCE_DEFAULT_KEY,
+};
 use crate::config::GooseMode;
 use fs2::FileExt;
 use keyring::Entry;
@@ -42,6 +45,23 @@ pub enum ConfigError {
     LockError(String),
     #[error("Secret stored using file-based fallback")]
     FallbackToFileStorage,
+    /// A key configured to come from an external secret manager could not be
+    /// read from it.
+    ///
+    /// This is deliberately NOT `NotFound`: callers treat `NotFound` as "the
+    /// user hasn't set this up", and every provider would then report itself
+    /// unconfigured — the exact misdiagnosis that cost three investigations
+    /// when an unreadable keychain was reported as an empty one. A configured
+    /// reference that cannot be read is a FAILURE and says which reference and
+    /// why.
+    #[error("Couldn't read '{key}' from {source_label}: {detail}")]
+    SecretSource {
+        key: String,
+        /// NOT named `source`: thiserror reserves that name for a nested
+        /// `std::error::Error`, and this is a human label ("1Password").
+        source_label: String,
+        detail: String,
+    },
 }
 
 impl From<serde_json::Error> for ConfigError {
@@ -839,11 +859,107 @@ impl Config {
         self.save_values(&values)
     }
 
+    /// The configured per-key source map, e.g.
+    /// `secret_sources: { OPENAI_API_KEY: "op://Personal/OpenAI/credential" }`.
+    ///
+    /// A map that exists but cannot be read as `key: string` is logged LOUDLY
+    /// and treated as empty. Failing every secret read because one config entry
+    /// is the wrong shape would brick the app over a typo; being quiet about it
+    /// would leave the user's references silently inert, which is the worse of
+    /// the two failure modes this feature is meant to remove — so it is neither
+    /// fatal nor silent.
+    pub fn secret_source_map(&self) -> HashMap<String, String> {
+        match self.get_param::<HashMap<String, String>>(SECRET_SOURCES_KEY) {
+            Ok(map) => map,
+            Err(ConfigError::NotFound(_)) => HashMap::new(),
+            Err(e) => {
+                tracing::error!(
+                    "`{SECRET_SOURCES_KEY}` in config.yaml is not a map of key → source \
+                     ({e}). Every key will fall back to its default source until this is \
+                     fixed; any 1Password/Bitwarden references you configured are NOT in \
+                     effect."
+                );
+                HashMap::new()
+            }
+        }
+    }
+
+    /// The configured default source spec, if any. `None` means keychain.
+    pub fn secret_source_default(&self) -> Option<String> {
+        self.get_param::<String>(SECRET_SOURCE_DEFAULT_KEY).ok()
+    }
+
+    /// Where `key` is read from: explicit per-key source → configured default →
+    /// keychain.
+    pub fn secret_source_for(&self, key: &str) -> Result<SecretSource, ConfigError> {
+        let sources = self.secret_source_map();
+        let default = self.secret_source_default();
+        secret_source::source_for_key(key, &sources, default.as_deref()).map_err(|e| {
+            ConfigError::SecretSource {
+                key: key.to_string(),
+                source_label: "its configured secret source".to_string(),
+                detail: e.to_string(),
+            }
+        })
+    }
+
+    /// Point `key` at `spec` (`"keychain"`, `"file"`, `op://…`, `bw://…`).
+    ///
+    /// Validated BEFORE it is written: a spec that cannot be parsed is rejected
+    /// here rather than persisted and discovered later at read time, when the
+    /// only symptom is a provider that stopped working.
+    pub fn set_secret_source(&self, key: &str, spec: &str) -> Result<SecretSource, ConfigError> {
+        let parsed = SecretSource::parse(spec).map_err(|e| ConfigError::SecretSource {
+            key: key.to_string(),
+            source_label: "the requested secret source".to_string(),
+            detail: e.to_string(),
+        })?;
+
+        let mut map = self.secret_source_map();
+        // Replace any differently-cased spelling of the same key, or the map
+        // ends up with two entries and the lookup answers with whichever one
+        // `HashMap` iteration reached first.
+        map.retain(|k, _| !k.eq_ignore_ascii_case(key));
+        map.insert(key.to_string(), parsed.to_spec());
+        self.set_param(SECRET_SOURCES_KEY, &map)?;
+
+        // Anything cached under the OLD source is now a stale answer for this
+        // key. Cheap to drop, and a stale "it works" right after an edit is
+        // exactly as misleading as a silent fallback.
+        secret_source::clear_cache();
+        Ok(parsed)
+    }
+
+    /// Drop `key`'s explicit source, returning it to the configured default
+    /// (and so, normally, to the keychain).
+    pub fn clear_secret_source(&self, key: &str) -> Result<(), ConfigError> {
+        let mut map = self.secret_source_map();
+        let before = map.len();
+        map.retain(|k, _| !k.eq_ignore_ascii_case(key));
+        if map.len() != before {
+            self.set_param(SECRET_SOURCES_KEY, &map)?;
+            secret_source::clear_cache();
+        }
+        Ok(())
+    }
+
+    /// Where `SecretSource::File` reads from. The instance's own path when it
+    /// has one (tests, and installs with the keyring disabled), otherwise the
+    /// standard `~/.permagent/secrets.yaml`.
+    fn builtin_secrets_file(&self) -> PathBuf {
+        match &self.secrets {
+            SecretStorage::File { path } => path.clone(),
+            SecretStorage::Keyring { .. } => Self::secrets_file_path(),
+        }
+    }
+
     /// Get a secret value.
     ///
-    /// This will attempt to get the value from:
-    /// 1. Environment variable with the exact key name
-    /// 2. System keyring
+    /// Resolution order:
+    /// 1. The key's configured [`SecretSource`], if that source is an external
+    ///    password manager. Its answer — success or failure — is FINAL.
+    /// 2. Otherwise the built-in store (system keyring, or the secrets file).
+    /// 3. Otherwise an environment variable with the uppercase key name.
     ///
     /// The value will be deserialized into the requested type. This works with
     /// both simple types (String, i32, etc.) and complex types that implement
@@ -855,13 +971,38 @@ impl Config {
     /// - The key doesn't exist in either environment or keyring
     /// - The value cannot be deserialized into the requested type
     /// - There is an error accessing the keyring
+    /// - The key's configured external source could not answer
+    ///   ([`ConfigError::SecretSource`])
     pub fn get_secret<T: for<'de> Deserialize<'de>>(&self, key: &str) -> Result<T, ConfigError> {
-        // Keychain is checked FIRST — it's the authoritative store for user-set
-        // secrets (e.g. API keys saved via the Settings UI). Env vars serve only
-        // as a bootstrap fallback for initial setup (plist, CI, etc.).
-        let values = self.all_secrets()?;
+        let source = self.secret_source_for(key)?;
+
+        // An external manager's answer is final — including when the answer is
+        // "no". Falling through to the keychain here would be the silent
+        // fallback the design forbids: the user would see a working key, never
+        // learn their reference is broken, and be running on a credential they
+        // believe they moved out of the keychain.
+        //
+        // Note the ordering: this happens BEFORE `all_secrets()`, so a key
+        // sourced from 1Password never touches the keychain at all — which is
+        // the entire point, since the ACL/partition-list failures that motivated
+        // this feature happen on contact.
+        if source.backend().is_some() {
+            let value = self
+                .resolve_external_secret(key, &source)?
+                .ok_or_else(|| ConfigError::NotFound(key.to_string()))?;
+            return Ok(serde_json::from_value(Value::String(value))?);
+        }
+
+        // Built-in stores. The keychain is checked FIRST — it's the
+        // authoritative store for user-set secrets (e.g. API keys saved via the
+        // Settings UI). Env vars serve only as a bootstrap fallback for initial
+        // setup (plist, CI, etc.).
+        let values = match source {
+            SecretSource::File => self.read_secrets_from_file(&self.builtin_secrets_file())?,
+            _ => self.all_secrets()?,
+        };
         if let Some(v) = values.get(key) {
-            // Only use keychain value if it's non-empty (empty string = removed)
+            // Only use the stored value if it's non-empty (empty string = removed)
             let is_empty = v.as_str().is_some_and(|s| s.is_empty());
             if !is_empty {
                 return Ok(serde_json::from_value(v.clone())?);
@@ -878,8 +1019,34 @@ impl Config {
         Err(ConfigError::NotFound(key.to_string()))
     }
 
+    /// Read one key from an external manager, converting the failure into a
+    /// `ConfigError` that names the key and the source.
+    ///
+    /// The `SecretValue` is unwrapped only at the return, so nothing between
+    /// here and the caller can print it: `SecretSourceError` never carries the
+    /// value, and `SecretValue`'s `Debug` is redacting.
+    fn resolve_external_secret(
+        &self,
+        key: &str,
+        source: &SecretSource,
+    ) -> Result<Option<String>, ConfigError> {
+        source
+            .resolve(secret_source::READ_TIMEOUT)
+            .map(|opt| opt.map(secret_source::SecretValue::expose))
+            .map_err(|e| ConfigError::SecretSource {
+                key: key.to_string(),
+                source_label: source.label(),
+                detail: e.to_string(),
+            })
+    }
+
     /// Get secrets. Checks keychain first (authoritative), then env vars as fallback.
     /// If primary is resolved from env, secondary keys also use env for consistency.
+    ///
+    /// Keys with an external [`SecretSource`] are resolved through it, one key
+    /// at a time — this is the same single read path as `get_secret`, not a
+    /// second one, and it is why the source lookup happens per key rather than
+    /// once for the group.
     pub fn get_secrets(
         &self,
         primary: &str,
@@ -893,6 +1060,18 @@ impl Config {
             .is_some_and(|s| !s.is_empty());
 
         let get_value = |key: &str| -> Result<String, ConfigError> {
+            let source = self.secret_source_for(key)?;
+            if source.backend().is_some() {
+                // Explicitly configured, so it wins over both the keychain and
+                // the group's env-consistency rule — and its failure is
+                // reported rather than swallowed, for the primary AND for the
+                // secondary keys. A secondary that quietly vanished because
+                // 1Password was locked would produce a half-built credential
+                // set and a confusing 401 downstream.
+                return self
+                    .resolve_external_secret(key, &source)?
+                    .ok_or_else(|| ConfigError::NotFound(key.to_string()));
+            }
             if primary_in_keychain {
                 // Keep the group on one source. Falling through to an env var
                 // for only a secondary key can combine credentials from two
@@ -912,8 +1091,18 @@ impl Config {
         let mut result = HashMap::new();
         result.insert(primary.to_string(), get_value(primary)?);
         for &key in maybe_secret {
-            if let Ok(v) = get_value(key) {
-                result.insert(key.to_string(), v);
+            match get_value(key) {
+                Ok(v) => {
+                    result.insert(key.to_string(), v);
+                }
+                // These keys are optional by contract, so an absent one is not
+                // an error and never was.
+                Err(ConfigError::NotFound(_)) => {}
+                // A configured source that FAILED is a different thing from an
+                // absent key. Swallowing it here would hand the provider a
+                // half-built credential set and turn a fixable "1Password is
+                // locked" into an unexplained 401 three layers away.
+                Err(e) => return Err(e),
             }
         }
         Ok(result)
@@ -937,6 +1126,27 @@ impl Config {
     where
         V: Serialize,
     {
+        // Refuse to write a key that is READ from somewhere else.
+        //
+        // The write would succeed, the keychain would hold a value nobody ever
+        // reads, and the user would have every reason to believe they had
+        // changed the key. That is the write-side twin of a silent fallback,
+        // and it is worse here because it also puts a plaintext credential into
+        // the store the reference existed to avoid.
+        let source = self.secret_source_for(key)?;
+        if let Some(backend) = source.backend() {
+            return Err(ConfigError::SecretSource {
+                key: key.to_string(),
+                source_label: source.label(),
+                detail: format!(
+                    "This key is read from {} ({}), so saving a value here would have no \
+                     effect. Change its source back to the keychain first.",
+                    backend.display_name(),
+                    source.locator()
+                ),
+            });
+        }
+
         // Lock before reading to prevent race condition.
         let _guard = self.guard.lock().unwrap();
 
@@ -2315,6 +2525,241 @@ mod tests {
         let config_file = NamedTempFile::new().unwrap();
         let secrets_file = NamedTempFile::new().unwrap();
         Config::new_with_file_secrets(config_file.path(), secrets_file.path()).unwrap()
+    }
+
+    // ── SecretSource wiring ──────────────────────────────────────────────
+    //
+    // These exercise the join between `secret_source.rs` and the single read
+    // path. The mechanics of talking to `op`/`bw` are tested in that module;
+    // what matters here is that `get_secret` HONOURS the configured source and
+    // never quietly routes around it.
+
+    /// A `#!/bin/sh` stand-in for `op`, installed via PERMAGENT_OP_BIN.
+    #[cfg(unix)]
+    fn op_stub(dir: &Path, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("op");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[serial]
+    fn get_secret_reads_from_the_configured_external_source() {
+        crate::config::secret_source::clear_cache();
+        let dir = TempDir::new().unwrap();
+        let bin = op_stub(dir.path(), "printf 'from-1password'");
+        let _guard = env_lock::lock_env([
+            ("PERMAGENT_OP_BIN", Some(bin.to_str().unwrap())),
+            ("MY_API_KEY", None),
+        ]);
+
+        let config = new_test_config();
+        config
+            .set_secret_source("MY_API_KEY", "op://Personal/OpenAI/credential")
+            .unwrap();
+
+        let value: String = config.get_secret("MY_API_KEY").unwrap();
+        assert_eq!(value, "from-1password");
+        crate::config::secret_source::clear_cache();
+    }
+
+    /// The rule the whole feature stands on. A configured reference that cannot
+    /// be read makes the key UNAVAILABLE. Here the same key is also present in
+    /// the built-in store AND in the environment — both of which would "work" —
+    /// and neither may be used, because using one would tell the user their
+    /// 1Password reference is fine when it is broken.
+    #[test]
+    #[cfg(unix)]
+    #[serial]
+    fn a_failing_external_source_never_falls_back_to_the_keychain_or_env() {
+        crate::config::secret_source::clear_cache();
+        let dir = TempDir::new().unwrap();
+        let bin = op_stub(
+            dir.path(),
+            "echo 'You are not currently signed in.' >&2\nexit 1",
+        );
+        let _guard = env_lock::lock_env([
+            ("PERMAGENT_OP_BIN", Some(bin.to_str().unwrap())),
+            ("MY_API_KEY", Some("value-from-env")),
+        ]);
+
+        let config = new_test_config();
+        // Seed the built-in store first, then move the key to 1Password.
+        config
+            .set_secret("MY_API_KEY", &"value-from-keychain")
+            .unwrap();
+        config
+            .set_secret_source("MY_API_KEY", "op://Personal/OpenAI/credential")
+            .unwrap();
+
+        let err = config.get_secret::<String>("MY_API_KEY").unwrap_err();
+        let rendered = err.to_string();
+        assert!(
+            matches!(err, ConfigError::SecretSource { .. }),
+            "must be a source failure, not NotFound (which reads as \
+             'user never configured this'): {rendered}"
+        );
+        assert!(rendered.contains("MY_API_KEY"), "{rendered}");
+        assert!(rendered.contains("1Password"), "{rendered}");
+        assert!(rendered.contains("not signed in"), "{rendered}");
+        assert!(
+            !rendered.contains("value-from-keychain") && !rendered.contains("value-from-env"),
+            "the fallback values must not appear anywhere: {rendered}"
+        );
+    }
+
+    /// The stored value must not reach a log, an error, or a `Debug` render on
+    /// the failure path. `op` here exits non-zero while shouting the secret on
+    /// both channels — the worst-case CLI.
+    #[test]
+    #[cfg(unix)]
+    #[serial]
+    fn a_failed_external_read_does_not_leak_the_value() {
+        crate::config::secret_source::clear_cache();
+        const SECRET: &str = "sk-live-c0ffee1234567890abcdef1234567890";
+        let dir = TempDir::new().unwrap();
+        let bin = op_stub(
+            dir.path(),
+            &format!("printf '{SECRET}'\nprintf 'refused {SECRET}' >&2\nexit 1"),
+        );
+        let _guard = env_lock::lock_env([
+            ("PERMAGENT_OP_BIN", Some(bin.to_str().unwrap())),
+            ("MY_API_KEY", None),
+        ]);
+
+        let config = new_test_config();
+        config
+            .set_secret_source("MY_API_KEY", "op://Personal/OpenAI/credential")
+            .unwrap();
+
+        let err = config.get_secret::<String>("MY_API_KEY").unwrap_err();
+        let rendered = format!("{err} | {err:?}");
+        assert!(!rendered.contains(SECRET), "secret leaked: {rendered}");
+        assert!(!rendered.contains("sk-live"), "secret leaked: {rendered}");
+    }
+
+    /// Writing a key that is READ from elsewhere would put a plaintext
+    /// credential in the keychain that nothing ever reads, while showing the
+    /// user a successful save.
+    #[test]
+    #[serial]
+    fn set_secret_refuses_a_key_owned_by_an_external_source() {
+        let _guard = env_lock::lock_env([("MY_API_KEY", None::<&str>)]);
+        let config = new_test_config();
+        config
+            .set_secret_source("MY_API_KEY", "op://Personal/OpenAI/credential")
+            .unwrap();
+
+        let err = config
+            .set_secret("MY_API_KEY", &"typed-by-hand")
+            .unwrap_err();
+        assert!(matches!(err, ConfigError::SecretSource { .. }), "{err}");
+        assert!(err.to_string().contains("1Password"), "{err}");
+    }
+
+    /// Keys with no configured source must behave EXACTLY as before. This is
+    /// the "keychain stays the default" guarantee, asserted rather than assumed.
+    #[test]
+    #[serial]
+    fn unconfigured_keys_still_resolve_from_the_builtin_store() {
+        let _guard = env_lock::lock_env([("MY_API_KEY", None::<&str>)]);
+        let config = new_test_config();
+        config.set_secret("MY_API_KEY", &"stored").unwrap();
+
+        assert_eq!(
+            config.secret_source_for("MY_API_KEY").unwrap(),
+            SecretSource::Keychain
+        );
+        let value: String = config.get_secret("MY_API_KEY").unwrap();
+        assert_eq!(value, "stored");
+    }
+
+    #[test]
+    #[serial]
+    fn secret_sources_round_trip_through_config_and_can_be_cleared() {
+        let _guard = env_lock::lock_env([("MY_API_KEY", None::<&str>)]);
+        let config = new_test_config();
+
+        config
+            .set_secret_source("MY_API_KEY", "op://Personal/OpenAI/credential")
+            .unwrap();
+        assert_eq!(
+            config.secret_source_for("MY_API_KEY").unwrap(),
+            SecretSource::OnePassword {
+                reference: "op://Personal/OpenAI/credential".into()
+            }
+        );
+
+        // Re-pointing with different casing must REPLACE, not accumulate — two
+        // entries for one key would resolve by HashMap iteration order.
+        config
+            .set_secret_source("my_api_key", "bw://OpenAI/api-key")
+            .unwrap();
+        assert_eq!(config.secret_source_map().len(), 1);
+
+        config.clear_secret_source("MY_API_KEY").unwrap();
+        assert_eq!(
+            config.secret_source_for("MY_API_KEY").unwrap(),
+            SecretSource::Keychain
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn an_unparseable_source_is_rejected_at_write_time() {
+        let config = new_test_config();
+        let err = config
+            .set_secret_source("MY_API_KEY", "op://Personal/OpenAI")
+            .unwrap_err();
+        assert!(matches!(err, ConfigError::SecretSource { .. }), "{err}");
+        assert!(
+            config.secret_source_map().is_empty(),
+            "a rejected spec must not be persisted"
+        );
+    }
+
+    /// A source string that is already in config.yaml but nonsense must make
+    /// the key fail loudly, not silently resolve from the keychain.
+    #[test]
+    #[serial]
+    fn an_unparseable_persisted_source_fails_the_read() {
+        let _guard = env_lock::lock_env([("MY_API_KEY", Some("value-from-env"))]);
+        let config = new_test_config();
+        let mut map = HashMap::new();
+        map.insert("MY_API_KEY".to_string(), "1password".to_string());
+        config.set_param(SECRET_SOURCES_KEY, &map).unwrap();
+
+        let err = config.get_secret::<String>("MY_API_KEY").unwrap_err();
+        assert!(matches!(err, ConfigError::SecretSource { .. }), "{err}");
+        assert!(
+            err.to_string().contains("not a valid secret source"),
+            "{err}"
+        );
+    }
+
+    /// `secret_source_default` may only name a built-in store, and the keychain
+    /// stays the answer when nothing is configured.
+    #[test]
+    #[serial]
+    fn configured_default_applies_only_to_unlisted_keys() {
+        let _guard = env_lock::lock_env([("MY_API_KEY", None::<&str>), ("OTHER_KEY", None)]);
+        let config = new_test_config();
+        config
+            .set_secret_source("MY_API_KEY", "op://Personal/OpenAI/credential")
+            .unwrap();
+        config.set_param(SECRET_SOURCE_DEFAULT_KEY, "file").unwrap();
+
+        assert!(matches!(
+            config.secret_source_for("MY_API_KEY").unwrap(),
+            SecretSource::OnePassword { .. }
+        ));
+        assert_eq!(
+            config.secret_source_for("OTHER_KEY").unwrap(),
+            SecretSource::File
+        );
     }
 
     /// The 2026-08-06 config destruction: a corrupted config recovered to

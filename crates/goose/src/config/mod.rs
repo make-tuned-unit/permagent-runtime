@@ -10,6 +10,7 @@ mod migrations;
 pub mod paths;
 pub mod permission;
 pub mod search_path;
+pub mod secret_source;
 pub mod secure_fs;
 pub mod signup_nanogpt;
 pub mod signup_openrouter;
@@ -27,6 +28,7 @@ pub use extensions::{
 };
 pub use goose_mode::GooseMode;
 pub use permission::PermissionManager;
+pub use secret_source::{SecretSource, SecretSourceError};
 pub use signup_nanogpt::configure_nanogpt;
 pub use signup_openrouter::configure_openrouter;
 pub use signup_tetrate::configure_tetrate;

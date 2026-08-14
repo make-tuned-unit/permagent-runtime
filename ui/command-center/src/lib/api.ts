@@ -345,6 +345,43 @@ export interface PermagentConfig {
   [key: string]: unknown;
 }
 
+// ── Secret sources (GET/POST /config/secret-sources) ──
+// Wire shapes mirror routes/config_management.rs (rename_all = camelCase).
+
+/** One key's configured source. `resolves` is null for the built-in stores:
+ *  listing sources deliberately does NOT open the keychain, because a settings
+ *  list is not worth an authorization prompt. */
+export interface SecretKeySource {
+  key: string;
+  /** 'keychain' | 'file' | 'onepassword' | 'bitwarden' | 'invalid' */
+  kind: string;
+  /** Display label, e.g. "macOS Keychain", "1Password". */
+  label: string;
+  /** op://… or bw://…, empty for the built-in stores. Never a secret. */
+  reference: string;
+  resolves?: boolean | null;
+  error?: string | null;
+}
+
+/** Whether one password manager is present AND usable. Both halves matter: an
+ *  installed-but-locked CLI fails every read, and showing it as ready is the
+ *  false green light this feature exists to remove. */
+export interface SecretBackendStatus {
+  id: string;
+  displayName: string;
+  installed: boolean;
+  signedIn: boolean;
+  detail?: string | null;
+}
+
+export interface SecretSourcesResponse {
+  /** Source for keys with no explicit entry. Normally 'keychain'. */
+  defaultSource: string;
+  /** ONLY keys with an explicit source. */
+  keys: SecretKeySource[];
+  backends: SecretBackendStatus[];
+}
+
 /** Wire shape for POST/PUT /config/custom-providers (backend
  *  UpdateCustomProviderRequest). A custom provider is a user-defined
  *  OpenAI/Anthropic/Ollama-compatible endpoint not in the built-in catalog. */
@@ -1196,6 +1233,30 @@ export const api = {
 
   reloadConfig: () =>
     apiFetch<{ provider: string; keyTail: string }>('/config/reload', { method: 'POST' }),
+
+  // ── Secret sources ────────────────────────────────────────────────────
+  /** Where each secret is READ from, plus whether the password managers on this
+   *  machine can actually answer. `keys` lists ONLY keys with an explicit
+   *  source; everything else uses `defaultSource`. camelCase on the wire — see
+   *  the `maskedValue` regression note above. */
+  getSecretSources: () =>
+    apiFetch<SecretSourcesResponse>('/config/secret-sources'),
+
+  /** Point a key at a source, or pass `null` to return it to the default
+   *  (normally the keychain). */
+  setSecretSource: (key: string, source: string | null) =>
+    apiFetch<SecretKeySource>('/config/secret-sources', {
+      method: 'POST', body: JSON.stringify({ key, source }),
+    }),
+
+  /** Actually read a candidate source without saving it. "Reference saved" only
+   *  proves a string reached config.yaml; this proves the reference RESOLVES.
+   *  Always resolves (a failed test is a result, not an error). */
+  testSecretSource: (key: string, source: string) =>
+    apiFetch<{ ok: boolean; maskedValue?: string | null; error?: string | null }>(
+      '/config/secret-sources/test',
+      { method: 'POST', body: JSON.stringify({ key, source }) },
+    ),
 
   /** Ship a finished coding-harness session's transcript tail; the daemon
    *  summarizes it and the Brain remembers what the user was building. */

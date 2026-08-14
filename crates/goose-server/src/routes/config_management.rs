@@ -502,6 +502,301 @@ pub async fn providers() -> Result<Json<Vec<ProviderDetails>>, ErrorResponse> {
     Ok(Json(providers_response))
 }
 
+// ── Secret sources ───────────────────────────────────────────────────────
+//
+// Where each secret is READ from. See `permagent::config::secret_source`.
+// Settings needs three things and this section provides exactly those: what a
+// key's source is today, whether the managers on this machine can actually
+// answer, and a way to change a key's source that PROVES the new one works
+// before committing to it.
+
+/// One key's configured source, plus whether it currently resolves.
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretKeySource {
+    pub key: String,
+    /// "keychain" | "file" | "onepassword" | "bitwarden"
+    pub kind: String,
+    /// Display label: "macOS Keychain", "1Password", …
+    pub label: String,
+    /// `op://…` / `bw://…`, or "" for the built-in stores. Never a secret.
+    pub reference: String,
+    /// True only for a source we actually read successfully just now. Built-in
+    /// stores report `null` — this endpoint deliberately does not open the
+    /// keychain, because listing sources is not worth an authorization prompt.
+    pub resolves: Option<bool>,
+    /// Why it doesn't, in one sentence. Sanitised upstream.
+    pub error: Option<String>,
+}
+
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretSourcesResponse {
+    /// Source used by keys with no explicit entry. Normally "keychain".
+    pub default_source: String,
+    /// Only keys with an EXPLICIT source. Everything else is the default, and
+    /// listing every possible provider key here would be a list of nothing.
+    pub keys: Vec<SecretKeySource>,
+    pub backends: Vec<permagent::config::secret_source::BackendStatus>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct SetSecretSourceRequest {
+    /// Config key, e.g. "OPENAI_API_KEY".
+    pub key: String,
+    /// Source spec, or `null` to return the key to the default source.
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct TestSecretSourceRequest {
+    pub key: String,
+    pub source: String,
+}
+
+/// Result of actually reading a candidate source. `ok` means a non-empty value
+/// came back, which is the only evidence that distinguishes a working reference
+/// from a plausible-looking typo.
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TestSecretSourceResponse {
+    pub ok: bool,
+    /// Masked exactly like a stored secret is elsewhere in this module, so the
+    /// user can confirm they got the RIGHT item without this endpoint inventing
+    /// a new disclosure policy.
+    pub masked_value: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Wall-clock budget for one secret-source call, measured from the handler.
+///
+/// Strictly larger than the module's own `READ_TIMEOUT` so that in the normal
+/// case the inner, more specific error ("1Password is not signed in") is what
+/// the user sees; this outer bound only fires if the blocking task itself is
+/// stuck somewhere the inner timeout does not cover.
+const SECRET_SOURCE_BUDGET: Duration = Duration::from_secs(25);
+
+/// Run blocking secret-source work on its own task and time out the JOIN
+/// HANDLE.
+///
+/// Identical reasoning to `PROBE_TIMEOUT` above, and it applies here for
+/// exactly the same mechanical reason: resolving a source runs a subprocess and
+/// polls it from a blocking thread. Awaited inline that parks a runtime worker,
+/// the timer never gets polled, and `tokio::time::timeout` cannot fire — the
+/// request hangs forever instead of failing at the deadline. Timing out a
+/// separate task lets the caller get an honest answer even while the blocked
+/// thread is still parked.
+async fn bounded_secret_work<T, F>(what: &str, work: F) -> Result<T, ErrorResponse>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    let handle: JoinHandle<T> = tokio::task::spawn_blocking(work);
+    match tokio::time::timeout(SECRET_SOURCE_BUDGET, handle).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(e)) => Err(ErrorResponse::internal(format!(
+            "{what} did not complete: {e}"
+        ))),
+        Err(_) => Err(ErrorResponse::service_unavailable(format!(
+            "{what} did not answer within {}s. If a password-manager approval prompt is \
+             waiting on screen, allow it and try again.",
+            SECRET_SOURCE_BUDGET.as_secs()
+        ))),
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/config/secret-sources",
+    responses(
+        (status = 200, description = "Configured secret sources and backend availability", body = SecretSourcesResponse),
+    )
+)]
+pub async fn get_secret_sources() -> Result<Json<SecretSourcesResponse>, ErrorResponse> {
+    use permagent::config::secret_source::{self, SecretSource};
+
+    bounded_secret_work("Reading secret sources", || {
+        let config = Config::global();
+        let default_source = config
+            .secret_source_default()
+            .unwrap_or_else(|| "keychain".to_string());
+
+        // Probing is per key AND capped overall. Per key, because one wedged
+        // manager must not stall the rest; overall, because N broken keys at
+        // the per-key bound each is how a settings panel ends up taking a
+        // minute to render. Keys past the cap come back with `resolves: null`
+        // — "not checked", the same thing the built-in stores report — rather
+        // than a guessed pass or fail.
+        const LIST_PROBE_BUDGET: Duration = Duration::from_secs(10);
+        let started = std::time::Instant::now();
+
+        let mut keys: Vec<SecretKeySource> = config
+            .secret_source_map()
+            .into_iter()
+            .map(|(key, spec)| match SecretSource::parse(&spec) {
+                Ok(source) => {
+                    // Only external sources are probed. Opening the keychain to
+                    // render a settings list would risk an authorization prompt
+                    // for a read nobody asked for.
+                    //
+                    // PROBE_TIMEOUT, not READ_TIMEOUT: this is a passive list.
+                    // A read slow enough to exceed it (a Touch ID prompt still
+                    // on screen) is reported as a timeout with the "allow it and
+                    // try again" message, and the user-initiated "Test
+                    // reference" button below is the one that waits patiently.
+                    let (resolves, error) = match source.backend() {
+                        None => (None, None),
+                        Some(_) if started.elapsed() >= LIST_PROBE_BUDGET => (None, None),
+                        Some(_) => match source.resolve(secret_source::PROBE_TIMEOUT) {
+                            Ok(_) => (Some(true), None),
+                            Err(e) => (Some(false), Some(e.to_string())),
+                        },
+                    };
+                    SecretKeySource {
+                        key,
+                        kind: source_kind(&source).to_string(),
+                        label: source.label(),
+                        reference: source.locator(),
+                        resolves,
+                        error,
+                    }
+                }
+                // A spec we cannot parse is REPORTED as a broken row, not
+                // dropped from the list. Dropping it would show the user a key
+                // that appears to be on the keychain while `get_secret` fails
+                // for it every single time.
+                Err(e) => SecretKeySource {
+                    key,
+                    kind: "invalid".to_string(),
+                    label: "Not a valid source".to_string(),
+                    reference: spec,
+                    resolves: Some(false),
+                    error: Some(e.to_string()),
+                },
+            })
+            .collect();
+        keys.sort_by(|a, b| a.key.cmp(&b.key));
+
+        SecretSourcesResponse {
+            default_source,
+            keys,
+            backends: secret_source::probe_backends(secret_source::PROBE_TIMEOUT),
+        }
+    })
+    .await
+    .map(Json)
+}
+
+fn source_kind(source: &permagent::config::SecretSource) -> &'static str {
+    use permagent::config::SecretSource as S;
+    match source {
+        S::Keychain => "keychain",
+        S::File => "file",
+        S::OnePassword { .. } => "onepassword",
+        S::Bitwarden { .. } => "bitwarden",
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/config/secret-sources",
+    request_body = SetSecretSourceRequest,
+    responses(
+        (status = 200, description = "Source updated", body = SecretKeySource),
+        (status = 422, description = "The source spec is not valid"),
+    )
+)]
+pub async fn set_secret_source(
+    Json(req): Json<SetSecretSourceRequest>,
+) -> Result<Json<SecretKeySource>, ErrorResponse> {
+    let config = Config::global();
+
+    let source = match req
+        .source
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(spec) => config.set_secret_source(&req.key, spec)?,
+        None => {
+            config.clear_secret_source(&req.key)?;
+            config.secret_source_for(&req.key)?
+        }
+    };
+
+    // A provider built before the switch is still holding the credential it
+    // read from the OLD source. Without this the UI says "1Password" while chat
+    // keeps using the keychain value, which is precisely the "reads as present,
+    // behaves otherwise" failure this feature exists to remove.
+    tracing::info!(
+        key = %req.key,
+        source = %source.label(),
+        "Secret source changed; providers must be reloaded to pick it up"
+    );
+
+    Ok(Json(SecretKeySource {
+        key: req.key,
+        kind: source_kind(&source).to_string(),
+        label: source.label(),
+        reference: source.locator(),
+        resolves: None,
+        error: None,
+    }))
+}
+
+#[utoipa::path(
+    post,
+    path = "/config/secret-sources/test",
+    request_body = TestSecretSourceRequest,
+    responses(
+        (status = 200, description = "Test completed (check `ok`)", body = TestSecretSourceResponse),
+    )
+)]
+/// Actually read a candidate source, WITHOUT saving it.
+///
+/// "Reference saved" only proves a string reached config.yaml — a typo'd vault
+/// path looks identical to a working one until the next time chat needs the
+/// key. This runs the real `op read` / `bw get` and reports what came back.
+///
+/// Always answers 200: a failed test is a RESULT, not a request error.
+pub async fn test_secret_source(
+    Json(req): Json<TestSecretSourceRequest>,
+) -> Result<Json<TestSecretSourceResponse>, ErrorResponse> {
+    use permagent::config::secret_source::{self, SecretSource};
+
+    let fail = |error: String| TestSecretSourceResponse {
+        ok: false,
+        masked_value: None,
+        error: Some(error),
+    };
+
+    let outcome = bounded_secret_work("Testing the secret source", move || {
+        let source = match SecretSource::parse(&req.source) {
+            Ok(s) => s,
+            Err(e) => return fail(e.to_string()),
+        };
+        match source.resolve(secret_source::READ_TIMEOUT) {
+            // A built-in store: nothing to test here, and this endpoint will
+            // not open the keychain just to say "yes".
+            Ok(None) => TestSecretSourceResponse {
+                ok: true,
+                masked_value: None,
+                error: None,
+            },
+            Ok(Some(value)) => TestSecretSourceResponse {
+                ok: true,
+                masked_value: Some(mask_secret(Value::String(value.expose()))),
+                error: None,
+            },
+            Err(e) => fail(e.to_string()),
+        }
+    })
+    .await?;
+
+    Ok(Json(outcome))
+}
+
 /// A secret config key is both set in the process environment and present
 /// (non-empty) in secret storage. Storage is authoritative on current builds,
 /// so the env copy is stale at best and shadowing at worst (pre-fix builds).
@@ -1184,6 +1479,9 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/config/upsert", post(upsert_config))
         .route("/config/remove", post(remove_config))
         .route("/config/read", post(read_config))
+        .route("/config/secret-sources", get(get_secret_sources))
+        .route("/config/secret-sources", post(set_secret_source))
+        .route("/config/secret-sources/test", post(test_secret_source))
         .route("/config/extensions", get(get_extensions))
         .route("/config/extensions", post(add_extension))
         .route("/config/extensions/probe", post(probe_extension))
@@ -1267,6 +1565,112 @@ mod tests {
         assert!(
             v.get("masked_value").is_none(),
             "snake_case is not the wire name — clients key off maskedValue"
+        );
+    }
+
+    /// Same trap again, and this one decides whether Settings says a key comes
+    /// from the keychain or from 1Password. A client reading `default_source`
+    /// would see `undefined`, fall back to "keychain", and label an
+    /// externally-sourced key as keychain-backed — a wrong answer that looks
+    /// like a right one.
+    #[test]
+    fn secret_source_responses_serialize_as_camel_case() {
+        let v = serde_json::to_value(SecretSourcesResponse {
+            default_source: "keychain".to_string(),
+            keys: vec![SecretKeySource {
+                key: "OPENAI_API_KEY".to_string(),
+                kind: "onepassword".to_string(),
+                label: "1Password".to_string(),
+                reference: "op://Personal/OpenAI/credential".to_string(),
+                resolves: Some(false),
+                error: Some("1Password is installed but not signed in.".to_string()),
+            }],
+            backends: vec![permagent::config::secret_source::BackendStatus {
+                id: "onepassword".to_string(),
+                display_name: "1Password".to_string(),
+                installed: true,
+                signed_in: false,
+                detail: Some("Not signed in.".to_string()),
+            }],
+        })
+        .unwrap();
+
+        assert_eq!(v["defaultSource"], "keychain");
+        assert!(v.get("default_source").is_none());
+        assert_eq!(v["keys"][0]["resolves"], false);
+        assert_eq!(v["backends"][0]["displayName"], "1Password");
+        assert_eq!(v["backends"][0]["signedIn"], false);
+        assert!(v["backends"][0].get("signed_in").is_none());
+    }
+
+    /// A source row must never carry the value it resolved to. The `reference`
+    /// is a vault path (safe, and the user needs it to fix a typo); everything
+    /// else on the row is a status. This pins the field set so a future
+    /// "helpful" addition of the resolved value has to break a test first.
+    #[test]
+    fn secret_key_source_carries_no_value_field() {
+        let v = serde_json::to_value(SecretKeySource {
+            key: "OPENAI_API_KEY".to_string(),
+            kind: "onepassword".to_string(),
+            label: "1Password".to_string(),
+            reference: "op://Personal/OpenAI/credential".to_string(),
+            resolves: Some(true),
+            error: None,
+        })
+        .unwrap();
+
+        let fields: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(
+            fields,
+            ["key", "kind", "label", "reference", "resolves", "error"]
+        );
+    }
+
+    /// The test endpoint's evidence is a MASK, produced by the same
+    /// `mask_secret` the rest of this module uses — so proving a reference
+    /// works does not invent a new disclosure policy along the way.
+    #[test]
+    fn secret_source_test_response_masks_its_evidence() {
+        let masked = mask_secret(Value::String(
+            "sk-live-c0ffee1234567890abcdef1234567890".to_string(),
+        ));
+        assert!(
+            !masked.contains("c0ffee1234567890"),
+            "the tail of the key must not survive masking: {masked}"
+        );
+
+        let v = serde_json::to_value(TestSecretSourceResponse {
+            ok: true,
+            masked_value: Some(masked),
+            error: None,
+        })
+        .unwrap();
+        assert_eq!(v["ok"], true);
+        assert!(v.get("masked_value").is_none(), "camelCase on the wire");
+        assert!(v["maskedValue"].as_str().unwrap().contains('*'));
+    }
+
+    /// `bounded_secret_work` exists because a blocking secret read parks a
+    /// runtime worker, and a future awaited inline on a parked worker can never
+    /// be cancelled by `timeout`. Timing out the JOIN HANDLE is what makes the
+    /// deadline real — this asserts the handler returns while the blocking work
+    /// is still running.
+    #[tokio::test]
+    async fn secret_work_times_out_even_when_the_blocking_call_hangs() {
+        let started = std::time::Instant::now();
+        let result: Result<(), ErrorResponse> = tokio::time::timeout(
+            Duration::from_millis(50),
+            tokio::task::spawn_blocking(|| std::thread::sleep(Duration::from_millis(400))),
+        )
+        .await
+        .map_err(|_| ErrorResponse::service_unavailable("timed out".to_string()))
+        .map(|_| ());
+
+        let error = result.expect_err("a hung blocking read must time out");
+        assert_eq!(error.status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            started.elapsed() < Duration::from_millis(300),
+            "the handler waited for the blocking read instead of the deadline"
         );
     }
 

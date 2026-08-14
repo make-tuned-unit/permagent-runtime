@@ -86,6 +86,12 @@ impl From<ConfigError> for ErrorResponse {
     fn from(err: ConfigError) -> Self {
         match err {
             ConfigError::NotFound(key) => Self::not_found(format!("Config key not found: {}", key)),
+            // Not a 500: the daemon is fine, the user's password manager (or
+            // their reference to it) is not. Routing it through `internal`
+            // would log it as a server error and bury the one sentence that
+            // actually tells them what to fix, which is the whole reason this
+            // error carries a specific message instead of a generic one.
+            ConfigError::SecretSource { .. } => Self::unprocessable(err.to_string()),
             _ => Self::internal(err.to_string()),
         }
     }
