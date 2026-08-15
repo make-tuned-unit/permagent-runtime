@@ -373,15 +373,22 @@ fn validate_schedule_spec(job: &ScheduledJob) -> Result<(), String> {
 
 /// Minimum allowed firing interval for any schedule, in seconds. Every-minute
 /// agent-created crons burned ~$20 of API credits overnight on 2026-08-05; a
-/// floor makes that class of runaway impossible to install. Overridable for
-/// tests and deliberate power use via `PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS`.
+/// floor makes that class of runaway impossible to install. A shipped build has
+/// no override: `PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS` is read in test builds
+/// only, because a guardrail a runtime env var can switch off is advisory.
 const DEFAULT_MIN_SCHEDULE_INTERVAL_SECS: u64 = 900;
 
+#[cfg(test)]
 fn min_schedule_interval_secs() -> u64 {
     std::env::var("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_MIN_SCHEDULE_INTERVAL_SECS)
+}
+
+#[cfg(not(test))]
+fn min_schedule_interval_secs() -> u64 {
+    DEFAULT_MIN_SCHEDULE_INTERVAL_SECS
 }
 
 /// `Some(reason)` when the job would fire more often than the interval floor.
@@ -396,8 +403,8 @@ fn schedule_floor_violation(job: &ScheduledJob) -> Option<String> {
     if let Some(secs) = job.every_seconds {
         if secs < floor {
             return Some(format!(
-                "interval every_seconds={} is below the minimum of {}s \
-                 (set PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS to override)",
+                "interval every_seconds={} is below the minimum of {}s; \
+                 this floor is not user-overridable",
                 secs, floor
             ));
         }
@@ -424,8 +431,8 @@ fn schedule_floor_violation(job: &ScheduledJob) -> Option<String> {
             if let Some(gap) = min_gap {
                 if gap > 0 && (gap as u64) < floor {
                     return Some(format!(
-                        "cron '{}' fires every {}s — below the minimum of {}s \
-                         (set PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS to override)",
+                        "cron '{}' fires every {}s — below the minimum of {}s; \
+                         this floor is not user-overridable",
                         cron_text, gap, floor
                     ));
                 }
@@ -1235,7 +1242,22 @@ impl Scheduler {
             (to_add, to_remove)
         };
 
-        for job in jobs_to_add {
+        for mut job in jobs_to_add {
+            // Same floor treatment as the startup loader, for the same reason:
+            // schedule.json is hand-editable and this path arms whatever it finds
+            // there — on every list_scheduled_jobs, not just at boot. Pausing in
+            // memory is enough to stop the fire (create_job_task re-reads `paused`
+            // from this map at fire time); the loader persists it at next boot.
+            if !job.paused {
+                if let Some(violation) = schedule_floor_violation(&job) {
+                    job.paused = true;
+                    job.last_error = Some(format!(
+                        "paused at load: {} — edit the schedule, then resume",
+                        violation
+                    ));
+                    tracing::warn!("Scheduled job '{}' paused at load: {}", job.id, violation);
+                }
+            }
             if !Path::new(&job.source).exists() {
                 tracing::warn!(
                     "Skipping sync of job '{}': recipe file not found at {}",
@@ -1519,6 +1541,14 @@ impl Scheduler {
             let mut jobs_guard = self.jobs.lock().await;
             match jobs_guard.get_mut(sched_id) {
                 Some((_, job)) => {
+                    // Resume is the one path that can un-do a floor pause, so the
+                    // floor is re-checked here or it is only advisory: a job the
+                    // loader paused for firing too often would otherwise resume at
+                    // its illegal cadence on one click.
+                    if let Some(violation) = schedule_floor_violation(job) {
+                        job.last_error = Some(violation.clone());
+                        return Err(SchedulerError::InvalidScheduleSpec(violation));
+                    }
                     job.paused = false;
                     // Unpausing IS the approval: the only route here for an
                     // approval-pending job is the user's Automate UI — the
@@ -1551,8 +1581,15 @@ impl Scheduler {
                     if new_cron == job.cron {
                         return Ok(());
                     }
-                    job.cron = new_cron.clone();
-                    (*uuid, job.clone())
+                    // Validate a candidate, not the stored job: a rejected cron
+                    // must leave the job exactly as it was, still armed on its
+                    // legal schedule.
+                    let mut candidate = job.clone();
+                    candidate.cron = new_cron;
+                    validate_schedule_spec(&candidate)
+                        .map_err(SchedulerError::InvalidScheduleSpec)?;
+                    *job = candidate.clone();
+                    (*uuid, candidate)
                 }
                 None => return Err(SchedulerError::JobNotFound(sched_id.to_string())),
             }
@@ -2586,6 +2623,105 @@ mod tests {
             "refusal must name the approval gate, got: {}",
             err
         );
+    }
+
+    #[tokio::test]
+    async fn update_schedule_rejects_floor_violation_without_mutating_job() {
+        let _guard = env_lock::lock_env([("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", None::<&str>)]);
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let recipe_path = create_test_recipe(temp_dir.path(), "update_floor");
+        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let scheduler = Scheduler::new(storage_path, session_manager).await.unwrap();
+        let original_cron = "0 0 * * * *";
+
+        scheduler
+            .add_scheduled_job(
+                ScheduledJob {
+                    id: "update_floor".to_string(),
+                    source: recipe_path.to_string_lossy().to_string(),
+                    cron: original_cron.to_string(),
+                    ..Default::default()
+                },
+                false,
+            )
+            .await
+            .unwrap();
+
+        let err = scheduler
+            .update_schedule("update_floor", "0 */1 * * * *".to_string())
+            .await
+            .expect_err("every-minute update must be rejected");
+        assert!(err.to_string().contains("below the minimum"));
+        let jobs = scheduler.list_scheduled_jobs().await;
+        let job = jobs.iter().find(|job| job.id == "update_floor").unwrap();
+        assert_eq!(job.cron, original_cron);
+    }
+
+    #[tokio::test]
+    async fn sync_from_storage_pauses_floor_violation() {
+        let _guard = env_lock::lock_env([("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", None::<&str>)]);
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let recipe_path = create_test_recipe(temp_dir.path(), "synced_floor");
+        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let scheduler = Scheduler::new(storage_path.clone(), session_manager)
+            .await
+            .unwrap();
+        let job = ScheduledJob {
+            id: "synced_floor".to_string(),
+            source: recipe_path.to_string_lossy().to_string(),
+            cron: "0 */1 * * * *".to_string(),
+            ..Default::default()
+        };
+        fs::write(
+            &storage_path,
+            serde_json::to_string_pretty(&vec![job]).unwrap(),
+        )
+        .unwrap();
+
+        let jobs = scheduler.list_scheduled_jobs().await;
+        let job = jobs.iter().find(|job| job.id == "synced_floor").unwrap();
+        assert!(job.paused);
+        assert!(job
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("below the minimum")));
+    }
+
+    #[tokio::test]
+    async fn unpause_schedule_refuses_floor_violation() {
+        let _guard = env_lock::lock_env([("PERMAGENT_MIN_SCHEDULE_INTERVAL_SECS", None::<&str>)]);
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let recipe_path = create_test_recipe(temp_dir.path(), "paused_floor");
+        let job = ScheduledJob {
+            id: "paused_floor".to_string(),
+            source: recipe_path.to_string_lossy().to_string(),
+            cron: "0 */1 * * * *".to_string(),
+            paused: true,
+            ..Default::default()
+        };
+        fs::write(
+            &storage_path,
+            serde_json::to_string_pretty(&vec![job]).unwrap(),
+        )
+        .unwrap();
+        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let scheduler = Scheduler::new(storage_path, session_manager).await.unwrap();
+
+        let err = scheduler
+            .unpause_schedule("paused_floor")
+            .await
+            .expect_err("resume must reject an every-minute schedule");
+        assert!(err.to_string().contains("below the minimum"));
+        let jobs = scheduler.list_scheduled_jobs().await;
+        let job = jobs.iter().find(|job| job.id == "paused_floor").unwrap();
+        assert!(job.paused);
+        assert!(job
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("below the minimum")));
     }
 
     #[test]

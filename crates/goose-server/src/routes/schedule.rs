@@ -516,6 +516,11 @@ async fn unpause_schedule(
         permagent::scheduler::SchedulerError::JobNotFound(msg) => {
             ErrorResponse::not_found(format!("Schedule not found: {}", msg))
         }
+        // Resume refuses a schedule below the interval floor. That is a rejected
+        // request, not a server fault — a 500 here would read as a bug.
+        permagent::scheduler::SchedulerError::InvalidScheduleSpec(msg) => {
+            ErrorResponse::bad_request(format!("Cannot resume schedule: {}", msg))
+        }
         _ => ErrorResponse::internal(format!("Error unpausing schedule: {}", e)),
     })?;
     Ok(StatusCode::NO_CONTENT)
