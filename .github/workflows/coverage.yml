@@ -1,0 +1,125 @@
+name: Coverage
+
+on:
+  push:
+    branches: [main]
+  # On PRs only when the measurement plumbing itself changes — the Rust leg is
+  # far too expensive to attach to every pull request.
+  pull_request:
+    paths:
+      - '.github/workflows/coverage.yml'
+      - '.github/coverage-baseline.json'
+      - 'scripts/coverage-gate.mjs'
+      - 'ui/command-center/vite.config.ts'
+      - 'ui/command-center/package.json'
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Must match ci.yml.
+  SHERPA_ONNX_VERSION: 1.13.2
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui/command-center
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui/command-center/package-lock.json
+      - run: npm ci
+      - run: npm run test:coverage
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: coverage-frontend
+          path: ui/command-center/coverage/
+      - name: Gate frontend coverage
+        run: node ../../scripts/coverage-gate.mjs frontend_lines_pct "$(jq -r '.total.lines.pct' coverage/coverage-summary.json)"
+
+  # A ~40 minute instrumented rebuild of a workspace that already sits at the
+  # hosted runner's disk ceiling, so it runs on main, nightly and dispatch; the
+  # workflow's PR paths filter narrows PR runs to changes that can break the
+  # measurement itself.
+  rust:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule' || github.repository == 'make-tuned-unit/permagent-runtime'
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: true
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: coverage
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      # Keep in sync with ci.yml's required link- and runtime-library staging.
+      - name: Resolve sherpa-onnx prebuilt lib paths
+        shell: bash
+        run: |
+          case "${{ runner.os }}-${{ runner.arch }}" in
+            Linux-X64)    stem="sherpa-onnx-v${SHERPA_ONNX_VERSION}-linux-x64-shared-lib" ;;
+            macOS-ARM64)  stem="sherpa-onnx-v${SHERPA_ONNX_VERSION}-osx-arm64-shared-lib" ;;
+            *) echo "Unsupported runner for sherpa-onnx prebuilt libs: ${{ runner.os }}-${{ runner.arch }}" >&2; exit 1 ;;
+          esac
+          echo "SHERPA_ONNX_STEM=${stem}" >> "$GITHUB_ENV"
+          echo "SHERPA_ONNX_LIB_DIR=${HOME}/sherpa-onnx-prebuilt/${stem}/lib" >> "$GITHUB_ENV"
+          libdir="${HOME}/sherpa-onnx-prebuilt/${stem}/lib"
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            echo "LD_LIBRARY_PATH=${libdir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" >> "$GITHUB_ENV"
+          else
+            echo "DYLD_FALLBACK_LIBRARY_PATH=${libdir}${DYLD_FALLBACK_LIBRARY_PATH:+:${DYLD_FALLBACK_LIBRARY_PATH}}" >> "$GITHUB_ENV"
+          fi
+      - name: Cache sherpa-onnx prebuilt libs
+        id: sherpa-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/sherpa-onnx-prebuilt
+          key: sherpa-onnx-v${{ env.SHERPA_ONNX_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+      - name: Download sherpa-onnx prebuilt libs
+        if: steps.sherpa-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          mkdir -p "${HOME}/sherpa-onnx-prebuilt"
+          curl -fsSL --retry 3 \
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/v${SHERPA_ONNX_VERSION}/${SHERPA_ONNX_STEM}.tar.bz2" \
+            | tar xj -C "${HOME}/sherpa-onnx-prebuilt"
+          ls "${SHERPA_ONNX_LIB_DIR}"
+      # Deliberately no RUSTFLAGS/CFLAGS/debuginfo overrides like ci.yml's test
+      # job carries: cargo-llvm-cov owns RUSTFLAGS, and an externally-set value
+      # replaces rather than extends its instrumentation flags.
+      # `--no-report` collects profile data once; each `report` invocation then
+      # renders a format from it without re-running the suite.
+      - name: Measure Rust coverage
+        run: |
+          cargo llvm-cov --no-report --locked --workspace --exclude permagent-brain-tests --lib --tests
+          cargo llvm-cov report --lcov --output-path lcov.info
+          cargo llvm-cov report --json --summary-only --output-path coverage-summary.json
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: coverage-rust
+          path: |
+            lcov.info
+            coverage-summary.json
+      - name: Gate Rust coverage
+        run: node scripts/coverage-gate.mjs rust_lines_pct "$(jq -r '.data[0].totals.lines.percent' coverage-summary.json)"

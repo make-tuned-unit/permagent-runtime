@@ -99,6 +99,7 @@ graph.kz
 
 # Build artifacts
 ui/command-center/dist/
+ui/command-center/coverage/
 
 .claude/worktrees/
 
