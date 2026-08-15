@@ -40,6 +40,10 @@ pub struct CatalogEntry {
     pub section: Option<String>,
     pub description: String,
     pub affords: Vec<String>,
+    /// The store this tab renders, the machine-checkable half of the
+    /// observability contract; the coverage test asserts the observe_app aspect
+    /// claiming this tab reads the same store.
+    pub reads: String,
     pub suggest_when: Vec<String>,
     pub customizable_layout: bool,
 }

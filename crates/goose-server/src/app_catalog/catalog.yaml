@@ -2,6 +2,7 @@ tabs:
   - name: Build
     tool_type: build
     panel_type: workspace
+    reads: coding_sessions
     description: >-
       The Build tab is where the user works with code, terminals, and browsers
       in an integrated dev environment.
@@ -15,6 +16,7 @@ tabs:
   - name: Automate
     tool_type: automate
     panel_type: workspace
+    reads: schedule.json
     description: >-
       The Automate tab shows the user's scheduled recipes, saved skills, and
       device-health insights — all automations the agent can run for them.
@@ -31,6 +33,7 @@ tabs:
   - name: Brain
     tool_type: memory
     panel_type: workspace
+    reads: memory.db
     description: >-
       The Brain tab visualizes the user's Spectral memory graph — memories,
       entities, descriptions, consolidations. It's how the user inspects what
@@ -47,6 +50,7 @@ tabs:
   - name: World
     tool_type: world
     panel_type: workspace
+    reads: agent.yaml
     description: >-
       The World tab is a 3D scene showing the user's agents and their current
       activity. Visual representation of the agent ecosystem.
@@ -60,6 +64,7 @@ tabs:
   - name: Settings
     tool_type: settings
     panel_type: overlay
+    reads: config
     description: >-
       The Settings tab is where providers, models, appearance, and scheduling
       defaults are configured. It also hosts the Console pages (Sessions,
@@ -82,6 +87,7 @@ tabs:
   - name: Projects
     tool_type: projects
     panel_type: workspace
+    reads: projects
     description: >-
       The Projects tab shows all of the user's projects — codebases, repos,
       and workspaces the agent can operate in.
@@ -96,6 +102,7 @@ tabs:
   - name: Dashboard
     tool_type: dashboard
     panel_type: workspace
+    reads: overview_aggregate
     description: >-
       The Dashboard is the home view — a customizable surface showing the user's
       most important real-time information. Layout customization coming in PR 1.6.E.
@@ -110,6 +117,7 @@ tabs:
   - name: Grow
     tool_type: grow
     panel_type: workspace
+    reads: growth_actions
     description: >-
       The Grow tab is a per-project go-to-market workspace — strategy pillars
       (audience, positioning, channels), a content calendar of drafted posts,
@@ -127,6 +135,7 @@ tabs:
     tool_type: settings
     panel_type: overlay
     section: inbox
+    reads: inbox_files
     description: >-
       The Downloads inbox (a Settings page) lists files that landed in
       Permagent's intake folder (~/.permagent/inbox) via the in-app browser
@@ -142,6 +151,7 @@ tabs:
   - name: Skills
     tool_type: skills
     panel_type: overlay
+    reads: skills
     description: >-
       The Skills Library is where the user's saved skills live — the reusable
       task recipes the agent learns when the user repeats a task and saves it.
@@ -160,6 +170,7 @@ tabs:
     tool_type: settings
     panel_type: overlay
     section: sessions
+    reads: session_files
     description: >-
       The Sessions history (a Settings page) lists the user's past
       conversations — each with its title and when it was last active — so they
@@ -178,6 +189,7 @@ tabs:
     tool_type: settings
     panel_type: overlay
     section: activity
+    reads: activity_journal
     description: >-
       The Execution trace (the Activity page in Settings) shows the runtime's
       most recent events live from the running system's event streams —
