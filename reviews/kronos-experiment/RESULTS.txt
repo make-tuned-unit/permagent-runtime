@@ -1,0 +1,57 @@
+==========================================================================
+N = 606 non-overlapping forecasts   tickers: 6   2024-08-01 .. 2026-07-31
+==========================================================================
+
+1. STANDALONE — Spearman rank correlation with next-window realized vol
+   predictor                rho          p   95% CI
+   Kronos dispersion      0.592   1.19e-58   [0.538, 0.642]  <-- Kronos
+   Kronos path-vol        0.538   9.81e-47   [0.479, 0.592]  <-- Kronos
+   Trailing RV(20)        0.741  1.49e-106   [0.703, 0.775]
+   Trailing RV(60)        0.715   5.37e-96   [0.674, 0.752]
+   EWMA(0.94)             0.744  9.07e-108   [0.706, 0.777]
+   GARCH(1,1)             0.745  2.90e-108   [0.707, 0.778]
+
+   best baseline rho = 0.745   |   Kronos dispersion rho = 0.592
+   Steiger test, Kronos vs GARCH: t=-7.94, p=9.55e-15   (corr between the two predictors = 0.753)
+
+2. INCREMENTAL — does Kronos add anything beyond GARCH?
+   log(realized) ~ log(GARCH) + log(Kronos dispersion), HC3 errors
+     const          beta= -0.293  se=0.114  p=0.0103
+     log(GARCH)     beta=  0.936  se=0.052  p=3.04e-71
+     log(Kronos)    beta=  0.029  se=0.049  p=0.558
+     R^2 = 0.5262
+     GARCH alone R^2 = 0.5258   ->  Kronos adds +0.0004
+     Kronos alone R^2 = 0.2643
+
+3. CALIBRATED QLIKE (scale fitted per predictor, so level bias is not penalised)
+   lower is better; DM tests Kronos against each baseline
+   Kronos dispersion    0.8921
+   Kronos path-vol      1.0341
+   Trailing RV(20)      0.5736
+   Trailing RV(60)      0.5606
+   EWMA(0.94)           0.5324
+   GARCH(1,1)           0.5252
+
+   Kronos vs Trailing RV(20)    dQLIKE=+0.3185  DM=+4.32  p=1.56e-05  -> Kronos WORSE, significant
+   Kronos vs EWMA(0.94)         dQLIKE=+0.3597  DM=+5.54  p=3.05e-08  -> Kronos WORSE, significant
+   Kronos vs GARCH(1,1)         dQLIKE=+0.3669  DM=+6.43  p=1.24e-10  -> Kronos WORSE, significant
+
+4. DIRECTIONAL (recorded to test the claim we expect to fail)
+   directional accuracy = 49.0% +/- 4.0pp (95%), vs 50% chance p=0.655
+   Spearman(predicted return, realized return) = 0.063 (p=0.122)
+
+5. PER TICKER — Spearman with realized vol (guards against one name driving it)
+   ticker      n   Kronos    GARCH     RV20
+   AAPL      101   -0.134    0.168    0.283
+   AMD       101    0.281    0.325    0.304
+   MSFT      101   -0.089    0.313    0.345
+   NVDA      101    0.214    0.300    0.424
+   SPY       101    0.055    0.384    0.332
+   TSLA      101    0.208    0.193    0.358
+
+==========================================================================
+KILL CRITERION
+  beats best baseline standalone : NO  (0.592 vs 0.745)
+  adds incremental info vs GARCH : NO  (beta=+0.029, p=0.558)
+  VERDICT: FAILS — do not build
+==========================================================================

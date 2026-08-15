@@ -92,8 +92,18 @@ impl SearchTool {
         };
 
         // ripgrep exit codes: 0 = matches found, 1 = no matches, 2 = error.
-        if output.status.code() == Some(2) {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+        //
+        // Except one exit-2 is not an error. When a --glob or --type filter
+        // excludes every candidate, ripgrep exits 2 with "No files were
+        // searched" — the exact case this tool exists to explain, reported as a
+        // failure. Treating it as one turns "your glob matched nothing, retry
+        // without it" into "Search failed", which is the empty-vs-broken
+        // confusion the zero-match message was written to prevent.
+        //
+        // Narrow on purpose: a bad regex also exits 2 and must stay an error.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let filtered_everything = stderr.contains("No files were searched");
+        if output.status.code() == Some(2) && !filtered_everything {
             let detail = stderr.trim();
             let detail = if detail.is_empty() {
                 "ripgrep reported an error (check the pattern or path)."
@@ -798,6 +808,39 @@ mod tests {
             "got: {text}"
         );
         assert!(text.contains("retry without it"), "got: {text}");
+    }
+
+    /// A genuinely broken pattern must still be an error, so the exemption
+    /// above cannot swallow real ripgrep failures.
+    ///
+    /// Both cases exit 2; only the filtered-everything one is benign. Without
+    /// this, "treat exit 2 as no-matches" would silently report an unparseable
+    /// regex as a clean zero-result — trading one empty-vs-broken confusion for
+    /// its mirror image.
+    #[tokio::test]
+    async fn an_invalid_regex_is_still_an_error() {
+        if which::which("rg").is_err() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("notes.md"), "anything\n").unwrap();
+
+        let tool = SearchTool::new();
+        let result = tool
+            .search_with_cwd(
+                SearchParams {
+                    pattern: "(unclosed".to_string(),
+                    path: None,
+                    glob: None,
+                    file_type: None,
+                    max_per_file: None,
+                    max_files: None,
+                },
+                Some(dir.path()),
+            )
+            .await;
+
+        assert_eq!(result.is_error, Some(true), "{}", extract_text(&result));
     }
 
     #[tokio::test]
