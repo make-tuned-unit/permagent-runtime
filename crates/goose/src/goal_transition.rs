@@ -85,6 +85,39 @@ fn db_err(e: sqlx::Error) -> GuardError {
     GuardError::Db(e.to_string())
 }
 
+/// Who the activity journal names for a transition. A human or policy actor
+/// always wins. A system-driven move on a worker-owned goal is part of that
+/// worker's run, so it is attributed to the worker named in `worker_key` — one
+/// of the two fields `GET /api/agents/{id}/work` already joins that agent's
+/// goals on, so the two halves of one work review cannot disagree. (`worker_key`
+/// alone, not `assigned_to`: dispatch writes both, and only the metadata is in
+/// hand here without a second read.)
+/// The decision-audit actor is NOT changed by this: the audit answers "who was
+/// authorized", the journal answers "whose work was this". They are different
+/// questions and the audit chain's meaning must not shift to answer the second.
+///
+/// Callers pass the POST-patch metadata, so the Dispatch transition that first
+/// writes `worker_key` is itself attributed to the worker it hands the goal to
+/// — that row opens the worker's run and belongs in its record.
+///
+/// Nothing here invents an actor: an unowned goal moved by the system stays
+/// `system`, and [`crate::activity_journal::Actor::resolve`] fails closed again
+/// on anything it does not recognize.
+fn journal_actor(
+    audit_actor: &str,
+    goal_metadata: &serde_json::Map<String, serde_json::Value>,
+) -> String {
+    if audit_actor != decisions::ACTOR_SYSTEM {
+        return audit_actor.to_string();
+    }
+    goal_metadata
+        .get("worker_key")
+        .and_then(serde_json::Value::as_str)
+        .filter(|worker| !worker.is_empty())
+        .unwrap_or(decisions::ACTOR_SYSTEM)
+        .to_string()
+}
+
 // ── Checked advance ─────────────────────────────────────────────────────────
 
 /// The risk_policy action class governing each goal action.
@@ -335,6 +368,11 @@ pub async fn advance_goal_checked(
 
     check_proof(tier, proof.as_ref(), card_id, action)?;
 
+    let (decision_id, audit_actor) = match proof.as_ref() {
+        Some(p) => (p.decision_id().to_string(), p.acted_by().to_string()),
+        None => ("none".to_string(), actor.to_string()),
+    };
+
     // #504: capture the dispatched worker's run id (== goal worktree dir name)
     // before `meta` is consumed, so a terminal transition can reap the worktree
     // post-commit. Only meaningful for terminal states; `None` otherwise.
@@ -360,6 +398,7 @@ pub async fn advance_goal_checked(
         "goal_state".to_string(),
         serde_json::Value::String(new_state.binding().to_string()),
     );
+    let journal_actor = journal_actor(&audit_actor, &meta);
     let meta_str = serde_json::to_string(&serde_json::Value::Object(meta))
         .map_err(|e| GuardError::Db(e.to_string()))?;
 
@@ -384,10 +423,6 @@ pub async fn advance_goal_checked(
         .await
         .map_err(db_err)?;
 
-    let (decision_id, audit_actor) = match proof.as_ref() {
-        Some(p) => (p.decision_id().to_string(), p.acted_by().to_string()),
-        None => ("none".to_string(), actor.to_string()),
-    };
     decisions::append_audit_tx(
         &mut tx,
         &decision_id,
@@ -410,6 +445,7 @@ pub async fn advance_goal_checked(
         Some(&goal.project_id),
         Some(current_state.binding()),
         new_state.binding(),
+        &journal_actor,
     ));
 
     // #504: a goal that just reached a terminal state no longer needs its
@@ -464,6 +500,7 @@ pub async fn park_goal(
         )));
     }
 
+    let journal_actor = journal_actor(actor, &goal.metadata);
     let mut meta = goal.metadata;
     meta.insert(
         "goal_state".to_string(),
@@ -503,6 +540,7 @@ pub async fn park_goal(
         Some(&goal.project_id),
         None,
         "failed",
+        &journal_actor,
     ));
 
     Ok(())
@@ -545,6 +583,7 @@ pub async fn requeue_goal(
         )));
     }
 
+    let journal_actor = journal_actor(actor, &goal.metadata);
     let mut meta = goal.metadata;
     meta.insert(
         "goal_state".to_string(),
@@ -584,6 +623,7 @@ pub async fn requeue_goal(
         Some(&goal.project_id),
         Some("in_progress"),
         "ready",
+        &journal_actor,
     ));
 
     Ok(())
@@ -647,6 +687,7 @@ pub async fn release_dispatch_claim(
         )));
     }
 
+    let journal_actor = journal_actor(decisions::ACTOR_SYSTEM, &goal.metadata);
     let mut meta = goal.metadata;
     meta.insert(
         "goal_state".to_string(),
@@ -687,6 +728,7 @@ pub async fn release_dispatch_claim(
         Some(&goal.project_id),
         Some("in_progress"),
         "ready",
+        &journal_actor,
     ));
     Ok(())
 }
@@ -703,6 +745,7 @@ pub async fn record_goal_failure(
     // BUSY lock-upgrade a concurrent writer would trigger (see advance_goal_checked).
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(db_err)?;
     let goal = read_goal_tx(&mut tx, card_id).await?;
+    let journal_actor = journal_actor(decisions::ACTOR_SYSTEM, &goal.metadata);
     let mut meta = goal.metadata;
     meta.insert(
         "last_error".to_string(),
@@ -729,6 +772,7 @@ pub async fn record_goal_failure(
         Some(&goal.project_id),
         Some("in_progress"),
         "in_progress",
+        &journal_actor,
     ));
 
     Ok(())
@@ -791,7 +835,11 @@ pub async fn delete_goal_checked(
     let deleted = result.rows_affected() > 0;
     if deleted {
         crate::events::emit(crate::events::goal_state_changed(
-            card_id, None, None, "deleted",
+            card_id,
+            None,
+            None,
+            "deleted",
+            proof.acted_by(),
         ));
     }
     Ok(deleted)
@@ -1340,12 +1388,19 @@ pub async fn set_goal_dependencies(
 
     write_depends_on_audited(pool, card_id, &deps, actor, "roadmap:set_deps").await?;
 
+    let journal_actor = card
+        .metadata_json
+        .as_object()
+        .map(|metadata| journal_actor(actor, metadata))
+        .unwrap_or_else(|| actor.to_string());
+
     // Same-state emit so live board surfaces refresh their dependency view.
     crate::events::emit(crate::events::goal_state_changed(
         card_id,
         Some(&card.project_id),
         Some(binding),
         binding,
+        &journal_actor,
     ));
     Ok(())
 }
@@ -1637,6 +1692,58 @@ mod tests {
             .unwrap()
             .unwrap();
         col.state_binding.unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn system_transition_journals_worker_without_changing_audit_actor() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "ready", 0).await;
+        let mut metadata = goal.metadata_json.as_object().unwrap().clone();
+        metadata.insert("worker_key".to_string(), serde_json::json!("claude_code"));
+        sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+            .bind(serde_json::Value::Object(metadata).to_string())
+            .bind(&goal.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let mut events = crate::events::subscribe();
+        advance_goal_checked(
+            &pool,
+            &goal.id,
+            GoalAction::Dispatch,
+            decisions::ACTOR_SYSTEM,
+            None,
+            TransitionEffects::default(),
+        )
+        .await
+        .unwrap();
+
+        let event = loop {
+            let event = events.recv().await.unwrap();
+            if event.payload.get("goal_id").and_then(|v| v.as_str()) == Some(goal.id.as_str()) {
+                break event;
+            }
+        };
+        assert_eq!(
+            event.payload.get("actor").and_then(|v| v.as_str()),
+            Some("claude_code")
+        );
+        assert_eq!(
+            crate::activity_journal::entry_from_event(&event)
+                .unwrap()
+                .actor
+                .as_str(),
+            "claude_code"
+        );
+        let acted_by: String = sqlx::query_scalar(
+            "SELECT acted_by FROM decision_audit WHERE goal_id = ? AND outcome = 'transition:dispatch'",
+        )
+        .bind(&goal.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(acted_by, decisions::ACTOR_SYSTEM);
     }
 
     async fn approve_decision_proof(

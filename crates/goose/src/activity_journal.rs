@@ -37,7 +37,7 @@ pub const TIMELINE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
         display_name: "Activity timeline",
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
         what_it_does:
-            "A day-grouped timeline on the Home dashboard reading the durable activity journal — an append-only record of what you and your workers actually did: goal moves, decisions requested and resolved, librarian describe runs, Watcher nudges, and task failures, kept for 90 days and filterable by kind or actor",
+            "A day-grouped timeline on the Home dashboard reading the durable activity journal — an append-only record of what you and your workers actually did, kept for 90 days and filterable by kind or actor: a goal move is attributed to the worker the goal is assigned to, or to the person or policy that authorized it; decisions name Henry, librarian describe runs name the librarian, and Watcher nudges name the Watcher; a task failure stays unattributed because the task record carries no worker",
         why_it_matters:
             "It is the user's reviewable answer to 'what did my agents do today and why' — a row points at its evidence (the goal card, the decision, the memory, or the article a news nudge is about) whenever the event that produced it carried one, so when the user asks what happened, point them here instead of reconstructing history from your context window",
         state_source: crate::agents::self_knowledge::StateSource::Static,
@@ -64,13 +64,105 @@ pub const KNOWN_KINDS: [&str; 6] = [
     "task_failed",
 ];
 
+/// A roster agent id. The inner `String` is private to this module so that
+/// [`Actor::Agent`] cannot be built anywhere else from an arbitrary string:
+/// [`Actor::resolve`] is the only door, and it admits only ids the /agents
+/// roster publishes. That is what stops `actor` drifting back into free text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentId(String);
+
+/// Who a journal row names. A closed vocabulary, because the actor is a JOIN
+/// key: `GET /api/agents/{id}/work` filters the journal by exact actor, so a
+/// value outside the roster is a row no review can ever reach.
+///
+/// [`Actor::Assistant`] ("henry") is the one member that is deliberately not a
+/// roster id — Henry is the assistant, not a dispatchable agent — so decision
+/// rows are readable on the timeline but do not appear under any agent's work
+/// review. That is correct, not a gap: no agent did that work.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Actor {
+    /// No knowable originator. Never a guess.
+    System,
+    /// The human operator.
+    User,
+    /// Henry himself.
+    Assistant,
+    /// Henry's autonomous decision policy (the `henry-policy` audit actor).
+    Policy,
+    /// A background worker or dispatch persona from the /agents roster.
+    Agent(AgentId),
+}
+
+/// The roster ids an [`Actor::Agent`] may name: background-worker descriptor
+/// ids plus the seeded dispatch-persona keys. Built once — `default_roster()`
+/// allocates a full `WorkerPersona` per entry, and this is consulted on every
+/// journaled event.
+fn known_agent_ids() -> &'static std::collections::HashSet<String> {
+    static IDS: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
+    IDS.get_or_init(|| {
+        crate::agents::self_knowledge::WORKER_DESCRIPTORS
+            .iter()
+            .map(|d| d.id.to_string())
+            .chain(crate::config::agent_identity::default_roster().into_keys())
+            .collect()
+    })
+}
+
+impl Actor {
+    /// Resolve a producer-supplied actor string into the journal's joinable
+    /// vocabulary. Anything unrecognized fails closed to [`Actor::System`]:
+    /// an unjoinable actor is worse than an honest "not attributed".
+    ///
+    /// Known limitation, deliberate: the roster check is against the SEEDED
+    /// personas only (no config file read, so this stays pure and hermetic in
+    /// tests). A persona the operator adds to `agent.yaml` beyond the seeded
+    /// set journals as `system` until it is seeded. Widening this means giving
+    /// the journal a live roster read, which is a bigger change than #619's
+    /// gap warrants.
+    ///
+    /// Note what is NOT here: the card-authorship literal `"user"`. Several
+    /// producers hardcode `created_by: "user"` for any caller (see
+    /// `goal_transition::insert_roadmap_goal`), so honouring it would launder
+    /// an agent's insert into the human's name — the same defect that function's
+    /// own comment records. Only `"jesse"`, which callers state deliberately as
+    /// the decision-audit actor, resolves to a person.
+    pub fn resolve(raw: &str) -> Self {
+        match raw {
+            "system" => Self::System,
+            "jesse" => Self::User,
+            "henry" => Self::Assistant,
+            "henry-policy" => Self::Policy,
+            _ => {
+                // Producers spell agent ids both ways ("claude-code" on cards,
+                // "claude_code" on the roster); normalize before the lookup.
+                let id = raw.trim().to_lowercase().replace('-', "_");
+                if known_agent_ids().contains(&id) {
+                    Self::Agent(AgentId(id))
+                } else {
+                    Self::System
+                }
+            }
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::System => "system",
+            Self::User => "jesse",
+            Self::Assistant => "henry",
+            Self::Policy => "henry-policy",
+            Self::Agent(id) => &id.0,
+        }
+    }
+}
+
 /// A journal row ready to insert (write side).
 #[derive(Debug, Clone)]
 pub struct NewEntry {
     pub id: String,
     pub ts: String,
     pub kind: String,
-    pub actor: String,
+    pub actor: Actor,
     pub title: String,
     pub detail: Option<String>,
     pub ref_kind: Option<String>,
@@ -142,10 +234,6 @@ pub fn entry_from_event(event: &PermagentEvent) -> Option<NewEntry> {
             let goal_id = payload_str(event, "goal_id");
             let from = payload_str(event, "from");
             let to = payload_str(event, "to").unwrap_or("unknown");
-            // Actor honesty: the event payload carries no actor (transitions
-            // can be agent- or user-driven), so the journal says "system"
-            // rather than guessing. Follow-up: thread the audit actor through
-            // the event.
             let detail = match (from, to) {
                 (_, "deleted") => "Goal deleted".to_string(),
                 (None, to) => format!("Goal created ({})", state_label(to)),
@@ -153,7 +241,7 @@ pub fn entry_from_event(event: &PermagentEvent) -> Option<NewEntry> {
             };
             (
                 "goal_state_changed",
-                "system".to_string(),
+                Actor::resolve(payload_str(event, "actor").unwrap_or("system")),
                 // Placeholder title; record_event upgrades it to the card
                 // title when the card still exists.
                 goal_id
@@ -174,7 +262,9 @@ pub fn entry_from_event(event: &PermagentEvent) -> Option<NewEntry> {
             };
             (
                 "decision_created",
-                "henry".to_string(),
+                // `NewDecision` carries no requester, so the honest actor is
+                // Henry's inbox itself, not whichever caller happened to ask.
+                Actor::Assistant,
                 "Decision requested".to_string(),
                 Some(detail),
                 Some("decision"),
@@ -187,7 +277,7 @@ pub fn entry_from_event(event: &PermagentEvent) -> Option<NewEntry> {
             let acted_by = payload_str(event, "acted_by").unwrap_or("system");
             (
                 "decision_resolved",
-                acted_by.to_string(),
+                Actor::resolve(acted_by),
                 "Decision resolved".to_string(),
                 Some(format!("Answered: {answer}")),
                 Some("decision"),
@@ -204,7 +294,7 @@ pub fn entry_from_event(event: &PermagentEvent) -> Option<NewEntry> {
             };
             (
                 "librarian_describe_completed",
-                "librarian".to_string(),
+                Actor::resolve("librarian"),
                 format!("Described '{}'", truncate(memory_key, 80)),
                 Some(detail),
                 Some("memory"),
@@ -216,7 +306,10 @@ pub fn entry_from_event(event: &PermagentEvent) -> Option<NewEntry> {
             let error = payload_str(event, "error").unwrap_or("unknown error");
             (
                 "task_failed",
-                "system".to_string(),
+                // Not knowable: `tasks` has no worker/agent column, only a
+                // session id, and #GAP-B may not add one. Honest "system"
+                // beats a guess joined off the session.
+                Actor::System,
                 "Task failed".to_string(),
                 Some(error.to_string()),
                 Some("task"),
@@ -248,7 +341,7 @@ pub fn entry_from_event(event: &PermagentEvent) -> Option<NewEntry> {
             };
             (
                 "proactive_nudge",
-                "watcher".to_string(),
+                Actor::resolve("watcher"),
                 title,
                 message.map(str::to_string),
                 ref_kind,
@@ -264,7 +357,9 @@ pub fn entry_from_event(event: &PermagentEvent) -> Option<NewEntry> {
         id: event.id.clone(),
         ts,
         kind: kind.to_string(),
-        actor: truncate(&actor, 40),
+        // No truncation: `Actor` is a closed vocabulary of short ids, so the
+        // free-text length cap the `String` field needed is now structural.
+        actor,
         title: truncate(&title, TITLE_MAX),
         detail: detail.map(|d| truncate(&d, DETAIL_MAX)),
         ref_kind: ref_kind.map(str::to_string),
@@ -302,7 +397,7 @@ pub async fn insert_entry(pool: &Pool<Sqlite>, entry: &NewEntry) -> Result<()> {
     .bind(&entry.id)
     .bind(&entry.ts)
     .bind(&entry.kind)
-    .bind(&entry.actor)
+    .bind(entry.actor.as_str())
     .bind(&entry.title)
     .bind(&entry.detail)
     .bind(&entry.ref_kind)
@@ -432,7 +527,7 @@ mod tests {
             id: id.to_string(),
             ts: ts.to_string(),
             kind: "task_failed".to_string(),
-            actor: "system".to_string(),
+            actor: Actor::System,
             title: format!("entry {id}"),
             detail: None,
             ref_kind: None,
@@ -550,7 +645,13 @@ mod tests {
     #[test]
     fn maps_selected_kinds_and_skips_noise() {
         // Selected: goal transition.
-        let e = events::goal_state_changed("goal-1", Some("proj-1"), Some("ready"), "in_progress");
+        let e = events::goal_state_changed(
+            "goal-1",
+            Some("proj-1"),
+            Some("ready"),
+            "in_progress",
+            "codex",
+        );
         let entry = entry_from_event(&e).expect("goal_state_changed is journaled");
         assert_eq!(entry.kind, "goal_state_changed");
         assert_eq!(entry.ref_kind.as_deref(), Some("goal"));
@@ -564,7 +665,7 @@ mod tests {
             "d-1", "unblock", "approve", "jesse", 1,
         ))
         .unwrap();
-        assert_eq!(resolved.actor, "jesse");
+        assert_eq!(resolved.actor.as_str(), "jesse");
         assert_eq!(resolved.detail.as_deref(), Some("Answered: approve"));
         assert!(entry_from_event(&events::task_failed("t-1", "boom")).is_some());
 
@@ -587,6 +688,76 @@ mod tests {
         assert!(entry.ref_id.is_none());
         let f = PermagentEvent::new(PermagentEventType::TaskFailed, serde_json::json!(null));
         assert!(entry_from_event(&f).is_some());
+    }
+
+    /// **The anti-rot guard for GAP-B.** `actor` is a JOIN key, not a label:
+    /// `GET /api/agents/{id}/work` filters the journal by exact actor. Free
+    /// text is how it rotted the first time, so this asserts the property
+    /// directly — every journaled kind, and a bogus producer value.
+    #[tokio::test]
+    async fn every_journaled_kind_resolves_to_a_joinable_actor() {
+        let events = [
+            events::goal_state_changed("g", None, None, "ready", "claude-code"),
+            events::decision_created("d", "unblock", 1),
+            events::decision_resolved("d", "unblock", "approve", "henry-policy", 1),
+            events::librarian_describe_completed(
+                "m",
+                "description",
+                10,
+                crate::agents::platform_extensions::librarian::DescriptionQuality::Structured,
+            ),
+            events::task_failed("t", "boom"),
+            events::proactive_nudge("project_news", "s", "m", 1, "now", None, None),
+        ];
+        let allowed: std::collections::HashSet<String> =
+            ["system", "jesse", "henry", "henry-policy"]
+                .into_iter()
+                .map(str::to_string)
+                .chain(
+                    crate::agents::self_knowledge::WORKER_DESCRIPTORS
+                        .iter()
+                        .map(|descriptor| descriptor.id.to_string()),
+                )
+                .chain(crate::config::agent_identity::default_roster().into_keys())
+                .collect();
+        let entries: Vec<NewEntry> = events
+            .iter()
+            .map(|event| entry_from_event(event).unwrap())
+            .collect();
+        // Fails when a seventh kind is journaled without being covered here.
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.kind.as_str())
+                .collect::<std::collections::HashSet<_>>(),
+            KNOWN_KINDS.into_iter().collect(),
+            "the guard must represent every journaled event kind"
+        );
+        for entry in &entries {
+            assert!(
+                allowed.contains(entry.actor.as_str()),
+                "kind '{}' journals actor '{}', which is neither a roster agent id \
+                 nor one of system/jesse/henry/henry-policy — no work review can \
+                 reach that row. Resolve it through Actor::resolve.",
+                entry.kind,
+                entry.actor.as_str()
+            );
+        }
+
+        // A producer inventing an actor must NOT be able to write it.
+        let bogus =
+            events::goal_state_changed("bogus", None, None, "ready", "totally-made-up-worker");
+        assert_eq!(entry_from_event(&bogus).unwrap().actor, Actor::System);
+
+        // And the whole point: a real worker's row is reachable by its id.
+        let pool = test_pool().await;
+        let worker = events::goal_state_changed("worker-goal", None, None, "ready", "claude_code");
+        record_event(&pool, &worker).await.unwrap();
+        let page = page(&pool, None, 10, None, Some("claude_code"))
+            .await
+            .unwrap();
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].actor, "claude_code");
     }
 
     #[tokio::test]
@@ -612,6 +783,14 @@ mod tests {
             Some(crate::projects::PERSONAL_PROJECT_ID),
             None,
             "triage",
+            // `create_card` hardcodes this literal for every caller, so it
+            // must NOT resolve to a person — see `Actor::resolve`.
+            "user",
+        );
+        assert_eq!(
+            entry_from_event(&e).unwrap().actor,
+            Actor::System,
+            "card authorship 'user' must not be laundered into the human actor"
         );
         assert!(record_event(&pool, &e).await.unwrap());
 
@@ -645,7 +824,7 @@ mod tests {
         );
         let entry = entry_from_event(&e).expect("proactive_nudge is journaled");
         assert_eq!(entry.kind, "proactive_nudge");
-        assert_eq!(entry.actor, "watcher");
+        assert_eq!(entry.actor.as_str(), "watcher");
         assert_eq!(entry.title, "Resurfaced 'Solar shed project'");
         assert_eq!(entry.ref_kind.as_deref(), Some("memory"));
         assert_eq!(entry.ref_id.as_deref(), Some("Solar shed project"));
@@ -715,7 +894,7 @@ mod tests {
         for (id, ts, kind, actor) in rows {
             let mut e = entry(id, ts);
             e.kind = kind.to_string();
-            e.actor = actor.to_string();
+            e.actor = Actor::resolve(actor);
             insert_entry(&pool, &e).await.unwrap();
         }
 

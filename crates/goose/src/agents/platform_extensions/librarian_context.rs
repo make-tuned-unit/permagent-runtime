@@ -900,7 +900,7 @@ mod tests {
                     id: id.to_string(),
                     ts,
                     kind: kind.to_string(),
-                    actor: "system".to_string(),
+                    actor: crate::activity_journal::Actor::System,
                     title: format!("entry {id}"),
                     detail: Some("moved a goal".to_string()),
                     ref_kind: None,
