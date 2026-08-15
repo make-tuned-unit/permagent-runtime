@@ -4,6 +4,7 @@ use crate::agents::ExtensionConfig;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Mapping;
+use std::collections::HashSet;
 use tracing::warn;
 use utoipa::ToSchema;
 
@@ -129,6 +130,13 @@ pub fn is_extension_enabled(key: &str) -> bool {
     extensions.get(key).map(|e| e.enabled).unwrap_or(false)
 }
 
+/// True when `key` may be granted to an agent at all. Refusing unknown or
+/// globally-disabled keys at the write boundary prevents the roster from
+/// claiming a permission that runtime resolution would silently discard.
+pub fn extension_is_grantable(key: &str) -> bool {
+    is_extension_enabled(key)
+}
+
 pub fn get_enabled_extensions() -> Vec<ExtensionConfig> {
     get_all_extensions()
         .into_iter()
@@ -182,6 +190,40 @@ pub fn resolve_extensions_for_new_session(
         .into_iter()
         .filter(is_extension_available)
         .collect()
+}
+
+/// Narrow an already-resolved extension set to what an agent is granted.
+/// `None` returns `base` verbatim — the pre-grant behaviour, unchanged, so
+/// an agent.yaml with no grants dispatches exactly as it did before. An
+/// explicit empty list grants nothing.
+///
+/// Narrowing is a `retain` over the caller's own set, so the result is a
+/// subset by construction: a grant naming an extension the run never had
+/// cannot manufacture it, and a globally-disabled extension cannot be
+/// revived for one agent. That is what stops a grant being a
+/// privilege-escalation seam.
+pub fn narrow_extensions_for_agent(
+    mut base: Vec<ExtensionConfig>,
+    grants: Option<&[String]>,
+) -> Vec<ExtensionConfig> {
+    let Some(grants) = grants else {
+        return base;
+    };
+
+    let granted: HashSet<&str> = grants.iter().map(String::as_str).collect();
+    base.retain(|config| granted.contains(config.key().as_str()));
+    base
+}
+
+/// Resolves the ordinary per-run extension set, then narrows it to the agent's
+/// grants.
+pub fn resolve_extensions_for_agent(
+    grants: Option<&[String]>,
+    recipe_extensions: Option<&[ExtensionConfig]>,
+    override_extensions: Option<Vec<ExtensionConfig>>,
+) -> Vec<ExtensionConfig> {
+    let base = resolve_extensions_for_new_session(recipe_extensions, override_extensions);
+    narrow_extensions_for_agent(base, grants)
 }
 
 #[cfg(test)]
@@ -243,5 +285,59 @@ mod tests {
 
         assert!(!is_extension_available(&unknown_platform));
         assert!(is_extension_available(&builtin));
+    }
+
+    fn builtin(name: &str) -> ExtensionConfig {
+        ExtensionConfig::Builtin {
+            name: name.to_string(),
+            description: String::new(),
+            display_name: None,
+            timeout: None,
+            bundled: None,
+            available_tools: Vec::new(),
+        }
+    }
+
+    /// Filtering the already-resolved base is the security boundary: naming an
+    /// extension that the run did not receive must never manufacture it.
+    #[test]
+    fn agent_grant_never_widens_the_base() {
+        let resolved = resolve_extensions_for_agent(
+            Some(&["bravesearch".to_string()]),
+            None,
+            Some(vec![builtin("developer")]),
+        );
+        assert!(resolved.is_empty());
+    }
+
+    /// Existing agent files have no grant field, so absence must remain byte-for-
+    /// byte equivalent at the resolved configuration boundary.
+    #[test]
+    fn absent_agent_grants_preserve_session_resolution() {
+        let overrides = vec![builtin("developer"), builtin("bravesearch")];
+        let expected = resolve_extensions_for_new_session(None, Some(overrides.clone()));
+        let actual = resolve_extensions_for_agent(None, None, Some(overrides));
+        assert_eq!(actual, expected);
+    }
+
+    /// An explicit empty list is an intentional denial and must not be confused
+    /// with the absent field's backwards-compatible inheritance semantics.
+    #[test]
+    fn empty_agent_grants_deny_every_extension() {
+        let resolved =
+            resolve_extensions_for_agent(Some(&[]), None, Some(vec![builtin("developer")]));
+        assert!(resolved.is_empty());
+    }
+
+    /// A partial grant must preserve only matching members of the run's base,
+    /// keeping both the selection and its order predictable for dispatch.
+    #[test]
+    fn agent_grants_keep_only_named_base_extensions() {
+        let resolved = resolve_extensions_for_agent(
+            Some(&["bravesearch".to_string()]),
+            None,
+            Some(vec![builtin("developer"), builtin("bravesearch")]),
+        );
+        assert_eq!(resolved, vec![builtin("bravesearch")]);
     }
 }

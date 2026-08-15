@@ -1125,6 +1125,45 @@ pub async fn list_active_goals(pool: &Pool<Sqlite>) -> Result<Vec<ActiveGoal>, S
         .collect())
 }
 
+/// All non-archived goals attributed to one worker, across projects and in
+/// every workflow state. Both attribution fields are queried because older
+/// dispatches recorded `metadata_json.worker_key`, while the canonical goal
+/// transition now writes `assigned_to`; ignoring either silently loses work.
+pub async fn list_goals_for_worker(
+    pool: &Pool<Sqlite>,
+    worker_key: &str,
+    limit: i64,
+) -> Result<Vec<ActiveGoal>, String> {
+    let rows = sqlx::query(
+        "SELECT c.id, c.title, c.project_id, bc.state_binding, c.assigned_to, \
+                c.created_at, c.updated_at \
+         FROM cards c JOIN board_columns bc ON c.column_id = bc.id \
+         WHERE c.card_type = 'goal' AND c.archived_at IS NULL \
+           AND (c.assigned_to = ? OR json_extract(c.metadata_json, '$.worker_key') = ?) \
+         ORDER BY c.updated_at DESC LIMIT ?",
+    )
+    .bind(worker_key)
+    .bind(worker_key)
+    .bind(limit.clamp(1, 500))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|r| ActiveGoal {
+            id: r.get("id"),
+            title: r.get("title"),
+            project_id: r.get("project_id"),
+            state: r
+                .get::<Option<String>, _>("state_binding")
+                .unwrap_or_default(),
+            assigned_to: r.get("assigned_to"),
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+        })
+        .collect())
+}
+
 #[derive(Debug, Default)]
 pub struct UpdateCard {
     pub title: Option<String>,

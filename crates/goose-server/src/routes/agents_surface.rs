@@ -1,0 +1,1013 @@
+//! Backend surface for Settings → Agents.
+//!
+//! The roster keeps background workers, dispatch personas, and capabilities in
+//! separate populations because combining them would imply dispatchability and
+//! liveness that those populations do not share.
+
+use crate::state::AppState;
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::{get, post},
+    Json, Router,
+};
+use permagent::agents::extension::ExtensionConfig;
+use permagent::agents::platform_extensions::PLATFORM_EXTENSIONS;
+use permagent::agents::self_knowledge::{
+    worker_descriptor_visible, worker_live_state_for, FeatureDescriptor, FeatureFlags, StateSource,
+    WORKER_DESCRIPTORS,
+};
+use permagent::config::agent_identity::{self, WorkerPersona};
+use permagent::config::extensions::name_to_key;
+use permagent::config::worker_probe;
+use permagent::config::{extension_is_grantable, get_all_extensions, is_extension_enabled, Config};
+use permagent::{activity_journal, cards, decisions};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use sqlx::Row;
+use std::collections::HashMap;
+use std::sync::Arc;
+
+const DEFAULT_LIMIT: i64 = 50;
+const MAX_LIMIT: i64 = 200;
+const MAX_GRANTS: usize = 100;
+const MAX_SECRETS: usize = 100;
+const MAX_REQUIRED_SECRETS: usize = 100;
+
+type ApiResult<T> = Result<Json<T>, ApiError>;
+
+#[derive(Debug)]
+struct ApiError(StatusCode, String);
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (self.0, Json(json!({ "error": self.1 }))).into_response()
+    }
+}
+
+#[derive(Serialize, Clone)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum LiveState {
+    Ok { value: String },
+    NotQueryable,
+    Unavailable { reason: String },
+}
+
+#[derive(Serialize, Clone)]
+struct BackgroundWorker {
+    id: String,
+    display_name: String,
+    what_it_does: String,
+    why_it_matters: String,
+    state_source: &'static str,
+    live_state: LiveState,
+    dispatchable: bool,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum Availability {
+    Available,
+    Unavailable { reason: String },
+    ProbeFailed { reason: String },
+}
+
+#[derive(Serialize, Clone)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+enum Grants {
+    InheritGlobal,
+    Explicit {
+        extensions: Vec<String>,
+        truncated: bool,
+    },
+}
+
+#[derive(Serialize, Clone)]
+struct SecretItem {
+    name: String,
+    presence: agent_identity::SecretPresence,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum Secrets {
+    Ok {
+        items: Vec<SecretItem>,
+        truncated: bool,
+    },
+    Unavailable {
+        reason: String,
+    },
+}
+
+#[derive(Serialize, Clone)]
+struct DispatchPersona {
+    key: String,
+    display_name: String,
+    role: String,
+    engine: String,
+    cost_tier: String,
+    workflow_role: Option<String>,
+    availability: Availability,
+    grants: Grants,
+    grants_enforced: bool,
+    secrets: Secrets,
+}
+
+#[derive(Serialize, Clone)]
+struct RequiredSecret {
+    name: String,
+    present: bool,
+}
+
+/// `not_declared` means the platform registry declares no secret metadata; it
+/// must never be interpreted as a claim that the extension needs no secrets.
+#[derive(Serialize, Clone)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum RequiredSecrets {
+    Declared {
+        items: Vec<RequiredSecret>,
+        truncated: bool,
+    },
+    NotDeclared,
+}
+
+#[derive(Serialize, Clone)]
+struct Capability {
+    key: String,
+    display_name: String,
+    description: String,
+    enabled: bool,
+    /// `None` means the source declares no default, not that the default is off.
+    default_enabled: Option<bool>,
+    source: &'static str,
+    required_secrets: RequiredSecrets,
+}
+
+#[derive(Serialize)]
+struct RosterResponse {
+    workers: Vec<BackgroundWorker>,
+    dispatch_roster: Vec<DispatchPersona>,
+    capabilities: Vec<Capability>,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum AgentDetail {
+    Worker(BackgroundWorker),
+    DispatchPersona(DispatchPersona),
+}
+
+fn bounded<T>(mut items: Vec<T>, limit: usize) -> (Vec<T>, bool) {
+    let truncated = items.len() > limit;
+    items.truncate(limit);
+    (items, truncated)
+}
+
+fn background_workers(scheduled_job_count: Option<usize>) -> Vec<BackgroundWorker> {
+    let flags = FeatureFlags::from_live_config();
+    WORKER_DESCRIPTORS
+        .iter()
+        .filter(|d| worker_descriptor_visible(d, flags))
+        .map(|d| background_worker(d, scheduled_job_count, flags))
+        .collect()
+}
+
+fn background_worker(
+    d: &FeatureDescriptor,
+    scheduled_job_count: Option<usize>,
+    flags: FeatureFlags,
+) -> BackgroundWorker {
+    let state_source = match d.state_source {
+        StateSource::Queryable => "queryable",
+        StateSource::Static => "static",
+    };
+    let live_state = shape_live_state(Ok(worker_live_state_for(d, scheduled_job_count, flags)));
+    BackgroundWorker {
+        id: d.id.to_string(),
+        display_name: d.display_name.to_string(),
+        what_it_does: d.what_it_does.to_string(),
+        why_it_matters: d.why_it_matters.to_string(),
+        state_source,
+        live_state,
+        dispatchable: false,
+    }
+}
+
+fn shape_live_state(read: Result<Option<String>, String>) -> LiveState {
+    match read {
+        Ok(Some(value)) => LiveState::Ok { value },
+        Ok(None) => LiveState::NotQueryable,
+        Err(reason) => LiveState::Unavailable { reason },
+    }
+}
+
+/// Enumeration and presence are separate reads: the flat keyspace is the only
+/// way to discover names, while only the presence read can distinguish a
+/// resolvable value from a removed or unreadable one. Values are discarded at
+/// the keyspace boundary and cannot enter any response-shaping path.
+fn secret_names_from_map(id: &str, secrets: HashMap<String, Value>) -> Secrets {
+    let prefix = format!("agent_secret.{}.", name_to_key(id));
+    let mut names: Vec<String> = secrets
+        .into_keys()
+        .filter_map(|key| key.strip_prefix(&prefix).map(str::to_string))
+        .collect();
+    names.sort();
+    let (names, truncated) = bounded(names, MAX_SECRETS);
+    Secrets::Ok {
+        items: names
+            .into_iter()
+            .map(|name| SecretItem {
+                presence: agent_identity::agent_secret_presence(id, &name),
+                name,
+            })
+            .collect(),
+        truncated,
+    }
+}
+
+fn secrets_for_agent(id: &str) -> Secrets {
+    match Config::global().all_secrets() {
+        Ok(secrets) => secret_names_from_map(id, secrets),
+        Err(error) => Secrets::Unavailable {
+            reason: error.to_string(),
+        },
+    }
+}
+
+fn dispatch_persona(
+    key: String,
+    worker: WorkerPersona,
+    availability: Availability,
+) -> DispatchPersona {
+    let workflow_role = worker.routing_role().map(|role| role.as_str().to_string());
+    let grants = match worker.extension_grants.clone() {
+        None => Grants::InheritGlobal,
+        Some(items) => {
+            let (extensions, truncated) = bounded(items, MAX_GRANTS);
+            Grants::Explicit {
+                extensions,
+                truncated,
+            }
+        }
+    };
+    DispatchPersona {
+        secrets: secrets_for_agent(&key),
+        key,
+        display_name: worker.display_name(),
+        role: worker.role,
+        engine: worker.engine.label().to_string(),
+        cost_tier: worker.cost_tier,
+        workflow_role,
+        availability,
+        grants,
+        grants_enforced: worker.engine.grants_enforced(),
+    }
+}
+
+async fn dispatch_roster(state: &AppState) -> Vec<DispatchPersona> {
+    let workers: Vec<(String, WorkerPersona)> = state
+        .agent_config
+        .read()
+        .await
+        .workers
+        .iter()
+        .map(|(key, worker)| (key.clone(), worker.clone()))
+        .collect();
+    let probed = tokio::task::spawn_blocking(move || {
+        workers
+            .into_iter()
+            .map(|(key, worker)| {
+                let (available, reason) = worker_probe::probe_worker(&worker.availability_check);
+                let availability = if available {
+                    Availability::Available
+                } else {
+                    Availability::Unavailable {
+                        reason: reason
+                            .unwrap_or_else(|| "availability probe returned no reason".into()),
+                    }
+                };
+                (key, worker, availability)
+            })
+            .collect::<Vec<_>>()
+    })
+    .await;
+    match probed {
+        Ok(rows) => rows
+            .into_iter()
+            .map(|(key, worker, availability)| dispatch_persona(key, worker, availability))
+            .collect(),
+        Err(error) => {
+            let reason = error.to_string();
+            state
+                .agent_config
+                .read()
+                .await
+                .workers
+                .iter()
+                .map(|(key, worker)| {
+                    dispatch_persona(
+                        key.clone(),
+                        worker.clone(),
+                        Availability::ProbeFailed {
+                            reason: reason.clone(),
+                        },
+                    )
+                })
+                .collect()
+        }
+    }
+}
+
+fn extension_fields(config: &ExtensionConfig) -> (String, String, Vec<String>) {
+    match config {
+        ExtensionConfig::Stdio {
+            description,
+            env_keys,
+            ..
+        }
+        | ExtensionConfig::StreamableHttp {
+            description,
+            env_keys,
+            ..
+        } => (config.name(), description.clone(), env_keys.clone()),
+        ExtensionConfig::Sse { description, .. }
+        | ExtensionConfig::Builtin { description, .. }
+        | ExtensionConfig::Platform { description, .. }
+        | ExtensionConfig::Frontend { description, .. }
+        | ExtensionConfig::InlinePython { description, .. } => {
+            (config.name(), description.clone(), Vec::new())
+        }
+    }
+}
+
+fn config_key_present(name: &str) -> bool {
+    std::env::var(name).is_ok() || Config::global().get_secret::<Value>(name).is_ok()
+}
+
+fn capabilities() -> Vec<Capability> {
+    let mut by_key: HashMap<String, Capability> = PLATFORM_EXTENSIONS
+        .values()
+        .filter(|def| !def.hidden)
+        .map(|def| {
+            let key = name_to_key(def.name);
+            Capability {
+                enabled: is_extension_enabled(&key),
+                key,
+                display_name: def.display_name.to_string(),
+                description: def.description.to_string(),
+                default_enabled: Some(def.default_enabled),
+                source: "platform",
+                required_secrets: RequiredSecrets::NotDeclared,
+            }
+        })
+        .map(|capability| (capability.key.clone(), capability))
+        .collect();
+    for entry in get_all_extensions() {
+        let configured_key = entry.config.key();
+        let declares_secret_metadata = matches!(
+            entry.config,
+            ExtensionConfig::Stdio { .. } | ExtensionConfig::StreamableHttp { .. }
+        );
+        let (display_name, description, env_keys) = extension_fields(&entry.config);
+        let items = env_keys
+            .into_iter()
+            .map(|name| RequiredSecret {
+                present: config_key_present(&name),
+                name,
+            })
+            .collect();
+        let (items, truncated) = bounded(items, MAX_REQUIRED_SECRETS);
+        let key = name_to_key(&configured_key);
+        let capability = Capability {
+            key: key.clone(),
+            display_name,
+            description,
+            enabled: entry.enabled,
+            default_enabled: None,
+            source: "configured",
+            required_secrets: RequiredSecrets::Declared { items, truncated },
+        };
+        // A configured transport replaces a bare registry entry because it
+        // carries actual secret metadata; otherwise retain the registry's real
+        // default rather than manufacturing one from configuration.
+        if declares_secret_metadata || !by_key.contains_key(&key) {
+            by_key.insert(key, capability);
+        }
+    }
+    let mut result: Vec<_> = by_key.into_values().collect();
+    result.sort_by(|a, b| a.key.cmp(&b.key));
+    result
+}
+
+async fn roster(State(state): State<Arc<AppState>>) -> Json<RosterResponse> {
+    let jobs = state.scheduler().list_scheduled_jobs().await;
+    Json(RosterResponse {
+        workers: background_workers(Some(jobs.len())),
+        dispatch_roster: dispatch_roster(&state).await,
+        capabilities: capabilities(),
+    })
+}
+
+async fn detail(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> ApiResult<AgentDetail> {
+    if let Some(worker) = state.agent_config.read().await.workers.get(&id).cloned() {
+        let key = id.clone();
+        let check = worker.availability_check.clone();
+        let availability =
+            match tokio::task::spawn_blocking(move || worker_probe::probe_worker(&check)).await {
+                Ok((true, _)) => Availability::Available,
+                Ok((false, reason)) => Availability::Unavailable {
+                    reason: reason
+                        .unwrap_or_else(|| "availability probe returned no reason".into()),
+                },
+                Err(error) => Availability::ProbeFailed {
+                    reason: error.to_string(),
+                },
+            };
+        return Ok(Json(AgentDetail::DispatchPersona(dispatch_persona(
+            key,
+            worker,
+            availability,
+        ))));
+    }
+    let jobs = state.scheduler().list_scheduled_jobs().await;
+    let flags = FeatureFlags::from_live_config();
+    if let Some(d) = visible_worker_descriptor(&id, flags) {
+        return Ok(Json(AgentDetail::Worker(background_worker(
+            d,
+            Some(jobs.len()),
+            flags,
+        ))));
+    }
+    if capabilities()
+        .iter()
+        .any(|capability| capability.key == name_to_key(&id))
+    {
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            format!("'{id}' is a capability, not an agent"),
+        ));
+    }
+    Err(ApiError(
+        StatusCode::NOT_FOUND,
+        format!("agent '{id}' was not found"),
+    ))
+}
+
+fn visible_worker_descriptor(id: &str, flags: FeatureFlags) -> Option<&'static FeatureDescriptor> {
+    WORKER_DESCRIPTORS
+        .iter()
+        .find(|d| d.id == id && worker_descriptor_visible(d, flags))
+}
+
+#[derive(Deserialize)]
+struct LimitQuery {
+    limit: Option<i64>,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum ListSection<T> {
+    Ok { items: Vec<T>, truncated: bool },
+    Unavailable { reason: String },
+}
+
+#[derive(Serialize)]
+struct ActivitySection {
+    attribution: &'static str,
+    #[serde(flatten)]
+    result: ListSection<activity_journal::JournalItem>,
+}
+
+#[derive(Serialize)]
+struct GoalItem {
+    id: String,
+    title: String,
+    project_id: String,
+    state: String,
+    updated_at: String,
+    review_decisions: ListSection<ReviewDecision>,
+}
+
+#[derive(Serialize, Clone)]
+struct ReviewDecision {
+    answer: Option<String>,
+    acted_by: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SpendItem {
+    cost_usd: f64,
+    call_count: i64,
+    estimated_call_count: i64,
+    attribution: &'static str,
+    note: Option<&'static str>,
+}
+
+#[derive(Serialize)]
+struct ScheduledJobItem {
+    id: String,
+    cron: String,
+    at: Option<String>,
+    every: Option<u64>,
+    paused: bool,
+    run_count: u64,
+    last_run: Option<String>,
+    last_status: Option<permagent::scheduler::ScheduleRunStatus>,
+    last_error: Option<String>,
+    consecutive_failures: u32,
+}
+
+#[derive(Serialize)]
+struct WorkReview {
+    activity: ActivitySection,
+    goals: ListSection<GoalItem>,
+    spend: ListSection<SpendItem>,
+    scheduled_jobs: ListSection<ScheduledJobItem>,
+}
+
+/// The journal actor is free text and many producers still record `system`;
+/// an empty exact-match page means no entry is attributed to this id, not that
+/// the agent did no work.
+async fn work(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(query): Query<LimitQuery>,
+) -> ApiResult<WorkReview> {
+    let flags = FeatureFlags::from_live_config();
+    let known = state.agent_config.read().await.workers.contains_key(&id)
+        || visible_worker_descriptor(&id, flags).is_some();
+    if !known {
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            format!("agent '{id}' was not found"),
+        ));
+    }
+    let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+    let pool = state.session_manager().pool_clone().await;
+    let (activity, goals, spend) = match pool {
+        Err(error) => {
+            let reason = error.to_string();
+            (
+                ListSection::Unavailable {
+                    reason: reason.clone(),
+                },
+                ListSection::Unavailable {
+                    reason: reason.clone(),
+                },
+                ListSection::Unavailable { reason },
+            )
+        }
+        Ok(pool) => {
+            let activity =
+                match activity_journal::page(&pool, None, limit + 1, None, Some(&id)).await {
+                    Ok(items) => {
+                        let (items, truncated) = bounded(items, limit as usize);
+                        ListSection::Ok { items, truncated }
+                    }
+                    Err(error) => ListSection::Unavailable {
+                        reason: error.to_string(),
+                    },
+                };
+            let goals_read = cards::list_goals_for_worker(&pool, &id, limit + 1).await;
+            let goals = match goals_read.as_ref() {
+                Err(error) => ListSection::Unavailable {
+                    reason: error.clone(),
+                },
+                Ok(rows) => {
+                    let decisions = decisions::decision_history(&pool, MAX_LIMIT, None).await;
+                    let history_saturated = decisions
+                        .as_ref()
+                        .is_ok_and(|history| history.len() >= MAX_LIMIT as usize);
+                    let mut by_goal: HashMap<String, Vec<ReviewDecision>> = HashMap::new();
+                    if let Ok(history) = &decisions {
+                        for item in history {
+                            if let Some(goal_id) = &item.decision.goal_id {
+                                by_goal
+                                    .entry(goal_id.clone())
+                                    .or_default()
+                                    .push(ReviewDecision {
+                                        answer: item.decision.answer.clone(),
+                                        acted_by: item.decision.acted_by.clone(),
+                                    });
+                            }
+                        }
+                    }
+                    let mut items = Vec::new();
+                    for goal in rows.iter().take(limit as usize) {
+                        let review_decisions = match &decisions {
+                            Ok(_) => {
+                                let decisions = by_goal.remove(&goal.id).unwrap_or_default();
+                                // A clean empty is only knowable when the global
+                                // history window was not saturated; otherwise this
+                                // goal's decision may simply be older than the read.
+                                let truncated = decisions.len() >= MAX_LIMIT as usize
+                                    || (decisions.is_empty() && history_saturated);
+                                ListSection::Ok {
+                                    items: decisions,
+                                    truncated,
+                                }
+                            }
+                            Err(error) => ListSection::Unavailable {
+                                reason: error.clone(),
+                            },
+                        };
+                        items.push(GoalItem {
+                            id: goal.id.clone(),
+                            title: goal.title.clone(),
+                            project_id: goal.project_id.clone(),
+                            state: goal.state.clone(),
+                            updated_at: goal.updated_at.clone(),
+                            review_decisions,
+                        });
+                    }
+                    ListSection::Ok {
+                        items,
+                        truncated: rows.len() > limit as usize,
+                    }
+                }
+            };
+            let goal_ids: Vec<String> = goals_read
+                .as_ref()
+                .map(|v| v.iter().map(|g| g.id.clone()).collect())
+                .unwrap_or_default();
+            let spend = if goals_read.is_err() {
+                ListSection::Unavailable {
+                    reason: "goals could not be read, so spend attribution could not be resolved"
+                        .into(),
+                }
+            } else if goal_ids.is_empty() {
+                ListSection::Ok {
+                    items: vec![SpendItem {
+                        cost_usd: 0.0,
+                        call_count: 0,
+                        estimated_call_count: 0,
+                        attribution: "via_goal_id",
+                        note: Some("this agent has no attributable goals"),
+                    }],
+                    truncated: false,
+                }
+            } else {
+                let placeholders = vec!["?"; goal_ids.len()].join(",");
+                let sql = format!("SELECT COALESCE(SUM(cost_usd), 0.0) AS total, COUNT(*) AS calls, COALESCE(SUM(CASE WHEN is_estimated = 1 THEN 1 ELSE 0 END), 0) AS estimated FROM cost_ledger WHERE goal_id IN ({placeholders})");
+                let mut q = sqlx::query(&sql);
+                for goal_id in &goal_ids {
+                    q = q.bind(goal_id);
+                }
+                match q.fetch_one(&pool).await {
+                    Ok(row) => ListSection::Ok {
+                        items: vec![SpendItem {
+                            cost_usd: row.get("total"),
+                            call_count: row.get("calls"),
+                            estimated_call_count: row.get("estimated"),
+                            attribution: "via_goal_id",
+                            note: None,
+                        }],
+                        truncated: false,
+                    },
+                    Err(error) => ListSection::Unavailable {
+                        reason: error.to_string(),
+                    },
+                }
+            };
+            (activity, goals, spend)
+        }
+    };
+    // Scheduled jobs expose last-fire and aggregate counters only. There is no
+    // per-fire history table, so no field here claims to be a run history.
+    let jobs: Vec<ScheduledJobItem> = state
+        .scheduler()
+        .list_scheduled_jobs()
+        .await
+        .into_iter()
+        .filter(|job| job.worker_persona.as_deref() == Some(&id))
+        .map(|job| ScheduledJobItem {
+            id: job.id,
+            cron: job.cron,
+            at: job.at.map(|v| v.to_rfc3339()),
+            every: job.every_seconds,
+            paused: job.paused,
+            run_count: job.run_count,
+            last_run: job.last_run.map(|v| v.to_rfc3339()),
+            last_status: job.last_status,
+            last_error: job.last_error,
+            consecutive_failures: job.consecutive_failures,
+        })
+        .collect();
+    let (jobs, jobs_truncated) = bounded(jobs, limit as usize);
+    Ok(Json(WorkReview {
+        activity: ActivitySection {
+            attribution: "actor_exact_match",
+            result: activity,
+        },
+        goals,
+        spend,
+        scheduled_jobs: ListSection::Ok {
+            items: jobs,
+            truncated: jobs_truncated,
+        },
+    }))
+}
+
+#[derive(Deserialize)]
+struct GrantsRequest {
+    extensions: Option<Vec<String>>,
+}
+
+fn validate_grants(extensions: Option<Vec<String>>) -> Result<Option<Vec<String>>, ApiError> {
+    let normalized = extensions.map(|items| {
+        items
+            .into_iter()
+            .map(|key| name_to_key(&key))
+            .collect::<Vec<_>>()
+    });
+    if normalized
+        .as_ref()
+        .is_some_and(|items| items.len() > MAX_GRANTS)
+    {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            format!("at most {MAX_GRANTS} extension grants are accepted"),
+        ));
+    }
+    if let Some(items) = &normalized {
+        let invalid: Vec<&String> = items
+            .iter()
+            .filter(|key| !extension_is_grantable(key))
+            .collect();
+        if !invalid.is_empty() {
+            return Err(ApiError(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "extensions are not grantable: {}",
+                    invalid
+                        .into_iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            ));
+        }
+    }
+    Ok(normalized)
+}
+
+async fn set_grants(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<GrantsRequest>,
+) -> ApiResult<DispatchPersona> {
+    if id == "roster" {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            "'roster' is reserved and cannot be an agent id".into(),
+        ));
+    }
+    let normalized = validate_grants(body.extensions)?;
+    let worker = {
+        let mut config = state.agent_config.write().await;
+        let Some(worker) = config.workers.get_mut(&id) else {
+            let message = if WORKER_DESCRIPTORS.iter().any(|d| d.id == id) {
+                format!(
+                    "background worker '{id}' has no agent.yaml entry and cannot receive grants"
+                )
+            } else {
+                format!("dispatch persona '{id}' was not found")
+            };
+            return Err(ApiError(StatusCode::NOT_FOUND, message));
+        };
+        worker.extension_grants = normalized;
+        let worker = worker.clone();
+        let disk_config = agent_identity::AgentConfig {
+            primary: state.persona.read().await.clone(),
+            workers: config.workers.clone(),
+        };
+        agent_identity::save_agent_config(&disk_config)
+            .map_err(|error| ApiError(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+        worker
+    };
+    let check = worker.availability_check.clone();
+    let availability =
+        match tokio::task::spawn_blocking(move || worker_probe::probe_worker(&check)).await {
+            Ok((true, _)) => Availability::Available,
+            Ok((false, reason)) => Availability::Unavailable {
+                reason: reason.unwrap_or_else(|| "availability probe returned no reason".into()),
+            },
+            Err(error) => Availability::ProbeFailed {
+                reason: error.to_string(),
+            },
+        };
+    Ok(Json(dispatch_persona(id, worker, availability)))
+}
+
+#[derive(Deserialize)]
+struct SecretRequest {
+    name: String,
+    // No `Debug` derive: request debugging must never expose this value.
+    value: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SecretResponse {
+    name: String,
+    presence: &'static str,
+}
+
+async fn set_secret(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<SecretRequest>,
+) -> ApiResult<SecretResponse> {
+    if id == "roster" {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            "'roster' is reserved and cannot be an agent id".into(),
+        ));
+    }
+    if body.name.trim().is_empty() {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            "secret name must not be empty".into(),
+        ));
+    }
+    if body
+        .value
+        .as_ref()
+        .is_some_and(|value| value.trim().is_empty())
+    {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            "secret value must not be empty; use null to delete the secret".into(),
+        ));
+    }
+    if !state.agent_config.read().await.workers.contains_key(&id) {
+        let message = if WORKER_DESCRIPTORS.iter().any(|d| d.id == id) {
+            format!("background worker '{id}' has no agent.yaml entry and cannot store per-agent secrets")
+        } else {
+            format!("dispatch persona '{id}' was not found")
+        };
+        return Err(ApiError(StatusCode::NOT_FOUND, message));
+    }
+    let key = agent_identity::agent_secret_key(&id, &body.name);
+    let presence = match body.value {
+        Some(value) => {
+            Config::global()
+                .set_secret(&key, &value)
+                .map_err(|error| ApiError(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+            "present"
+        }
+        None => {
+            Config::global()
+                .delete_secret(&key)
+                .map_err(|error| ApiError(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+            "absent"
+        }
+    };
+    Ok(Json(SecretResponse {
+        name: body.name,
+        presence,
+    }))
+}
+
+pub fn routes(state: Arc<AppState>) -> Router {
+    Router::new()
+        // matchit prefers this static segment over `{id}`. The write handlers
+        // also reserve `roster`, preventing a persona from shadowing it.
+        .route("/api/agents/roster", get(roster))
+        .route("/api/agents/{id}", get(detail))
+        .route("/api/agents/{id}/work", get(work))
+        .route("/api/agents/{id}/grants", post(set_grants))
+        .route("/api/agents/{id}/secrets", post(set_secret))
+        .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workers_are_never_dispatchable_and_have_no_affordance() {
+        let value = serde_json::to_value(background_workers(Some(3))).unwrap();
+        for worker in value.as_array().unwrap() {
+            assert_eq!(worker["dispatchable"], false);
+            assert!(worker.get("dispatch").is_none());
+        }
+    }
+
+    #[test]
+    fn unavailable_is_not_an_empty_success() {
+        let value =
+            serde_json::to_value(shape_live_state(Err("worker state reader failed".into())))
+                .unwrap();
+        assert_eq!(value["status"], "unavailable");
+        assert!(!value["reason"].as_str().unwrap().is_empty());
+        assert!(value.get("value").is_none());
+
+        let value = serde_json::to_value(Secrets::Unavailable {
+            reason: "keychain locked".into(),
+        })
+        .unwrap();
+        assert_eq!(value["status"], "unavailable");
+        assert!(!value["reason"].as_str().unwrap().is_empty());
+        assert!(value.get("items").is_none());
+    }
+
+    #[test]
+    fn bounds_are_explicit() {
+        let (items, truncated) = bounded(vec![1, 2, 3], 2);
+        assert_eq!(items, vec![1, 2]);
+        assert!(truncated);
+    }
+
+    #[test]
+    fn secret_response_never_serializes_value() {
+        let distinctive = "NEVER_LEAK_8d97d55c";
+        let seeded = HashMap::from([(
+            agent_identity::agent_secret_key("researcher", "token"),
+            Value::String(distinctive.into()),
+        )]);
+        let shaped_secrets = secret_names_from_map("researcher", seeded);
+        let roster = RosterResponse {
+            workers: background_workers(Some(0)),
+            dispatch_roster: vec![DispatchPersona {
+                key: "researcher".into(),
+                display_name: "Researcher".into(),
+                role: String::new(),
+                engine: "internal_subagent".into(),
+                cost_tier: "local_free".into(),
+                workflow_role: None,
+                availability: Availability::Available,
+                grants: Grants::InheritGlobal,
+                grants_enforced: true,
+                secrets: shaped_secrets,
+            }],
+            capabilities: Vec::new(),
+        };
+        let detail = AgentDetail::Worker(background_workers(Some(0)).remove(0));
+        let work = WorkReview {
+            activity: ActivitySection {
+                attribution: "actor_exact_match",
+                result: ListSection::Ok {
+                    items: Vec::new(),
+                    truncated: false,
+                },
+            },
+            goals: ListSection::Ok {
+                items: Vec::new(),
+                truncated: false,
+            },
+            spend: ListSection::Ok {
+                items: Vec::new(),
+                truncated: false,
+            },
+            scheduled_jobs: ListSection::Ok {
+                items: Vec::new(),
+                truncated: false,
+            },
+        };
+        let response = SecretResponse {
+            name: "token".into(),
+            presence: "present",
+        };
+        for body in [
+            serde_json::to_string(&roster).unwrap(),
+            serde_json::to_string(&detail).unwrap(),
+            serde_json::to_string(&work).unwrap(),
+            serde_json::to_string(&response).unwrap(),
+        ] {
+            assert!(!body.contains(distinctive));
+        }
+    }
+
+    #[test]
+    fn globally_disabled_grant_is_rejected_by_validation() {
+        let key = "definitely_disabled_agents_surface_extension";
+        let error = validate_grants(Some(vec![key.into()])).unwrap_err();
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(error.1.contains(key));
+    }
+
+    #[test]
+    fn capabilities_have_unique_keys() {
+        let capabilities = capabilities();
+        let mut keys: Vec<_> = capabilities.iter().map(|item| &item.key).collect();
+        keys.sort();
+        keys.dedup();
+        assert_eq!(keys.len(), capabilities.len());
+    }
+
+    #[test]
+    fn gated_worker_existence_uses_visibility_predicate() {
+        let flags = FeatureFlags::default();
+        for descriptor in WORKER_DESCRIPTORS
+            .iter()
+            .filter(|descriptor| !worker_descriptor_visible(descriptor, flags))
+        {
+            assert!(visible_worker_descriptor(descriptor.id, flags).is_none());
+        }
+    }
+}

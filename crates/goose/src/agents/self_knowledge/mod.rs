@@ -163,12 +163,12 @@ pub static WORKER_DESCRIPTORS: &[FeatureDescriptor] = &[
 ];
 
 /// Whether a worker descriptor should be rendered into the `permagent_self`
-/// brief. Almost all are always visible; a flag-gated, experimental worker is
+/// brief and the Agents API. Almost all are always visible; a flag-gated, experimental worker is
 /// hidden until its flag is on, so the capability the agent can DESCRIBE is
 /// exactly the one it can DO — and, with the flag off, the brief is byte-for-
 /// byte identical to before the descriptor existed (the canonical snapshots
 /// stay unchanged; a dedicated test covers the enabled rendering).
-fn worker_descriptor_visible(d: &FeatureDescriptor, flags: FeatureFlags) -> bool {
+pub fn worker_descriptor_visible(d: &FeatureDescriptor, flags: FeatureFlags) -> bool {
     if d.id == crate::playbook::PLAYBOOK_FEATURE_ID {
         return flags.playbook_enabled;
     }
@@ -179,6 +179,54 @@ fn worker_descriptor_visible(d: &FeatureDescriptor, flags: FeatureFlags) -> bool
         return flags.strix_enabled;
     }
     true
+}
+
+/// Live state line for a worker descriptor, or `None` when the worker
+/// is `Static` or exposes no queryable signal. Shared by the
+/// `permagent_self` brief and the Agents API so the two can never
+/// disagree about what a worker is doing.
+pub fn worker_live_state_for(
+    d: &FeatureDescriptor,
+    scheduled_job_count: Option<usize>,
+    flags: FeatureFlags,
+) -> Option<String> {
+    if d.state_source != StateSource::Queryable {
+        return None;
+    }
+    match d.id {
+        "scheduler" => scheduled_job_count.map(|n| format!("{n} job(s) scheduled")),
+        id if id == librarian_state_id() => {
+            let s = librarian_state::get_state();
+            // The "awaiting your context" clause (#387 v2 ask-seam) renders
+            // only when non-zero: the zero state stays byte-identical to the
+            // pre-v2 brief (snapshot-stable), and the agent is only prompted
+            // to ask when there is actually something to ask about.
+            Some(if s.entities_awaiting_context > 0 {
+                format!(
+                    "{} described, {} pending, {} awaiting your context",
+                    s.lifetime_stats.described,
+                    s.lifetime_stats.pending,
+                    s.entities_awaiting_context
+                )
+            } else {
+                format!(
+                    "{} described, {} pending",
+                    s.lifetime_stats.described, s.lifetime_stats.pending
+                )
+            })
+        }
+        "initiative" => Some(if flags.initiative_enabled {
+            "on — watching for repeated commands".to_string()
+        } else {
+            "off (initiative_enabled=false)".to_string()
+        }),
+        "strix" => Some(if flags.strix_enabled {
+            "on — the Guard is sweeping your projects for security flaws".to_string()
+        } else {
+            "off (strix_enabled=false)".to_string()
+        }),
+        _ => None,
+    }
 }
 
 /// Deterministic guardrails the agent operates under. Co-located with the
@@ -565,45 +613,7 @@ impl SelfKnowledgeBuilder {
 
     /// Live state for a Queryable worker, or `None` for Static / unavailable.
     fn worker_live_state(&self, d: &FeatureDescriptor) -> Option<String> {
-        if d.state_source != StateSource::Queryable {
-            return None;
-        }
-        match d.id {
-            "scheduler" => self
-                .scheduled_job_count
-                .map(|n| format!("{n} job(s) scheduled")),
-            id if id == librarian_state_id() => {
-                let s = librarian_state::get_state();
-                // The "awaiting your context" clause (#387 v2 ask-seam) renders
-                // only when non-zero: the zero state stays byte-identical to the
-                // pre-v2 brief (snapshot-stable), and the agent is only prompted
-                // to ask when there is actually something to ask about.
-                Some(if s.entities_awaiting_context > 0 {
-                    format!(
-                        "{} described, {} pending, {} awaiting your context",
-                        s.lifetime_stats.described,
-                        s.lifetime_stats.pending,
-                        s.entities_awaiting_context
-                    )
-                } else {
-                    format!(
-                        "{} described, {} pending",
-                        s.lifetime_stats.described, s.lifetime_stats.pending
-                    )
-                })
-            }
-            "initiative" => Some(if self.flags.initiative_enabled {
-                "on — watching for repeated commands".to_string()
-            } else {
-                "off (initiative_enabled=false)".to_string()
-            }),
-            "strix" => Some(if self.flags.strix_enabled {
-                "on — the Guard is sweeping your projects for security flaws".to_string()
-            } else {
-                "off (strix_enabled=false)".to_string()
-            }),
-            _ => None,
-        }
+        worker_live_state_for(d, self.scheduled_job_count, self.flags)
     }
 }
 

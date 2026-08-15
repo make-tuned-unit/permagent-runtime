@@ -8,7 +8,7 @@ use crate::agents::{AgentEvent, SessionConfig};
 use crate::cards;
 use crate::config::agent_identity;
 use crate::config::worker_probe::{self, ProbeCache};
-use crate::config::{Config, ExtensionConfig, GooseMode};
+use crate::config::{narrow_extensions_for_agent, Config, ExtensionConfig, GooseMode};
 use crate::context_mgmt::format_message_for_compacting;
 use crate::conversation::message::Message;
 use crate::decisions;
@@ -1159,7 +1159,12 @@ pub(crate) async fn dispatch_goal_fn(
         // InternalSubagent (default), or worker entry absent.
         _ => {
             let provider = get_provider_fn(context).await?;
-            let extensions = parent_extensions_fn(context);
+            // This is the one dispatch path whose tool set this process
+            // composes, so extension grants are genuinely enforced here.
+            let extensions = narrow_extensions_for_agent(
+                parent_extensions_fn(context),
+                worker_cfg.and_then(|worker| worker.extension_grants.as_deref()),
+            );
             // Resolve the worker's workflow role → its CONFIGURED model (#730
             // wiring). Unset ⇒ None ⇒ the engine clones the parent session
             // model (single-model fallback; never a baked-in vendor default).

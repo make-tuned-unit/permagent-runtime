@@ -22,8 +22,9 @@ pub use base::{Config, ConfigError};
 pub use declarative_providers::DeclarativeProviderConfig;
 pub use experiments::ExperimentManager;
 pub use extensions::{
-    get_all_extension_names, get_all_extensions, get_enabled_extensions, get_extension_by_name,
-    get_warnings, is_extension_enabled, remove_extension, resolve_extensions_for_new_session,
+    extension_is_grantable, get_all_extension_names, get_all_extensions, get_enabled_extensions,
+    get_extension_by_name, get_warnings, is_extension_enabled, narrow_extensions_for_agent,
+    remove_extension, resolve_extensions_for_agent, resolve_extensions_for_new_session,
     set_extension, set_extension_enabled, ExtensionEntry,
 };
 pub use goose_mode::GooseMode;
