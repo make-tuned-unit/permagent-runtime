@@ -37,5 +37,17 @@ export default defineConfig({
       'src/**/*.{test,spec}.{ts,tsx}',
       '../analytics-client/src/**/*.{test,spec}.ts',
     ],
+    coverage: {
+      provider: 'v8',
+      reporter: ['text-summary', 'json-summary', 'lcov'],
+      reportsDirectory: 'coverage',
+      // An explicit include is what makes the percentage comparable run to
+      // run: without it the denominator is only whatever the tests imported.
+      // It cannot reach ../analytics-client — coverage globs are resolved
+      // under the project root — so that package's sources are executed by
+      // the suite above but are not part of this number.
+      include: ['src/**/*.{ts,tsx}'],
+      exclude: ['**/*.{test,spec}.{ts,tsx}', '**/*.d.ts'],
+    },
   },
 });

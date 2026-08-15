@@ -4,8 +4,8 @@
 # `if: github.repository == 'aaif-goose/goose'` guard that meant it never ran
 # on this repo. Re-enabled here, advisories-focused (see deny.toml: yanked +
 # vulnerabilities, matching cargo-audit semantics), plus an npm audit leg for
-# the frontend packages — production dependencies only, failing on
-# high/critical advisories.
+# the frontend packages — production high/critical enforcement plus a full,
+# dev-inclusive critical-advisory pass with an explicit allowlist.
 name: Dependency Audit
 
 on:
@@ -81,3 +81,40 @@ jobs:
       - name: npm audit (production, high+critical)
         working-directory: ${{ matrix.dir }}
         run: npm audit --omit=dev --audit-level=high
+      # Dev dependencies included. `npm audit --audit-level` cannot express an
+      # exception, and the one critical advisory we knowingly carry would make
+      # this gate permanently red — so parse the report and fail on any critical
+      # ADVISORY not in the allowlist below. Advisories, not packages: a package
+      # inherits its severity through `via` string references that carry no
+      # identifier, so package-level matching cannot tell a known advisory from
+      # a new one.
+      - name: npm audit (dev included, critical gate)
+        working-directory: ${{ matrix.dir }}
+        shell: bash
+        run: |
+          npm audit --json > audit.json || true
+          node - <<'NODE'
+          const fs = require('fs');
+          let audit;
+          try { audit = JSON.parse(fs.readFileSync('audit.json', 'utf8')); }
+          catch (error) { console.error(`npm audit did not produce valid JSON: ${error.message}`); process.exit(1); }
+          if (!audit.metadata?.vulnerabilities) { console.error('npm audit JSON has no metadata.vulnerabilities; treating as a failed audit, not a clean one.'); process.exit(1); }
+          // GHSA-5xrq-8626-4rwp (vitest): dev-only, and exploitation needs the
+          // Vitest UI server listening — `vitest --ui` is never run here or in
+          // CI. Clearing it needs vitest 1 -> 4 and vite 5 -> 8, both major.
+          const allowed = new Set(['GHSA-5xrq-8626-4rwp']);
+          const advisories = new Map();
+          for (const vuln of Object.values(audit.vulnerabilities ?? {}))
+            for (const via of vuln.via ?? [])
+              if (typeof via === 'object') advisories.set(via.url?.split('/').pop() ?? `npm-${via.source}`, via);
+          let blocked = false;
+          for (const [id, advisory] of advisories) {
+            if (advisory.severity !== 'critical') continue;
+            const ok = allowed.has(id);
+            blocked ||= !ok;
+            console.log(`critical ${advisory.name} ${id}: ${ok ? 'allowlisted' : 'BLOCKED'} — ${advisory.title}`);
+          }
+          const counts = audit.metadata.vulnerabilities;
+          console.log(`not gated on: ${counts.high} high, ${counts.moderate} moderate, ${counts.low} low`);
+          if (blocked) process.exit(1);
+          NODE
