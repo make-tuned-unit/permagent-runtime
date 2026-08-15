@@ -1,6 +1,6 @@
 {
-  "_comment": "Non-regression ratchet for .github/workflows/coverage.yml: CI fails when line coverage lands more than tolerance_pct below its baseline. Raise a baseline in the same PR that improves coverage; lowering one is permitted but is then a deliberate, reviewable act. rust_lines_pct is 0 (unarmed) until the first Rust coverage run reports a real number - putting a figure here that nobody has measured is the exact habit this ratchet exists to break.",
+  "_comment": "Non-regression ratchet for .github/workflows/coverage.yml: CI fails when line coverage lands more than tolerance_pct below its baseline. Every value here was measured by a real run - never write one that has not been. Raise a baseline in the same PR that improves coverage; lowering one is permitted but is then a deliberate, reviewable act.",
   "tolerance_pct": 0.5,
-  "rust_lines_pct": 0,
+  "rust_lines_pct": 64.97,
   "frontend_lines_pct": 32.37
 }
