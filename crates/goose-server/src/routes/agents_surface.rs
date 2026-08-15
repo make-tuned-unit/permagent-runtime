@@ -530,9 +530,15 @@ struct WorkReview {
     scheduled_jobs: ListSection<ScheduledJobItem>,
 }
 
-/// The journal actor is free text and many producers still record `system`;
-/// an empty exact-match page means no entry is attributed to this id, not that
-/// the agent did no work.
+/// Activity is an exact actor match. Goal moves now carry a real actor — the
+/// worker that owns the goal, or the person or policy that authorized the move
+/// — so a dispatched agent's rows land under its own id instead of `system`.
+///
+/// `attribution` still ships, because an empty page is still not proof the
+/// agent was idle: rows written before that change keep their old `system`
+/// actor, task failures carry no worker at all, and a run that produced no
+/// journaled event was never counted. Absence means "nothing is attributed to
+/// this id", never "this agent did nothing".
 async fn work(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,

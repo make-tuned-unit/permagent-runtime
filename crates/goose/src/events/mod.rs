@@ -522,6 +522,7 @@ pub fn goal_state_changed(
     project_id: Option<&str>,
     from: Option<&str>,
     to: &str,
+    actor: &str,
 ) -> PermagentEvent {
     PermagentEvent::new(
         PermagentEventType::GoalStateChanged,
@@ -530,6 +531,7 @@ pub fn goal_state_changed(
             "project_id": project_id,
             "from": from,
             "to": to,
+            "actor": actor,
         }),
     )
 }

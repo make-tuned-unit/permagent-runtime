@@ -772,6 +772,7 @@ pub async fn create_card(pool: &Pool<Sqlite>, input: CreateCard) -> Result<Card,
             Some(&input.project_id),
             None,
             to_binding.as_deref().unwrap_or("triage"),
+            &card.created_by,
         ));
     }
 
