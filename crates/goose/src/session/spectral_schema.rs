@@ -1363,7 +1363,8 @@ pub async fn migrate_v25_to_v26(pool: &Pool<Sqlite>) -> Result<()> {
 /// RFC3339 UTC millisecond timestamp (same shape as the strftime defaults
 /// elsewhere in this schema), so lexicographic order is chronological order and
 /// the DESC index serves the newest-first timeline page directly. Fully
-/// idempotent (`CREATE TABLE / INDEX IF NOT EXISTS`).
+/// idempotent (`CREATE TABLE / INDEX IF NOT EXISTS`; the guard triggers are
+/// dropped and recreated so their retention window follows the Rust constant).
 pub async fn apply_activity_journal_schema(pool: &Pool<Sqlite>) -> Result<()> {
     let mut tx = pool.begin().await?;
 
@@ -1384,6 +1385,31 @@ pub async fn apply_activity_journal_schema(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_activity_journal_ts ON activity_journal(ts DESC)")
         .execute(&mut *tx)
         .await?;
+
+    // This user-facing record of what agents did must not be rewritable; deletion
+    // is legitimate only for the retention pass after the window.
+    sqlx::query("DROP TRIGGER IF EXISTS trg_activity_journal_no_update")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "CREATE TRIGGER trg_activity_journal_no_update
+         BEFORE UPDATE ON activity_journal
+         BEGIN SELECT RAISE(ABORT, 'activity_journal is append-only'); END",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DROP TRIGGER IF EXISTS trg_activity_journal_no_delete")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(&format!(
+        "CREATE TRIGGER trg_activity_journal_no_delete
+         BEFORE DELETE ON activity_journal
+         WHEN OLD.ts >= strftime('%Y-%m-%dT%H:%M:%fZ','now','-{} days')
+         BEGIN SELECT RAISE(ABORT, 'activity_journal is append-only'); END",
+        crate::activity_journal::RETENTION_DAYS
+    ))
+    .execute(&mut *tx)
+    .await?;
 
     tx.commit().await?;
     Ok(())

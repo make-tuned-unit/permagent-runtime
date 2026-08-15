@@ -39,7 +39,7 @@ pub const TIMELINE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
         what_it_does:
             "A day-grouped timeline on the Home dashboard reading the durable activity journal — an append-only record of what you and your workers actually did: goal moves, decisions requested and resolved, librarian describe runs, Watcher nudges, and task failures, kept for 90 days and filterable by kind or actor",
         why_it_matters:
-            "It is the user's reviewable answer to 'what did my agents do today and why' — every row carries an evidence pointer (the goal card, the decision, the memory), so when the user asks what happened, point them here instead of reconstructing history from your context window",
+            "It is the user's reviewable answer to 'what did my agents do today and why' — a row points at its evidence (the goal card, the decision, the memory, or the article a news nudge is about) whenever the event that produced it carried one, so when the user asks what happened, point them here instead of reconstructing history from your context window",
         state_source: crate::agents::self_knowledge::StateSource::Static,
         teaching: &[],
     };
@@ -225,8 +225,8 @@ pub fn entry_from_event(event: &PermagentEvent) -> Option<NewEntry> {
         }
         PermagentEventType::ProactiveNudge => {
             // The Watcher's initiative (#672): it chose to surface something.
-            // Dormant Brain threads carry a memory pointer; news nudges have
-            // no durable referent (the link lives in the notification).
+            // The article link is the evidence for a news nudge, with the grounded
+            // project as fallback when a user-declared topic has no link.
             let nudge_kind = payload_str(event, "kind").unwrap_or("nudge");
             let subject = payload_str(event, "subject").unwrap_or("something");
             let message = payload_str(event, "message");
@@ -237,6 +237,12 @@ pub fn entry_from_event(event: &PermagentEvent) -> Option<NewEntry> {
             };
             let (ref_kind, ref_id) = if nudge_kind == "dormant_thread" {
                 (Some("memory"), Some(subject.to_string()))
+            } else if let Some(url) = payload_str(event, "url").filter(|url| !url.is_empty()) {
+                (Some("url"), Some(url.to_string()))
+            } else if let Some(project_id) =
+                payload_str(event, "project_id").filter(|project_id| !project_id.is_empty())
+            {
+                (Some("project"), Some(project_id.to_string()))
             } else {
                 (None, None)
             };
@@ -491,6 +497,38 @@ mod tests {
         assert_eq!(page(&pool, None, 10, None, None).await.unwrap().len(), 1);
     }
 
+    /// The other half of the guarantee — that the retention pass is still
+    /// allowed through the DELETE guard — is `prune_removes_only_old_rows`.
+    #[tokio::test]
+    async fn journal_rejects_rewrites_and_in_window_deletes() {
+        let pool = test_pool().await;
+        let fresh_ts = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+        insert_entry(&pool, &entry("fresh", &fresh_ts))
+            .await
+            .unwrap();
+
+        let update = sqlx::query("UPDATE activity_journal SET title = 'rewritten'")
+            .execute(&pool)
+            .await;
+        assert!(
+            update.is_err(),
+            "activity journal rows must not be rewritable"
+        );
+
+        let delete = sqlx::query("DELETE FROM activity_journal WHERE id = ?")
+            .bind("fresh")
+            .execute(&pool)
+            .await;
+        assert!(
+            delete.is_err(),
+            "activity journal rows inside retention must not be deletable"
+        );
+
+        let items = page(&pool, None, 10, None, None).await.unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title, "entry fresh");
+    }
+
     #[tokio::test]
     async fn prune_removes_only_old_rows() {
         let pool = test_pool().await;
@@ -613,7 +651,7 @@ mod tests {
         assert_eq!(entry.ref_id.as_deref(), Some("Solar shed project"));
         assert!(entry.detail.as_deref().unwrap().contains("three weeks"));
 
-        // News nudge: no durable referent, so no evidence pointer.
+        // News nudge: the article URL is its evidence pointer.
         let news = entry_from_event(&events::proactive_nudge(
             "project_news",
             "kuzu 0.11",
@@ -625,8 +663,24 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(news.title, "News: kuzu 0.11");
-        assert!(news.ref_kind.is_none());
-        assert!(news.ref_id.is_none());
+        assert_eq!(news.ref_kind.as_deref(), Some("url"));
+        assert_eq!(
+            news.ref_id.as_deref(),
+            Some("https://example.com/kuzu-0-11")
+        );
+
+        let project_news = entry_from_event(&events::proactive_nudge(
+            "project_news",
+            "Brain",
+            "Something relevant to the Brain.",
+            1,
+            "2026-07-10T10:00:00.000Z",
+            None,
+            Some(("proj-brain", "Brain")),
+        ))
+        .unwrap();
+        assert_eq!(project_news.ref_kind.as_deref(), Some("project"));
+        assert_eq!(project_news.ref_id.as_deref(), Some("proj-brain"));
     }
 
     #[tokio::test]

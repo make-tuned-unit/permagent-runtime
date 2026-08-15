@@ -8,7 +8,7 @@
  * server-side kind/actor filters (chips + actor select) so pagination stays
  * correct under a filter. Rows deep-link to their evidence: goal rows open
  * the goal detail overlay, decision rows open the Decision Inbox, memory
- * rows jump to the Memory tool.
+ * rows jump to the Memory tool, and news rows open the article.
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
@@ -22,6 +22,7 @@ import { apiFetch } from '../../../lib/api';
 import { useCommandCenter, navigateToTool } from '../../../lib/store';
 import { useDecisions } from '../decisions/useDecisions';
 import { DecisionInbox } from '../decisions/DecisionInbox';
+import { useBrowserNavigate } from '../../../hooks/useBrowserNavigate';
 
 interface JournalItem {
   id: string;
@@ -306,6 +307,7 @@ function TimelineRow({ item, isLast, onOpenDecisions }: {
 }) {
   const { colors } = useTheme();
   const openGoalDetail = useCommandCenter(s => s.openGoalDetail);
+  const openInBrowser = useBrowserNavigate();
   const [hover, setHover] = useState(false);
 
   const meta = KIND_META[item.kind] ?? { icon: FiActivity, colorKey: 'cyan' as const };
@@ -320,7 +322,9 @@ function TimelineRow({ item, isLast, onOpenDecisions }: {
         ? onOpenDecisions
         : item.ref_kind === 'memory'
           ? () => navigateToTool('memory')
-          : undefined;
+          : item.ref_kind === 'url' && item.ref_id
+            ? () => openInBrowser(item.ref_id!)
+            : undefined;
 
   return (
     <div
