@@ -127,6 +127,9 @@ name = "tts_bench"
 path = "src/bin/tts_bench.rs"
 
 [dev-dependencies]
+# Runs the config pin before any test body — see lib.rs. cfg(test) in the
+# permagent crate does not apply to this binary, so the pin has to be armed here.
+ctor = "1.0"
 tower = "0.5.2"
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros"] }

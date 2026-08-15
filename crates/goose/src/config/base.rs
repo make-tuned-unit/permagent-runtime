@@ -149,21 +149,35 @@ enum SecretStorage {
 static GLOBAL_CONFIG: OnceCell<Config> = OnceCell::new();
 
 /// The directory every config read in this test binary resolves under.
-#[cfg(test)]
-fn test_config_root() -> PathBuf {
+#[doc(hidden)]
+pub fn test_config_root() -> PathBuf {
     env::temp_dir().join(format!("permagent-test-config-{}", std::process::id()))
 }
 
-/// Pin every config read in this test binary to a per-run temp directory.
+/// Pin every config read in THIS TEST BINARY to a per-run temp directory.
 ///
 /// `Config::global()` is a `OnceCell`: the first touch fixes the path for the
 /// whole process, so a test that sets `PERMAGENT_PATH_ROOT` in its own body has
 /// already lost the race. Without this the suite reads the developer's real
 /// `~/.permagent/config.yaml` — the Guard flag, the telemetry choice — and a
 /// green run proves only that it was green on that machine.
-#[cfg(test)]
-#[ctor::ctor(unsafe)]
-fn pin_config_to_temp_root_for_tests() {
+///
+/// # Why this is `pub` rather than `#[cfg(test)]`
+///
+/// `cfg(test)` is set only while compiling THIS crate's own test binary. A
+/// dependent crate's tests (`permagent-daemon`) link `permagent` as an ordinary
+/// dependency, so a `cfg(test)` initialiser here never runs for them — they kept
+/// reading the real config and the real system keyring. That is not theoretical:
+/// the daemon's `secret_response_never_serializes_value` hung indefinitely in
+/// `Config::get_secret -> all_secrets`, blocked on a macOS keychain
+/// authorisation prompt no headless run can answer.
+///
+/// So it is exported, `#[doc(hidden)]`, for dependent TEST binaries to call from
+/// their own `#[ctor]`. It is inert unless called, and calling it from
+/// production code would only redirect that process's config to a temp dir —
+/// loud and immediate, not silent corruption.
+#[doc(hidden)]
+pub fn pin_config_to_temp_root_for_tests() {
     let root = test_config_root();
     // A pid can be reused; start from an empty directory so a previous run's
     // leftovers cannot decide this one's results.
@@ -171,6 +185,12 @@ fn pin_config_to_temp_root_for_tests() {
     std::fs::create_dir_all(&root).expect("test config root");
     env::set_var("PERMAGENT_PATH_ROOT", &root);
     Config::init_for_tests(&root);
+}
+
+#[cfg(test)]
+#[ctor::ctor(unsafe)]
+fn pin_config_for_this_crates_tests() {
+    pin_config_to_temp_root_for_tests();
 }
 
 impl Default for Config {
@@ -318,8 +338,11 @@ impl Config {
     /// Pin the process-global config under `root`, with file-backed secrets so the
     /// suite never reaches the developer's system keyring. Returns `false` if the
     /// global was already initialised.
-    #[cfg(test)]
-    pub(crate) fn init_for_tests(root: &Path) -> bool {
+    ///
+    /// Exported (hidden) rather than `cfg(test)` so dependent crates' test
+    /// binaries can pin too — see [`pin_config_to_temp_root_for_tests`].
+    #[doc(hidden)]
+    pub fn init_for_tests(root: &Path) -> bool {
         let config =
             Config::new_with_file_secrets(root.join(CONFIG_YAML_NAME), root.join("secrets.yaml"))
                 .expect("file-backed test config");

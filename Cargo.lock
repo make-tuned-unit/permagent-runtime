@@ -7510,6 +7510,7 @@ dependencies = [
  "chrono",
  "clap",
  "config",
+ "ctor",
  "data-encoding",
  "dirs",
  "ed25519-dalek",

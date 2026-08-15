@@ -4,6 +4,23 @@ compile_error!("At least one of `rustls-tls` or `native-tls` features must be en
 #[cfg(all(feature = "rustls-tls", feature = "native-tls"))]
 compile_error!("Features `rustls-tls` and `native-tls` are mutually exclusive");
 
+/// Pin this test binary's config to a temp root before any test body runs.
+///
+/// `permagent` arms the same pin for its own tests, but `cfg(test)` is set only
+/// while compiling that crate's test binary — this one links `permagent` as an
+/// ordinary dependency, so its initialiser never fired here and daemon tests
+/// read the developer's real config and system keyring.
+///
+/// That was not theoretical: `agents_surface::tests::
+/// secret_response_never_serializes_value` hung indefinitely in
+/// `Config::get_secret -> all_secrets`, blocked on a macOS keychain
+/// authorisation prompt that a headless run cannot answer.
+#[cfg(test)]
+#[ctor::ctor(unsafe)]
+fn pin_config_for_daemon_tests() {
+    permagent::config::base::pin_config_to_temp_root_for_tests();
+}
+
 pub mod agent_state_tick;
 pub mod analytics;
 pub mod analytics_drain;
