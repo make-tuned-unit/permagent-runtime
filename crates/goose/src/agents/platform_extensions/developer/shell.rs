@@ -19,6 +19,7 @@ use tokio::sync::OnceCell;
 use tokio::task::JoinHandle;
 use tokio_stream::{wrappers::SplitStream, StreamExt};
 
+use crate::agents::platform_extensions::goal_engine::{self, worker_git_env};
 use crate::subprocess::SubprocessExt;
 
 /// Check if the current process is running inside a Flatpak sandbox.
@@ -573,6 +574,31 @@ async fn run_command(
     })
 }
 
+/// Ephemeral `GIT_CONFIG_*` pairs for a shell command whose cwd is inside a
+/// goal worktree (P1-5). In-process workers inherit no per-dispatch env, so
+/// the push block that guards external CLI workers is re-derived from the
+/// one path goal worktrees ever live at. Empty for every other directory.
+fn goal_worktree_git_env(working_dir: Option<&std::path::Path>) -> Vec<(String, String)> {
+    let Some(working_dir) = working_dir else {
+        return Vec::new();
+    };
+    if !working_dir
+        .components()
+        .any(|component| component.as_os_str() == goal_engine::GOAL_WORKTREES_DIR)
+    {
+        return Vec::new();
+    }
+
+    let pairs = worker_git_env(None);
+    let mut env = Vec::with_capacity(1 + pairs.len() * 2);
+    env.push(("GIT_CONFIG_COUNT".to_string(), pairs.len().to_string()));
+    for (index, (key, value)) in pairs.into_iter().enumerate() {
+        env.push((format!("GIT_CONFIG_KEY_{index}"), key));
+        env.push((format!("GIT_CONFIG_VALUE_{index}"), value));
+    }
+    env
+}
+
 fn build_shell_command(
     command_line: &str,
     working_dir: Option<&std::path::Path>,
@@ -601,6 +627,9 @@ fn build_shell_command(
         if let Some(path) = login_path {
             command.env("PATH", path);
         }
+        for (key, value) in goal_worktree_git_env(working_dir) {
+            command.env(key, value);
+        }
         command
     };
 
@@ -616,6 +645,9 @@ fn build_shell_command(
             if let Some(path) = login_path {
                 command.arg(format!("--env=PATH={}", path));
             }
+            for (key, value) in goal_worktree_git_env(working_dir) {
+                command.arg(format!("--env={}={}", key, value));
+            }
             command.arg(&shell).arg("-c").arg(command_line);
             command
         } else {
@@ -626,6 +658,9 @@ fn build_shell_command(
             }
             if let Some(path) = login_path {
                 command.env("PATH", path);
+            }
+            for (key, value) in goal_worktree_git_env(working_dir) {
+                command.env(key, value);
             }
             command
         }
@@ -779,6 +814,30 @@ fn save_full_output(
 mod tests {
     use super::*;
     use rmcp::model::RawContent;
+
+    #[test]
+    fn goal_worktree_git_env_blocks_push_only_in_goal_worktrees() {
+        let goal_path = std::path::Path::new("/repo-parent")
+            .join(goal_engine::GOAL_WORKTREES_DIR)
+            .join("run-id");
+        let env = goal_worktree_git_env(Some(&goal_path));
+
+        assert_eq!(
+            env,
+            vec![
+                ("GIT_CONFIG_COUNT".to_string(), "1".to_string()),
+                (
+                    "GIT_CONFIG_KEY_0".to_string(),
+                    "remote.origin.pushurl".to_string()
+                ),
+                (
+                    "GIT_CONFIG_VALUE_0".to_string(),
+                    goal_engine::PUSH_BLOCK_SENTINEL.to_string()
+                ),
+            ]
+        );
+        assert!(goal_worktree_git_env(Some(std::path::Path::new("/ordinary/project"))).is_empty());
+    }
 
     fn extract_text(result: &CallToolResult) -> &str {
         match &result.content[0].raw {
