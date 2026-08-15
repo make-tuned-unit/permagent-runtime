@@ -56,7 +56,8 @@ pub use best_of_n::{
     Difficulty, DifficultySignals, Selection, Verdict, BEST_OF_N_DEFAULT, MAX_BEST_OF_N,
 };
 pub use budget::{
-    budget_verdict, BudgetBand, BudgetCeilings, BudgetConfig, BudgetScope, BudgetVerdict,
+    budget_verdict, budget_verdict_with_unpriced, BudgetBand, BudgetCeilings, BudgetConfig,
+    BudgetScope, BudgetVerdict,
 };
 pub use cache::{
     may_swap_main_loop_model, model_change_breaks_cache, prefix_is_cache_stable, ModelKey,

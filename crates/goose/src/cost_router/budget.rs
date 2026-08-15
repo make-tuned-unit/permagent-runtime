@@ -181,6 +181,9 @@ pub struct BudgetVerdict {
     pub spent: f64,
     /// The threshold that scope crossed (0.0 when `band == Ok`).
     pub crossed: f64,
+    /// Chargeable calls in scope whose model had no price. `spent` is a
+    /// FLOOR whenever this is non-zero.
+    pub unpriced_calls: u32,
 }
 
 impl BudgetVerdict {
@@ -215,19 +218,35 @@ fn band_for(spent: f64, ceilings: BudgetCeilings) -> (BudgetBand, f64) {
 /// fires exactly AT the gate ceiling.
 ///
 /// Spend is a plain `f64` (the caller already has it: `task` spend and the
-/// session's `accumulated_cost_usd`). Unknown cost is passed as `0.0` — the
-/// ledger returns `None`/`0` for unpriced models, and unknown cost must never
-/// fabricate a stop.
+/// session's `accumulated_cost_usd`). Unpriced chargeable calls contribute $0
+/// to that figure — `spent` is then a FLOOR; pass their count via
+/// [`budget_verdict_with_unpriced`] so an otherwise-Ok band lifts to Soft
+/// (visible, never a Gate/Hard stop).
 pub fn budget_verdict(task_spent: f64, session_spent: f64, cfg: &BudgetConfig) -> BudgetVerdict {
+    budget_verdict_with_unpriced(task_spent, session_spent, 0, cfg)
+}
+
+/// Like [`budget_verdict`], plus the count of chargeable calls whose model had
+/// no published price. Unpriced calls never fabricate a Gate or Hard stop; they
+/// only lift an `Ok` band to `Soft` (non-blocking alert) so unmeasurable spend
+/// is visible instead of reading as a confident $0.00. When they lift, `crossed`
+/// stays 0.0 and the scope is `Task`.
+pub fn budget_verdict_with_unpriced(
+    task_spent: f64,
+    session_spent: f64,
+    unpriced_calls: u32,
+    cfg: &BudgetConfig,
+) -> BudgetVerdict {
     let (task_band, task_thresh) = band_for(task_spent, cfg.task);
     let (session_band, session_thresh) = band_for(session_spent, cfg.session);
 
-    if session_band.rank() > task_band.rank() {
+    let mut verdict = if session_band.rank() > task_band.rank() {
         BudgetVerdict {
             band: session_band,
             scope: BudgetScope::Session,
             spent: session_spent,
             crossed: session_thresh,
+            unpriced_calls,
         }
     } else {
         BudgetVerdict {
@@ -235,8 +254,16 @@ pub fn budget_verdict(task_spent: f64, session_spent: f64, cfg: &BudgetConfig) -
             scope: BudgetScope::Task,
             spent: task_spent,
             crossed: task_thresh,
+            unpriced_calls,
         }
+    };
+
+    if unpriced_calls > 0 && verdict.band == BudgetBand::Ok {
+        verdict.band = BudgetBand::Soft;
+        verdict.crossed = 0.0;
+        verdict.scope = BudgetScope::Task;
     }
+    verdict
 }
 
 // ── The Decision-Inbox gate (near-pure: builds the request; thin async writer) ─
@@ -287,12 +314,18 @@ pub fn gate_decision_request(
     let scope = verdict.scope.word();
     // Plain-language outcome headline, <= 80 chars, no technical identifiers.
     let headline = format!("Spent ${:.2} on this {scope} — keep going?", verdict.spent);
-    let detail = format!(
+    let mut detail = format!(
         "Spend gate reached: ${:.2} spent against the ${:.2} {scope} gate ceiling. \
          'increment' raises the ceiling by ${:.2}; 'to_completion' lifts the gate for \
          the rest of this run; 'stop' halts now and preserves all changes.",
         verdict.spent, verdict.crossed, increment
     );
+    if verdict.unpriced_calls > 0 {
+        detail.push_str(&format!(
+            " This figure is a floor because {} call(s) ran on a model with no published price.",
+            verdict.unpriced_calls
+        ));
+    }
     NewDecision {
         kind: "choice".to_string(),
         goal_id,
@@ -464,5 +497,48 @@ mod tests {
         // Payload round-trips as a ChoicePayload with 3 options.
         let payload: ChoicePayload = serde_json::from_value(req.payload).unwrap();
         assert_eq!(payload.options.len(), 3);
+    }
+
+    // ── Unpriced calls: floor semantics, never fabricate Gate/Hard ─────────
+
+    #[test]
+    fn unpriced_calls_lift_ok_to_soft_and_never_past_it() {
+        let c = BudgetConfig::default();
+        // Zero spend + unpriced → Soft alert (visible floor), not Ok.
+        let v = budget_verdict_with_unpriced(0.0, 0.0, 3, &c);
+        assert_eq!(v.band, BudgetBand::Soft);
+        assert_eq!(v.scope, BudgetScope::Task);
+        approx(v.crossed, 0.0);
+        assert_eq!(v.unpriced_calls, 3);
+
+        // Soft / Gate / Hard bands are unchanged by unpriced calls.
+        let soft = budget_verdict_with_unpriced(2.0, 0.0, 5, &c);
+        assert_eq!(soft.band, BudgetBand::Soft);
+        let gate = budget_verdict_with_unpriced(5.0, 0.0, 5, &c);
+        assert_eq!(gate.band, BudgetBand::Gate);
+        let hard = budget_verdict_with_unpriced(10.0, 0.0, 5, &c);
+        assert_eq!(hard.band, BudgetBand::Hard);
+    }
+
+    #[test]
+    fn gate_detail_names_unpriced_calls_only_when_present() {
+        let c = BudgetConfig::default();
+        let priced = budget_verdict(0.0, 25.0, &c);
+        let req = gate_decision_request(priced, 10.0, None, None);
+        let detail = req.detail.as_deref().unwrap();
+        assert!(
+            !detail.contains("floor") && !detail.contains("no published price"),
+            "priced gate detail must not mention unpriced calls, got: {detail}"
+        );
+
+        let unpriced = budget_verdict_with_unpriced(0.0, 25.0, 2, &c);
+        let req = gate_decision_request(unpriced, 10.0, None, None);
+        let detail = req.detail.as_deref().unwrap();
+        assert!(
+            detail.contains("floor") && detail.contains("2 call(s)"),
+            "unpriced gate detail must name the floor and call count, got: {detail}"
+        );
+        // Headline stays short (Decision Inbox 80-char cap).
+        assert!(req.headline.as_deref().unwrap().chars().count() <= 80);
     }
 }

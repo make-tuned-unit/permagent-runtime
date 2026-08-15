@@ -4929,6 +4929,65 @@ pub async fn session_spent_usd(pool: &sqlx::Pool<sqlx::Sqlite>, session_id: &str
         .unwrap_or(0.0)
 }
 
+/// Spend (USD) on the CURRENT task — everything charged since the session's most
+/// recent user message. A goal worker's dispatch prompt is that message, so for a
+/// worker this is the whole run; for an interactive session it is the request in
+/// flight. No user message yet ⇒ the whole session. Errors ⇒ 0.0 (never fabricate
+/// a stop, per the budget ledger contract).
+pub async fn task_spent_usd(pool: &sqlx::Pool<sqlx::Sqlite>, session_id: &str) -> f64 {
+    let last_user_secs = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT MAX(created_timestamp) FROM messages WHERE session_id = ? AND role = 'user'",
+    )
+    .bind(session_id)
+    .fetch_one(pool)
+    .await
+    .ok()
+    .flatten();
+
+    // `cost_ledger.ts` is written with `chrono::Utc::now().to_rfc3339()`, so the
+    // task boundary is built the same way and compared as a plain indexed TEXT
+    // range rather than parsed in SQL.
+    let since = last_user_secs
+        .and_then(|secs| chrono::DateTime::from_timestamp(secs, 0))
+        .map(|dt| dt.to_rfc3339());
+
+    let result = match &since {
+        Some(since) => {
+            sqlx::query_scalar::<_, f64>(
+                "SELECT COALESCE(SUM(cost_usd), 0) FROM cost_ledger \
+                 WHERE session_id = ? AND ts >= ?",
+            )
+            .bind(session_id)
+            .bind(since)
+            .fetch_one(pool)
+            .await
+        }
+        None => {
+            sqlx::query_scalar::<_, f64>(
+                "SELECT COALESCE(SUM(cost_usd), 0) FROM cost_ledger WHERE session_id = ?",
+            )
+            .bind(session_id)
+            .fetch_one(pool)
+            .await
+        }
+    };
+    result.unwrap_or(0.0)
+}
+
+/// Chargeable calls in this session that ran on a model with no published
+/// price (`cost_ledger.is_estimated`). They contribute $0.00 to the running
+/// total, so the budget gate needs the count to know its figure is a floor.
+pub async fn unpriced_calls_in_session(pool: &sqlx::Pool<sqlx::Sqlite>, session_id: &str) -> u32 {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM cost_ledger WHERE session_id = ? AND is_estimated = 1",
+    )
+    .bind(session_id)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+    count.max(0) as u32
+}
+
 /// The goal's normal retry-attempt count (kept UNCHANGED across an escalation
 /// re-dispatch — R1: escalation has its own `max_escalations` budget and must not
 /// starve the goal of its ordinary attempts).
@@ -5044,7 +5103,8 @@ pub async fn escalate_verify_fix_loop(
         |tier| crate::cost_router::role_model(crate::cost_router::workflow_role_for_tier(tier));
     let spent = session_spent_usd(pool, session_id).await;
     let budget_cfg = crate::cost_router::budget::load_budget_config();
-    let verdict = crate::cost_router::budget_verdict(0.0, spent, &budget_cfg);
+    let task_spent = task_spent_usd(pool, session_id).await;
+    let verdict = crate::cost_router::budget_verdict(task_spent, spent, &budget_cfg);
     let max_escalations = crate::cost_router::load_max_escalations();
 
     let outcome = crate::cost_router::decide_escalation(
@@ -7947,5 +8007,160 @@ mod tests {
     async fn record_decision_create_failure_survives_missing_card() {
         let pool = decisions_pool().await;
         record_decision_create_failure(&pool, "no-such-card", "unblock", "db said no").await;
+    }
+
+    // ── Task spend + unpriced floor (P1-8 / P1-9) ───────────────────────────
+
+    async fn insert_session(pool: &sqlx::Pool<sqlx::Sqlite>, session_id: &str) {
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, '/tmp')")
+            .bind(session_id)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    async fn insert_user_message(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        session_id: &str,
+        message_id: &str,
+        created_timestamp: i64,
+    ) {
+        sqlx::query(
+            "INSERT INTO messages (message_id, session_id, role, content_json, created_timestamp) \
+             VALUES (?, ?, 'user', '[]', ?)",
+        )
+        .bind(message_id)
+        .bind(session_id)
+        .bind(created_timestamp)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn insert_ledger_row(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        call_id: &str,
+        session_id: &str,
+        ts: &str,
+        cost_usd: f64,
+        is_estimated: bool,
+    ) {
+        sqlx::query(
+            "INSERT INTO cost_ledger (call_id, ts, session_id, cost_usd, is_estimated) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(call_id)
+        .bind(ts)
+        .bind(session_id)
+        .bind(cost_usd)
+        .bind(is_estimated)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn task_spent_counts_only_ledger_after_last_user_message() {
+        let pool = test_pool().await;
+        let sid = "sess-task-spend";
+        insert_session(&pool, sid).await;
+
+        // Two user turns; spend before the second must not count as task spend.
+        insert_user_message(&pool, sid, "m1", 1_700_000_000).await;
+        insert_user_message(&pool, sid, "m2", 1_700_000_100).await;
+
+        let before_ts = chrono::DateTime::from_timestamp(1_700_000_050, 0)
+            .unwrap()
+            .to_rfc3339();
+        let after_ts = chrono::DateTime::from_timestamp(1_700_000_150, 0)
+            .unwrap()
+            .to_rfc3339();
+
+        insert_ledger_row(&pool, "c-before", sid, &before_ts, 3.0, false).await;
+        insert_ledger_row(&pool, "c-after", sid, &after_ts, 1.5, false).await;
+
+        let task = task_spent_usd(&pool, sid).await;
+        assert!(
+            (task - 1.5).abs() < 1e-9,
+            "task spend must be only post-last-user rows, got {task}"
+        );
+
+        let session_sum: f64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(cost_usd), 0) FROM cost_ledger WHERE session_id = ?",
+        )
+        .bind(sid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(
+            (session_sum - 4.5).abs() < 1e-9,
+            "session total must still include both rows, got {session_sum}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unpriced_call_is_visible_at_zero_spend() {
+        let pool = test_pool().await;
+        let sid = "sess-unpriced";
+        insert_session(&pool, sid).await;
+
+        let ts = chrono::Utc::now().to_rfc3339();
+        insert_ledger_row(&pool, "c-unpriced", sid, &ts, 0.0, true).await;
+
+        assert_eq!(unpriced_calls_in_session(&pool, sid).await, 1);
+        let sum: f64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(cost_usd), 0) FROM cost_ledger WHERE session_id = ?",
+        )
+        .bind(sid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(
+            (sum - 0.0).abs() < 1e-9,
+            "unpriced call must book $0.00, got {sum}"
+        );
+
+        // P1-9: $0.00 spent with an unpriced call must NOT read to the gate as
+        // the confident "nothing was spent" that a genuinely free call does.
+        let cfg = crate::cost_router::budget::BudgetConfig::default();
+        let verdict = crate::cost_router::budget::budget_verdict_with_unpriced(
+            task_spent_usd(&pool, sid).await,
+            session_spent_usd(&pool, sid).await,
+            unpriced_calls_in_session(&pool, sid).await,
+            &cfg,
+        );
+        assert_ne!(
+            verdict.band,
+            crate::cost_router::budget::BudgetBand::Ok,
+            "unpriced spend must be visible to the budget gate"
+        );
+    }
+
+    #[tokio::test]
+    async fn task_over_its_ceiling_is_gated_while_the_session_is_fine() {
+        // The P1-8 regression: task spend used to be hardcoded 0.0, so the task
+        // ceiling could never fire and only the far looser session ceiling
+        // (default $25) ever gated.
+        let pool = test_pool().await;
+        let sid = "sess-task-gate";
+        insert_session(&pool, sid).await;
+        insert_user_message(&pool, sid, "m1", 1_700_000_000).await;
+
+        let ts = chrono::DateTime::from_timestamp(1_700_000_010, 0)
+            .unwrap()
+            .to_rfc3339();
+        insert_ledger_row(&pool, "c-1", sid, &ts, 6.0, false).await;
+
+        let cfg = crate::cost_router::budget::BudgetConfig::default();
+        let verdict = crate::cost_router::budget_verdict(
+            task_spent_usd(&pool, sid).await,
+            session_spent_usd(&pool, sid).await,
+            &cfg,
+        );
+        assert!(
+            verdict.needs_gate(),
+            "$6.00 on one task must cross the $5.00 task gate, got {verdict:?}"
+        );
+        assert_eq!(verdict.scope, crate::cost_router::budget::BudgetScope::Task);
     }
 }

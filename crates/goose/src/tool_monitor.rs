@@ -303,6 +303,9 @@ fn edited_path(args: &Value) -> Option<&str> {
 /// signal).
 pub const VERIFY_GAMING_FINDING: &str = "VERIFY-GAMING";
 
+/// Finding id for a spend-ceiling deny (gate or hard stop).
+pub const BUDGET_GATE_FINDING: &str = "BUDGET-GATE";
+
 /// Detect the test-gaming reward-hack: the most recent `verify` PASSED, and every
 /// file edited since the previous `verify` was a TEST file — the pass was earned
 /// by changing the tests `verify` runs, not by fixing the code. Returns the
@@ -351,6 +354,29 @@ fn test_gaming_message(test_paths: &[String]) -> String {
          the test itself was wrong. This pass will not be accepted as proof of work.",
         test_paths.join(", ")
     )
+}
+
+/// The deny text for a session over its spend ceiling. It must not tell the
+/// user to answer anything in the Decision Inbox: nothing in the codebase
+/// handles the spend-gate choice options, so raising the ceiling in Settings is
+/// the only action that actually lets the run continue.
+fn budget_block_message(verdict: crate::cost_router::budget::BudgetVerdict) -> String {
+    let mut msg = format!(
+        "BLOCKED by the spend ceiling: this {} has spent ${:.2}, which crossed the \
+         ${:.2} ceiling. No further tools will run and all work so far is preserved. \
+         Raise the ceiling in Settings → Spend to continue.",
+        verdict.scope.word(),
+        verdict.spent,
+        verdict.crossed,
+    );
+    if verdict.unpriced_calls > 0 {
+        msg.push_str(&format!(
+            " That total is a floor — at least that much — because {} call(s) ran on \
+             a model with no published price.",
+            verdict.unpriced_calls
+        ));
+    }
+    msg
 }
 
 /// Hash any string to the `u64` result-hash space.
@@ -745,26 +771,46 @@ impl ProgressMonitor {
         }
     }
 
-    /// The current budget verdict for this session's spend (#938). Reads the
-    /// session's `accumulated_cost_usd` and evaluates it against the configured
+    /// The current budget verdict for this session's spend (#938). Reads task
+    /// spend (ledger rows since the most recent user message), session spend,
+    /// and the unpriced-call count, then evaluates them against the configured
     /// ceilings. FAIL-OPEN: any error (no session manager, no pool, DB error)
     /// yields `None` (no gate), so a transient fault never spuriously stops a
     /// run — matching the ledger's "unknown cost never fabricates a stop"
-    /// contract. Task spend is `0.0` for now (session ceilings only; a per-task
-    /// accumulator is a follow-up, #938 MED).
+    /// contract.
     async fn budget_verdict_for(
         &self,
         session_id: &str,
     ) -> Option<crate::cost_router::budget::BudgetVerdict> {
         let session_manager = self.session_manager.as_ref()?;
         let pool = session_manager.pool_clone().await.ok()?;
+        let task_spent =
+            crate::agents::platform_extensions::orchestrator::task_spent_usd(&pool, session_id)
+                .await;
         let session_spent =
             crate::agents::platform_extensions::orchestrator::session_spent_usd(&pool, session_id)
                 .await;
+        let unpriced = crate::agents::platform_extensions::orchestrator::unpriced_calls_in_session(
+            &pool, session_id,
+        )
+        .await;
+        if unpriced > 0 {
+            // Money is being spent that the ledger cannot price, so every figure
+            // above is a floor. Ambient only — an unknown cost never fabricates a
+            // stop; the band it lifts to (Soft) is non-blocking by design.
+            tracing::warn!(
+                target: "permagent::progress_monitor",
+                session_id = %session_id,
+                unpriced_calls = unpriced,
+                session_spent_usd = session_spent,
+                "spend gate is reading a FLOOR: chargeable calls ran on a model with no published price",
+            );
+        }
         let cfg = crate::cost_router::budget::load_budget_config();
-        Some(crate::cost_router::budget::budget_verdict(
-            0.0,
+        Some(crate::cost_router::budget::budget_verdict_with_unpriced(
+            task_spent,
             session_spent,
+            unpriced,
             &cfg,
         ))
     }
@@ -773,10 +819,9 @@ impl ProgressMonitor {
     /// detached (mirrors [`Self::escalate`]'s reservation discipline): reserves
     /// the session, then raises the Decision-Inbox spend gate + parks the goal
     /// (work-preserving) + stops the worker via `escalate_session_budget`,
-    /// releasing the reservation on failure so a later turn retries. The park is
-    /// the enforcement — killing the worker stops further spend; no tool is
-    /// denied, so an interactive (non-worker) session is never frozen (it simply
-    /// has no goal to park — enforcing it is a follow-up).
+    /// releasing the reservation on failure so a later turn retries. Tools are
+    /// denied for every over-cap session (interactive included); the park+kill
+    /// is the extra enforcement a goal worker gets.
     fn budget_escalate(
         &self,
         session_id: &str,
@@ -987,15 +1032,30 @@ impl ToolInspector for ProgressMonitor {
         messages: &[Message],
         _goose_mode: GooseMode,
     ) -> Result<Vec<InspectionResult>> {
-        // Budget enforcement (#938): if this worker session's spend has crossed
-        // the gate/hard ceiling, raise the Decision-Inbox spend gate + park the
-        // goal + stop the worker (detached, once per run) so spend cannot run on
-        // past the ceiling. Fail-open: a check error is a no-op. This is the
-        // enforcement half of the budget policy — the pure `budget_verdict` core
-        // was already built and tested; nothing was calling it (#938).
+        // Budget enforcement (#938): if this session's spend has crossed the
+        // gate/hard ceiling, raise the Decision-Inbox spend gate + park any goal
+        // worker (detached, once per run) AND deny every tool in this turn, so
+        // an over-cap session cannot act again — an interactive session has no
+        // goal to park, and the deny is its only stop. Fail-open: a check error
+        // is a no-op. This is the enforcement half of the budget policy — the
+        // pure `budget_verdict` core was already built and tested (#938).
         if let Some(verdict) = self.budget_verdict_for(session_id).await {
             if verdict.needs_gate() || verdict.must_stop() {
                 self.budget_escalate(session_id, verdict);
+                let reason = budget_block_message(verdict);
+                let denials: Vec<InspectionResult> = tool_requests
+                    .iter()
+                    .filter(|req| req.tool_call.is_ok())
+                    .map(|req| InspectionResult {
+                        tool_request_id: req.id.clone(),
+                        action: InspectionAction::Deny,
+                        reason: reason.clone(),
+                        confidence: 1.0,
+                        inspector_name: PROGRESS_MONITOR_NAME.to_string(),
+                        finding_id: Some(BUDGET_GATE_FINDING.to_string()),
+                    })
+                    .collect();
+                return Ok(denials);
             }
         }
 
@@ -1730,8 +1790,9 @@ mod tests {
 
     #[test]
     fn no_deny_variant_claims_the_inbox() {
-        // None of the block messages (nudge, same-failure, escalate) may claim the
-        // Inbox — the claim was false for the common non-goal session.
+        // None of the block messages (nudge, same-failure, escalate, budget)
+        // may claim the Inbox — the claim was false for the common non-goal
+        // session, and the spend-gate choice options have no handler.
         for action in [
             LoopAction::Nudge(Signal::RepeatedCall),
             LoopAction::Escalate(Signal::RepeatedCall),
@@ -1744,6 +1805,40 @@ mod tests {
                 "no deny text may claim the Inbox, got: {msg}"
             );
         }
+
+        let c = crate::cost_router::budget::BudgetConfig::default();
+        let gate = crate::cost_router::budget::budget_verdict(5.0, 0.0, &c);
+        let budget_msg = budget_block_message(gate);
+        assert!(
+            !budget_msg.to_lowercase().contains("inbox"),
+            "budget deny text must not claim the Inbox, got: {budget_msg}"
+        );
+        assert!(
+            budget_msg.contains("$5.00")
+                && budget_msg.contains("ceiling")
+                && budget_msg.contains("Settings → Spend"),
+            "budget deny must name the dollar figure, ceiling, and Settings, got: {budget_msg}"
+        );
+        assert!(
+            budget_msg.contains("No further tools will run") && budget_msg.contains("preserved"),
+            "budget deny must say what it actually does — no more tools, work preserved — \
+             got: {budget_msg}"
+        );
+    }
+
+    #[test]
+    fn budget_block_message_names_unpriced_floor() {
+        let c = crate::cost_router::budget::BudgetConfig::default();
+        let v = crate::cost_router::budget::budget_verdict_with_unpriced(5.0, 0.0, 2, &c);
+        let msg = budget_block_message(v);
+        assert!(
+            msg.to_lowercase().contains("floor") || msg.contains("at least"),
+            "unpriced budget deny must say the total is a floor, got: {msg}"
+        );
+        assert!(
+            !msg.to_lowercase().contains("inbox"),
+            "budget deny must not claim the Inbox, got: {msg}"
+        );
     }
 
     #[tokio::test]
