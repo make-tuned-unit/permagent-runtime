@@ -14,6 +14,7 @@
 //! `handle_goal_completion` (success / retriable failure) or — for `TimedOut` —
 //! `handle_goal_timeout` (park as an unblock decision, never a silent retry).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -1432,52 +1433,88 @@ pub(crate) async fn push_clean_work(worktree: &Path, baseline: &str) {
     }
 }
 
-/// Per-file content read cap for the credential scan. Secrets live near the top
-/// of a file; reading the whole of a large generated artifact is wasteful.
-const SECRET_SCAN_READ_CAP: usize = 256 * 1024;
-
 /// #508 — deterministic credential guard over the worker's *committed* changes
 /// (`baseline..HEAD`), run after a clean exit and before the goal is allowed to
-/// advance. Returns a human-readable block reason on the first credential-shaped
-/// file/content, or `None` when the changeset is clean.
+/// advance. Every path in every commit that will be pushed is checked from its
+/// committed blob, never the working tree, and any enumeration or blob-read
+/// failure blocks the goal. Returns a human-readable block reason on the first
+/// credential-shaped file/content, or `None` when the changeset is clean.
 ///
-/// **Fail-closed:** a changed (added/modified/renamed) file that exists but
-/// cannot be read is treated as a match — the guard must never *allow* on
-/// uncertainty. Deletions are excluded (`--diff-filter=ACMR`) so a legitimately
-/// removed file can't trip the fail-closed path. Binary / oversized files are
-/// still caught by the filename rule; their content scan is skipped.
+/// Deletions are excluded so a legitimately removed file cannot trip the
+/// fail-closed path, as are submodule gitlinks, which carry no blob. Every blob
+/// is scanned in full; binary data is inspected as lossy UTF-8 because an
+/// incomplete inspection must never be reported clean.
 pub(crate) async fn scan_committed_changes(worktree: &Path, baseline: &str) -> Option<String> {
     let range = format!("{}..HEAD", baseline);
-    let names = git_text(
+    let Some(changes) = git_try(
         worktree,
-        &["diff", "--name-only", "--diff-filter=ACMR", &range],
+        &[
+            "-c",
+            "core.quotepath=false",
+            "log",
+            "--format=%x00%H",
+            "--name-only",
+            "--diff-filter=ACMRT",
+            &range,
+        ],
     )
-    .await;
+    .await
+    else {
+        return Some(format!(
+            "Commit blocked by the credential guard: could not enumerate committed changes in \
+             `{range}`. The guard fails closed."
+        ));
+    };
 
-    for path in names.lines().map(str::trim).filter(|l| !l.is_empty()) {
-        // Filename rule first — catches even binary / unreadable files.
+    // `%x00` marks the sha line. Git puts no blank line between one commit's
+    // last path and the next commit's sha, and a path can itself be 40 hex
+    // characters — matching on shape would read such a file as a commit and
+    // never scan it. A path can never contain NUL.
+    let mut sha = None;
+    let mut scanned = HashSet::new();
+    for line in changes.lines().filter(|line| !line.is_empty()) {
+        if let Some(commit) = line.strip_prefix('\0') {
+            sha = Some(commit);
+            continue;
+        }
+        let Some(sha) = sha else {
+            return Some(format!(
+                "Commit blocked by the credential guard: could not parse committed path `{line}` \
+                 in `{range}`. The guard fails closed."
+            ));
+        };
+        if line.starts_with('"') {
+            return Some(format!(
+                "Commit blocked by the credential guard: git returned quoted path `{line}`, which \
+                 cannot be resolved reliably. The guard fails closed."
+            ));
+        }
+        let path = line;
+        if !scanned.insert((sha, path)) {
+            continue;
+        }
         if let Some(finding) = crate::steward::secret_scan::scan_path(path) {
             return Some(block_message(path, &finding));
         }
-        // Content rule. The worktree is checked out at HEAD, so the committed
-        // file is on disk.
-        let full = worktree.join(path);
-        match read_capped_text(&full) {
-            Ok(Some(content)) => {
-                if let Some(finding) = crate::steward::secret_scan::scan_content(&content) {
-                    return Some(block_message(path, &finding));
-                }
+        let object = format!("{sha}:{path}");
+        let Some(blob) = git_try(worktree, &["show", &object]).await else {
+            // A submodule entry has no blob for `git show` to resolve and no
+            // content to leak. Confirm it really is a gitlink — an unreadable
+            // ordinary file must still block.
+            if git_try(worktree, &["ls-tree", sha, "--", path])
+                .await
+                .is_some_and(|entry| entry.split_whitespace().nth(1) == Some("commit"))
+            {
+                continue;
             }
-            // Binary / oversized — filename rule already ran; nothing to add.
-            Ok(None) => {}
-            // Fail-closed: a tracked, non-deleted file we cannot verify blocks.
-            Err(e) => {
-                return Some(format!(
-                    "Commit blocked by the credential guard: could not read `{path}` to verify it \
-                     contains no secrets ({e}). The guard fails closed — fix the file or remove it \
-                     from the commit."
-                ));
-            }
+            return Some(format!(
+                "Commit blocked by the credential guard: could not read committed blob `{path}` \
+                 at `{}` to verify it contains no secrets. The guard fails closed.",
+                sha.get(..8).unwrap_or(sha)
+            ));
+        };
+        if let Some(finding) = crate::steward::secret_scan::scan_content(&blob) {
+            return Some(block_message(path, &finding));
         }
     }
     None
@@ -1491,22 +1528,6 @@ fn block_message(path: &str, finding: &crate::steward::secret_scan::SecretFindin
          to `.gitignore`, then re-run the goal.",
         finding.rule, path, finding.detail
     )
-}
-
-/// Read a file as UTF-8 text, capped at [`SECRET_SCAN_READ_CAP`]. Returns
-/// `Ok(None)` for binary content (a NUL byte in the read window) or a file that
-/// does not exist as a regular readable file; `Err` only on a real I/O error of
-/// an existing path (the fail-closed signal).
-fn read_capped_text(path: &Path) -> std::io::Result<Option<String>> {
-    use std::io::Read;
-    let mut f = std::fs::File::open(path)?;
-    let mut buf = vec![0u8; SECRET_SCAN_READ_CAP];
-    let n = f.read(&mut buf)?;
-    buf.truncate(n);
-    if buf.contains(&0) {
-        return Ok(None); // binary
-    }
-    Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
 }
 
 /// Collect deterministic verification evidence from the worker's worktree
@@ -2394,15 +2415,67 @@ mod tests {
         assert!(reason.contains(".env"), "reason names the file: {reason}");
         assert!(reason.contains("credential guard"), "reason: {reason}");
 
-        // Removing a tracked file must NOT trip the fail-closed read path.
+        // Delete-after-commit bypass: the blob is gone at HEAD but remains in
+        // the pushed chain, so scanning from the original baseline must block.
         g(&["rm", "-q", ".env"]);
         g(&["commit", "-q", "-m", "remove secret"]);
+        let reason = scan_committed_changes(&repo, &baseline)
+            .await
+            .expect("deleted secret blob in the pushed chain must be blocked");
+        assert!(reason.contains(".env"), "reason names the file: {reason}");
+
         // The deletion commit alone (new baseline) is clean.
         let after_del = String::from_utf8(g(&["rev-parse", "HEAD~1"]).stdout)
             .unwrap()
             .trim()
             .to_string();
         assert!(scan_committed_changes(&repo, &after_del).await.is_none());
+    }
+
+    /// #508: committed blob content is scanned even when a later commit leaves
+    /// the working tree and net tree diff clean.
+    #[tokio::test]
+    async fn scan_committed_changes_blocks_secret_removed_from_working_tree() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = tmp.path().join("proj");
+        std::fs::create_dir(&repo).unwrap();
+        let g = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        g(&["init", "-q"]);
+        g(&["config", "user.email", "t@t.t"]);
+        g(&["config", "user.name", "t"]);
+        std::fs::write(repo.join("config.txt"), "clean\n").unwrap();
+        g(&["add", "."]);
+        g(&["commit", "-q", "-m", "base"]);
+        let baseline = String::from_utf8(g(&["rev-parse", "HEAD"]).stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+
+        std::fs::write(
+            repo.join("config.txt"),
+            "-----BEGIN RSA PRIVATE KEY-----\nsecret\n-----END RSA PRIVATE KEY-----\n",
+        )
+        .unwrap();
+        g(&["add", "."]);
+        g(&["commit", "-q", "-m", "commit secret"]);
+        std::fs::write(repo.join("config.txt"), "clean\n").unwrap();
+        g(&["add", "."]);
+        g(&["commit", "-q", "-m", "clean working tree"]);
+
+        let reason = scan_committed_changes(&repo, &baseline)
+            .await
+            .expect("historical committed secret blob must be blocked");
+        assert!(
+            reason.contains("config.txt"),
+            "reason names the file: {reason}"
+        );
     }
 
     /// Defect 2 (worktree isolation): with no git baseline the external engine
