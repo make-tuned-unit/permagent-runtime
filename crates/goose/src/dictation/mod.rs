@@ -32,17 +32,22 @@ pub const MEETING_DICTATION_FEATURE: crate::agents::self_knowledge::FeatureDescr
              then a background pass rewrites it into structured sections while keeping the \
              user's own words verbatim under `## Your notes` and the full transcript under \
              `## Transcript`, and files each action item stated in the meeting as a card on the \
-             project's kanban board. A recording interrupted by a crash or quit is offered back \
-             for saving the next time the app opens",
+             project's kanban board. That write-up pass runs on the configured model: the full \
+             transcript and the user's notepad text are sent to it, and it is a cloud model \
+             unless a local one is configured. A recording interrupted by a crash or quit is \
+             offered back for saving the next time the app opens",
         why_it_matters:
             "When the user wants a call captured, point them at the Record button, and tell them \
              to jot fragments in the notepad while it runs — what they type is what the write-up \
              will argue, which is the difference between notes about them and notes for them. Be \
              accurate about coverage: their microphone is always recorded, the other side only \
              if they tick the box (macOS asks for Screen Recording the first time). Every word \
-             is transcribed on this machine. The saved note lands in the project's Brain like \
-             any other note, so it is searchable afterwards, and its action items are already on \
-             the board — no need to offer to re-read the transcript for them",
+             is transcribed on this machine. The write-up is not — on save the full transcript \
+             and their notepad go to the configured model, which is a cloud model unless they \
+             have set a local one; say so if they ask whether the meeting stayed private. The \
+             saved note lands in the project's Brain like any other note, so it is searchable \
+             afterwards, and its action items are already on the board — no need to offer to \
+             re-read the transcript for them",
         state_source: crate::agents::self_knowledge::StateSource::Static,
         teaching: &[
             crate::agents::self_knowledge::TeachingStep {
