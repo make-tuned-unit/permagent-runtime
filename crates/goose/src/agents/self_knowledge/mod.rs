@@ -1694,11 +1694,19 @@ mod tests {
     // `steward_scan_enabled` is the git-health sweep's config flag
     // (~/.permagent/config.yaml), named in the git_steward descriptor so the
     // agent can tell the user how to turn the sweep on — a setting, not a tool.
+    // `recipe_author` is an EXTENSION name (a bundle of tools), not a tool. It
+    // is named in the Scheduler descriptor because it is one of the two entries
+    // in `scheduler::HEADLESS_DENYLIST` — a headless run withholds exactly
+    // `orchestrator` and `recipe_author` unless the recipe declares them, and
+    // the agent can only state that guardrail correctly by naming them. Its
+    // sibling `orchestrator` needs no entry only because it happens to be a
+    // single word, so the tool-shaped-token scan never sees it.
     const NON_TOOL_PROSE_TOKENS: &[&str] = &[
         "sub_recipes",
         "worker_persona",
         "strix_llm",
         "steward_scan_enabled",
+        "recipe_author",
     ];
 
     /// Every tool name that exists in the runtime: the statically-derived

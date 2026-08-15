@@ -113,7 +113,9 @@ pub const GOVERNANCE_SURFACE_FEATURE: crate::agents::self_knowledge::FeatureDesc
              the cost ledger, a running total, and the optional session and per-task budget \
              ceilings that gate through the Decision Inbox), the Sovereignty section (the \
              on/off data-boundary 'pull the cable' control plus the append-only egress audit \
-             log — every cloud call that was allowed or blocked, when, and of what kind), the \
+             log — every cloud INFERENCE call that was allowed or blocked, when, and of what \
+             kind; the Guard's code scanner and analytics egress are not in it, so a quiet log \
+             is not proof nothing left), the \
              Models section (the active primary model, the worker roster each role can dispatch \
              to, and the Guard's security-sweep toggle), and the Autonomy section (the \
              pending-approvals strip and the tool-approval trust level itself)",
