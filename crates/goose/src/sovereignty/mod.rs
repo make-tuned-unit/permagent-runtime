@@ -274,8 +274,10 @@ pub enum EgressKind {
     Embedding,
     /// A product-analytics telemetry POST (e.g. the session-started event).
     Telemetry,
+    /// An agentic code scanner driving its own cloud model over the user's source.
+    CodeScan,
     /// A crash-report upload (no ambient path exists today; a future one must
-    /// flow through the same boundary — see [`guard_outbound_telemetry`]).
+    /// flow through the same boundary — see [`guard_outbound_egress`]).
     CrashReport,
 }
 
@@ -285,6 +287,7 @@ impl EgressKind {
             EgressKind::Inference => "inference",
             EgressKind::Embedding => "embedding",
             EgressKind::Telemetry => "telemetry",
+            EgressKind::CodeScan => "code_scan",
             EgressKind::CrashReport => "crash_report",
         }
     }
@@ -460,29 +463,29 @@ pub async fn recent_egress(limit: i64) -> anyhow::Result<Vec<EgressLogEntry>> {
     recent_egress_rows(&pool, limit).await
 }
 
-// ── Non-inference outbound egress (telemetry / crash-report uploads) ─────────
+// ── Non-inference outbound egress ───────────────────────────────────────────
 
-/// Pure policy for a non-inference outbound POST (telemetry or a crash-report
-/// upload) under the sovereign boundary (#327). Given whether the process is in
-/// sovereign mode, decide whether the caller MAY send, and build the audit
-/// record to write either way. Under sovereign mode the egress is
-/// **hard-suppressed** — `allowed = false` and `record.blocked = true` — so
-/// telemetry and (any future) crash-report upload fail closed exactly like
-/// cloud inference. Split out from [`guard_outbound_telemetry`] so the decision
-/// is unit-testable without touching process-global state.
+/// Pure policy for non-inference outbound egress (telemetry, crash-report
+/// upload, analytics fetch, or code scan) under the sovereign boundary (#327).
+/// Given whether the process is in sovereign mode, decide whether the caller
+/// MAY send, and build the audit record to write either way. Under sovereign
+/// mode the egress is **hard-suppressed** — `allowed = false` and
+/// `record.blocked = true` — so non-inference egress fails closed exactly like
+/// cloud inference. Split out from [`guard_outbound_egress`] so the decision is
+/// unit-testable without touching process-global state.
 ///
-/// `destination` is the endpoint URL (recorded as the `provider`), `event` a
-/// short label (recorded as the `model`) — both non-sensitive; the audit hashes
-/// the destination rather than any payload, so no user content is stored.
-pub fn plan_telemetry_egress(
+/// `destination` is the endpoint URL or model (recorded as the `provider`),
+/// `label` a short label (recorded as the `model`); the audit hashes the
+/// destination rather than any payload, so no request content is stored.
+pub fn plan_outbound_egress(
     kind: EgressKind,
     destination: &str,
-    event: &str,
+    label: &str,
     sovereign: bool,
 ) -> (bool, EgressRecord) {
     let rec = EgressRecord {
         provider: destination.to_string(),
-        model: event.to_string(),
+        model: label.to_string(),
         session_id: "-".to_string(),
         project_id: None,
         kind,
@@ -493,19 +496,25 @@ pub fn plan_telemetry_egress(
     (!sovereign, rec)
 }
 
-/// Guard an outbound telemetry / crash-report POST under the global sovereign
-/// boundary and record it to the append-only egress audit log (#327).
+/// Guard non-inference outbound egress (telemetry, crash-report upload,
+/// analytics fetch, or code scan) under the global sovereign boundary and
+/// record it to the append-only egress audit log (#327).
 ///
-/// Returns `true` if the caller may send (not sovereign), `false` if it must
-/// **hard-suppress** the POST (sovereign mode on or audit write failure).
+/// `destination` maps to the record's `provider` column; `label` maps to its
+/// `model` column. Returns `true` if the caller may send (not sovereign),
+/// `false` if it must **hard-suppress** the egress (sovereign mode on or audit
+/// write failure).
 /// Either way an audit row is attempted (`blocked = sovereign`), bringing
-/// telemetry egress under the same no-unlogged-egress boundary as inference.
-pub async fn guard_outbound_telemetry(kind: EgressKind, destination: &str, event: &str) -> bool {
+/// all outbound egress under the same no-unlogged-egress boundary as inference.
+pub async fn guard_outbound_egress(kind: EgressKind, destination: &str, label: &str) -> bool {
     let sovereign = global_sovereign_mode();
-    let (allowed, rec) = plan_telemetry_egress(kind, destination, event, sovereign);
-    // `record_egress` logs failures loudly. Suppress rather than crash the
-    // caller, but never permit an unaudited outbound POST.
-    allowed && record_egress(rec).await.is_ok()
+    let (allowed, rec) = plan_outbound_egress(kind, destination, label, sovereign);
+    // Recorded BEFORE the `allowed` test rather than `&&`-ed after it: a
+    // blocked call that writes no row is half the audit missing, and "blocked
+    // or allowed" is the whole promise. `record_egress` logs failures loudly;
+    // suppress rather than crash the caller, but never permit unaudited egress.
+    let audited = record_egress(rec).await.is_ok();
+    allowed && audited
 }
 
 #[cfg(test)]
@@ -687,7 +696,7 @@ mod tests {
         let pool = mem_pool().await;
 
         // Sovereign context: a crash-report upload must be suppressed + audited.
-        let (allowed, rec) = plan_telemetry_egress(
+        let (allowed, rec) = plan_outbound_egress(
             EgressKind::CrashReport,
             "https://glitchtip.example/api/store/",
             "crash_report",
@@ -702,7 +711,7 @@ mod tests {
         record_egress_row(&pool, &rec).await.unwrap();
 
         // Non-sovereign context: a telemetry POST is allowed + audited (allowed).
-        let (allowed2, rec2) = plan_telemetry_egress(
+        let (allowed2, rec2) = plan_outbound_egress(
             EgressKind::Telemetry,
             "https://us.i.posthog.com/capture/",
             "session_started",
@@ -719,5 +728,42 @@ mod tests {
         assert!(crash.blocked, "the sovereign-suppressed upload is blocked");
         let telem = rows.iter().find(|r| r.kind == "telemetry").unwrap();
         assert!(!telem.blocked, "the allowed telemetry POST is not blocked");
+    }
+
+    /// The Guard's scanner drives its OWN cloud model over the user's whole
+    /// source tree. That path used to gate on the sovereign flag and record
+    /// nothing, so a scan was egress the audit log could not see; both
+    /// outcomes must now land in it.
+    #[tokio::test]
+    async fn a_code_scan_is_audited_whether_blocked_or_allowed() {
+        let pool = mem_pool().await;
+        assert_eq!(EgressKind::CodeScan.as_str(), "code_scan");
+
+        let (allowed, rec) = plan_outbound_egress(
+            EgressKind::CodeScan,
+            "anthropic/claude-haiku-4-5-20251001",
+            "sovereign-project",
+            /* sovereign */ true,
+        );
+        assert!(!allowed, "sovereign mode must hard-suppress the scan");
+        assert!(rec.blocked, "the suppressed scan must be recorded blocked");
+        assert!(rec.prompt.is_none(), "no scanned source is stored");
+        record_egress_row(&pool, &rec).await.unwrap();
+
+        let (allowed, rec) = plan_outbound_egress(
+            EgressKind::CodeScan,
+            "anthropic/claude-haiku-4-5-20251001",
+            "allowed-project",
+            /* sovereign */ false,
+        );
+        assert!(allowed, "with sovereign mode off the scan is allowed");
+        assert!(!rec.blocked, "an allowed scan is recorded not-blocked");
+        record_egress_row(&pool, &rec).await.unwrap();
+
+        let rows = recent_egress_rows(&pool, 10).await.unwrap();
+        let scans: Vec<_> = rows.iter().filter(|row| row.kind == "code_scan").collect();
+        assert_eq!(scans.len(), 2, "both scan decisions were audited");
+        assert!(scans.iter().any(|row| row.blocked));
+        assert!(scans.iter().any(|row| !row.blocked));
     }
 }

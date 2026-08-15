@@ -21,14 +21,11 @@
 //!
 //! ## Sovereignty
 //!
-//! Any fetch here is cloud egress. The egress *audit log* currently
-//! intercepts LLM provider calls only (`SovereignGuardProvider`), so this
-//! module does not flow through an audited path — instead it fails closed:
-//! when global sovereign mode is on, [`fetch_stats`] refuses before opening a
-//! connection. Routing non-LLM HTTP through the egress audit log is a flagged
-//! follow-up (see the PR / sovereignty-router direction).
+//! Any fetch here is cloud egress. [`fetch_stats`] routes it through the
+//! append-only egress audit and fails closed before opening a connection when
+//! sovereign mode is on or the audit is unavailable.
 
-use permagent::sovereignty;
+use permagent::sovereignty::{self, EgressKind};
 use serde::{Deserialize, Serialize};
 
 /// Key inside `projects.metadata_json` holding the [`AnalyticsConnection`].
@@ -51,6 +48,19 @@ pub enum AnalyticsProvider {
     PlausibleV2,
     /// GoatCounter v0 API.
     Goatcounter,
+}
+
+impl AnalyticsProvider {
+    /// Stable name for the egress audit log. Deliberately not the serde
+    /// representation: a row written today must still read the same after a
+    /// wire-format rename.
+    fn label(self) -> &'static str {
+        match self {
+            AnalyticsProvider::Plausible => "plausible",
+            AnalyticsProvider::PlausibleV2 => "plausible_v2",
+            AnalyticsProvider::Goatcounter => "goatcounter",
+        }
+    }
 }
 
 /// Per-project connection config — the non-secret part, stored in the
@@ -129,6 +139,8 @@ pub struct AnalyticsStats {
 pub enum AnalyticsError {
     #[error("sovereign mode is on — cloud analytics fetch refused (no egress)")]
     SovereignBlocked,
+    #[error("egress audit unavailable — cloud analytics fetch refused (no unaudited egress)")]
+    AuditUnavailable,
     #[error("invalid analytics connection: {0}")]
     InvalidConfig(String),
     #[error("analytics provider returned HTTP {status}: {detail}")]
@@ -259,20 +271,31 @@ fn goatcounter_range(period: StatsPeriod, now: chrono::DateTime<chrono::Utc>) ->
 
 /// Fetch visitors/pageviews for the period from the connected provider.
 ///
-/// Fails closed under global sovereign mode BEFORE any connection is opened —
-/// analytics HTTP is cloud egress and (unlike LLM calls) does not yet flow
-/// through the audited egress path.
+/// Audits the canonical destination and fails closed before opening a
+/// connection when sovereign mode is on or the audit is unavailable.
 pub async fn fetch_stats(
     client: &reqwest::Client,
     conn: &AnalyticsConnection,
     api_key: &str,
     period: StatsPeriod,
 ) -> Result<AnalyticsStats, AnalyticsError> {
-    if sovereignty::global_sovereign_mode() {
-        return Err(AnalyticsError::SovereignBlocked);
-    }
+    // Validation first — it is pure, and it means the audit row names a
+    // canonical destination rather than whatever the user typed, and that no
+    // row is written for a request that was never buildable.
     validate_connection(conn)?;
     let base = normalize_base_url(&conn.base_url)?;
+    if !sovereignty::guard_outbound_egress(EgressKind::Telemetry, &base, conn.provider.label())
+        .await
+    {
+        // The guard refuses for two different reasons and they must not be
+        // conflated: reporting an unwritable audit as a sovereignty block
+        // would send the user to a toggle that is already off.
+        return if sovereignty::global_sovereign_mode() {
+            Err(AnalyticsError::SovereignBlocked)
+        } else {
+            Err(AnalyticsError::AuditUnavailable)
+        };
+    }
 
     let response = match conn.provider {
         AnalyticsProvider::Plausible => {
