@@ -36,10 +36,10 @@
 //!   progress and pass untouched. This is the escalation TRIGGER the
 //!   verifier-driven controller ([`crate::cost_router::VerifyEscalation`]) acts
 //!   on to climb to a stronger model.
-//! - **Anti-gaming flag** — a `verify` PASS earned by editing ONLY the test
-//!   files it runs (weakening/deleting one's own tests) is blocked, not banked.
-//!   Reuses the edit stream + [`is_test_path`]; precise by design (a co-edited
-//!   source file clears it, so legitimate TDD is not flagged).
+//! - **Anti-gaming flag** — after a `verify` PASS, reads the working-tree diff
+//!   and flags when every change lands in a test file or an inline
+//!   `#[cfg(test)]`/`describe(` region (so a shell edit cannot slip past). A
+//!   co-changed source file still clears it, so legitimate TDD is not flagged.
 //! - **wait/poll/watch tools are EXEMPT from S1–S3** — a legit long-poll must
 //!   not be killed (a known real-world false-positive).
 //!
@@ -67,6 +67,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
@@ -125,8 +126,9 @@ pub const SELF_KNOWLEDGE_FEATURE: FeatureDescriptor = FeatureDescriptor {
          and a bounded number of climbs, and never to a model you did not configure. When nothing \
          stronger is configured, the budget is spent, or the climb limit is reached — or for any \
          other stuck signal — it escalates to the Decision Inbox and stops the run, always leaving \
-         your work in place. It also refuses a reward-hack: a verify made to pass by editing only \
-         the tests it runs is blocked, not accepted as proof of work",
+         your work in place. It also refuses a reward-hack: after a verify passes it reads your \
+         actual working-tree diff and blocks the pass when every change lands in a test file or an \
+         inline test block, whatever tool made the edit",
     why_it_matters:
         "It is the safety floor that guarantees you never get trapped in a loop the user can't \
          get out of: repeated verify failures are first retried on a stronger model within budget, \
@@ -253,11 +255,10 @@ pub fn is_verify(name: &str) -> bool {
     base_tool_name(name) == "verify"
 }
 
-/// Whether an edited path looks like a TEST file — the files `verify` runs.
-/// Used by the anti-gaming flag: a `verify` pass earned by editing only these is
-/// not a real pass. Multi-language and conservative — it matches separate test
-/// files and test directories, NOT inline unit-test modules (a same-file
-/// `#[cfg(test)]` block), which path classification cannot see.
+/// Whether a path looks like a TEST file — the files `verify` runs. The first of
+/// two anti-gaming classifiers, matching separate test files and test
+/// directories. A same-file `#[cfg(test)]` block is invisible to any path rule;
+/// [`test_regions`] is the classifier that catches those.
 pub fn is_test_path(path: &str) -> bool {
     let p = path.replace('\\', "/").to_ascii_lowercase();
     // `rsplit` always yields at least one element, so the default is unreachable.
@@ -290,15 +291,6 @@ pub fn is_test_path(path: &str) -> bool {
         || file.ends_with("test.java")
 }
 
-/// Best-effort extraction of the file path an edit/write call targeted, from the
-/// argument keys the edit tools use. A mutating call with no recognizable path
-/// (e.g. a `shell` command) yields `None`.
-fn edited_path(args: &Value) -> Option<&str> {
-    ["path", "file_path", "file", "filename"]
-        .iter()
-        .find_map(|key| args.get(*key).and_then(Value::as_str))
-}
-
 /// Finding id for the anti-gaming flag (its own namespace — it is not a stall
 /// signal).
 pub const VERIFY_GAMING_FINDING: &str = "VERIFY-GAMING";
@@ -306,50 +298,188 @@ pub const VERIFY_GAMING_FINDING: &str = "VERIFY-GAMING";
 /// Finding id for a spend-ceiling deny (gate or hard stop).
 pub const BUDGET_GATE_FINDING: &str = "BUDGET-GATE";
 
-/// Detect the test-gaming reward-hack: the most recent `verify` PASSED, and every
-/// file edited since the previous `verify` was a TEST file — the pass was earned
-/// by changing the tests `verify` runs, not by fixing the code. Returns the
-/// offending test paths (chronological).
-///
-/// Precise on purpose, to keep false-positives low (legitimate TDD edits a test
-/// AND the code under test): if ANY non-test source file was edited in that span
-/// the pass is treated as a real fix and NOT flagged; and a pass with no edits at
-/// all is never flagged. It cannot see edits to inline `#[cfg(test)]` modules
-/// (same file as the source) — a known limitation of path-based classification.
-fn detect_test_gaming(window: &[ToolEvent]) -> Option<Vec<String>> {
-    let last_verify = window.iter().rposition(|e| is_verify(&e.name))?;
-    if window[last_verify].is_error {
-        return None; // only a PASS can be gamed
+/// The most recent `verify` PASSED and at least one mutating call happened
+/// since the previous `verify`. Deliberately blind to WHICH files were
+/// touched — tool arguments cannot see a `sed -i` or an inline test block, so
+/// classification is left to the working-tree diff.
+pub fn verify_pass_after_edits(window: &[ToolEvent]) -> bool {
+    let Some(last) = window.iter().rposition(|e| is_verify(&e.name)) else {
+        return false;
+    };
+    if window[last].is_error {
+        return false;
     }
-    let mut test_paths = Vec::new();
-    for e in window[..last_verify].iter().rev() {
-        if is_verify(&e.name) {
-            break; // stop at the previous verify — only this fix round counts
-        }
-        if !e.is_mutating {
+    window[..last]
+        .iter()
+        .rev()
+        .take_while(|e| !is_verify(&e.name))
+        .any(|e| e.is_mutating)
+}
+
+/// Classify a `git diff --unified=0 HEAD` against the working tree: `Some(paths)`
+/// when EVERY change lands in a test file or inside an inline test region of a
+/// source file, `None` when any change touches production code (a real fix) or
+/// cannot be classified. `read_post_image` returns the CURRENT contents of a
+/// repo-relative path (the diff's post-image), or `None` if it is unreadable.
+pub fn diff_touches_only_tests(
+    diff: &str,
+    untracked: &[String],
+    read_post_image: &dyn Fn(&str) -> Option<String>,
+) -> Option<Vec<String>> {
+    let mut recorded = Vec::new();
+    for f in parse_diff(diff) {
+        // A deletion has no post-image to classify: it counts only if the file
+        // that went away was itself a test.
+        if f.new == "/dev/null" {
+            if !is_test_path(&f.old) {
+                return None;
+            }
+            recorded.push(f.old);
             continue;
         }
-        match edited_path(&e.args) {
-            Some(p) if is_test_path(p) => test_paths.push(p.to_string()),
-            // A non-test source edit → plausibly a real fix; do not flag.
-            Some(_) => return None,
-            // A mutating call with no path (e.g. a shell command) → cannot
-            // classify; ignore it rather than clear or trip the flag.
-            None => {}
+        if is_test_path(&f.new) {
+            recorded.push(f.new);
+            continue;
+        }
+        // A source file: every changed line must land inside an inline test
+        // region. An unreadable file, or an entry carrying no hunks at all (a
+        // mode or rename change), is unclassifiable — never flag what we cannot
+        // see.
+        let source = read_post_image(&f.new)?;
+        let regions = test_regions(&source);
+        if f.lines.is_empty()
+            || !f
+                .lines
+                .iter()
+                .all(|ln| regions.iter().any(|&(s, e)| (s..=e).contains(ln)))
+        {
+            return None;
+        }
+        recorded.push(format!("{} (inline tests)", f.new));
+    }
+    // `git diff` cannot see an untracked file, so a new SOURCE file would look
+    // like no change at all. It is a real fix and must clear the flag.
+    for p in untracked {
+        if !is_test_path(p) {
+            return None;
+        }
+        recorded.push(p.clone());
+    }
+    (!recorded.is_empty()).then_some(recorded)
+}
+
+/// One file's entry in a diff: its pre/post paths and the NEW-side line numbers
+/// its hunks touched.
+struct DiffFile {
+    old: String,
+    new: String,
+    lines: Vec<usize>,
+}
+
+/// Split a `git diff --unified=0` into per-file changed-line sets. Path headers
+/// are read only BEFORE a file's first hunk: a removed `-- sql comment` renders
+/// as `--- sql comment` in the hunk body and would otherwise be taken for one.
+fn parse_diff(diff: &str) -> Vec<DiffFile> {
+    let mut files: Vec<DiffFile> = Vec::new();
+    let mut in_hunks = false;
+    for line in diff.lines() {
+        if line.starts_with("diff --git ") {
+            files.push(DiffFile {
+                old: String::new(),
+                new: String::new(),
+                lines: Vec::new(),
+            });
+            in_hunks = false;
+        }
+        let Some(f) = files.last_mut() else { continue };
+        if !in_hunks {
+            if let Some(rest) = line.strip_prefix("--- ") {
+                f.old = diff_path(rest).to_string();
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("+++ ") {
+                f.new = diff_path(rest).to_string();
+                continue;
+            }
+        }
+        if line.starts_with("@@ ") {
+            if let Some((a, b)) = hunk_new_range(line) {
+                in_hunks = true;
+                f.lines.extend(a..=b);
+            }
         }
     }
-    if test_paths.is_empty() {
-        return None;
+    files
+}
+
+/// Strip the `a/`+`b/` prefix and the optional trailing timestamp from a `---`
+/// or `+++` header field.
+fn diff_path(field: &str) -> &str {
+    let path = field.split('\t').next().unwrap_or(field);
+    path.strip_prefix("a/")
+        .or_else(|| path.strip_prefix("b/"))
+        .unwrap_or(path)
+}
+
+/// The NEW-side line span of an `@@ -a,b +c,d @@` header. A count of `0` (a pure
+/// deletion) anchors on the line the removal followed, so a deleted assertion is
+/// still located inside its region.
+fn hunk_new_range(header: &str) -> Option<(usize, usize)> {
+    let rest = header.split_once('+')?.1;
+    // `split` always yields at least one element, so the default is unreachable.
+    let field = rest.split([' ', '@']).next().unwrap_or(rest);
+    let (a, b): (usize, usize) = match field.split_once(',') {
+        Some((a, b)) => (a.parse().ok()?, b.parse().ok()?),
+        None => (field.parse().ok()?, 1),
+    };
+    if b == 0 {
+        let n = a.max(1);
+        Some((n, n))
+    } else {
+        Some((a, a + b - 1))
     }
-    test_paths.reverse();
-    Some(test_paths)
+}
+
+/// 1-based inclusive line ranges of a source file's INLINE test regions: a Rust
+/// `#[cfg(test)]` item and a JS/TS `describe(`/`it(`/`test(` block. The end is
+/// found by indentation, not brace counting, because both languages are
+/// formatter-enforced here (`cargo fmt`, prettier) and brace counting would
+/// have to lex strings and comments to be right. A region with no matching
+/// closing line runs to end of file — the conventional position for a Rust
+/// `#[cfg(test)] mod tests`.
+pub fn test_regions(source: &str) -> Vec<(usize, usize)> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut out = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let trim = line.trim_start();
+        let indent = line.len() - trim.len();
+        let rust = trim.starts_with("#[cfg(test)]");
+        let js =
+            trim.starts_with("describe(") || trim.starts_with("it(") || trim.starts_with("test(");
+        if !rust && !js {
+            continue;
+        }
+        let mut end = lines.len();
+        for (j, later) in lines.iter().enumerate().skip(i + 1) {
+            let t = later.trim_start();
+            if later.len() - t.len() != indent {
+                continue;
+            }
+            if (rust && t == "}") || (!rust && t.starts_with("})")) {
+                end = j + 1;
+                break;
+            }
+        }
+        out.push((i + 1, end));
+    }
+    out
 }
 
 /// The actionable block message for the anti-gaming flag.
 fn test_gaming_message(test_paths: &[String]) -> String {
     format!(
-        "BLOCKED by the runaway-loop guard: `verify` passed, but the only files you edited \
-         to get there are its TESTS ({}). A check made to pass by changing the tests it runs \
+        "BLOCKED by the runaway-loop guard: `verify` passed, but every change in the working \
+         tree lands in its TESTS ({}). A check made to pass by changing the tests it runs \
          is not a real pass — restore those tests and make the CODE pass them, or explain why \
          the test itself was wrong. This pass will not be accepted as proof of work.",
         test_paths.join(", ")
@@ -740,6 +870,9 @@ pub struct ProgressMonitor {
     /// Sessions already spend-gated this run (#938) — once the budget gate is
     /// raised + the goal parked, don't re-raise it every turn.
     budget_gated: Arc<Mutex<HashSet<String>>>,
+    /// Directory the anti-gaming diff runs in. `None` in production (resolved
+    /// from the session); tests pin it at a scratch repo.
+    diff_dir: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for ProgressMonitor {
@@ -754,11 +887,70 @@ impl ProgressMonitor {
     /// Enabled-by-default monitor. Pass the session manager in production so L3
     /// can reach the pool; pass `None` in tests.
     pub fn new(session_manager: Option<Arc<SessionManager>>) -> Self {
+        Self::build(session_manager, None)
+    }
+
+    /// Pin the directory the anti-gaming diff runs in. Production resolves it
+    /// from the session; tests point it at a scratch repo.
+    pub fn with_diff_dir(session_manager: Option<Arc<SessionManager>>, diff_dir: PathBuf) -> Self {
+        Self::build(session_manager, Some(diff_dir))
+    }
+
+    fn build(session_manager: Option<Arc<SessionManager>>, diff_dir: Option<PathBuf>) -> Self {
         Self {
             session_manager,
             escalated: Arc::new(Mutex::new(HashSet::new())),
             budget_gated: Arc::new(Mutex::new(HashSet::new())),
+            diff_dir,
         }
+    }
+
+    /// Read-only `git` in `dir`, stdout on success. `None` on any failure — git
+    /// missing, not a repo, non-zero exit.
+    async fn git_stdout(dir: &Path, args: &[&str]) -> Option<String> {
+        let out = tokio::process::Command::new("git")
+            .arg("--no-optional-locks")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .await
+            .ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// Classify the session's working-tree changes after a `verify` PASS. Scoped
+    /// to what is UNCOMMITTED, so work the agent already committed is invisible
+    /// here — that can only under-flag, never invent one. Fail-open: any error
+    /// (no session, no git, not a repo) yields `None`, so a fault never
+    /// fabricates a block.
+    async fn test_only_changes(&self, session_id: &str) -> Option<Vec<String>> {
+        let dir = match &self.diff_dir {
+            Some(d) => d.clone(),
+            None => {
+                self.session_manager
+                    .as_ref()?
+                    .get_session(session_id, false)
+                    .await
+                    .ok()?
+                    .working_dir
+            }
+        };
+        let diff = Self::git_stdout(
+            &dir,
+            &["diff", "--unified=0", "--no-color", "--no-ext-diff", "HEAD"],
+        )
+        .await?;
+        let untracked: Vec<String> =
+            Self::git_stdout(&dir, &["ls-files", "--others", "--exclude-standard"])
+                .await?
+                .lines()
+                .map(str::to_string)
+                .collect();
+        diff_touches_only_tests(&diff, &untracked, &|path| {
+            std::fs::read_to_string(dir.join(path)).ok()
+        })
     }
 
     /// Clear per-run state (called on retry reset).
@@ -1062,11 +1254,14 @@ impl ToolInspector for ProgressMonitor {
         let window = reconstruct_window(messages);
         let mut results = Vec::new();
 
-        // Anti-gaming (#3): a `verify` PASS earned by editing ONLY the tests it
-        // runs is a reward-hack, not a real pass. Detected over the completed
-        // window and surfaced as a block on the model's next action so it cannot
-        // bank the gamed pass. Non-terminal — restoring the tests clears it.
-        let gaming_paths = detect_test_gaming(&window);
+        // Anti-gaming: a `verify` PASS whose working-tree diff touches only tests
+        // is a reward-hack, not a real pass. Surfaced as a block on the model's
+        // next action so it cannot bank the gamed pass.
+        let gaming_paths = if verify_pass_after_edits(&window) {
+            self.test_only_changes(session_id).await
+        } else {
+            None
+        };
         let mut gaming_flagged = false;
 
         for req in tool_requests {
@@ -1571,55 +1766,186 @@ mod tests {
     }
 
     #[test]
-    fn gaming_flagged_when_pass_follows_only_test_edits() {
-        // FAIL, edit(test), PASS — the pass was earned by editing only a test.
-        let win = vec![verr(0xF), edit("tests/math_tests.rs"), vok(0xA)];
-        let flagged = detect_test_gaming(&win).expect("gaming must be flagged");
-        assert_eq!(flagged, vec!["tests/math_tests.rs".to_string()]);
+    fn verify_pass_after_edits_gate() {
+        assert!(
+            verify_pass_after_edits(&[verr(0xF), edit("tests/x.rs"), vok(0xA)]),
+            "pass after a mutating edit must gate open"
+        );
+        assert!(
+            !verify_pass_after_edits(&[vok(0xA)]),
+            "a clean pass with no edits must not gate"
+        );
+        assert!(
+            !verify_pass_after_edits(&[edit("tests/x.rs"), verr(0xF)]),
+            "a failing verify must not gate"
+        );
+        // The sed hole: mutating shell with no path argument still opens the gate.
+        let shell = ev(
+            "developer__shell",
+            json!({"command": "sed -i s/false/true/ tests/math_tests.rs"}),
+            0,
+            false,
+        );
+        assert!(
+            verify_pass_after_edits(&[verr(0xF), shell, vok(0xA)]),
+            "a path-less shell mutate must still open the gate"
+        );
     }
 
+    const MATH_RS: &str = "\
+pub fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
     #[test]
-    fn no_gaming_when_source_also_edited() {
-        // A co-edited SOURCE file → plausibly a real fix (legit TDD) → not flagged.
-        let win = vec![
-            verr(0xF),
-            edit("tests/math_tests.rs"),
-            edit("src/math.rs"),
-            vok(0xA),
-        ];
+    fn add_works() {
+        assert_eq!(add(1, 2), 3);
+    }
+}
+";
+
+    #[test]
+    fn inline_cfg_test_weakening_is_flagged() {
+        // Line 11 is inside `#[cfg(test)] mod tests` (assert_eq).
+        let diff = "\
+diff --git a/src/math.rs b/src/math.rs
+--- a/src/math.rs
++++ b/src/math.rs
+@@ -11 +11 @@
+-        assert_eq!(add(1, 2), 3);
++        assert_eq!(add(1, 2), 99);
+";
+        let flagged = diff_touches_only_tests(diff, &[], &|p| {
+            assert_eq!(p, "src/math.rs");
+            Some(MATH_RS.to_string())
+        })
+        .expect("inline test-only edit must be flagged");
         assert!(
-            detect_test_gaming(&win).is_none(),
-            "a co-edited source file must clear the flag"
+            flagged.iter().any(|p| p.contains("src/math.rs")),
+            "recorded path must mention src/math.rs, got: {flagged:?}"
         );
     }
 
     #[test]
-    fn no_gaming_on_a_clean_pass_or_a_failure() {
-        // A pass with no edits at all is never gaming.
-        assert!(detect_test_gaming(&[vok(0xA)]).is_none());
-        // A FAILING verify is never gaming (only a pass can be gamed).
-        let win = vec![edit("tests/x.rs"), verr(0xF)];
-        assert!(detect_test_gaming(&win).is_none());
+    fn shell_sed_on_test_file_is_flagged() {
+        let diff = "\
+diff --git a/tests/math_tests.rs b/tests/math_tests.rs
+--- a/tests/math_tests.rs
++++ b/tests/math_tests.rs
+@@ -1 +1 @@
+-assert!(false);
++assert!(true);
+";
+        let flagged = diff_touches_only_tests(diff, &[], &|_| None)
+            .expect("test-file-only diff must be flagged");
+        assert_eq!(flagged, vec!["tests/math_tests.rs".to_string()]);
     }
 
     #[test]
-    fn gaming_scoped_to_edits_since_the_previous_verify() {
-        // Only edits since the PREVIOUS verify count. A source edit belonging to
-        // an EARLIER round must not clear a later test-only gamed pass.
-        let win = vec![
-            edit("src/math.rs"), // earlier round, before the previous verify
-            verr(0xF),
-            edit("tests/x_tests.rs"),
-            vok(0xA),
-        ];
-        let flagged = detect_test_gaming(&win).expect("must flag the latest round only");
-        assert_eq!(flagged, vec!["tests/x_tests.rs".to_string()]);
+    fn production_fix_alongside_test_is_not_flagged() {
+        // Line 2 of MATH_RS is production (`a + b`), above the test module.
+        let diff = "\
+diff --git a/src/math.rs b/src/math.rs
+--- a/src/math.rs
++++ b/src/math.rs
+@@ -2 +2 @@
+-    a + b
++    a.wrapping_add(b)
+diff --git a/tests/math_tests.rs b/tests/math_tests.rs
+--- a/tests/math_tests.rs
++++ b/tests/math_tests.rs
+@@ -1 +1 @@
+-old
++new
+";
+        assert!(
+            diff_touches_only_tests(diff, &[], &|p| {
+                if p == "src/math.rs" {
+                    Some(MATH_RS.to_string())
+                } else {
+                    None
+                }
+            })
+            .is_none(),
+            "a co-changed production line must clear the flag"
+        );
+    }
+
+    #[test]
+    fn untracked_new_source_clears_the_flag() {
+        let diff = "\
+diff --git a/tests/math_tests.rs b/tests/math_tests.rs
+--- a/tests/math_tests.rs
++++ b/tests/math_tests.rs
+@@ -1 +1 @@
+-old
++new
+";
+        let untracked = vec!["src/new_fix.rs".to_string()];
+        assert!(
+            diff_touches_only_tests(diff, &untracked, &|_| None).is_none(),
+            "an untracked new source file must clear the flag"
+        );
+    }
+
+    #[test]
+    fn test_regions_finds_rust_cfg_test() {
+        let regions = test_regions(MATH_RS);
+        assert!(!regions.is_empty(), "must find the #[cfg(test)] region");
+        let (start, end) = regions[0];
+        // Line 1–3 are production; the region opens at `#[cfg(test)]` (line 5).
+        assert!(start >= 5, "region must start at #[cfg(test)], got {start}");
+        assert!(end >= start);
+        assert!(
+            !(1..=3).any(|ln| ln >= start && ln <= end),
+            "lines above the test module must be excluded"
+        );
+        assert!(
+            (start..=end).contains(&11),
+            "the assert_eq line must fall inside the region"
+        );
     }
 
     #[tokio::test]
     async fn inspector_flags_a_test_gaming_pass() {
         use rmcp::model::{CallToolResult, Content};
-        let monitor = ProgressMonitor::new(None);
+        use std::process::Command;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // A real scratch repo — the check now reads git, not tool arguments.
+        // Pinned config so it works on any machine's global git settings.
+        let git = |args: &[&str]| {
+            assert!(Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success());
+        };
+        git(&["-c", "init.defaultBranch=main", "init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        std::fs::create_dir_all(root.join("tests")).unwrap();
+        std::fs::write(
+            root.join("tests/math_tests.rs"),
+            "fn t() { assert!(false); }\n",
+        )
+        .unwrap();
+        git(&["add", "tests/math_tests.rs"]);
+        git(&["commit", "--no-gpg-sign", "-qm", "init"]);
+        // Gaming edit: weaken the test in the working tree.
+        std::fs::write(
+            root.join("tests/math_tests.rs"),
+            "fn t() { assert!(true); }\n",
+        )
+        .unwrap();
+
+        let monitor = ProgressMonitor::with_diff_dir(None, root.to_path_buf());
 
         // Conversation: verify FAILS → edit a TEST file → verify PASSES.
         let mut messages = Vec::new();
