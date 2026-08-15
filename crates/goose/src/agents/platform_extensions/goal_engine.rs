@@ -93,9 +93,8 @@ pub(crate) fn worker_git_env(hooks_dir: Option<&PathBuf>) -> Vec<(String, String
 pub enum GoalOutcome {
     /// Worker finished cleanly; the work product is in the working dir.
     /// Carries deterministic verification evidence (commit SHAs, diffstat,
-    /// push target, worker summary) when the engine can produce it — the
-    /// external-CLI worktree path always can; the in-process subagent yields
-    /// `None` (no worktree / push model).
+    /// push target, worker summary); every engine runs in a worktree and
+    /// produces it.
     Success(Option<GoalEvidence>),
     /// Retriable failure within budget — routes through the existing
     /// budget/retry logic in `handle_goal_completion`.
@@ -394,44 +393,19 @@ impl GoalEngine for InternalSubagentEngine {
 
         let session_id = subagent_session.id.clone();
 
-        // Worktree isolation (2026-08-11 bench-contamination bug): the internal
-        // subagent used to run in the PRIMARY project root, so verification
-        // diffed the operator's own uncommitted work into the worker's verdict
-        // (which voided the first three benchmark cells), and concurrent
-        // internal goals poisoned each other. Isolate exactly like the
-        // external engine — worktree off the baseline on goal/<session_id>,
-        // work-base hooks, credential scan, evidence — so landing derives the
-        // same branch name it does for CLI workers. A non-git project (no
-        // baseline) or a worktree failure degrades LOUDLY to the shared dir
-        // rather than failing dispatch: unisolated is how it always ran.
-        let mut isolation: Option<(PathBuf, String)> = None;
-        if let Some(baseline) = task.baseline_commit.clone() {
-            match create_goal_worktree(&task.working_dir, &baseline, &session_id).await {
-                Ok(wt) => {
-                    let _ = install_work_base_hooks(&wt).await;
-                    isolation = Some((wt, baseline));
-                }
-                Err(e) => tracing::warn!(
-                    target: "permagentd::goals",
-                    session_id = %session_id,
-                    "internal goal worktree creation failed — running UNISOLATED \
-                     in the shared project dir (verification may attribute \
-                     unrelated tree changes to this worker): {}",
-                    e
-                ),
-            }
-        } else {
-            tracing::warn!(
-                target: "permagentd::goals",
-                session_id = %session_id,
-                "internal goal has no baseline commit (non-git project?) — \
-                 running unisolated"
-            );
-        }
-        let work_dir = isolation
-            .as_ref()
-            .map(|(wt, _)| wt.clone())
-            .unwrap_or_else(|| task.working_dir.clone());
+        // Isolate exactly like the external engine — worktree off the baseline
+        // on goal/<session_id> — so landing derives the same branch name it does
+        // for CLI workers. The shared project root voided the first three
+        // benchmark cells (2026-08-11 bench contamination) and left the
+        // completion path with no worktree to credential-scan, so a failure to
+        // isolate now fails the dispatch rather than degrading into it.
+        let (worktree, baseline) = resolve_internal_isolation(
+            &task.working_dir,
+            task.baseline_commit.as_deref(),
+            &session_id,
+        )
+        .await?;
+        let work_dir = worktree.clone();
 
         // Route this goal to its workflow role's CONFIGURED model (#730 wiring)
         // when the orchestrator resolved one; otherwise clone the parent session's
@@ -495,11 +469,12 @@ impl GoalEngine for InternalSubagentEngine {
             GoosePlatform::GooseCli,
         );
 
+        let worker_prompt = format!("{}{}", task.instructions, COMMIT_ONLY_BRIEF);
         let recipe = Recipe::builder()
             .version("1.0.0")
             .title(format!("Goal: {}", task.card_title))
             .description("Orchestrator-dispatched goal")
-            .prompt(&task.instructions)
+            .prompt(&worker_prompt)
             .build()
             .map_err(|e| format!("Failed to build recipe: {}", e))?;
 
@@ -522,28 +497,23 @@ impl GoalEngine for InternalSubagentEngine {
             })
             .await
             {
-                // Isolated runs get the same post-exit treatment as external
-                // workers: credential scan first (#508 — a secret must never
-                // survive to review), then deterministic evidence from the
-                // worktree so verification diffs THE WORKER'S commits, not the
-                // shared project tree.
-                Ok(_) => match &isolation {
-                    Some((wt, baseline)) => {
-                        if let Some(reason) = scan_committed_changes(wt, baseline).await {
-                            GoalOutcome::Blocked { reason }
-                        } else {
-                            GoalOutcome::Success(Some(
-                                collect_evidence(
-                                    wt,
-                                    baseline,
-                                    "in-process subagent run".to_string(),
-                                )
-                                .await,
-                            ))
-                        }
+                // Credential scan first (#508 — a secret must never survive to
+                // review), then deterministic evidence from the worktree so
+                // verification diffs THE WORKER'S commits.
+                Ok(_) => {
+                    if let Some(reason) = scan_committed_changes(&worktree, &baseline).await {
+                        GoalOutcome::Blocked { reason }
+                    } else {
+                        GoalOutcome::Success(Some(
+                            collect_evidence(
+                                &worktree,
+                                &baseline,
+                                "in-process subagent run".to_string(),
+                            )
+                            .await,
+                        ))
                     }
-                    None => GoalOutcome::Success(None),
-                },
+                }
                 Err(e) => GoalOutcome::Failed(e.to_string()),
             }
         });
@@ -780,6 +750,23 @@ pub(crate) async fn create_goal_worktree(
         ));
     }
     Ok(dest)
+}
+
+/// Resolve the isolated worktree an internal goal runs in. Failure is fatal
+/// to the dispatch (P1-5): the fallback used to be the user's project root,
+/// where the completion path had no worktree to scan, so a worker's commits
+/// reached the user's repo unscanned.
+pub(crate) async fn resolve_internal_isolation(
+    working_dir: &Path,
+    baseline: Option<&str>,
+    run_id: &str,
+) -> Result<(PathBuf, String), String> {
+    let baseline = baseline.ok_or_else(|| {
+        "Internal goal dispatch requires a git baseline commit, but the project root is not a git repository".to_string()
+    })?;
+    let worktree = create_goal_worktree(working_dir, baseline, run_id).await?;
+    let _ = install_work_base_hooks(&worktree).await;
+    Ok((worktree, baseline.to_string()))
 }
 
 /// Fix (#523): install per-worktree git hooks that record the worker's TRUE base
@@ -2596,6 +2583,50 @@ mod tests {
         std::fs::write(wt.join(file), "work").unwrap();
         git(wt, &["add", "."]);
         git(wt, &["commit", "-q", "-m", "work"]);
+    }
+
+    #[tokio::test]
+    async fn resolve_internal_isolation_requires_baseline_without_creating_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("project");
+        std::fs::create_dir(&repo).unwrap();
+
+        let error = resolve_internal_isolation(&repo, None, "internal-no-baseline")
+            .await
+            .unwrap_err();
+
+        assert!(error.contains("requires a git baseline commit"));
+        assert!(!tmp.path().join(GOAL_WORKTREES_DIR).exists());
+    }
+
+    #[tokio::test]
+    async fn resolve_internal_isolation_rejects_nonexistent_baseline() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (repo, _) = init_repo_with_remote(tmp.path());
+
+        let result = resolve_internal_isolation(
+            &repo,
+            Some("0000000000000000000000000000000000000000"),
+            "internal-bogus-baseline",
+        )
+        .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn resolve_internal_isolation_uses_goal_worktree_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (repo, baseline) = init_repo_with_remote(tmp.path());
+        let run_id = "internal-valid-baseline";
+
+        let (worktree, resolved_baseline) =
+            resolve_internal_isolation(&repo, Some(&baseline), run_id)
+                .await
+                .unwrap();
+
+        assert_eq!(worktree, tmp.path().join(GOAL_WORKTREES_DIR).join(run_id));
+        assert_eq!(resolved_baseline, baseline);
     }
 
     // ── #522 push-ownership inversion ───────────────────────────────────────

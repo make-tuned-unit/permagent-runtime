@@ -5449,8 +5449,9 @@ async fn resume_single_goal(
 /// When a worker commits in its detached worktree but the daemon restarts before
 /// the completion tracker fires, the goal is stranded mid-completion. Rather than
 /// requeue it to Ready (which discards the work and keeps it counted as active),
-/// reconstruct the same `dispatch_evidence` a clean completion would have left
-/// and advance it to Review via `handle_goal_completion`.
+/// credential-scan the recovered work, reconstruct the same `dispatch_evidence`
+/// a clean completion would have left, and advance it to Review via
+/// `handle_goal_completion`.
 ///
 /// Returns `true` when the goal was routed to Review; `false` (caller then
 /// requeues/parks as before) when there is no worker session, no baseline, no
@@ -5491,6 +5492,27 @@ async fn try_complete_dead_worker_from_worktree(
     let evidence = goal_engine::collect_evidence(&worktree, baseline, String::new()).await;
     if evidence.commits.is_empty() {
         return false;
+    }
+    if let Some(reason) = goal_engine::scan_committed_changes(&worktree, baseline).await {
+        tracing::warn!(
+            target: "permagentd::brain",
+            "Goal '{}' recovered after restart with credential-shaped content: {}",
+            card.title, reason
+        );
+        // A failed block handler means the card was never actually blocked, so
+        // fall through to the caller's requeue rather than stranding it
+        // in_progress with no decision — same shape as the completion path below.
+        return match handle_goal_blocked(pool, &card.id, project_id, &reason).await {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!(
+                    target: "permagentd::brain",
+                    "resume: failed to block recovered goal '{}': {}",
+                    card.title, e
+                );
+                false
+            }
+        };
     }
     let Ok(evidence_json) = serde_json::to_value(&evidence) else {
         return false;
