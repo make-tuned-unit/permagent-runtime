@@ -2,6 +2,21 @@
 
 Generated 2026-04-27 for Phase 2 planning.
 
+> **Historical snapshot — not maintained.** This records what was *planned* on the
+> date above. Its counts and status columns have since drifted and are known wrong:
+> it documents 16 platform extensions where 30 now ship, roughly 70 tools where the
+> shipped surface is far larger, and it calls the World and Trace panels placeholders
+> when both now ship and are readable by the agent via `app_perception`.
+>
+> The living capability inventory is the self-knowledge brief,
+> `crates/goose/src/agents/self_knowledge/mod.rs`. It is compiled into the agent's
+> system prompt every turn, so it cannot silently drift from the code the way this
+> file did — take counts from there, never from here.
+>
+> Background on that supersession lives in the audit note
+> `reviews/00c-promise-selfknowledge.md`, which is a local working-tree document and
+> is deliberately not committed to this repo.
+
 ---
 
 ## What the UI surfaces today
@@ -146,7 +161,7 @@ Generated 2026-04-27 for Phase 2 planning.
 
 **MCP transport types supported:** stdio (builtin extensions), HTTP/SSE (streaming tool results), arbitrary external MCP server URIs via config. Any MCP-compatible server can be added.
 
-**Currently wired integrations:** Gmail only (OAuth in SettingsView).
+**Currently wired integrations:** Gmail via OAuth in SettingsView; Slack via a bot token through the CLI (no Command Center UI surface).
 
 ### 4. Spectral schema and runtime state
 
