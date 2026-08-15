@@ -119,12 +119,21 @@ mod tests {
     /// surface is not the same as being able to read it, and only the prose was
     /// ever checked.
     ///
+    /// An earlier version of this test compared lowercased tab NAMES against
+    /// `OBSERVABLE_SURFACES`. The shipped "Inbox" tab therefore matched the
+    /// `inbox` surface by name while that aspect queried the Decision Inbox — a
+    /// completely different store — and the test passed. The contract is now
+    /// about the data source: each shipped tab declares what it `reads`, and
+    /// `TAB_SURFACES` must name the same store for the aspect that claims it.
+    ///
     /// This is the mirror of `every_teachable_surface_is_in_the_shipped_catalog`
     /// below: that one proves the agent never teaches a tab that does not exist;
     /// this one proves the app never ships a tab the agent cannot read.
     #[test]
     fn every_shipped_tab_is_observable_or_exempt() {
-        use permagent::agents::platform_extensions::app_perception::OBSERVABLE_SURFACES;
+        use permagent::agents::platform_extensions::app_perception::{
+            OBSERVABLE_SURFACES, TAB_SURFACES,
+        };
 
         /// Tabs with no `observe_app` aspect yet, and why. SHRINK THIS LIST.
         /// An entry here is a promise not kept, not a design decision — the
@@ -132,54 +141,73 @@ mod tests {
         /// data, and will either say so or, worse, guess.
         const NOT_YET_OBSERVABLE: &[(&str, &str)] = &[];
 
-        /// Tab name → surface name, where the two differ. The Dashboard tab is
-        /// the home view and is read through the `overview` aspect; an alias
-        /// here asserts that mapping instead of letting the tab fall through
-        /// the check as unreadable.
-        const TAB_SURFACE_ALIASES: &[(&str, &str)] = &[("dashboard", "overview")];
-
         let catalog = crate::app_catalog::init();
-        let observable: std::collections::HashSet<String> = OBSERVABLE_SURFACES
-            .iter()
-            .map(|s| s.to_lowercase())
-            .chain(
-                TAB_SURFACE_ALIASES
-                    .iter()
-                    // The alias only counts if its target surface really exists
-                    // — otherwise it would exempt a tab on the strength of a
-                    // typo.
-                    .filter(|(_, surface)| OBSERVABLE_SURFACES.contains(surface))
-                    .map(|(tab, _)| tab.to_string()),
-            )
-            .collect();
         let exempt: std::collections::HashSet<String> = NOT_YET_OBSERVABLE
             .iter()
             .map(|(t, _)| t.to_lowercase())
             .collect();
+        let shipped: std::collections::HashSet<String> =
+            catalog.tabs.iter().map(|t| t.name.to_lowercase()).collect();
+
+        let mut seen_tabs: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for entry in TAB_SURFACES {
+            let key = entry.tab.to_lowercase();
+            assert!(
+                seen_tabs.insert(key.clone()),
+                "TAB_SURFACES lists tab {:?} more than once",
+                entry.tab
+            );
+            assert!(
+                shipped.contains(&key),
+                "TAB_SURFACES names tab {:?}, which is not a shipped tab",
+                entry.tab
+            );
+        }
 
         for tab in &catalog.tabs {
             let name = tab.name.to_lowercase();
+            if exempt.contains(&name) {
+                continue;
+            }
+            let matches: Vec<_> = TAB_SURFACES
+                .iter()
+                .filter(|e| e.tab.eq_ignore_ascii_case(&tab.name))
+                .collect();
             assert!(
-                observable.contains(&name) || exempt.contains(&name),
+                matches.len() == 1,
                 "tab {:?} ships in the app but the agent cannot read it: add an observe_app \
                  aspect, or add it to NOT_YET_OBSERVABLE with a reason. Everything in the app \
                  is meant to be queryable by the agent.",
                 tab.name
             );
+            let entry = matches[0];
+            assert!(
+                OBSERVABLE_SURFACES.contains(&entry.surface),
+                "TAB_SURFACES maps {:?} to surface {:?}, which is not in OBSERVABLE_SURFACES",
+                entry.tab,
+                entry.surface
+            );
+            assert_eq!(
+                entry.reads,
+                tab.reads.as_str(),
+                "aspect for tab {:?} claims to read {:?}, but the tab renders {:?} — the \
+                 aspect reads a different store than the tab renders",
+                tab.name,
+                entry.reads,
+                tab.reads
+            );
         }
 
         // An exemption for a tab that no longer exists, or for one that HAS
         // gained an aspect, is stale bookkeeping that hides real coverage.
-        let tabs: std::collections::HashSet<String> =
-            catalog.tabs.iter().map(|t| t.name.to_lowercase()).collect();
         for (tab, _) in NOT_YET_OBSERVABLE {
             let t = tab.to_lowercase();
             assert!(
-                tabs.contains(&t),
+                shipped.contains(&t),
                 "NOT_YET_OBSERVABLE lists {tab:?}, which is not a shipped tab — remove it"
             );
             assert!(
-                !observable.contains(&t),
+                !TAB_SURFACES.iter().any(|e| e.tab.eq_ignore_ascii_case(tab)),
                 "{tab:?} now has an observe_app aspect — remove it from NOT_YET_OBSERVABLE"
             );
         }

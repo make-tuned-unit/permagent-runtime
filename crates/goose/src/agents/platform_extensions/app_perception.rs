@@ -53,9 +53,88 @@ pub const OBSERVABLE_SURFACES: &[&str] = &[
     "settings",
     "overview",
     "inbox",
+    "decision_inbox",
     "skills",
     "automate",
     "trace",
+];
+
+/// One shipped catalog tab, the surface that observes it, and the store that
+/// surface queries.
+pub struct TabSurface {
+    pub tab: &'static str,
+    pub surface: &'static str,
+    pub reads: &'static str,
+}
+
+/// Which `observe_app` surface reads each shipped tab, and from where.
+///
+/// Names are not evidence — "Inbox" matched the `inbox` surface by name for a
+/// whole release while that aspect queried the Decision Inbox. The daemon's
+/// coverage test pairs `reads` here against the tab's own `reads` in
+/// catalog.yaml, so an aspect pointed at a different store fails the build even
+/// when the names line up.
+pub const TAB_SURFACES: &[TabSurface] = &[
+    TabSurface {
+        tab: "Build",
+        surface: "build",
+        reads: "coding_sessions",
+    },
+    TabSurface {
+        tab: "Automate",
+        surface: "automate",
+        reads: "schedule.json",
+    },
+    TabSurface {
+        tab: "Brain",
+        surface: "brain",
+        reads: "memory.db",
+    },
+    TabSurface {
+        tab: "World",
+        surface: "world",
+        reads: "agent.yaml",
+    },
+    TabSurface {
+        tab: "Settings",
+        surface: "settings",
+        reads: "config",
+    },
+    TabSurface {
+        tab: "Projects",
+        surface: "projects",
+        reads: "projects",
+    },
+    TabSurface {
+        tab: "Dashboard",
+        surface: "overview",
+        reads: "overview_aggregate",
+    },
+    TabSurface {
+        tab: "Grow",
+        surface: "grow",
+        reads: "growth_actions",
+    },
+    TabSurface {
+        tab: "Inbox",
+        surface: "inbox",
+        reads: "inbox_files",
+    },
+    TabSurface {
+        tab: "Skills",
+        surface: "skills",
+        reads: "skills",
+    },
+    TabSurface {
+        tab: "Sessions",
+        surface: "sessions",
+        reads: "session_files",
+    },
+    TabSurface {
+        tab: "Trace",
+        surface: "trace",
+        reads: "activity_journal",
+    },
 ];
 const LIST_LIMIT: usize = 5;
 
@@ -70,9 +149,11 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
         what_it_does:
             "You can directly perceive the aggregate data your Permagent home renders by \
              calling observe_app for analytics, projects, goals, cards, spend, sessions, \
-             briefings, grow, inbox, skills, automate, trace, brain, build, world, settings, \
-             or an overview. This is structured local state, not screenshot vision and not the \
-             website in the Build browser. \
+             briefings, grow, inbox, decision_inbox, skills, automate, trace, brain, build, \
+             world, settings, or an overview. This is structured local state, not screenshot \
+             vision and not the website in the Build browser. \
+             `inbox` is the Downloads intake folder (files from the in-app browser); \
+             `decision_inbox` is what is waiting on the user's approval. \
              `grow` returns the growth actions YOU recommended for a project, what you predicted \
              each would move, and how the 7/14/28-day sweep judged it — you have no memory of \
              those recommendations, so read them rather than saying you do not know. `brain` is \
@@ -92,8 +173,9 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ObserveAppParams {
     /// Room of the app to observe: analytics, projects, goals, cards, spend,
-    /// sessions, briefings, grow, inbox, skills, automate, trace, brain,
-    /// build, world, settings, or overview.
+    /// sessions, briefings, grow, inbox (Downloads intake), decision_inbox
+    /// (approvals queue), skills, automate, trace, brain, build, world,
+    /// settings, or overview.
     surface: String,
     /// Narrow scope. Required for analytics/cards; optional project name, slug,
     /// or id for goals. Never returned as a raw join id.
@@ -448,11 +530,13 @@ impl AppPerceptionClient {
                 "Read the structured data behind the Permagent app. Use observe_app directly \
                  when the user asks what is happening in analytics, projects, goals/cards, \
                  spend, sessions, growth actions you have recommended, agent briefings, the \
-                 Decision Inbox, skills, scheduled automations, execution trace, brain memory \
-                 health, build coding sessions or browser bookmarks, world workers, settings \
-                 configuration, or the overall home. Do not navigate first \
-                 and do not use browser snapshots: browser tools see websites, not this app. \
-                 This extension is read-only and returns aggregate answers with bounded lists.",
+                 Downloads inbox (files from the in-app browser), the Decision Inbox \
+                 (approvals waiting on the user), skills, scheduled automations, execution \
+                 trace, brain memory health, build coding sessions or browser bookmarks, \
+                 world workers, settings configuration, or the overall home. Do not navigate \
+                 first and do not use browser snapshots: browser tools see websites, not \
+                 this app. This extension is read-only and returns aggregate answers with \
+                 bounded lists.",
             );
         Ok(Self { info, context })
     }
@@ -492,9 +576,13 @@ impl AppPerceptionClient {
         // conversation, so a full corpus would be paid for on every later turn.
         let mut recent = Vec::new();
         for row in rows.iter().take(LIST_LIMIT) {
-            let outcomes = crate::growth::store::outcomes_for(pool, &row.id)
-                .await
-                .unwrap_or_default();
+            let outcomes = match crate::growth::store::outcomes_for(pool, &row.id).await {
+                Ok(o) => o,
+                // A failed judgement query must not be reported as "not yet judged".
+                Err(e) => {
+                    return unavailable("grow", format!("could not read growth outcomes: {e}"))
+                }
+            };
             recent.push(json!({
                 "title": safe_text(&row.title, 120),
                 "status": row.status,
@@ -514,16 +602,22 @@ impl AppPerceptionClient {
             }));
         }
 
-        json!({
-            "surface": "grow",
-            "status": "ok",
-            "queried": true,
+        let data = json!({
             "project": project.name,
             "totalActions": rows.len(),
             "byStatus": by_status,
             "recent": recent,
             "truncated": rows.len() > LIST_LIMIT,
-        })
+        });
+        if rows.is_empty() {
+            empty(
+                "grow",
+                "query succeeded; no growth actions recorded for this project",
+                data,
+            )
+        } else {
+            available("grow", data)
+        }
     }
 
     async fn observe_analytics(
@@ -930,14 +1024,24 @@ impl AppPerceptionClient {
         available("briefings", json!({"briefings": ranked(items, total)}))
     }
 
-    async fn observe_inbox(&self, pool: &Pool<Sqlite>) -> Value {
+    async fn observe_decision_inbox(&self, pool: &Pool<Sqlite>) -> Value {
         let summary = match decisions::inbox_summary(pool).await {
             Ok(summary) => summary,
-            Err(e) => return unavailable("inbox", format!("decision inbox query failed: {e}")),
+            Err(e) => {
+                return unavailable(
+                    "decision_inbox",
+                    format!("decision inbox query failed: {e}"),
+                )
+            }
         };
         let rows = match decisions::list_open_decisions(pool).await {
             Ok(rows) => rows,
-            Err(e) => return unavailable("inbox", format!("open decisions query failed: {e}")),
+            Err(e) => {
+                return unavailable(
+                    "decision_inbox",
+                    format!("open decisions query failed: {e}"),
+                )
+            }
         };
         let total = rows.len();
         let items = rows
@@ -963,8 +1067,46 @@ impl AppPerceptionClient {
         });
         if total == 0 {
             empty(
-                "inbox",
+                "decision_inbox",
                 "query succeeded; there are no open decisions",
+                data,
+            )
+        } else {
+            available("decision_inbox", data)
+        }
+    }
+
+    async fn observe_inbox(&self, pool: &Pool<Sqlite>) -> Value {
+        let files = match crate::inbox::list_inbox_files(pool).await {
+            Ok(files) => files,
+            Err(e) => return unavailable("inbox", format!("inbox files query failed: {e}")),
+        };
+        let mut by_status: BTreeMap<String, i64> = BTreeMap::new();
+        for f in &files {
+            *by_status.entry(f.status.clone()).or_insert(0) += 1;
+        }
+        let total = files.len();
+        let items = files
+            .into_iter()
+            .take(LIST_LIMIT)
+            .map(|f| {
+                json!({
+                    "filename": safe_text(&f.filename, 120),
+                    "source": f.original_url.map(|v| safe_text(&v, 160)),
+                    "size_bytes": f.size_bytes,
+                    "status": safe_text(&f.status, 40),
+                    "arrived_at": safe_text(&f.created_at, 80),
+                })
+            })
+            .collect();
+        let data = json!({
+            "by_status": by_status,
+            "files": ranked(items, total),
+        });
+        if total == 0 {
+            empty(
+                "inbox",
+                "query succeeded; no files have landed in the Permagent inbox",
                 data,
             )
         } else {
@@ -1704,6 +1846,7 @@ impl AppPerceptionClient {
             "briefings" => self.observe_briefings(&pool).await,
             "grow" => self.observe_grow(&pool, args.scope.as_deref()).await,
             "inbox" => self.observe_inbox(&pool).await,
+            "decision_inbox" => self.observe_decision_inbox(&pool).await,
             "skills" => self.observe_skills(&pool).await,
             "automate" => self.observe_automate().await,
             "trace" => self.observe_trace(&pool).await,
@@ -1733,10 +1876,10 @@ impl AppPerceptionClient {
             "observe_app".to_string(),
             "Read aggregate state from the data behind the Permagent app. Call this directly \
              when asked about analytics, projects, goals/cards, spend, sessions, growth \
-             actions you recommended, agent briefings, Decision Inbox, skills, scheduled \
-             automations, execution trace, brain memory health, build coding sessions or \
-             browser bookmarks, world workers, settings configuration, or what \
-             is happening overall. It does not require navigation and \
+             actions you recommended, agent briefings, the Downloads inbox, the Decision \
+             Inbox, skills, scheduled automations, execution trace, brain memory health, \
+             build coding sessions or browser bookmarks, world workers, settings \
+             configuration, or what is happening overall. It does not require navigation and \
              never use get_page_snapshot for this job: browser snapshots describe a website, \
              not the Permagent app.\n\n\
              ANALYTICS IS THE USER'S OWN WEBSITE TRAFFIC, not Permagent usage stats. \
@@ -1747,8 +1890,10 @@ impl AppPerceptionClient {
              are unavailable. If a project returns no events, say the collector is not \
              installed for it rather than that the data does not exist.\n\n\
              surface: analytics | projects | goals | cards | spend | sessions | briefings | \
-             grow | inbox | skills | automate | trace | brain | build | world | settings | \
-             overview. analytics and cards require \
+             grow | inbox | decision_inbox | skills | automate | trace | brain | build | \
+             world | settings | overview. `inbox` is the Downloads intake folder (files from \
+             the in-app browser); `decision_inbox` is what is waiting on the user's approval. \
+             analytics and cards require \
              scope = project name, slug, or id; goals accepts an optional project scope; grow \
              requires a project scope. window supports 7d, 30d, 90d, 365d, or all. \
              The analytics surface returns window totals AND a per-day series (`daily`), so \
@@ -1907,11 +2052,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn inbox_is_bounded_and_missing_schema_is_unavailable() {
+    async fn decision_inbox_is_bounded_and_missing_schema_is_unavailable() {
         let dir = tempfile::tempdir().unwrap();
         let client = test_client(dir.path().to_path_buf());
         let pool = memory_pool().await;
-        assert_eq!(client.observe_inbox(&pool).await["status"], "unavailable");
+        assert_eq!(
+            client.observe_decision_inbox(&pool).await["status"],
+            "unavailable"
+        );
         sqlx::query("CREATE TABLE decisions (id TEXT, kind TEXT, goal_id TEXT, project_id TEXT, tier INTEGER, headline TEXT, detail TEXT, payload_json TEXT, rank REAL, status TEXT, answer TEXT, answer_note TEXT, answer_choice_id TEXT, answer_input TEXT, acted_by TEXT, created_at TEXT, resolved_at TEXT)").execute(&pool).await.unwrap();
         sqlx::query("CREATE TABLE cards (id TEXT, title TEXT, project_id TEXT, card_type TEXT, column_id TEXT, archived_at TEXT, metadata_json TEXT)").execute(&pool).await.unwrap();
         sqlx::query("CREATE TABLE board_columns (id TEXT, state_binding TEXT)")
@@ -1923,10 +2071,100 @@ mod tests {
                 .bind(format!("d{i}")).bind(format!("Decision {i}"))
                 .execute(&pool).await.unwrap();
         }
-        let value = client.observe_inbox(&pool).await;
+        let value = client.observe_decision_inbox(&pool).await;
+        assert_eq!(value["surface"], "decision_inbox");
         assert_eq!(value["data"]["decisions"]["returned"], LIST_LIMIT);
         assert_eq!(value["data"]["decisions"]["truncated"], true);
         assert!(!value.to_string().contains("private detail"));
+    }
+
+    #[tokio::test]
+    async fn inbox_is_bounded_and_missing_schema_is_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = test_client(dir.path().to_path_buf());
+        let pool = memory_pool().await;
+        assert_eq!(client.observe_inbox(&pool).await["status"], "unavailable");
+        sqlx::query(
+            "CREATE TABLE inbox_files (id TEXT, filename TEXT, original_url TEXT, \
+             content_type TEXT, size_bytes INTEGER, disk_path TEXT, status TEXT, \
+             project_id TEXT, created_at TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let secret_disk_path = "/tmp/secret-inbox-disk-path-p1-11";
+        for i in 0..(LIST_LIMIT + 1) {
+            sqlx::query("INSERT INTO inbox_files VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)")
+                .bind(format!("f{i}"))
+                .bind(format!("file-{i}.txt"))
+                .bind("https://example.com/file")
+                .bind("text/plain")
+                .bind(10i64)
+                .bind(secret_disk_path)
+                .bind("received")
+                .bind(format!("2026-08-14T00:00:{i:02}Z"))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let value = client.observe_inbox(&pool).await;
+        assert_eq!(value["status"], "available");
+        assert_eq!(value["surface"], "inbox");
+        assert_eq!(value["data"]["files"]["returned"], LIST_LIMIT);
+        assert_eq!(value["data"]["files"]["truncated"], true);
+        assert!(!value.to_string().contains(secret_disk_path));
+    }
+
+    #[tokio::test]
+    async fn grow_outcomes_query_failure_is_unavailable_not_empty_judged() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = test_client(dir.path().to_path_buf());
+        let pool = memory_pool().await;
+        crate::session::spectral_schema::init_spectral_db(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO projects (id, user_id, slug, name) \
+             VALUES ('p1', 'default', 'grow-proj', 'Grow Proj')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO growth_actions \
+             (id, project_id, fingerprint, title, recommendation, status, created_at) \
+             VALUES ('a1', 'p1', 'fp1', 'Try FAQ', 'Add FAQ schema', 'suggested', \
+             '2026-08-14T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO growth_action_outcomes \
+             (action_id, window_days, before_json, after_json, delta_pct, verdict, \
+              rationale, confounders, judged_at) \
+             VALUES ('a1', 7, '{}', '{}', 1.5, 'lifted', 'traffic up', NULL, \
+             '2026-08-14T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let ok = client.observe_grow(&pool, Some("Grow Proj")).await;
+        assert_eq!(ok["status"], "available");
+        assert_eq!(ok["data"]["project"], "Grow Proj");
+        assert_eq!(ok["data"]["totalActions"], 1);
+        assert!(ok["data"]["recent"].is_array());
+        assert!(ok.get("totalActions").is_none());
+
+        sqlx::query("DROP TABLE growth_action_outcomes")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let bad = client.observe_grow(&pool, Some("Grow Proj")).await;
+        assert_eq!(bad["status"], "unavailable");
+        assert_eq!(bad["surface"], "grow");
+        assert!(!bad.to_string().contains("\"judged\":[]"));
     }
 
     #[tokio::test]
@@ -2173,21 +2411,19 @@ mod tests {
         assert!(!encoded.contains("API_KEY"));
     }
 
-    /// NOT hermetic, so ignored by default: `observe_settings` reads the LIVE
-    /// global config, and `Config::global()`'s keyring choice is baked in at
-    /// first access — `PERMAGENT_DISABLE_KEYRING` set per-test cannot undo it.
-    /// On macOS, `all_secrets` then calls SecKeychainFindGenericPassword, which
-    /// blocks forever on an authorization dialog a headless test cannot show
-    /// (observed hanging the suite >10 min, and stalling every later env_lock
-    /// test behind its mutex). Run explicitly on a machine where the test
-    /// binary may read the keychain:
-    /// `cargo test -p permagent observe_settings -- --ignored`
+    /// Config is pinned file-backed by the test-binary ctor
+    /// (`pin_config_to_temp_root_for_tests`), so this runs headless and never
+    /// touches the system keyring. Seeds a fake key through the env fallback
+    /// that `Config::get_secret` / `config_key_present` consult, and asserts the
+    /// value never appears in the payload.
     #[tokio::test]
-    #[ignore = "reads the live keychain via Config::global(); hangs headless"]
     async fn observe_settings_never_emits_secret_values() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().display().to_string();
-        let _env = env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(root.as_str()))]);
+        let _env = env_lock::lock_env([
+            ("PERMAGENT_PATH_ROOT", Some(root.as_str())),
+            ("OPENAI_API_KEY", Some("sk-not-a-real-key-p2-20")),
+        ]);
         let client = test_client(tmp.path().to_path_buf());
         let payload = observe(&client, "settings").await;
         assert_eq!(payload["surface"], "settings");
@@ -2204,8 +2440,10 @@ mod tests {
         let encoded = payload.to_string();
         // Secret *names* may appear; values must not. A sk- style token is a
         // value leak; a present:bool is fine.
+        assert!(!encoded.contains("sk-not-a-real-key-p2-20"));
         assert!(!encoded.contains("sk-"));
         assert!(!encoded.contains("\"value\""));
+        let mut present_keys = 0;
         if let Some(providers) = payload["data"]["providers"]["items"].as_array() {
             assert!(providers.len() <= LIST_LIMIT);
             for p in providers {
@@ -2213,10 +2451,17 @@ mod tests {
                     for k in keys {
                         assert!(k.get("value").is_none());
                         assert!(k["present"].is_boolean());
+                        present_keys += i32::from(k["present"] == true);
                     }
                 }
             }
         }
+        // Without this the test would pass on an observation that found no
+        // configured provider at all, which proves nothing about secrets.
+        assert!(
+            present_keys > 0,
+            "seeded key was never observed as present; the guarantee went untested: {payload}"
+        );
     }
 
     /// Reproducible acceptance harness for a copied production database.
