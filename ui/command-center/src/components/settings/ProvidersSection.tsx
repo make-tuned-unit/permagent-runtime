@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
-import { FiCheck, FiPlus, FiSettings, FiStar, FiTrash2 } from 'react-icons/fi';
+import { FiAlertTriangle, FiCheck, FiKey, FiPlus, FiSettings, FiStar, FiTrash2 } from 'react-icons/fi';
 import { api } from '../../lib/api';
+import type { SecretSourcesResponse } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import type { ProviderInfo } from '../../lib/store';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { AddCustomProviderModal } from './AddCustomProviderModal';
 import { ConfigureProviderModal } from './ConfigureProviderModal';
+import { findKeySource, keyStatusMessage } from './secretSource';
 
 export function ProvidersSection() {
   const { colors } = useTheme();
@@ -18,6 +20,19 @@ export function ProvidersSection() {
   const [adding, setAdding] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [secretSources, setSecretSources] = useState<SecretSourcesResponse | undefined>();
+
+  // Fetched here rather than in the modal so the card badge and the modal
+  // cannot disagree about where a key comes from. Failure is silent on purpose:
+  // an older daemon has no such route, and every key is then on the keychain —
+  // which is exactly what an absent badge means.
+  const loadSecretSources = useCallback(() => {
+    api.getSecretSources()
+      .then(setSecretSources)
+      .catch(() => setSecretSources(undefined));
+  }, []);
+
+  useEffect(() => { loadSecretSources(); }, [loadSecretSources]);
 
   // loadProviders never rejects (it sets providersError internally), so `.finally`
   // is enough to end the loading state; the flag distinguishes failure from empty.
@@ -81,7 +96,14 @@ export function ProvidersSection() {
         <div className="text-xs py-4 text-center" style={{ fontFamily: font.mono, color: colors.textMuted }}>No providers available.</div>
       )}
 
-      {providers.map(p => (
+      {providers.map(p => {
+        // The badge names the SOURCE only when it is not the keychain — the
+        // default needs no label, and labelling it would bury the one case
+        // worth noticing.
+        const keyName = p.configKeys.find(k => k.secret)?.name ?? '';
+        const sourceEntry = findKeySource(secretSources?.keys, keyName);
+        const sourceProblem = keyStatusMessage(sourceEntry);
+        return (
         <div
           key={p.name}
           className="rounded-lg p-4"
@@ -101,6 +123,19 @@ export function ProvidersSection() {
               </div>
             </div>
             <div className="flex items-center gap-2">
+              {sourceEntry && (
+                <span
+                  className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded"
+                  title={sourceProblem ?? `${keyName} is read from ${sourceEntry.label} (${sourceEntry.reference})`}
+                  style={
+                    sourceProblem
+                      ? { backgroundColor: `${colors.danger}26`, color: colors.danger }
+                      : { backgroundColor: `${colors.textMuted}26`, color: colors.textMuted }
+                  }
+                >
+                  {sourceProblem ? <FiAlertTriangle size={10} /> : <FiKey size={10} />} {sourceEntry.label}
+                </span>
+              )}
               {p.isDefault && (
                 <span
                   className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded"
@@ -161,13 +196,26 @@ export function ProvidersSection() {
               </button>
             )}
           </div>
+
+          {/* A configured reference the daemon cannot read. Stated on the card,
+              not just inside the modal, because the whole point is that the
+              user learns it here instead of from an unexplained provider error
+              in the middle of a chat turn. */}
+          {sourceProblem && (
+            <div className="text-[11px] mt-2" style={{ fontFamily: font.body, color: colors.danger }}>
+              {sourceProblem}
+            </div>
+          )}
         </div>
-      ))}
+        );
+      })}
 
       {configuring && (
         <ConfigureProviderModal
           provider={configuring}
-          onClose={() => { setConfiguring(null); loadProviders(); }}
+          secretSources={secretSources}
+          onSourcesChanged={loadSecretSources}
+          onClose={() => { setConfiguring(null); loadProviders(); loadSecretSources(); }}
         />
       )}
 
