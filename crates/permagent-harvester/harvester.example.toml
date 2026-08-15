@@ -1,0 +1,36 @@
+[database]
+path = "~/.permagent/harvest.db"
+
+[daemon]
+bind = "127.0.0.1:4007"
+bearer_token_env = "PERMAGENT_HARVESTER_TOKEN"
+
+[[sources]]
+# Session transcripts never leave the machine, so this must stay false.
+kind = "agent_session"
+path = "~/.claude/projects"
+label = "Claude sessions"
+enabled = true
+cloud_ok = false
+
+[[sources]]
+kind = "git"
+path = "~/Documents/dev/permagent-runtime"
+label = "Permagent"
+enabled = true
+cloud_ok = true
+
+# Placeholder: set this path to a real notes directory before enabling it.
+[[sources]]
+kind = "notes"
+path = "/path/to/your/notes"
+label = "Notes"
+enabled = false
+cloud_ok = false
+
+[models]
+base_url = "http://127.0.0.1:11434"
+generation = "qwen2.5:7b"
+# qwen3-embedding:0.6b and gemma3n:e4b are not installed. A later phase must pull
+# the required model or change this setting before model-backed work is enabled.
+embedding = "qwen3-embedding:0.6b"

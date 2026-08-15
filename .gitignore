@@ -5,6 +5,9 @@ __pycache__
 run_cli.sh
 tokenizer_files/
 .DS_Store
+
+# Harvester's real config is operator-local and may contain private source paths.
+harvester.toml
 .idea
 .vscode
 *.log
