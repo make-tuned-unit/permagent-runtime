@@ -7585,6 +7585,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "permagent-harvester"
+version = "1.31.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "clap",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "shellexpand",
+ "subtle",
+ "tempfile",
+ "tokio",
+ "toml 0.8.23",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "permagent-mcp"
 version = "1.31.0"
 dependencies = [

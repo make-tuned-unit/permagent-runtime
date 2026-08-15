@@ -1,0 +1,27 @@
+[package]
+name = "permagent-harvester"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+chrono.workspace = true
+clap.workspace = true
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde.workspace = true
+serde_json.workspace = true
+shellexpand.workspace = true
+subtle = "2.6"
+tokio.workspace = true
+toml = "0.8"
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "json", "time"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tower = "0.5"
+
+[lints]
+workspace = true
