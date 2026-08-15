@@ -1,15 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  launchd agent for scripts/daemon-health-watchdog.sh (#560, item 2).
+  launchd agent for daemon-health-watchdog.sh (#560, item 2). This file is the
+  TEMPLATE: `permagent setup` embeds it, substitutes the placeholders, and loads
+  the result into ~/Library/LaunchAgents. Placeholders are double-underscore
+  delimited; write no other token that way, prose included — the renderer's
+  test asserts none survive substitution.
 
   Restarts permagentd when it is ALIVE BUT WEDGED — the failure launchd's
   KeepAlive (exit-only) cannot see. Pings the public /status endpoint and, after
   FAIL_THRESHOLD consecutive unreachable ticks, `launchctl kickstart -k`s the
   daemon. Mirrors the UI-wedge watchdog.
 
-  INSTALL (edit the two __PATH__ placeholders first):
+  MANUAL INSTALL (dev only — setup does this for you):
     cp scripts/ai.permagent.daemon-watchdog.plist ~/Library/LaunchAgents/
-    # replace __REPO__ with the absolute repo path, __HOME__ with $HOME
+    # substitute the four placeholders: the watchdog script path, the log
+    # directory, the daemon /status URL, and the daemon process pattern
     launchctl load  ~/Library/LaunchAgents/ai.permagent.daemon-watchdog.plist
   UNINSTALL:
     launchctl unload ~/Library/LaunchAgents/ai.permagent.daemon-watchdog.plist
@@ -21,7 +26,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>__REPO__/scripts/daemon-health-watchdog.sh</string>
+        <string>__SCRIPT__</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
@@ -34,6 +39,10 @@
              Set to 0 for capture-only (never restart). -->
         <key>RESTART</key>
         <string>1</string>
+        <key>DAEMON_URL</key>
+        <string>__DAEMON_URL__</string>
+        <key>DAEMON_PATTERN</key>
+        <string>__DAEMON_PATTERN__</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>
@@ -42,8 +51,8 @@
     <key>ThrottleInterval</key>
     <integer>30</integer>
     <key>StandardOutPath</key>
-    <string>__HOME__/.permagent/logs/daemon-watchdog.out</string>
+    <string>__LOG_DIR__/daemon-watchdog.out</string>
     <key>StandardErrorPath</key>
-    <string>__HOME__/.permagent/logs/daemon-watchdog.err</string>
+    <string>__LOG_DIR__/daemon-watchdog.err</string>
 </dict>
 </plist>

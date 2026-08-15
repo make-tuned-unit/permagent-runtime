@@ -73,23 +73,28 @@ pub fn crash_reports_consented() -> bool {
         .unwrap_or(false)
 }
 
-/// Self-knowledge descriptor for the daemon's durability supervision (the
-/// "weeks-untouched" guarantee). A `Guard`, not a tool: Henry does not *call*
-/// this — the daemon runs it *around* him. Co-located here with the panic
-/// circuit-breaker (the F1 core); the same capability also covers the scheduler
-/// startup reconciliation, the WAL-checkpoint timer, and the external health
-/// watchdog + metrics probe. Static — a live/queryable version awaits the
-/// `/api/health/durability` endpoint (follow-up). Aggregated by
-/// `crate::agents::self_knowledge::GUARD_DESCRIPTORS`.
+/// Self-knowledge descriptor for the daemon's durability supervision. A
+/// `Guard`, not a tool: Henry does not *call* this — the daemon runs it
+/// *around* him. Co-located here with the panic circuit-breaker (the F1 core);
+/// the same capability also covers the scheduler startup reconciliation, the
+/// WAL-checkpoint timer, and the external wedge watchdog + metrics probe.
+///
+/// The prose below is deliberately conditional on two counts. The watchdog is a
+/// separate LaunchAgent that only `permagent setup` installs, so a desktop
+/// install that never ran setup has the circuit-breaker but no wedge cover. And
+/// `wal_checkpoint(TRUNCATE)` returns `busy=1` against a pinned reader, so the
+/// WAL is retried rather than guaranteed bounded. Static — a live/queryable
+/// version awaits the `/api/health/durability` endpoint (follow-up). Aggregated
+/// by `crate::agents::self_knowledge::GUARD_DESCRIPTORS`.
 pub const DURABILITY_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
     crate::agents::self_knowledge::FeatureDescriptor {
         id: "durability_supervision",
         display_name: "Durability supervision",
         category: crate::agents::self_knowledge::FeatureCategory::Guard,
         what_it_does:
-            "Keeps your daemon healthy for weeks unattended: a panic circuit-breaker forces a clean restart instead of limping half-dead, an external watchdog restarts you if you stop answering, the databases' write-ahead logs are truncated on a timer so they cannot fill the disk, and scheduled work is reconciled after every restart",
+            "Keeps your daemon healthy for weeks unattended: a panic circuit-breaker forces a clean restart instead of limping half-dead, and — once `permagent setup` has registered you under launchd — an external watchdog restarts you if you stop answering while your process is still alive; the databases' write-ahead logs are checkpointed on a timer, retried on the next tick when a reader pins the log, and scheduled work is reconciled after every restart",
         why_it_matters:
-            "It is why the user can leave you running and reach you days later and you just work — nothing silently died, wedged, leaked, or filled the disk in the meantime",
+            "It is why the user can leave you running and reach you days later and you just work — a crash restarts you cleanly, a wedge is caught by the watchdog once it is installed, the write-ahead logs are checkpointed rather than left to grow untended, and scheduled work resumes",
         state_source: crate::agents::self_knowledge::StateSource::Static,
         teaching: &[],
     };

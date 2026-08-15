@@ -11,6 +11,14 @@ fn plist_path() -> PathBuf {
     home.join("Library/LaunchAgents/ai.permagent.daemon.plist")
 }
 
+/// The wedge watchdog `permagent setup` installs beside the daemon agent. It
+/// has to be loaded and unloaded with the daemon: left loaded against a stopped
+/// service it logs an unreachable tick forever and files a bogus wedge capture.
+fn watchdog_plist_path() -> PathBuf {
+    let home = dirs::home_dir().expect("could not determine home directory");
+    home.join("Library/LaunchAgents/ai.permagent.daemon-watchdog.plist")
+}
+
 fn logs_dir() -> PathBuf {
     let home = dirs::home_dir().expect("could not determine home directory");
     home.join(".permagent/logs")
@@ -172,6 +180,13 @@ pub fn handle_start() -> Result<()> {
         .status()
         .context("failed to run launchctl load")?;
 
+    let watchdog = watchdog_plist_path();
+    if watchdog.exists() {
+        let _ = Command::new("launchctl")
+            .args(["load", &watchdog.to_string_lossy()])
+            .status();
+    }
+
     if status.success() {
         println!("Permagent daemon started (port {port})");
     } else {
@@ -191,6 +206,14 @@ pub fn handle_stop() -> Result<()> {
             plist.display()
         );
         return Ok(());
+    }
+
+    // Watchdog first, so it cannot see the shutdown as a wedge.
+    let watchdog = watchdog_plist_path();
+    if watchdog.exists() {
+        let _ = Command::new("launchctl")
+            .args(["unload", &watchdog.to_string_lossy()])
+            .status();
     }
 
     let status = Command::new("launchctl")

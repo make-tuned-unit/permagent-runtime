@@ -8,6 +8,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+const WEDGE_WATCHDOG_SCRIPT: &str = include_str!("../../../../scripts/daemon-health-watchdog.sh");
+const WEDGE_WATCHDOG_PLIST: &str =
+    include_str!("../../../../scripts/ai.permagent.daemon-watchdog.plist");
+
 /// Provider choices for the setup wizard
 const PROVIDERS: &[(&str, &str)] = &[
     ("anthropic", "Anthropic (Claude)"),
@@ -559,6 +563,79 @@ fn register_launchd_daemon() -> Result<()> {
         anyhow::bail!("launchctl load failed with exit code: {:?}", status.code());
     }
 
+    if let Err(e) = install_wedge_watchdog(&daemon_binary) {
+        eprintln!("Warning: wedge watchdog not installed: {e}");
+    }
+
+    Ok(())
+}
+
+/// Split out from the install so the substitution is testable without touching
+/// launchd or the home directory.
+fn render_watchdog_plist(
+    script_path: &str,
+    log_dir: &str,
+    daemon_url: &str,
+    daemon_pattern: &str,
+) -> String {
+    WEDGE_WATCHDOG_PLIST
+        .replace("__SCRIPT__", script_path)
+        .replace("__LOG_DIR__", log_dir)
+        .replace("__DAEMON_URL__", daemon_url)
+        .replace("__DAEMON_PATTERN__", daemon_pattern)
+}
+
+/// Install the alive-but-wedged watchdog beside the daemon agent. launchd's
+/// KeepAlive only relaunches on process *exit*, so without this a daemon that
+/// holds its socket but stops answering is never restarted. The script is
+/// embedded and written into `~/.permagent/bin` because the LaunchAgent must
+/// survive without a source checkout to point at.
+fn install_wedge_watchdog(daemon_binary: &str) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let bin_dir = Paths::in_config_dir("bin");
+    fs::create_dir_all(&bin_dir)?;
+    let script_path = bin_dir.join("daemon-health-watchdog.sh");
+    fs::write(&script_path, WEDGE_WATCHDOG_SCRIPT)?;
+    fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755))?;
+
+    let log_dir = Paths::logs_dir();
+    fs::create_dir_all(&log_dir)?;
+    let daemon_url = format!(
+        "http://127.0.0.1:{}/status",
+        crate::commands::daemon::read_daemon_port()
+    );
+    // The pattern is the registered binary path, not the script's .app-bundle
+    // default: `pgrep -f` must find a launchd-installed daemon or the wedge
+    // `sample` capture comes back empty.
+    let plist_content = render_watchdog_plist(
+        &script_path.display().to_string(),
+        &log_dir.display().to_string(),
+        &daemon_url,
+        daemon_binary,
+    );
+
+    let home = dirs::home_dir().context("Could not determine home directory")?;
+    let launch_agents_dir = home.join("Library/LaunchAgents");
+    fs::create_dir_all(&launch_agents_dir)?;
+    let plist_path = launch_agents_dir.join("ai.permagent.daemon-watchdog.plist");
+    fs::write(&plist_path, plist_content)?;
+
+    let _ = std::process::Command::new("launchctl")
+        .args(["unload"])
+        .arg(&plist_path)
+        .status();
+
+    let status = std::process::Command::new("launchctl")
+        .args(["load", "-w"])
+        .arg(&plist_path)
+        .status()
+        .context("Failed to run launchctl")?;
+
+    if !status.success() {
+        anyhow::bail!("launchctl load failed with exit code: {:?}", status.code());
+    }
+
     Ok(())
 }
 
@@ -594,4 +671,31 @@ fn which_daemon_binary() -> Result<String> {
 
     // Fall back to the standard install location
     Ok("/usr/local/bin/permagentd".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn renders_watchdog_plist_placeholders() {
+        let rendered = render_watchdog_plist(
+            "/config/bin/watchdog.sh",
+            "/config/logs",
+            "http://127.0.0.1:4321/status",
+            "/usr/local/bin/permagentd",
+        );
+
+        assert!(rendered.contains("/config/bin/watchdog.sh"));
+        assert!(rendered.contains("/config/logs"));
+        assert!(rendered.contains("http://127.0.0.1:4321/status"));
+        assert!(rendered.contains("/usr/local/bin/permagentd"));
+        assert!(!rendered.contains("__"));
+    }
+
+    #[test]
+    fn embedded_watchdog_script_is_bash() {
+        assert!(!WEDGE_WATCHDOG_SCRIPT.is_empty());
+        assert!(WEDGE_WATCHDOG_SCRIPT.starts_with("#!/usr/bin/env bash"));
+    }
 }
