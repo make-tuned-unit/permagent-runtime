@@ -5,6 +5,46 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::config::paths::Paths;
+use crate::config::{Config, ConfigError};
+
+/// Secret-store key for a secret scoped to one agent.
+///
+/// The `.` delimiter cannot be emitted by `name_to_key`, preventing aliases
+/// such as (`claude`, `code_key`) and (`claude_code`, `key`) that would occur
+/// if normalized components were joined with `_`.
+pub fn agent_secret_key(agent_id: &str, name: &str) -> String {
+    format!(
+        "agent_secret.{}.{}",
+        crate::config::extensions::name_to_key(agent_id),
+        crate::config::extensions::name_to_key(name)
+    )
+}
+
+/// Whether a per-agent secret is set — presence ONLY. There is deliberately
+/// no public getter returning the value on a read path, and nothing here
+/// may ever reach an API response body; `app_perception`'s settings surface
+/// holds the same line with an explicit `// NEVER include the value`.
+///
+/// Tri-state on purpose: a keychain that could not be READ is not the same
+/// fact as a secret that is not SET, and collapsing the two would tell the
+/// user to re-enter a credential they already have. Unreadable reasons come
+/// only from `ConfigError` metadata; no successfully read value is formatted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretPresence {
+    Present,
+    Absent,
+    /// The store could not be read; carries the reason for the surface to show.
+    Unreadable(String),
+}
+
+pub fn agent_secret_presence(agent_id: &str, name: &str) -> SecretPresence {
+    match Config::global().get_secret::<serde_json::Value>(&agent_secret_key(agent_id, name)) {
+        Ok(_) => SecretPresence::Present,
+        Err(ConfigError::NotFound(_)) => SecretPresence::Absent,
+        Err(error) => SecretPresence::Unreadable(error.to_string()),
+    }
+}
 
 /// Placeholder persona key carried into
 /// [`spectral::graph::RecognitionContext::persona`] at every recall site.
@@ -280,6 +320,16 @@ pub enum WorkerEngineKind {
 }
 
 impl WorkerEngineKind {
+    /// Whether an extension grant on this worker is actually ENFORCED at
+    /// dispatch, or merely advisory. Only the in-process subagent runs on a
+    /// tool set this process composes; an external or supervised CLI brings its
+    /// own tools and this process cannot restrict them, so a grant there is a
+    /// statement of intent, not a control. Surfaces must say which — a grant
+    /// shown as enforced when it is not would be a false absolute.
+    pub fn grants_enforced(&self) -> bool {
+        matches!(self, Self::InternalSubagent)
+    }
+
     /// Short, stable label for surfacing in the API / self-knowledge.
     pub fn label(&self) -> &'static str {
         match self {
@@ -318,6 +368,19 @@ pub struct WorkerPersona {
     /// the single session model (no baked default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_role: Option<String>,
+    /// Which extensions this persona may use when a goal is dispatched to it,
+    /// by extension key (`name_to_key` form, e.g. `developer`, `bravesearch`).
+    ///
+    /// `None` (the field absent from agent.yaml) means INHERIT the global
+    /// enabled set unchanged — exactly the behaviour before grants existed.
+    /// `Some(list)` NARROWS: resolution keeps only the extensions in the list.
+    ///
+    /// A grant can only narrow, never widen. Resolution is a filter over the
+    /// set the run would already have got, so an extension that is globally
+    /// disabled can never be re-enabled for one agent by granting it — a grant
+    /// that could widen would be a privilege-escalation seam.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extension_grants: Option<Vec<String>>,
     /// How to check if this worker is available on this machine.
     /// "bin_exists:<name>" | "api_credential:<env_var>" | "model_loaded:<model>" | "always"
     #[serde(default = "default_availability")]
@@ -347,6 +410,7 @@ impl Default for WorkerPersona {
             tone: String::new(),
             tool_kinds: Vec::new(),
             workflow_role: None,
+            extension_grants: None,
             availability_check: default_availability(),
             cost_tier: default_cost_tier(),
             engine: WorkerEngineKind::default(),
@@ -780,6 +844,84 @@ tone: concise
         assert!(persona.tool_kinds.is_empty());
         assert_eq!(persona.availability_check, "always");
         assert_eq!(persona.cost_tier, "local_free");
+        assert_eq!(persona.extension_grants, None);
+    }
+
+    /// Older agent files must inherit extensions without being rewritten with
+    /// a null marker that would make an absent policy look explicitly set.
+    #[test]
+    fn absent_extension_grants_stay_absent_across_serde() {
+        let persona: WorkerPersona = serde_yaml::from_str("first_name: Legacy\n").unwrap();
+        assert_eq!(persona.extension_grants, None);
+
+        let serialized = serde_yaml::to_string(&persona).unwrap();
+        assert!(!serialized.contains("extension_grants"));
+    }
+
+    /// The delimiter must prevent normalized component boundaries from
+    /// aliasing, while still separating agents that share a service name.
+    #[test]
+    fn agent_secret_keys_cannot_alias_across_agents() {
+        assert_ne!(
+            agent_secret_key("claude", "code_key"),
+            agent_secret_key("claude_code", "key")
+        );
+        assert_ne!(
+            agent_secret_key("researcher", "github_token"),
+            agent_secret_key("reviewer", "github_token")
+        );
+    }
+
+    /// Path-like and dotted input must become inert key material rather than
+    /// retaining separators that could escape the intended flat namespace.
+    #[test]
+    fn agent_secret_keys_normalise_untrusted_components() {
+        assert_eq!(
+            agent_secret_key("../Research.Agent", "tokens/api.key"),
+            "agent_secret.___research_agent.tokens_api_key"
+        );
+    }
+
+    #[test]
+    fn unset_agent_secret_is_absent() {
+        assert_eq!(
+            agent_secret_presence("presence_test_agent", "definitely_unset_secret"),
+            SecretPresence::Absent
+        );
+    }
+
+    #[test]
+    fn secret_presence_variants_serialize_distinctly() {
+        let present = serde_json::to_value(SecretPresence::Present).unwrap();
+        let absent = serde_json::to_value(SecretPresence::Absent).unwrap();
+        let unreadable =
+            serde_json::to_value(SecretPresence::Unreadable("store locked".to_string())).unwrap();
+
+        assert_eq!(present, serde_json::json!("present"));
+        assert_eq!(absent, serde_json::json!("absent"));
+        assert_eq!(
+            unreadable,
+            serde_json::json!({ "unreadable": "store locked" })
+        );
+        assert_ne!(present, absent);
+        assert_ne!(absent, unreadable);
+    }
+
+    #[test]
+    fn extension_grant_enforcement_is_pinned_per_engine_kind() {
+        // If a future engine gains real enforcement, update this assertion
+        // deliberately alongside the dispatch implementation.
+        assert!(WorkerEngineKind::InternalSubagent.grants_enforced());
+        assert!(!WorkerEngineKind::ExternalCli {
+            bin: "claude".to_string(),
+            args: Vec::new(),
+        }
+        .grants_enforced());
+        assert!(!WorkerEngineKind::SupervisedCli {
+            bin: "claude".to_string(),
+        }
+        .grants_enforced());
+        assert!(!WorkerEngineKind::Pending.grants_enforced());
     }
 
     #[test]

@@ -2,6 +2,7 @@ pub mod action_required;
 pub mod activity;
 pub mod agent;
 pub mod agents;
+pub mod agents_surface;
 pub mod analytics_attribution;
 pub mod analytics_classify;
 pub mod analytics_funnel;
@@ -205,6 +206,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(decisions::routes(state.clone()))
         .merge(devices::routes(state.clone()))
         .merge(agents::routes(state.clone()))
+        .merge(agents_surface::routes(state.clone()))
         // Voice HTTP endpoints — on-demand model downloader + synth primitive
         // (the public `/voice` WS is merged above; these are bearer-protected).
         .merge(voice::http_routes(state.clone()))
