@@ -1190,9 +1190,9 @@ pub(crate) async fn dispatch_goal_fn(
                 // goal is a README or a concurrency rewrite, so every goal a
                 // worker took started on the same rung.
                 //
-                // The assessment is deterministic and reads no self-declared
-                // difficulty (see `cost_router::assess`), so a goal cannot argue
-                // itself onto the expensive model. It only chooses the STARTING
+                // The assessment is deterministic (see `cost_router::assess`): free
+                // text can only lower the tier; only structure, an explicit pin,
+                // and explicit tags can raise it. It only chooses the STARTING
                 // rung — the reactive ladder still owns the outcome, and an
                 // under-tiered goal escalates on its own verify failure.
                 let assessment = crate::cost_router::assess_goal(

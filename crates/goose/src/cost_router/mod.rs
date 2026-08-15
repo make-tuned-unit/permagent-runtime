@@ -122,9 +122,10 @@ pub const COST_OPTIMIZER_FEATURE: crate::agents::self_knowledge::FeatureDescript
              latency-tolerant sub-work is dispatched to SEPARATE cheaper-tier subagents, and a \
              cache-heavy role routed to a non-caching provider is flagged at dispatch. Every \
              dispatched GOAL is additionally assessed to a starting tier before any model runs: \
-             a deterministic, zero-LLM read of the goal's structure (acceptance-criteria count, \
-             breadth) and kind-of-work vocabulary — never its self-declared difficulty, so a \
-             goal cannot talk itself onto an expensive model. Simple work starts cheap; a \
+             a deterministic, zero-LLM read in which the tier is raised only by structure \
+             (acceptance-criteria count, breadth), an explicit tag, or an explicit pin — never \
+             by the wording of the goal's own title and description, which can only route it \
+             cheaper. Simple work starts cheap; a \
              verify failure climbs the configured escalation ladder carrying the prior \
              attempt's diff, and the user can pin a tier explicitly with metadata.tier on the \
              goal. Worker selection ranks by real marginal cost (local free, then flat-rate \
