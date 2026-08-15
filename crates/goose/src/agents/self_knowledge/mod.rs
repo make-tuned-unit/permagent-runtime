@@ -1701,12 +1701,20 @@ mod tests {
     // the agent can only state that guardrail correctly by naming them. Its
     // sibling `orchestrator` needs no entry only because it happens to be a
     // single word, so the tool-shaped-token scan never sees it.
+    // `decision_inbox` is an ASPECT of `observe_app` (a surface it can read),
+    // not a tool. It is named in the app_awareness descriptor because `inbox`
+    // and `decision_inbox` are two different surfaces — Downloads intake versus
+    // what is waiting on the user's approval — and the agent picks the wrong one
+    // unless the prose distinguishes them. Its sibling aspects (`grow`, `trace`,
+    // `brain`, …) need no entry only because they are single words the
+    // tool-shaped-token scan never sees.
     const NON_TOOL_PROSE_TOKENS: &[&str] = &[
         "sub_recipes",
         "worker_persona",
         "strix_llm",
         "steward_scan_enabled",
         "recipe_author",
+        "decision_inbox",
     ];
 
     /// Every tool name that exists in the runtime: the statically-derived
