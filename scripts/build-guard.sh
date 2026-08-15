@@ -46,7 +46,12 @@ WARN_ONLY=0
 LOCK_TIMEOUT="${LOCK_TIMEOUT:-1800}"  # max seconds to wait for the build lock
 DATA_VOL="${DATA_VOL:-/System/Volumes/Data}"
 ALLOW_SHARED_TARGET="${ALLOW_SHARED_TARGET:-0}"
-WORKTREES_ROOT="${WORKTREES_ROOT:-$HOME/dev/permagent-worktrees}"
+# Derived from where this checkout actually lives, not a guessed absolute path.
+# It was hardcoded to ~/dev/permagent-worktrees until 2026-08-14, while the
+# worktrees sat under ~/Documents/dev/permagent-worktrees — so the lane check
+# below matched nothing and #584 silently protected nothing on this machine. A
+# guard that believes it is guarding is worse than no guard.
+WORKTREES_ROOT="${WORKTREES_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/permagent-worktrees}"
 
 log() { printf '[build-guard %s] %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
 
