@@ -541,6 +541,15 @@ pub fn skill_is_proven(execution_count: i64) -> bool {
 /// the limited prompt slots go to skills the user actually relies on rather than
 /// whatever happened to be created most recently. Returns None if no active
 /// skills exist.
+///
+/// **Prompt-cache note.** This fragment rides in the byte-stable prefix (see
+/// `agents::prompt_manager::extra_is_volatile`), and `execution_count` moves
+/// *within* a session: a skill firing can re-rank the list or flip a `[proven]`
+/// marker, which busts the cached prefix for the rest of the session. That is
+/// accepted rather than fixed by freezing the ranking, because the order carries
+/// salience — proven-first is what tells the agent which approach to reach for,
+/// and a snapshot-at-session-start ranking would hand it a stale answer to buy a
+/// cache hit. The drift fires at most once per skill graduation, not per turn.
 pub async fn build_skills_prompt(pool: &Pool<Sqlite>) -> Result<Option<String>, String> {
     let rows = sqlx::query(
         "SELECT s.name, s.description, s.definition_json, s.created_at, s.skill_path,

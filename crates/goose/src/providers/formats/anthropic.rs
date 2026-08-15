@@ -1,5 +1,5 @@
 use crate::conversation::message::{Message, MessageContent};
-use crate::cost_router::cache::CacheTtl;
+use crate::cost_router::cache::{CacheTtl, SystemPromptParts};
 use crate::mcp_utils::extract_text_from_resource;
 use crate::model::ModelConfig;
 use crate::providers::base::Usage;
@@ -408,16 +408,45 @@ pub fn format_system(system: &str) -> Value {
 /// stays canonical order. TTL is applied to every breakpoint later, in
 /// [`apply_cache_ttl`].
 pub fn format_system_with_read_only(system: &str, read_only_files: &[ReadOnlyFile]) -> Value {
+    format_system_parts(
+        &SystemPromptParts::all_stable(system.to_string()),
+        read_only_files,
+    )
+}
+
+/// Convert a stable/volatile-split system prompt into Anthropic's system spec.
+///
+/// Emits the stable prefix (plus any pinned read-only context) as the FIRST text
+/// block, carrying the sole `cache_control` marker, and the volatile suffix as a
+/// SECOND, unmarked block. Anthropic caches everything up to and including a
+/// marked block, so the turn-specific tail can be rewritten every turn without
+/// touching the cached prefix — which is the whole point. A second block adds no
+/// breakpoint, so the 4-breakpoint cap is untouched.
+///
+/// With an empty volatile suffix this produces exactly one block and is
+/// byte-identical to the pre-split payload.
+pub fn format_system_parts(system: &SystemPromptParts, read_only_files: &[ReadOnlyFile]) -> Value {
+    let stable = system.stable_prefix();
     let text = match format_read_only_files(read_only_files) {
-        Some(block) if system.is_empty() => block,
-        Some(block) => format!("{system}\n\n{block}"),
-        None => system.to_string(),
+        Some(block) if stable.is_empty() => block,
+        Some(block) => format!("{stable}\n\n{block}"),
+        None => stable.to_string(),
     };
-    json!([{
+    let mut blocks = vec![json!({
         TYPE_FIELD: TEXT_TYPE,
         TEXT_TYPE: text,
         CACHE_CONTROL_FIELD: cache_control(CacheTtl::FiveMinute)
-    }])
+    })];
+    if !system.volatile_suffix().is_empty() {
+        // Deliberately NO cache_control: a breakpoint here would cache a block
+        // that changes every turn, paying the 1.25× write premium each time for
+        // a read that can never hit.
+        blocks.push(json!({
+            TYPE_FIELD: TEXT_TYPE,
+            TEXT_TYPE: system.volatile_suffix(),
+        }));
+    }
+    Value::Array(blocks)
 }
 
 /// Upgrade every `cache_control` breakpoint already present in `payload` to the
@@ -720,9 +749,31 @@ pub fn create_request_cached(
     read_only_files: &[ReadOnlyFile],
     ttl: CacheTtl,
 ) -> Result<Value> {
+    create_request_split(
+        model_config,
+        &SystemPromptParts::all_stable(system.to_string()),
+        messages,
+        tools,
+        read_only_files,
+        ttl,
+    )
+}
+
+/// [`create_request_cached`] with the system prompt split into its byte-stable
+/// prefix and its turn-volatile suffix, so only the prefix carries the
+/// `cache_control` breakpoint. Passing an all-stable prompt reproduces
+/// [`create_request_cached`] byte-for-byte.
+pub fn create_request_split(
+    model_config: &ModelConfig,
+    system: &SystemPromptParts,
+    messages: &[Message],
+    tools: &[Tool],
+    read_only_files: &[ReadOnlyFile],
+    ttl: CacheTtl,
+) -> Result<Value> {
     let anthropic_messages = format_messages(messages);
     let tool_specs = format_tools(tools);
-    let system_spec = format_system_with_read_only(system, read_only_files);
+    let system_spec = format_system_parts(system, read_only_files);
 
     if anthropic_messages.is_empty() {
         return Err(anyhow!("No valid messages to send to Anthropic API"));
@@ -738,6 +789,8 @@ pub fn create_request_cached(
     // Emit the system block whenever there is either a base prompt or pinned
     // read-only context — read-only context alone must still be sent (and cached).
     if !system.is_empty() || !read_only_files.is_empty() {
+        // (`is_empty` covers both halves — a prompt that is only a volatile
+        // suffix still has to be sent.)
         payload
             .as_object_mut()
             .unwrap()
@@ -2042,6 +2095,109 @@ mod tests {
             .as_str()
             .unwrap()
             .contains(READ_ONLY_FILES_OPEN));
+    }
+
+    /// The split's payload contract: the volatile suffix becomes a SECOND system
+    /// block that carries no breakpoint, so rewriting it every turn leaves the
+    /// cached first block untouched.
+    #[test]
+    fn only_the_stable_prefix_carries_the_system_breakpoint() {
+        let parts = SystemPromptParts::new(
+            cache_guard_system(),
+            "\n# Live Status\n- 3 pending\n".into(),
+        );
+        let spec = format_system_parts(&parts, &[]);
+        let blocks = spec.as_array().unwrap();
+
+        assert_eq!(
+            blocks.len(),
+            2,
+            "expected a stable block and a volatile one"
+        );
+        assert!(
+            blocks[0].get("cache_control").is_some(),
+            "the stable prefix must anchor the breakpoint"
+        );
+        assert!(
+            blocks[1].get("cache_control").is_none(),
+            "a breakpoint on the volatile block would pay the 1.25x write premium \
+             every turn for a read that can never hit"
+        );
+        assert_eq!(blocks[1]["text"], json!("\n# Live Status\n- 3 pending\n"));
+        // The volatile half is behind the breakpoint, not deleted.
+        assert!(!blocks[0]["text"].as_str().unwrap().contains("3 pending"));
+    }
+
+    /// An all-stable prompt must produce exactly the pre-split payload — the
+    /// split is opt-in, not a silent rewrite of every provider's request. Pinned
+    /// against the literal expected shape rather than against `format_system`,
+    /// which now shares the same code path and would make this tautological.
+    #[test]
+    fn an_all_stable_prompt_is_the_single_block_payload() {
+        let system = cache_guard_system();
+        let spec = format_system_parts(&SystemPromptParts::all_stable(system.clone()), &[]);
+        assert_eq!(
+            spec,
+            json!([{
+                "type": "text",
+                "text": system,
+                "cache_control": { "type": "ephemeral" }
+            }]),
+            "an all-stable prompt must be exactly one cached text block"
+        );
+        // …and with read-only context pinned, still ONE block (the read-only
+        // content folds into the cached block, never a second one).
+        let with_ro = format_system_parts(
+            &SystemPromptParts::all_stable(system),
+            &cache_guard_read_only_files(),
+        );
+        assert_eq!(with_ro.as_array().unwrap().len(), 1);
+        assert!(with_ro[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains(READ_ONLY_FILES_OPEN));
+    }
+
+    /// The payoff, at the payload level: a turn whose live status changed still
+    /// sends a byte-identical cached block. Before the split, the same change
+    /// rewrote the single system block and discarded the whole warm prefix.
+    #[test]
+    fn a_changed_volatile_suffix_leaves_the_cached_block_untouched() {
+        let _env = no_thinking_env();
+        let config = cfg("claude-opus-4-8");
+        let tools = cache_guard_tools();
+        let stable = cache_guard_system();
+
+        let request = |volatile: &str| {
+            create_request_split(
+                &config,
+                &SystemPromptParts::new(stable.clone(), volatile.to_string()),
+                &[Message::user().with_text("go")],
+                &tools,
+                &[],
+                CacheTtl::FiveMinute,
+            )
+            .unwrap()
+        };
+
+        let turn1 = request("\n# Live Status\n- 0 described, 0 pending\n");
+        let turn2 = request("\n# Live Status\n- 4 described, 12 pending\n");
+
+        assert_eq!(
+            turn1["system"][0], turn2["system"][0],
+            "the cached system block must not move when only live status changed"
+        );
+        assert_ne!(turn1["system"][1], turn2["system"][1]);
+        assert_eq!(turn1["tools"], turn2["tools"]);
+
+        // Guard the reason this works: exactly one breakpoint in the system spec.
+        let breakpoints = turn2["system"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|b| b.get("cache_control").is_some())
+            .count();
+        assert_eq!(breakpoints, 1);
     }
 
     #[test]

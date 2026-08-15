@@ -354,9 +354,31 @@ pub fn orchestrator_dispatch_active() -> bool {
 }
 
 impl SelfKnowledgeBuilder {
-    /// Build the full brief, grouped by category. Deterministic output (tools
-    /// sorted by id) so it is prompt-cache- and snapshot-stable.
+    /// The whole brief as one string — the stable inventory followed by the live
+    /// status block. Kept for callers with no cache breakpoint to place; the
+    /// prompt path uses [`build_parts`](Self::build_parts).
     pub fn build(&self) -> String {
+        let (stable, volatile) = self.build_parts();
+        format!("{stable}{volatile}")
+    }
+
+    /// Build the brief split into its byte-stable half and its turn-volatile
+    /// half.
+    ///
+    /// The **stable** half is the capability inventory: who the agent is, the
+    /// tools/workers/surfaces/guardrails it has. It changes only when the user
+    /// changes something (renames the persona, enables an extension) — and then
+    /// it *should* bust the cache, because the agent's description of itself
+    /// genuinely changed.
+    ///
+    /// The **volatile** half is everything that moves on its own: unread
+    /// briefings (Info-severity ones are acknowledged the moment they are
+    /// rendered, so turn N+1 differs from turn N *by construction*), live worker
+    /// counters, and worker availability probes that do live HTTP. None of it is
+    /// dropped — dropping it would blind the agent to what its workers just
+    /// reported — it just rides after the cache breakpoint, where changing it
+    /// costs its own tokens instead of the whole prompt.
+    pub fn build_parts(&self) -> (String, String) {
         let mut out = String::new();
         let name = &self.agent_display_name;
 
@@ -367,6 +389,128 @@ impl SelfKnowledgeBuilder {
             "You are {name}. The following is an authoritative, live inventory of \
              what you (the Permagent runtime) can actually do. Trust it over any \
              assumption about your own abilities."
+        )
+        .ok();
+
+        // ── Tools ──
+        writeln!(out, "\n## Tools you can call").ok();
+        let mut tools: Vec<&PlatformExtensionDef> = PLATFORM_EXTENSIONS
+            .values()
+            .filter(|d| !d.hidden && !TOOL_IDS_RENDERED_ELSEWHERE.contains(&d.name))
+            .collect();
+        tools.sort_by(|a, b| a.name.cmp(b.name));
+        for def in tools {
+            let desc = def.descriptor();
+            // Queryable live state: enabled if explicitly enabled in config, or
+            // on by default and not explicitly disabled.
+            let active =
+                crate::config::extensions::is_extension_enabled(def.name) || def.default_enabled;
+            let state = if active {
+                "active"
+            } else {
+                "available — enable to use"
+            };
+            writeln!(
+                out,
+                "- **{}** [{}] — {}. {}",
+                desc.display_name, state, desc.what_it_does, desc.why_it_matters
+            )
+            .ok();
+        }
+
+        // ── Workers ──
+        //
+        // The bullet is the worker's *description*, which does not move. Its
+        // live counters ("3 described, 7 pending") do move — every idle sweep
+        // rewrites them — so they render in the volatile block below instead of
+        // inline here, where they would have invalidated the whole cached prompt
+        // on a background job the user never touched.
+        writeln!(
+            out,
+            "\n## Background workers (run on their own, even when you are idle)"
+        )
+        .ok();
+        for d in WORKER_DESCRIPTORS {
+            // Flag-gated workers are omitted from the brief while disabled — off
+            // is a byte-for-byte no-op (see `worker_descriptor_visible`).
+            if !worker_descriptor_visible(d, self.flags) {
+                continue;
+            }
+            writeln!(
+                out,
+                "- **{}** — {}. {}",
+                d.display_name, d.what_it_does, d.why_it_matters
+            )
+            .ok();
+        }
+
+        // ── Surfaces ──
+        writeln!(out, "\n## Surfaces the user can see").ok();
+        for d in SURFACE_DESCRIPTORS {
+            // Static surfaces render editorial-only — no live status claim.
+            writeln!(
+                out,
+                "- **{}** — {}. {}",
+                d.display_name, d.what_it_does, d.why_it_matters
+            )
+            .ok();
+        }
+
+        // ── Guardrails ──
+        // Deterministic constraints the agent is subject to. Surfacing them is a
+        // correctness requirement: a guard the agent can't describe is a bug.
+        writeln!(
+            out,
+            "\n## Guardrails you operate under (deterministic — not your judgment)"
+        )
+        .ok();
+        for d in GUARD_DESCRIPTORS {
+            writeln!(
+                out,
+                "- **{}** — {}. {}",
+                d.display_name, d.what_it_does, d.why_it_matters
+            )
+            .ok();
+        }
+
+        (out, self.live_status_block())
+    }
+
+    /// The turn-volatile half of the brief.
+    ///
+    /// The rule is deliberately blunt — **anything `worker_live_state` reports
+    /// goes here**, plus briefings and dispatch probes — rather than a per-field
+    /// judgement about which counters "really" move. A carve-out list is exactly
+    /// the thing a later contributor extends without noticing they have put a
+    /// moving value back inside the cached block. The cost of the blunt rule is
+    /// ~60 uncached tokens a turn against a system prompt in the thousands.
+    ///
+    /// Empty string when there is nothing live at all, so the section never
+    /// renders as an empty heading.
+    fn live_status_block(&self) -> String {
+        let mut worker_states: Vec<(&'static str, String)> = Vec::new();
+        for d in WORKER_DESCRIPTORS {
+            // Same gate as the inventory half: a worker hidden from its
+            // description must not reappear here as a live-status line.
+            if !worker_descriptor_visible(d, self.flags) {
+                continue;
+            }
+            if let Some(state) = self.worker_live_state(d) {
+                worker_states.push((d.display_name, state));
+            }
+        }
+
+        let has_briefings = self.agent_briefings.is_some();
+        if !has_briefings && self.dispatchable_workers.is_empty() && worker_states.is_empty() {
+            return String::new();
+        }
+
+        let mut out = String::new();
+        writeln!(out, "\n# Live Status (this turn)").ok();
+        writeln!(
+            out,
+            "\nThis section is re-read every turn and changes on its own. Everything \
+             above it is fixed for the session."
         )
         .ok();
 
@@ -399,35 +543,9 @@ impl SelfKnowledgeBuilder {
             }
         }
 
-        // ── Tools ──
-        writeln!(out, "\n## Tools you can call").ok();
-        let mut tools: Vec<&PlatformExtensionDef> = PLATFORM_EXTENSIONS
-            .values()
-            .filter(|d| !d.hidden && !TOOL_IDS_RENDERED_ELSEWHERE.contains(&d.name))
-            .collect();
-        tools.sort_by(|a, b| a.name.cmp(b.name));
-        for def in tools {
-            let desc = def.descriptor();
-            // Queryable live state: enabled if explicitly enabled in config, or
-            // on by default and not explicitly disabled.
-            let active =
-                crate::config::extensions::is_extension_enabled(def.name) || def.default_enabled;
-            let state = if active {
-                "active"
-            } else {
-                "available — enable to use"
-            };
-            writeln!(
-                out,
-                "- **{}** [{}] — {}. {}",
-                desc.display_name, state, desc.what_it_does, desc.why_it_matters
-            )
-            .ok();
-        }
-
         // ── Workers you can dispatch goals to (dynamic; orchestrator) ──
-        // Populated only when orchestration is active; empty → omitted, keeping
-        // the brief snapshot-stable.
+        // Volatile because each entry's status is a live availability probe —
+        // `model_loaded:` does HTTP, and a model that unloads flips the line.
         if !self.dispatchable_workers.is_empty() {
             writeln!(out, "\n## Workers you can dispatch goals to").ok();
             for w in &self.dispatchable_workers {
@@ -435,61 +553,11 @@ impl SelfKnowledgeBuilder {
             }
         }
 
-        // ── Workers ──
-        writeln!(
-            out,
-            "\n## Background workers (run on their own, even when you are idle)"
-        )
-        .ok();
-        for d in WORKER_DESCRIPTORS {
-            // Flag-gated workers are omitted from the brief while disabled — off
-            // is a byte-for-byte no-op (see `worker_descriptor_visible`).
-            if !worker_descriptor_visible(d, self.flags) {
-                continue;
+        if !worker_states.is_empty() {
+            writeln!(out, "\n## Background worker status").ok();
+            for (display_name, state) in worker_states {
+                writeln!(out, "- **{display_name}** — {state}").ok();
             }
-            let live = self.worker_live_state(d);
-            match live {
-                Some(state) => writeln!(
-                    out,
-                    "- **{}** — {}. {} _(now: {})_",
-                    d.display_name, d.what_it_does, d.why_it_matters, state
-                ),
-                None => writeln!(
-                    out,
-                    "- **{}** — {}. {}",
-                    d.display_name, d.what_it_does, d.why_it_matters
-                ),
-            }
-            .ok();
-        }
-
-        // ── Surfaces ──
-        writeln!(out, "\n## Surfaces the user can see").ok();
-        for d in SURFACE_DESCRIPTORS {
-            // Static surfaces render editorial-only — no live status claim.
-            writeln!(
-                out,
-                "- **{}** — {}. {}",
-                d.display_name, d.what_it_does, d.why_it_matters
-            )
-            .ok();
-        }
-
-        // ── Guardrails ──
-        // Deterministic constraints the agent is subject to. Surfacing them is a
-        // correctness requirement: a guard the agent can't describe is a bug.
-        writeln!(
-            out,
-            "\n## Guardrails you operate under (deterministic — not your judgment)"
-        )
-        .ok();
-        for d in GUARD_DESCRIPTORS {
-            writeln!(
-                out,
-                "- **{}** — {}. {}",
-                d.display_name, d.what_it_does, d.why_it_matters
-            )
-            .ok();
         }
 
         out
@@ -854,7 +922,7 @@ mod tests {
     /// encoded whether the developer running the suite had the Guard switched on.
     #[test]
     fn config_backed_flags_reach_the_brief_only_through_the_builder() {
-        let build = |flags| {
+        let parts = |flags| {
             SelfKnowledgeBuilder {
                 agent_display_name: "Aria".to_string(),
                 scheduled_job_count: None,
@@ -862,7 +930,11 @@ mod tests {
                 dispatchable_workers: Vec::new(),
                 agent_briefings: None,
             }
-            .build()
+            .build_parts()
+        };
+        let build = |flags| {
+            let (stable, volatile) = parts(flags);
+            format!("{stable}{volatile}")
         };
         let off = build(FeatureFlags::default());
         let guard_on = build(FeatureFlags {
@@ -874,17 +946,43 @@ mod tests {
             ..FeatureFlags::default()
         });
 
-        // Off, the Guard is render-gated out entirely (not rendered as "off").
+        // Off, the Guard is render-gated out entirely (not rendered as "off"),
+        // in BOTH halves — a worker hidden from the inventory must not reappear
+        // as a live-status line behind the cache breakpoint.
         assert!(!off.contains("The Guard"));
         assert!(off.contains("off (initiative_enabled=false)"));
 
         assert!(guard_on.contains("**The Guard**"));
         assert!(guard_on.contains("on — the Guard is sweeping your projects"));
-        // One line added, and it is the Guard's: enabling the flag must not
-        // disturb anything else in the brief.
-        assert_eq!(off.lines().count() + 1, guard_on.lines().count());
+
+        // Enabling the flag must not disturb anything else in the brief. Since
+        // the prefix/suffix split, the Guard costs exactly TWO lines, one in
+        // each half, and the halves are checked separately so a line that moved
+        // across the breakpoint cannot hide inside a single total.
+        let (off_stable, off_volatile) = parts(FeatureFlags::default());
+        let (on_stable, on_volatile) = parts(FeatureFlags {
+            strix_enabled: true,
+            ..FeatureFlags::default()
+        });
+        // The inventory half gains the Guard's description…
+        assert_eq!(off_stable.lines().count() + 1, on_stable.lines().count());
         assert_eq!(
-            guard_on.lines().filter(|l| l.contains("The Guard")).count(),
+            on_stable
+                .lines()
+                .filter(|l| l.contains("The Guard"))
+                .count(),
+            1
+        );
+        // …and the live half gains its current state, and nothing more.
+        assert_eq!(
+            off_volatile.lines().count() + 1,
+            on_volatile.lines().count()
+        );
+        assert_eq!(
+            on_volatile
+                .lines()
+                .filter(|l| l.contains("The Guard"))
+                .count(),
             1
         );
 
@@ -992,16 +1090,24 @@ mod tests {
 
     #[test]
     fn librarian_is_not_double_listed_as_a_tool() {
-        let brief = SelfKnowledgeBuilder {
+        let (inventory, live) = SelfKnowledgeBuilder {
             agent_display_name: "Aria".to_string(),
             scheduled_job_count: None,
             flags: FeatureFlags::default(),
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
         }
-        .build();
-        // It appears once (under workers). Exactly one bold occurrence.
-        assert_eq!(brief.matches("**Librarian**").count(), 1);
+        .build_parts();
+        // It appears once in the inventory (under workers, not also under
+        // tools). Asserted against the inventory half specifically: the live
+        // half legitimately names it again to report its counters, and folding
+        // the two together would make this guard unable to tell a genuine
+        // double-listing from a status line.
+        assert_eq!(inventory.matches("**Librarian**").count(), 1);
+        assert!(
+            live.contains("**Librarian**"),
+            "the librarian's live counters belong in the volatile half"
+        );
     }
 
     /// The orchestrator self-describes its real capability — goal orchestration

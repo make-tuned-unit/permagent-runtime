@@ -128,6 +128,11 @@ fn default_env_filter() -> EnvFilter {
         // below the WARN floor (the #580 trap) and a silently-failing memory
         // pipeline looks identical to nobody coding.
         .add_directive("coding_session=info".parse().unwrap())
+        // Prompt caching: the prefix/tail split logs its hit and miss decisions
+        // under this target. A cache that silently stopped hitting is the whole
+        // failure mode worth watching, and without the directive those lines sit
+        // below the WARN floor (the #580 trap) and never appear.
+        .add_directive("prompt_cache=info".parse().unwrap())
         .add_directive(LevelFilter::WARN.into())
 }
 

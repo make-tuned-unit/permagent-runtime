@@ -37,6 +37,7 @@ use crate::conversation::message::{
     ToolRequest,
 };
 use crate::conversation::{debug_conversation_fix, fix_conversation, Conversation};
+use crate::cost_router::cache::SystemPromptParts;
 use crate::mcp_utils::ToolResult;
 use crate::permission::permission_inspector::PermissionInspector;
 use crate::permission::permission_judge::PermissionCheckResult;
@@ -181,7 +182,7 @@ pub struct ReplyContext {
     pub conversation: Conversation,
     pub tools: Vec<Tool>,
     pub toolshim_tools: Vec<Tool>,
-    pub system_prompt: String,
+    pub system_prompt: SystemPromptParts,
     pub goose_mode: GooseMode,
     pub tool_call_cut_off: usize,
     pub initial_messages: Vec<Message>,
@@ -1740,6 +1741,24 @@ impl Agent {
                     &working_dir,
                 ).await;
 
+                // Prompt-cache observability. The prefix hash is emitted BEFORE
+                // the request so a turn that errors out still leaves the hash in
+                // the log; the provider-reported hit/miss follows on the first
+                // usage frame below. A prefix hash that changes turn to turn
+                // within one session IS the regression this phase exists to
+                // prevent — without this line it is invisible and merely
+                // expensive.
+                let prefix_hash = system_prompt.prefix_hash();
+                debug!(
+                    target: "prompt_cache",
+                    session_id = %session_config.id,
+                    prefix.hash = %prefix_hash,
+                    prefix.bytes = system_prompt.stable_prefix().len(),
+                    volatile.bytes = system_prompt.volatile_suffix().len(),
+                    "system prompt prefix"
+                );
+                let mut logged_cache_result = false;
+
                 let mut stream = Self::stream_response_from_provider(
                     self.provider().await?,
                     &session_config.id,
@@ -1789,6 +1808,37 @@ impl Agent {
                             compaction_attempts = 0;
 
                             if let Some(ref usage) = usage {
+                                // Pair the prefix hash with what the provider
+                                // actually did with it. Once per turn: usage
+                                // frames arrive repeatedly on a stream and the
+                                // cache verdict is decided on the first one.
+                                //
+                                // `None` for both counters means the provider
+                                // reports no cache telemetry at all — logged as
+                                // "unreported", never as a miss. Claiming a miss
+                                // we did not observe would be the same defect in
+                                // the other direction.
+                                if !logged_cache_result {
+                                    logged_cache_result = true;
+                                    debug!(
+                                        target: "prompt_cache",
+                                        session_id = %session_config.id,
+                                        prefix.hash = %prefix_hash,
+                                        model = %usage.model,
+                                        cache.read_tokens = ?usage.usage.cache_read_input_tokens,
+                                        cache.write_tokens = ?usage.usage.cache_write_input_tokens,
+                                        cache.result = match (
+                                            usage.usage.cache_read_input_tokens,
+                                            usage.usage.cache_write_input_tokens,
+                                        ) {
+                                            (None, None) => "unreported",
+                                            (Some(r), _) if r > 0 => "hit",
+                                            (_, Some(w)) if w > 0 => "write",
+                                            _ => "miss",
+                                        },
+                                        "prompt cache result"
+                                    );
+                                }
                                 self.update_session_metrics(&session_config.id, session_config.schedule_id.clone(), usage, false).await?;
                             }
 

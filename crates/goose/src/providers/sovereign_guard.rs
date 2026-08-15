@@ -31,6 +31,7 @@ use super::errors::ProviderError;
 use super::retry::RetryConfig;
 use crate::config::GooseMode;
 use crate::conversation::message::Message;
+use crate::cost_router::cache::SystemPromptParts;
 use crate::model::ModelConfig;
 use crate::permission::PermissionConfirmation;
 use crate::sovereignty::{self, DataLocality, EgressKind, EgressRecord};
@@ -160,6 +161,45 @@ impl Provider for SovereignGuardProvider {
         }
         self.inner
             .stream(model_config, session_id, system, messages, tools)
+            .await
+    }
+
+    /// Forwards the split to the wrapped provider. Without this override the
+    /// default would flatten the prompt before it ever reached the inner
+    /// provider, so wrapping Anthropic in the sovereignty guard would silently
+    /// cost every session its prompt cache — a decorator quietly disabling a
+    /// property of the thing it decorates.
+    ///
+    /// The egress gate keys on the FULL prompt (`render()`), not the prefix:
+    /// what crosses the wire is the whole thing, and hashing only the cached
+    /// half would under-report what left the device.
+    async fn stream_split(
+        &self,
+        model_config: &ModelConfig,
+        session_id: &str,
+        system: &SystemPromptParts,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<MessageStream, ProviderError> {
+        if self.locality == DataLocality::Cloud {
+            let rendered = system.render();
+            let prompt = if sovereignty::capture_prompts_enabled() {
+                Some(sovereignty::render_prompt(&rendered, messages))
+            } else {
+                None
+            };
+            let content_hash = sovereignty::hash_prompt(&rendered, messages);
+            self.gate(
+                session_id,
+                &model_config.model_name,
+                EgressKind::Inference,
+                content_hash,
+                prompt,
+            )
+            .await?;
+        }
+        self.inner
+            .stream_split(model_config, session_id, system, messages, tools)
             .await
     }
 

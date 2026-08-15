@@ -15,6 +15,12 @@
 //!    reordering or mid-prefix insertion invalidates every token after the
 //!    change, so callers must assemble the prefix in canonical order.
 //!
+//! 3. Keep the prefix BYTE-STABLE across turns. Ordering the prefix correctly
+//!    buys nothing if its bytes drift anyway, and the system prompt is where
+//!    drift is easiest to introduce: a live counter, a relative timestamp, a
+//!    map iteration order. [`SystemPromptParts`] is the seam — turn-specific
+//!    context moves *behind* the breakpoint instead of being deleted.
+//!
 //! Pure policy — no async/IO.
 
 /// A segment of the cacheable prompt prefix, ordered most-static-first. The
@@ -120,6 +126,100 @@ impl CacheTtl {
     /// 5-minute default.
     pub fn is_extended(self) -> bool {
         matches!(self, CacheTtl::OneHour)
+    }
+}
+
+// ── The system prompt's stable/volatile split ──────────────────────────────
+
+/// A system prompt cut into the byte-stable prefix that carries the provider
+/// `cache_control` breakpoint and the turn-volatile suffix that rides *after*
+/// it, outside the cache.
+///
+/// Prompt caches are prefix-exact. A single drifting byte anywhere in the cached
+/// block — a live memory count, a briefing that was unread last turn and is
+/// acknowledged this turn, a probe result that flapped — invalidates every token
+/// after it, which in a single-block system prompt means the entire system
+/// prompt AND everything downstream of it. The fix is not to delete the volatile
+/// context (it is load-bearing: the agent must know what its workers just
+/// reported) but to move it behind the breakpoint, where changing it costs only
+/// its own tokens.
+///
+/// Lives here rather than in `agents::prompt_manager` because both sides need
+/// it: the prompt manager produces it, the provider request builders consume it,
+/// and neither should own a type the other depends on.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SystemPromptParts {
+    stable_prefix: String,
+    volatile_suffix: String,
+}
+
+impl SystemPromptParts {
+    pub fn new(stable_prefix: String, volatile_suffix: String) -> Self {
+        Self {
+            stable_prefix,
+            volatile_suffix,
+        }
+    }
+
+    /// A prompt with nothing volatile in it. Used by callers that assemble a
+    /// prompt with no turn-specific tail at all (recipe creation, subagents) and
+    /// by the flattening fallback in providers that cannot express a breakpoint.
+    pub fn all_stable(stable_prefix: String) -> Self {
+        Self {
+            stable_prefix,
+            volatile_suffix: String::new(),
+        }
+    }
+
+    /// The bytes that must not change from turn to turn within a session.
+    pub fn stable_prefix(&self) -> &str {
+        &self.stable_prefix
+    }
+
+    /// The turn-specific tail. Free to change every turn.
+    pub fn volatile_suffix(&self) -> &str {
+        &self.volatile_suffix
+    }
+
+    /// The whole prompt as one string, for providers with no cache breakpoint to
+    /// place. Concatenation only — no separator — so a caller that splits at a
+    /// different boundary still sends the same bytes.
+    pub fn render(&self) -> String {
+        format!("{}{}", self.stable_prefix, self.volatile_suffix)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.stable_prefix.is_empty() && self.volatile_suffix.is_empty()
+    }
+
+    /// Rewrite the stable prefix in place, keeping the volatile tail.
+    ///
+    /// For transforms that append *stable* text (the toolshim's tool-JSON
+    /// instructions). Deliberately not a `map_render`: folding the volatile tail
+    /// into the prefix would make the "stable" prefix change every turn, which is
+    /// the exact defect this type exists to prevent.
+    pub fn map_stable(self, f: impl FnOnce(String) -> String) -> Self {
+        Self {
+            stable_prefix: f(self.stable_prefix),
+            volatile_suffix: self.volatile_suffix,
+        }
+    }
+
+    /// Short SHA-256 prefix of the stable prefix, for the per-turn debug log.
+    ///
+    /// Truncated to 16 hex chars: this identifies a prefix across turns in a log,
+    /// it does not authenticate one, and a full 64-char digest on every turn is
+    /// noise. SHA-256 rather than `DefaultHasher` because the latter's output is
+    /// explicitly not guaranteed stable across Rust versions, and a hash that
+    /// silently changes under a toolchain bump would read as a cache regression.
+    pub fn prefix_hash(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(self.stable_prefix.as_bytes());
+        // Truncate the DIGEST BYTES, not the hex string: slicing a `String` by
+        // byte index is a panic waiting on a non-ASCII input, and there is no
+        // reason to build the full 64-char encoding just to throw half away.
+        hex::encode(&h.finalize()[..8])
     }
 }
 
@@ -321,6 +421,44 @@ mod tests {
         assert_eq!(CacheTtl::default(), CacheTtl::FiveMinute);
         assert!(!CacheTtl::FiveMinute.is_extended());
         assert!(CacheTtl::OneHour.is_extended());
+    }
+
+    // ── The stable/volatile split ─────────────────────────────────────────
+
+    #[test]
+    fn render_is_prefix_then_suffix_with_nothing_inserted() {
+        // The split must be invisible on the wire for providers that flatten it:
+        // a separator here would change the prompt every provider sees.
+        let parts = SystemPromptParts::new("STABLE".into(), "\n\nVOLATILE".into());
+        assert_eq!(parts.render(), "STABLE\n\nVOLATILE");
+        assert_eq!(
+            SystemPromptParts::all_stable("only".into()).render(),
+            "only"
+        );
+    }
+
+    #[test]
+    fn prefix_hash_ignores_the_volatile_tail() {
+        // The whole point: a changed tail must NOT read as a changed prefix, or
+        // the regression log would cry wolf on every turn.
+        let a = SystemPromptParts::new("STABLE".into(), "turn 1".into());
+        let b = SystemPromptParts::new("STABLE".into(), "turn 2 — totally different".into());
+        assert_eq!(a.prefix_hash(), b.prefix_hash());
+
+        let c = SystemPromptParts::new("STABLE ".into(), "turn 1".into());
+        assert_ne!(a.prefix_hash(), c.prefix_hash());
+        assert_eq!(a.prefix_hash().len(), 16);
+    }
+
+    #[test]
+    fn map_stable_leaves_the_volatile_tail_where_it_is() {
+        // The toolshim path appends to the prefix. If it folded the tail in, the
+        // "stable" prefix would change every turn — the defect, not the fix.
+        let parts = SystemPromptParts::new("base".into(), "\n\ntail".into())
+            .map_stable(|s| format!("{s}\n\ntools"));
+        assert_eq!(parts.stable_prefix(), "base\n\ntools");
+        assert_eq!(parts.volatile_suffix(), "\n\ntail");
+        assert_eq!(parts.render(), "base\n\ntools\n\ntail");
     }
 
     #[test]

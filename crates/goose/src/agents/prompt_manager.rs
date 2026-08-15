@@ -7,6 +7,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 use crate::agents::extension::ExtensionInfo;
+use crate::cost_router::cache::SystemPromptParts;
 use crate::hints::load_hints::build_gitignore;
 use crate::hints::{get_context_filenames, load_hint_files, SubdirectoryHintTracker};
 use crate::{
@@ -158,7 +159,28 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
         self
     }
 
+    /// The rendered system prompt as one string — the stable prefix followed by
+    /// the volatile suffix, with nothing inserted between them.
     pub fn build(self) -> String {
+        self.build_parts().render()
+    }
+
+    /// Build the system prompt split into the byte-stable prefix that carries
+    /// the provider `cache_control` breakpoint and the turn-volatile suffix that
+    /// rides after it.
+    ///
+    /// **What is in the prefix:** persona/identity, the capability inventory,
+    /// the extension instructions, the tool-count suggestion, the standing
+    /// policy sections, and every system-prompt extra that is not turn-specific
+    /// (saved skills, project hints, chat-mode, recipe instructions). These
+    /// change only when the *user* changes something, and a bust is then
+    /// correct.
+    ///
+    /// **What is in the suffix:** the live-status block (unread briefings, live
+    /// worker counters, worker availability probes) and the extras listed in
+    /// [`extra_is_volatile`]. Nothing here is dropped — it is context the agent
+    /// needs — it is only moved behind the breakpoint.
+    pub fn build_parts(self) -> SystemPromptParts {
         let mut extensions_info = self.extensions_info;
 
         // Add frontend instructions to extensions_info to simplify json rendering
@@ -227,15 +249,20 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
 
         // Assemble the permagent_self brief from the resolved display name (so
         // the persona name is interpolated, never hardcoded) plus any live
-        // scheduled-job count fetched at the call site.
-        let permagent_self_block = crate::agents::self_knowledge::SelfKnowledgeBuilder {
-            agent_display_name: display_name.clone(),
-            scheduled_job_count: self.scheduled_job_count,
-            flags: crate::agents::self_knowledge::FeatureFlags::from_live_config(),
-            dispatchable_workers: self.dispatchable_workers.clone(),
-            agent_briefings: self.agent_briefings.clone(),
-        }
-        .build();
+        // scheduled-job count fetched at the call site, and the feature flags
+        // read here rather than inside the renderer (#995 — so a test can render
+        // either state without this machine's config deciding for it). Split:
+        // the capability inventory is templated into the prompt body; the
+        // live-status half is held back for the volatile suffix.
+        let (permagent_self_block, live_status_block) =
+            crate::agents::self_knowledge::SelfKnowledgeBuilder {
+                agent_display_name: display_name.clone(),
+                scheduled_job_count: self.scheduled_job_count,
+                flags: crate::agents::self_knowledge::FeatureFlags::from_live_config(),
+                dispatchable_workers: self.dispatchable_workers.clone(),
+                agent_briefings: self.agent_briefings.clone(),
+            }
+            .build_parts();
 
         let context = SystemPromptContext {
             agent_persona_block: persona_block.clone(),
@@ -275,21 +302,98 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
             );
         }
 
-        if system_prompt_extras.is_empty() {
+        // Partition the extras by key BEFORE rendering. `system_prompt_extras`
+        // is an IndexMap, so its order is insertion order — which for a
+        // turn-specific extra means the position it lands in depends on which
+        // turn it first appeared. Splitting on the key (not the position) is
+        // what keeps the stable half's ordering independent of turn number.
+        let mut stable_extras: Vec<String> = Vec::new();
+        let mut volatile_extras: Vec<String> = Vec::new();
+        for (key, extra) in system_prompt_extras {
+            let sanitized = sanitize_unicode_tags(&extra);
+            if extra_is_volatile(&key) {
+                volatile_extras.push(sanitized);
+            } else {
+                stable_extras.push(sanitized);
+            }
+        }
+
+        let stable_prefix = if stable_extras.is_empty() {
             base_prompt
         } else {
-            let sanitized_system_prompt_extras: Vec<String> = system_prompt_extras
-                .into_values()
-                .map(|extra| sanitize_unicode_tags(&extra))
-                .collect();
-
             format!(
                 "{}\n\n# Additional Instructions:\n\n{}",
                 base_prompt,
-                sanitized_system_prompt_extras.join("\n\n")
+                stable_extras.join("\n\n")
             )
+        };
+
+        let mut volatile_suffix = live_status_block;
+        if !volatile_extras.is_empty() {
+            volatile_suffix.push_str("\n# Turn-specific Instructions\n\n");
+            volatile_suffix.push_str(&volatile_extras.join("\n\n"));
+            volatile_suffix.push('\n');
         }
+        // The suffix concatenates directly onto the prefix (no separator), so it
+        // must open its own gap; the prefix never ends in a blank line.
+        if !volatile_suffix.is_empty() {
+            volatile_suffix.insert(0, '\n');
+        }
+
+        SystemPromptParts::new(stable_prefix, volatile_suffix)
     }
+}
+
+/// System-prompt extras whose CONTENT is rebuilt from the current turn, keyed by
+/// the key their producer registers them under. These are the reason the prompt
+/// cache could not hit before this split: they sit inside `# Additional
+/// Instructions`, in the middle of an otherwise fixed prompt, and they change on
+/// literally every turn.
+///
+/// Each entry names its producer so a rename shows up in review:
+const VOLATILE_EXTRA_KEYS: &[&str] = &[
+    // Brain recall for THIS turn's user query — different memories, different
+    // count, every turn (`goose-server::brain_ops`).
+    "memory_recall",
+    // The ambient-activity digest: `EVENTS_LAST_5MIN`, the last terminal
+    // command, the current browser URL, and a `HH:MM`-stamped list of the last
+    // 20 events (`activity::context_builder::render_ambient_context`). This is
+    // the single most volatile block in the prompt — a wall-clock-windowed
+    // counter and per-event timestamps, rebuilt on every turn.
+    "ambient_context",
+    // Which tab/panel the user is looking at and what they have selected — it
+    // changes as they click around (`goose-server::routes::session_events`).
+    "app_context",
+    // The onboarding coach's once-a-day nudge: present on the turn after its
+    // cooldown elapses, absent the next (`teachable::proactive_learn_next_hint`).
+    "learn_next_offer",
+    // Auto-skill proposals, injected MID-TURN at tool dispatch when repetition
+    // is detected (`Agent::dispatch_tool_call`) — an insertion partway through
+    // a session by construction.
+    "skill_proposals",
+];
+
+/// Prefix for the per-subdirectory hint extras the agent accumulates as it works
+/// (`SubdirectoryHintTracker::load_new_hints` keys them by directory path), so
+/// each new directory touched appends another one mid-session.
+const SUBDIR_HINTS_KEY_PREFIX: &str = "subdir_hints:";
+
+/// Whether a system-prompt extra is turn-specific and therefore belongs behind
+/// the cache breakpoint rather than inside the cached prefix.
+///
+/// Keyed on the extra's key rather than sniffed from its content: content
+/// heuristics ("does it contain a timestamp?") fail open — a new volatile
+/// producer that happens not to match the heuristic silently rejoins the cached
+/// prefix, and the cost is invisible. A key list fails loudly instead: a new
+/// producer is either listed here or it is not, and the reviewer sees which.
+///
+/// Everything else defaults to STABLE, deliberately. The rest of the extras —
+/// recipe instructions, the app catalog, the final-output contract, the
+/// voice-reply style, saved skills, project hints — are set once for the
+/// session. Defaulting to volatile would push the whole `# Additional
+/// Instructions` block out of the cache to guard against a hypothetical.
+fn extra_is_volatile(key: &str) -> bool {
+    VOLATILE_EXTRA_KEYS.contains(&key) || key.starts_with(SUBDIR_HINTS_KEY_PREFIX)
 }
 
 impl PromptManager {
@@ -384,6 +488,211 @@ mod tests {
     use insta::assert_snapshot;
 
     use super::*;
+
+    fn briefing(summary: &str) -> crate::agents::self_knowledge::BriefingLine {
+        crate::agents::self_knowledge::BriefingLine {
+            from: "Steward".to_string(),
+            severity: "info".to_string(),
+            summary: summary.to_string(),
+        }
+    }
+
+    /// The property this whole phase exists for: within one session, two turns
+    /// whose only differences are turn-specific must produce a BYTE-IDENTICAL
+    /// stable prefix. Provider prompt caches are prefix-exact, so one drifting
+    /// byte here costs the entire cached prompt.
+    #[test]
+    fn stable_prefix_is_byte_identical_across_turns_in_one_session() {
+        // Pin config resolution to an empty temp root so the build is a
+        // function of its inputs, not of this machine's real config.
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let temp_root = tmp_dir.path().display().to_string();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(temp_root.as_str())),
+            ("PERMAGENT_PATH_ROOT", Some(temp_root.as_str())),
+            ("INITIATIVE_ENABLED", Some("false")),
+        ]);
+
+        let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+
+        // Turn 1: two jobs scheduled, one unread briefing, a worker available.
+        let turn1 = manager
+            .builder()
+            .with_extension(ExtensionInfo::new("test", "how to use it", true))
+            .with_scheduled_job_count(Some(2))
+            .with_agent_briefings(Some(vec![briefing("branch delete proposed")]))
+            .with_dispatchable_workers(vec![crate::agents::self_knowledge::DispatchableWorker {
+                display_name: "Claude Code".to_string(),
+                status: "available".to_string(),
+            }])
+            .build_parts();
+
+        // Turn 2: the scheduler fired, the briefing was acknowledged on read
+        // (Info-severity ones are — see `reply_parts`), the availability probe
+        // flipped. Every one of these moves on its own, with no user action.
+        let turn2 = manager
+            .builder()
+            .with_extension(ExtensionInfo::new("test", "how to use it", true))
+            .with_scheduled_job_count(Some(9))
+            .with_agent_briefings(Some(vec![]))
+            .with_dispatchable_workers(vec![crate::agents::self_knowledge::DispatchableWorker {
+                display_name: "Claude Code".to_string(),
+                status: "unavailable: not signed in".to_string(),
+            }])
+            .build_parts();
+
+        assert_eq!(
+            turn1.stable_prefix(),
+            turn2.stable_prefix(),
+            "turn-specific state leaked into the cached prefix"
+        );
+        assert_eq!(turn1.prefix_hash(), turn2.prefix_hash());
+
+        // Non-vacuity in the other direction: the turn-specific state was not
+        // silently dropped to buy the byte equality above — it moved.
+        assert_ne!(turn1.volatile_suffix(), turn2.volatile_suffix());
+        assert!(turn1.volatile_suffix().contains("branch delete proposed"));
+        assert!(turn1.volatile_suffix().contains("2 job(s) scheduled"));
+        assert!(turn2.volatile_suffix().contains("9 job(s) scheduled"));
+        assert!(turn2
+            .volatile_suffix()
+            .contains("unavailable: not signed in"));
+
+        // …and none of it is in the prefix.
+        for needle in [
+            "branch delete proposed",
+            "job(s) scheduled",
+            "unavailable: not signed in",
+        ] {
+            assert!(
+                !turn1.stable_prefix().contains(needle),
+                "{needle:?} belongs behind the cache breakpoint"
+            );
+        }
+    }
+
+    /// The guard against a vacuous pass. A test that asserts byte equality would
+    /// also pass if `stable_prefix()` returned a constant — so a deliberate
+    /// persona change MUST move the prefix.
+    #[tokio::test]
+    async fn a_persona_change_produces_a_different_stable_prefix() {
+        use crate::config::agent_identity::{PrimaryPersona, SharedPersona};
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        // Pin config resolution to an empty temp root so the build is a
+        // function of its inputs, not of this machine's real config.
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let temp_root = tmp_dir.path().display().to_string();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(temp_root.as_str())),
+            ("PERMAGENT_PATH_ROOT", Some(temp_root.as_str())),
+            ("INITIATIVE_ENABLED", Some("false")),
+        ]);
+
+        let build_with = |first_name: &str| {
+            let shared: SharedPersona = Arc::new(RwLock::new(PrimaryPersona {
+                first_name: first_name.into(),
+                ..PrimaryPersona::default()
+            }));
+            let mut manager =
+                PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+            manager.set_persona(shared);
+            manager.builder().build_parts()
+        };
+
+        let zephyr = build_with("Zephyr");
+        let nova = build_with("Nova");
+
+        assert_ne!(
+            zephyr.stable_prefix(),
+            nova.stable_prefix(),
+            "a persona rename must bust the cached prefix — it changes who the agent is"
+        );
+        assert_ne!(zephyr.prefix_hash(), nova.prefix_hash());
+        assert!(zephyr.stable_prefix().contains("Zephyr"));
+        assert!(nova.stable_prefix().contains("Nova"));
+
+        // Rebuilding the same persona is stable — the difference above is the
+        // persona, not build-to-build noise.
+        assert_eq!(build_with("Zephyr").stable_prefix(), zephyr.stable_prefix());
+    }
+
+    /// `build()` must remain exactly prefix + suffix. A separator inserted here
+    /// would mean flattening providers see a different prompt than split ones.
+    #[test]
+    fn build_is_the_concatenation_of_the_two_parts() {
+        // Pin config resolution to an empty temp root so the build is a
+        // function of its inputs, not of this machine's real config.
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let temp_root = tmp_dir.path().display().to_string();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(temp_root.as_str())),
+            ("PERMAGENT_PATH_ROOT", Some(temp_root.as_str())),
+            ("INITIATIVE_ENABLED", Some("false")),
+        ]);
+
+        let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+        let parts = manager
+            .builder()
+            .with_scheduled_job_count(Some(4))
+            .build_parts();
+        let flat = manager.builder().with_scheduled_job_count(Some(4)).build();
+
+        assert_eq!(
+            format!("{}{}", parts.stable_prefix(), parts.volatile_suffix()),
+            flat
+        );
+    }
+
+    /// Extras keyed as turn-specific ride behind the breakpoint; everything else
+    /// stays in the cached prefix. The onboarding nudge appears on one turn and
+    /// is gone the next — inside the prefix it would cost the whole prompt.
+    #[test]
+    fn volatile_extras_ride_behind_the_breakpoint() {
+        // Pin config resolution to an empty temp root so the build is a
+        // function of its inputs, not of this machine's real config.
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let temp_root = tmp_dir.path().display().to_string();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(temp_root.as_str())),
+            ("PERMAGENT_PATH_ROOT", Some(temp_root.as_str())),
+            ("INITIATIVE_ENABLED", Some("false")),
+        ]);
+
+        let mut manager =
+            PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+        // Every real producer of a per-turn extra, keyed exactly as it registers
+        // it. If one of these keys is renamed at its producer without being
+        // renamed here, this test still passes — which is why each entry in
+        // VOLATILE_EXTRA_KEYS names its producer in a comment.
+        for key in VOLATILE_EXTRA_KEYS {
+            manager.add_system_prompt_extra((*key).to_string(), format!("VOLATILE::{key}"));
+        }
+        manager.add_system_prompt_extra("subdir_hints:/x/y".into(), "VOLATILE::subdir".into());
+        // …and a representative stable one.
+        manager.add_system_prompt_extra("saved_skills".into(), "STABLE::skills".into());
+
+        let parts = manager.builder().build_parts();
+
+        assert!(parts.stable_prefix().contains("STABLE::skills"));
+        for key in VOLATILE_EXTRA_KEYS {
+            let marker = format!("VOLATILE::{key}");
+            assert!(
+                !parts.stable_prefix().contains(&marker),
+                "{key:?} is rebuilt every turn and must not sit in the cached prefix"
+            );
+            assert!(parts.volatile_suffix().contains(&marker));
+        }
+        assert!(!parts.stable_prefix().contains("VOLATILE::subdir"));
+        assert!(parts.volatile_suffix().contains("VOLATILE::subdir"));
+
+        // Nothing was dropped to buy the separation — determinism bought by
+        // deleting context is the failure mode this guards against.
+        for key in VOLATILE_EXTRA_KEYS {
+            assert!(parts.render().contains(&format!("VOLATILE::{key}")));
+        }
+    }
 
     #[test]
     fn test_build_system_prompt_sanitizes_override() {
