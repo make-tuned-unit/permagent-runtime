@@ -1086,6 +1086,11 @@ impl SessionStorage {
                     // without changing the pinned fresh-init base stamp.
                     spectral_schema::apply_incidents_schema(&self.pool).await?;
 
+                    // The activity journal shipped at v27 without append-only guards,
+                    // so DBs past v27 need them applied by table state. Steady-state
+                    // boots add nothing because the function is idempotent.
+                    spectral_schema::apply_activity_journal_schema(&self.pool).await?;
+
                     // Governed lesson pool (Phase 3). Same discipline: new tables
                     // only, idempotent, version-independent.
                     spectral_schema::apply_lessons_schema(&self.pool).await?;
