@@ -1333,6 +1333,26 @@ async fn run_external_cli(
     }
 }
 
+/// P0-3 — the only branch [`push_clean_work`] may publish for `run_id`. A
+/// worker with shell access can move its own worktree's HEAD, so the branch it
+/// is left on is verified against the run's goal branch rather than trusted:
+/// taking it at face value let a worker name `main` and route its commits
+/// around the review gate.
+fn resolve_push_branch(run_id: &str, head_branch: &str) -> Result<String, String> {
+    let expected = goal_branch_name(run_id);
+    let branch = if head_branch.is_empty() {
+        expected.clone()
+    } else {
+        head_branch.to_string()
+    };
+    if branch != expected || crate::steward::is_protected_branch(&branch) {
+        return Err(format!(
+            "refusing to push run {run_id}: worktree HEAD is on `{branch}`, not the run's goal branch `{expected}` — the goal branch is the only ref the completion path may publish"
+        ));
+    }
+    Ok(branch)
+}
+
 /// #522 — the Permagent-owned push: after `scan_committed_changes` passes,
 /// push the worker's commits to the run's `goal/<run_id>` branch on `origin`.
 /// NEVER to main: work used to land on `origin/main` before completion checks
@@ -1342,6 +1362,8 @@ async fn run_external_cli(
 /// Skipped when the worker made no commits. A push failure — unreachable
 /// remote, no remote at all — is logged loudly and left for
 /// review-in-worktree; it never fails the goal and never bypasses the scan.
+/// A worktree left on any branch other than the run's own (see
+/// [`resolve_push_branch`]) is refused outright — no fallback name, no push.
 pub(crate) async fn push_clean_work(worktree: &Path, baseline: &str) {
     let range = format!("{}..HEAD", baseline);
     let committed = git_text(worktree, &["rev-list", "--count", &range])
@@ -1353,22 +1375,24 @@ pub(crate) async fn push_clean_work(worktree: &Path, baseline: &str) {
         return; // nothing to publish (analysis/docs goal with no commits)
     }
 
-    // The worktree sits on its goal/<run_id> branch; push to the same-named
-    // remote ref. Pre-branch worktrees (detached HEAD) fall back to a branch
-    // named after the worktree dir — still never main.
-    let branch = {
-        let named = git_text(worktree, &["symbolic-ref", "--short", "HEAD"])
-            .await
-            .trim()
-            .to_string();
-        if named.is_empty() {
-            worktree
-                .file_name()
-                .and_then(|n| n.to_str())
-                .map(goal_branch_name)
-                .unwrap_or_else(|| "goal/unnamed-run".to_string())
-        } else {
-            named
+    // Only the run's goal branch may be published, including for detached HEAD.
+    let run_id = worktree
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unnamed-run");
+    let head = git_text(worktree, &["symbolic-ref", "--short", "HEAD"])
+        .await
+        .trim()
+        .to_string();
+    let branch = match resolve_push_branch(run_id, &head) {
+        Ok(branch) => branch,
+        Err(refusal) => {
+            tracing::error!(
+                worktree = %worktree.display(),
+                commits = committed,
+                "{refusal}"
+            );
+            return;
         }
     };
     let refspec = format!("HEAD:refs/heads/{}", branch);
@@ -2561,6 +2585,22 @@ mod tests {
         );
     }
 
+    /// The run's own goal branch is the only accepted name; a detached HEAD
+    /// resolves to it, and anything else — main, another run's goal branch —
+    /// is refused with the run id named so the log identifies the run.
+    #[test]
+    fn resolve_push_branch_only_accepts_the_runs_goal_branch() {
+        let run_id = "cli-resolve-push";
+        let expected = goal_branch_name(run_id);
+        assert_eq!(resolve_push_branch(run_id, &expected), Ok(expected.clone()));
+        assert_eq!(resolve_push_branch(run_id, ""), Ok(expected));
+
+        let main_error = resolve_push_branch(run_id, "main").unwrap_err();
+        assert!(main_error.contains(run_id));
+        assert!(main_error.contains("`main`"));
+        assert!(resolve_push_branch(run_id, "goal/another-run").is_err());
+    }
+
     /// After a clean scan, Permagent's own push (no blocking env) publishes
     /// the worker's commits to the run's goal branch — NEVER to main; with no
     /// commits it is a no-op.
@@ -2598,6 +2638,49 @@ mod tests {
         assert!(
             main_tip.starts_with(&baseline),
             "origin/main must NOT move on the completion path"
+        );
+    }
+
+    /// P0-3: a worker with shell access moves its worktree onto `main` and
+    /// carries its commits there. The Permagent-owned push must refuse rather
+    /// than land the work on origin/main, outside the review gate.
+    #[tokio::test]
+    async fn push_clean_work_refuses_worker_moved_head() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (repo, baseline) = init_repo_with_remote(tmp.path());
+        let run_id = "cli-moved-head";
+        let wt = create_goal_worktree(&repo, &baseline, run_id)
+            .await
+            .unwrap();
+        commit_in_worktree(&wt, "work.txt");
+
+        // `checkout -b main` is refused (main is checked out in the primary
+        // worktree), but moving the ref and then HEAD is not. Main must end up
+        // carrying the worker's commits: otherwise the no-commits gate returns
+        // before the branch is ever resolved and the test proves nothing.
+        let work_head = String::from_utf8(git(&wt, &["rev-parse", "HEAD"]).stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+        assert!(git(&wt, &["update-ref", "refs/heads/main", &work_head])
+            .status
+            .success());
+        assert!(git(&wt, &["symbolic-ref", "HEAD", "refs/heads/main"])
+            .status
+            .success());
+
+        push_clean_work(&wt, &baseline).await;
+
+        let main_tip =
+            String::from_utf8(git(&repo, &["ls-remote", "origin", "refs/heads/main"]).stdout)
+                .unwrap();
+        assert!(main_tip.starts_with(&baseline), "origin/main must not move");
+        let goal_ref = format!("refs/heads/{}", goal_branch_name(run_id));
+        let goal_tip =
+            String::from_utf8(git(&repo, &["ls-remote", "origin", &goal_ref]).stdout).unwrap();
+        assert!(
+            goal_tip.trim().is_empty(),
+            "the goal branch must not be pushed"
         );
     }
 
