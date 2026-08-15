@@ -81,7 +81,7 @@ async fn posthog_capture(
     // recorded in the append-only egress audit log — so telemetry is no longer an
     // egress the sovereignty story can't see. An audit-write failure also
     // suppresses the POST, so no unaudited telemetry leaves the machine.
-    let allowed = crate::sovereignty::guard_outbound_telemetry(
+    let allowed = crate::sovereignty::guard_outbound_egress(
         crate::sovereignty::EgressKind::Telemetry,
         POSTHOG_CAPTURE_URL,
         event_name,

@@ -261,8 +261,9 @@ absent because the services are absent.
 - **Content is hashed, not stored, by default** — only a SHA-256 content hash is
   recorded unless `sovereign_capture_prompts` is explicitly enabled
   (`sovereignty/mod.rs:41-42, 337-342`). Good data-minimization posture.
-- **Telemetry egress is under the same boundary** (`guard_outbound_telemetry`
-  `sovereignty/mod.rs:518-525`, wired into PostHog `posthog.rs:78-86`).
+- **Non-inference egress is under the same boundary** (`guard_outbound_egress`
+  in `sovereignty/mod.rs`, wired into PostHog telemetry `posthog.rs:78-86`, the
+  analytics fetch and drain, and the Guard's code scans).
 - **The egress log is user-visible** via `GET /api/security/egress-log`
   (`routes/security.rs:126-130`) and surfaced in the **Governance** control
   surface (`sovereignty/mod.rs:93-128`).

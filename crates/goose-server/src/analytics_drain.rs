@@ -158,8 +158,10 @@ pub fn spawn(state: Arc<AppState>) {
 }
 
 async fn run_once(state: &AppState) -> Result<(), String> {
-    // Outbound HTTP is not on the audited egress path, so sovereign mode has to
-    // be enforced here or it silently leaks (same contract as analytics.rs).
+    // The global off-switch stays a plain early return: this loop wakes every
+    // TICK, so auditing it here would write ~720 blocked rows a day per project
+    // for requests that were never built. The per-project guard below is the
+    // audited choke point, and it covers every request a pass actually makes.
     if permagent::sovereignty::global_sovereign_mode() {
         return Ok(());
     }
@@ -182,6 +184,19 @@ async fn run_once(state: &AppState) -> Result<(), String> {
         else {
             continue;
         };
+
+        // This is the audited choke point for outbound drain HTTP; a mid-pass
+        // sovereign flip or unwritable audit skips the project rather than
+        // egressing unaudited.
+        if !permagent::sovereignty::guard_outbound_egress(
+            permagent::sovereignty::EgressKind::Telemetry,
+            &drain_url,
+            &project.id,
+        )
+        .await
+        {
+            continue;
+        }
 
         let outcome = drain_project(&pool, &project.id, &drain_url, &secret, &mut config).await;
         // Persist the cursor/status regardless of outcome: a partial catch-up

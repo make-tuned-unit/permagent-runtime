@@ -55,6 +55,8 @@ const STARTUP_DELAY: Duration = Duration::from_secs(300);
 const FIRST_SWEEP_SETTLE: Duration = Duration::from_secs(15);
 /// Hard bound on one project's scan.
 const SCAN_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+/// Poll cadence for the mid-scan sovereignty re-check.
+const SOVEREIGN_POLL: Duration = Duration::from_secs(30);
 /// The default bucket is not a project Strix reports on.
 const PERSONAL_PROJECT_ID: &str = "00000000-0000-0000-0000-000000000001";
 
@@ -134,10 +136,8 @@ fn announce(state_label: &str) {
 }
 
 async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
-    // The scanner drives its OWN cloud LLM over the user's source. That is
-    // outbound egress the audited path never sees, so sovereign mode has to be
-    // enforced here or the data boundary leaks silently (same contract as
-    // analytics_drain::run_once).
+    // Sovereign mode is enforced and audited at the scan itself; this cheap
+    // early return only avoids pointless preflight and database work.
     if permagent::sovereignty::global_sovereign_mode() {
         tracing::info!(
             target: "permagentd::strix",
@@ -213,6 +213,37 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
             return Ok(());
         }
     };
+
+    // The audited choke point for the sweep. The scanner drives its OWN cloud
+    // LLM over the user's source, so this is real outbound egress that the
+    // provider guard never sees: it is recorded here — blocked or allowed —
+    // like any other cloud call, and a refusal (sovereign mode, or an audit the
+    // daemon cannot write) means no scan rather than an unlogged one.
+    let model = strix_model();
+    if !permagent::sovereignty::guard_outbound_egress(
+        permagent::sovereignty::EgressKind::CodeScan,
+        &model,
+        &project.name,
+    )
+    .await
+    {
+        let reason = if permagent::sovereignty::global_sovereign_mode() {
+            "sovereign mode"
+        } else {
+            "egress audit unavailable"
+        };
+        tracing::info!(
+            target: "permagentd::strix",
+            project = %project.name,
+            "scan refused: {reason}"
+        );
+        // Stamp anyway, for the same reason an unresolvable root does: a
+        // refused project must not pin the rotation.
+        if let Err(e) = stamp_last_scan(&pool, project).await {
+            tracing::warn!(target: "permagentd::strix", "last-scan stamp failed: {e}");
+        }
+        return Ok(());
+    }
 
     announce("working");
     let outcome = scan_project(&target).await;
@@ -430,6 +461,14 @@ fn security_report_markdown(project_name: &str, current: &[Finding], fresh: &[Fi
 const STRIX_LLM_KEY: &str = "strix_llm";
 const DEFAULT_STRIX_LLM: &str = "anthropic/claude-haiku-4-5-20251001";
 
+/// The cloud model the scanner drives — the destination the user's source
+/// actually reaches, and so what the egress audit records.
+fn strix_model() -> String {
+    permagent::config::Config::global()
+        .get_param::<String>(STRIX_LLM_KEY)
+        .unwrap_or_else(|_| DEFAULT_STRIX_LLM.to_string())
+}
+
 /// Build the scanner's LLM environment from Permagent's own config/keychain,
 /// so Guard setup never touches the launchd plist: the model rides
 /// `strix_llm`, and the API key is the SAME provider secret the user already
@@ -439,9 +478,7 @@ const DEFAULT_STRIX_LLM: &str = "anthropic/claude-haiku-4-5-20251001";
 fn scanner_env() -> Vec<(&'static str, String)> {
     let mut env = Vec::new();
     let config = permagent::config::Config::global();
-    let model = config
-        .get_param::<String>(STRIX_LLM_KEY)
-        .unwrap_or_else(|_| DEFAULT_STRIX_LLM.to_string());
+    let model = strix_model();
     if std::env::var("STRIX_LLM").is_err() {
         env.push(("STRIX_LLM", model.clone()));
     }
@@ -597,6 +634,48 @@ async fn kill_scan_tree(pid: u32) {
 #[cfg(not(unix))]
 async fn kill_scan_tree(_pid: u32) {}
 
+/// Wait for the scan under its `SCAN_TIMEOUT` bound, aborting it early if the
+/// sovereignty toggle flips mid-flight. Without the re-check, turning sovereign
+/// mode on during a scan left up to `SCAN_TIMEOUT` — twenty minutes — of a
+/// cloud model still reading the user's source, because the flag was only ever
+/// read at the top of the sweep. `sovereign` and `poll` are injected so the
+/// abort path is testable without process-global config or a 30-second wait.
+async fn wait_supervised(
+    child: tokio::process::Child,
+    sovereign: impl Fn() -> bool,
+    poll: Duration,
+) -> Result<std::process::Output, String> {
+    let pid = child.id();
+    let deadline = tokio::time::Instant::now() + SCAN_TIMEOUT;
+    let mut wait = std::pin::pin!(child.wait_with_output());
+    loop {
+        tokio::select! {
+            result = &mut wait => return result.map_err(|e| e.to_string()),
+            _ = tokio::time::sleep_until(deadline) => {
+                if let Some(pid) = pid {
+                    kill_scan_tree(pid).await;
+                }
+                return Err(format!(
+                    "scan exceeded its {}-minute bound (scanner killed; a Docker container it \
+                     started may need `docker ps` cleanup)",
+                    SCAN_TIMEOUT.as_secs() / 60
+                ));
+            }
+            _ = tokio::time::sleep(poll) => {
+                if sovereign() {
+                    if let Some(pid) = pid {
+                        kill_scan_tree(pid).await;
+                    }
+                    return Err(
+                        "scan aborted mid-flight: sovereign mode was turned on (scanner killed)"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+    }
+}
+
 async fn scan_project(target: &std::path::Path) -> Result<Vec<Finding>, String> {
     let mut cmd = tokio::process::Command::new(resolve_strix_bin());
     for (k, v) in scanner_env() {
@@ -636,21 +715,12 @@ async fn scan_project(target: &std::path::Path) -> Result<Vec<Finding>, String> 
     let child = cmd.spawn().map_err(|e| {
         format!("`strix` is not runnable ({e}) — install it and Docker to enable sweeps")
     })?;
-    // Copied before the handle moves into `wait_with_output`.
-    let pid = child.id();
-    let output = match tokio::time::timeout(SCAN_TIMEOUT, child.wait_with_output()).await {
-        Ok(result) => result.map_err(|e| e.to_string())?,
-        Err(_) => {
-            if let Some(pid) = pid {
-                kill_scan_tree(pid).await;
-            }
-            return Err(format!(
-                "scan exceeded its {}-minute bound (scanner killed; a Docker container it \
-                 started may need `docker ps` cleanup)",
-                SCAN_TIMEOUT.as_secs() / 60
-            ));
-        }
-    };
+    let output = wait_supervised(
+        child,
+        permagent::sovereignty::global_sovereign_mode,
+        SOVEREIGN_POLL,
+    )
+    .await?;
     if !output.status.success() {
         return Err(format!(
             "scanner exited {}: {}",
@@ -1003,6 +1073,49 @@ mod tests {
         assert!(
             !status.success(),
             "the scanner was signalled, not left to finish"
+        );
+    }
+
+    /// The toggle has to reach a scan already in flight: the sweep reads the
+    /// flag once, and a scan runs for up to twenty minutes on the user's source
+    /// against a cloud model. A stand-in long-running child proves the
+    /// supervision aborts rather than waiting out the bound.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_sovereign_flip_aborts_an_in_flight_scan() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tokio::process::Command;
+
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c")
+            .arg("sleep 60")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd.kill_on_drop(true);
+        permagent::subprocess::configure_subprocess(&mut cmd);
+        let child = cmd.spawn().expect("/bin/sh spawns");
+
+        let probe = Arc::new(AtomicBool::new(false));
+        let flip = Arc::clone(&probe);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            flip.store(true, Ordering::SeqCst);
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            wait_supervised(
+                child,
+                || probe.load(Ordering::SeqCst),
+                Duration::from_millis(20),
+            ),
+        )
+        .await
+        .expect("the abort must not wait out the 20-minute scan bound");
+        assert!(
+            result.unwrap_err().contains("sovereign mode"),
+            "the scan must end naming the sovereignty flip, not the timeout"
         );
     }
 }
