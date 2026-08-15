@@ -748,10 +748,14 @@ mod tests {
     async fn a_signalled_check_is_unprovable_and_says_why() {
         let dir = tempfile::tempdir().unwrap();
         let checks = vec![CompletionCheck::CommandExitZero {
-            // `/bin/sh -c` execs a single simple command, so the process we
-            // spawned is the one that takes the signal — the shape a real
-            // OOM-killed or crashing check actually has.
-            cmd: "sh -c 'kill -TERM $$'".to_string(),
+            // SIGKILL specifically, and not SIGTERM. A shell may CATCH a term
+            // and exit 143 rather than dying by it, which is what Linux `sh`
+            // does — the process then has an exit code, so this asserted Error
+            // and got Fail on ubuntu while passing on macOS. SIGKILL cannot be
+            // caught or turned into an exit status by any shell, so the wait
+            // status carries a signal on every unix. That is the shape a real
+            // OOM-killed check has anyway.
+            cmd: "sh -c 'kill -KILL $$'".to_string(),
             cwd: None,
             timeout_secs: 30,
         }];
@@ -759,7 +763,7 @@ mod tests {
         assert_eq!(results[0].status, CheckStatus::Error);
         assert_eq!(results[0].evidence.exit_code, None);
         let message = results[0].evidence.message.as_deref().unwrap_or_default();
-        assert!(message.contains("signal 15"), "message was {message:?}");
+        assert!(message.contains("signal 9"), "message was {message:?}");
         assert!(message.contains("cannot be told apart"));
     }
 
