@@ -24,9 +24,11 @@
 //!
 //! ## What it reads
 //!
-//! Signals that correlate with difficulty and are cheap to observe. It reads
-//! only STRUCTURE and explicit user intent, never a self-assessment of
-//! difficulty written into the goal body.
+//! Signals that correlate with difficulty and are cheap to observe, read with
+//! one asymmetry: the goal's free-text title and body can only route it DOWN.
+//! Raising the tier takes structure (breadth), an explicit tier pin, or an
+//! explicit `tags` entry — never prose, which is written by whoever, or
+//! whatever, filed the goal.
 
 use super::tier::Tier;
 
@@ -39,10 +41,10 @@ pub struct Assessment {
     pub reason: &'static str,
 }
 
-/// Words that mark work as reasoning-heavy rather than mechanical. Chosen for
-/// naming a KIND of work, not a degree of it: "complex", "hard" and "difficult"
-/// are deliberately absent — they are self-assessment, which is the thing this
-/// must not trust.
+/// Words that mark work as reasoning-heavy rather than mechanical. Matched only
+/// against explicit `tags` metadata — never title or description — so free text
+/// cannot promote a goal. Chosen for naming a KIND of work, not a degree of it:
+/// "complex", "hard" and "difficult" are deliberately absent.
 const HARD_SIGNALS: &[&str] = &[
     "architect",
     "architecture",
@@ -130,16 +132,26 @@ pub fn assess_goal(title: &str, description: &str, metadata: &serde_json::Value)
         };
     }
 
-    // 3. Vocabulary, over title AND body. Hard signals win ties: the cost of
-    //    under-tiering a hard goal is a wasted dispatch plus an escalation,
-    //    while over-tiering a simple one is a single cheap-ish call.
-    let haystack = format!("{} {}", title, description).to_lowercase();
-    if HARD_SIGNALS.iter().any(|s| haystack.contains(s)) {
+    // 3. Vocabulary, with the promotion path narrowed to explicit `tags`: the
+    //    title and body are prose the goal's author writes, so matching them
+    //    lets a goal name its way onto the expensive rung. Mechanical signals
+    //    still read title and body — they can only route DOWN.
+    let tagged_hard = metadata
+        .get("tags")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|tags| {
+            tags.iter().filter_map(serde_json::Value::as_str).any(|t| {
+                let t = t.to_lowercase();
+                HARD_SIGNALS.iter().any(|s| t.contains(s))
+            })
+        });
+    if tagged_hard {
         return Assessment {
             tier: Tier::Frontier,
-            reason: "names reasoning-heavy work",
+            reason: "tagged as reasoning-heavy work",
         };
     }
+    let haystack = format!("{} {}", title, description).to_lowercase();
     if MECHANICAL_SIGNALS.iter().any(|s| haystack.contains(s)) && criteria <= 1 {
         return Assessment {
             tier: Tier::LocalFree,
@@ -172,7 +184,7 @@ mod tests {
     }
 
     #[test]
-    fn a_readme_starts_local_and_a_refactor_starts_frontier() {
+    fn a_readme_starts_local_and_a_tagged_refactor_starts_frontier() {
         assert_eq!(
             assess_goal("Add a README.md", "", &meta(serde_json::json!({}))).tier,
             Tier::LocalFree
@@ -181,7 +193,34 @@ mod tests {
             assess_goal(
                 "Refactor the session store for concurrent access",
                 "",
-                &meta(serde_json::json!({}))
+                &meta(serde_json::json!({ "tags": ["refactor"] }))
+            )
+            .tier,
+            Tier::Frontier
+        );
+    }
+
+    /// A hard-signal word in the title names the SUBJECT of the work, not its
+    /// difficulty — a typo fix in a security doc is still a typo fix.
+    #[test]
+    fn free_text_hard_signal_cannot_promote() {
+        let a = assess_goal(
+            "Fix a typo in the security policy doc",
+            "",
+            &meta(serde_json::json!({})),
+        );
+        assert_eq!(a.tier, Tier::LocalFree, "{a:?}");
+    }
+
+    /// Explicit tags DO promote — the structured field is the only vocabulary
+    /// path that can raise the tier.
+    #[test]
+    fn explicit_tags_do_promote() {
+        assert_eq!(
+            assess_goal(
+                "Wire the widget to the gizmo",
+                "",
+                &meta(serde_json::json!({ "tags": ["security"] }))
             )
             .tier,
             Tier::Frontier
@@ -189,7 +228,8 @@ mod tests {
     }
 
     /// The whole point of not asking a model: a goal that CLAIMS difficulty
-    /// must not be able to promote itself. "complex"/"hard" are not signals.
+    /// must not be able to promote itself. "complex"/"hard" are not signals,
+    /// nor are hard-signal words buried in the free-text body.
     #[test]
     fn a_goal_cannot_talk_itself_into_the_expensive_tier() {
         let a = assess_goal(
@@ -201,6 +241,16 @@ mod tests {
             a.tier,
             Tier::LocalFree,
             "self-declared difficulty must carry no weight: {a:?}"
+        );
+        let b = assess_goal(
+            "Update the changelog",
+            "Needs security and performance review before merge.",
+            &meta(serde_json::json!({})),
+        );
+        assert_ne!(
+            b.tier,
+            Tier::Frontier,
+            "hard-signal words in the body must not promote: {b:?}"
         );
     }
 
