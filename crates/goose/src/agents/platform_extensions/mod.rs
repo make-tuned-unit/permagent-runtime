@@ -136,6 +136,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: false,
                 why_it_matters:
                     "Reach for it before editing unfamiliar code — it maps structure and call graphs so you change the right thing.",
+                required_secrets: &[],
                 teaching: &[],
                 client_factory: |ctx| Box::new(analyze::AnalyzeClient::new(ctx).unwrap()),
             },
@@ -166,6 +167,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                      only reading it. open_website also opens a LOCAL dev server \
                      (http://localhost:PORT) in the browser, so after you build or scaffold an \
                      app you can show the user the running result — the coding last mile.",
+                required_secrets: &[],
                 teaching: &[
                     crate::agents::self_knowledge::TeachingStep {
                         title: "Browse together",
@@ -207,6 +209,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: false,
                 why_it_matters:
                     "Ground a project's Grow strategy — its Audience and Channels — in what people are really saying, not guesses. When the user wants to understand or reach an audience, listen first: it tries RSS then web_search in order, reports which backend answered, and never fabricates chatter",
+                required_secrets: &[],
                 teaching: &[
                     crate::agents::self_knowledge::TeachingStep {
                         title: "Open Grow",
@@ -247,6 +250,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                      weather, read the weather card instead of searching the web — the card knows \
                      where they are, needs no API key, and matches what is on their screen. \
                      Searching for something a card already shows is slower and often wrong.",
+                required_secrets: &[],
                 teaching: &[crate::agents::self_knowledge::TeachingStep {
                     title: "Read the room",
                     body: "Bring the user Home and read a card back to them — the weather where \
@@ -281,6 +285,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                      breath. The verdict is ALWAYS the user's words from this conversation; \
                      never answer a decision on your own judgment, and read the bundle back \
                      before applying it",
+                required_secrets: &[],
                 teaching: &[crate::agents::self_knowledge::TeachingStep {
                     title: "Settle what is waiting",
                     body: "Read the user their open decisions grouped into bundles ('five \
@@ -315,6 +320,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                      time. When something went wrong, report_failure records the grounded \
                      incident but does not fix it. Asking for a better tool is not a failure; \
                      hiding the gap is.",
+                required_secrets: &[],
                 teaching: &[crate::agents::self_knowledge::TeachingStep {
                     title: "Look back at a rough patch",
                     body: "After a session that went badly, call review_struggles and read the \
@@ -345,6 +351,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                      sound — or the user winces at your pronunciation — stop, ask them to say \
                      it, save it with save_pronunciation (word + sounds-like + IPA), then say \
                      it back to confirm. Saved once, spoken right forever.",
+                required_secrets: &[],
                 teaching: &[crate::agents::self_knowledge::TeachingStep {
                     title: "Teach me your words",
                     body: "Invite the user to say any name you might mangle — their company, \
@@ -370,6 +377,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 unprefixed_tools: false,
                 hidden: false,
                 why_it_matters: "Track multi-step work so nothing is dropped across a long task.",
+                required_secrets: &[],
                 teaching: &[],
                 client_factory: |ctx| Box::new(todo::TodoClient::new(ctx).unwrap()),
             },
@@ -387,6 +395,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: false,
                 why_it_matters:
                     "Build the user a small interactive tool on the spot instead of just describing one.",
+                required_secrets: &[],
                 teaching: &[],
                 client_factory: |ctx| Box::new(apps::AppsManagerClient::new(ctx).unwrap()),
             },
@@ -404,6 +413,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: false,
                 why_it_matters:
                     "Recover context from past conversations so the user does not have to repeat themselves.",
+                required_secrets: &[],
                 teaching: &[],
                 client_factory: |ctx| Box::new(chatrecall::ChatRecallClient::new(ctx).unwrap()),
             },
@@ -421,6 +431,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: false,
                 why_it_matters:
                     "Turn capabilities on and off mid-task so you always have the right tools loaded.",
+                required_secrets: &[],
                 teaching: &[],
                 client_factory: |ctx| Box::new(ext_manager::ExtensionManagerClient::new(ctx).unwrap()),
             },
@@ -437,6 +448,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: false,
                 why_it_matters:
                     "Delegate heavy or parallel subtasks to subagents instead of doing everything in one context.",
+                required_secrets: &[],
                 teaching: &[],
                 client_factory: |ctx| Box::new(summon::SummonClient::new(ctx).unwrap()),
             },
@@ -453,6 +465,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: false,
                 why_it_matters:
                     "Digest large files or directories in one call rather than reading them piecemeal.",
+                required_secrets: &[],
                 teaching: &[],
                 client_factory: |ctx| Box::new(summarize::SummarizeClient::new(ctx).unwrap()),
             },
@@ -470,6 +483,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: false,
                 why_it_matters:
                     "Batch many tool calls into one code block to save tokens on complex work.",
+                required_secrets: &[],
                 teaching: &[],
                 client_factory: |ctx| {
                     Box::new(
@@ -495,6 +509,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: false,
                 why_it_matters:
                     "Act on the user's other desktop apps by real UI element, entirely on-device — the local-first alternative to cloud screenshot computer use. Double-gated by design: default-off behind DESKTOP_CONTROL_ENABLED plus the macOS Accessibility permission (desktop_status explains both), every action re-checks the flag, and clicking and typing are approval-gated like shell.",
+                required_secrets: &[],
                 teaching: &[],
                 client_factory: |ctx| Box::new(desktop::DesktopClient::new(ctx).unwrap()),
             },
@@ -511,6 +526,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: false,
                 why_it_matters:
                     "Your primary hands — read, write, and run things on the user's machine.",
+                required_secrets: &[],
                 teaching: &[],
                 client_factory: |ctx| Box::new(developer::DeveloperClient::new(ctx).unwrap()),
             },
@@ -528,6 +544,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: false,
                 why_it_matters:
                     "Run multi-agent work — dispatch goals, track roadmaps, and steer other sessions when one agent is not enough — escalating decisions to the user for approval rather than acting unsupervised.",
+                required_secrets: &[],
                 teaching: &[
                     crate::agents::self_knowledge::TeachingStep {
                         title: "Give me acceptance criteria",
@@ -567,6 +584,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: false,
                 why_it_matters:
                     "Inject standing context into every turn so persistent facts are never forgotten.",
+                required_secrets: &[],
                 teaching: &[],
                 client_factory: |ctx| Box::new(tom::TomClient::new(ctx).unwrap()),
             },
@@ -583,6 +601,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: false,
                 why_it_matters:
                     "Pull in proven step-by-step procedures instead of improvising a workflow. Skills are portable SKILL.md folders compatible with Claude Code, Cursor, Codex, and the broader agent ecosystem, so learned capability moves in and out without lock-in.",
+                required_secrets: &[],
                 teaching: &[],
                 client_factory: |ctx| Box::new(skills::SkillsClient::new(ctx).unwrap()),
             },
@@ -600,6 +619,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: false,
                 why_it_matters:
                     "Generates prose descriptions for memories in the background so later recall stays sharp.",
+                required_secrets: &[],
                 teaching: &[],
                 client_factory: |ctx| Box::new(librarian::LibrarianClient::new(ctx).unwrap()),
             },
@@ -616,6 +636,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: false,
                 why_it_matters:
                     "Drive the app for the user — take them to the right view, operate it, and open the specific goal or project view they mean. Perception stays separate: use observe_app when you need to know what a surface contains.",
+                required_secrets: &[],
                 teaching: &[],
                 client_factory: |ctx| {
                     Box::new(app_conductor::AppConductorClient::new(ctx).unwrap())
@@ -641,6 +662,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                     "The app is your home, not a UI you visit. Use observe_app to know what is \
                      happening from the same local data its surfaces render, while keeping raw \
                      rows and private join identifiers out of conversation history.",
+                required_secrets: &[],
                 teaching: &[],
                 client_factory: |ctx| {
                     Box::new(app_perception::AppPerceptionClient::new(ctx).unwrap())
@@ -664,6 +686,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                      standard, shared with Claude Code, Cursor, and Codex); the ones that prove useful \
                      are promoted to the front of what you reach for, and ones that never fire retire \
                      themselves, so the skill library stays honest.",
+                required_secrets: &[],
                 teaching: &[],
                 client_factory: |ctx| {
                     Box::new(recipe_author::RecipeAuthorClient::new(ctx).unwrap())
@@ -683,6 +706,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: false,
                 why_it_matters:
                     "So you can see which models your sub-agents run AND keep them current — proposing a switch to a better, more compact model as the market improves, always with the user's approval.",
+                required_secrets: &[],
                 teaching: &[],
                 client_factory: |ctx| {
                     Box::new(model_manager::ModelManagerClient::new(ctx).unwrap())
@@ -696,12 +720,17 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: finance::EXTENSION_NAME,
                 display_name: "The Financier",
                 description:
-                    "Market research and the user's own finance tooling. research_ticker reads live prices, day and 52-week ranges and volume for any symbol — no setup, no key. If the user runs their own stock scanner, picker_status/picker_start/picker_scan/picker_top_picks drive it and record_trade/list_trades keep their trade history. Reports numbers; never sizes a position and cannot place an order",
+                    "Market research and the user's own finance tooling. research_ticker reads live prices, day and 52-week ranges and volume for any symbol with no key. company_fundamentals retrieves financial statements from financialdatasets.ai with an optional key; everything else works without it. If the user runs their own stock scanner, picker_status/picker_start/picker_scan/picker_top_picks drive it and record_trade/list_trades keep their trade history. Reports numbers; never sizes a position and cannot place an order",
                 default_enabled: false,
                 unprefixed_tools: true,
                 hidden: false,
                 why_it_matters:
                     "Ground any claim about a price in a real, timestamped number instead of memory — and, for a user who runs their own picking algorithm, run it and keep the record their performance is measured against.",
+                required_secrets: &[RequiredSecretDef {
+                    key: crate::market_data::FUNDAMENTALS_KEY,
+                    impact: SecretImpact::Degraded,
+                    unlocks: "Retrieves company income, balance-sheet, and cash-flow fundamentals from financialdatasets.ai.",
+                }],
                 teaching: &[],
                 client_factory: |ctx| Box::new(finance::FinanceClient::new(ctx).unwrap()),
             },
@@ -719,6 +748,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: false,
                 why_it_matters:
                     "Find and reclaim wasted disk before it becomes a problem.",
+                required_secrets: &[],
                 teaching: &[],
                 client_factory: |ctx| {
                     Box::new(storage_health::StorageHealthClient::new(ctx).unwrap())
@@ -738,6 +768,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: true,
                 why_it_matters:
                     "Gates destructive git operations behind human approval so autonomous repo work stays safe.",
+                required_secrets: &[],
                 teaching: &[],
                 client_factory: |ctx| Box::new(steward::StewardClient::new(ctx).unwrap()),
             },
@@ -755,6 +786,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: false,
                 why_it_matters:
                     "When the user says \"file this email against <project>\" or \"save this to <project>\", this is the ONE consent path for persisting what they are viewing — nothing is written until they approve the proposal, and browser reads stay unpersisted otherwise. Never pass email addresses or phone numbers for the people it adds — names only.",
+                required_secrets: &[],
                 teaching: &[],
                 client_factory: |ctx| {
                     Box::new(file_to_project::FileToProjectClient::new(ctx).unwrap())
@@ -774,6 +806,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: false,
                 why_it_matters:
                     "When the user says \"add <name>\" or \"associate <name> with <project>\", do it directly — you create and link people, you do not just remember them as a note. When they ask to enrich or refresh a contact's details, start with enrich_person — nothing is written until they approve the proposal.",
+                required_secrets: &[],
                 teaching: &[],
                 client_factory: |ctx| Box::new(people::PeopleClient::new(ctx).unwrap()),
             },
@@ -791,6 +824,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: false,
                 why_it_matters:
                     "Keep the user's workspaces, paths, and URLs organized so project context is one lookup away.",
+                required_secrets: &[],
                 teaching: &[],
                 client_factory: |ctx| {
                     Box::new(project_manager::ProjectManagerClient::new(ctx).unwrap())
@@ -855,6 +889,26 @@ impl PlatformExtensionContext {
     }
 }
 
+/// What the capability loses when a declared secret is absent. There is no
+/// third variant: a secret whose absence changes nothing is not required.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecretImpact {
+    /// The extension still works; some tools or fields are missing.
+    Degraded,
+    /// The extension cannot do its job at all without this.
+    Unavailable,
+}
+
+/// One secret a capability needs, named by the env var / `Config` secret key
+/// it is read from. The key NAME travels; the value never does.
+#[derive(Debug, Clone, Copy)]
+pub struct RequiredSecretDef {
+    pub key: &'static str,
+    pub impact: SecretImpact,
+    /// One human sentence: what having this key unlocks.
+    pub unlocks: &'static str,
+}
+
 /// Definition for a platform extension that runs in-process with direct agent access.
 #[derive(Debug, Clone)]
 pub struct PlatformExtensionDef {
@@ -870,6 +924,12 @@ pub struct PlatformExtensionDef {
     /// every registry entry must supply it — a missing one is a compile error.
     /// See [`crate::agents::self_knowledge`].
     pub why_it_matters: &'static str,
+    /// Secrets this extension reads. Non-`Option` and non-defaulted so a new
+    /// registry entry that forgets to think about secrets is a COMPILE ERROR,
+    /// exactly like `why_it_matters`. `&[]` is a positive claim — "this
+    /// extension needs no secret" — and is NOT the same as the API's
+    /// `not_declared`, which means no declaration exists at all.
+    pub required_secrets: &'static [RequiredSecretDef],
     /// Self-knowledge Phase-2 hook: how to drive this tool. `&[]` in Phase 1.
     pub teaching: &'static [crate::agents::self_knowledge::TeachingStep],
     pub client_factory: fn(PlatformExtensionContext) -> Box<dyn McpClientTrait>,
@@ -891,5 +951,50 @@ impl PlatformExtensionDef {
             state_source: crate::agents::self_knowledge::StateSource::Queryable,
             teaching: self.teaching,
         }
+    }
+}
+
+#[cfg(test)]
+mod required_secret_tests {
+    use super::*;
+
+    /// A declaration that says nothing is not a declaration. Hidden entries are
+    /// checked too: hidden from the picker is not exempt from the inventory.
+    #[test]
+    fn every_secret_declaration_is_meaningful() {
+        for extension in PLATFORM_EXTENSIONS.values() {
+            let mut seen = std::collections::HashSet::new();
+            for secret in extension.required_secrets {
+                assert!(
+                    !secret.key.trim().is_empty() && !secret.key.contains(char::is_whitespace),
+                    "{} declares a secret key that is not a key name: {:?}",
+                    extension.name,
+                    secret.key
+                );
+                assert!(
+                    !secret.unlocks.trim().is_empty(),
+                    "{} declares {} with no sentence saying what it unlocks",
+                    extension.name,
+                    secret.key
+                );
+                assert!(
+                    seen.insert(secret.key),
+                    "{} declares {} twice",
+                    extension.name,
+                    secret.key
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn financier_declares_its_optional_fundamentals_key() {
+        // Omission on any registry entry is prevented structurally by the
+        // non-defaulted `required_secrets` field on `PlatformExtensionDef`.
+        let financier = PLATFORM_EXTENSIONS.get(finance::EXTENSION_NAME).unwrap();
+        assert!(financier.required_secrets.iter().any(|secret| {
+            secret.key == crate::market_data::FUNDAMENTALS_KEY
+                && secret.impact == SecretImpact::Degraded
+        }));
     }
 }
