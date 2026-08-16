@@ -23,13 +23,13 @@ vi.mock('../../../lib/store', () => ({
       selector({
         pendingAgentFocus: null,
         clearPendingAgentFocus: vi.fn(),
-        focusWorldAgent: vi.fn(),
+        focusWorldAgent: vi.fn(() => true),
       }),
     {
       getState: () => ({
         pendingAgentFocus: null,
         clearPendingAgentFocus: vi.fn(),
-        focusWorldAgent: vi.fn(),
+        focusWorldAgent: vi.fn(() => true),
         openAgentSettings: vi.fn(),
       }),
     },
@@ -114,6 +114,19 @@ afterEach(() => {
   container.remove();
 });
 
+/**
+ * React tracks the DOM value setter, so assigning `input.value` directly is
+ * swallowed and onChange never fires. Go through the native setter.
+ */
+function typeInto(input: HTMLInputElement, text: string) {
+  const setter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    'value',
+  )?.set;
+  setter?.call(input, text);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
 async function flush() {
   await act(async () => {
     await Promise.resolve();
@@ -192,8 +205,7 @@ describe('AgentsPanel', () => {
     expect(valueInput).toBeTruthy();
     expect(valueInput.type).toBe('password');
     await act(async () => {
-      valueInput.value = SEED_SECRET_VALUE;
-      valueInput.dispatchEvent(new Event('input', { bubbles: true }));
+      typeInto(valueInput, SEED_SECRET_VALUE);
     });
 
     const html = container.innerHTML;
@@ -202,9 +214,86 @@ describe('AgentsPanel', () => {
     expect(container.textContent ?? '').toContain('present');
     expect(container.textContent ?? '').not.toMatch(/reveal/i);
     expect(html).not.toContain(`>${SEED_SECRET_VALUE}<`);
-    // After a successful path the component clears the field; here we only
-    // assert the roster-sourced presence never carried a value string.
     expect(container.textContent ?? '').not.toContain(SEED_SECRET_VALUE);
+  });
+
+  it('clears the value field after a successful write and re-reads presence', async () => {
+    mockRosterAndDetail();
+    await act(async () => {
+      root.render(<AgentsPanel goto={vi.fn()} />);
+    });
+    await flush();
+    await act(async () => {
+      (container.querySelector('[data-testid="persona-row-claude_code"]') as HTMLButtonElement).click();
+    });
+    await flush();
+
+    const nameInput = container.querySelector('input[placeholder="Secret name"]') as HTMLInputElement;
+    const valueInput = container.querySelector('input[aria-label="Secret value"]') as HTMLInputElement;
+    await act(async () => {
+      typeInto(nameInput, 'api_token');
+      typeInto(valueInput, SEED_SECRET_VALUE);
+    });
+    expect(valueInput.value).toBe(SEED_SECRET_VALUE);
+
+    const before = apiFetchMock.mock.calls.length;
+    const setBtn = [...container.querySelectorAll('button')]
+      .find(b => (b.textContent ?? '').trim() === 'Set secret') as HTMLButtonElement;
+    apiFetchMock.mockImplementation(async (endpoint: string, options?: RequestInit) => {
+      if (endpoint === '/api/agents/claude_code/secrets') {
+        // The write must never come back carrying the value.
+        return { name: 'api_token', presence: 'present' } as never;
+      }
+      if (endpoint === '/api/agents/claude_code') {
+        return { kind: 'dispatch_persona', ...ROSTER.dispatch_roster[0] } as never;
+      }
+      if (endpoint.startsWith('/api/agents/claude_code/work')) return EMPTY_WORK as never;
+      if (endpoint === '/api/agents/roster') return ROSTER as never;
+      void options;
+      throw new Error(`unexpected fetch ${endpoint}`);
+    });
+    await act(async () => { setBtn.click(); });
+    await flush();
+
+    // Presence is re-read from the API rather than assumed.
+    const after = apiFetchMock.mock.calls.slice(before).map(c => c[0]);
+    expect(after).toContain('/api/agents/claude_code/secrets');
+    expect(after).toContain('/api/agents/claude_code');
+
+    const clearedValue = container.querySelector('input[aria-label="Secret value"]') as HTMLInputElement;
+    expect(clearedValue.value).toBe('');
+    expect(container.innerHTML).not.toContain(SEED_SECRET_VALUE);
+  });
+
+  it('does not claim a pending-engine persona runs a CLI it cannot restrict', async () => {
+    const pendingPersona = {
+      ...ROSTER.dispatch_roster[0],
+      key: 'unwired',
+      display_name: 'Unwired',
+      engine: 'pending' as const,
+    };
+    apiFetchMock.mockImplementation(async (endpoint: string) => {
+      if (endpoint === '/api/agents/roster') {
+        return { ...ROSTER, dispatch_roster: [pendingPersona] } as never;
+      }
+      if (endpoint === '/api/agents/unwired') {
+        return { kind: 'dispatch_persona', ...pendingPersona } as never;
+      }
+      if (endpoint.startsWith('/api/agents/unwired/work')) return EMPTY_WORK as never;
+      throw new Error(`unexpected fetch ${endpoint}`);
+    });
+    await act(async () => {
+      root.render(<AgentsPanel goto={vi.fn()} />);
+    });
+    await flush();
+    await act(async () => {
+      (container.querySelector('[data-testid="persona-row-unwired"]') as HTMLButtonElement).click();
+    });
+    await flush();
+
+    const note = container.querySelector('[data-testid="grants-not-enforced"]');
+    expect(note?.textContent ?? '').toMatch(/no runnable engine/i);
+    expect((note?.textContent ?? '').toLowerCase()).not.toContain('cli process');
   });
 
   it('does not render unavailable live_state as idle', async () => {

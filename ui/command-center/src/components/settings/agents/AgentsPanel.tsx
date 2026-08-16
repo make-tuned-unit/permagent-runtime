@@ -1,7 +1,8 @@
 /**
  * Settings → Agents — three honest populations (workers, dispatch roster,
- * capabilities) over the merged /api/agents surface. No HUD rebuild; World
- * deep-link only when the id is in the World ROSTER.
+ * capabilities) over the merged /api/agents surface. No HUD rebuild: the World
+ * view owns the HUDs, and this page deep-links into it for the agents that have
+ * an in-world character (see lib/worldAgentIds — the two id namespaces differ).
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -9,12 +10,12 @@ import { Chip, H1, Section, TextInput } from '../atoms';
 import {
   availabilityLabel,
   defaultEnabledLabel,
-  emptyWorkNote,
+  EMPTY_ACTIVITY_NOTE,
   EMPTY_GOALS_NOTE,
   EMPTY_JOBS_NOTE,
   EMPTY_SPEND_NOTE,
   engineLabel,
-  GRANTS_NOT_ENFORCED_NOTE,
+  grantsNotEnforcedNote,
   grantsSummary,
   liveStateLabel,
   presenceLabel,
@@ -40,6 +41,7 @@ import {
   type Secrets,
   type WorkReview,
 } from '../../../lib/agentsApi';
+import { worldAgentIdForAgent } from '../../../lib/worldAgentIds';
 import { ROSTER } from '../../world/agents/roster';
 
 type PanelProps = { goto: (key: string) => void };
@@ -69,8 +71,9 @@ function grantsToMode(grants: DispatchPersona['grants']): GrantMode {
 
 function WorldLink({ agentId }: { agentId: string }) {
   const { colors } = useTheme();
-  const inWorld = ROSTER.some(a => a.id === agentId);
-  if (!inWorld) {
+  const [unreachable, setUnreachable] = useState(false);
+  const worldId = worldAgentIdForAgent(agentId);
+  if (!worldId || !ROSTER.some(a => a.id === worldId)) {
     return (
       <div style={{ fontSize: 12, color: colors.textDim, lineHeight: 1.5 }}>
         This agent has no in-world presence.
@@ -78,16 +81,24 @@ function WorldLink({ agentId }: { agentId: string }) {
     );
   }
   return (
-    <button
-      type="button"
-      onClick={() => useCommandCenter.getState().focusWorldAgent(agentId)}
-      style={{
-        fontSize: 12, fontWeight: 600, color: colors.cyan, background: 'none',
-        border: 'none', cursor: 'pointer', padding: 0, fontFamily: font.body,
-      }}
-    >
-      Open in World
-    </button>
+    <div>
+      <button
+        type="button"
+        onClick={() => setUnreachable(!useCommandCenter.getState().focusWorldAgent(worldId))}
+        style={{
+          fontSize: 12, fontWeight: 600, color: colors.cyan, background: 'none',
+          border: 'none', cursor: 'pointer', padding: 0, fontFamily: font.body,
+        }}
+      >
+        Open in World
+      </button>
+      {unreachable && (
+        <div style={{ fontSize: 11, color: colors.warning, marginTop: 6, lineHeight: 1.45 }}>
+          No workspace has the World view open, so there is nowhere to fly to. Add it to a
+          workspace first.
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -229,8 +240,16 @@ function GrantsEditor({
   const [error, setError] = useState<string | null>(null);
 
   const staleKeys = selected.filter(k => !enabledKeys.has(k));
+  // The API truncates the grant list it returns, so what is on screen is not the
+  // whole set. Saving from a truncated view would silently revoke the grants that
+  // were cut off — refuse instead of destroying them.
+  const listTruncated = persona.grants.mode === 'explicit' && persona.grants.truncated;
 
   const save = async () => {
+    if (listTruncated) {
+      setError('This grant list came back truncated, so saving would drop the grants not shown. Reduce the grant count on disk first.');
+      return;
+    }
     if (mode === 'narrowed' && staleKeys.length > 0) {
       setError('Stale grants cannot be re-saved until those capabilities are enabled globally.');
       return;
@@ -262,12 +281,18 @@ function GrantsEditor({
           data-testid="grants-not-enforced"
           style={{ fontSize: 12, color: colors.warning, marginBottom: 12, lineHeight: 1.5 }}
         >
-          {GRANTS_NOT_ENFORCED_NOTE}
+          {grantsNotEnforcedNote(persona.engine)}
         </div>
       )}
       <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 10 }}>
         Current: {grantsSummary(persona)}
       </div>
+      {listTruncated && (
+        <div style={{ fontSize: 12, color: colors.warning, marginBottom: 10, lineHeight: 1.5 }}>
+          This grant list came back truncated, so what is shown is not the whole set. Editing is
+          disabled — saving would silently revoke the grants that were cut off.
+        </div>
+      )}
       <div
         data-testid="grants-editor"
         style={{
@@ -313,7 +338,7 @@ function GrantsEditor({
       )}
       <button
         type="button"
-        disabled={!enforced || busy}
+        disabled={!enforced || busy || listTruncated}
         onClick={() => { void save(); }}
         style={{
           padding: '7px 14px', borderRadius: radius.sm, border: `1px solid ${colors.border}`,
@@ -363,7 +388,7 @@ function WorkReviewBlock({ work }: { work: WorkReview }) {
         {activity.status === 'unavailable'
           ? renderListUnavailable(activity.reason, colors)
           : activity.items.length === 0
-            ? <div data-testid="empty-activity" style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>{emptyWorkNote(activity)}</div>
+            ? <div data-testid="empty-activity" style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>{EMPTY_ACTIVITY_NOTE}</div>
             : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {activity.items.map(item => (
@@ -573,8 +598,19 @@ export function AgentsPanel({ goto }: PanelProps) {
 
   const loadRoster = useCallback(() => {
     fetchRoster()
-      .then(r => { setRoster(r); setError(null); })
-      .catch(() => setError('Could not load the agents roster.'));
+      // Never hand a non-array to the render path — a degraded daemon reply used
+      // to take whole settings panes down with `.map of undefined`.
+      .then(r => {
+        setRoster({
+          workers: Array.isArray(r?.workers) ? r.workers : [],
+          dispatch_roster: Array.isArray(r?.dispatch_roster) ? r.dispatch_roster : [],
+          capabilities: Array.isArray(r?.capabilities) ? r.capabilities : [],
+        });
+        setError(null);
+      })
+      .catch(err => setError(
+        `Could not load the agents roster — ${err instanceof Error ? err.message : 'the daemon did not answer'}.`,
+      ));
   }, []);
 
   useEffect(() => { loadRoster(); }, [loadRoster]);
@@ -667,7 +703,9 @@ export function AgentsPanel({ goto }: PanelProps) {
             padding: '10px 12px', borderRadius: radius.md, border: `1px solid ${colors.border}`,
           }}
         >
-          No agent named {unknownFocus}.
+          The roster has no agent named {unknownFocus}. A flag-gated worker — the Guard, for
+          instance — is absent from the roster while its flag is off, so this is not proof no
+          such agent exists.
         </div>
       )}
 
@@ -707,6 +745,12 @@ export function AgentsPanel({ goto }: PanelProps) {
           {roster.capabilities.map(cap => (
             <CapabilityRow key={cap.key} capability={cap} onManage={() => goto('tools')} />
           ))}
+          {roster.capabilities.length === 0 && (
+            <div style={{ fontSize: 12, color: colors.textDim }}>
+              The roster listed no capabilities. That is what the daemon returned, not proof none
+              are installed.
+            </div>
+          )}
         </div>
       </Section>
     </div>

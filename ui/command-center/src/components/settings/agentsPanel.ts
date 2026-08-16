@@ -5,7 +5,6 @@
  */
 
 import type {
-  ActivitySection,
   Availability,
   DispatchPersona,
   LiveState,
@@ -38,8 +37,24 @@ export const NOT_DECLARED_SECRETS =
 
 export const NO_DEFAULT_DECLARED = 'no default declared';
 
-export const GRANTS_NOT_ENFORCED_NOTE =
-  'This engine runs an external CLI process that the runtime cannot restrict, so grants would be recorded and not enforced.';
+/**
+ * Why grants are not enforced depends on the engine, and the difference is not
+ * cosmetic: a CLI engine hands work to a separate process the runtime cannot
+ * restrict, while a `pending` persona is registered with no runnable engine at
+ * all. Telling a pending persona it "runs an external CLI process" would be a
+ * false statement on a page whose whole point is not making them.
+ */
+export function grantsNotEnforcedNote(engine: string): string {
+  switch (engine) {
+    case 'external_cli':
+    case 'supervised_cli':
+      return 'This engine hands work to a separate CLI process that the runtime cannot restrict, so grants here are recorded and not enforced.';
+    case 'pending':
+      return 'This persona is registered but has no runnable engine yet, so grants here are recorded and nothing enforces them.';
+    default:
+      return `Grants are not enforced for the ${engineLabel(engine)} engine — they are recorded only.`;
+  }
+}
 
 export function liveStateLabel(s: LiveState): StatusLabel {
   switch (s.status) {
@@ -92,15 +107,6 @@ export function grantsSummary(
       ' — grants are recorded but not enforced for this engine';
   }
   return text;
-}
-
-export function emptyWorkNote(
-  section: ActivitySection | { attribution?: string },
-): string {
-  // Attribution mode is on the wire so callers can assert it; the user-facing
-  // sentence stays fixed so empty never implies "did nothing".
-  void section;
-  return EMPTY_ACTIVITY_NOTE;
 }
 
 export function truncatedNote(count: number): string {

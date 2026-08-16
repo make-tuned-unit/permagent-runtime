@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   availabilityLabel,
-  emptyWorkNote,
+  grantsNotEnforcedNote,
   EMPTY_ACTIVITY_NOTE,
   grantsSummary,
   liveStateLabel,
@@ -107,15 +107,29 @@ describe('grantsSummary', () => {
   });
 });
 
-describe('emptyWorkNote', () => {
+describe('grantsNotEnforcedNote', () => {
+  it('blames the CLI process only for CLI engines', () => {
+    for (const engine of ['external_cli', 'supervised_cli']) {
+      const note = grantsNotEnforcedNote(engine);
+      expect(note.toLowerCase()).toContain('cli process');
+      expect(note.toLowerCase()).toContain('not enforced');
+    }
+  });
+
+  it('does not claim a pending persona runs a CLI process', () => {
+    const note = grantsNotEnforcedNote('pending');
+    expect(note.toLowerCase()).not.toContain('cli process');
+    expect(note.toLowerCase()).toContain('no runnable engine');
+  });
+
+  it('still says grants are unenforced for an engine it does not know', () => {
+    expect(grantsNotEnforcedNote('some_future_engine').toLowerCase()).toContain('not enforced');
+  });
+});
+
+describe('EMPTY_ACTIVITY_NOTE', () => {
   it('uses attribution wording, never "did nothing" / "no work yet"', () => {
-    const note = emptyWorkNote({
-      attribution: 'actor_exact_match',
-      status: 'ok',
-      items: [],
-      truncated: false,
-    });
-    expect(note).toBe(EMPTY_ACTIVITY_NOTE);
+    const note = EMPTY_ACTIVITY_NOTE;
     expect(note.toLowerCase()).toContain('attributed');
     expect(note.toLowerCase()).toContain('not proof the agent did nothing');
     expect(note.toLowerCase()).not.toContain('no work yet');

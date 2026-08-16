@@ -3,6 +3,7 @@ import { COLORS } from './constants';
 import { ROSTER } from './agents';
 import { useOrchestratorName } from './shared/useOrchestratorName';
 import { useCommandCenter } from '../../lib/store';
+import { agentIdForWorldAgent } from '../../lib/worldAgentIds';
 
 interface AgentPickerProps {
   selectedAgentId: string | null;
@@ -24,6 +25,11 @@ export function AgentPicker({ selectedAgentId, onSelectAgent }: AgentPickerProps
   const roleLabel = (role: string) => (role === 'orchestrator' ? 'orchestrator' : 'worker');
 
   const selected = ROSTER.find((a) => a.id === selectedAgentId);
+  // Not every in-world character is an agent the API knows: Henry is the
+  // orchestrator and the Reader is a surface, neither has a roster entry, and
+  // the Steward's id differs across the two namespaces. Offer the deep-link only
+  // where it resolves, rather than a button that lands on "no agent named …".
+  const manageableAgentId = selectedAgentId ? agentIdForWorldAgent(selectedAgentId) : null;
 
   return (
     <div style={containerStyle}>
@@ -36,10 +42,10 @@ export function AgentPicker({ selectedAgentId, onSelectAgent }: AgentPickerProps
         </span>
       </button>
 
-      {selectedAgentId && (
+      {manageableAgentId && (
         <button
           type="button"
-          onClick={() => openAgentSettings(selectedAgentId)}
+          onClick={() => openAgentSettings(manageableAgentId)}
           style={{
             ...triggerStyle,
             marginLeft: 8,

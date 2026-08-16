@@ -401,7 +401,10 @@ interface CommandCenterStore {
   openAgentSettings: (id: string | null) => void;
   clearPendingAgentFocus: () => void;
   pendingWorldAgent: string | null;
-  focusWorldAgent: (id: string) => void;
+  /** False when no workspace holds the World view: there is nowhere to fly to,
+   *  and the caller must say so rather than leave a control that looks like it
+   *  worked. */
+  focusWorldAgent: (id: string) => boolean;
   clearPendingWorldAgent: () => void;
 
   // --- Project terminal launch (from agent: project_launch event) ---
@@ -1647,8 +1650,11 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
   pendingWorldAgent: null,
   focusWorldAgent: (id) => {
+    // Only arm the pending focus if the World view is actually reachable —
+    // otherwise it would sit in the store and yank a later, unrelated visit.
+    if (!navigateToTool('world')) return false;
     set({ pendingWorldAgent: id });
-    navigateToTool('world');
+    return true;
   },
   clearPendingWorldAgent: () => set({ pendingWorldAgent: null }),
 
