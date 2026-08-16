@@ -201,6 +201,31 @@ pub const WEB_SEARCH_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
         ],
     };
 
+/// Settings → Agents surface (Phase 2 UI over the merged /api/agents roster).
+/// Co-located with other Settings-surface descriptors; aggregated by
+/// `crate::agents::self_knowledge`.
+pub const AGENTS_SURFACE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "agents",
+        display_name: "Agents (Settings)",
+        category: crate::agents::self_knowledge::FeatureCategory::Surface,
+        what_it_does:
+            "Settings → Agents lists three populations honestly: background workers that run \
+             themselves, the dispatch roster goals are sent to, and platform capabilities with \
+             their enablement and declared secret presence. Opening a worker or persona shows \
+             its grants, write-only per-agent secrets (only presence is ever shown — values never \
+             leave the write form), and work attributed to that id. Grants narrow an agent to a \
+             subset of globally enabled capabilities; they are enforced only for the internal \
+             subagent engine and are recorded but not enforced for external CLI engines. \
+             Capabilities are not agents — enablement is managed under Settings → Tools",
+        why_it_matters:
+            "It is the one place to see who can do what, give an agent a key or a narrower grant, \
+             and review what is attributed to that agent — without implying a background worker \
+             can be dispatched or that an empty attribution list means the agent did nothing",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        teaching: &[],
+    };
+
 /// Primary agent persona configuration.
 /// Stored at ~/.permagent/agent.yaml under the `primary` key.
 #[derive(Debug, Clone, Serialize, Deserialize)]

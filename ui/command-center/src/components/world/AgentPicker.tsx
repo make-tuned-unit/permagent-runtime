@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { COLORS } from './constants';
 import { ROSTER } from './agents';
 import { useOrchestratorName } from './shared/useOrchestratorName';
+import { useCommandCenter } from '../../lib/store';
 
 interface AgentPickerProps {
   selectedAgentId: string | null;
@@ -15,6 +16,7 @@ interface AgentPickerProps {
 export function AgentPicker({ selectedAgentId, onSelectAgent }: AgentPickerProps) {
   const [open, setOpen] = useState(false);
   const orchestratorName = useOrchestratorName();
+  const openAgentSettings = useCommandCenter(s => s.openAgentSettings);
 
   // Henry's live persona name overrides the roster fallback; others use their role.
   const displayName = (id: string, fallback: string) =>
@@ -33,6 +35,21 @@ export function AgentPicker({ selectedAgentId, onSelectAgent }: AgentPickerProps
           {open ? '▲' : '▼'}
         </span>
       </button>
+
+      {selectedAgentId && (
+        <button
+          type="button"
+          onClick={() => openAgentSettings(selectedAgentId)}
+          style={{
+            ...triggerStyle,
+            marginLeft: 8,
+            fontSize: 10,
+            color: COLORS.neonCyan,
+          }}
+        >
+          Manage in Settings
+        </button>
+      )}
 
       {open && (
         <div style={dropdownStyle}>
@@ -75,6 +92,8 @@ const containerStyle: React.CSSProperties = {
   left: 16,
   zIndex: 10,
   pointerEvents: 'auto',
+  display: 'flex',
+  alignItems: 'center',
 };
 
 const triggerStyle: React.CSSProperties = {

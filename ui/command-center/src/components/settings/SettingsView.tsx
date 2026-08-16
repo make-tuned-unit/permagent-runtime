@@ -23,6 +23,7 @@ import { SessionsList } from '../sessions/SessionsList';
 import { InboxPanel } from '../inbox/InboxPanel';
 import { ExecutionTrace } from '../trace/ExecutionTrace';
 import { SpendPanel } from './SpendPanel';
+import { AgentsPanel } from './agents/AgentsPanel';
 import { timeAgo } from './format';
 import { useDecisions } from '../dashboard/decisions/useDecisions';
 import { DecisionInbox } from '../dashboard/decisions/DecisionInbox';
@@ -59,6 +60,7 @@ const CATEGORIES = [
   ]},
   { group: 'Agent', items: [
     { key: 'agent',       label: 'Persona',          icon: 'M12 2a4 4 0 014 4v3a4 4 0 11-8 0V6a4 4 0 014-4zM4 21v-2a6 6 0 016-6h4a6 6 0 016 6v2' },
+    { key: 'agents',      label: 'Agents',           icon: 'M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8zM23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75' },
     { key: 'memory',      label: 'Memory',           icon: 'M9 4a4 4 0 00-4 4 3 3 0 00-1 5.5A3 3 0 005 18a4 4 0 004 3M15 4a4 4 0 014 4 3 3 0 011 5.5A3 3 0 0119 18a4 4 0 01-4 3' },
     { key: 'autonomy',    label: 'Autonomy & guardrails', icon: 'M12 2l9 4v6c0 5-4 9-9 10-5-1-9-5-9-10V6l9-4z' },
   ]},
@@ -1442,6 +1444,7 @@ const PANELS: Record<string, (props: PanelProps) => JSX.Element> = {
   appearance: AppearancePanel, shortcuts: ShortcutsPanel, data: DataPanel,
   sovereignty: SovereigntyPanel,
   sessions: SessionsPane, inbox: InboxPane, activity: ActivityPane, spend: SpendPane,
+  agents: AgentsPanel,
 };
 
 

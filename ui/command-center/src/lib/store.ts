@@ -396,6 +396,14 @@ interface CommandCenterStore {
   pendingSettingsSection: string | null;
   setPendingSettingsSection: (section: string | null) => void;
 
+  // --- Settings → Agents deep-link (Automate / World → manage an agent) ---
+  pendingAgentFocus: string | null;
+  openAgentSettings: (id: string | null) => void;
+  clearPendingAgentFocus: () => void;
+  pendingWorldAgent: string | null;
+  focusWorldAgent: (id: string) => void;
+  clearPendingWorldAgent: () => void;
+
   // --- Project terminal launch (from agent: project_launch event) ---
   pendingTerminalLaunch: { rootPath: string; label: string; command?: string; supervisedSessionId?: string } | null;
   setPendingTerminalLaunch: (
@@ -1626,6 +1634,23 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
   pendingSettingsSection: null,
   setPendingSettingsSection: (section) => set({ pendingSettingsSection: section }),
+
+  pendingAgentFocus: null,
+  openAgentSettings: (id) => {
+    set({
+      pendingAgentFocus: id,
+      pendingSettingsSection: 'agents',
+      activePanel: 'settings',
+    });
+  },
+  clearPendingAgentFocus: () => set({ pendingAgentFocus: null }),
+
+  pendingWorldAgent: null,
+  focusWorldAgent: (id) => {
+    set({ pendingWorldAgent: id });
+    navigateToTool('world');
+  },
+  clearPendingWorldAgent: () => set({ pendingWorldAgent: null }),
 
   pendingTerminalLaunch: null,
   setPendingTerminalLaunch: (launch) => set({ pendingTerminalLaunch: launch }),
