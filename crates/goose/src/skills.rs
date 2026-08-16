@@ -14,7 +14,7 @@ use uuid::Uuid;
 /// workspace hosts it) — the agent opens it via `navigate_app("Skills")`.
 pub const SKILLS_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
     crate::agents::self_knowledge::FeatureDescriptor {
-        id: "skills",
+        id: "skills_library",
         display_name: "Skills Library",
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
         what_it_does:

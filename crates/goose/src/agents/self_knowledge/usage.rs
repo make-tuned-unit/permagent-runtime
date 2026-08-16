@@ -43,6 +43,11 @@ use crate::events::activity::{ActivityEventType, SourceSurface};
 /// no DB schema/migration, mirroring `tour_completed`.
 pub const USAGE_CONFIG_KEY: &str = "feature_usage";
 
+/// Descriptor ids renamed after usage persistence shipped. Hydration moves
+/// records forward so a learned feature is not offered again under its new id.
+const LEGACY_USAGE_IDS: &[(&str, &str)] =
+    &[("inbox", "downloads_inbox"), ("skills", "skills_library")];
+
 /// Self-knowledge descriptor for THIS capability — the onboarding coach. Lets
 /// the agent describe that it tracks what the user has used and teaches the
 /// rest. Registered in [`super::WORKER_DESCRIPTORS`]; rendered into the
@@ -203,7 +208,7 @@ pub fn capability_for_activity(
 
         ProjectSelected | ProjectOpened => Some("projects"),
 
-        SkillExecuted => Some("skills"),
+        SkillExecuted => Some("skills_library"),
 
         AutomationJobStarted
         | AutomationJobCompleted
@@ -225,7 +230,7 @@ pub fn capability_for_activity(
         WebSearchPerformed => Some("web_search"),
         DictationCompleted => Some("voice"),
         WorldViewOpened => Some("world_view"),
-        InboxOpened => Some("inbox"),
+        InboxOpened => Some("downloads_inbox"),
         GrowOpened => Some("grow"),
         BrainOpened => Some("brain"),
 
@@ -254,10 +259,29 @@ pub fn enable_persistence() {
 /// Hydrate the global store from durable config. Best-effort: an absent key or
 /// malformed value leaves the store empty. Call once at daemon startup.
 pub fn hydrate_from_config() {
-    if let Ok(map) = Config::global().get_param::<HashMap<String, UsageRecord>>(USAGE_CONFIG_KEY) {
+    if let Ok(mut map) =
+        Config::global().get_param::<HashMap<String, UsageRecord>>(USAGE_CONFIG_KEY)
+    {
+        migrate_legacy_usage_ids(&mut map);
         if let Ok(mut g) = USAGE.lock() {
             g.records = map;
         }
+    }
+}
+
+fn migrate_legacy_usage_ids(map: &mut HashMap<String, UsageRecord>) {
+    for &(legacy_id, current_id) in LEGACY_USAGE_IDS {
+        let Some(legacy) = map.remove(legacy_id) else {
+            continue;
+        };
+        map.entry(current_id.to_string())
+            .and_modify(|current| {
+                current.count = current.count.saturating_add(legacy.count);
+                current.taught |= legacy.taught;
+                current.first_used = current.first_used.min(legacy.first_used);
+                current.last_used = current.last_used.max(legacy.last_used);
+            })
+            .or_insert(legacy);
     }
 }
 
@@ -392,6 +416,56 @@ mod tests {
     }
 
     #[test]
+    fn legacy_usage_ids_hydrate_under_new_ids_and_merge() {
+        let persisted = HashMap::from([
+            (
+                "inbox".to_string(),
+                UsageRecord {
+                    count: 2,
+                    taught: true,
+                    first_used: at(2026, 7, 15, 9),
+                    last_used: at(2026, 7, 16, 11),
+                },
+            ),
+            (
+                "downloads_inbox".to_string(),
+                UsageRecord {
+                    count: 3,
+                    taught: false,
+                    first_used: at(2026, 7, 16, 9),
+                    last_used: at(2026, 7, 17, 12),
+                },
+            ),
+            (
+                "skills".to_string(),
+                UsageRecord {
+                    count: 4,
+                    taught: true,
+                    first_used: at(2026, 7, 14, 8),
+                    last_used: at(2026, 7, 18, 10),
+                },
+            ),
+        ]);
+        let json = serde_json::to_string(&persisted).unwrap();
+        let mut hydrated: HashMap<String, UsageRecord> = serde_json::from_str(&json).unwrap();
+
+        migrate_legacy_usage_ids(&mut hydrated);
+
+        assert!(!hydrated.contains_key("inbox"));
+        assert!(!hydrated.contains_key("skills"));
+        let inbox = hydrated.get("downloads_inbox").expect("migrated inbox");
+        assert_eq!(inbox.count, 5);
+        assert!(inbox.taught);
+        assert_eq!(inbox.first_used, at(2026, 7, 15, 9));
+        assert_eq!(inbox.last_used, at(2026, 7, 17, 12));
+        let skills = hydrated.get("skills_library").expect("migrated skills");
+        assert_eq!(skills.count, 4);
+        assert!(skills.taught);
+        assert_eq!(skills.first_used, at(2026, 7, 14, 8));
+        assert_eq!(skills.last_used, at(2026, 7, 18, 10));
+    }
+
+    #[test]
     fn activity_maps_only_to_real_capability_ids() {
         // Every mapped id must resolve to a live self-knowledge descriptor — no
         // fabricated capability. This is the "no fake usage target" guard.
@@ -450,7 +524,7 @@ mod tests {
         );
         assert_eq!(
             capability_for_activity(&SkillExecuted, &SourceSurface::SkillsEngine),
-            Some("skills")
+            Some("skills_library")
         );
         assert_eq!(
             capability_for_activity(&AutomationJobCompleted, &SourceSurface::Scheduler),
@@ -489,7 +563,7 @@ mod tests {
         );
         assert_eq!(
             capability_for_activity(&InboxOpened, &SourceSurface::Inbox),
-            Some("inbox")
+            Some("downloads_inbox")
         );
         assert_eq!(
             capability_for_activity(&GrowOpened, &SourceSurface::Grow),
@@ -520,7 +594,7 @@ mod tests {
             (WebSearchPerformed, "web_search"),
             (DictationCompleted, "voice"),
             (WorldViewOpened, "world_view"),
-            (InboxOpened, "inbox"),
+            (InboxOpened, "downloads_inbox"),
             (GrowOpened, "grow"),
             (BrainOpened, "brain"),
         ];

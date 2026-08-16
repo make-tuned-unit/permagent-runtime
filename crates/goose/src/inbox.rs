@@ -23,7 +23,7 @@ use uuid::Uuid;
 /// could surface the unread count).
 pub const INBOX_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
     crate::agents::self_knowledge::FeatureDescriptor {
-        id: "inbox",
+        id: "downloads_inbox",
         display_name: "Downloads inbox",
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
         what_it_does:
