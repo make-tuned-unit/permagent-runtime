@@ -234,6 +234,16 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
     setCameraMode('third-person');
   }, []);
 
+  const pendingWorldAgent = useCommandCenter(s => s.pendingWorldAgent);
+  const clearPendingWorldAgent = useCommandCenter(s => s.clearPendingWorldAgent);
+  useEffect(() => {
+    if (!pendingWorldAgent) return;
+    if (ROSTER.some(a => a.id === pendingWorldAgent)) {
+      handleSelectAgent(pendingWorldAgent);
+    }
+    clearPendingWorldAgent();
+  }, [pendingWorldAgent, clearPendingWorldAgent, handleSelectAgent]);
+
   const handleModeChange = useCallback((mode: CameraMode) => {
     setCameraMode(mode);
     if (mode === 'orbit') {

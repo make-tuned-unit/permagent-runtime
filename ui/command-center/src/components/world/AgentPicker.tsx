@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { COLORS } from './constants';
 import { ROSTER } from './agents';
 import { useOrchestratorName } from './shared/useOrchestratorName';
+import { useCommandCenter } from '../../lib/store';
+import { agentIdForWorldAgent } from '../../lib/worldAgentIds';
 
 interface AgentPickerProps {
   selectedAgentId: string | null;
@@ -15,6 +17,7 @@ interface AgentPickerProps {
 export function AgentPicker({ selectedAgentId, onSelectAgent }: AgentPickerProps) {
   const [open, setOpen] = useState(false);
   const orchestratorName = useOrchestratorName();
+  const openAgentSettings = useCommandCenter(s => s.openAgentSettings);
 
   // Henry's live persona name overrides the roster fallback; others use their role.
   const displayName = (id: string, fallback: string) =>
@@ -22,6 +25,11 @@ export function AgentPicker({ selectedAgentId, onSelectAgent }: AgentPickerProps
   const roleLabel = (role: string) => (role === 'orchestrator' ? 'orchestrator' : 'worker');
 
   const selected = ROSTER.find((a) => a.id === selectedAgentId);
+  // Not every in-world character is an agent the API knows: Henry is the
+  // orchestrator and the Reader is a surface, neither has a roster entry, and
+  // the Steward's id differs across the two namespaces. Offer the deep-link only
+  // where it resolves, rather than a button that lands on "no agent named …".
+  const manageableAgentId = selectedAgentId ? agentIdForWorldAgent(selectedAgentId) : null;
 
   return (
     <div style={containerStyle}>
@@ -33,6 +41,21 @@ export function AgentPicker({ selectedAgentId, onSelectAgent }: AgentPickerProps
           {open ? '▲' : '▼'}
         </span>
       </button>
+
+      {manageableAgentId && (
+        <button
+          type="button"
+          onClick={() => openAgentSettings(manageableAgentId)}
+          style={{
+            ...triggerStyle,
+            marginLeft: 8,
+            fontSize: 10,
+            color: COLORS.neonCyan,
+          }}
+        >
+          Manage in Settings
+        </button>
+      )}
 
       {open && (
         <div style={dropdownStyle}>
@@ -75,6 +98,8 @@ const containerStyle: React.CSSProperties = {
   left: 16,
   zIndex: 10,
   pointerEvents: 'auto',
+  display: 'flex',
+  alignItems: 'center',
 };
 
 const triggerStyle: React.CSSProperties = {
