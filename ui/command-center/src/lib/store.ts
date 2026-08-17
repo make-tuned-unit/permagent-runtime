@@ -396,6 +396,17 @@ interface CommandCenterStore {
   pendingSettingsSection: string | null;
   setPendingSettingsSection: (section: string | null) => void;
 
+  // --- Settings → Agents deep-link (Automate / World → manage an agent) ---
+  pendingAgentFocus: string | null;
+  openAgentSettings: (id: string | null) => void;
+  clearPendingAgentFocus: () => void;
+  pendingWorldAgent: string | null;
+  /** False when no workspace holds the World view: there is nowhere to fly to,
+   *  and the caller must say so rather than leave a control that looks like it
+   *  worked. */
+  focusWorldAgent: (id: string) => boolean;
+  clearPendingWorldAgent: () => void;
+
   // --- Project terminal launch (from agent: project_launch event) ---
   pendingTerminalLaunch: { rootPath: string; label: string; command?: string; supervisedSessionId?: string } | null;
   setPendingTerminalLaunch: (
@@ -1626,6 +1637,26 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
   pendingSettingsSection: null,
   setPendingSettingsSection: (section) => set({ pendingSettingsSection: section }),
+
+  pendingAgentFocus: null,
+  openAgentSettings: (id) => {
+    set({
+      pendingAgentFocus: id,
+      pendingSettingsSection: 'agents',
+      activePanel: 'settings',
+    });
+  },
+  clearPendingAgentFocus: () => set({ pendingAgentFocus: null }),
+
+  pendingWorldAgent: null,
+  focusWorldAgent: (id) => {
+    // Only arm the pending focus if the World view is actually reachable —
+    // otherwise it would sit in the store and yank a later, unrelated visit.
+    if (!navigateToTool('world')) return false;
+    set({ pendingWorldAgent: id });
+    return true;
+  },
+  clearPendingWorldAgent: () => set({ pendingWorldAgent: null }),
 
   pendingTerminalLaunch: null,
   setPendingTerminalLaunch: (launch) => set({ pendingTerminalLaunch: launch }),

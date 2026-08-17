@@ -17,6 +17,7 @@ import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { apiFetch } from '../../lib/api';
 import { relativeTimeAgo } from '../../lib/time-decay';
+import { useCommandCenter } from '../../lib/store';
 
 interface RunItem {
   kind: 'worker' | 'schedule' | 'session';
@@ -37,6 +38,7 @@ const KIND_LABEL: Record<RunItem['kind'], string> = {
 
 export function RunRoster() {
   const { colors } = useTheme();
+  const openAgentSettings = useCommandCenter(s => s.openAgentSettings);
   const [runs, setRuns] = useState<RunItem[]>([]);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
 
@@ -174,6 +176,21 @@ export function RunRoster() {
                 <span style={{ fontSize: 10, color: colors.textDim, fontFamily: font.body, flexShrink: 0 }}>
                   {relativeTimeAgo(r.last_activity)}
                 </span>
+              )}
+              {r.kind === 'worker' && (
+                <button
+                  type="button"
+                  onClick={() => openAgentSettings(r.id)}
+                  title="Open in Settings → Agents"
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0,
+                    fontSize: 10, fontFamily: font.body, color: colors.cyan,
+                    background: 'none', border: `1px solid ${colors.border}`,
+                    borderRadius: radius.sm, padding: '3px 7px', cursor: 'pointer',
+                  }}
+                >
+                  Settings
+                </button>
               )}
               {/* Only schedules have a kill verb today — showing Stop on
                   worker/session rows made a button that did nothing
