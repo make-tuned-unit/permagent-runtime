@@ -294,8 +294,27 @@ export function MeetingRecorder({ open }: { open: boolean }) {
             </div>
             <div style={{ fontSize: 11, color: colors.textMuted, lineHeight: 1.5, marginBottom: 10 }}>
               {systemAudio
-                ? "Records BOTH sides — your microphone and this Mac's audio output, which is the other participants. Transcribed locally on this device; nothing is sent to a cloud service. Saved as a note on the project you pick."
-                : "Records your own voice from this machine's microphone (not the other side of a call), transcribes it locally on this device — nothing is sent to a cloud service — and saves the transcript as a note on the project you pick when you stop."}
+                ? "Records BOTH sides — your microphone and this Mac's audio output, which is the other participants. The audio is transcribed on this device and never uploaded. Saved as a note on the project you pick."
+                : "Records your own voice from this machine's microphone (not the other side of a call), transcribes it on this device — the audio is never uploaded — and saves the transcript as a note on the project you pick when you stop."}
+            </div>
+
+            {/* The transcript is written up by the configured model, and that
+                is a separate question from where the audio was transcribed.
+                Saying only "transcribed locally" here read as a blanket privacy
+                guarantee and was not one: the write-up sends the transcript
+                text to whichever provider the user has configured, which is a
+                cloud provider unless they have set a local one. A user
+                recording a private meeting deserves to be told that at the
+                moment they record it, not to find it in an egress log. */}
+            {/* Stated unconditionally rather than computed. The signals the UI
+                can cheaply reach — `localProviderAvailable` from the
+                sovereignty endpoint — say a local provider EXISTS, not that it
+                is the configured one, and a privacy line that is right most of
+                the time is worse than one that is always right. */}
+            <div style={{ fontSize: 11, color: colors.textMuted, lineHeight: 1.5, marginBottom: 10 }}>
+              Afterwards the transcript text is sent to your configured model to
+              write the summary and pull out to-dos. Configure a local model, or
+              turn on Sovereign mode, to keep the text on this device too.
             </div>
 
             {/* Far-side capture. Off by default and stated plainly: recording
