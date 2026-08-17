@@ -748,14 +748,22 @@ mod tests {
     async fn a_signalled_check_is_unprovable_and_says_why() {
         let dir = tempfile::tempdir().unwrap();
         let checks = vec![CompletionCheck::CommandExitZero {
-            // SIGKILL specifically, and not SIGTERM. A shell may CATCH a term
-            // and exit 143 rather than dying by it, which is what Linux `sh`
-            // does — the process then has an exit code, so this asserted Error
-            // and got Fail on ubuntu while passing on macOS. SIGKILL cannot be
-            // caught or turned into an exit status by any shell, so the wait
-            // status carries a signal on every unix. That is the shape a real
-            // OOM-killed check has anyway.
-            cmd: "sh -c 'kill -KILL $$'".to_string(),
+            // Two things matter here and both were learned from CI.
+            //
+            // SIGKILL, not SIGTERM: a shell may CATCH a term and exit 143
+            // rather than die by it, which is what Linux `sh` does. SIGKILL
+            // cannot be caught or converted to an exit status by any shell.
+            //
+            // And no nested `sh -c`: run_checks already runs this through
+            // `/bin/sh -c`, so wrapping it again had the inner shell kill
+            // itself while the OUTER one survived and exited 137 — an ordinary
+            // exit code, which is precisely the case the next test covers.
+            // macOS `sh` execs the final simple command, so the two were one
+            // process and it passed there; dash on ubuntu forked, and it
+            // failed. Killing the shell run_checks itself spawned is
+            // unambiguous on every unix, and is the shape an OOM-killed check
+            // has anyway.
+            cmd: "kill -KILL $$".to_string(),
             cwd: None,
             timeout_secs: 30,
         }];
