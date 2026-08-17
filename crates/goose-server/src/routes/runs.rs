@@ -98,7 +98,7 @@ async fn list_runs(State(state): State<Arc<AppState>>) -> Json<RunsResponse> {
         runs.push(RunItem {
             kind: "schedule",
             id: j.id.clone(),
-            name: j.source.clone(),
+            name: schedule_run_name(j),
             status,
             detail,
             last_activity: j.last_run.map(|t| t.to_rfc3339()),
@@ -140,8 +140,56 @@ async fn list_runs(State(state): State<Arc<AppState>>) -> Json<RunsResponse> {
     Json(RunsResponse { runs })
 }
 
+/// The roster label for a scheduled job.
+///
+/// The id, never `source`. `source` is the absolute path to the recipe YAML,
+/// so the roster rendered every scheduled job as
+/// `/Users/<name>/…/scheduled_recipes/git-steward.yaml` — a local filesystem
+/// path, including the user's home directory, displayed in a surface people
+/// screen-share and record. The recipe cards beside it already render
+/// `display_name || id`; this agrees with them.
+fn schedule_run_name(job: &permagent::scheduler::ScheduledJob) -> String {
+    job.id.clone()
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/runs", get(list_runs))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn job_at(source: &str) -> permagent::scheduler::ScheduledJob {
+        permagent::scheduler::ScheduledJob {
+            id: "git-steward".to_string(),
+            source: source.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// The roster label must never be derived from a filesystem path. This is
+    /// a disclosure property, not a cosmetic one: the Automate tab is a
+    /// screen-shared and screen-recorded surface, and `source` carries the
+    /// user's home directory.
+    #[test]
+    fn a_scheduled_run_is_labelled_by_id_never_by_its_path() {
+        let job = job_at("/Users/someone/Documents/dev/scheduled_recipes/git-steward.yaml");
+        let name = schedule_run_name(&job);
+        assert_eq!(name, "git-steward");
+        assert!(
+            !name.contains('/'),
+            "roster label {name:?} contains a path separator — it is rendering a filesystem path"
+        );
+        assert!(
+            !name.contains("/Users/") && !name.contains("/home/"),
+            "roster label {name:?} discloses a home directory"
+        );
+        assert!(
+            !name.ends_with(".yaml"),
+            "roster label {name:?} is a filename, not a name"
+        );
+    }
 }

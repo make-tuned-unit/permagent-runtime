@@ -327,6 +327,31 @@ where
     })
 }
 
+/// Persist an assistant message that ENDS the turn, before it is yielded.
+///
+/// The provider-error arms below yield a message and then `break`, so they
+/// never reach the `add_message` call at the bottom of the reply loop. The
+/// message therefore streamed to the client and was never saved — and the UI
+/// reloads the persisted transcript on `Finish`, which replaced the streamed
+/// text with a transcript that did not contain it. The net effect was that a
+/// provider error rendered for one frame and then vanished: the user sent a
+/// message and the chat showed nothing at all. That is the worst of both
+/// worlds, because the turn genuinely failed and the only account of why was
+/// discarded.
+///
+/// A failure to persist is warned and swallowed rather than propagated: the
+/// user still needs to see the message, and turning "we could not save the
+/// error" into a second error would replace one silence with another.
+async fn persist_turn_ending_message(
+    session_manager: &Arc<crate::session::SessionManager>,
+    session_id: &str,
+    message: &Message,
+) {
+    if let Err(e) = session_manager.add_message(session_id, message).await {
+        warn!("Failed to persist the turn-ending provider message: {e}");
+    }
+}
+
 impl Agent {
     pub fn new() -> Self {
         let config = Config::global();
@@ -2262,16 +2287,16 @@ impl Agent {
                                 Ok(provider) => format!("LLM provider ({})", provider.get_name()),
                                 Err(_) => "LLM provider".to_string(),
                             };
-                            yield AgentEvent::Message(
-                                Message::assistant().with_text(
-                                    format!(
-                                        "Authentication failed for your {provider_label}: the API key was rejected (HTTP 401). \
-                                         This is a credential problem with the model provider configured in Permagent — \
-                                         not with any website, page, or service the agent was reading. \
-                                         Check that the provider's API key is set, valid, and has the required permissions, then resend your message.\n\nDetails: {provider_err}"
-                                    )
+                            let message = Message::assistant().with_text(
+                                format!(
+                                    "Authentication failed for your {provider_label}: the API key was rejected (HTTP 401). \
+                                     This is a credential problem with the model provider configured in Permagent — \
+                                     not with any website, page, or service the agent was reading. \
+                                     Check that the provider's API key is set, valid, and has the required permissions, then resend your message.\n\nDetails: {provider_err}"
                                 )
                             );
+                            persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                            yield AgentEvent::Message(message);
                             state_guard.mark_error();
                             break;
                         }
@@ -2283,11 +2308,11 @@ impl Agent {
                             // invalid — resending the identical payload fails the same
                             // way, so don't invite a retry. Point at the levers that
                             // actually change the request.
-                            yield AgentEvent::Message(
-                                Message::assistant().with_text(
-                                    format!("Ran into this error: {provider_err}.\n\nThe provider rejected this request as invalid, so sending it again unchanged will fail the same way. Switch the model (Settings → Models), or start a new session, then resend your message.")
-                                )
+                            let message = Message::assistant().with_text(
+                                format!("Ran into this error: {provider_err}.\n\nThe provider rejected this request as invalid, so sending it again unchanged will fail the same way. Switch the model (Settings → Models), or start a new session, then resend your message.")
                             );
+                            persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                            yield AgentEvent::Message(message);
                             state_guard.mark_error();
                             break;
                         }
@@ -2295,11 +2320,11 @@ impl Agent {
                             #[cfg(feature = "telemetry")]
                             crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
                             error!("Error: {}", provider_err);
-                            yield AgentEvent::Message(
-                                Message::assistant().with_text(
-                                    format!("Ran into this error: {provider_err}.\n\nPlease retry if you think this is a transient or recoverable error.")
-                                )
+                            let message = Message::assistant().with_text(
+                                format!("Ran into this error: {provider_err}.\n\nPlease retry if you think this is a transient or recoverable error.")
                             );
+                            persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                            yield AgentEvent::Message(message);
                             state_guard.mark_error();
                             break;
                         }

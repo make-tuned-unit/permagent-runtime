@@ -32,12 +32,24 @@ const FPS: Record<MobiusState, number> = {
   sleeping: 0,
 };
 
+/// Resolve a `public/` asset against the app's base path.
+///
+/// These were root-absolute (`/mobius/…`). That works in Tauri, where Vite is
+/// built with `base: '/'`, and breaks everywhere else: the browser build uses
+/// `base: '/ui/'` and the daemon serves the app from `nest_service("/ui", …)`,
+/// so `/mobius/frame_000.webp` resolved to the origin root, which serves
+/// nothing — the animation never loaded and the logo fell back to its alt text
+/// for anyone opening the daemon-served UI in a browser.
+function asset(path: string): string {
+  return `${import.meta.env.BASE_URL}${path.replace(/^\//, '')}`;
+}
+
 function frameSrc(n: number): string {
-  return `/mobius/frame_${String(n).padStart(3, '0')}.webp`;
+  return asset(`mobius/frame_${String(n).padStart(3, '0')}.webp`);
 }
 
 function idleFrameSrc(n: number): string {
-  return `/mobius-idle/frame_${String(n).padStart(2, '0')}.webp`;
+  return asset(`mobius-idle/frame_${String(n).padStart(2, '0')}.webp`);
 }
 
 // memo: props are all primitives, so a parent re-render with unchanged props
@@ -107,7 +119,7 @@ export const Mobius = memo(function Mobius({
 
   const src = isAnimated
     ? (isIdle ? idleFrameSrc(frame) : frameSrc(frame))
-    : '/mobius/logo.webp';
+    : asset('mobius/logo.webp');
 
   // size = height; width derives from natural aspect ratio of the active frame set
   const aspect = isIdle ? IDLE_ASPECT : ASPECT;

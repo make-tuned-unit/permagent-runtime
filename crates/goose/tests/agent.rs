@@ -750,6 +750,7 @@ mod tests {
 
             agent.update_provider(provider, &session.id).await?;
 
+            let session_id = session.id.clone();
             let session_config = SessionConfig {
                 id: session.id,
                 schedule_id: None,
@@ -787,6 +788,40 @@ mod tests {
                 !surfaced
                     .contains("Please retry if you think this is a transient or recoverable error"),
                 "auth 401 must not be rendered as a generic transient error: {surfaced}"
+            );
+
+            // And it must SURVIVE the turn. The provider-error arms yield a
+            // message and then `break`, so they never reached the persistence
+            // call at the end of the reply loop — the message streamed and was
+            // never saved. The UI reloads the persisted transcript on `Finish`,
+            // which then replaced the streamed text with a transcript that did
+            // not contain it, so the error rendered for one frame and vanished:
+            // the user sent a message and the chat showed nothing at all.
+            //
+            // Asserting only on `surfaced` cannot catch that — the stream was
+            // always correct. This reads the transcript back instead.
+            let persisted = agent
+                .config
+                .session_manager
+                .get_session(&session_id, true)
+                .await?;
+            let transcript: String = persisted
+                .conversation
+                .unwrap_or_default()
+                .messages()
+                .iter()
+                .flat_map(|m| m.content.iter())
+                .filter_map(|c| match c {
+                    MessageContent::Text(t) => Some(t.text.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                transcript.contains("Authentication failed for your LLM provider"),
+                "the provider error must be persisted, not only streamed — the UI \
+                 reloads this transcript on Finish and would otherwise show an empty \
+                 turn. Persisted transcript was: {transcript}"
             );
             Ok(())
         }
