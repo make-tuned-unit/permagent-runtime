@@ -250,6 +250,15 @@ impl VerifyTool {
                             check.label
                         ));
                     }
+                    // jest/vitest exit 1 with "no tests found" when zero test files
+                    // match — same empty-scaffold case as pytest exit 5.
+                    if is_no_test_files_found(check, exit_code, &output) {
+                        return no_checks_result(&format!(
+                            "`{}` found no test files (the runner exited 1 with \"no tests \
+                             found\") — there are no tests to run yet.",
+                            check.label
+                        ));
+                    }
                     return fail_result(check, exit_code, &output);
                 }
                 CheckOutcome::TimedOut => {
@@ -397,6 +406,28 @@ fn is_placeholder_test(script: &str) -> bool {
 fn is_no_tests_collected(check: &Check, exit_code: Option<i32>) -> bool {
     exit_code == Some(5)
         && matches!(&check.exec, Exec::Direct { program, .. } if program.as_str() == "pytest")
+}
+
+/// jest and vitest exit 1 with "No tests found" / "No test files found" when
+/// zero test files match — a fresh Node scaffold with no tests yet, not a real
+/// failure. A genuine jest/vitest assertion failure ALSO exits 1, so the marker
+/// string is the only discriminator; the program+args gate keeps another tool's
+/// exit 1 from being swallowed. Narrow on purpose.
+fn is_no_test_files_found(check: &Check, exit_code: Option<i32>, output: &str) -> bool {
+    if exit_code != Some(1) {
+        return false;
+    }
+    let is_node_test = matches!(
+        &check.exec,
+        Exec::Direct { program, args }
+            if matches!(program.as_str(), "npm" | "pnpm" | "yarn" | "bun")
+                && args.as_slice() == ["run", "test"]
+    );
+    if !is_node_test {
+        return false;
+    }
+    let lower = output.to_ascii_lowercase();
+    lower.contains("no tests found") || lower.contains("no test files found")
 }
 
 /// Package manager implied by the lockfile present (npm is the default).
@@ -859,6 +890,47 @@ mod tests {
         ));
         // An explicit shell check is never reclassified.
         assert!(!is_no_tests_collected(&Check::shell("pytest"), Some(5)));
+    }
+
+    #[test]
+    fn jest_vitest_no_test_files_is_empty_not_broken() {
+        let npm_test = Check::direct("npm", &["run", "test"]);
+        assert!(is_no_test_files_found(
+            &npm_test,
+            Some(1),
+            "No tests found, exiting with code 1"
+        ));
+        assert!(is_no_test_files_found(
+            &npm_test,
+            Some(1),
+            "No test files found, exiting with code 1"
+        ));
+    }
+
+    /// A real failing assertion also exits 1; without this guard the empty-suite
+    /// exemption would report a broken suite as "no tests" — the mirror bug.
+    #[test]
+    fn a_real_jest_failure_still_fails() {
+        assert!(!is_no_test_files_found(
+            &Check::direct("npm", &["run", "test"]),
+            Some(1),
+            "FAIL  src/foo.test.js\n  ● adds numbers › 1 + 1 = 2\n    Expected: 2\n    Received: 3"
+        ));
+    }
+
+    #[test]
+    fn no_test_files_marker_is_gated_to_node_test_scripts() {
+        let marker = "No tests found, exiting with code 1";
+        assert!(!is_no_test_files_found(
+            &Check::direct("cargo", &["test"]),
+            Some(1),
+            marker
+        ));
+        assert!(!is_no_test_files_found(
+            &Check::shell("npm run test"),
+            Some(1),
+            marker
+        ));
     }
 
     #[tokio::test]

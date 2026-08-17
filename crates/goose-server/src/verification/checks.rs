@@ -368,14 +368,34 @@ async fn run_command_check(
     let (stdout_tail, out_trunc) = tail_bytes(&output.stdout, MAX_TAIL_BYTES);
     let (stderr_tail, err_trunc) = tail_bytes(&output.stderr, MAX_TAIL_BYTES);
     let exit_code = output.status.code();
+    // `code()` is None exactly when the process we spawned died by a SIGNAL.
+    // Note what that process is: `/bin/sh -c "<cmd>"` on macOS execs a single
+    // simple command in place, so for the ordinary check (`cargo test`) the
+    // signalled process IS the check itself. A signalled check is therefore
+    // ambiguous — SIGKILL from the OOM killer (the machine) and SIGSEGV from a
+    // crashing test binary (the work) are indistinguishable from here.
+    let signal_killed = exit_code.is_none();
     let status = if output.status.success() {
         CheckStatus::Pass
-    } else if exit_code == Some(127) {
-        // "command not found" is the CHECK ENVIRONMENT failing, not the work:
-        // this exact code (cargo absent from the daemon's launchd PATH) gave
-        // real, finished goal work a fail verdict and auto-cancelled it. An
-        // Error result parks the goal for human review instead of condemning
-        // the diff.
+    } else if exit_code == Some(127) || exit_code == Some(126) || signal_killed {
+        // Not a verdict on the diff — an Error parks the goal for human review
+        // instead of condemning work that may be finished and correct:
+        //
+        // - 127: "command not found" — the CHECK ENVIRONMENT failing. This exact
+        //   code (cargo absent from the daemon's launchd PATH) gave real,
+        //   finished goal work a fail verdict and auto-cancelled it.
+        // - 126: POSIX "found but not executable" (permission denied, or not an
+        //   executable format) — same category as 127.
+        // - signalled: unprovable either way (see above), so it is reported as
+        //   unprovable rather than asserted as a failure of the work. This is
+        //   not a softening: `clamp_with_check_results` clamps Error and Fail
+        //   alike to a Fail verdict, so nothing is auto-approved by landing
+        //   here. What changes is only what the verifier is TOLD — "killed by a
+        //   signal, cause unknown" instead of a bare failure with no exit code.
+        //
+        // 128+N stays Fail on purpose: that is a normal exit, reported by a
+        // surviving shell whose CHILD was signalled, and the shell surviving is
+        // evidence the machine was not the thing that died.
         CheckStatus::Error
     } else {
         CheckStatus::Fail
@@ -387,10 +407,34 @@ async fn run_command_check(
             exit_code,
             stdout_tail: Some(stdout_tail),
             stderr_tail: Some(stderr_tail),
+            // With no exit code there is nothing else in the row to explain an
+            // `error`, and an unexplained error is not evidence.
+            message: signal_killed.then(|| {
+                format!(
+                    "the check was terminated by {} before it could report an exit code — \
+                     this may be the machine (OOM/kill) or the check crashing, and the two \
+                     cannot be told apart here",
+                    describe_termination(&output.status)
+                )
+            }),
             ..Default::default()
         },
         out_trunc || err_trunc,
     ))
+}
+
+/// Name the signal that killed a check, when the platform can say. The number
+/// is the actionable part: 9/15 read as the machine, 6/11 as a crash.
+fn describe_termination(status: &std::process::ExitStatus) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return format!("signal {signal}");
+        }
+    }
+    let _ = status;
+    "a signal".to_string()
 }
 
 async fn run_http_check(
@@ -668,6 +712,87 @@ mod tests {
         // No short-circuit: second check still ran and failed.
         assert_eq!(results[1].status, CheckStatus::Fail);
         assert_eq!(results[1].evidence.exit_code, Some(3));
+    }
+
+    #[tokio::test]
+    async fn exit_126_is_environment_error_not_a_fail_verdict() {
+        let dir = tempfile::tempdir().unwrap();
+        let checks = vec![CompletionCheck::CommandExitZero {
+            cmd: "exit 126".to_string(),
+            cwd: None,
+            timeout_secs: 30,
+        }];
+        let results = run_checks(&checks, dir.path()).await;
+        assert_eq!(results[0].status, CheckStatus::Error);
+        assert_eq!(results[0].evidence.exit_code, Some(126));
+    }
+
+    #[tokio::test]
+    async fn exit_1_still_fails_after_environment_exit_mapping() {
+        let dir = tempfile::tempdir().unwrap();
+        let checks = vec![CompletionCheck::CommandExitZero {
+            cmd: "exit 1".to_string(),
+            cwd: None,
+            timeout_secs: 30,
+        }];
+        let results = run_checks(&checks, dir.path()).await;
+        assert_eq!(results[0].status, CheckStatus::Fail);
+        assert_eq!(results[0].evidence.exit_code, Some(1));
+    }
+
+    /// A signalled check has NO exit code, and cannot be graded as a verdict on
+    /// the diff. It must also SAY so: an `error` row whose only evidence is a
+    /// missing exit code explains nothing to the verifier reading it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_signalled_check_is_unprovable_and_says_why() {
+        let dir = tempfile::tempdir().unwrap();
+        let checks = vec![CompletionCheck::CommandExitZero {
+            // Two things matter here and both were learned from CI.
+            //
+            // SIGKILL, not SIGTERM: a shell may CATCH a term and exit 143
+            // rather than die by it, which is what Linux `sh` does. SIGKILL
+            // cannot be caught or converted to an exit status by any shell.
+            //
+            // And no nested `sh -c`: run_checks already runs this through
+            // `/bin/sh -c`, so wrapping it again had the inner shell kill
+            // itself while the OUTER one survived and exited 137 — an ordinary
+            // exit code, which is precisely the case the next test covers.
+            // macOS `sh` execs the final simple command, so the two were one
+            // process and it passed there; dash on ubuntu forked, and it
+            // failed. Killing the shell run_checks itself spawned is
+            // unambiguous on every unix, and is the shape an OOM-killed check
+            // has anyway.
+            cmd: "kill -KILL $$".to_string(),
+            cwd: None,
+            timeout_secs: 30,
+        }];
+        let results = run_checks(&checks, dir.path()).await;
+        assert_eq!(results[0].status, CheckStatus::Error);
+        assert_eq!(results[0].evidence.exit_code, None);
+        let message = results[0].evidence.message.as_deref().unwrap_or_default();
+        assert!(message.contains("signal 9"), "message was {message:?}");
+        assert!(message.contains("cannot be told apart"));
+    }
+
+    /// The narrowness guard for the case above: when the shell SURVIVES its
+    /// signalled child it exits 128+N normally, and that is an ordinary failing
+    /// exit code. Without this, "signalled means unprovable" would spread to
+    /// every check whose child dies — laundering real failures into `error`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_surviving_shell_reporting_128_plus_n_still_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let checks = vec![CompletionCheck::CommandExitZero {
+            // The trailing commands stop `sh` from exec'ing, so it lives to
+            // report its child's 128+15.
+            cmd: "sh -c 'kill -TERM $$'; rc=$?; exit $rc".to_string(),
+            cwd: None,
+            timeout_secs: 30,
+        }];
+        let results = run_checks(&checks, dir.path()).await;
+        assert_eq!(results[0].status, CheckStatus::Fail);
+        assert_eq!(results[0].evidence.exit_code, Some(143));
     }
 
     #[tokio::test]
