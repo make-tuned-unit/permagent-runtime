@@ -17,6 +17,27 @@ mod middleware;
 mod notification_router;
 mod openapi;
 mod proactive;
+/// Pin this test binary's config to a temp root before any test body runs.
+///
+/// `lib.rs` arms the identical initialiser (#1017) and this file did not — but
+/// `main.rs` re-declares `mod routes` and `mod state`, so every route test is
+/// compiled a SECOND time into the `permagentd` bin test binary. Nothing pinned
+/// the root there before the process-global `SESSION_STORAGE` `LazyLock`
+/// captured `Paths::spectral_db()`, so it captured the developer's real
+/// `~/.permagent` and those tests wrote fixture projects into the user's own
+/// database. Forty of them turned up in the Projects tab.
+///
+/// `test_support::test_root()` is not sufficient alone: it pins correctly, but
+/// only from the first test that calls it, and the global pool is fixed by
+/// whatever touches it first. `test_support::tests::
+/// the_session_db_never_resolves_to_the_real_permagent_dir` compiles into both
+/// roots and fails loudly if either ever loses this again.
+#[cfg(test)]
+#[ctor::ctor(unsafe)]
+fn pin_config_for_daemon_bin_tests() {
+    permagent::config::base::pin_config_to_temp_root_for_tests();
+}
+
 mod routes;
 mod session_event_bus;
 mod state;
