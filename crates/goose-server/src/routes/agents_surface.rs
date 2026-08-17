@@ -13,7 +13,9 @@ use axum::{
     Json, Router,
 };
 use permagent::agents::extension::ExtensionConfig;
-use permagent::agents::platform_extensions::PLATFORM_EXTENSIONS;
+use permagent::agents::platform_extensions::{
+    RequiredSecretDef, SecretImpact, PLATFORM_EXTENSIONS,
+};
 use permagent::agents::self_knowledge::{
     worker_descriptor_visible, worker_live_state_for, FeatureDescriptor, FeatureFlags, StateSource,
     WORKER_DESCRIPTORS,
@@ -119,10 +121,23 @@ struct DispatchPersona {
 struct RequiredSecret {
     name: String,
     present: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    impact: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unlocks: Option<String>,
 }
 
-/// `not_declared` means the platform registry declares no secret metadata; it
-/// must never be interpreted as a claim that the extension needs no secrets.
+/// Three states, and the third is the one that is easy to get wrong.
+///
+/// * `declared` + `present: true` — the key is set.
+/// * `declared` + `present: false` — the source names a key and it is NOT set.
+///   This is the actionable state: it is what tells the user which key to fill
+///   in. It must never be reported as `not_declared`.
+/// * `not_declared` — the source made no statement about secrets at all. Since
+///   every platform-registry entry now carries a `required_secrets` field (an
+///   empty one being the positive claim "needs none"), this now arises only for
+///   a configured extension whose transport enumerates no env keys. It must
+///   never be read as "this extension needs no secrets".
 #[derive(Serialize, Clone)]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum RequiredSecrets {
@@ -342,8 +357,77 @@ fn extension_fields(config: &ExtensionConfig) -> (String, String, Vec<String>) {
     }
 }
 
+/// Presence, never the value. A blank value is NOT presence: the capabilities
+/// that read these keys (see `market_data::FUNDAMENTALS_KEY`) treat an empty
+/// string as unset, so reporting it present here would tell the user they are
+/// done while the capability still refuses to run.
+fn key_is_present(env_value: Option<String>, stored: Option<Value>) -> bool {
+    fn meaningful(value: &str) -> bool {
+        !value.trim().is_empty()
+    }
+    if env_value.is_some_and(|value| meaningful(&value)) {
+        return true;
+    }
+    match stored {
+        Some(Value::String(value)) => meaningful(&value),
+        Some(Value::Null) | None => false,
+        // A non-string secret (a structured credential) is present as stored.
+        Some(_) => true,
+    }
+}
+
 fn config_key_present(name: &str) -> bool {
-    std::env::var(name).is_ok() || Config::global().get_secret::<Value>(name).is_ok()
+    key_is_present(
+        std::env::var(name).ok(),
+        Config::global().get_secret::<Value>(name).ok(),
+    )
+}
+
+/// Secrets a PLATFORM extension declares in the registry. Every declaration
+/// carries its impact and its human sentence, which is what separates this
+/// from the configured-transport path below.
+fn platform_required_secrets(declared: &'static [RequiredSecretDef]) -> RequiredSecrets {
+    let items = declared
+        .iter()
+        .map(|secret| RequiredSecret {
+            name: secret.key.to_string(),
+            present: config_key_present(secret.key),
+            impact: Some(match secret.impact {
+                SecretImpact::Degraded => "degraded",
+                SecretImpact::Unavailable => "unavailable",
+            }),
+            unlocks: Some(secret.unlocks.to_string()),
+        })
+        .collect();
+    let (items, truncated) = bounded(items, MAX_REQUIRED_SECRETS);
+    RequiredSecrets::Declared { items, truncated }
+}
+
+/// Secrets a CONFIGURED extension's transport enumerates. Only Stdio and
+/// StreamableHttp carry `env_keys`; for every other transport the config makes
+/// no statement at all, which is `not_declared` — reporting an empty
+/// declaration would be this surface inventing a "needs nothing" claim the
+/// configuration never made. These entries carry no impact or unlocks sentence
+/// because the transport does not supply one; absent is honest, "degraded" by
+/// default would not be.
+fn configured_required_secrets(
+    declares_secret_metadata: bool,
+    env_keys: Vec<String>,
+) -> RequiredSecrets {
+    if !declares_secret_metadata {
+        return RequiredSecrets::NotDeclared;
+    }
+    let items = env_keys
+        .into_iter()
+        .map(|name| RequiredSecret {
+            present: config_key_present(&name),
+            name,
+            impact: None,
+            unlocks: None,
+        })
+        .collect();
+    let (items, truncated) = bounded(items, MAX_REQUIRED_SECRETS);
+    RequiredSecrets::Declared { items, truncated }
 }
 
 fn capabilities() -> Vec<Capability> {
@@ -359,7 +443,7 @@ fn capabilities() -> Vec<Capability> {
                 description: def.description.to_string(),
                 default_enabled: Some(def.default_enabled),
                 source: "platform",
-                required_secrets: RequiredSecrets::NotDeclared,
+                required_secrets: platform_required_secrets(def.required_secrets),
             }
         })
         .map(|capability| (capability.key.clone(), capability))
@@ -371,14 +455,6 @@ fn capabilities() -> Vec<Capability> {
             ExtensionConfig::Stdio { .. } | ExtensionConfig::StreamableHttp { .. }
         );
         let (display_name, description, env_keys) = extension_fields(&entry.config);
-        let items = env_keys
-            .into_iter()
-            .map(|name| RequiredSecret {
-                present: config_key_present(&name),
-                name,
-            })
-            .collect();
-        let (items, truncated) = bounded(items, MAX_REQUIRED_SECRETS);
         let key = name_to_key(&configured_key);
         let capability = Capability {
             key: key.clone(),
@@ -387,7 +463,7 @@ fn capabilities() -> Vec<Capability> {
             enabled: entry.enabled,
             default_enabled: None,
             source: "configured",
-            required_secrets: RequiredSecrets::Declared { items, truncated },
+            required_secrets: configured_required_secrets(declares_secret_metadata, env_keys),
         };
         // A configured transport replaces a bare registry entry because it
         // carries actual secret metadata; otherwise retain the registry's real
@@ -951,7 +1027,7 @@ mod tests {
                 grants_enforced: true,
                 secrets: shaped_secrets,
             }],
-            capabilities: Vec::new(),
+            capabilities: capabilities(),
         };
         let detail = AgentDetail::Worker(background_workers(Some(0)).remove(0));
         let work = WorkReview {
@@ -1004,6 +1080,133 @@ mod tests {
         keys.sort();
         keys.dedup();
         assert_eq!(keys.len(), capabilities.len());
+    }
+
+    /// A key that is DECLARED but not set must report `declared` with
+    /// `present: false`. Collapsing it into `not_declared` would tell the user
+    /// the registry knows of no key to fill in — the opposite of the truth, and
+    /// the whole reason this surface distinguishes three states. Both branches
+    /// are asserted through the real mapping functions, not hand-built enum
+    /// values, so a revert in `capabilities()` cannot pass this.
+    #[test]
+    fn declared_but_unset_is_absent_not_undeclared() {
+        // A key no machine has. `present` is therefore knowably false here,
+        // which a real registry key could not guarantee on a dev box.
+        static NEVER_SET: &[RequiredSecretDef] = &[RequiredSecretDef {
+            key: "PERMAGENT_AGENTS_SURFACE_KEY_THAT_IS_NEVER_SET_4f19c0",
+            impact: SecretImpact::Degraded,
+            unlocks: "Nothing; this exists only to pin the declared-and-absent state.",
+        }];
+        let declared = serde_json::to_value(platform_required_secrets(NEVER_SET)).unwrap();
+        assert_eq!(declared["status"], "declared");
+        assert_eq!(declared["items"][0]["present"], false);
+        assert_eq!(declared["items"][0]["impact"], "degraded");
+        assert!(!declared["items"][0]["unlocks"].as_str().unwrap().is_empty());
+
+        let undeclared =
+            serde_json::to_value(configured_required_secrets(false, Vec::new())).unwrap();
+        assert_eq!(undeclared["status"], "not_declared");
+        assert!(undeclared.get("items").is_none());
+        assert_ne!(declared["status"], undeclared["status"]);
+    }
+
+    /// A capability whose registry entry declares nothing is a POSITIVE claim
+    /// ("needs no secret"), so it is `declared` with zero items — while a
+    /// configured transport that enumerates no env keys made no claim at all.
+    /// The two look alike and mean opposite things.
+    #[test]
+    fn empty_declaration_and_no_declaration_are_not_the_same_answer() {
+        let declares_nothing = serde_json::to_value(platform_required_secrets(&[])).unwrap();
+        assert_eq!(declares_nothing["status"], "declared");
+        assert_eq!(declares_nothing["items"].as_array().unwrap().len(), 0);
+
+        // Sse / Builtin / Platform / Frontend / InlinePython carry no env_keys.
+        for config in [
+            ExtensionConfig::Sse {
+                name: "x".into(),
+                description: String::new(),
+                uri: Some("http://localhost/x".into()),
+            },
+            ExtensionConfig::Frontend {
+                name: "y".into(),
+                description: String::new(),
+                tools: Vec::new(),
+                instructions: None,
+                bundled: None,
+                available_tools: Vec::new(),
+            },
+        ] {
+            let declares_secret_metadata = matches!(
+                config,
+                ExtensionConfig::Stdio { .. } | ExtensionConfig::StreamableHttp { .. }
+            );
+            let (_, _, env_keys) = extension_fields(&config);
+            let value = serde_json::to_value(configured_required_secrets(
+                declares_secret_metadata,
+                env_keys,
+            ))
+            .unwrap();
+            assert_eq!(value["status"], "not_declared", "{:?}", config.name());
+        }
+    }
+
+    /// The Financier's declaration must reach the API. This is the wiring the
+    /// whole gap was about: without it the roster still answers `not_declared`
+    /// and the user is never told which key to fill in.
+    #[test]
+    fn financier_declaration_reaches_the_roster() {
+        let capabilities = serde_json::to_value(capabilities()).unwrap();
+        let financier = capabilities
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|capability| capability["key"] == "finance")
+            .expect("the Financier is a visible capability");
+        let secrets = &financier["required_secrets"];
+        assert_eq!(secrets["status"], "declared");
+        let item = secrets["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["name"] == permagent::market_data::FUNDAMENTALS_KEY)
+            .expect("the fundamentals key is declared");
+        assert_eq!(item["impact"], "degraded");
+        assert!(item["present"].is_boolean());
+    }
+
+    /// Presence-only, enforced on the SHAPE. `RequiredSecret` may never grow a
+    /// field that could carry a value; the leak test above can only catch a
+    /// value it happens to seed, this catches the field itself.
+    #[test]
+    fn required_secret_exposes_no_value_bearing_field() {
+        let value = serde_json::to_value(RequiredSecret {
+            name: "SOME_KEY".into(),
+            present: true,
+            impact: Some("degraded"),
+            unlocks: Some("what it unlocks".into()),
+        })
+        .unwrap();
+        let mut fields: Vec<&str> = value.as_object().unwrap().keys().map(|k| &**k).collect();
+        fields.sort();
+        assert_eq!(fields, vec!["impact", "name", "present", "unlocks"]);
+    }
+
+    /// A blank value is not a configured secret. Reporting one as present
+    /// would tell the user to stop looking for a key the capability still
+    /// refuses to use — `market_data`'s reader applies the same rule, and the
+    /// two must not disagree about whether the Financier has its key.
+    #[test]
+    fn blank_value_is_absent_not_present() {
+        assert!(!key_is_present(None, None));
+        assert!(!key_is_present(Some("   ".into()), None));
+        assert!(!key_is_present(None, Some(Value::String("".into()))));
+        assert!(!key_is_present(Some("".into()), Some(Value::Null)));
+        assert!(key_is_present(Some("k".into()), None));
+        // A blank env var must not shadow a real stored secret.
+        assert!(key_is_present(
+            Some("".into()),
+            Some(Value::String("k".into()))
+        ));
     }
 
     #[test]

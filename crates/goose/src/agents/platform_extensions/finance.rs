@@ -3,10 +3,11 @@
 //!
 //! ## Two halves, and only one of them assumes anything
 //!
-//! **Everyone gets research.** `research_ticker` reads live quotes and
-//! fundamentals from Yahoo Finance and needs no setup, no key and no local
-//! service. That is the half a user with no trading stack of their own can
-//! still use on day one.
+//! **Everyone gets research.** `research_ticker` reads live quotes from Yahoo
+//! Finance and needs no setup, no key and no local service. Optional company
+//! fundamentals come from financialdatasets.ai when its key is configured.
+//! A user with no trading stack and no key can still use the quote path on day
+//! one.
 //!
 //! **Some people have their own engine.** Picker
 //! (`~/dev/Picker/pre_surge_scanner`) owns a pre-surge ranking algorithm, its
@@ -56,6 +57,18 @@ struct ResearchTickerParams {
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct CompanyFundamentalsParams {
+    /// One ticker symbol, e.g. `AAPL` or `SHOP.TO`.
+    ticker: String,
+    /// Statement period: annual, quarterly, or ttm. Defaults to annual.
+    #[serde(default)]
+    period: Option<String>,
+    /// Number of statement periods to retrieve. Clamped to 8.
+    #[serde(default)]
+    limit: Option<u8>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct RecordTradeParams {
     /// Date the position was opened, ISO `YYYY-MM-DD`. Ask the user rather
     /// than assuming today.
@@ -77,6 +90,31 @@ struct RecordTradeParams {
     /// Anything the user said about why they took the trade.
     #[serde(default)]
     notes: Option<String>,
+}
+
+fn render_fundamentals(
+    outcome: Result<crate::market_data::Fundamentals, crate::market_data::FundamentalsError>,
+) -> std::result::Result<CallToolResult, String> {
+    match outcome {
+        Ok(fundamentals) => Ok(CallToolResult::success(vec![Content::text(format!(
+            "{}\n\nThese are reported figures, not advice. Report them and their \
+             periods; do not derive a valuation, a forecast, or a position size.",
+            crate::market_data::describe_fundamentals(&fundamentals),
+        ))])),
+        Err(crate::market_data::FundamentalsError::NotConfigured) => {
+            Ok(CallToolResult::success(vec![Content::text(format!(
+                "No financialdatasets.ai key is configured. Set {} to unlock company \
+                 income, balance-sheet, and cash-flow fundamentals. Live prices via \
+                 research_ticker still work without it. Do not answer this fundamentals \
+                 question from memory.",
+                crate::market_data::FUNDAMENTALS_KEY
+            ))]))
+        }
+        Err(crate::market_data::FundamentalsError::Failed(error)) => Err(format!(
+            "the fundamentals request could not be completed: {error}. \
+             Do not answer the fundamentals question from memory"
+        )),
+    }
 }
 
 fn schema<T: JsonSchema>() -> JsonObject {
@@ -103,6 +141,9 @@ impl FinanceClient {
                 "Market research and the user's own finance tooling.\n\n\
                  research_ticker works for everyone — no setup, no key — and is how you \
                  ground any claim about a price. Never state a price from memory.\n\n\
+                 company_fundamentals retrieves financial statements from \
+                 financialdatasets.ai and needs the optional FINANCIAL_DATASETS_API_KEY. \
+                 Its absence is not an error and does not affect any other tool.\n\n\
                  The picker_* tools drive the user's OWN stock scanner and only exist if \
                  they run one: call picker_status first, since it is often not running and \
                  picker_start brings it up. picker_scan takes many minutes. record_trade \
@@ -190,6 +231,21 @@ impl FinanceClient {
             )
         };
         Ok(CallToolResult::success(vec![Content::text(text)]))
+    }
+
+    async fn handle_fundamentals(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> std::result::Result<CallToolResult, String> {
+        let args = arguments.ok_or("company_fundamentals needs a ticker")?;
+        let p: CompanyFundamentalsParams = serde_json::from_value(serde_json::Value::Object(args))
+            .map_err(|e| format!("could not read the fundamentals request: {e}"))?;
+        let period = p.period.unwrap_or_else(|| "annual".into()).to_lowercase();
+        if !matches!(period.as_str(), "annual" | "quarterly" | "ttm") {
+            return Err("period must be one of annual, quarterly, or ttm".into());
+        }
+        let limit = p.limit.unwrap_or(4).clamp(1, 8);
+        render_fundamentals(crate::market_data::fundamentals(&p.ticker, &period, limit).await)
     }
 
     async fn handle_start(&self) -> std::result::Result<CallToolResult, String> {
@@ -313,6 +369,16 @@ impl FinanceClient {
                 schema::<ResearchTickerParams>(),
             ),
             Tool::new(
+                "company_fundamentals".to_string(),
+                "Retrieve reported income statements, balance sheets, and cash-flow \
+                 statements for one company from financialdatasets.ai. This optional path \
+                 needs FINANCIAL_DATASETS_API_KEY; if it is absent, say so and do not answer \
+                 from memory. Retrieval and report only: no pricing, forecasting, valuation \
+                 opinion, or position sizing."
+                    .to_string(),
+                schema::<CompanyFundamentalsParams>(),
+            ),
+            Tool::new(
                 "picker_status".to_string(),
                 "Whether the user's stock scanner is running, whether a scan is in flight, \
                  and how fresh its results are. Call this FIRST — the scanner is often down, \
@@ -386,6 +452,7 @@ impl McpClientTrait for FinanceClient {
     ) -> std::result::Result<CallToolResult, Error> {
         let result = match name {
             "research_ticker" => self.handle_research(arguments).await,
+            "company_fundamentals" => self.handle_fundamentals(arguments).await,
             "picker_status" => self.handle_status().await,
             "picker_start" => self.handle_start().await,
             "picker_scan" => self.handle_scan().await,
@@ -440,5 +507,52 @@ mod tests {
                 tool.name
             );
         }
+    }
+
+    #[test]
+    fn research_inventory_is_preserved_and_fundamentals_is_added() {
+        let tools = FinanceClient::get_tools();
+        let research = tools
+            .iter()
+            .find(|tool| tool.name == "research_ticker")
+            .expect("research_ticker remains available");
+        assert_eq!(
+            research.description.as_deref(),
+            Some(
+                "Live price, day and 52-week ranges, volume and timestamp for one or more \
+                 tickers, from Yahoo Finance. Needs no setup, no key and no local service — \
+                 use it whenever the user asks what something is trading at, or to ground a \
+                 claim about a company in a real number. NEVER answer a price from memory: \
+                 if this tool cannot reach the source it says so, and so must you. Report \
+                 the numbers and their timestamp; this is data, not advice, and you do not \
+                 recommend a position size."
+            )
+        );
+        assert!(tools.iter().any(|tool| tool.name == "company_fundamentals"));
+    }
+
+    /// An optional capability that errors on every machine that never opted in
+    /// reads as broken software; an opted-in call that fails remains a failure.
+    #[test]
+    fn fundamentals_configuration_absence_is_an_answer_but_call_failure_is_an_error() {
+        let answer = render_fundamentals(Err(crate::market_data::FundamentalsError::NotConfigured))
+            .expect("an unconfigured optional capability is still a successful answer");
+        let text = match &answer.content[0].raw {
+            rmcp::model::RawContent::Text(text) => &text.text,
+            other => panic!("expected text content, got {other:?}"),
+        };
+        assert!(
+            text.contains(crate::market_data::FUNDAMENTALS_KEY),
+            "{text}"
+        );
+        assert!(text.contains("research_ticker"), "{text}");
+
+        let failure = render_fundamentals(Err(crate::market_data::FundamentalsError::Failed(
+            "configured call failed".into(),
+        )));
+        assert!(
+            failure.is_err(),
+            "a configured call failure must be an error"
+        );
     }
 }

@@ -1,12 +1,13 @@
-//! Market data — live quotes and fundamentals, with no setup required.
+//! Market data — live quotes with no setup, plus optional fundamentals.
 //!
 //! The Financier's research half has to work for a user who has no trading
-//! stack of their own, so this reaches Yahoo Finance's public quote endpoints
-//! directly: no API key, no account, no local service.
+//! stack of their own, so quotes reach Yahoo Finance's public endpoints
+//! directly: no API key, no account, no local service. Fundamentals use the
+//! authenticated financialdatasets.ai API only when its optional key exists.
 //!
 //! ## What that costs, stated plainly
 //!
-//! These endpoints are **not a supported API**. They are the ones Yahoo's own
+//! The Yahoo quote endpoints are **not a supported API**. They are the ones Yahoo's own
 //! web client calls; they are rate-limited, occasionally require a crumb/cookie
 //! handshake, and have changed shape before without notice. So:
 //!
@@ -18,14 +19,270 @@
 //!   * nothing here is cached across calls. A price is only a price at the
 //!     moment it was read, and its timestamp travels with it.
 //!
+//! The three bullets bind the fundamentals path too, and it carries one more
+//! obligation: an absent key and a rejected key are separate states, reported
+//! separately. "You have not set one" and "the one you set was refused" have
+//! different fixes, and the key's VALUE never appears in a message, a log, or
+//! a URL — only the name of the key does.
+//!
 //! This is deliberately a *research* source, not an execution source. Nothing
 //! in this module can place an order.
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+use crate::config::Config;
+
 const QUOTE_BASE: &str = "https://query1.finance.yahoo.com/v8/finance/chart";
 const TIMEOUT: Duration = Duration::from_secs(12);
+
+/// financialdatasets.ai key. Same name their own MCP server uses, so a
+/// user who already has one does not have to learn a second name.
+pub const FUNDAMENTALS_KEY: &str = "FINANCIAL_DATASETS_API_KEY";
+const FUNDAMENTALS_URL: &str = "https://api.financialdatasets.ai/financials";
+
+/// "No key configured" and "key configured, call failed" are different
+/// states and the user must be told which one they are in. Conflating them
+/// is the exact class this codebase was audited for.
+#[derive(Debug)]
+pub enum FundamentalsError {
+    NotConfigured,
+    Failed(String),
+}
+
+/// One statement kind: where it lives in the response, what it is called to the
+/// user, and the line items read out of it as (source field, human label). The
+/// source may rename or drop any of them, so each is read defensively and a
+/// field that is absent is simply not read — never rendered as zero.
+struct StatementSpec {
+    source: &'static str,
+    label: &'static str,
+    line_items: &'static [(&'static str, &'static str)],
+}
+
+const STATEMENTS: &[StatementSpec] = &[
+    StatementSpec {
+        source: "income_statements",
+        label: "Income",
+        line_items: &[
+            ("revenue", "revenue"),
+            ("operating_income", "operating income"),
+            ("net_income", "net income"),
+            ("earnings_per_share", "earnings per share"),
+        ],
+    },
+    StatementSpec {
+        source: "balance_sheets",
+        label: "Balance sheet",
+        line_items: &[
+            ("total_assets", "assets"),
+            ("total_liabilities", "liabilities"),
+            ("shareholders_equity", "shareholders' equity"),
+        ],
+    },
+    StatementSpec {
+        source: "cash_flow_statements",
+        label: "Cash flow",
+        line_items: &[
+            ("net_cash_flow_from_operations", "operating cash flow"),
+            ("free_cash_flow", "free cash flow"),
+        ],
+    },
+];
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Statement {
+    pub label: &'static str,
+    pub report_period: Option<String>,
+    /// Only the line items that were actually readable.
+    pub line_items: Vec<(&'static str, f64)>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Fundamentals {
+    pub symbol: String,
+    pub statements: Vec<Statement>,
+}
+
+/// The env var wins over the stored secret, and a blank value counts as
+/// absent — a key set to the empty string is not a key, and reporting it as
+/// one would send the user looking for a configuration problem they do not
+/// have. Pure, and the stored secret is read lazily, so precedence and the
+/// blank rule are testable without touching the process environment or the
+/// keychain.
+fn resolve_fundamentals_key(
+    env_value: Option<String>,
+    config_value: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    env_value
+        .and_then(non_empty)
+        .or_else(|| config_value().and_then(non_empty))
+}
+
+fn non_empty(value: String) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn fundamentals_key() -> Option<String> {
+    resolve_fundamentals_key(std::env::var(FUNDAMENTALS_KEY).ok(), || {
+        Config::global().get_secret::<String>(FUNDAMENTALS_KEY).ok()
+    })
+}
+
+pub async fn fundamentals(
+    symbol: &str,
+    period: &str,
+    limit: u8,
+) -> Result<Fundamentals, FundamentalsError> {
+    // Resolved first, and the only source of the auth header: no key means the
+    // function returns before a client or a URL exists, so there is no path on
+    // which an unauthenticated request is attempted.
+    let key = fundamentals_key().ok_or(FundamentalsError::NotConfigured)?;
+    let symbol = normalize_symbol(symbol).map_err(FundamentalsError::Failed)?;
+    // `^` is legal in a ticker (`^GSPC`) and must be percent-encoded, so the
+    // query is built by the URL parser rather than string-formatted.
+    let limit = limit.to_string();
+    let url = reqwest::Url::parse_with_params(
+        FUNDAMENTALS_URL,
+        &[
+            ("ticker", symbol.as_str()),
+            ("period", period),
+            ("limit", limit.as_str()),
+        ],
+    )
+    .map_err(|e| FundamentalsError::Failed(format!("could not build the request URL: {e}")))?;
+    let client = reqwest::Client::builder()
+        .timeout(TIMEOUT)
+        .build()
+        .map_err(|e| FundamentalsError::Failed(e.to_string()))?;
+    let response = client
+        .get(url)
+        .header("X-API-KEY", &key)
+        .send()
+        .await
+        .map_err(|e| {
+            FundamentalsError::Failed(format!("could not reach financialdatasets.ai: {e}"))
+        })?;
+    let status = response.status();
+    let text = response.text().await.map_err(|e| {
+        FundamentalsError::Failed(format!(
+            "financialdatasets.ai returned an unreadable response: {e}"
+        ))
+    })?;
+    if !status.is_success() {
+        return Err(FundamentalsError::Failed(fundamentals_failure_message(
+            status, &text, &key,
+        )));
+    }
+    let body: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+        FundamentalsError::Failed(format!(
+            "financialdatasets.ai returned unreadable JSON: {e}"
+        ))
+    })?;
+    parse_fundamentals(&body, &symbol).map_err(FundamentalsError::Failed)
+}
+
+/// A non-2xx from the fundamentals source, put into words. A rejected
+/// credential is called out as such: "the key you set was refused" and "you
+/// set no key" are different problems with different fixes, and this codebase
+/// was audited for conflating exactly that pair. The key is stripped from the
+/// echoed body — some APIs quote the offending credential back at you, and
+/// this string reaches the model and the transcript.
+fn fundamentals_failure_message(status: reqwest::StatusCode, body: &str, key: &str) -> String {
+    let redacted = body.replace(key, "[redacted]");
+    let detail = redacted.trim();
+    let detail = if detail.is_empty() {
+        "no detail given".to_string()
+    } else {
+        detail.chars().take(500).collect()
+    };
+    if matches!(status.as_u16(), 401 | 403) {
+        format!("financialdatasets.ai REJECTED the configured key ({status}): {detail}")
+    } else {
+        format!("financialdatasets.ai answered {status}: {detail}")
+    }
+}
+
+pub fn parse_fundamentals(body: &serde_json::Value, symbol: &str) -> Result<Fundamentals, String> {
+    let financials = body
+        .get("financials")
+        .ok_or("financialdatasets.ai returned no financials object")?;
+    let statements = STATEMENTS
+        .iter()
+        .flat_map(|spec| {
+            financials
+                .get(spec.source)
+                .and_then(|value| value.as_array())
+                .into_iter()
+                .flatten()
+                .map(move |row| Statement {
+                    label: spec.label,
+                    report_period: row
+                        .get("report_period")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string),
+                    line_items: spec
+                        .line_items
+                        .iter()
+                        .filter_map(|(field, label)| {
+                            row.get(field)
+                                .and_then(|value| value.as_f64())
+                                .map(|value| (*label, value))
+                        })
+                        .collect(),
+                })
+        })
+        .collect();
+    Ok(Fundamentals {
+        symbol: symbol.to_string(),
+        statements,
+    })
+}
+
+/// A human-readable rendering, for the agent to narrate. Absent line items are
+/// omitted rather than rendered as zero, and a statement whose every line item
+/// was unreadable says so — an empty row would read as "the company reported
+/// nothing", which is a different and false claim.
+pub fn describe_fundamentals(f: &Fundamentals) -> String {
+    fn section(lines: &mut Vec<String>, label: &str, period: Option<&str>, values: Vec<String>) {
+        let period = period.unwrap_or("period unavailable");
+        if values.is_empty() {
+            lines.push(format!(
+                "{label} {period}: no line items were readable in the response"
+            ));
+        } else {
+            lines.push(format!("{label} {period}: {}", values.join(", ")));
+        }
+    }
+
+    let mut lines = vec![format!(
+        "Fundamentals for {}, as reported, from financialdatasets.ai",
+        f.symbol
+    )];
+    for statement in &f.statements {
+        section(
+            &mut lines,
+            statement.label,
+            statement.report_period.as_deref(),
+            statement
+                .line_items
+                .iter()
+                .map(|(label, value)| format!("{label} {value}"))
+                .collect(),
+        );
+    }
+    if lines.len() == 1 {
+        lines.push(
+            "No statements came back in a readable shape. That may mean the source has \
+             nothing for this ticker, or that its response changed shape — from here the \
+             two are indistinguishable, so say so. It is NOT evidence the company reported \
+             nothing, and must not be filled in from memory."
+                .into(),
+        );
+    }
+    lines.join("\n")
+}
 
 /// Yahoo rejects requests without a browser-ish agent.
 const USER_AGENT: &str =
@@ -329,5 +586,136 @@ mod tests {
             "absent values must not render as zero"
         );
         assert!(!text.contains("Volume"));
+    }
+
+    #[test]
+    fn missing_fundamentals_key_is_resolved_before_any_request() {
+        // The pure seam avoids mutating the process environment, which is
+        // global to the whole test binary. `fundamentals` resolves through it
+        // before a client or a URL exists, so `None` here is the no-request path.
+        assert_eq!(resolve_fundamentals_key(None, || None), None);
+        assert_eq!(
+            resolve_fundamentals_key(Some("   ".into()), || Some("".into())),
+            None
+        );
+        // A blank env var must not shadow a real stored secret.
+        assert_eq!(
+            resolve_fundamentals_key(Some("".into()), || Some("stored".into())),
+            Some("stored".into())
+        );
+        // Env wins, and the stored secret is not even read.
+        assert_eq!(
+            resolve_fundamentals_key(Some(" env ".into()), || {
+                panic!("the stored secret must not be read when the env var is set")
+            }),
+            Some("env".into())
+        );
+    }
+
+    /// A key that was configured and refused is a different report from no key
+    /// at all: the first is a credential the user must fix, the second is a
+    /// feature they never turned on.
+    #[test]
+    fn rejected_key_reads_differently_from_no_key() {
+        let rejected = fundamentals_failure_message(
+            reqwest::StatusCode::UNAUTHORIZED,
+            "{\"detail\":\"bad key\"}",
+            "s3cret",
+        );
+        assert!(rejected.contains("REJECTED"), "{rejected}");
+        let other = fundamentals_failure_message(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            "boom",
+            "s3cret",
+        );
+        assert!(!other.contains("REJECTED"), "{other}");
+        // The key never travels in an error message, however the source echoes it.
+        let echoed = fundamentals_failure_message(
+            reqwest::StatusCode::BAD_REQUEST,
+            "unknown key s3cret supplied",
+            "s3cret",
+        );
+        assert!(!echoed.contains("s3cret"), "{echoed}");
+    }
+
+    #[test]
+    fn captured_fundamentals_shape_parses_defensively() {
+        let full = serde_json::json!({ "financials": {
+            "income_statements": [{
+                "ticker": "ACME", "report_period": "2025-12-31", "fiscal_period": "FY",
+                "period": "annual", "revenue": 100.0, "operating_income": 20.0,
+                "net_income": 12.0, "earnings_per_share": 1.5
+            }],
+            "balance_sheets": [{
+                "ticker": "ACME", "report_period": "2025-12-31", "fiscal_period": "FY",
+                "period": "annual", "total_assets": 300.0, "total_liabilities": 120.0,
+                "shareholders_equity": 180.0
+            }],
+            "cash_flow_statements": [{
+                "ticker": "ACME", "report_period": "2025-12-31", "fiscal_period": "FY",
+                "period": "annual", "net_cash_flow_from_operations": 30.0,
+                "free_cash_flow": 18.0
+            }]
+        }});
+        let parsed = parse_fundamentals(&full, "ACME").unwrap();
+        assert_eq!(
+            parsed.statements[0].line_items,
+            vec![
+                ("revenue", 100.0),
+                ("operating income", 20.0),
+                ("net income", 12.0),
+                ("earnings per share", 1.5),
+            ]
+        );
+        assert_eq!(
+            parsed.statements[1].line_items,
+            vec![
+                ("assets", 300.0),
+                ("liabilities", 120.0),
+                ("shareholders' equity", 180.0),
+            ]
+        );
+        assert_eq!(
+            parsed.statements[2].line_items,
+            vec![("operating cash flow", 30.0), ("free cash flow", 18.0)]
+        );
+
+        let thin = serde_json::json!({ "financials": {
+            "income_statements": [{ "sales_renamed": 100.0 }]
+        }});
+        let parsed = parse_fundamentals(&thin, "ACME").unwrap();
+        assert!(parsed.statements[0].line_items.is_empty());
+        assert!(!parsed
+            .statements
+            .iter()
+            .any(|statement| statement.label == "Balance sheet"));
+    }
+
+    #[test]
+    fn fundamentals_description_does_not_fabricate_missing_values() {
+        let text = describe_fundamentals(&Fundamentals {
+            symbol: "ACME".into(),
+            statements: vec![Statement {
+                label: "Income",
+                report_period: Some("2025-12-31".into()),
+                line_items: Vec::new(),
+            }],
+        });
+        assert!(
+            text.contains("Fundamentals for ACME, as reported, from financialdatasets.ai"),
+            "{text}"
+        );
+        assert!(!text.contains("revenue"), "{text}");
+        assert!(!text.contains("income 0"), "{text}");
+        // A row whose every line item was unreadable says so. A bare
+        // "Income 2025-12-31:" would read as a company that reported nothing.
+        assert!(text.contains("no line items were readable"), "{text}");
+
+        // Nothing readable at all must not render as "the company reported nothing".
+        let empty = describe_fundamentals(&Fundamentals {
+            symbol: "ACME".into(),
+            statements: Vec::new(),
+        });
+        assert!(empty.contains("NOT evidence"), "{empty}");
     }
 }
