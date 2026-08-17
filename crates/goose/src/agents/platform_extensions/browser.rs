@@ -1126,7 +1126,16 @@ mod annotation_tests {
     /// browser tool cannot slip past the gate by simply omitting annotations.
     #[test]
     fn no_browser_tool_skips_the_write_gate_by_accident() {
-        for tool in BrowserClient::get_tools() {
+        let tools = BrowserClient::get_tools();
+        // A gate that iterates an empty list passes while gating nothing. If
+        // registration ever breaks, this test must go red rather than green —
+        // it is the only thing standing between an unannotated tool and the
+        // permission layer skipping it.
+        assert!(
+            !tools.is_empty(),
+            "get_tools() returned nothing, so the write gate below checked nothing"
+        );
+        for tool in tools {
             let name = tool.name.to_string();
             if DELIBERATELY_UNANNOTATED.contains(&name.as_str()) {
                 continue;

@@ -483,12 +483,24 @@ mod tests {
     /// Nothing here may move money. If a tool is ever added that can, this
     /// test should fail and force the Tier-2 decision explicitly rather than
     /// letting it arrive as an ordinary tool.
+    ///
+    /// Every assertion below is a *negative* one, and an empty tool list
+    /// satisfies all of them. A mutation returning `Vec::new()` from
+    /// `get_tools()` was caught here only by the `record_trade` line, which had
+    /// been written to pin the safe recording tool, not to floor this guard —
+    /// the money property was resting on an incidental neighbour. The floor is
+    /// explicit now so nobody removes it as redundant.
     #[test]
     fn no_tool_can_place_an_order() {
         let names: Vec<String> = FinanceClient::get_tools()
             .iter()
             .map(|t| t.name.to_string())
             .collect();
+        assert!(
+            !names.is_empty(),
+            "get_tools() returned nothing, so every 'no tool named X' assertion \
+             below would pass without inspecting a single tool"
+        );
         for forbidden in ["place_order", "buy", "sell", "submit_order", "trade"] {
             assert!(
                 !names.iter().any(|n| n == forbidden),
@@ -500,7 +512,12 @@ mod tests {
 
     #[test]
     fn every_tool_is_described() {
-        for tool in FinanceClient::get_tools() {
+        let tools = FinanceClient::get_tools();
+        assert!(
+            !tools.is_empty(),
+            "get_tools() returned nothing, so 'every tool' was vacuously true"
+        );
+        for tool in tools {
             assert!(
                 tool.description.as_ref().is_some_and(|d| d.len() > 40),
                 "{} needs a description the model can act on",

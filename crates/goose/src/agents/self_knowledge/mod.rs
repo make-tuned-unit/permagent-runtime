@@ -878,21 +878,88 @@ mod tests {
         assert!(lesson_for("not_a_real_feature").is_none());
     }
 
+    /// Every authored confirm must be readable back from something the brief
+    /// renders for that feature, or from `search_memory`.
+    ///
+    /// `HasScheduledJob` and `LibrarianDescribedAtLeastOne` are read back from
+    /// the feature's own live status line, which [`worker_live_state_for`]
+    /// returns `None` for unless `state_source` is `Queryable`. So a `Static`
+    /// feature authoring either of those asks the agent to confirm against a
+    /// line that will not be there. The other variants read signals the brief
+    /// renders unconditionally — the tool `[active]` flag, the "You are <name>"
+    /// line — or go through the `search_memory` proxy, and are fine either way.
+    ///
+    /// The earlier form of this test stated a rule in a comment and checked
+    /// something else: it matched `if let Some(MemoryRecallable(p))` and
+    /// asserted only that the phrase was non-empty, so every non-matching
+    /// variant — including the two that are genuinely unconfirmable — fell
+    /// through the `if` and passed. The match below is exhaustive, so a new
+    /// `ConfirmCheck` cannot be added without deciding here whether a Static
+    /// feature can read it back.
     #[test]
-    fn confirm_checks_only_on_queryable_signals() {
-        // Every authored confirm maps to a queryable read-back. Static surfaces
-        // (Reader) are allowed a confirm only via the MemoryRecallable proxy.
-        for id in V1_LESSON_IDS {
-            let d = find_descriptor(id).unwrap();
+    fn a_static_feature_never_confirms_against_a_live_status_line() {
+        let mut confirms_seen = 0;
+        let mut static_confirms_seen = 0;
+
+        for d in WORKER_DESCRIPTORS
+            .iter()
+            .chain(SURFACE_DESCRIPTORS)
+            .chain(GUARD_DESCRIPTORS)
+            .copied()
+            .chain(PLATFORM_EXTENSIONS.values().map(|def| def.descriptor()))
+        {
             for step in d.teaching {
-                if let Some(ConfirmCheck::MemoryRecallable(p)) = step.confirm {
+                let Some(confirm) = step.confirm else {
+                    continue;
+                };
+                confirms_seen += 1;
+                let is_static = d.state_source == StateSource::Static;
+                if is_static {
+                    static_confirms_seen += 1;
+                }
+                let (needs_live_status, phrase) = match confirm {
+                    // Read back via search_memory — no brief line involved.
+                    ConfirmCheck::MemoryRecallable(p) => (false, Some(p)),
+                    // Rendered unconditionally, not via worker_live_state_for.
+                    ConfirmCheck::ExtensionEnabled(_) | ConfirmCheck::PersonaConfigured => {
+                        (false, None)
+                    }
+                    // Merged only for Queryable features.
+                    ConfirmCheck::HasScheduledJob | ConfirmCheck::LibrarianDescribedAtLeastOne => {
+                        (true, None)
+                    }
+                };
+                assert!(
+                    !(needs_live_status && is_static),
+                    "{}: a Static feature confirms with {confirm:?}, which reads back from a \
+                     live status line that worker_live_state_for suppresses for Static \
+                     features — the step can never be confirmed. Use MemoryRecallable, or \
+                     make the feature Queryable and merge the signal into the brief.",
+                    d.id
+                );
+                if let Some(p) = phrase {
                     assert!(
                         !p.is_empty(),
-                        "{id}: MemoryRecallable phrase must be non-empty"
+                        "{}: MemoryRecallable phrase must be non-empty — the agent searches \
+                         memory for it verbatim",
+                        d.id
                     );
                 }
             }
         }
+
+        // Floors. Without these the loop above passes on a registry where no
+        // step authors a confirm at all, which is what the previous version of
+        // this test was actually doing whenever the `if let` missed.
+        assert!(
+            confirms_seen > 0,
+            "no teaching step authors a confirm, so the rule went untested"
+        );
+        assert!(
+            static_confirms_seen > 0,
+            "no Static feature authors a confirm, so the case this test exists \
+             for was never exercised — Reader is expected to be one"
+        );
     }
 
     #[test]
