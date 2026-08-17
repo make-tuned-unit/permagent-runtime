@@ -57,6 +57,14 @@ impl Severity {
         match s {
             "action_required" => Severity::ActionRequired,
             "attention" => Severity::Attention,
+            // `"info"` has its own arm even though the fallback would produce
+            // the same value. Without it the known label and a corrupt one
+            // share the `_` arm, so any test of `from_stored("info")` exercises
+            // the fallback through a value that was never in question — mutate
+            // the fallback and the test still passes, while the case it exists
+            // for goes unchecked. Splitting them makes the degrade path
+            // independently testable.
+            "info" => Severity::Info,
             _ => Severity::Info,
         }
     }
@@ -298,6 +306,80 @@ mod tests {
             detail: None,
             ref_kind: None,
             ref_id: None,
+        }
+    }
+
+    /// The severity ordering exists in exactly one place — the `CASE severity`
+    /// in `try_unacknowledged` — and the module docs make it load-bearing: the
+    /// cap is only safe because what gets dropped is the least urgent, not the
+    /// oldest. `Severity` derives no `Ord`, so there is nothing in Rust for
+    /// that SQL to disagree with, and equally nothing that fails when a new
+    /// variant is added without a `WHEN` arm. Such a variant would silently
+    /// land in `ELSE` and be the first thing truncated away — the loudest
+    /// briefing dropped first.
+    ///
+    /// Asserted through the real query rather than by matching the SQL text,
+    /// so it tests the ordering rather than the spelling.
+    #[tokio::test]
+    async fn every_severity_is_ranked_and_the_cap_drops_the_quietest() {
+        let pool = pool().await;
+        // Filed quietest-first so a no-op ORDER BY cannot pass by accident.
+        for (sev, summary) in [
+            (Severity::Info, "routine"),
+            (Severity::Attention, "worth a mention"),
+            (Severity::ActionRequired, "needs a decision"),
+        ] {
+            file_briefing(&pool, new("steward", sev, summary)).await;
+        }
+        let all = try_unacknowledged(&pool, 10).await.unwrap();
+        assert_eq!(
+            all.iter().map(|b| b.severity).collect::<Vec<_>>(),
+            vec![
+                Severity::ActionRequired,
+                Severity::Attention,
+                Severity::Info
+            ],
+            "severities must come back loudest-first"
+        );
+        // The claim the cap rests on: truncation sheds the quietest.
+        let capped = try_unacknowledged(&pool, 1).await.unwrap();
+        assert_eq!(capped.len(), 1);
+        assert_eq!(
+            capped[0].severity,
+            Severity::ActionRequired,
+            "a cap of 1 must keep the most urgent briefing, not the newest"
+        );
+    }
+
+    /// `from_stored` is the decode for every severity read out of the
+    /// `agent_briefings.severity` column, and it had no test at all.
+    ///
+    /// Two separate claims, and the second is the one that was unreachable
+    /// while `"info"` shared the `_` arm: every severity survives a
+    /// write/read round trip, AND an unrecognised value degrades to `Info`
+    /// rather than to something louder. The degrade is deliberate — a briefing
+    /// written by a newer build, or a hand-edited row, must not be able to
+    /// escalate itself into Henry's brief as action_required.
+    #[test]
+    fn stored_severities_round_trip_and_unknown_degrades_to_info() {
+        for sev in [
+            Severity::Info,
+            Severity::Attention,
+            Severity::ActionRequired,
+        ] {
+            assert_eq!(
+                Severity::from_stored(sev.as_str()),
+                sev,
+                "{:?} did not survive as_str -> from_stored",
+                sev
+            );
+        }
+        for unknown in ["", "critical", "ACTION_REQUIRED", "urgent", "info ", "null"] {
+            assert_eq!(
+                Severity::from_stored(unknown),
+                Severity::Info,
+                "unrecognised severity {unknown:?} must degrade to Info, never escalate"
+            );
         }
     }
 
