@@ -63,3 +63,40 @@ static TEST_ROOT: LazyLock<tempfile::TempDir> = LazyLock::new(|| {
 pub fn test_root() -> PathBuf {
     TEST_ROOT.path().to_path_buf()
 }
+
+#[cfg(test)]
+mod tests {
+    /// No test binary may resolve the session database to the developer's real
+    /// `~/.permagent`.
+    ///
+    /// This module is compiled into BOTH crate roots — the lib and the
+    /// `permagentd` bin — because `main.rs` re-declares `mod routes`, so every
+    /// route test exists twice, once per binary. `lib.rs` arms a `#[ctor]` that
+    /// pins config to a temp root before any test body runs; `main.rs` did not,
+    /// so in the bin binary nothing pinned the root before the process-global
+    /// `SESSION_STORAGE` `LazyLock` captured `Paths::spectral_db()`. It captured
+    /// the real one, and route tests wrote fixture projects into the user's own
+    /// database — 40 of them, found in the Projects tab.
+    ///
+    /// `test_root()` is not enough on its own: it pins correctly, but only from
+    /// the first test that calls it. Anything touching the global pool earlier
+    /// has already fixed the path for the whole process. The `#[ctor]` is what
+    /// makes the pin unconditional, and this test is what makes a missing
+    /// `#[ctor]` fail loudly instead of silently writing to real data.
+    #[test]
+    fn the_session_db_never_resolves_to_the_real_permagent_dir() {
+        let db = permagent::config::paths::Paths::spectral_db();
+        let real = dirs::home_dir()
+            .expect("home dir")
+            .join(".permagent")
+            .join("spectral");
+        assert!(
+            !db.starts_with(&real),
+            "this test binary resolves the session database to {} — the REAL user \
+             database. Whatever runs first here will write test fixtures into it. \
+             Every crate root that compiles these test modules needs the \
+             pin_config_to_temp_root_for_tests() ctor that lib.rs arms.",
+            db.display()
+        );
+    }
+}
