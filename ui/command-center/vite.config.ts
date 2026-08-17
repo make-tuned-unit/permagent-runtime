@@ -26,6 +26,13 @@ export default defineConfig({
       '/events': { target: 'http://localhost:3001', ws: true, changeOrigin: true },
       '/config': { target: 'http://localhost:3001', changeOrigin: true },
       '/status': { target: 'http://localhost:3001', changeOrigin: true },
+      // Missing from the proxy list, so under `base: '/ui/'` these fell
+      // through to Vite's own handler and 404'd — the Automate tab showed
+      // "Couldn't load automations. Unknown error" in `npm run dev`, which
+      // reads as a broken daemon rather than a missing proxy entry.
+      '/schedule': { target: 'http://localhost:3001', changeOrigin: true },
+      '/activity': { target: 'http://localhost:3001', changeOrigin: true },
+      '/voice': { target: 'http://localhost:3001', changeOrigin: true },
     },
   },
   build: {
