@@ -898,7 +898,30 @@ mod tests {
     #[test]
     fn workers_are_never_dispatchable_and_have_no_affordance() {
         let value = serde_json::to_value(background_workers(Some(3))).unwrap();
-        for worker in value.as_array().unwrap() {
+        let workers = value.as_array().unwrap();
+        // "never dispatchable" over an empty roster is vacuously true, so floor
+        // it. Not pinned to WORKER_DESCRIPTORS.len(): the roster is filtered by
+        // worker_descriptor_visible against FeatureFlags::from_live_config(), so
+        // the visible count depends on the host's config (6 of 9 here). Pinning
+        // the count, or naming expected workers, would make this fail on config
+        // rather than on the property. Re-deriving the same filter to compare
+        // against would only assert the function equals a copy of itself.
+        assert!(
+            !workers.is_empty(),
+            "roster returned no workers, so the assertions below inspected nothing"
+        );
+        let known: Vec<&str> = permagent::agents::self_knowledge::WORKER_DESCRIPTORS
+            .iter()
+            .map(|d| d.id)
+            .collect();
+        for worker in workers {
+            let id = worker["id"].as_str().expect("worker must carry an id");
+            assert!(
+                known.contains(&id),
+                "roster returned {id:?}, which is not a WORKER_DESCRIPTORS id"
+            );
+        }
+        for worker in workers {
             assert_eq!(worker["dispatchable"], false);
             assert!(worker.get("dispatch").is_none());
         }
