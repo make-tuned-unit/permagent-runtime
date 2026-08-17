@@ -1,3 +1,4 @@
+use crate::agents::schema_validation::{compile_schema, schema_error_message, validation_errors};
 use crate::agents::tool_execution::ToolCallResult;
 use crate::recipe::validate_recipe::validate_response_json_schema;
 use crate::recipe::Response;
@@ -112,26 +113,13 @@ impl FinalOutputTool {
         let Some(schema) = self.response.json_schema.as_ref() else {
             return Err("Internal error: final output schema is missing".to_string());
         };
-        let compiled_schema = match jsonschema::validator_for(schema) {
-            Ok(schema) => schema,
-            Err(e) => {
-                return Err(format!("Internal error: Failed to compile schema: {}", e));
-            }
-        };
-
-        let validation_errors: Vec<String> = compiled_schema
-            .iter_errors(output)
-            .map(|error| format!("- {}: {}", error.instance_path, error))
-            .collect();
-
-        if validation_errors.is_empty() {
+        let validator = compile_schema(schema)
+            .map_err(|e| format!("Internal error: Failed to compile schema: {}", e))?;
+        let errors = validation_errors(&validator, output);
+        if errors.is_empty() {
             Ok(output.clone())
         } else {
-            Err(format!(
-                "Validation failed:\n{}\n\nExpected format:\n{}\n\nPlease correct your output to match the expected JSON schema and try again.",
-                validation_errors.join("\n"),
-                self.schema_pretty()
-            ))
+            Err(schema_error_message(schema, &errors))
         }
     }
 

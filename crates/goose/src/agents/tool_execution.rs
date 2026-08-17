@@ -18,6 +18,7 @@ pub struct ToolCallContext {
     pub session_id: String,
     pub working_dir: Option<PathBuf>,
     pub tool_call_request_id: Option<String>,
+    pub model: Option<String>,
 }
 
 impl ToolCallContext {
@@ -30,7 +31,13 @@ impl ToolCallContext {
             session_id,
             working_dir,
             tool_call_request_id,
+            model: None,
         }
+    }
+
+    pub fn with_model(mut self, model: Option<String>) -> Self {
+        self.model = model;
+        self
     }
 
     pub fn working_dir_str(&self) -> Option<&str> {

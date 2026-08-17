@@ -782,6 +782,12 @@ impl Agent {
             session.id.clone(),
             Some(session.working_dir.clone()),
             Some(request_id.clone()),
+        )
+        .with_model(
+            self.provider()
+                .await
+                .ok()
+                .map(|p| p.get_model_config().model_name.clone()),
         );
 
         debug!("WAITING_TOOL_START: {}", tool_call.name);
