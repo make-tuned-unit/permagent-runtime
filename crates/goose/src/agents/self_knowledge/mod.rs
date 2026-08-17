@@ -720,6 +720,59 @@ fn confirm_hint(c: &ConfirmCheck) -> String {
 mod tests {
     use super::*;
 
+    /// Rerunnable raw evidence for descriptor audits. Kept ignored because it
+    /// prints the full registries and MCP tool copy rather than asserting.
+    #[test]
+    #[ignore = "audit dump, not an assertion"]
+    fn descriptor_audit_dump() {
+        fn one_line(text: &str) -> String {
+            text.replace(['\r', '\n'], " ")
+        }
+
+        fn print_descriptor(registry: &str, d: FeatureDescriptor) {
+            println!(
+                "{}|{}|{}|{:?}|{}|{}",
+                registry,
+                d.id,
+                one_line(d.display_name),
+                d.category,
+                one_line(d.what_it_does),
+                one_line(d.why_it_matters)
+            );
+        }
+
+        let mut platform: Vec<&PlatformExtensionDef> = PLATFORM_EXTENSIONS.values().collect();
+        platform.sort_by_key(|def| def.name);
+        for def in platform {
+            let registry = if def.hidden {
+                "platform_extension(hidden)"
+            } else {
+                "platform_extension"
+            };
+            print_descriptor(registry, def.descriptor());
+        }
+        for d in WORKER_DESCRIPTORS {
+            print_descriptor("worker", *d);
+        }
+        for d in GUARD_DESCRIPTORS {
+            print_descriptor("guard", *d);
+        }
+        for d in SURFACE_DESCRIPTORS {
+            print_descriptor("surface", *d);
+        }
+
+        for (ext_name, tools) in extension_tool_inventories() {
+            for tool in tools {
+                println!(
+                    "mcp_tool|{}|{}|{}",
+                    ext_name,
+                    tool.name,
+                    one_line(tool.description.as_deref().unwrap_or_default())
+                );
+            }
+        }
+    }
+
     /// Every known worker id must have exactly one descriptor. Catches a worker
     /// added without a co-located descriptor wired into [`WORKER_DESCRIPTORS`].
     const KNOWN_WORKER_IDS: &[&str] = &[
@@ -749,7 +802,7 @@ mod tests {
         "projects",
         "devices",
         "decision_inbox",
-        "inbox",
+        "downloads_inbox",
         "timeline",
         "run_roster",
         "grow",
@@ -757,7 +810,7 @@ mod tests {
         "coding_harness",
         "cost_optimizer",
         "mesh",
-        "skills",
+        "skills_library",
         "sessions",
         "trace",
         "meeting_dictation",
@@ -766,6 +819,187 @@ mod tests {
     ];
     /// The Phase-2-v1 lesson set — each must resolve to a descriptor with steps.
     const V1_LESSON_IDS: &[&str] = &["reader", "brain", "scheduler", "persona"];
+
+    /// No descriptor id may occur twice, either inside one registry or across
+    /// registries. Historical DEFECT A let the Downloads inbox surface shadow
+    /// the Decision Inbox extension at id `inbox`; DEFECT B likewise let the
+    /// Skills Library surface shadow the Skills extension at id `skills`.
+    #[test]
+    fn descriptor_ids_are_unique_across_registries() {
+        // Librarian deliberately has both a platform extension and a worker
+        // descriptor. The platform copy is omitted from the brief by
+        // TOOL_IDS_RENDERED_ELSEWHERE, so the worker is the one rendered.
+        const ALLOWLIST: &[(&str, &[&str])] = &[("librarian", &["platform", "worker"])];
+
+        let mut by_id: std::collections::BTreeMap<&'static str, Vec<&'static str>> =
+            std::collections::BTreeMap::new();
+        {
+            let mut add = |registry: &'static str, id: &'static str| {
+                let registries = by_id.entry(id).or_default();
+                assert!(
+                    !registries.contains(&registry),
+                    "descriptor id {id:?} appears twice in the {registry} registry; \
+                     find_descriptor resolves worker > surface > guard > platform, so a collision \
+                     silently shadows a descriptor and serves the wrong lesson"
+                );
+                registries.push(registry);
+            };
+
+            for def in PLATFORM_EXTENSIONS.values() {
+                add("platform", def.name);
+            }
+            for d in WORKER_DESCRIPTORS {
+                add("worker", d.id);
+            }
+            for d in GUARD_DESCRIPTORS {
+                add("guard", d.id);
+            }
+            for d in SURFACE_DESCRIPTORS {
+                add("surface", d.id);
+            }
+        }
+
+        for (id, registries) in by_id {
+            if registries.len() == 1 {
+                continue;
+            }
+            let allowlisted = ALLOWLIST.iter().any(|(allowed_id, allowed_registries)| {
+                id == *allowed_id && registries.as_slice() == *allowed_registries
+            });
+            assert!(
+                allowlisted,
+                "descriptor id {id:?} occurs across registries {registries:?}; \
+                 find_descriptor resolves worker > surface > guard > platform, so a collision \
+                 silently shadows a descriptor and serves the wrong lesson"
+            );
+        }
+    }
+
+    /// Every descriptor rendered in the brief needs a distinct bold label.
+    #[test]
+    fn descriptor_display_names_are_unique_in_the_brief() {
+        // These two bullets are intentionally complementary: the extension
+        // exposes tools that settle decisions from chat, while the surface is
+        // the dashboard queue where those decisions land.
+        type RegistryEntry = (&'static str, &'static str);
+        type DisplayNameAllowance = (&'static str, RegistryEntry, RegistryEntry);
+        const ALLOWLIST: &[DisplayNameAllowance] = &[(
+            "Decision Inbox",
+            ("platform", "inbox"),
+            ("surface", "decision_inbox"),
+        )];
+
+        let mut by_name: std::collections::BTreeMap<
+            &'static str,
+            Vec<(&'static str, &'static str)>,
+        > = std::collections::BTreeMap::new();
+        {
+            let mut add = |registry: &'static str, id: &'static str, display_name: &'static str| {
+                by_name
+                    .entry(display_name)
+                    .or_default()
+                    .push((registry, id));
+            };
+
+            for def in PLATFORM_EXTENSIONS
+                .values()
+                .filter(|def| !def.hidden && !TOOL_IDS_RENDERED_ELSEWHERE.contains(&def.name))
+            {
+                add("platform", def.name, def.display_name);
+            }
+            for d in WORKER_DESCRIPTORS
+                .iter()
+                .filter(|d| worker_descriptor_visible(d, FeatureFlags::default()))
+            {
+                add("worker", d.id, d.display_name);
+            }
+            for d in GUARD_DESCRIPTORS {
+                add("guard", d.id, d.display_name);
+            }
+            for d in SURFACE_DESCRIPTORS {
+                add("surface", d.id, d.display_name);
+            }
+        }
+
+        for (display_name, entries) in by_name {
+            if entries.len() == 1 {
+                continue;
+            }
+            let allowlisted = ALLOWLIST.iter().any(|(allowed_name, left, right)| {
+                display_name == *allowed_name
+                    && entries.len() == 2
+                    && entries.contains(left)
+                    && entries.contains(right)
+            });
+            assert!(
+                allowlisted,
+                "brief display name {display_name:?} is shared by {entries:?}; the brief renders \
+                 each descriptor as `- **{{display_name}}** — ...`, so duplicate bold labels hand \
+                 the agent two definitions of one name"
+            );
+        }
+    }
+
+    /// Paired extension and non-tool descriptors must retain the same defining
+    /// claim even though each copy serves a different audience.
+    #[test]
+    fn paired_descriptors_do_not_contradict() {
+        // The Decision Inbox surface intentionally does not name callable tools;
+        // "decisions" is the honest shared claim instead of an invented tool
+        // reference. The other pairs share their concrete implementation handle.
+        const PAIRS: &[(&str, &str, &str, &str)] = &[
+            (
+                "inbox",
+                "decision_inbox",
+                "decisions",
+                "both copies must identify decisions as the queue's subject",
+            ),
+            (
+                "app_perception",
+                "app_awareness",
+                "observe_app",
+                "both copies must name the read-only app-perception tool",
+            ),
+            (
+                "skills",
+                "skills_library",
+                "SKILL.md folder",
+                "both copies must preserve the portable on-disk skills format",
+            ),
+            (
+                "analyze",
+                "codebase",
+                "tree-sitter",
+                "both copies must preserve how the code map is produced",
+            ),
+            (
+                "projectmanager",
+                "build",
+                "project_launch",
+                "both copies must name the tool that opens the project-rooted terminal",
+            ),
+        ];
+
+        for &(extension_name, descriptor_id, claim, reason) in PAIRS {
+            let extension = PLATFORM_EXTENSIONS
+                .values()
+                .find(|def| def.name == extension_name)
+                .unwrap_or_else(|| panic!("paired extension {extension_name:?} is not registered"));
+            let other = find_descriptor(descriptor_id)
+                .unwrap_or_else(|| panic!("paired descriptor {descriptor_id:?} is not registered"));
+            let extension_prose = format!("{} {}", extension.description, extension.why_it_matters);
+            let other_prose = format!("{} {}", other.what_it_does, other.why_it_matters);
+
+            assert!(
+                extension_prose.contains(claim),
+                "extension {extension_name:?} lost shared claim {claim:?}: {reason}"
+            );
+            assert!(
+                other_prose.contains(claim),
+                "descriptor {descriptor_id:?} lost shared claim {claim:?}: {reason}"
+            );
+        }
+    }
 
     #[test]
     fn every_known_worker_has_a_descriptor() {
@@ -1429,7 +1663,7 @@ mod tests {
     /// - **Code Mode** varies by disclosure mode; `all_possible_tools()` is the
     ///   union of every mode's `tools_for_disclosure`, so a tool added to any
     ///   branch lands here automatically.
-    fn extension_tool_inventories() -> Vec<(&'static str, Vec<String>)> {
+    fn extension_tool_inventories() -> Vec<(&'static str, Vec<rmcp::model::Tool>)> {
         use crate::agents::platform_extensions::{
             analyze, app_conductor, app_perception, apps, browser, chatrecall, dashboard, desktop,
             developer, ext_manager, file_to_project, finance, inbox_tools, listen, model_manager,
@@ -1437,132 +1671,110 @@ mod tests {
             skills, storage_health, summarize, summon, todo,
         };
 
-        fn names(tools: Vec<rmcp::model::Tool>) -> Vec<String> {
-            tools.iter().map(|t| t.name.to_string()).collect()
-        }
-
-        let mut project_manager_tools = names(project_manager::ProjectManagerClient::get_tools());
+        let mut project_manager_tools = project_manager::ProjectManagerClient::get_tools();
         // Keep these review-gated research tools explicit in the self-knowledge
         // inventory: prompt-manager snapshots are regenerated by the reviewer.
-        project_manager_tools.retain(|name| {
-            !matches!(
-                name.as_str(),
+        let mut review_gated_tools = Vec::new();
+        project_manager_tools.retain(|tool| {
+            if matches!(
+                tool.name.as_ref(),
                 "research_project_intel" | "propose_project_intel"
-            )
+            ) {
+                review_gated_tools.push(tool.clone());
+                false
+            } else {
+                true
+            }
         });
-        project_manager_tools.extend([
-            "research_project_intel".to_string(),
-            "propose_project_intel".to_string(),
-        ]);
+        project_manager_tools.extend(review_gated_tools);
 
         let mut inventories = vec![
-            (
-                analyze::EXTENSION_NAME,
-                names(analyze::AnalyzeClient::get_tools()),
-            ),
+            (analyze::EXTENSION_NAME, analyze::AnalyzeClient::get_tools()),
             (
                 inbox_tools::EXTENSION_NAME,
-                names(inbox_tools::InboxClient::get_tools()),
+                inbox_tools::InboxClient::get_tools(),
             ),
             (
                 app_conductor::EXTENSION_NAME,
-                names(app_conductor::AppConductorClient::get_tools()),
+                app_conductor::AppConductorClient::get_tools(),
             ),
             (
                 app_perception::EXTENSION_NAME,
-                names(app_perception::AppPerceptionClient::get_tools()),
+                app_perception::AppPerceptionClient::get_tools(),
             ),
-            (
-                apps::EXTENSION_NAME,
-                names(apps::AppsManagerClient::get_tools()),
-            ),
-            (
-                browser::EXTENSION_NAME,
-                names(browser::BrowserClient::get_tools()),
-            ),
+            (apps::EXTENSION_NAME, apps::AppsManagerClient::get_tools()),
+            (browser::EXTENSION_NAME, browser::BrowserClient::get_tools()),
             (
                 chatrecall::EXTENSION_NAME,
-                names(chatrecall::ChatRecallClient::get_tools()),
+                chatrecall::ChatRecallClient::get_tools(),
             ),
             (
                 dashboard::EXTENSION_NAME,
-                names(dashboard::DashboardClient::get_tools()),
+                dashboard::DashboardClient::get_tools(),
             ),
             (
                 retrospect::EXTENSION_NAME,
-                names(retrospect::RetrospectClient::get_tools()),
+                retrospect::RetrospectClient::get_tools(),
             ),
             (
                 // Flag-gated at runtime (DESKTOP_CONTROL_ENABLED): `list_tools`
                 // selects from this superset, so the superset is the inventory
                 // (the Extension Manager precedent).
                 desktop::EXTENSION_NAME,
-                names(desktop::DesktopClient::get_tools()),
+                desktop::DesktopClient::get_tools(),
             ),
             (
                 developer::EXTENSION_NAME,
-                names(developer::DeveloperClient::get_tools()),
+                developer::DeveloperClient::get_tools(),
             ),
             (
                 ext_manager::EXTENSION_NAME,
-                names(ext_manager::ExtensionManagerClient::all_possible_tools()),
+                ext_manager::ExtensionManagerClient::all_possible_tools(),
             ),
             (
                 file_to_project::EXTENSION_NAME,
-                names(file_to_project::FileToProjectClient::get_tools()),
+                file_to_project::FileToProjectClient::get_tools(),
             ),
-            (
-                finance::EXTENSION_NAME,
-                names(finance::FinanceClient::get_tools()),
-            ),
-            (
-                listen::EXTENSION_NAME,
-                names(listen::ListenClient::get_tools()),
-            ),
+            (finance::EXTENSION_NAME, finance::FinanceClient::get_tools()),
+            (listen::EXTENSION_NAME, listen::ListenClient::get_tools()),
             (
                 model_manager::EXTENSION_NAME,
-                names(model_manager::ModelManagerClient::get_tools()),
+                model_manager::ModelManagerClient::get_tools(),
             ),
             (
                 orchestrator::EXTENSION_NAME,
-                names(orchestrator::OrchestratorClient::get_tools()),
+                orchestrator::OrchestratorClient::get_tools(),
             ),
-            (
-                people::EXTENSION_NAME,
-                names(people::PeopleClient::get_tools()),
-            ),
+            (people::EXTENSION_NAME, people::PeopleClient::get_tools()),
             (project_manager::EXTENSION_NAME, project_manager_tools),
             (
                 pronunciation::EXTENSION_NAME,
-                names(pronunciation::PronunciationClient::get_tools()),
+                pronunciation::PronunciationClient::get_tools(),
             ),
             (
                 recipe_author::EXTENSION_NAME,
-                names(recipe_author::RecipeAuthorClient::get_tools()),
+                recipe_author::RecipeAuthorClient::get_tools(),
             ),
-            (
-                skills::EXTENSION_NAME,
-                names(skills::SkillsClient::get_tools()),
-            ),
+            (skills::EXTENSION_NAME, skills::SkillsClient::get_tools()),
             (
                 storage_health::EXTENSION_NAME,
-                names(storage_health::StorageHealthClient::get_tools()),
+                storage_health::StorageHealthClient::get_tools(),
             ),
             (
                 summarize::EXTENSION_NAME,
-                names(summarize::SummarizeClient::get_tools()),
+                summarize::SummarizeClient::get_tools(),
             ),
             (
                 summon::EXTENSION_NAME,
-                names(summon::SummonClient::all_possible_tools()),
+                summon::SummonClient::all_possible_tools(),
             ),
-            (todo::EXTENSION_NAME, names(todo::TodoClient::get_tools())),
+            (todo::EXTENSION_NAME, todo::TodoClient::get_tools()),
         ];
 
         #[cfg(feature = "code-mode")]
         inventories.push((
             crate::agents::platform_extensions::code_execution::EXTENSION_NAME,
-            names(crate::agents::platform_extensions::code_execution::CodeExecutionClient::all_possible_tools()),
+            crate::agents::platform_extensions::code_execution::CodeExecutionClient::all_possible_tools(),
         ));
 
         inventories
@@ -1605,7 +1817,8 @@ mod tests {
                 "{ext_name}: empty tool inventory — test wiring is broken"
             );
             let desc = platform_extension_description(ext_name);
-            for missing in tools_not_named_in(desc, tools) {
+            let tool_names: Vec<String> = tools.iter().map(|tool| tool.name.to_string()).collect();
+            for missing in tools_not_named_in(desc, &tool_names) {
                 gaps.push(format!(
                     "{ext_name}: tool `{missing}` is callable but its description never names it"
                 ));
@@ -1908,6 +2121,7 @@ mod tests {
         let mut inv: std::collections::HashSet<String> = extension_tool_inventories()
             .into_iter()
             .flat_map(|(_, tools)| tools)
+            .map(|tool| tool.name.to_string())
             .collect();
         inv.extend(
             crate::agents::platform_extensions::steward::StewardClient::get_tools()

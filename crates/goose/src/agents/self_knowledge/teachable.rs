@@ -146,7 +146,7 @@ pub static TEACHABLE: &[TeachableFeature] = &[
         },
     },
     TeachableFeature {
-        id: "inbox",
+        id: "downloads_inbox",
         surface: SurfaceRef {
             tab: "Inbox",
             section: None,

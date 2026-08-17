@@ -14,8 +14,9 @@ pub mod policy;
 pub mod sink;
 
 /// Self-knowledge descriptor for the Decision Inbox surface (#353 standing
-/// rule). Distinct from the downloads inbox (`crate::inbox`) — that name
-/// collision confused the brief until 2026-07-10.
+/// rule). Distinct from the downloads inbox (`crate::inbox`, descriptor id
+/// `downloads_inbox`); the Decision Inbox extension keeps its persisted config
+/// name `inbox`, while the two surface ids remain unambiguous.
 pub const DECISION_INBOX_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
     crate::agents::self_knowledge::FeatureDescriptor {
         id: "decision_inbox",
