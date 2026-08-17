@@ -98,7 +98,7 @@ async fn list_runs(State(state): State<Arc<AppState>>) -> Json<RunsResponse> {
         runs.push(RunItem {
             kind: "schedule",
             id: j.id.clone(),
-            name: schedule_run_name(&j),
+            name: schedule_run_name(j),
             status,
             detail,
             last_activity: j.last_run.map(|t| t.to_rfc3339()),
@@ -163,10 +163,11 @@ mod tests {
     use super::*;
 
     fn job_at(source: &str) -> permagent::scheduler::ScheduledJob {
-        let mut job = permagent::scheduler::ScheduledJob::default();
-        job.id = "git-steward".to_string();
-        job.source = source.to_string();
-        job
+        permagent::scheduler::ScheduledJob {
+            id: "git-steward".to_string(),
+            source: source.to_string(),
+            ..Default::default()
+        }
     }
 
     /// The roster label must never be derived from a filesystem path. This is
