@@ -13,7 +13,9 @@ use permagent::agents::Agent;
 use permagent::recipe::build_recipe::{
     build_recipe_from_template, resolve_sub_recipe_path, RecipeError,
 };
-use permagent::recipe::local_recipes::{get_recipe_library_dir, list_local_recipes};
+use permagent::recipe::local_recipes::{
+    discover_local_recipes, get_recipe_library_dir, LocalRecipeDiscovery, UntrustedRecipeLocation,
+};
 use permagent::recipe::validate_recipe::validate_recipe_template_from_content;
 use permagent::recipe::Recipe;
 use serde::Serialize;
@@ -43,10 +45,22 @@ pub fn short_id_from_path(path: &str) -> String {
     format!("{:016x}", h)
 }
 
+#[derive(Debug, Serialize, ToSchema)]
+pub struct UntrustedRecipeDir {
+    #[schema(value_type = String)]
+    pub dir: PathBuf,
+    pub recipe_count: usize,
+    pub message: String,
+}
+
 pub fn get_all_recipes_manifests() -> Result<Vec<RecipeManifest>> {
-    let recipes_with_path = list_local_recipes()?;
+    Ok(discover_recipe_manifests()?.0)
+}
+
+pub fn discover_recipe_manifests() -> Result<(Vec<RecipeManifest>, Vec<UntrustedRecipeDir>)> {
+    let LocalRecipeDiscovery { recipes, untrusted } = discover_local_recipes()?;
     let mut recipe_manifests_with_path = Vec::new();
-    for (file_path, mut recipe) in recipes_with_path {
+    for (file_path, mut recipe) in recipes {
         // `modified()` can fail independently of `metadata()` (platform /
         // filesystem dependent) — chain it instead of unwrapping inside the
         // map, which escaped the surrounding `let Ok … else` and panicked.
@@ -79,7 +93,22 @@ pub fn get_all_recipes_manifests() -> Result<Vec<RecipeManifest>> {
     }
     recipe_manifests_with_path.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
 
-    Ok(recipe_manifests_with_path)
+    let untrusted_dirs = untrusted
+        .into_iter()
+        .map(
+            |UntrustedRecipeLocation { dir, recipe_count }| UntrustedRecipeDir {
+                message: format!(
+                    "Found {recipe_count} recipe(s) in {} but that directory is not trusted. \
+                     Cloning a repository is not consent to run them. Trust this workspace to load them.",
+                    dir.display()
+                ),
+                dir,
+                recipe_count,
+            },
+        )
+        .collect();
+
+    Ok((recipe_manifests_with_path, untrusted_dirs))
 }
 
 pub fn validate_recipe(recipe: &Recipe) -> Result<(), RecipeValidationError> {
@@ -141,6 +170,20 @@ pub async fn get_recipe_file_path_by_id(
 
 pub async fn load_recipe_by_id(state: &AppState, id: &str) -> Result<Recipe, ErrorResponse> {
     let path = get_recipe_file_path_by_id(state, id).await?;
+
+    if let Some(parent) = path.parent() {
+        if !permagent::workspace_trust::WorkspaceTrustStore::default_store()
+            .allows_active_config(parent)
+        {
+            return Err(ErrorResponse {
+                message: format!(
+                    "Recipe at {} is in an untrusted directory. Cloning a repository is not consent to run its recipes. Trust this workspace first.",
+                    parent.display()
+                ),
+                status: StatusCode::FORBIDDEN,
+            });
+        }
+    }
 
     let mut recipe = Recipe::from_file_path(&path).map_err(|err| ErrorResponse {
         message: format!("Failed to load recipe: {}", err),

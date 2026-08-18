@@ -38,8 +38,8 @@ fn clean_data_error(err: &axum::extract::rejection::JsonDataError) -> String {
 
 use crate::routes::errors::ErrorResponse;
 use crate::routes::recipe_utils::{
-    get_all_recipes_manifests, get_recipe_file_path_by_id, short_id_from_path, validate_recipe,
-    RecipeManifest, RecipeValidationError,
+    discover_recipe_manifests, get_recipe_file_path_by_id, short_id_from_path, validate_recipe,
+    RecipeManifest, RecipeValidationError, UntrustedRecipeDir,
 };
 use crate::state::AppState;
 
@@ -124,6 +124,10 @@ pub struct DeleteRecipeRequest {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ListRecipeResponse {
     manifests: Vec<RecipeManifest>,
+    /// Directories that contain recipes the user has not trusted. Distinct from
+    /// an empty library: cloning a repository is not consent to run them.
+    #[serde(default)]
+    untrusted: Vec<UntrustedRecipeDir>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -307,7 +311,7 @@ async fn scan_recipe(
 async fn list_recipes(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<ListRecipeResponse>, StatusCode> {
-    let mut manifests = get_all_recipes_manifests().unwrap_or_default();
+    let (mut manifests, untrusted) = discover_recipe_manifests().unwrap_or_default();
     let recipe_file_hash_map: HashMap<_, _> = manifests
         .iter()
         .map(|m| (m.id.clone(), m.file_path.clone()))
@@ -336,7 +340,10 @@ async fn list_recipes(
         }
     }
 
-    Ok(Json(ListRecipeResponse { manifests }))
+    Ok(Json(ListRecipeResponse {
+        manifests,
+        untrusted,
+    }))
 }
 
 #[utoipa::path(

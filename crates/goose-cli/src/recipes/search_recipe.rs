@@ -6,7 +6,7 @@ use super::github_recipe::{
     list_github_recipes, retrieve_recipe_from_github, RecipeInfo, RecipeSource,
     GOOSE_RECIPE_GITHUB_REPO_CONFIG_KEY,
 };
-use permagent::recipe::local_recipes::{list_local_recipes, load_local_recipe_file};
+use permagent::recipe::local_recipes::{discover_local_recipes, load_local_recipe_file};
 
 use super::builtin_recipes::builtin_recipe_file;
 
@@ -38,8 +38,8 @@ pub fn list_available_recipes() -> Result<Vec<RecipeInfo>> {
     let mut recipes = Vec::new();
 
     // Search local recipes
-    if let Ok(local_recipes) = list_local_recipes() {
-        recipes.extend(local_recipes.into_iter().map(|(path, recipe)| {
+    if let Ok(discovery) = discover_local_recipes() {
+        recipes.extend(discovery.recipes.into_iter().map(|(path, recipe)| {
             let name = path
                 .file_stem()
                 .and_then(|s| s.to_str())

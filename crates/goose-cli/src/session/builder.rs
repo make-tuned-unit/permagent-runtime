@@ -530,7 +530,13 @@ async fn collect_extension_configs(
     } else if session_config.no_profile {
         Vec::new()
     } else {
-        resolve_extensions_for_new_session(recipe.and_then(|r| r.extensions.as_deref()), None)
+        let cwd = std::env::current_dir().ok();
+        resolve_extensions_for_new_session(
+            recipe.and_then(|r| r.extensions.as_deref()),
+            None,
+            cwd.as_deref(),
+        )
+        .map_err(|e| ExtensionError::ConfigError(e.to_string()))?
     };
 
     let cli_flag_extensions = parse_cli_flag_extensions(

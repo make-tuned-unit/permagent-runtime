@@ -1,10 +1,12 @@
 use super::base::Config;
 use crate::agents::extension::PLATFORM_EXTENSIONS;
 use crate::agents::ExtensionConfig;
+use crate::workspace_trust::{admit_recipe_extensions, WorkspaceTrustError};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Mapping;
 use std::collections::HashSet;
+use std::path::Path;
 use tracing::warn;
 use utoipa::ToSchema;
 
@@ -177,19 +179,24 @@ pub fn get_warnings() -> Vec<String> {
 pub fn resolve_extensions_for_new_session(
     recipe_extensions: Option<&[ExtensionConfig]>,
     override_extensions: Option<Vec<ExtensionConfig>>,
-) -> Vec<ExtensionConfig> {
+    recipe_dir: Option<&Path>,
+) -> Result<Vec<ExtensionConfig>, WorkspaceTrustError> {
     let extensions = if let Some(exts) = recipe_extensions {
-        exts.to_vec()
+        let origin = match recipe_dir.map(Path::to_path_buf) {
+            Some(dir) => dir,
+            None => std::env::current_dir().map_err(WorkspaceTrustError::Io)?,
+        };
+        admit_recipe_extensions(&origin, exts)?
     } else if let Some(exts) = override_extensions {
         exts
     } else {
         get_enabled_extensions()
     };
 
-    extensions
+    Ok(extensions
         .into_iter()
         .filter(is_extension_available)
-        .collect()
+        .collect())
 }
 
 /// Narrow an already-resolved extension set to what an agent is granted.
@@ -221,9 +228,11 @@ pub fn resolve_extensions_for_agent(
     grants: Option<&[String]>,
     recipe_extensions: Option<&[ExtensionConfig]>,
     override_extensions: Option<Vec<ExtensionConfig>>,
-) -> Vec<ExtensionConfig> {
-    let base = resolve_extensions_for_new_session(recipe_extensions, override_extensions);
-    narrow_extensions_for_agent(base, grants)
+    recipe_dir: Option<&Path>,
+) -> Result<Vec<ExtensionConfig>, WorkspaceTrustError> {
+    let base =
+        resolve_extensions_for_new_session(recipe_extensions, override_extensions, recipe_dir)?;
+    Ok(narrow_extensions_for_agent(base, grants))
 }
 
 #[cfg(test)]
@@ -306,7 +315,9 @@ mod tests {
             Some(&["bravesearch".to_string()]),
             None,
             Some(vec![builtin("developer")]),
-        );
+            None,
+        )
+        .unwrap();
         assert!(resolved.is_empty());
     }
 
@@ -315,8 +326,9 @@ mod tests {
     #[test]
     fn absent_agent_grants_preserve_session_resolution() {
         let overrides = vec![builtin("developer"), builtin("bravesearch")];
-        let expected = resolve_extensions_for_new_session(None, Some(overrides.clone()));
-        let actual = resolve_extensions_for_agent(None, None, Some(overrides));
+        let expected =
+            resolve_extensions_for_new_session(None, Some(overrides.clone()), None).unwrap();
+        let actual = resolve_extensions_for_agent(None, None, Some(overrides), None).unwrap();
         assert_eq!(actual, expected);
     }
 
@@ -325,7 +337,8 @@ mod tests {
     #[test]
     fn empty_agent_grants_deny_every_extension() {
         let resolved =
-            resolve_extensions_for_agent(Some(&[]), None, Some(vec![builtin("developer")]));
+            resolve_extensions_for_agent(Some(&[]), None, Some(vec![builtin("developer")]), None)
+                .unwrap();
         assert!(resolved.is_empty());
     }
 
@@ -337,7 +350,9 @@ mod tests {
             Some(&["bravesearch".to_string()]),
             None,
             Some(vec![builtin("developer"), builtin("bravesearch")]),
-        );
+            None,
+        )
+        .unwrap();
         assert_eq!(resolved, vec![builtin("bravesearch")]);
     }
 }

@@ -2023,22 +2023,24 @@ async fn execute_job(
     // user approval, so the declaration is user-visible before the first run).
     const HEADLESS_DENYLIST: &[&str] = &["orchestrator", "recipe_author"];
     let declared = recipe.extensions.is_some();
-    let extensions: Vec<_> = resolve_extensions_for_new_session(recipe.extensions.as_deref(), None)
-        .into_iter()
-        .filter(|ext| {
-            let key = crate::config::extensions::name_to_key(&ext.name());
-            let denied = !declared && HEADLESS_DENYLIST.contains(&key.as_str());
-            if denied {
-                tracing::info!(
-                    "Scheduled job '{}': withholding inherited extension '{}' \
+    let recipe_dir = recipe_path.parent();
+    let extensions: Vec<_> =
+        resolve_extensions_for_new_session(recipe.extensions.as_deref(), None, recipe_dir)?
+            .into_iter()
+            .filter(|ext| {
+                let key = crate::config::extensions::name_to_key(&ext.name());
+                let denied = !declared && HEADLESS_DENYLIST.contains(&key.as_str());
+                if denied {
+                    tracing::info!(
+                        "Scheduled job '{}': withholding inherited extension '{}' \
                      (declare it in the recipe's `extensions:` to grant it)",
-                    job_id,
-                    key
-                );
-            }
-            !denied
-        })
-        .collect();
+                        job_id,
+                        key
+                    );
+                }
+                !denied
+            })
+            .collect();
     for ext in &extensions {
         agent.add_extension(ext.clone(), &session.id).await?;
     }
