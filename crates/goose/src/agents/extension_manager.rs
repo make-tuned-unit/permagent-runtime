@@ -1371,10 +1371,30 @@ impl ExtensionManager {
     /// The tool's declared `inputSchema`, read from the warm in-memory tool
     /// cache. `None` means "we could not find out" — never a reason to fail a
     /// call.
-    async fn cached_input_schema(&self, session_id: &str, tool_name: &str) -> Option<Value> {
-        self.get_all_tools_cached(session_id)
-            .await
-            .ok()?
+    ///
+    /// Reads the cache directly and NEVER fetches. Going through
+    /// `get_all_tools_cached` populates a cold cache by issuing `tools/list`
+    /// over the wire, which put an extra round trip in front of the dispatch
+    /// that triggered it and reordered the MCP conversation — caught by the
+    /// replay tests, which compare recorded traffic message for message.
+    ///
+    /// A validation pass must be observable only in its verdict, never in the
+    /// protocol. And skipping is already the right answer here: the contract
+    /// above says an unknown schema means "carry on", so a cold cache costs a
+    /// validation, not a call.
+    ///
+    /// In practice the cache is warm by the time anything dispatches: the tool
+    /// list must be fetched to be offered to the model before it can name a
+    /// tool, and the lazy-start path serves that list from the on-disk schema
+    /// cache without starting the server. The one window is a dispatch between
+    /// an add/remove extension (which invalidates) and the re-list the version
+    /// bump forces — that turn validates nothing, and silently. If a stricter
+    /// guarantee is ever needed, the fix is to warm the cache at add time, NOT
+    /// to fetch from here.
+    async fn cached_input_schema(&self, _session_id: &str, tool_name: &str) -> Option<Value> {
+        let cache = self.tools_cache.lock().await;
+        cache
+            .as_ref()?
             .iter()
             .find(|tool| tool.name.as_ref() == tool_name)
             .map(|tool| Value::Object((*tool.input_schema).clone()))
@@ -2786,6 +2806,17 @@ mod tests {
         manager
             .add_mock_extension("test_client".to_string(), Arc::new(MockClient {}))
             .await;
+        // Warm the tools cache, exactly as the agent loop does before it can
+        // dispatch anything: the tool list has to be fetched to be offered to
+        // the model in the first place, so by the time a tool call comes back
+        // the cache is always populated. Validation deliberately reads that
+        // cache and never fetches — a validation pass must be observable only
+        // in its verdict, never in the MCP conversation — so a test that skips
+        // this step is testing a state dispatch cannot actually be reached in.
+        manager
+            .get_all_tools_cached("arg-validation-test")
+            .await
+            .expect("tool list must load");
         let ctx = ToolCallContext::new("arg-validation-test".to_string(), None, None)
             .with_model(Some("real-model".to_string()));
         // `strict_tool` requires a string `name`; `{}` violates that.
