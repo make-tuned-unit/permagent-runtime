@@ -11,6 +11,7 @@ pub(crate) mod code_map;
 pub mod dashboard;
 pub mod desktop;
 pub mod developer;
+pub mod dispatch_scope;
 pub mod execution_receipt;
 pub mod ext_manager;
 pub mod file_to_project;
@@ -538,7 +539,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: orchestrator::EXTENSION_NAME,
                 display_name: "Orchestrator",
                 description:
-                    "Orchestrate work across agent sessions: list, view, start, message, and interrupt them (list_sessions, view_session, start_agent, send_message, interrupt_agent); inspect available workers (list_workers, check_worker); plan objectives and dispatch roadmap goals to worker agents (decompose_roadmap, create_roadmap, goal_advance, goal_status, steer_goal, pause_roadmap, resume_roadmap); and surface decisions in the Decision Inbox for supervised approval (escalate)",
+                    "Orchestrate work across agent sessions: list, view, start, message, and interrupt them (list_sessions, view_session, start_agent, send_message, interrupt_agent); inspect available workers (list_workers, check_worker); plan objectives and dispatch roadmap goals to worker agents, optionally narrowing extensions for an in-process dispatch while refusing that scope for CLI workers (decompose_roadmap, create_roadmap, goal_advance, goal_status, steer_goal, pause_roadmap, resume_roadmap); and surface decisions in the Decision Inbox for supervised approval (escalate)",
                 default_enabled: true,
                 unprefixed_tools: false,
                 hidden: false,

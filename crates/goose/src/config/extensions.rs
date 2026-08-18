@@ -355,4 +355,56 @@ mod tests {
         .unwrap();
         assert_eq!(resolved, vec![builtin("bravesearch")]);
     }
+
+    /// A dispatch scope composes with worker grants by retaining only their
+    /// intersection from the caller's already-resolved extension set.
+    #[test]
+    fn dispatch_scope_yields_only_granted_extensions() {
+        let base = vec![
+            builtin("developer"),
+            builtin("bravesearch"),
+            builtin("browser"),
+        ];
+        let worker_grants = ["developer".to_string(), "bravesearch".to_string()];
+        let dispatch_scope = ["bravesearch".to_string()];
+        let resolved = narrow_extensions_for_agent(
+            narrow_extensions_for_agent(base, Some(&worker_grants)),
+            Some(&dispatch_scope),
+        );
+        assert_eq!(resolved, vec![builtin("bravesearch")]);
+    }
+
+    /// Composed narrowing cannot add a scope member missing from either the
+    /// parent set or the worker's grants.
+    #[test]
+    fn composed_dispatch_scope_never_widens() {
+        let base = vec![builtin("developer"), builtin("bravesearch")];
+        let worker_grants = ["developer".to_string()];
+        let dispatch_scope = ["bravesearch".to_string(), "browser".to_string()];
+        let resolved = narrow_extensions_for_agent(
+            narrow_extensions_for_agent(base, Some(&worker_grants)),
+            Some(&dispatch_scope),
+        );
+        assert!(resolved.is_empty());
+    }
+
+    /// An absent dispatch scope preserves today's worker-grant resolution
+    /// byte-for-byte.
+    #[test]
+    fn absent_dispatch_scope_preserves_agent_resolution() {
+        let base = vec![builtin("developer"), builtin("bravesearch")];
+        let grants = ["developer".to_string()];
+        let expected = narrow_extensions_for_agent(base.clone(), Some(&grants));
+        let actual =
+            narrow_extensions_for_agent(narrow_extensions_for_agent(base, Some(&grants)), None);
+        assert_eq!(actual, expected);
+    }
+
+    /// An explicit empty dispatch scope denies the worker every extension.
+    #[test]
+    fn empty_dispatch_scope_denies_every_extension() {
+        let base = vec![builtin("developer"), builtin("bravesearch")];
+        let resolved = narrow_extensions_for_agent(base, Some(&[]));
+        assert!(resolved.is_empty());
+    }
 }

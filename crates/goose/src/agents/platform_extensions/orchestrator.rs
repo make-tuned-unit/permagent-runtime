@@ -186,6 +186,12 @@ struct GoalAdvanceParams {
     /// re-dispatches until changed). An unknown role is refused.
     #[serde(default)]
     role: Option<String>,
+    /// For 'dispatch' only: run the worker with only these extensions. Persisted
+    /// on the goal (sticky across re-dispatches until changed). Enforced only
+    /// for in-process workers; a later dispatch to a CLI worker is refused
+    /// until the scope is cleared.
+    #[serde(default)]
+    extension_scope: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -1130,7 +1136,27 @@ pub(crate) async fn dispatch_goal_fn(
         output_tx: Some(output_tx),
     };
 
-    let engine: Box<dyn goal_engine::GoalEngine> = match worker_cfg.map(|w| &w.engine) {
+    // Resolve once before engine construction so the scope is fixed for the
+    // worker's lifetime. This is still before the atomic claim below: invalid
+    // metadata or an unenforceable engine costs no attempt.
+    let dispatch_scope = super::dispatch_scope::extension_scope_from_metadata(&card.metadata_json)?;
+    let engine_kind = worker_cfg.map(|worker| &worker.engine);
+    if let Some(engine_label) = dispatch_scope
+        .as_ref()
+        .and_then(|_| super::dispatch_scope::unenforceable_engine_label(engine_kind))
+    {
+        // An external or supervised CLI brings its own tools; this process
+        // cannot restrict them. Refusing is the only honest option — dispatching
+        // anyway would run the goal on the FULL tool set while the card claims a
+        // scope, which is exactly the false absolute the grants work outlawed.
+        let key = super::dispatch_scope::DISPATCH_EXTENSION_SCOPE_KEY;
+        return Err(format!(
+            "Worker '{worker_key}' runs engine '{engine_label}', which cannot enforce this \
+             goal's '{key}' — not dispatched. Either pin an in-process worker (goal_advance's \
+             `worker` argument) or clear '{key}' from the card's metadata."
+        ));
+    }
+    let engine: Box<dyn goal_engine::GoalEngine> = match engine_kind {
         Some(agent_identity::WorkerEngineKind::ExternalCli { bin, args }) => {
             Box::new(goal_engine::ExternalCliEngine {
                 bin: bin.clone(),
@@ -1162,8 +1188,11 @@ pub(crate) async fn dispatch_goal_fn(
             // This is the one dispatch path whose tool set this process
             // composes, so extension grants are genuinely enforced here.
             let extensions = narrow_extensions_for_agent(
-                parent_extensions_fn(context),
-                worker_cfg.and_then(|worker| worker.extension_grants.as_deref()),
+                narrow_extensions_for_agent(
+                    parent_extensions_fn(context),
+                    worker_cfg.and_then(|worker| worker.extension_grants.as_deref()),
+                ),
+                dispatch_scope.as_deref(),
             );
             // Resolve the worker's workflow role → its CONFIGURED model (#730
             // wiring). Unset ⇒ None ⇒ the engine clones the parent session
@@ -2130,6 +2159,11 @@ impl OrchestratorClient {
             })?),
             None => None,
         };
+        let requested_extension_scope = args
+            .get("extension_scope")
+            .map(|value| serde_json::from_value::<Vec<String>>(value.clone()))
+            .transpose()
+            .map_err(|e| format!("extension_scope must be an array of strings: {e}"))?;
 
         let action = GoalAction::parse_action(&action_str).ok_or_else(|| {
             format!(
@@ -2202,6 +2236,21 @@ impl OrchestratorClient {
                     .execute(&pool)
                     .await
                     .map_err(|e| format!("persist dispatch_role: {e}"))?;
+                }
+                // Persist before dispatch so its single metadata snapshot owns
+                // the scope. Sticky across re-dispatches until changed.
+                if let Some(scope) = requested_extension_scope {
+                    let scope_json = serde_json::to_string(&scope)
+                        .map_err(|e| format!("serialize dispatch extension scope: {e}"))?;
+                    sqlx::query(
+                        "UPDATE cards SET metadata_json = json_set(metadata_json, '$.dispatch_extension_scope', json(?)) \
+                         WHERE id = ?",
+                    )
+                    .bind(scope_json)
+                    .bind(&card_id)
+                    .execute(&pool)
+                    .await
+                    .map_err(|e| format!("persist dispatch_extension_scope: {e}"))?;
                 }
                 let session_id = self
                     .dispatch_goal_to(&card_id, requested_worker.as_deref())
@@ -2960,6 +3009,8 @@ impl OrchestratorClient {
                  'ready' (Triage→Ready), 'dispatch' (Ready→InProgress), \
                  'review' (InProgress→Review), 'approve' (Review→Complete), \
                  'reject' (Review→InProgress, or Triage if 3 attempts reached). \
+                 Dispatch may persistently narrow extensions for in-process workers; \
+                 scoped dispatch to CLI workers is refused. \
                  Only works on card_type='goal' cards."
                     .to_string(),
                 schema::<GoalAdvanceParams>(),
