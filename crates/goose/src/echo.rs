@@ -44,7 +44,7 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
     };
 
 /// Self-knowledge descriptor for the Watcher's project-insights card (the
-/// daemon's `watcher_insights` loop, Jesse 2026-07-28). The Watcher worker
+/// daemon's `watcher_insights` loop, ruling 2026-07-28). The Watcher worker
 /// above says it composes insights; this is the SURFACE where they land — the
 /// Overview card on each project — so the agent can point the user at it.
 /// Registered in [`crate::agents::self_knowledge::SURFACE_DESCRIPTORS`].
