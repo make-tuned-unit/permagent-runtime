@@ -1227,10 +1227,17 @@ pub(crate) async fn call_ollama_streaming_pooled(
         .await
 }
 
-/// True for the failure shapes that mean "nothing is listening there" (as
-/// opposed to a model error mid-stream, which should surface as-is).
+/// True for the failure shapes where the dedicated endpoint cannot deliver
+/// tonight — nothing listening, a 5xx, or a stream that errored/died (on the
+/// minis that is the split losing its Metal budget to another model). A 4xx
+/// is our request's fault and must surface as-is rather than be papered over
+/// by the fallback.
 fn is_endpoint_down(err: &str) -> bool {
     err.contains("unreachable")
+        || err.contains("error (5")
+        || err.contains("stream error")
+        || err.contains("terminated prematurely")
+        || err.contains("Stream interrupted")
 }
 
 async fn call_ollama_streaming_pooled_inner(
@@ -1937,15 +1944,23 @@ mod tests {
     }
 
     #[test]
-    fn librarian_endpoint_fallback_only_on_unreachable() {
+    fn librarian_endpoint_fallback_on_unavailability_not_bad_requests() {
         assert!(is_endpoint_down(
             "llama-server unreachable: connection refused"
         ));
+        assert!(is_endpoint_down("llama-server error (500): Compute error."));
+        assert!(is_endpoint_down(
+            "llama-server stream error: {\"code\":500}"
+        ));
+        assert!(is_endpoint_down(
+            "llama-server stream terminated prematurely — no finish signal"
+        ));
+        // Our own bad request is not the endpoint's unavailability.
         assert!(!is_endpoint_down(
-            "llama-server error (500): Compute error."
+            "llama-server error (400): invalid max_tokens"
         ));
         assert!(!is_endpoint_down(
-            "llama-server stream terminated prematurely"
+            "Malformed SSE from llama-server: expected value"
         ));
     }
 
