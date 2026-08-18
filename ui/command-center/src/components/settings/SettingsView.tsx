@@ -11,6 +11,7 @@ import {
   setOsNotificationsEnabled, KIND_LABELS, type NotificationKind,
 } from '../../lib/notifications';
 import { ProvidersSection } from './ProvidersSection';
+import { RoutingSection } from './RoutingSection';
 import { DevRootsSection } from './DevRootsSection';
 import { SearchToolsSection } from './SearchToolsSection';
 import { usePersona } from './useSettings';
@@ -730,6 +731,9 @@ function ModelsPanel({ goto }: PanelProps) {
         </div>
         <button style={ghost(colors)} onClick={() => goto('keys')}>Manage API keys</button>
       </Section>
+
+      {/* ── Per-role routing (GET/PUT/DELETE /api/cost-router/roles) ── */}
+      <RoutingSection />
       {/* The old Routing/Behavior selects were decorative — hardcoded options
           wired to nothing (2026-07-10 settings audit). The real model/default
           switch lives in the provider modal on the API keys tab. */}

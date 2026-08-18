@@ -78,8 +78,10 @@ tabs:
       - Review spend per project/session and set budget caps (Spend section)
       - Toggle the data boundary and read the egress audit log (Sovereignty section)
       - Enable or disable the Guard's security sweeps (Models section)
+      - See and override per-role model routing (Models → Routing section) — which model each workflow role (orchestrate, edit, mechanical, review, local) dispatches to, hand-set or derived from the models actually available
     suggest_when:
       - User asks how to configure a provider, change model, or adjust the Librarian
+      - User asks which model handles a role, why a role routes where it does, or wants to pin a role to a model
       - User asks what something is costing, wants a spend cap, or worries about a bill
       - User asks what data has left the machine or wants to audit egress
     customizable_layout: false

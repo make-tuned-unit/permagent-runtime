@@ -16,6 +16,7 @@ pub mod browser_state;
 pub mod cards;
 pub mod coding_session;
 pub mod config_management;
+pub mod cost_router;
 pub mod dashboard;
 pub mod dashboard_cards;
 pub mod decisions;
@@ -203,6 +204,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(growth_actions::routes(state.clone()))
         .merge(first_party_analytics::routes(state.clone()))
         .merge(governance::routes(state.clone()))
+        .merge(cost_router::routes(state.clone()))
         .merge(decisions::routes(state.clone()))
         .merge(devices::routes(state.clone()))
         .merge(agents::routes(state.clone()))

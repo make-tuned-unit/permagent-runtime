@@ -849,6 +849,42 @@ export interface BudgetPatch {
   task?: Partial<Ceilings>;
 }
 
+// ── Cost-router per-role routing (GET/PUT/DELETE /api/cost-router/roles) ──
+
+/** A workflow role the cost-router dispatches by (snake_case wire id). */
+export type RoutingRole = 'orchestrate' | 'edit' | 'mechanical' | 'review' | 'local';
+
+/** A concrete provider+model pair. */
+export interface RoutingModel {
+  provider: string;
+  model: string;
+}
+
+/**
+ * One role's routing row. `configured` is what the user hand-set (always
+ * wins); `recommended` is the router's derived best-fit over the models
+ * actually available. Both null → the role runs on the session model.
+ */
+export interface RoutingRoleRow {
+  role: RoutingRole;
+  label: string;
+  description: string;
+  configured: RoutingModel | null;
+  recommended: RoutingModel | null;
+  /** Whether the recommended model clears the role's capability floor. */
+  floor_met: boolean;
+  warnings: string[];
+  /** How the recommended model matched its knowledge-base row; absent when unknown / no rec. */
+  confidence?: 'exact' | 'alias' | 'family_estimate';
+  reason: string;
+}
+
+export interface RoutingRolesResponse {
+  roles: RoutingRoleRow[];
+  kb: { snapshot_date: string; stale: boolean };
+  discovered: { providers: string[]; local_models: string[] };
+}
+
 /** One worker in the roster (GET /api/agent/workers). */
 export interface WorkerInfo {
   key: string;
@@ -1181,6 +1217,24 @@ export const api = {
   /** The worker roster (per-role model/engine + live availability). */
   getWorkers: () =>
     apiFetch<Record<string, WorkerInfo>>('/api/agent/workers'),
+
+  // ── Cost-router per-role routing ──────────────────────────────────────
+  /** Every workflow role: hand-set + derived model, fit, KB + discovery notes. */
+  getRoutingRoles: () =>
+    apiFetch<RoutingRolesResponse>('/api/cost-router/roles'),
+
+  /** Hand-set a role's provider+model (wins over the derived pick); returns the row. */
+  setRoutingRole: (role: RoutingRole, body: RoutingModel) =>
+    apiFetch<RoutingRoleRow>(`/api/cost-router/roles/${encodeURIComponent(role)}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+
+  /** Clear a role's hand-set mapping (back to derived / session model); returns the row. */
+  clearRoutingRole: (role: RoutingRole) =>
+    apiFetch<RoutingRoleRow>(`/api/cost-router/roles/${encodeURIComponent(role)}`, {
+      method: 'DELETE',
+    }),
 
   // ── Diagnostics consent (two independent opt-ins, #327) ───────────────
   /** Current crash-report + analytics consent (both off by default). */
