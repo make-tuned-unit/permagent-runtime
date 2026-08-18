@@ -265,6 +265,37 @@ describe('AgentsPanel', () => {
     expect(container.innerHTML).not.toContain(SEED_SECRET_VALUE);
   });
 
+  it('surfaces the impact and unlocks hint a platform capability ships with its secrets', async () => {
+    const capability = {
+      ...ROSTER.capabilities[0],
+      required_secrets: {
+        status: 'declared' as const,
+        truncated: false,
+        items: [
+          { name: 'GROW_KEY', present: false, impact: 'unavailable', unlocks: 'Runs the GTM sweep.' },
+          { name: 'PLAIN_KEY', present: true },
+        ],
+      },
+    };
+    apiFetchMock.mockImplementation(async (endpoint: string) => {
+      if (endpoint === '/api/agents/roster') {
+        return { ...ROSTER, capabilities: [capability] } as never;
+      }
+      throw new Error(`unexpected fetch ${endpoint}`);
+    });
+    await act(async () => {
+      root.render(<AgentsPanel goto={vi.fn()} />);
+    });
+    await flush();
+
+    const row = container.querySelector('[data-testid="capability-row-grow"]');
+    expect(row?.textContent ?? '').toContain('GROW_KEY: absent');
+    const hints = [...(row?.querySelectorAll('[data-testid="required-secret-hint"]') ?? [])].map(
+      el => el.textContent,
+    );
+    expect(hints).toEqual(['GROW_KEY: Runs the GTM sweep. — unavailable without it']);
+  });
+
   it('does not claim a pending-engine persona runs a CLI it cannot restrict', async () => {
     const pendingPersona = {
       ...ROSTER.dispatch_roster[0],

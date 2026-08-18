@@ -8,6 +8,7 @@ import type {
   Availability,
   DispatchPersona,
   LiveState,
+  RequiredSecret,
   RequiredSecrets,
   SecretPresence,
 } from '../../lib/agentsApi';
@@ -124,6 +125,38 @@ export function requiredSecretsLabel(rs: RequiredSecrets): string {
   let text = parts.join(', ');
   if (rs.truncated) text += ` (${truncatedNote(rs.items.length)})`;
   return text;
+}
+
+/** "degraded" / "unavailable" as the consequence of the secret being absent. */
+export function secretImpactLabel(impact: string): string {
+  switch (impact) {
+    case 'degraded':
+      return 'degraded without it';
+    case 'unavailable':
+      return 'unavailable without it';
+    default:
+      return `${impact} without it`;
+  }
+}
+
+/**
+ * One hint line per declared secret that ships an impact or unlocks sentence.
+ * Configured-transport secrets carry neither and produce no line — the
+ * absence of a hint is not a claim that the secret does nothing.
+ */
+export function requiredSecretHint(secret: RequiredSecret): string | null {
+  const parts: string[] = [];
+  if (secret.unlocks) parts.push(secret.unlocks);
+  if (secret.impact) parts.push(secretImpactLabel(secret.impact));
+  if (parts.length === 0) return null;
+  return `${secret.name}: ${parts.join(' — ')}`;
+}
+
+export function requiredSecretHints(rs: RequiredSecrets): string[] {
+  if (rs.status === 'not_declared') return [];
+  return rs.items
+    .map(requiredSecretHint)
+    .filter((h): h is string => h !== null);
 }
 
 export function defaultEnabledLabel(value: boolean | null): string {

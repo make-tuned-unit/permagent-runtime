@@ -20,6 +20,7 @@ import {
   liveStateLabel,
   presenceLabel,
   requiredSecretsLabel,
+  requiredSecretHints,
   truncatedNote,
   type LabelTone,
 } from '../agentsPanel';
@@ -837,6 +838,9 @@ function CapabilityRow({
       </div>
       <div style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.45, marginBottom: 8 }}>
         {requiredSecretsLabel(capability.required_secrets)}
+        {requiredSecretHints(capability.required_secrets).map(hint => (
+          <div key={hint} data-testid="required-secret-hint" style={{ marginTop: 2 }}>{hint}</div>
+        ))}
       </div>
       <button
         type="button"

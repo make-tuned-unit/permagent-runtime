@@ -849,17 +849,6 @@ export interface BudgetPatch {
   task?: Partial<Ceilings>;
 }
 
-/** One worker in the roster (GET /api/agent/workers). */
-export interface WorkerInfo {
-  key: string;
-  display_name: string;
-  role: string;
-  /** "internal_subagent" | "external_cli" | "pending". */
-  engine: string;
-  available: boolean;
-  reason: string | null;
-}
-
 export const api = {
   // Health
   getHealth: () => apiFetch<{ status: string }>('/status'),
@@ -1177,10 +1166,6 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(patch),
     }),
-
-  /** The worker roster (per-role model/engine + live availability). */
-  getWorkers: () =>
-    apiFetch<Record<string, WorkerInfo>>('/api/agent/workers'),
 
   // ── Diagnostics consent (two independent opt-ins, #327) ───────────────
   /** Current crash-report + analytics consent (both off by default). */
