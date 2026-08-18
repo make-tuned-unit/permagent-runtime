@@ -187,6 +187,7 @@ export class BrainScene {
   private adjacency = new Map<string, Set<string>>();
 
   private search = '';
+  private searchFocusNodeId: string | null = null;
   private typeFilter: TypeFilters = { person: true, project: true, tool: true, location: true, organization: true, concept: true, memory: true };
   private timeRange: [number, number] = [0, 1];
 
@@ -478,6 +479,18 @@ export class BrainScene {
   }
 
   setSearch(query: string) { this.search = query.toLowerCase(); this.applyFilters(); }
+  /** Centre the camera on a search hit and keep it visibly lit above the dimmed field. */
+  focusSearchHit(nodeId: string | null, preview?: string) {
+    let target = nodeId ? this.nodes.find(n => n.id === nodeId) ?? null : null;
+    if (!target && preview) target = this.findNodeByPreview(preview);
+    this.searchFocusNodeId = target?.id ?? null;
+    if (target) this.centerCameraOn(target);
+    this.applyFilters();
+  }
+  clearSearchFocus() {
+    this.searchFocusNodeId = null;
+    this.applyFilters();
+  }
   setTypeFilter(f: TypeFilters) { this.typeFilter = f; this.applyFilters(); }
   setTimeRange(r: [number, number]) { this.timeRange = r; this.applyFilters(); }
 
@@ -497,13 +510,26 @@ export class BrainScene {
       }
       n.mesh.visible = visible;
 
-      // Search dimming
+      // Search dimming — the focused top hit stays fully lit.
       const mat = n.mesh.material as THREE.MeshPhysicalMaterial;
+      const isFocus = !!this.searchFocusNodeId && n.id === this.searchFocusNodeId;
       if (this.search && visible) {
-        const matches = n.label.toLowerCase().includes(this.search) || n.note.toLowerCase().includes(this.search);
-        mat.opacity = matches ? 0.95 : 0.18;
-        mat.emissiveIntensity = matches ? (n.kind === 'memory' ? 0.5 : 0.6) : 0.05;
-        n.labelMul = matches ? 1.4 : 0.06; // search hits keep their names lit
+        const matches = isFocus
+          || n.label.toLowerCase().includes(this.search)
+          || n.note.toLowerCase().includes(this.search);
+        if (isFocus) {
+          mat.opacity = 1;
+          mat.emissiveIntensity = n.kind === 'memory' ? 1.15 : 1.25;
+          n.labelMul = 2;
+        } else if (matches) {
+          mat.opacity = 0.95;
+          mat.emissiveIntensity = matches ? (n.kind === 'memory' ? 0.5 : 0.6) : 0.05;
+          n.labelMul = 1.4;
+        } else {
+          mat.opacity = 0.18;
+          mat.emissiveIntensity = 0.05;
+          n.labelMul = 0.06;
+        }
       } else if (visible) {
         mat.opacity = n.kind === 'memory' ? 0.92 : 0.95;
         mat.emissiveIntensity = n.kind === 'memory' ? 0.7 : 0.8;
@@ -574,6 +600,34 @@ export class BrainScene {
       (this.ringLines.material as THREE.Material).dispose();
       this.ringLines = null;
     }
+  }
+
+  private findNodeByPreview(preview: string): SimNode | null {
+    const needle = preview.toLowerCase().trim();
+    if (!needle) return null;
+    let best: SimNode | null = null;
+    let bestScore = 0;
+    for (const n of this.nodes) {
+      if (n.kind !== 'memory') continue;
+      const hay = `${n.label} ${n.note}`.toLowerCase();
+      const head = needle.slice(0, 40);
+      const memHead = n.note.toLowerCase().slice(0, 40);
+      if (!hay.includes(head) && !needle.includes(memHead)) continue;
+      const score = Math.min(hay.length, needle.length);
+      if (score > bestScore) {
+        bestScore = score;
+        best = n;
+      }
+    }
+    return best;
+  }
+
+  private centerCameraOn(node: SimNode) {
+    const target = node.pos;
+    const r = Math.max(0.01, target.length());
+    this.orbitPitch = Math.asin(Math.max(-1, Math.min(1, target.y / r + 0.08)));
+    this.orbitYaw = Math.atan2(target.x, target.z);
+    this.orbitRadius = Math.max(12, Math.min(80, r * 2.2));
   }
 
   // ── Edge Geometry ────────────────────────────────────────────────────

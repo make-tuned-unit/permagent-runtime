@@ -1758,6 +1758,26 @@ export const api = {
       slices: { start: string; end: string; memory_count: number; described_count: number }[];
     }>(`/api/world/strata?slices=${encodeURIComponent(String(slices))}`),
 
+  searchBrain: (params: { q: string; since?: string; until?: string; source?: string; offset?: number; limit?: number }) => {
+    const qs = new URLSearchParams();
+    qs.set('q', params.q);
+    if (params.since) qs.set('since', params.since);
+    if (params.until) qs.set('until', params.until);
+    if (params.source) qs.set('source', params.source);
+    if (params.offset !== undefined) qs.set('offset', String(params.offset));
+    if (params.limit !== undefined) qs.set('limit', String(params.limit));
+    return apiFetch<{
+      results: { source: string; id: string; preview: string; score: number; timestamp: string; session_id?: string | null }[];
+      total: number;
+      query: string;
+      offset: number;
+      limit: number;
+      fts_count: number;
+      spectral_count: number;
+      dedup_count: number;
+    }>(`/api/brain/search?${qs.toString()}`);
+  },
+
   getBrainMemories: (params: { q?: string; before?: string; before_id?: string; after?: string; offset?: number; limit?: number }) => {
     const qs = new URLSearchParams();
     if (params.q) qs.set('q', params.q);
