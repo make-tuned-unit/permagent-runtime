@@ -12,8 +12,10 @@
 //! documented (see the ruled design in `docs/design/daily-life-roster.md`, #878,
 //! and the ruling on #640):
 //!
-//! 1. **Flag-gated, default OFF** ([`is_enabled`], `PERMAGENT_CONCIERGE_ENABLED`).
-//!    When off, the daemon loop never spawns AND [`SELF_KNOWLEDGE_FEATURE`] is
+//! 1. **Flag-gated, default OFF** ([`is_enabled`], the `concierge_enabled` config
+//!    key that Settings → Features flips; the legacy `PERMAGENT_CONCIERGE_ENABLED`
+//!    env still overrides). When off, the daemon loop stays inert every tick AND
+//!    [`SELF_KNOWLEDGE_FEATURE`] is
 //!    hidden from the `permagent_self` brief (the Playbook render-gate pattern in
 //!    `self_knowledge::worker_descriptor_visible`), so the canonical
 //!    `prompt_manager` snapshots stay byte-for-byte identical. The Concierge reads
@@ -31,15 +33,22 @@
 //!    as an editable Decision-Inbox card; it can never send or mutate mail.
 
 use crate::agents::self_knowledge::{FeatureCategory, FeatureDescriptor, StateSource};
+use crate::config::Config;
 use crate::decision_inbox::escalate::{
     DecisionDraft, DecisionKind, DecisionSink, RecordedDecision, ResumeMode,
 };
 
 // ── Flag gate (default OFF) ───────────────────────────────────────────────────
 
-/// Env flag gating the entire Concierge. Default OFF: the character is an
-/// early daily-life-roster slice reading the user's most sensitive data, so it
-/// must be turned on deliberately (mirrors the Playbook rollout discipline).
+/// Config key in `~/.permagent/config.yaml` gating the entire Concierge — the
+/// switch Settings → Features flips. Default OFF: the character is an early
+/// daily-life-roster slice reading the user's most sensitive data, so it must
+/// be turned on deliberately (mirrors the Strix / Playbook rollout discipline).
+pub const CONCIERGE_ENABLED_KEY: &str = "concierge_enabled";
+
+/// Legacy env override for the flag. Kept so an existing
+/// `PERMAGENT_CONCIERGE_ENABLED=1` shell keeps working; see [`is_enabled`] for
+/// the precedence.
 pub const CONCIERGE_ENABLED_ENV: &str = "PERMAGENT_CONCIERGE_ENABLED";
 
 /// The self-knowledge descriptor id — also the render-gate key that
@@ -55,11 +64,24 @@ fn is_truthy(raw: Option<&str>) -> bool {
     )
 }
 
-/// Whether the Concierge is switched on. Read by the daemon loop (spawn gate)
+/// Whether the Concierge is switched on. Read by the daemon loop (every tick)
 /// and the self-knowledge brief (descriptor render gate) — one flag so the
 /// capability the agent can DO is exactly the one it can DESCRIBE. Default OFF.
+///
+/// Precedence, highest first:
+/// 1. the legacy env `PERMAGENT_CONCIERGE_ENABLED` — when set to a truthy value
+///    (`1`/`true`/`yes`/`on`) the Concierge is on regardless of config;
+/// 2. `Config::get_param(CONCIERGE_ENABLED_KEY)` — which itself honours the
+///    `CONCIERGE_ENABLED` env before falling back to `config.yaml`, where the
+///    Settings → Features toggle writes it;
+/// 3. absent everywhere → OFF.
+///
+/// Not cached: a Settings flip is visible on the next read.
 pub fn is_enabled() -> bool {
     is_truthy(std::env::var(CONCIERGE_ENABLED_ENV).ok().as_deref())
+        || Config::global()
+            .get_param::<bool>(CONCIERGE_ENABLED_KEY)
+            .unwrap_or(false)
 }
 
 // ── Self-knowledge identity ───────────────────────────────────────────────────

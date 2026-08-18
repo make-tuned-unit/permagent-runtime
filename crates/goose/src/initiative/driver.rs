@@ -16,9 +16,15 @@
 //!      is deliberately in-memory: a cold start re-accumulates (W3 contract).
 //!
 //! GATING — explicit config, default OFF. A proactive-origination organ must be
-//! turned on deliberately (`initiative_enabled: true`), mirroring the posture
-//! of the other autonomous workers (orchestrator, steward). The off state is
-//! logged loudly at startup so it is never silently absent.
+//! turned on deliberately (`initiative_enabled: true` — the Settings → Features
+//! switch), mirroring the posture of the other autonomous workers (orchestrator,
+//! steward). The loop ALWAYS spawns and re-reads the flag on every tick (the
+//! Strix shape), so a flip takes effect at the next tick with no daemon
+//! restart. While off it is inert: it does not even hold an event-bus
+//! subscription — the bus is subscribed lazily when the flag turns on and the
+//! receiver, the in-memory counter and any held pattern are dropped when it
+//! turns off, so an off driver accumulates nothing. The off state is logged
+//! loudly at startup so it is never silently absent.
 //!
 //! A threshold-crossed pattern is HELD across skipped ticks (engaged user,
 //! cooldown, no fresh activity) and consumed by the first tick that emits or
@@ -72,32 +78,26 @@ pub fn is_enabled() -> bool {
         .unwrap_or(false)
 }
 
-/// Spawn the driver if enabled. Called once at daemon startup with the app DB
-/// pool (cards + recognition live there). Never silent: logs the on/off state
-/// either way.
+/// Spawn the driver. Called once at daemon startup with the app DB pool (cards
+/// and recognition live there). The loop always spawns and re-reads
+/// [`is_enabled`] every tick, so flipping `initiative_enabled` in Settings →
+/// Features takes effect at the next tick — no restart. Never silent: logs the
+/// on/off state either way.
 pub fn spawn(pool: Pool<Sqlite>) {
-    if !is_enabled() {
-        tracing::info!(
-            target: "initiative",
-            "initiative driver OFF ({INITIATIVE_ENABLED_KEY}=false) — set it to true to enable ambient goal origination"
-        );
-        return;
-    }
     let tick_secs = Config::global()
         .get_param::<u64>(INITIATIVE_TICK_SECS_KEY)
         .unwrap_or(DEFAULT_TICK_SECS)
         .max(5);
-    let cfg = gate_config();
-    let surface = resolve_surface();
-    tracing::info!(
-        target: "initiative",
-        tick_secs,
-        quiet_secs = cfg.quiet_secs,
-        cooldown_secs = cfg.cooldown_secs,
-        surface = surface.as_str(),
-        "initiative driver ON — observing activity for repeated-command patterns"
-    );
-    tokio::spawn(run_driver(pool, tick_secs, cfg, surface));
+    if is_enabled() {
+        tracing::info!(target: "initiative", tick_secs, "initiative driver ON");
+    } else {
+        tracing::info!(
+            target: "initiative",
+            tick_secs,
+            "initiative driver OFF ({INITIATIVE_ENABLED_KEY}=false) — idle until enabled in Settings → Features"
+        );
+    }
+    tokio::spawn(run_driver(pool, tick_secs));
 }
 
 fn gate_config() -> GateConfig {
@@ -162,15 +162,63 @@ async fn resolve_draft_provider() -> Option<Arc<dyn Provider>> {
     }
 }
 
-async fn run_driver(
-    pool: Pool<Sqlite>,
-    tick_secs: u64,
-    cfg: GateConfig,
-    surface: InitiativeSurface,
-) {
-    let mut rx = events::subscribe();
+/// Why an enabled session ended.
+enum SessionEnd {
+    /// The flag was flipped off — the session dropped its subscription and
+    /// state; the outer loop keeps polling the flag on the tick cadence.
+    Disabled,
+    /// The global event bus closed — nothing left to observe; the driver stops.
+    BusClosed,
+}
+
+/// The always-running outer loop: on every tick re-read the flag; while off do
+/// nothing at all (no subscription, no counter, no DB or config writes); when
+/// on, run one enabled session until it is switched off again.
+async fn run_driver(pool: Pool<Sqlite>, tick_secs: u64) {
     let mut interval = tokio::time::interval(Duration::from_secs(tick_secs));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        interval.tick().await;
+        if !is_enabled() {
+            tracing::debug!(target: "initiative", "initiative off — tick skipped");
+            continue;
+        }
+        // Gate windows and surface are resolved when the driver switches on,
+        // so a config change lands with the next enable (as it did with the
+        // next daemon start before the loop became always-on).
+        let cfg = gate_config();
+        let surface = resolve_surface();
+        tracing::info!(
+            target: "initiative",
+            tick_secs,
+            quiet_secs = cfg.quiet_secs,
+            cooldown_secs = cfg.cooldown_secs,
+            surface = surface.as_str(),
+            "initiative driver ON — observing activity for repeated-command patterns"
+        );
+        match run_enabled_session(&pool, &mut interval, &cfg, surface).await {
+            SessionEnd::Disabled => tracing::info!(
+                target: "initiative",
+                "initiative driver switched off ({INITIATIVE_ENABLED_KEY}=false) — subscription dropped, idle until re-enabled"
+            ),
+            SessionEnd::BusClosed => break,
+        }
+    }
+    tracing::info!(target: "initiative", "initiative driver stopped (event bus closed)");
+}
+
+/// One enabled session: subscribe to the event bus, observe + tick until the
+/// flag is flipped off (checked on every tick) or the bus closes. Everything
+/// in-memory (receiver, counter, held pattern, live timestamps) lives and dies
+/// with the session — the W3 "cold start re-accumulates" contract already
+/// covers a re-enable.
+async fn run_enabled_session(
+    pool: &Pool<Sqlite>,
+    interval: &mut tokio::time::Interval,
+    cfg: &GateConfig,
+    surface: InitiativeSurface,
+) -> SessionEnd {
+    let mut rx = events::subscribe();
 
     let mut counter = CommandCounter::default();
     let mut pending_pattern: Option<CommandPattern> = None;
@@ -211,9 +259,14 @@ async fn run_driver(
                 Err(RecvError::Lagged(n)) => {
                     tracing::warn!(target: "initiative", "event bus lagged, missed {n} events");
                 }
-                Err(RecvError::Closed) => break,
+                Err(RecvError::Closed) => return SessionEnd::BusClosed,
             },
             _ = interval.tick() => {
+                // Re-read the flag every tick: off ⇒ end the session, dropping
+                // the subscription and all in-memory state.
+                if !is_enabled() {
+                    return SessionEnd::Disabled;
+                }
                 let inputs = GateInputs {
                     now: Utc::now(),
                     last_activity_at,
@@ -225,11 +278,11 @@ async fn run_driver(
                 // Pre-run the (pure, deterministic) gate so a provider handle is
                 // only resolved when this tick will actually spend a token; the
                 // tick re-evaluates the same inputs to the same decision.
-                let provider = match evaluate(&inputs, &cfg) {
+                let provider = match evaluate(&inputs, cfg) {
                     GateDecision::Proceed(_) => resolve_draft_provider().await,
                     GateDecision::Skip(_) => None,
                 };
-                match run_initiative_tick(&pool, PERSONAL_PROJECT_ID, &inputs, &cfg, provider.as_ref(), surface).await {
+                match run_initiative_tick(pool, PERSONAL_PROJECT_ID, &inputs, cfg, provider.as_ref(), surface).await {
                     Ok(TickOutcome::Skipped(reason)) => {
                         tracing::trace!(target: "initiative", ?reason, "tick skipped at Tier 0");
                     }
@@ -274,5 +327,4 @@ async fn run_driver(
             }
         }
     }
-    tracing::info!(target: "initiative", "initiative driver stopped (event bus closed)");
 }

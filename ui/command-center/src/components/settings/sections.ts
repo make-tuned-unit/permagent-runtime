@@ -16,6 +16,9 @@ export const SETTINGS_SECTION_KEYS = [
   'sessions', 'inbox', 'activity', 'spend',
   // Settings → Agents (Phase 2 UI over the merged /api/agents surface).
   'agents',
+  // Settings → Features: the switches for the off-by-default workers
+  // (Initiative, Decision Playbook, Concierge, Steward git-health).
+  'features',
 ] as const;
 
 export type SettingsSectionKey = (typeof SETTINGS_SECTION_KEYS)[number];

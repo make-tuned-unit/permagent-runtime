@@ -3,8 +3,9 @@
 //! (`permagent::concierge`), exactly like `echo.rs` ↔ this `proactive.rs`-shaped
 //! loop.
 //!
-//! When — and ONLY when — `PERMAGENT_CONCIERGE_ENABLED` is on, this spawns a
-//! gentle interval loop that:
+//! The loop always spawns and re-reads `concierge_enabled` (the Settings →
+//! Features switch; legacy `PERMAGENT_CONCIERGE_ENABLED` env still overrides)
+//! every tick — off means the tick does nothing at all. When on, each tick:
 //!   1. reads the user's unread mail **read-only** via the bundled Gmail API
 //!      (`gmail.readonly` — there is no send/draft-write path to call);
 //!   2. reasons over it strictly on the **local, on-device** model tier
@@ -16,7 +17,8 @@
 //!      reply as an **editable Decision-Inbox draft card** (#760).
 //!
 //! It only ever reads and proposes — it can never send or mutate mail. With the
-//! flag off (default), the loop never spawns: the Concierge reads nothing.
+//! flag off (default), every tick is inert: the Concierge reads nothing. A flip
+//! in Settings takes effect at the next tick, no daemon restart.
 
 use chrono::{DateTime, Local, Timelike, Utc};
 use permagent::concierge::{
@@ -81,23 +83,26 @@ impl Budget {
     }
 }
 
-/// Spawn the Concierge loop — but ONLY when the flag is on. Off (default) is a
-/// no-op: no task, no reads, nothing surfaces.
+/// Spawn the Concierge loop. The loop always spawns and re-reads the flag every
+/// tick (the Strix shape), so flipping `concierge_enabled` in Settings →
+/// Features takes effect at the next tick with no restart. Off (default) means
+/// every tick is a no-op: no reads, nothing surfaces.
 pub fn spawn(_state: Arc<AppState>) {
-    if !concierge::is_enabled() {
-        tracing::debug!(
-            target: "permagentd::concierge",
-            "Concierge disabled (PERMAGENT_CONCIERGE_ENABLED off) — inbox triage will not run"
-        );
-        return;
-    }
     // Safety invariant, asserted at startup: reasoning is pinned on-device.
     debug_assert!(concierge::reasoning_is_local());
-    tracing::info!(
-        target: "permagentd::concierge",
-        endpoint = %concierge::reasoning_route().endpoint,
-        "Concierge enabled — read-only inbox triage, draft-only, local-tier reasoning"
-    );
+    if concierge::is_enabled() {
+        tracing::info!(
+            target: "permagentd::concierge",
+            endpoint = %concierge::reasoning_route().endpoint,
+            "Concierge enabled — read-only inbox triage, draft-only, local-tier reasoning"
+        );
+    } else {
+        tracing::info!(
+            target: "permagentd::concierge",
+            "Concierge is off ({}=false) — triage loop idle until enabled in Settings → Features",
+            concierge::CONCIERGE_ENABLED_KEY
+        );
+    }
 
     tokio::spawn(async move {
         tokio::time::sleep(STARTUP_DELAY).await;
@@ -105,6 +110,12 @@ pub fn spawn(_state: Arc<AppState>) {
         let mut ticker = tokio::time::interval(TICK);
         loop {
             ticker.tick().await;
+
+            // Re-read the flag every tick: off ⇒ inert.
+            if !concierge::is_enabled() {
+                tracing::debug!(target: "permagentd::concierge", "Concierge off — triage tick skipped");
+                continue;
+            }
 
             // Once-a-day budget.
             let now = Utc::now();

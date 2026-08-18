@@ -27,19 +27,27 @@
 //!
 //! ## Flag-gated (default OFF; off is byte-for-byte inert)
 //!
-//! Everything here is dormant unless [`is_enabled`]
-//! (`PERMAGENT_PLAYBOOK_ENABLED`) is set: the synthesis worker does not spawn,
-//! the decompose consultation does not inject, and the self-knowledge descriptor
-//! is hidden from the `permagent_self` brief. One flag gates all three, so a
+//! Everything here is dormant unless [`is_enabled`] (the `playbook_enabled`
+//! config key Settings → Features flips, or the legacy `PERMAGENT_PLAYBOOK_ENABLED`
+//! env): the synthesis worker's loop stays inert, the decompose consultation
+//! does not inject, and the self-knowledge descriptor is hidden from the
+//! `permagent_self` brief. One flag gates all three, so a
 //! capability the agent can DO is exactly the one it can DESCRIBE.
 
 pub mod synthesis;
 
 use crate::brain_handle::SafeBrain;
+use crate::config::Config;
 
-/// Env flag gating the entire playbook feature. Default OFF: the feature is
+/// Config key in `~/.permagent/config.yaml` gating the entire playbook feature —
+/// the switch Settings → Features flips. Default OFF: the feature is
 /// experimental and eval-gated (mirrors the Librarian-atoms / best-of-N rollout
 /// discipline), so it must be turned on deliberately.
+pub const PLAYBOOK_ENABLED_KEY: &str = "playbook_enabled";
+
+/// Legacy env override for the flag — also the A/B toggle the decompose eval
+/// exports per arm (`permagent-eval` pins its passthrough). See [`is_enabled`]
+/// for the precedence.
 pub const PLAYBOOK_ENABLED_ENV: &str = "PERMAGENT_PLAYBOOK_ENABLED";
 
 /// Key prefix for playbook memories — the recall-side filter surrogate
@@ -105,11 +113,24 @@ fn is_truthy(raw: Option<&str>) -> bool {
 }
 
 /// Whether the playbook feature is switched on. Read by the synthesis worker
-/// (spawn gate), the decompose consultation (injection gate), and the
+/// (every tick), the decompose consultation (injection gate), and the
 /// self-knowledge brief (descriptor render gate) — one flag so the capability
 /// the agent can DO is exactly the one it can DESCRIBE.
+///
+/// Precedence, highest first:
+/// 1. the legacy env `PERMAGENT_PLAYBOOK_ENABLED` — when set to a truthy value
+///    (`1`/`true`/`yes`/`on`) the playbook is on regardless of config;
+/// 2. `Config::get_param(PLAYBOOK_ENABLED_KEY)` — which itself honours the
+///    `PLAYBOOK_ENABLED` env before falling back to `config.yaml`, where the
+///    Settings → Features toggle writes it;
+/// 3. absent everywhere → OFF.
+///
+/// Not cached: a Settings flip is visible on the next read.
 pub fn is_enabled() -> bool {
     is_truthy(std::env::var(PLAYBOOK_ENABLED_ENV).ok().as_deref())
+        || Config::global()
+            .get_param::<bool>(PLAYBOOK_ENABLED_KEY)
+            .unwrap_or(false)
 }
 
 /// Stable, version-independent fingerprint of a hint's normalized text — the

@@ -9,9 +9,11 @@
 //! Like the Librarian it runs in the background, non-blocking, and never
 //! crashes the daemon: every failure is logged and swallowed.
 //!
-//! GATING — [`super::is_enabled`] (`PERMAGENT_PLAYBOOK_ENABLED`), default OFF.
-//! [`spawn`] logs the on/off state and returns without starting a task when the
-//! flag is unset, so an off daemon does exactly nothing here.
+//! GATING — [`super::is_enabled`] (`playbook_enabled`, default OFF). The loop
+//! ALWAYS spawns and re-reads the flag every tick (the Strix shape), so flipping
+//! it in Settings → Features takes effect at the next tick with no daemon
+//! restart; while off, a tick does exactly nothing — no Brain lookup, no DB
+//! read, no distiller call.
 //!
 //! LOCAL-FIRST / DEGRADE GRACEFULLY — distillation uses a cheap local model
 //! (default `ollama`/`qwen2.5:7b`, mirroring the initiative + decomposition
@@ -77,27 +79,29 @@ const DISTILL_SYSTEM: &str = "You distill a user's (Jesse's) past product and en
     - Only emit a hint that genuinely generalizes across the items. If nothing does, output [].\n\
     - Never invent a preference the items do not support. These are HINTS, not rules.";
 
-/// Spawn the synthesis worker if enabled. Called once at daemon startup with the
-/// app DB pool. Never silent: logs the on/off state either way (the #360
-/// "never silent" contract).
+/// Spawn the synthesis worker. Called once at daemon startup with the app DB
+/// pool. The loop always spawns and re-reads [`super::is_enabled`] every tick,
+/// so a Settings → Features flip takes effect at the next tick — no restart.
+/// Never silent: logs the on/off state either way (the #360 "never silent"
+/// contract).
 pub fn spawn(pool: Pool<Sqlite>) {
-    if !super::is_enabled() {
-        tracing::info!(
-            target: "playbook",
-            "playbook synthesis worker OFF ({}=unset) — set it to enable decision-playbook distillation",
-            super::PLAYBOOK_ENABLED_ENV
-        );
-        return;
-    }
     let tick_secs = Config::global()
         .get_param::<u64>(PLAYBOOK_TICK_SECS_KEY)
         .unwrap_or(DEFAULT_TICK_SECS)
         .max(60);
-    tracing::info!(
-        target: "playbook",
-        tick_secs,
-        "playbook synthesis worker ON — distilling answered decisions into hints"
-    );
+    if super::is_enabled() {
+        tracing::info!(
+            target: "playbook",
+            tick_secs,
+            "playbook synthesis worker ON — distilling answered decisions into hints"
+        );
+    } else {
+        tracing::info!(
+            target: "playbook",
+            "playbook synthesis worker OFF ({}=false) — loop idle until enabled in Settings → Features",
+            super::PLAYBOOK_ENABLED_KEY
+        );
+    }
     tokio::spawn(run_worker(pool, tick_secs));
 }
 
@@ -112,6 +116,11 @@ async fn run_worker(pool: Pool<Sqlite>, tick_secs: u64) {
 
     loop {
         interval.tick().await;
+        // Re-read the flag every tick: off ⇒ byte-for-byte inert.
+        if !super::is_enabled() {
+            tracing::debug!(target: "playbook", "playbook off — synthesis tick skipped");
+            continue;
+        }
         let Some(brain) = crate::agents::platform_extensions::get_global_brain() else {
             tracing::debug!(target: "playbook", "no Brain available — skipping synthesis pass");
             continue;

@@ -159,8 +159,9 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
     // events the drain above already pulled; no model call, no network.
     crate::growth_sweep::spawn(app_state.clone());
 
-    // The Concierge (#640): flag-gated (default OFF), draft-only, local-tier
-    // inbox triage. Spawns a loop only when PERMAGENT_CONCIERGE_ENABLED is on.
+    // The Concierge (#640): flag-gated (`concierge_enabled`, default OFF),
+    // draft-only, local-tier inbox triage. The loop always spawns and re-reads
+    // the flag every tick, so a Settings → Features flip needs no restart.
     crate::concierge::spawn(app_state.clone());
 
     // Strix — the security sweep. No-ops unless `strix_enabled` is set, and

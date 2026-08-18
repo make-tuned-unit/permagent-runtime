@@ -765,7 +765,9 @@ impl AppState {
 
         // Initiative driver (#360): native tick loop consuming the same event
         // bus as the ingester above. Explicitly gated (initiative_enabled,
-        // default off) — spawn() logs the on/off state either way.
+        // default off) — the loop always spawns and re-reads the flag every
+        // tick, so a Settings → Features flip needs no restart; spawn() logs
+        // the on/off state either way.
         if let Ok(pool) = agent_manager.session_manager().pool_clone().await {
             permagent::initiative::driver::spawn(pool);
         } else {
@@ -778,8 +780,8 @@ impl AppState {
         // Playbook synthesis worker (learning loop, increment 1): a periodic,
         // project-scoped, local-first pass that distills Jesse's answered
         // decisions + corrections into provenance-linked hints. Flag-gated
-        // (PERMAGENT_PLAYBOOK_ENABLED, default OFF) — spawn() logs the on/off
-        // state and does nothing when the flag is unset.
+        // (playbook_enabled, default OFF) — the loop always spawns and re-reads
+        // the flag every tick (inert while off); spawn() logs the on/off state.
         if let Ok(pool) = agent_manager.session_manager().pool_clone().await {
             permagent::playbook::synthesis::spawn(pool);
         } else {
