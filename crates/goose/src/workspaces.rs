@@ -97,7 +97,7 @@ pub async fn seed_presets_if_empty(pool: &Pool<Sqlite>) -> Result<bool, String> 
         return Ok(false);
     }
 
-    // Sidebar order is a product decision (Jesse, 2026-07-10):
+    // Sidebar order is a product decision (ruling 2026-07-10):
     // Home, Projects, Build, Automate, World — Brain follows.
     // Keep in lockstep with CANONICAL_WORKSPACE_ORDER below.
     let presets = [
@@ -149,7 +149,7 @@ pub async fn seed_presets_if_empty(pool: &Pool<Sqlite>) -> Result<bool, String> 
     Ok(true)
 }
 
-/// The code-owned sidebar order (Jesse's ruling, 2026-07-10). Applied at every
+/// The code-owned sidebar order (ruling 2026-07-10). Applied at every
 /// startup by [`ensure_canonical_workspace_order`] so existing installs pick
 /// up order changes without a reseed; workspaces outside this list (user-
 /// created) keep their own sort_order untouched.

@@ -1525,7 +1525,7 @@ pub async fn insert_roadmap_goal(
     // (see `decisions::risk_gate`). Baking it into a library function means the
     // first non-human caller to appear mints the human's attribution silently,
     // with nothing at the call site to notice. That is the same defect as the
-    // `answer_decisions` finding, which relayed a model's verdict as Jesse.
+    // `answer_decisions` finding, which relayed a model's verdict as the user.
     // The actor is the caller's fact to state, never this function's to assume.
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(db_err)?;
     decisions::append_audit_tx(
@@ -1891,7 +1891,7 @@ mod tests {
         );
         assert_eq!(state_of(&pool, &goal.id).await, "review");
 
-        // Jesse-answered decision passes.
+        // user-answered decision passes.
         let jesse_proof =
             approve_decision_proof(&pool, &goal.id, crate::decisions::ACTOR_JESSE).await;
         let new = advance_goal_checked(
@@ -2517,7 +2517,7 @@ mod tests {
     /// against, so a library function that hardcodes it launders any future
     /// non-human caller into the human's identity — silently, with nothing at
     /// the call site to notice. This asserts a system-originated insert is
-    /// attributed to the system and is NOT recorded as Jesse.
+    /// attributed to the system and is NOT recorded as the user.
     #[tokio::test]
     async fn roadmap_insert_is_attributed_to_the_caller_not_to_jesse() {
         let pool = test_pool().await;

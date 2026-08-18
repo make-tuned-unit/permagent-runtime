@@ -1,7 +1,7 @@
 //! Evidence digest — deterministic Rust assembly (no LLM) of the evidence
 //! shown in the decision inbox.
 //!
-//! Layered evidence (Jesse amendment A3): machine-assembled plain-language
+//! Layered evidence (amendment A3): machine-assembled plain-language
 //! summary fields (`checks_summary`, `verifier_summary`, `costs` with dollars
 //! first) are rendered first by the UI; raw check/diff/verifier output stays
 //! in the detail layer. All strings are plain-text data (S2). Whole digest is

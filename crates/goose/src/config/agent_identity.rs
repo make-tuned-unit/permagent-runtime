@@ -1171,7 +1171,7 @@ workers:
         );
     }
 
-    /// Jesse's ruling (2026-08-09): a flat-rate subscription call costs nothing
+    /// Ruling (2026-08-09): a flat-rate subscription call costs nothing
     /// at the margin, so it outranks a cheap metered API. The harness is the
     /// fallback tier, not the default for routine coding work.
     #[test]

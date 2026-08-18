@@ -513,7 +513,7 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
              to draft commit messages, PR descriptions and changelogs, and to detect stale \
              merged branches and orphaned worktrees (a merged branch whose worktree was \
              never reaped). Its git-health sweep (default OFF, `steward_scan_enabled`) files \
-             merged-and-clean worktree removals and merged-branch deletions as Jesse-only \
+             merged-and-clean worktree removals and merged-branch deletions as user-only \
              Decision-Inbox approvals — every safety check is re-run at the moment of \
              removal, and anything with uncommitted or unpushed work is refused. Failing CI \
              and a dirty primary tree are alert-only: a briefing and a repo-health card, \

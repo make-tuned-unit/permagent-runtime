@@ -210,7 +210,7 @@ fn levers(s: &GrowthSignals) -> Vec<Lever> {
 
     // L3 — Keep momentum on the board. Traction (posts + shipped) with nothing
     // active means the pipeline has stalled; a goal in flight is positive
-    // momentum Henry is already driving. Only meaningful once there's traction
+    // momentum the agent is already driving. Only meaningful once there's traction
     // worth steering. (Goals are general project goals, not growth-typed — this
     // reads "is work moving?", not "is this a growth goal?".)
     let traction = s.posts + s.shipped;
@@ -223,7 +223,7 @@ fn levers(s: &GrowthSignals) -> Vec<Lever> {
             move_title: "Line up your next goal".to_string(),
             move_why: format!(
                 "You've got traction ({posts} posts, {shipped} shipped) but nothing active on the \
-                 board. Set a goal so Henry can drive the next move.",
+                 board. Set a goal to drive the next move.",
                 posts = s.posts,
                 shipped = s.shipped
             ),

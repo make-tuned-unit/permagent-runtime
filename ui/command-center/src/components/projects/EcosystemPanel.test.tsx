@@ -10,9 +10,11 @@ const { apiFetch } = vi.hoisted(() => ({ apiFetch: vi.fn() }));
 vi.mock('../../lib/api', () => ({ apiFetch }));
 
 // Minimal store double: the refresh button drives the real dock-open + send
-// seam, so the mock mirrors the zustand getState() surface the panel uses.
+// seam, so the mock mirrors the zustand getState() surface the panel uses, and
+// the hook form for the configured agent name (#986: copy never hardcodes it).
 const storeState = vi.hoisted(() => ({
   state: {
+    agentName: 'Henry',
     chatDockOpen: false,
     setActivePanel: vi.fn(),
     openChatDock: vi.fn(() => { storeState.state.chatDockOpen = true; }),
@@ -20,7 +22,10 @@ const storeState = vi.hoisted(() => ({
   },
 }));
 vi.mock('../../lib/store', () => ({
-  useCommandCenter: { getState: () => storeState.state },
+  useCommandCenter: Object.assign(
+    (selector: (s: typeof storeState.state) => unknown) => selector(storeState.state),
+    { getState: () => storeState.state },
+  ),
 }));
 const useCommandCenter = { getState: () => storeState.state };
 

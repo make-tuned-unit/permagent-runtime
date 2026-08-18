@@ -1025,7 +1025,7 @@ impl SessionStorage {
                     }
                     // v41: seed the Steward git-health risk_policy classes
                     // (repo_worktree_reap / repo_branch_delete — Tier 2,
-                    // Jesse-only, so henry-policy can never auto-approve a
+                    // user-only, so henry-policy can never auto-approve a
                     // deletion). INSERT OR IGNORE, purely additive to a
                     // free-text-PK table, base-independent.
                     if version < 41 {

@@ -1,4 +1,4 @@
-//! Watcher project insights (Jesse, 2026-07-28): once or twice a day per
+//! Watcher project insights (ruling 2026-07-28): once or twice a day per
 //! project the Watcher quietly places a short, grounded observation onto the
 //! project's Overview — no notification, no badge; you read them as you browse.
 //!

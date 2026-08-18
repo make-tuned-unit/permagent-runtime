@@ -30,6 +30,7 @@ export function EcosystemPanel({ project }: { project: Project }) {
   const [intel, setIntel] = useState<ProjectIntelResponse>(emptyIntel);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [requested, setRequested] = useState(false);
+  const agentName = useCommandCenter(s => s.agentName);
   const loadGeneration = useRef(0);
 
   const load = useCallback(async () => {
@@ -112,7 +113,7 @@ export function EcosystemPanel({ project }: { project: Project }) {
           onClick={requestIntelligence}
           style={{ border: 'none', background: 'none', color: colors.cyan, cursor: 'pointer', fontFamily: font.body, fontSize: 11, padding: 0 }}
         >
-          {requested ? 'Henry is researching…' : 'Refresh intelligence'}
+          {requested ? `${agentName} is researching…` : 'Refresh intelligence'}
         </button>
       )}
     >

@@ -71,11 +71,11 @@ const PENDING: Decision[] = [
     rank: 0.9,
     headline: 'Spend a little more: voice speed experiment wants $10 extra',
     detail:
-      "The experiment paused at its budget limit just before the last measurement.\n\nRequested by: Henry",
+      "The experiment paused at its budget limit just before the last measurement.\n\nRequested by: your agent",
     payload: {
       action_class: 'budget_increase',
       description: 'Raise the experiment budget from $15 to $25',
-      requested_by: 'Henry',
+      requested_by: 'your agent',
     },
     created_at: minutesAgo(100),
   }),
@@ -85,7 +85,7 @@ const PENDING: Decision[] = [
     rank: 0.8,
     headline: 'Pick a path: where to keep your decision history',
     detail:
-      'Two workable options with different trade-offs; Henry needs you to choose one.\n' +
+      'Two workable options with different trade-offs; your agent needs you to choose one.\n' +
       'Options:\n' +
       '- opt-existing-db: Keep it in the existing database — reuses the database you already back up; simplest, ready today.\n' +
       '- opt-separate-file: Keep it in a separate file — keeps history out of the main database, but adds a new file to back up.',
@@ -109,7 +109,7 @@ const PENDING: Decision[] = [
     headline: 'Answer a question so work can continue: which database version',
     detail:
       'Which Postgres version is the prod target — 15 or 16? The migration syntax differs.\n\n' +
-      'Requested by: one of Henry’s workers (session w3, idle 48 minutes)',
+      'Requested by: one of your agent’s workers (session w3, idle 48 minutes)',
     payload: { reason: 'stuck' },
     created_at: minutesAgo(48),
   }),
@@ -147,7 +147,7 @@ const PENDING: Decision[] = [
       goal_id: `goal-${id}`,
       project_id: 'proj-permagent',
       headline: headline as string,
-      detail: 'Henry finished this and is waiting on your go-ahead.',
+      detail: 'Your agent finished this and is waiting on your go-ahead.',
       created_at: minutesAgo(age as number),
     }),
   ),
@@ -161,7 +161,7 @@ const PENDING: Decision[] = [
       id: id as string,
       kind: 'approve_review',
       headline: headline as string,
-      detail: 'Henry finished this and is waiting on your go-ahead.',
+      detail: 'Your agent finished this and is waiting on your go-ahead.',
       created_at: minutesAgo(age as number),
     }),
   ),
@@ -196,7 +196,7 @@ const DIGESTS: Record<string, EvidenceDigestData> = {
       tests_run: 412,
       one_line: 'All 4 automated checks passed (412 tests)',
     },
-    verifier_summary: "Henry's reviewer confirmed the work matches what was approved",
+    verifier_summary: "The agent's reviewer confirmed the work matches what was approved",
     costs: {
       cost_usd: 4.02,
       accumulated_total_tokens: 1_900_000,

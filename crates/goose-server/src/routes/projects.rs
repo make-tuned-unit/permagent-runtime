@@ -1149,7 +1149,7 @@ async fn create_project_note_handler(
     // #629 liveness: broadcast so other connected clients refresh the notes panel.
     events::emit(events::project_changed(&project.id, "notes"));
 
-    // Meeting transcripts drive the kanban without being asked (Jesse,
+    // Meeting transcripts drive the kanban without being asked (ruling
     // 2026-08-06): a background fast-model pass pulls the action items out of
     // the transcript and files each as a card on this project's board. Spawned
     // detached — the note is already durable, and a model failure must never

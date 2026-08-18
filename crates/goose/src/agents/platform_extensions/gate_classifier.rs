@@ -16,7 +16,7 @@
 //! dial"), and an **unknown class fails closed to Tier 2**
 //! (`decisions.rs:tier_for_action_class`). S4 plugs into that seam rather than
 //! inventing a parallel tier authority — the classifier returns only the
-//! action_class string; the DB owns the tier. That means Jesse can re-tier any
+//! action_class string; the DB owns the tier. That means the user can re-tier any
 //! CC action class (e.g. demote `cc_workspace_edit` to Tier 0, or promote
 //! `cc_read_only` to Tier 1) by editing one `risk_policy` row, with no code
 //! change.
@@ -32,7 +32,7 @@
 //! |---|---|---|---|
 //! | `Read` `Glob` `Grep` `LS` `NotebookRead` `BashOutput` `TodoWrite` | `cc_read_only` | 0 | no effect outside the session's own reasoning — reads + in-memory todo state |
 //! | `Write` `Edit` `MultiEdit` `NotebookEdit` | `cc_workspace_edit` | 1 | file mutation, but confined + git-reversible in a supervised worktree; recorded, Henry-clearable |
-//! | `Bash` `KillBash` `KillShell` | `cc_shell` | 2 | arbitrary shell — the `rm -rf` / `git push` / `curl` surface; Jesse-only |
+//! | `Bash` `KillBash` `KillShell` | `cc_shell` | 2 | arbitrary shell — the `rm -rf` / `git push` / `curl` surface; user-only |
 //! | `WebFetch` `WebSearch` | `network_external` | 2 | egress off the machine (reuses the existing seed) |
 //! | `Task` `SlashCommand`, `mcp__*`, **anything else** | `cc_unclassified` | 2 (fail-closed) | unbounded / unrecognized surface — deliberately UNSEEDED so it fails closed |
 //!
@@ -40,7 +40,7 @@
 //! tool it does not explicitly recognize (a new CC tool, an MCP tool, a typo, a
 //! crafted gate). `cc_unclassified` is intentionally **not** seeded into
 //! `risk_policy`, so `tier_for_action_class` resolves it to Tier 2 — the most
-//! restrictive tier, Jesse-only. Adding a tool to a lower tier is therefore an
+//! restrictive tier, user-only. Adding a tool to a lower tier is therefore an
 //! explicit, reviewable act; the absence of a mapping is never permissive.
 //!
 //! **`input` is accepted but not yet consumed.** The signature takes the tool
@@ -61,7 +61,7 @@ pub const READ_ONLY: &str = "cc_read_only";
 pub const WORKSPACE_EDIT: &str = "cc_workspace_edit";
 
 /// `risk_policy` action_class for CC tools that run arbitrary shell commands.
-/// Seeded at Tier 2 (Jesse-only) — the irreversible `rm`/`push`/`curl` surface.
+/// Seeded at Tier 2 (user-only) — the irreversible `rm`/`push`/`curl` surface.
 pub const SHELL: &str = "cc_shell";
 
 /// `risk_policy` action_class for CC tools that reach the network. Reuses the
@@ -91,7 +91,7 @@ pub const SEEDED_CLASSES: &[(&str, i64, &str)] = &[
     (
         SHELL,
         2,
-        "Supervised CC shell (Bash/KillBash) — arbitrary command surface; Jesse-only",
+        "Supervised CC shell (Bash/KillBash) — arbitrary command surface; user-only",
     ),
 ];
 

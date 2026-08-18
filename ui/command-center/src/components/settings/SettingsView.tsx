@@ -1484,6 +1484,7 @@ function PairingQrCode({ value, size = 112 }: { value: string; size?: number }) 
  *  named, individually revocable entry in the registry below. */
 function DevicesPanel() {
   const { colors } = useThemeHook();
+  const agentName = useCommandCenter(s => s.agentName);
   const [host, setHost] = useState('your-mac.tailnet-name.ts.net');
   const [copied, setCopied] = useState(false);
   const [tailnet, setTailnet] = useState<{ installed: boolean; running: boolean; magic_dns_name: string | null } | null>(null);
@@ -1517,7 +1518,7 @@ function DevicesPanel() {
     return () => clearInterval(t);
   }, [loadDevices]);
   // Deterministic detection: when the hub is on a tailnet, the address fills
-  // itself — the user types nothing (Jesse's zero-strain rule, 2026-07-11).
+  // itself — the user types nothing (zero-strain ruling, 2026-07-11).
   useEffect(() => {
     apiFetch<{ enabled: boolean; serve_url: string | null; available: boolean }>(
       '/api/tailnet/access',
@@ -1543,7 +1544,7 @@ function DevicesPanel() {
     <div>
       <H1 sub="One Brain, one truth: your strongest machine is the hub — every other device connects to it. No accounts, no sync conflicts; pairing is a URL, opened once per device.">Devices</H1>
 
-      {/* Role clarity (Jesse's rule 2026-07-11): friendly first, deeper on ask. */}
+      {/* Role clarity (ruling 2026-07-11): friendly first, deeper on ask. */}
       <Section title={isHub ? 'This device is your hub' : 'This device is a companion'}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
           <span style={{
@@ -1693,7 +1694,7 @@ function DevicesPanel() {
           ) : (
             <button
               style={ghost(colors)}
-              title="Copies a setup request and opens chat — Henry runs the terminal steps for you."
+              title={`Copies a setup request and opens chat — ${agentName} runs the terminal steps for you.`}
               onClick={() => {
                 navigator.clipboard.writeText(
                   'Set up Tailscale on this machine so my other devices can reach Permagent: '
@@ -1703,7 +1704,7 @@ function DevicesPanel() {
                 ).catch(() => {});
                 navigateToTool('chat');
               }}
-            >Have Henry set it up</button>
+            >Have {agentName} set it up</button>
           )}
         </Row>
         <Row

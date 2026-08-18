@@ -13,7 +13,7 @@
 //!    the user's CONFIGURED role→model map ([`super::role_map::role_model`],
 //!    which returns `None` when unset) — NEVER the [`super::packs`] tier-pack
 //!    defaults. A single-model user (no ladder) has nothing stronger to climb
-//!    to → NO swap → park. (Jesse's standing rule.)
+//!    to → NO swap → park. (The standing rule.)
 //! 2. **Bounded per-goal budget.** At most `max_escalations` climbs per goal,
 //!    orthogonal to the goal's normal `attempt_cap` — a pathological goal cannot
 //!    walk the whole ladder to the frontier.

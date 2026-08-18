@@ -3,7 +3,7 @@
 //! a delegated unit of work plays is routed to the model the USER configured for
 //! it. This is the wiring follow-up the `permagent packs recommend` CLI promised.
 //!
-//! ## The load-bearing guarantee (Jesse's hard rule)
+//! ## The load-bearing guarantee (the standing hard rule)
 //!
 //! There is **NO baked-in default here**. When a role has no configured mapping,
 //! [`resolve_role_model`] returns `None`, and the dispatch path

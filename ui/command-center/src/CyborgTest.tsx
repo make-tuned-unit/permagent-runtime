@@ -9,7 +9,7 @@ import { AGENT_TRIM } from './components/world/shared/palette';
 // was stale — his trim is warm white-gold since issue #87 resolved).
 const PRESETS = [
   { label: 'Librarian', trimColor: AGENT_TRIM.librarian, weathering: 0.4, crown: false },
-  { label: 'Henry', trimColor: AGENT_TRIM.henry, weathering: 0, crown: true },
+  { label: 'Orchestrator', trimColor: AGENT_TRIM.henry, weathering: 0, crown: true },
   { label: 'Aria', trimColor: AGENT_TRIM.aria, weathering: 0, crown: false },
   { label: 'Felix', trimColor: AGENT_TRIM.felix, weathering: 0, crown: false },
   { label: 'Nova', trimColor: AGENT_TRIM.nova, weathering: 0, crown: false },

@@ -64,7 +64,7 @@ impl GatewayHandler {
                         .send_message(
                             &message.user,
                             OutgoingMessage::Text {
-                                body: "Welcome! Enter your pairing code to connect to goose."
+                                body: "Welcome! Enter your pairing code to connect to Permagent."
                                     .into(),
                             },
                         )

@@ -58,8 +58,8 @@ Do not add any text outside these three lines.
 
 EXAMPLES:
 
-Memory: "Henry tell me a joke" (Slack message from Jesse to Henry on April 24)
-FACTS: Jesse asked Henry to tell a joke via Slack on April 24, 2026.
+Memory: "Tell me a joke" (Slack message from the user to the agent on April 24)
+FACTS: The user asked the agent to tell a joke via Slack on April 24, 2026.
 TERMS: joke, jokes, ask, asked, asking, message, request
 CATEGORIES: conversation, chat, communication, humor
 
@@ -1630,7 +1630,7 @@ mod index_quality_tests {
     /// noise that costs retrieval precision.
     #[test]
     fn a_local_models_overlong_list_is_trimmed_to_the_spec() {
-        let raw = "FACTS: Jesse migrated his brain between two Macs.\n\
+        let raw = "FACTS: The user migrated their brain between two Macs.\n\
 TERMS: migrated, Permagent, brain, older, Mac, mini, new, Tailscale, 2733, memories, 19, projects, device, pairings, repointed, Librarian, Ollama, endpoint\n\
 CATEGORIES: technology migration, digital identity transfer, data migration, networking, infrastructure, devops, sync";
 
@@ -1678,8 +1678,8 @@ CATEGORIES: notes, Notes";
     /// A well-behaved model's output must pass through unchanged.
     #[test]
     fn a_compliant_response_is_untouched() {
-        let raw = "FACTS: Jesse transferred data between computers using Tailscale.\n\
-TERMS: Jesse, Permagent, Mac mini, Tailscale, memories, projects, device, pairings, Librarian, Ollama\n\
+        let raw = "FACTS: The user transferred data between computers using Tailscale.\n\
+TERMS: user, Permagent, Mac mini, Tailscale, memories, projects, device, pairings, Librarian, Ollama\n\
 CATEGORIES: Technology, Data Migration, Networking";
         let out = parse_structured_description(raw).expect("compliant output parses");
         assert!(out.contains("Ollama"), "all ten terms kept: {out}");
@@ -1946,7 +1946,7 @@ mod tests {
     #[test]
     fn test_prompt_building_masks_ids_in_content() {
         let mut mem = test_memory();
-        mem.content = "Jesse asked Henry to run task_0e7a5d3f-4b21 via Slack.".to_string();
+        mem.content = "The user asked the agent to run task_0e7a5d3f-4b21 via Slack.".to_string();
         let prompt = build_description_prompt(&mem, None);
         assert!(!prompt.contains("task_0e7a5d3f"));
         assert!(prompt.contains("run [id] via Slack"));
@@ -1954,9 +1954,9 @@ mod tests {
 
     #[test]
     fn test_parse_structured_valid() {
-        let raw = "FACTS: Jesse asked Henry to tell a joke via Slack.\nTERMS: joke, jokes, ask, asked, asking, message, request\nCATEGORIES: conversation, chat, communication, humor";
+        let raw = "FACTS: The user asked the agent to tell a joke via Slack.\nTERMS: joke, jokes, ask, asked, asking, message, request\nCATEGORIES: conversation, chat, communication, humor";
         let result = parse_structured_description(raw).unwrap();
-        assert!(result.starts_with("Jesse asked Henry"));
+        assert!(result.starts_with("The user asked the agent"));
         assert!(result.contains("Related terms:"));
         assert!(result.contains("Categories:"));
         assert!(result.contains("joke, jokes"));

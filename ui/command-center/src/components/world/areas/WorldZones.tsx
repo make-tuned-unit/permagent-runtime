@@ -4,7 +4,7 @@
 // Mesh interiors) — dark blockout boxes hanging off the rotunda that read as junk.
 // Those were dropped. Then a "Thresholds" ring of framed portal openings + floating
 // zone labels remained, but with the rooms gone the labels pointed at nothing ("why
-// does it say Build here?"). Per Jesse: remove ALL of it — frames, floor seams, and
+// does it say Build here?"). Ruling: remove ALL of it — frames, floor seams, and
 // labels. The colonnade is now a clean unbroken ring (HallStructure punches only the
 // one opening below) and the single thing kept is the relocated Mesh Stargate.
 //

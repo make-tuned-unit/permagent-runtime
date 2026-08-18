@@ -168,7 +168,7 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
     crate::strix::spawn(app_state.clone());
 
     // The Steward's git-health sweep. Detect/propose only (cleanup is
-    // Jesse-only via the Decision Inbox); no-ops unless `steward_scan_enabled`
+    // user-only via the Decision Inbox); no-ops unless `steward_scan_enabled`
     // is set, and says so in the log either way.
     crate::steward_sweep::spawn(app_state.clone());
 

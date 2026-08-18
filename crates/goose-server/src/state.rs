@@ -776,7 +776,7 @@ impl AppState {
         }
 
         // Playbook synthesis worker (learning loop, increment 1): a periodic,
-        // project-scoped, local-first pass that distills Jesse's answered
+        // project-scoped, local-first pass that distills the user's answered
         // decisions + corrections into provenance-linked hints. Flag-gated
         // (PERMAGENT_PLAYBOOK_ENABLED, default OFF) — spawn() logs the on/off
         // state and does nothing when the flag is unset.

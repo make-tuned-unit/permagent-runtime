@@ -1291,7 +1291,7 @@ mod tests {
         (repo, wt)
     }
 
-    /// File the reap through the REAL proposer, then answer as Jesse.
+    /// File the reap through the REAL proposer, then answer as the user.
     async fn answered_reap_decision(
         pool: &Pool<Sqlite>,
         repo: &std::path::Path,
@@ -1315,7 +1315,7 @@ mod tests {
         let d = decisions::get_decision(pool, &id).await.unwrap().unwrap();
         assert_eq!(
             d.tier, 2,
-            "repo hygiene must resolve to the Jesse-only tier"
+            "repo hygiene must resolve to the user-only tier"
         );
         decisions::answer_decision(
             pool,

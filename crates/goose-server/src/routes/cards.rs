@@ -177,7 +177,7 @@ pub struct ReorderEntry {
 pub struct DeleteResponse {
     deleted: bool,
     /// Set when the card is a goal: deletion is Tier 2 (user_data_deletion)
-    /// and requires this risk_gate decision to be approved by Jesse first.
+    /// and requires this risk_gate decision to be approved by the user first.
     #[serde(skip_serializing_if = "Option::is_none")]
     pending_decision_id: Option<String>,
 }
@@ -375,7 +375,7 @@ async fn delete_card_handler(
         .ok_or((StatusCode::NOT_FOUND, "Card not found".to_string()))?;
 
     // Goal deletion is Tier 2 (user_data_deletion): file (or surface) a
-    // risk_gate decision and return 202 — the deletion executes when Jesse
+    // risk_gate decision and return 202 — the deletion executes when the user
     // approves the decision in the inbox.
     if card.card_type == "goal" {
         let decision =
@@ -568,7 +568,7 @@ async fn insert_roadmap_goal_handler(
         },
         // This route is the human's own click arriving over HTTP. Stated here
         // rather than assumed inside the guard, so a future non-human caller
-        // has to state its own actor instead of inheriting Jesse's.
+        // has to state its own actor instead of inheriting the user's.
         permagent::decisions::ACTOR_JESSE,
     )
     .await

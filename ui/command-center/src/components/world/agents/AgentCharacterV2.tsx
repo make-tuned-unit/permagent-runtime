@@ -345,7 +345,7 @@ export function AgentCharacterV2({
             }}
           >
             {/* Henry is the AGENT'S NAME (user-chosen persona), not a role —
-                no "(Orchestrator)" title (Jesse, 2026-07-28). */}
+                no "(Orchestrator)" title (ruling 2026-07-28). */}
             {identity.name}
             {identity.id === 'librarian' && ' (The Brain)'}
           </div>

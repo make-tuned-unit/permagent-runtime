@@ -30,7 +30,7 @@ export const AGORA_CENTER: [number, number, number] = [-19.8, 3, -19.8];
 /** Where the camera returns to on exit — framing the warm Rotunda crown. */
 export const HALL_HOME: [number, number, number] = [0, 2, 2];
 
-const ENTER_DUR = 1.35; // seconds (Jesse: ~1-1.5s, eased)
+const ENTER_DUR = 1.35; // seconds (ruling: ~1-1.5s, eased)
 const EXIT_DUR = 1.25;
 
 interface ArcState {

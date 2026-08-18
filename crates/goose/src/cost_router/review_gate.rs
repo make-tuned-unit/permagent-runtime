@@ -10,7 +10,7 @@
 //!   to the model the user mapped to REVIEW — objectively a *different family*
 //!   than EDIT ([`super::recommend`]). Unset ⇒ [`reviewer_routing`] falls the
 //!   review back to the main session model and surfaces the recommender's
-//!   single-family diversity warning (no baked-in vendor default, Jesse's rule).
+//!   single-family diversity warning (no baked-in vendor default, the standing rule).
 //! - **The summon** is the existing delegate path
 //!   ([`crate::agents::platform_extensions::summon`]) — the recipe SUMMONS the
 //!   `reviewer` persona with a READ-ONLY extension scope ([`REVIEWER_EXTENSIONS`])

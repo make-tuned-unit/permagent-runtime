@@ -5,7 +5,7 @@
 //!
 //!  * **Proposals** — reapable worktrees (merged + clean + fully pushed) and
 //!    deletable branches (merged + unprotected + not checked out) become
-//!    Tier-2 (Jesse-only) `risk_gate` decisions via
+//!    Tier-2 (user-only) `risk_gate` decisions via
 //!    `permagent::steward::hygiene::propose_repo_hygiene`. The sweep itself
 //!    NEVER mutates a repository — the only mutation path is the Decision
 //!    Inbox effect arm, which re-verifies every predicate at apply time.
@@ -64,7 +64,7 @@ pub fn spawn(state: Arc<AppState>) {
         tracing::info!(
             target: "permagentd::steward",
             "Steward git-health sweep enabled — one repo per sweep, every {}h; detects only, \
-             cleanup goes through Jesse-only decisions",
+             cleanup goes through user-only decisions",
             sweep_interval().as_secs() / 3600
         );
     } else {

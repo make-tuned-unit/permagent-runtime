@@ -40,7 +40,7 @@ const CHAT_PRINCIPAL: &str = "henry-chat";
 /// irreversible or high-blast-radius actions (goal deletion, merge/push to
 /// main, secrets access, spend, policy edits). Those are gated in code on
 /// `acted_by == ACTOR_JESSE`, and a tool call is the model's word, not the
-/// user's hand: relaying one as Jesse would let model output satisfy the exact
+/// user's hand: relaying one as the user would let model output satisfy the exact
 /// checkpoint that exists to require a human. Chat answers act as Henry and
 /// stop here.
 const MAX_TIER_FROM_CHAT: i64 = 1;

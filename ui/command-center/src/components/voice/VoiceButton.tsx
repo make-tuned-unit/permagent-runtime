@@ -63,6 +63,7 @@ export function VoiceButton() {
   // control: it reads the polled live feed and sends start/end commands, so
   // one conversation runs in one place no matter which surface drives it.
   const engine = useCommandCenter(s => s.voiceEngine);
+  const agentName = useCommandCenter(s => s.agentName);
   const [remote, setRemote] = useState(() => (isChatWindow ? readLiveConversation() : null));
   useEffect(() => {
     if (!isChatWindow) return;
@@ -188,7 +189,7 @@ export function VoiceButton() {
         title={
           state === 'idle' ? 'Enable voice (spacebar to talk)'
           : state === 'ready' ? 'Hold to talk (spacebar)'
-          : isInterruptibleState(state) ? 'Stop Henry — click or press space to interrupt'
+          : isInterruptibleState(state) ? `Stop ${agentName} — click or press space to interrupt`
           : STATE_LABELS[state]
         }
         className={`transition ${isBusy ? 'cursor-pointer' : ''}`}

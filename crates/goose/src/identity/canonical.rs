@@ -65,8 +65,8 @@ impl std::error::Error for CanonicalizeError {}
 /// ```
 /// use permagent::identity::canonical::*;
 /// assert_eq!(
-///     canonicalize_entity_id(EntityPrefix::Person, "Jesse Sharratt"),
-///     Ok("person:jesse-sharratt".to_string())
+///     canonicalize_entity_id(EntityPrefix::Person, "Ada Lovelace"),
+///     Ok("person:ada-lovelace".to_string())
 /// );
 /// assert_eq!(
 ///     canonicalize_entity_id(EntityPrefix::Project, "Get Ladle!"),
@@ -129,8 +129,8 @@ pub fn canonicalize_entity_id(
 /// This is **distinct** from [`canonicalize_entity_id`]: the graph keys entities
 /// on `entity_id(entity_type, canonical)` where `canonical` is the lowercased,
 /// whitespace-collapsed name with punctuation preserved (the convention in
-/// `ontology.toml`, e.g. `"jesse sharratt"`, `"next.js"`). It is NOT the dash-slug
-/// `canonicalize_entity_id` produces (`"person:jesse-sharratt"`). Because a
+/// `ontology.toml`, e.g. `"ada lovelace"`, `"next.js"`). It is NOT the dash-slug
+/// `canonicalize_entity_id` produces (`"person:ada-lovelace"`). Because a
 /// Spectral `EntityId` is a blake3 hash of the exact bytes, using the dash-slug
 /// would hash to a *different* id and silently mis-join to no graph node — so the
 /// bridge MUST use this form.
@@ -160,8 +160,8 @@ mod tests {
     #[test]
     fn basic_person() {
         assert_eq!(
-            canonicalize_entity_id(EntityPrefix::Person, "Jesse Sharratt"),
-            Ok("person:jesse-sharratt".into())
+            canonicalize_entity_id(EntityPrefix::Person, "Ada Lovelace"),
+            Ok("person:ada-lovelace".into())
         );
     }
 
@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn graph_canonical_lowercases_and_collapses_whitespace() {
-        assert_eq!(graph_canonical("Jesse Sharratt"), "jesse sharratt");
+        assert_eq!(graph_canonical("Ada Lovelace"), "ada lovelace");
         assert_eq!(graph_canonical("  Mel   Schembri "), "mel schembri");
         // Punctuation is preserved (graph convention), unlike the dash-slug.
         assert_eq!(graph_canonical("Next.JS"), "next.js");
@@ -215,9 +215,9 @@ mod tests {
 
     #[test]
     fn graph_entity_id_hex_matches_spectral_and_is_bare_hex() {
-        let got = graph_entity_id_hex("person", "Jesse Sharratt");
+        let got = graph_entity_id_hex("person", "Ada Lovelace");
         let expect = hex::encode(
-            spectral::core::entity_id::entity_id("person", "jesse sharratt").as_bytes(),
+            spectral::core::entity_id::entity_id("person", "ada lovelace").as_bytes(),
         );
         assert_eq!(got, expect);
         assert_eq!(got.len(), 64); // bare 64-hex, no "e:" prefix
@@ -227,9 +227,9 @@ mod tests {
     fn graph_id_differs_from_dash_slug_hash() {
         // The bug Decision B originally specified: hashing the dash-slug instead of
         // the graph canonical produces a DIFFERENT id that mis-joins to no node.
-        let correct = graph_entity_id_hex("person", "Jesse Sharratt");
+        let correct = graph_entity_id_hex("person", "Ada Lovelace");
         let wrong = hex::encode(
-            spectral::core::entity_id::entity_id("person", "jesse-sharratt").as_bytes(),
+            spectral::core::entity_id::entity_id("person", "ada-lovelace").as_bytes(),
         );
         assert_ne!(correct, wrong);
     }
@@ -237,8 +237,8 @@ mod tests {
     #[test]
     fn already_canonical_is_idempotent() {
         assert_eq!(
-            canonicalize_entity_id(EntityPrefix::Person, "jesse-sharratt"),
-            Ok("person:jesse-sharratt".into())
+            canonicalize_entity_id(EntityPrefix::Person, "ada-lovelace"),
+            Ok("person:ada-lovelace".into())
         );
     }
 

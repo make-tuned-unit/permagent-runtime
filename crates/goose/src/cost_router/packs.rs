@@ -6,7 +6,7 @@
 //! can go from "this is mechanical batch work" all the way to "spawn a subagent
 //! on `ollama`/`qwen3`".
 //!
-//! It carries Jesse's chosen tiered packs as CONFIGURABLE defaults:
+//! It carries the owner's chosen tiered packs as CONFIGURABLE defaults:
 //!
 //! | Role         | Default model                 | Where it runs                         |
 //! |--------------|-------------------------------|---------------------------------------|
@@ -16,7 +16,7 @@
 //! | `Local`      | `qwen3` (ollama, $0)          | on-device mechanical (Local/Mesh)     |
 //!
 //! Every field is overridable via `PERMAGENT_PACK_*` config/env keys (the
-//! defaults are Jesse's spend/quality call, surfaced for tuning), mirroring the
+//! defaults are the owner's spend/quality call, surfaced for tuning), mirroring the
 //! pure-core-plus-thin-env-wrapper convention in [`super::budget`].
 //!
 //! Cache discipline (see [`super::cache`]) is why `Edit` is a distinct role
@@ -42,7 +42,7 @@ pub const KEY_MECHANICAL_MODEL: &str = "PERMAGENT_PACK_MECHANICAL_MODEL";
 pub const KEY_LOCAL_PROVIDER: &str = "PERMAGENT_PACK_LOCAL_PROVIDER";
 pub const KEY_LOCAL_MODEL: &str = "PERMAGENT_PACK_LOCAL_MODEL";
 
-// ── Default models (Jesse's tiered packs) ────────────────────────────────────
+// ── Default models (the shipped tiered packs) ────────────────────────────────────
 
 /// The Anthropic provider id (see `providers::anthropic`).
 const PROVIDER_ANTHROPIC: &str = "anthropic";
@@ -126,7 +126,7 @@ impl ModelPack {
 }
 
 /// The full set of tiered packs — one per role. CONFIGURABLE: the defaults are
-/// Jesse's call and every field is overridable via the `PERMAGENT_PACK_*` keys.
+/// The owner's call and every field is overridable via the `PERMAGENT_PACK_*` keys.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelPacks {
     pub edit: ModelPack,
@@ -136,7 +136,7 @@ pub struct ModelPacks {
 }
 
 impl Default for ModelPacks {
-    /// Jesse's tiered packs: Opus 4.8 (hard) · Sonnet 5 (edit) · Haiku 4.5
+    /// The shipped tiered packs: Opus 4.8 (hard) · Sonnet 5 (edit) · Haiku 4.5
     /// (mechanical) · Ollama/qwen3 (local $0).
     fn default() -> Self {
         Self {
@@ -216,7 +216,7 @@ pub fn packs_from(
     }
 }
 
-/// Load the tiered packs from config/env, falling back to Jesse's defaults for
+/// Load the tiered packs from config/env, falling back to the shipped defaults for
 /// any unset key. Thin wrapper over [`packs_from`].
 pub fn load_packs() -> ModelPacks {
     let cfg = crate::config::Config::global();
@@ -394,7 +394,7 @@ mod tests {
         assert_eq!(p.mechanical.provider, "openai");
         assert_eq!(p.mechanical.model, "gpt-4o-mini");
         assert_eq!(p.local.model, "qwen3-coder:30b");
-        // …and untouched fields keep Jesse's defaults.
+        // …and untouched fields keep the shipped defaults.
         assert_eq!(p.edit.provider, "anthropic");
         assert_eq!(p.hard.model, "claude-opus-4-8");
         assert_eq!(p.local.provider, "ollama");
