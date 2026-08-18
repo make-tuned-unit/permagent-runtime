@@ -284,13 +284,41 @@ async fn init_default_provider(app_state: std::sync::Arc<state::AppState>) {
     };
 
     let started = std::time::Instant::now();
-    match tokio::time::timeout(
-        PROVIDER_INIT_TIMEOUT,
-        permagent::providers::create(&name, model.unwrap_or_default(), vec![]),
-    )
-    .await
-    {
-        Ok(Ok(provider)) => {
+    // Spawned as its own task, and the deadline applied to the JOIN HANDLE
+    // rather than to `create()` directly.
+    //
+    // `create()` resolves the provider's API key through `Config::get_secret`,
+    // which reaches the macOS keychain via a synchronous FFI call
+    // (`SecKeychainFindGenericPassword`). `tokio::time::timeout` cannot
+    // interrupt a blocking sync call: it polls the inner future inline, so when
+    // that poll blocks, the timeout's own timer never gets polled again and can
+    // never fire. Awaiting `create()` directly therefore produced a deadline
+    // that looked like a safety net and was not one — a wedged keychain hung
+    // boot forever and NONE of the four arms below ever logged. The daemon
+    // served HTTP normally, had no provider, and said nothing about why.
+    //
+    // Diagnosed by sampling a stuck process: all 397 samples in
+    // SecKeychainFindGenericPassword beneath tokio::time::timeout::poll.
+    //
+    // With the work in a separate task the timeout lives in a different task
+    // and does fire. The blocked task still holds a worker thread until the OS
+    // call returns — that is a real remaining cost, and the honest trade is
+    // that one wedged thread is much better than a silent daemon.
+    let create_name = name.clone();
+    let handle = tokio::spawn(async move {
+        permagent::providers::create(&create_name, model.unwrap_or_default(), vec![]).await
+    });
+    match tokio::time::timeout(PROVIDER_INIT_TIMEOUT, handle).await {
+        Ok(Err(join_err)) => {
+            tracing::error!(
+                "Default provider '{}' initializer panicked or was cancelled: {} — \
+                 leaving it unset. Sessions will report a provider error until it is \
+                 reconfigured in Settings.",
+                name,
+                join_err
+            );
+        }
+        Ok(Ok(Ok(provider))) => {
             app_state.agent_manager.set_default_provider(provider).await;
             info!(
                 "Default provider initialized: {} (model: {}) in {:?}",
@@ -299,14 +327,17 @@ async fn init_default_provider(app_state: std::sync::Arc<state::AppState>) {
                 started.elapsed()
             );
         }
-        Ok(Err(e)) => {
+        Ok(Ok(Err(e))) => {
             tracing::warn!("Failed to initialize default provider '{}': {}", name, e);
         }
         Err(_) => {
             tracing::error!(
                 "Default provider '{}' did not initialize within {:?} — leaving it unset. \
                  Sessions will report a provider error until it is reconfigured in Settings. \
-                 The daemon is otherwise serving normally.",
+                 The daemon is otherwise serving normally. A common cause is a macOS \
+                 keychain read that never returns; the credential is reachable again \
+                 once the keychain is unlocked, and Settings can re-configure without \
+                 a restart.",
                 name,
                 PROVIDER_INIT_TIMEOUT
             );

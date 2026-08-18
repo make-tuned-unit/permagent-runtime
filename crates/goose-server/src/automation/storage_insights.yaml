@@ -1,6 +1,6 @@
-version: "2.0.1"
-title: "Weekly Storage Cleanup"
-description: "Scans your Mac for cleanup opportunities — dev caches, app caches, stale downloads, and large files."
+version: "2.0.2"
+title: "Weekly Storage Report"
+description: "Scans your Mac for cleanup opportunities — dev caches, app caches, stale downloads, and large files — and reports them for your review. Deletes nothing."
 
 prompt: |
   Run a storage health scan to find cleanup opportunities on this Mac.
