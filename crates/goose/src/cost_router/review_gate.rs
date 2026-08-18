@@ -1046,7 +1046,10 @@ mod tests {
             Some(review.clone()),
         );
         assert_eq!(d.role_model, Some(review));
-        assert_eq!(d.warning, None, "a cross-family reviewer carries no warning");
+        assert_eq!(
+            d.warning, None,
+            "a cross-family reviewer carries no warning"
+        );
     }
 
     #[test]
@@ -1083,7 +1086,10 @@ mod tests {
             Some(rm(reviewer.provider, reviewer.model)),
         );
         assert!(d.role_model.is_some());
-        assert!(d.warning.is_some(), "same family via the knowledge base must warn");
+        assert!(
+            d.warning.is_some(),
+            "same family via the knowledge base must warn"
+        );
     }
 
     #[test]

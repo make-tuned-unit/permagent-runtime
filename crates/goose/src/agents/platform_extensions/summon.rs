@@ -1365,10 +1365,7 @@ impl SummonClient {
         let review_dispatch = (role == Some(crate::cost_router::WorkflowRole::Review)).then(|| {
             crate::cost_router::reviewer_dispatch(
                 session.provider_name.as_deref(),
-                session
-                    .model_config
-                    .as_ref()
-                    .map(|m| m.model_name.as_str()),
+                session.model_config.as_ref().map(|m| m.model_name.as_str()),
                 role_model.as_ref().map(|(rm, _)| rm.clone()),
             )
         });
