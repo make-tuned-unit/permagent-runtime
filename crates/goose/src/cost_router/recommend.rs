@@ -2,7 +2,7 @@
 //! the best fit for each workflow role, purely from the measured
 //! [`super::knowledge`] attributes and cost, with **zero vendor bias**.
 //!
-//! This is the heart of Jesse's rule: *no model is set by default; the agent
+//! This is the heart of the standing rule: *no model is set by default; the agent
 //! asks which models the user has access to and recommends which fit best where,
 //! with no bias toward the vendor whose runtime this is — pure objectivity and
 //! cost awareness.* Every pick here is a pure function of the data; the code has

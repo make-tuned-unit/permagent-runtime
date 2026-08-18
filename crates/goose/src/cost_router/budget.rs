@@ -15,7 +15,7 @@
 //! Two independent scopes — a single **task** and the whole **session** — and
 //! the STRICTER verdict wins. Defaults follow the cost-governance spec: task
 //! $2/$5/$10, session $10/$25/$50 (soft/gate/hard). All CONFIGURABLE via env /
-//! config; the defaults are Jesse's spend-comfort call, surfaced for tuning.
+//! config; the defaults are the owner's spend-comfort call, surfaced for tuning.
 //!
 //! `budget_verdict` is the pure `TODO(S8)` seam the loop-safety ProgressMonitor
 //! (#715, unmerged) calls pre-turn — "read the session's accumulated $-spend
@@ -58,7 +58,7 @@ impl BudgetCeilings {
 }
 
 /// Task + session ceilings. CONFIGURABLE — the defaults are the only free
-/// parameters and are Jesse's call to tune.
+/// parameters and are the owner's call to tune.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BudgetConfig {
     pub task: BudgetCeilings,

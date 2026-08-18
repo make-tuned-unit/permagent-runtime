@@ -6,6 +6,8 @@ mod experiments;
 pub mod extensions;
 pub mod gmail_oauth;
 pub mod goose_mode;
+#[cfg(test)]
+mod identity_name_guard;
 mod migrations;
 pub mod paths;
 pub mod permission;

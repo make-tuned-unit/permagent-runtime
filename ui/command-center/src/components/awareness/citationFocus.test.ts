@@ -12,12 +12,12 @@ import type { ProbedMemoryRef, RecalledMemoryRef } from '../../lib/store';
 describe('probedFocusTarget', () => {
   it('carries id, key, and a preview (text + the marker score as weight)', () => {
     const m: ProbedMemoryRef = {
-      id: 'mem-1', key: 'note:p:1', content_summary: 'Jesse prefers dark mode', relevance: 0.82, wing: 'work',
+      id: 'mem-1', key: 'note:p:1', content_summary: 'The user prefers dark mode', relevance: 0.82, wing: 'work',
     };
     const t = probedFocusTarget(m);
     expect(t.id).toBe('mem-1');
     expect(t.key).toBe('note:p:1');
-    expect(t.preview?.text).toBe('Jesse prefers dark mode');
+    expect(t.preview?.text).toBe('The user prefers dark mode');
     expect(t.preview?.weight).toBe(0.82);
   });
 

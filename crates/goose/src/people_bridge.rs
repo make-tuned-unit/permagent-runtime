@@ -179,7 +179,7 @@ mod tests {
     #[test]
     fn title_case_capitalizes_each_word() {
         assert_eq!(title_case("mel schembri"), "Mel Schembri");
-        assert_eq!(title_case("jesse  sharratt"), "Jesse Sharratt");
+        assert_eq!(title_case("ada  lovelace"), "Ada Lovelace");
         assert_eq!(title_case(""), "");
     }
 

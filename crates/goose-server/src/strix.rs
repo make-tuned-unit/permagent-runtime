@@ -182,7 +182,7 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
         return Ok(());
     }
 
-    // ONE project per sweep, rotating least-recently-scanned first (Jesse,
+    // ONE project per sweep, rotating least-recently-scanned first (ruling
     // 2026-08-06): a whole-fleet pass four times a day was the wrong shape —
     // one focused scan per interval spreads cost evenly and gives each
     // project a fresh report on a predictable cycle. A never-scanned project

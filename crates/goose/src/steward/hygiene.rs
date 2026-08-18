@@ -2,7 +2,7 @@
 //!
 //! Invariant: the Steward detects and proposes; a mutation happens solely in
 //! [`apply_repo_hygiene`], which is reachable only from the Decision-Inbox
-//! effect arm behind a [`crate::decisions::DecisionProof`] (Tier 2, Jesse-only
+//! effect arm behind a [`crate::decisions::DecisionProof`] (Tier 2, user-only
 //! via the `repo_worktree_reap` / `repo_branch_delete` risk_policy rows).
 //!
 //! Second-look contract: every safety predicate is RE-VERIFIED at effect time.
@@ -929,7 +929,7 @@ mod tests {
             .expect("first pitch files");
         let d = decisions::get_decision(&pool, &id).await.unwrap().unwrap();
         assert_eq!(d.kind, "risk_gate");
-        assert_eq!(d.tier, 2, "repo hygiene must be Jesse-only");
+        assert_eq!(d.tier, 2, "repo hygiene must be user-only");
         let payload: decisions::RiskGatePayload =
             serde_json::from_value(d.payload.clone()).unwrap();
         assert_eq!(payload.action_class, ACTION_REPO_BRANCH_DELETE);

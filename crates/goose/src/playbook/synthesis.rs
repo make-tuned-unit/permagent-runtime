@@ -66,15 +66,15 @@ const PERSONAL_KEY: &str = "personal";
 /// A synthetic session id for the distiller's provider call.
 const DISTILL_SESSION_ID: &str = "playbook-synthesis";
 
-const DISTILL_SYSTEM: &str = "You distill a user's (Jesse's) past product and engineering decisions \
-    into a few short, reusable \"playbook\" hints about how he tends to decide, so an assistant can \
-    plan more like he would.\n\n\
-    You are given numbered items — each a past decision he answered, or a draft of yours he revised \
+const DISTILL_SYSTEM: &str = "You distill a user's past product and engineering decisions \
+    into a few short, reusable \"playbook\" hints about how they tend to decide, so an assistant can \
+    plan more like they would.\n\n\
+    You are given numbered items — each a past decision they answered, or a draft of yours they revised \
     before accepting. Output ONLY a JSON array of 0 to 4 objects, no prose and no markdown fences:\n\
     [{\"hint\": \"<one sentence>\", \"from\": [<item numbers>]}]\n\n\
     Rules:\n\
     - Each hint is ONE sentence describing a TENDENCY or PREFERENCE, phrased as a soft \
-    generalization (\"tends to\", \"prefers\", \"usually\"), naming him as Jesse.\n\
+    generalization (\"tends to\", \"prefers\", \"usually\"), referring to them as \"the user\".\n\
     - \"from\" lists the item numbers the hint is grounded in; ground each hint in at least two items.\n\
     - Only emit a hint that genuinely generalizes across the items. If nothing does, output [].\n\
     - Never invent a preference the items do not support. These are HINTS, not rules.";
@@ -288,7 +288,7 @@ struct Ref {
 }
 
 /// Build numbered refs from a project's decisions. A jesse edit is rendered as
-/// its correction (draft → revision — the sharper "how he changes things"
+/// its correction (draft → revision — the sharper "how they change things"
 /// signal); every other answered decision as its question/answer prose.
 fn build_refs(decisions: &[Decision]) -> Vec<Ref> {
     decisions
@@ -317,13 +317,13 @@ fn build_refs(decisions: &[Decision]) -> Vec<Ref> {
 /// Render the numbered distillation prompt for one project.
 fn build_distill_input(project_slug: &str, refs: &[Ref]) -> String {
     let mut s = format!(
-        "Past decisions and draft-revisions by Jesse for project \"{project_slug}\", each numbered:\n"
+        "Past decisions and draft-revisions by the user for project \"{project_slug}\", each numbered:\n"
     );
     for r in refs {
         s.push_str(&format!("[{}] {}\n", r.num, r.prose));
     }
     s.push_str(
-        "\nDistill 0 to 4 short hints about how Jesse tends to decide or what he prefers on this \
+        "\nDistill 0 to 4 short hints about how the user tends to decide or what they prefer on this \
          project, each grounded in at least two of the numbered items. Respond with ONLY the JSON \
          array described in your instructions.",
     );
@@ -510,7 +510,7 @@ mod tests {
                 crate::decisions::ACTOR_JESSE,
                 "answered",
             ),
-            // henry-answered → excluded (only Jesse's decisions train the playbook).
+            // henry-answered → excluded (only the user's decisions train the playbook).
             answered_row("d3", Some("proj-a"), "henry-policy", "answered"),
             // still open → excluded.
             answered_row("d4", Some("proj-a"), crate::decisions::ACTOR_JESSE, "open"),
@@ -573,7 +573,7 @@ mod tests {
         assert_eq!(refs.len(), 2);
         assert_eq!(refs[0].num, 1);
         assert_eq!(refs[0].decision_id, "d1");
-        assert!(refs[0].prose.starts_with("Jesse was asked:"));
+        assert!(refs[0].prose.starts_with("The user was asked:"));
         // The edit renders as its draft→revision correction (the sharper signal).
         assert_eq!(refs[1].decision_id, "d2");
         assert!(refs[1].prose.starts_with("The agent drafted:"));
@@ -615,10 +615,10 @@ mod tests {
 
     #[test]
     fn parse_hints_maps_refs_to_provenance() {
-        let out = r#"[{"hint":"Jesse prefers Postgres","from":[1,3]}]"#;
+        let out = r#"[{"hint":"The user prefers Postgres","from":[1,3]}]"#;
         let hints = parse_hints(out, &refs3());
         assert_eq!(hints.len(), 1);
-        assert_eq!(hints[0].hint, "Jesse prefers Postgres");
+        assert_eq!(hints[0].hint, "The user prefers Postgres");
         assert_eq!(
             hints[0].provenance,
             vec!["decision d1".to_string(), "decision d3".to_string()]
@@ -627,10 +627,10 @@ mod tests {
 
     #[test]
     fn parse_hints_tolerates_fences_and_prose() {
-        let out = "Sure! Here you go:\n```json\n[{\"hint\":\"Jesse ships small\",\"from\":[2]}]\n```\nHope that helps.";
+        let out = "Sure! Here you go:\n```json\n[{\"hint\":\"The user ships small\",\"from\":[2]}]\n```\nHope that helps.";
         let hints = parse_hints(out, &refs3());
         assert_eq!(hints.len(), 1);
-        assert_eq!(hints[0].hint, "Jesse ships small");
+        assert_eq!(hints[0].hint, "The user ships small");
         assert_eq!(hints[0].provenance, vec!["decision d2".to_string()]);
     }
 
@@ -641,11 +641,11 @@ mod tests {
             {"hint":"ungrounded claim"},
             {"hint":"cites nothing real","from":[99]},
             {"hint":"","from":[1]},
-            {"hint":"Jesse prefers explicit config","from":[1,2]}
+            {"hint":"The user prefers explicit config","from":[1,2]}
         ]"#;
         let hints = parse_hints(out, &refs3());
         assert_eq!(hints.len(), 1, "only the grounded, non-empty hint survives");
-        assert_eq!(hints[0].hint, "Jesse prefers explicit config");
+        assert_eq!(hints[0].hint, "The user prefers explicit config");
     }
 
     #[test]

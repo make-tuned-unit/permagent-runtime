@@ -300,6 +300,8 @@ export function GrowView() {
   // projectsRev bumps on project_changed — a strategy save (from the UI or
   // Henry's set_project_strategy tool) refreshes the cards live.
   const projectsRev = useCommandCenter((st) => st.projectsRev);
+  // The primary agent's configured display name — identity is config, never a literal (#986).
+  const agentName = useCommandCenter((st) => st.agentName);
   useEffect(() => { loadProjects(); }, [loadProjects, projectsRev]);
 
   // Content calendar = social_post cards on this project (reserved card type
@@ -430,7 +432,7 @@ export function GrowView() {
           title="Grow"
           subtitle={
             <span style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-              <span>Take {active ? active.name : 'your project'} to market — Henry drafts with the project's real context.</span>
+              <span>Take {active ? active.name : 'your project'} to market — {agentName} drafts with the project's real context.</span>
               {active?.siteUrl && (
                 <a href={active.siteUrl} target="_blank" rel="noreferrer" style={{ color: colors.cyan, textDecoration: 'none' }}>site ↗</a>
               )}
@@ -538,7 +540,7 @@ export function GrowView() {
               <h3 style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0 }}>Go-to-market strategy</h3>
               <button
                 onClick={() => send(runAllPrompt(active.name))}
-                title="Henry researches every pillar and fills these cards with the results"
+                title={`${agentName} researches every pillar and fills these cards with the results`}
                 style={{
                   fontSize: 12, fontFamily: font.body, fontWeight: 600,
                   color: colors.cyan, background: colors.cyanSoft,
@@ -576,7 +578,7 @@ export function GrowView() {
                   background: 'transparent', border: `1px solid ${colors.border}`,
                   borderRadius: radius.md, padding: '5px 12px', cursor: 'pointer',
                 }}
-              >+ Draft a post with Henry</button>
+              >+ Draft a post with {agentName}</button>
             </div>
             {postsState === 'error' ? (
               <ErrorState
@@ -592,7 +594,7 @@ export function GrowView() {
                 border: `1px dashed ${colors.border}`, borderRadius: radius.lg, padding: 28,
                 textAlign: 'center', fontSize: 12, color: colors.textDim,
               }}>
-                No posts yet. Draft one with Henry above — he'll write it in the project's voice and file it here as a scheduled card.
+                No posts yet. Draft one with {agentName} above — it will be written in the project's voice and filed here as a scheduled card.
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>

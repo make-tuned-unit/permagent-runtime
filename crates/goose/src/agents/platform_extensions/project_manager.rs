@@ -395,7 +395,7 @@ pub const FIRST_PARTY_ANALYTICS_FEATURE: crate::agents::self_knowledge::FeatureD
 /// facts, links, live task status) and the Kanban board. Static — always-on
 /// surface, co-located with the project tools that back it.
 /// Self-knowledge for the Devices pairing surface + the agent-driven tailnet
-/// runbook (MULTI_DEVICE.md, Jesse's zero-strain rule 2026-07-11): Henry sets
+/// runbook (MULTI_DEVICE.md, zero-strain ruling 2026-07-11): Henry sets
 /// the tailnet up himself with terminal commands; the user's only step is the
 /// Tailscale login click, which Henry opens for them.
 pub const DEVICES_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
@@ -1909,8 +1909,8 @@ impl ProjectManagerClient {
                 Save one GTM strategy pillar for a project — audience, value,
                 positioning, channels, content, or workback — onto the Grow tab's Strategy
                 lens, where the user can read and edit it. Use this whenever you
-                define or refine a project's go-to-market strategy (e.g. after an
-                "Ask Henry" strategy card or a run-all strategy request): write
+                define or refine a project's go-to-market strategy (e.g. after a
+                strategy card ask or a run-all strategy request): write
                 each pillar you produced so the work persists instead of living
                 only in chat. Keep content concise and ready to publish; saving a
                 pillar overwrites its previous value. ALWAYS include the

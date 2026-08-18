@@ -1,6 +1,6 @@
 // Build wing blockout — WORLD_VIEW_BIBLE.md §3 A1 (tab: Build).
 // Gray geometry at real scale (1u = 1m). Landmark: 6u gantry crane arm
-// reaching over the threshold. Detail pass is gated on Jesse's blockout review.
+// reaching over the threshold. Detail pass is gated on the owner's blockout review.
 // Local frame: +x points away from hall center (ZoneMount applies the rotation).
 
 import { useEffect, useRef } from 'react';

@@ -177,7 +177,7 @@ const poolMat = new THREE.MeshStandardMaterial({
   transparent: true,
   opacity: 0.8,
 });
-// The grove tree-cones were removed 2026-07-28 (Jesse: low-poly green cones
+// The grove tree-cones were removed 2026-07-28 (ruling: low-poly green cones
 // read as noise, not growth). The POOLS stay — quiet reflecting circles that
 // still reveal with Brain maturity — and the night fireflies still gather
 // over them (NightAmbience reads GROVE_SLOTS).

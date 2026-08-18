@@ -1264,13 +1264,13 @@ pub async fn update_card(
 
 pub async fn delete_card(pool: &Pool<Sqlite>, card_id: &str) -> Result<bool, String> {
     // Goal deletion is a Tier-2 action (user_data_deletion): it requires a
-    // risk_gate decision approved by Jesse, executed via
+    // risk_gate decision approved by the user, executed via
     // goal_transition::delete_goal_checked.
     if let Some(card) = get_card(pool, card_id).await? {
         if card.card_type == "goal" {
             return Err(
                 "Goal cards cannot be deleted directly. Goal deletion is Tier 2 \
-                 (user_data_deletion): file a risk_gate decision and have Jesse approve it."
+                 (user_data_deletion): file a risk_gate decision and have the user approve it."
                     .to_string(),
             );
         }

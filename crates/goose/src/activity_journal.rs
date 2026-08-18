@@ -37,7 +37,7 @@ pub const TIMELINE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
         display_name: "Activity timeline",
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
         what_it_does:
-            "A day-grouped timeline on the Home dashboard reading the durable activity journal — an append-only record of what you and your workers actually did, kept for 90 days and filterable by kind or actor: a goal move is attributed to the worker the goal is assigned to, or to the person or policy that authorized it; decisions name Henry, librarian describe runs name the librarian, and Watcher nudges name the Watcher; a task failure stays unattributed because the task record carries no worker",
+            "A day-grouped timeline on the Home dashboard reading the durable activity journal — an append-only record of what you and your workers actually did, kept for 90 days and filterable by kind or actor: a goal move is attributed to the worker the goal is assigned to, or to the person or policy that authorized it; decisions name you, librarian describe runs name the librarian, and Watcher nudges name the Watcher; a task failure stays unattributed because the task record carries no worker",
         why_it_matters:
             "It is the user's reviewable answer to 'what did my agents do today and why' — a row points at its evidence (the goal card, the decision, the memory, or the article a news nudge is about) whenever the event that produced it carried one, so when the user asks what happened, point them here instead of reconstructing history from your context window",
         state_source: crate::agents::self_knowledge::StateSource::Static,

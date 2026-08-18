@@ -276,7 +276,7 @@ pub fn select_best_worker(
 /// Cheapest first, by ACTUAL money spent.
 ///
 /// A flat-rate subscription call costs nothing at the margin, so it outranks a
-/// metered API however cheap that API's per-token price is (Jesse's call,
+/// metered API however cheap that API's per-token price is (the owner's call,
 /// 2026-08-09). `cheap_api` therefore sits between `subscription` and
 /// `paid_api`: it is the tier that runs when the subscription CLIs are absent,
 /// rate-limited, or not capable of the goal — not the default for routine work.

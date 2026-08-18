@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 use sqlx::{Pool, Row, Sqlite};
 use uuid::Uuid;
 
-/// Maximum length of a decision headline (Jesse amendment A1).
+/// Maximum length of a decision headline (amendment A1).
 pub const MAX_HEADLINE_CHARS: usize = 80;
 
 /// Actors allowed to answer decisions (S5 attribution).
@@ -886,7 +886,7 @@ const DECISION_COLUMNS: &str = "id, kind, goal_id, project_id, tier, headline, d
      acted_by, created_at, resolved_at";
 
 /// Request to create a decision. `headline` and `detail` are both REQUIRED
-/// (Jesse amendment A1): `headline` is a plain-language outcome statement
+/// (amendment A1): `headline` is a plain-language outcome statement
 /// (<= 80 chars, no technical identifiers); `detail` carries the technical
 /// content. Requests missing either, or whose payload fails its kind's typed
 /// schema, are stored as `kind='malformed'` — never coerced (S2).
@@ -1089,7 +1089,7 @@ pub async fn create_decision(pool: &Pool<Sqlite>, req: NewDecision) -> Result<De
             );
             (
                 "malformed".to_string(),
-                2, // fail closed: only Jesse can resolve malformed requests
+                2, // fail closed: only the user can resolve malformed requests
                 headline,
                 detail,
                 serde_json::to_string(&malformed_payload).map_err(|e| e.to_string())?,
@@ -2861,7 +2861,7 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, AnswerError::Forbidden(_)));
 
-        // Jesse can.
+        // The user can.
         let (answered, proof) = answer_decision(&pool, &d.id, &ans, ACTOR_JESSE)
             .await
             .unwrap();

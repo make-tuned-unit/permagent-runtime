@@ -15,7 +15,7 @@
 //! `write_to_pty(command)`), per the Fork-1 ruling ("PTY in the Build-tab
 //! terminal; reuse the existing terminal.rs / Build-tab infra").
 //!
-//! Two entry points share the same session machinery (Jesse's ruling — the
+//! Two entry points share the same session machinery (ruling — the
 //! supervised session is NOT always a goal):
 //! - **Dispatched-goal** ([`SupervisedCliEngine`], a [`GoalEngine`] impl):
 //!   reuses #424's worktree / evidence / credential-guard scaffolding.

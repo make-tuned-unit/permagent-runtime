@@ -78,8 +78,8 @@ describe('PeopleDirectory', () => {
 
   it('flags a name that is a strict prefix of another, and nothing else', async () => {
     apiFetch.mockResolvedValue([
-      person('a', 'Jesse'),
-      person('b', 'Jesse Sharratt'),
+      person('a', 'Ada'),
+      person('b', 'Ada Lovelace'),
       // Same surname, genuinely different people — must NOT be flagged.
       person('c', 'Leanne Dixon'),
       person('d', 'Liam Dixon'),
@@ -118,9 +118,9 @@ describe('PeopleDirectory', () => {
   it('opens an existing person rather than reporting a false success', async () => {
     apiFetch.mockImplementation((_url: string, init?: { method?: string }) => {
       if (init?.method === 'POST') {
-        return Promise.resolve({ person: person('a', 'Jesse Sharratt'), created: false });
+        return Promise.resolve({ person: person('a', 'Ada Lovelace'), created: false });
       }
-      return Promise.resolve([person('a', 'Jesse Sharratt')]);
+      return Promise.resolve([person('a', 'Ada Lovelace')]);
     });
     await act(async () => root.render(<PeopleDirectory />));
 
@@ -135,7 +135,7 @@ describe('PeopleDirectory', () => {
       'value',
     )!.set!;
     await act(async () => {
-      setter.call(input, 'Jesse Sharratt');
+      setter.call(input, 'Ada Lovelace');
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
     const addBtn = Array.from(container.querySelectorAll('button')).find(

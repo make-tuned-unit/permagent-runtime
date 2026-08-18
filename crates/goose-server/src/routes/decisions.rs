@@ -150,7 +150,7 @@ async fn answer_decision_handler(
         input_text: req.input_text,
     };
 
-    // Paired devices act as Jesse, preserving the existing tier gate. Record
+    // Paired devices act as the user, preserving the existing tier gate. Record
     // the admitting credential separately so the append-only audit can name a
     // revoked/compromised device after the fact.
     let audit_principal = match &principal {
@@ -902,7 +902,7 @@ async fn execute_effect(
         // Supervised-terminal gate (S3, #429): the ruling is recorded and
         // audited HERE; the relay that writes it into the session's stdin is
         // S5 (#431) — deliberately not built yet (the supervision boundary,
-        // gated on Jesse's Fork-2/3 rulings). Until then the effect surfaces
+        // gated on the Fork-2/3 rulings). Until then the effect surfaces
         // the exact `control_response` line the ruling corresponds to, so the
         // operator can advance the session through its visible terminal tab
         // (the S1/S2 escape hatch) without composing protocol JSON by hand.

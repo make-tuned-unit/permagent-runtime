@@ -3,7 +3,7 @@ import { useCommandCenter } from '../../lib/store';
 import { font, ease } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
-// Staged status copy so a long wait never reads as a crash (Jesse,
+// Staged status copy so a long wait never reads as a crash (ruling
 // 2026-07-28): the label escalates with elapsed time instead of sitting on
 // three silent dots forever.
 function stageLabel(elapsed: number): string {

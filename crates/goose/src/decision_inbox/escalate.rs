@@ -77,7 +77,7 @@ pub struct EscalateParams {
     /// "information", or "approval".
     pub kind: EscalationKind,
     /// The one-line "add X so I can proceed" ask. This becomes the
-    /// plain-language headline Jesse sees: max 80 characters, no PR numbers,
+    /// plain-language headline the user sees: max 80 characters, no PR numbers,
     /// branch names, file counts, or internal IDs — technical identifiers
     /// belong in why_blocked and evidence_refs.
     pub specific_ask: String,

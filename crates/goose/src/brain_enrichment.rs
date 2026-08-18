@@ -2,7 +2,7 @@
 //!
 //! Spectral's `remember_with` never links a memory to the entities it talks
 //! about — only `ingest_document` runs the Canonicalizer, and runtime-created
-//! entities (people/projects) aren't in the ontology at all. The result Jesse
+//! entities (people/projects) aren't in the ontology at all. The result the owner
 //! saw: "New Brunswick" and "Mel Schembri" nodes with 0 memories and no
 //! description. This module closes that gap on our side of the pin:
 //!
@@ -488,7 +488,7 @@ mod tests {
             let m = rusqlite::Connection::open(&mem).unwrap();
             m.execute(
                 "INSERT INTO memories (id, key, content, created_at) VALUES
-                 ('m1', 'k1', 'Jesse moved to New Brunswick last spring.', '2026-05-01 10:00:00'),
+                 ('m1', 'k1', 'The user moved to New Brunswick last spring.', '2026-05-01 10:00:00'),
                  ('m2', 'k2', 'Met Mel Schembri about GetLadle onboarding.', '2026-06-02 09:00:00'),
                  ('m3', 'k3', 'Unrelated note about groceries.', '2026-06-03 08:00:00')",
                 [],

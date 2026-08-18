@@ -328,7 +328,7 @@ function StateBlock({ tone, title, detail, onRetry, compact }: {
   );
 }
 
-// ── All Projects View — Active-dominant landing (Jesse's ruling 2026-07-10) ──
+// ── All Projects View — Active-dominant landing (ruling 2026-07-10) ──
 //
 // Progressive disclosure (the pattern behind Linear/Notion/Vercel landings):
 // most projects are active, so Active IS the page — a responsive card grid.

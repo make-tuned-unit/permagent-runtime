@@ -382,7 +382,7 @@ pub const CODEBASE_INDEX_FEATURE: crate::agents::self_knowledge::FeatureDescript
         why_it_matters:
             "It makes a codebase a first-class thing you remember and recall — not a transcript you parse once and forget; once a project is indexed you can recall how its code is shaped and what its symbols are without re-reading every file, and the Librarian describes the map just as it describes documents",
         state_source: crate::agents::self_knowledge::StateSource::Static,
-        // Onboarding lesson (Jesse's rule: every user-facing capability carries
+        // Onboarding lesson (the standing rule: every user-facing capability carries
         // teaching steps, not just a descriptor). A Static surface that writes to
         // the Brain confirms by the MemoryRecallable proxy — the sanctioned
         // read-back when there is no live status to poll (mirrors the Reader).

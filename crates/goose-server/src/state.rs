@@ -778,7 +778,7 @@ impl AppState {
         }
 
         // Playbook synthesis worker (learning loop, increment 1): a periodic,
-        // project-scoped, local-first pass that distills Jesse's answered
+        // project-scoped, local-first pass that distills the user's answered
         // decisions + corrections into provenance-linked hints. Flag-gated
         // (playbook_enabled, default OFF) — the loop always spawns and re-reads
         // the flag every tick (inert while off); spawn() logs the on/off state.

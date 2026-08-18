@@ -10,7 +10,7 @@
 //! 2. **Projects / goals** — projects directly linked to this memory via
 //!    `project_memories`, plus cards whose title/description share the
 //!    memory's key terms.
-//! 3. **Decisions** — Jesse-answered decisions touching the same terms,
+//! 3. **Decisions** — user-answered decisions touching the same terms,
 //!    rendered with the `decision_inbox::learn` prose formatters.
 //! 4. **Activity journal (#619)** — what the agents did around this memory's
 //!    timestamp.
@@ -311,7 +311,7 @@ async fn fetch_projects(
     Ok(items)
 }
 
-/// Decisions: Jesse-answered decisions whose headline/detail share the
+/// Decisions: user-answered decisions whose headline/detail share the
 /// memory's terms, newest first, rendered with the same prose formatters
 /// `decision_inbox::learn` uses when it ingests decisions as memories.
 async fn fetch_decisions(
@@ -729,7 +729,7 @@ mod tests {
     /// (see `librarian::annotate_memory`).
     #[test]
     fn sources_line_is_invisible_to_the_annotation_parser() {
-        let description = "Jesse fixed the shed. Related terms: solar, shed, panel, fix. \
+        let description = "The user fixed the shed. Related terms: solar, shed, panel, fix. \
                            Categories: home, energy.\nSOURCES: chat:abc, project:p1";
         let terms_segment = description
             .split("Related terms:")
@@ -875,7 +875,7 @@ mod tests {
         .await
         .unwrap();
 
-        // Decisions: one by Jesse (in), one by policy (out), one open (out).
+        // Decisions: one by the user (in), one by policy (out), one open (out).
         insert_answered_decision(&pool, "d-jesse", "Choose the solar inverter", "jesse").await;
         insert_answered_decision(&pool, "d-policy", "Another solar question", "henry-policy").await;
         sqlx::query(
@@ -929,11 +929,11 @@ mod tests {
         assert_eq!(bundle.projects[1].source_ref, format!("goal:{}", card.id));
         assert!(bundle.projects[1].text.contains("Install solar panels"));
 
-        // Decisions: only Jesse's answered one, rendered as learn.rs prose
+        // Decisions: only the user's answered one, rendered as learn.rs prose
         // with the choice label resolved.
         assert_eq!(bundle.decisions.len(), 1);
         assert_eq!(bundle.decisions[0].source_ref, "decision:d-jesse");
-        assert!(bundle.decisions[0].text.starts_with("Jesse was asked:"));
+        assert!(bundle.decisions[0].text.starts_with("The user was asked:"));
         assert!(bundle.decisions[0].text.contains("Rebuild the panel"));
 
         // Journal: only the in-window, non-self row.

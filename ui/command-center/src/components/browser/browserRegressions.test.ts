@@ -54,7 +54,7 @@ describe('tab state across a keyed remount', () => {
     const restored = cache.restore();
     // …then the old instance's cleanup finally writes.
     cache.persist(LIVE);
-    expect(restored[0].label).toBe('New Tab'); // the bug Jesse photographed
+    expect(restored[0].label).toBe('New Tab'); // the bug in the reported screenshot
     expect(restored[0].webviewId).toBeNull();
   });
 

@@ -1191,7 +1191,7 @@ mod tests {
             "There is not enough information to describe this entity."
         ));
         assert!(!is_insufficient_context(
-            "Jesse Sharratt is a software engineer who works on Permagent."
+            "Ada Lovelace is a software engineer who works on Permagent."
         ));
     }
 

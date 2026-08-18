@@ -1,7 +1,7 @@
 // Brain Archive blockout — WORLD_VIEW_BIBLE.md §3 A2 (tab: Brain).
 // The only violet-dominant zone. Landmark: 7u rotating violet memory core —
 // a lathe-turned obelisk with orbiting index rings, visible down the south
-// threshold. Gray blockout; detail pass gated on Jesse's review.
+// threshold. Gray blockout; detail pass gated on the owner's review.
 
 import { useEffect, useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';

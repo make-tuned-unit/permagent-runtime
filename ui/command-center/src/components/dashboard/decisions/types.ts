@@ -15,7 +15,7 @@
  *    (routes/decisions.rs:46-85) — so the POST body uses choiceId/inputText
  *    and the answer response uses effectError.
  *
- * Plain-language rules (Jesse's amendments):
+ * Plain-language rules (the owner's amendments):
  *  - `headline`/`detail` come verbatim from the daemon (A1) — the UI NEVER
  *    synthesizes headlines from technical fields.
  *  - ALL decision text is untrusted (S2): rendered as React text nodes only —
@@ -57,7 +57,7 @@ export interface Decision {
   kind: DecisionKind | (string & {});
   goal_id: string | null;
   project_id: string | null;
-  /** 1 = Henry may auto-answer; 2 = requires Jesse. */
+  /** 1 = the agent's policy may auto-answer; 2 = requires the user. */
   tier: number;
   /** Plain-language outcome statement (A1). Rendered as the item title. */
   headline: string;

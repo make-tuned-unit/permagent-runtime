@@ -258,7 +258,7 @@ async function connect(): Promise<void> {
                   if (prefs.initiative) {
                     push({
                       kind: 'initiative',
-                      title: 'Henry has a proposal',
+                      title: `${useCommandCenter.getState().agentName} has a proposal`,
                       body: titleFor(src, 'An initiative proposal is waiting in the Decision Inbox'),
                       target: 'dashboard',
                     });

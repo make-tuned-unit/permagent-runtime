@@ -27,7 +27,7 @@
 //! that is less expensive — MiniMax, Kimi, DeepSeek, Groq, or a provider that does
 //! not exist yet — automatically becomes the preferred cheap tier the moment its
 //! key is present and it is priced: **zero code change, just a JSON + a key**.
-//! That is Jesse's "choose the cheapest but required path" made general: the
+//! That is the "choose the cheapest but required path" rule made general: the
 //! router never pays for a dearer model when a cheaper keyed+priced one can do the
 //! same mechanical work, and never strands the task when none is keyed.
 //!

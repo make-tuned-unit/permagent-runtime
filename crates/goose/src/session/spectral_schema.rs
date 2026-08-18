@@ -12,7 +12,7 @@ use tracing::{info, warn};
 /// Current Spectral schema version. Bump when adding migrations.
 ///
 /// v10 = decision inbox (decisions, decision_audit, risk_policy), assigned by
-/// Jesse 2026-06-15. v9 is reserved by the session-list-perf branch (committed
+/// Ruling 2026-06-15. v9 is reserved by the session-list-perf branch (committed
 /// but unmerged: migrate_v8_to_v9 + idx_sessions_type_updated), so on THIS
 /// branch the chain steps straight from v8 to v10 via `migrate_v9_to_v10` —
 /// the absent v9 is intentional. Whichever of the two branches merges second
@@ -1608,7 +1608,7 @@ pub async fn migrate_v31_to_v32(pool: &Pool<Sqlite>) -> Result<()> {
         "INSERT OR IGNORE INTO risk_policy (action_class, tier, rationale) VALUES
             ('cc_read_only', 0, 'Supervised CC read-only tool (Read/Glob/Grep/LS/NotebookRead/BashOutput/TodoWrite) — no effect outside the session'),
             ('cc_workspace_edit', 1, 'Supervised CC file edit (Write/Edit/MultiEdit/NotebookEdit) — confined, git-reversible; recorded decision'),
-            ('cc_shell', 2, 'Supervised CC shell (Bash/KillBash) — arbitrary command surface; Jesse-only')",
+            ('cc_shell', 2, 'Supervised CC shell (Bash/KillBash) — arbitrary command surface; user-only')",
     )
     .execute(pool)
     .await?;
@@ -2031,7 +2031,7 @@ pub async fn migrate_v17_to_v18(pool: &Pool<Sqlite>) -> Result<()> {
             ('goal_dispatch', 0, 'Dispatching a ready goal to a worker is reversible'),
             ('goal_review', 0, 'Worker reporting completion is informational'),
             ('goal_complete_confined', 0, 'Completion check passed, diff confined to declared paths, reversible class'),
-            ('goal_approve_standard', 1, 'Review->Complete requires a recorded decision (Henry or Jesse)'),
+            ('goal_approve_standard', 1, 'Review->Complete requires a recorded decision (agent policy or the user)'),
             ('goal_retry_within_budget', 1, 'Reject/retry requires a recorded decision with rationale'),
             ('goal_cancel', 0, 'User-initiated cancellation of a goal is immediate; the worker is killed'),
             ('merge_to_main', 2, 'Irreversible publication'),
@@ -2479,7 +2479,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
     let mut tx = pool.begin().await?;
 
     // ── DECISIONS ──
-    // headline/detail are Jesse amendment A1: two separate REQUIRED text fields.
+    // headline/detail are amendment A1: two separate REQUIRED text fields.
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS decisions (
             id            TEXT PRIMARY KEY,
@@ -2687,7 +2687,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
     // The `cc_*` classes are the S4 (#430) supervised-CC-gate policy — kept in
     // sync with `platform_extensions::gate_classifier::SEEDED_CLASSES` and
     // reconciled onto existing DBs by `migrate_v31_to_v32`. The `repo_*`
-    // classes are the Steward git-health lane (Tier 2, Jesse-only) —
+    // classes are the Steward git-health lane (Tier 2, user-only) —
     // reconciled onto existing DBs by `migrate_v40_to_v41`.
     sqlx::query(
         "INSERT OR IGNORE INTO risk_policy (action_class, tier, rationale) VALUES
@@ -2695,7 +2695,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
             ('goal_dispatch', 0, 'Dispatching a ready goal to a worker is reversible'),
             ('goal_review', 0, 'Worker reporting completion is informational'),
             ('goal_complete_confined', 0, 'Completion check passed, diff confined to declared paths, reversible class'),
-            ('goal_approve_standard', 1, 'Review->Complete requires a recorded decision (Henry or Jesse)'),
+            ('goal_approve_standard', 1, 'Review->Complete requires a recorded decision (agent policy or the user)'),
             ('goal_retry_within_budget', 1, 'Reject/retry requires a recorded decision with rationale'),
             ('goal_cancel', 0, 'User-initiated cancellation of a goal is immediate; the worker is killed'),
             ('merge_to_main', 2, 'Irreversible publication'),
@@ -2710,9 +2710,9 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
             ('policy_edit', 2, 'Changes to this table are themselves Tier 2'),
             ('cc_read_only', 0, 'Supervised CC read-only tool (Read/Glob/Grep/LS/NotebookRead/BashOutput/TodoWrite) — no effect outside the session'),
             ('cc_workspace_edit', 1, 'Supervised CC file edit (Write/Edit/MultiEdit/NotebookEdit) — confined, git-reversible; recorded decision'),
-            ('cc_shell', 2, 'Supervised CC shell (Bash/KillBash) — arbitrary command surface; Jesse-only'),
-            ('repo_worktree_reap', 2, 'Removes a merged, clean worktree directory — Jesse-only'),
-            ('repo_branch_delete', 2, 'Deletes a local branch merged into the trunk — Jesse-only')",
+            ('cc_shell', 2, 'Supervised CC shell (Bash/KillBash) — arbitrary command surface; user-only'),
+            ('repo_worktree_reap', 2, 'Removes a merged, clean worktree directory — user-only'),
+            ('repo_branch_delete', 2, 'Deletes a local branch merged into the trunk — user-only')",
     )
     .execute(&mut *tx)
     .await?;
@@ -3031,7 +3031,7 @@ pub async fn migrate_v39_to_v40(pool: &Pool<Sqlite>) -> Result<()> {
 }
 
 /// v41: reconcile the Steward git-health `risk_policy` classes onto existing
-/// DBs (`repo_worktree_reap`, `repo_branch_delete` — both Tier 2, Jesse-only,
+/// DBs (`repo_worktree_reap`, `repo_branch_delete` — both Tier 2, user-only,
 /// so henry-policy can never auto-approve a deletion). Same posture as the v32
 /// reconcile: `INSERT OR IGNORE` so any user tier customization on an
 /// already-present row survives; purely additive to a free-text-PK table and
@@ -3040,8 +3040,8 @@ pub async fn migrate_v40_to_v41(pool: &Pool<Sqlite>) -> Result<()> {
     info!("Migrating Spectral schema v40 -> v41 (seed Steward git-health risk_policy classes)");
     sqlx::query(
         "INSERT OR IGNORE INTO risk_policy (action_class, tier, rationale) VALUES
-            ('repo_worktree_reap', 2, 'Removes a merged, clean worktree directory — Jesse-only'),
-            ('repo_branch_delete', 2, 'Deletes a local branch merged into the trunk — Jesse-only')",
+            ('repo_worktree_reap', 2, 'Removes a merged, clean worktree directory — user-only'),
+            ('repo_branch_delete', 2, 'Deletes a local branch merged into the trunk — user-only')",
     )
     .execute(pool)
     .await?;
@@ -4457,7 +4457,7 @@ mod inbox_schema_tests {
 
     /// migrate_v40_to_v41: a pre-Steward-git-health DB has no `repo_*`
     /// risk_policy rows, so the classes fail closed to Tier 2 anyway — but the
-    /// seed makes the Jesse-only intent explicit and user-tunable. After v41
+    /// seed makes the user-only intent explicit and user-tunable. After v41
     /// both classes exist at Tier 2, a user customization survives a re-run,
     /// and no duplicates appear.
     #[tokio::test]
@@ -4492,7 +4492,7 @@ mod inbox_schema_tests {
                     .fetch_one(&pool)
                     .await
                     .unwrap();
-            assert_eq!(tier, 2, "{class} must be Tier 2 (Jesse-only)");
+            assert_eq!(tier, 2, "{class} must be Tier 2 (user-only)");
         }
 
         // A user customization survives a re-run (INSERT OR IGNORE posture).

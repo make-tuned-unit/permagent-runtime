@@ -5,7 +5,7 @@
 //! ## Why this exists
 //!
 //! The tiered packs in [`super::packs`] carry a chosen *default* set of models.
-//! Jesse's rule for the recommender is the opposite of a default: **no model is
+//! The standing rule for the recommender is the opposite of a default: **no model is
 //! set by default, and the agent must recommend from measured attributes with no
 //! bias toward the vendor whose runtime this is.** That recommendation needs an
 //! objective, updatable data source — this module.

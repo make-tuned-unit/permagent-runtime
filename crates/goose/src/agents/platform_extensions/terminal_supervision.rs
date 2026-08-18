@@ -29,7 +29,7 @@
 //!
 //! S3 (#429) adds the gate → Decision-Inbox bridge here
 //! ([`bridge_report_to_inbox`]): every gate the parser detects becomes a
-//! `session_gate` decision (Tier 2 fail-closed — Jesse-only until S4's
+//! `session_gate` decision (Tier 2 fail-closed — user-only until S4's
 //! classification), and a gate that resolves outside the inbox (hand-typed
 //! answer observed in the PTY echo, or session end) supersedes its open card
 //! so the inbox never shows a zombie.
@@ -268,7 +268,7 @@ fn classify_line(raw: &str) -> Option<StreamJsonEvent> {
 
 // ── Session registry ────────────────────────────────────────────────────────
 
-/// How the supervised session was launched (Jesse's "both entry points"
+/// How the supervised session was launched (the "both entry points"
 /// ruling). Dispatched goals additionally resolve S1's completion hook so the
 /// goal tracker records Success/Failed instead of parking at timeout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -701,7 +701,7 @@ pub struct GateBridgeOutcome {
 ///   tool via [`super::gate_classifier::classify_gate`] into a `risk_policy`
 ///   action_class, and [`crate::decisions::create_decision`] resolves the tier
 ///   from it (unrecognized tools → `cc_unclassified`, unseeded → Tier 2
-///   fail-closed, Jesse-only).
+///   fail-closed, user-only).
 /// - each cleared gate → the matching open card superseded (status
 ///   `superseded`, honest note, audit row) so the inbox never shows a gate
 ///   the session is no longer waiting on.
@@ -1463,7 +1463,7 @@ mod tests {
             .expect("a session_gate decision must be filed");
         assert_eq!(d.kind, "session_gate");
         // GATE_LINE is a `Write` → S4 classifies it `cc_workspace_edit` (Tier 1:
-        // confined, git-reversible edit — Henry-clearable, not Jesse-only).
+        // confined, git-reversible edit — Henry-clearable, not user-only).
         assert_eq!(
             d.tier, 1,
             "a Write gate classifies to cc_workspace_edit (Tier 1)"
@@ -1635,7 +1635,7 @@ mod tests {
 
     #[tokio::test]
     async fn shell_gate_is_filed_at_tier2() {
-        // `Bash` → cc_shell (Tier 2): the irreversible surface, Jesse-only.
+        // `Bash` → cc_shell (Tier 2): the irreversible surface, user-only.
         assert_eq!(filed_tier_for_tool("Bash").await, 2);
     }
 

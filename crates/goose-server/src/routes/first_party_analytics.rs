@@ -1,5 +1,5 @@
 //! First-party web analytics (#23) — the daemon IS the collector; no
-//! third-party analytics dependency. Jesse's ruling (2026-07-28) supersedes
+//! third-party analytics dependency. The ruling of 2026-07-28 supersedes
 //! the 2026-07-20 connector-only decision: the connector lens
 //! (`grow_analytics.rs`) stays for people who already have a provider, and
 //! this module adds the self-hosted path:
