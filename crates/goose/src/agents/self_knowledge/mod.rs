@@ -235,6 +235,7 @@ pub static GUARD_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::steward::secret_scan::SELF_KNOWLEDGE_FEATURE,
     crate::session::crash_capture::DURABILITY_FEATURE,
     crate::tool_monitor::SELF_KNOWLEDGE_FEATURE,
+    crate::agents::schema_validation::SELF_KNOWLEDGE_FEATURE,
     crate::sovereignty::SELF_KNOWLEDGE_FEATURE,
     crate::agents::platform_extensions::goal_engine::GOAL_LANDING_FEATURE,
 ];
@@ -1038,6 +1039,7 @@ mod tests {
             "credential_commit_guard",
             "durability_supervision",
             "runaway_loop_guard",
+            "tool_argument_validation",
             "sovereignty_guard",
             "goal_landing",
         ];
@@ -1064,6 +1066,7 @@ mod tests {
         .build();
         assert!(brief.contains("## Guardrails you operate under"));
         assert!(brief.contains("**Credential commit guard**"));
+        assert!(brief.contains("**Tool argument validation**"));
         // The sovereignty guard renders unconditionally (always-visible, like
         // every guard): the agent must be able to describe the boundary — and
         // recognize a `[sovereign]` refusal — even when the mode is off, and

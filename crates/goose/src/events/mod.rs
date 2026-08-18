@@ -309,6 +309,9 @@ pub enum PermagentEventType {
     DecisionResolved,
     // Agent runtime state
     AgentStateChanged,
+    /// Distinguishes malformed model output from tool execution failure because
+    /// those failure classes require different fixes.
+    ToolArgumentsInvalid,
     // Skills
     SkillProposed,
     SkillSaved,

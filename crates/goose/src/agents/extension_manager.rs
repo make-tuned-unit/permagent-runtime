@@ -32,6 +32,10 @@ use super::extension::{
     ExtensionConfig, ExtensionError, ExtensionInfo, ExtensionResult, PlatformExtensionContext,
     ToolInfo, PLATFORM_EXTENSIONS,
 };
+use super::schema_validation::{
+    compile_schema, is_permissive_schema, schema_error_message, validation_errors,
+    ToolArgValidationMode,
+};
 use super::tool_execution::{ToolCallContext, ToolCallResult};
 use super::types::SharedProvider;
 use crate::agents::extension::{Envs, ProcessExit};
@@ -153,6 +157,26 @@ pub struct ExtensionManager {
     client_name: String,
     capabilities: ExtensionManagerCapabilities,
     tool_schema_cache_dir: PathBuf,
+    invalid_arg_strikes: Mutex<HashMap<(String, String), u8>>,
+}
+
+const MAX_ARG_REPAIR_ATTEMPTS: u8 = 2;
+
+/// Instance paths only, for the log line — see the leak note at the call site.
+fn invalid_argument_paths(errors: &[String]) -> String {
+    errors
+        .iter()
+        .map(|error| {
+            error
+                .strip_prefix("- ")
+                .unwrap_or(error)
+                .split_once(':')
+                .map(|(path, _)| path)
+                .unwrap_or("")
+        })
+        .map(|path| if path.is_empty() { "<root>" } else { path })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// A flattened representation of a resource used by the agent to prepare inference
@@ -653,6 +677,7 @@ impl ExtensionManager {
             client_name,
             capabilities,
             tool_schema_cache_dir,
+            invalid_arg_strikes: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1343,6 +1368,147 @@ impl ExtensionManager {
         Ok(tools)
     }
 
+    /// The tool's declared `inputSchema`, read from the warm in-memory tool
+    /// cache. `None` means "we could not find out" — never a reason to fail a
+    /// call.
+    ///
+    /// Reads the cache directly and NEVER fetches. Going through
+    /// `get_all_tools_cached` populates a cold cache by issuing `tools/list`
+    /// over the wire, which put an extra round trip in front of the dispatch
+    /// that triggered it and reordered the MCP conversation — caught by the
+    /// replay tests, which compare recorded traffic message for message.
+    ///
+    /// A validation pass must be observable only in its verdict, never in the
+    /// protocol. And skipping is already the right answer here: the contract
+    /// above says an unknown schema means "carry on", so a cold cache costs a
+    /// validation, not a call.
+    ///
+    /// In practice the cache is warm by the time anything dispatches: the tool
+    /// list must be fetched to be offered to the model before it can name a
+    /// tool, and the lazy-start path serves that list from the on-disk schema
+    /// cache without starting the server. The one window is a dispatch between
+    /// an add/remove extension (which invalidates) and the re-list the version
+    /// bump forces — that turn validates nothing, and silently. If a stricter
+    /// guarantee is ever needed, the fix is to warm the cache at add time, NOT
+    /// to fetch from here.
+    async fn cached_input_schema(&self, _session_id: &str, tool_name: &str) -> Option<Value> {
+        let cache = self.tools_cache.lock().await;
+        cache
+            .as_ref()?
+            .iter()
+            .find(|tool| tool.name.as_ref() == tool_name)
+            .map(|tool| Value::Object((*tool.input_schema).clone()))
+    }
+
+    /// Check model-emitted arguments against the tool's declared schema before
+    /// dispatch. Returns `Some(error)` only when the call should be REJECTED
+    /// instead of dispatched; `None` means "carry on", which is the answer in
+    /// warn mode even when the arguments are wrong.
+    ///
+    /// Ships warn-only (`GOOSE_TOOL_ARG_VALIDATION` defaults to `warn`) because
+    /// real MCP servers are routinely looser than the schema they advertise —
+    /// extra properties, `required` fields their handler happily defaults. On
+    /// day one a mismatch is a data point, not a failure; an operator flips
+    /// the key to `enforce` once the event stream says their servers are clean.
+    async fn validate_tool_arguments(
+        &self,
+        ctx: &ToolCallContext,
+        tool_name: &str,
+        extension_name: &str,
+        tool_call: &CallToolRequestParams,
+    ) -> Option<ErrorData> {
+        let mode = ToolArgValidationMode::from_config();
+        if mode == ToolArgValidationMode::Off {
+            return None;
+        }
+
+        // Any unknown here means we cannot judge the call, so we let it through.
+        let schema = self.cached_input_schema(&ctx.session_id, tool_name).await?;
+        if is_permissive_schema(&schema) {
+            return None;
+        }
+        let validator = match compile_schema(&schema) {
+            Ok(validator) => validator,
+            Err(error) => {
+                // A schema the server itself cannot express is the server's
+                // bug, not the model's — say so once at debug and dispatch.
+                tracing::debug!(
+                    tool = tool_name,
+                    %error,
+                    "declared tool schema did not compile; skipping argument validation"
+                );
+                return None;
+            }
+        };
+
+        // Absent arguments mean "no arguments", i.e. `{}` — NOT JSON null.
+        // Validating null against `{"type": "object"}` would flag every
+        // no-argument call as malformed.
+        let value = Value::Object(tool_call.arguments.clone().unwrap_or_default());
+        let strike_key = (ctx.session_id.clone(), tool_name.to_string());
+        let errors = validation_errors(&validator, &value);
+        if errors.is_empty() {
+            self.invalid_arg_strikes.lock().await.remove(&strike_key);
+            return None;
+        }
+
+        let enforced = mode == ToolArgValidationMode::Enforce;
+        crate::events::emit(crate::events::PermagentEvent::new(
+            crate::events::PermagentEventType::ToolArgumentsInvalid,
+            serde_json::json!({
+                "tool_name": tool_name,
+                "extension": extension_name,
+                "session_id": ctx.session_id,
+                "model": ctx.model,
+                "mode": mode.as_str(),
+                "enforced": enforced,
+                "error_count": errors.len(),
+                "errors": errors,
+            }),
+        ));
+        // Log the instance paths, not the rendered errors: a jsonschema error
+        // embeds the offending VALUE, which for tool arguments can be a secret.
+        // The full text still goes to the model, which emitted it in the first
+        // place, and to the event payload the operator opts into watching.
+        warn!(
+            tool = tool_name,
+            extension = extension_name,
+            mode = mode.as_str(),
+            error_count = errors.len(),
+            paths = %invalid_argument_paths(&errors),
+            "model emitted tool arguments that violate the tool's declared schema"
+        );
+        if !enforced {
+            return None;
+        }
+
+        // Bound the reask. The runaway-loop guard (`tool_monitor` S1/S2)
+        // escalates on three identical call+result pairs, but it only ever sees
+        // calls we actually dispatch — a gate that rejected forever would be
+        // invisible to it and could ping-pong with the model indefinitely. So
+        // after MAX_ARG_REPAIR_ATTEMPTS consecutive rejections we dispatch
+        // anyway: behaviour degrades to exactly what shipped before this gate,
+        // the tool produces a real result, and the monitor can do its job.
+        let mut strikes = self.invalid_arg_strikes.lock().await;
+        let strike = strikes.entry(strike_key).or_insert(0);
+        *strike = strike.saturating_add(1);
+        if *strike <= MAX_ARG_REPAIR_ATTEMPTS {
+            return Some(ErrorData::new(
+                ErrorCode::INVALID_PARAMS,
+                schema_error_message(&schema, &errors),
+                None,
+            ));
+        }
+        *strike = 0;
+        warn!(
+            tool = tool_name,
+            attempts = MAX_ARG_REPAIR_ATTEMPTS,
+            "argument-repair budget exhausted; dispatching the call unvalidated \
+             so the tool's own result reaches the runaway-loop guard"
+        );
+        None
+    }
+
     async fn invalidate_tools_cache_and_bump_version(&self) {
         self.tools_cache_version.fetch_add(1, Ordering::SeqCst);
         *self.tools_cache.lock().await = None;
@@ -1951,6 +2117,13 @@ impl ExtensionManager {
             }
         }
 
+        if let Some(rejection) = self
+            .validate_tool_arguments(ctx, &tool_name_str, &resolved.extension_name, &tool_call)
+            .await
+        {
+            return Err(rejection.into());
+        }
+
         let arguments = tool_call.arguments.clone();
         let client = resolved.client.clone();
         let notifications_receiver = client.subscribe().await;
@@ -1959,7 +2132,8 @@ impl ExtensionManager {
             ctx.session_id.clone(),
             ctx.working_dir.clone(),
             ctx.tool_call_request_id.clone(),
-        );
+        )
+        .with_model(ctx.model.clone());
 
         let fut = async move {
             tracing::debug!(
@@ -2265,6 +2439,8 @@ mod tests {
 
     use tokio::sync::mpsc;
 
+    static ARG_VALIDATION_CALLS: AtomicU64 = AtomicU64::new(0);
+
     impl ExtensionManager {
         async fn add_mock_extension(&self, name: String, client: McpClientBox) {
             self.add_mock_extension_with_tools(name, client, vec![])
@@ -2358,6 +2534,19 @@ mod tests {
                         "A basic tool".to_string(),
                         Arc::new(json!({}).as_object().unwrap().clone()),
                     ),
+                    // Declares a real schema, so the argument gate actually
+                    // runs for it. Kept separate from `tool` so enforcing mode
+                    // in one test cannot perturb every other dispatch test.
+                    Tool::new(
+                        "strict_tool".to_string(),
+                        "A tool with a real schema".to_string(),
+                        Arc::new(
+                            json!({"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]})
+                                .as_object()
+                                .unwrap()
+                                .clone(),
+                        ),
+                    ),
                     Tool::new(
                         "available_tool".to_string(),
                         "An available tool".to_string(),
@@ -2381,8 +2570,11 @@ mod tests {
             _arguments: Option<JsonObject>,
             _cancellation_token: CancellationToken,
         ) -> Result<CallToolResult, Error> {
+            if _ctx.session_id == "arg-validation-test" {
+                ARG_VALIDATION_CALLS.fetch_add(1, Ordering::SeqCst);
+            }
             match name {
-                "tool" | "test__tool" | "available_tool" | "hidden_tool" => {
+                "tool" | "test__tool" | "strict_tool" | "available_tool" | "hidden_tool" => {
                     Ok(CallToolResult::success(vec![]))
                 }
                 _ => Err(Error::TransportClosed),
@@ -2554,6 +2746,213 @@ mod tests {
         }
     }
 
+    /// Restores `GOOSE_TOOL_ARG_VALIDATION` even if the test panics, so a
+    /// failure here cannot leave enforcing mode switched on for the rest of the
+    /// test binary.
+    struct ModeGuard;
+
+    impl ModeGuard {
+        fn set(mode: &str) -> Self {
+            std::env::set_var("GOOSE_TOOL_ARG_VALIDATION", mode);
+            Self
+        }
+    }
+
+    impl Drop for ModeGuard {
+        fn drop(&mut self) {
+            std::env::remove_var("GOOSE_TOOL_ARG_VALIDATION");
+        }
+    }
+
+    /// True when no `ToolArgumentsInvalid` event is waiting. Drains whatever
+    /// else the bus happens to carry: this binary's other tests emit freely, so
+    /// "the queue is empty" is not the same question as "we emitted nothing".
+    fn no_invalid_args_event(
+        events: &mut tokio::sync::broadcast::Receiver<crate::events::PermagentEvent>,
+    ) -> bool {
+        while let Ok(event) = events.try_recv() {
+            if event.event_type == crate::events::PermagentEventType::ToolArgumentsInvalid {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// The global event bus carries traffic from every test in this binary, so
+    /// pick out our variant rather than assuming the next event is ours.
+    async fn next_invalid_args_event(
+        events: &mut tokio::sync::broadcast::Receiver<crate::events::PermagentEvent>,
+    ) -> crate::events::PermagentEvent {
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), events.recv()).await {
+                Ok(Ok(event))
+                    if event.event_type
+                        == crate::events::PermagentEventType::ToolArgumentsInvalid =>
+                {
+                    return event
+                }
+                Ok(Ok(_)) => continue,
+                Ok(Err(error)) => panic!("event bus closed or lagged: {error}"),
+                Err(_) => panic!("no ToolArgumentsInvalid event within 5s"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn dispatch_tool_call_validates_arguments_emits_events_and_caps_repairs() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let manager = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+        manager
+            .add_mock_extension("test_client".to_string(), Arc::new(MockClient {}))
+            .await;
+        // Warm the tools cache, exactly as the agent loop does before it can
+        // dispatch anything: the tool list has to be fetched to be offered to
+        // the model in the first place, so by the time a tool call comes back
+        // the cache is always populated. Validation deliberately reads that
+        // cache and never fetches — a validation pass must be observable only
+        // in its verdict, never in the MCP conversation — so a test that skips
+        // this step is testing a state dispatch cannot actually be reached in.
+        manager
+            .get_all_tools_cached("arg-validation-test")
+            .await
+            .expect("tool list must load");
+        let ctx = ToolCallContext::new("arg-validation-test".to_string(), None, None)
+            .with_model(Some("real-model".to_string()));
+        // `strict_tool` requires a string `name`; `{}` violates that.
+        let invalid = || {
+            CallToolRequestParams::new("test_client__strict_tool".to_string())
+                .with_arguments(object!({}))
+        };
+        let valid = || {
+            CallToolRequestParams::new("test_client__strict_tool".to_string())
+                .with_arguments(object!({"name": "ok"}))
+        };
+        // `available_tool` declares `{}` — nothing to validate.
+        let permissive = || {
+            CallToolRequestParams::new("test_client__available_tool".to_string())
+                .with_arguments(object!({}))
+        };
+        ARG_VALIDATION_CALLS.store(0, Ordering::SeqCst);
+
+        // WARN (the shipped default): the mismatch is reported, the tool still runs.
+        {
+            let _mode = ModeGuard::set("warn");
+            let mut events = crate::events::subscribe();
+            manager
+                .dispatch_tool_call(&ctx, invalid(), CancellationToken::default())
+                .await
+                .expect("warn mode must dispatch")
+                .result
+                .await
+                .unwrap();
+            assert_eq!(ARG_VALIDATION_CALLS.load(Ordering::SeqCst), 1);
+            let event = next_invalid_args_event(&mut events).await;
+            assert_eq!(event.payload["tool_name"], "test_client__strict_tool");
+            assert_eq!(event.payload["extension"], "test_client");
+            assert_eq!(event.payload["model"], "real-model");
+            assert_eq!(event.payload["mode"], "warn");
+            assert_eq!(event.payload["enforced"], false);
+            assert_eq!(event.payload["error_count"], 1);
+        }
+
+        // ENFORCE: the model gets the structured repair error back...
+        let _mode = ModeGuard::set("enforce");
+        let mut events = crate::events::subscribe();
+        for attempt in 0..MAX_ARG_REPAIR_ATTEMPTS {
+            let error = manager
+                .dispatch_tool_call(&ctx, invalid(), CancellationToken::default())
+                .await
+                .err()
+                .unwrap_or_else(|| panic!("attempt {attempt} should have been rejected"));
+            let data = error.downcast_ref::<ErrorData>().unwrap();
+            assert_eq!(data.code, ErrorCode::INVALID_PARAMS);
+            assert!(data.message.starts_with("Validation failed:\n"));
+            assert!(data.message.contains("\"name\""));
+            assert!(data.message.ends_with(
+                "Please correct your output to match the expected JSON schema and try again."
+            ));
+        }
+        // ...the tool was never reached...
+        assert_eq!(ARG_VALIDATION_CALLS.load(Ordering::SeqCst), 1);
+        let event = next_invalid_args_event(&mut events).await;
+        assert_eq!(event.payload["mode"], "enforce");
+        assert_eq!(event.payload["enforced"], true);
+        assert_eq!(event.payload["model"], "real-model");
+
+        // ...and the cap holds: the next identical call is dispatched rather
+        // than rejected forever, so the runaway-loop guard sees a real result.
+        manager
+            .dispatch_tool_call(&ctx, invalid(), CancellationToken::default())
+            .await
+            .expect("repair budget exhausted must dispatch")
+            .result
+            .await
+            .unwrap();
+        assert_eq!(ARG_VALIDATION_CALLS.load(Ordering::SeqCst), 2);
+
+        // A conforming call passes untouched and refills the budget.
+        manager
+            .dispatch_tool_call(&ctx, valid(), CancellationToken::default())
+            .await
+            .expect("valid arguments must dispatch")
+            .result
+            .await
+            .unwrap();
+        assert_eq!(ARG_VALIDATION_CALLS.load(Ordering::SeqCst), 3);
+        assert!(manager
+            .dispatch_tool_call(&ctx, invalid(), CancellationToken::default())
+            .await
+            .is_err());
+
+        // A permissive schema is skipped entirely: dispatched, and no event.
+        let mut events = crate::events::subscribe();
+        manager
+            .dispatch_tool_call(&ctx, permissive(), CancellationToken::default())
+            .await
+            .expect("permissive schema must dispatch")
+            .result
+            .await
+            .unwrap();
+        assert_eq!(ARG_VALIDATION_CALLS.load(Ordering::SeqCst), 4);
+        assert!(
+            no_invalid_args_event(&mut events),
+            "a permissive schema must not be validated"
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn dispatch_tool_call_argument_validation_can_be_turned_off() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let manager = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+        manager
+            .add_mock_extension("test_client".to_string(), Arc::new(MockClient {}))
+            .await;
+        let ctx = ToolCallContext::new("arg-validation-test".to_string(), None, None);
+        ARG_VALIDATION_CALLS.store(0, Ordering::SeqCst);
+
+        let _mode = ModeGuard::set("off");
+        let mut events = crate::events::subscribe();
+        manager
+            .dispatch_tool_call(
+                &ctx,
+                CallToolRequestParams::new("test_client__strict_tool".to_string())
+                    .with_arguments(object!({})),
+                CancellationToken::default(),
+            )
+            .await
+            .expect("off mode must dispatch")
+            .result
+            .await
+            .unwrap();
+        assert_eq!(ARG_VALIDATION_CALLS.load(Ordering::SeqCst), 1);
+        assert!(
+            no_invalid_args_event(&mut events),
+            "off mode must not validate or report"
+        );
+    }
+
     #[tokio::test]
     async fn test_tool_availability_filtering() {
         let temp_dir = tempfile::tempdir().unwrap();
@@ -2610,11 +3009,14 @@ mod tests {
         assert!(tool_names.iter().any(|name| name == "test_extension__tool"));
         assert!(tool_names
             .iter()
+            .any(|name| name == "test_extension__strict_tool"));
+        assert!(tool_names
+            .iter()
             .any(|name| name == "test_extension__available_tool"));
         assert!(tool_names
             .iter()
             .any(|name| name == "test_extension__hidden_tool"));
-        assert!(tool_names.len() == 3);
+        assert!(tool_names.len() == 4);
     }
 
     #[tokio::test]
