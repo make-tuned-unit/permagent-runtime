@@ -154,6 +154,7 @@ export interface ProjectNote {
   title: string | null;
   body: string;
   memory_key: string | null;
+  export_path?: string | null;
   created_at: string;
   updated_at: string;
 }
