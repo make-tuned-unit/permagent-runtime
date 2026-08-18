@@ -1,10 +1,12 @@
 //! API routes for backup management.
 //!
 //! GET  /api/backups      — list all snapshots
-//! POST /api/backups/run  — force immediate snapshot of both DBs
+//! POST /api/backups/run  — snapshot memory.db, graph.sqlite, recognition.db,
+//!                          and permagent.db
 
 use axum::{extract::State, routing, Json, Router};
 use serde::Serialize;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::backup::{self, DbTarget, SnapshotInfo};
@@ -18,6 +20,8 @@ struct ListResponse {
 #[derive(Serialize)]
 struct RunResponse {
     brain: RunResult,
+    brain_graph: RunResult,
+    brain_recognition: RunResult,
     spectral: RunResult,
 }
 
@@ -41,74 +45,83 @@ async fn list_backups(State(_state): State<Arc<AppState>>) -> Json<ListResponse>
     let backup_root = permagent::config::paths::Paths::data_dir().join("backups");
     let mut snapshots = Vec::new();
     snapshots.extend(backup::list_snapshot_info(&backup_root, DbTarget::Brain));
+    snapshots.extend(backup::list_snapshot_info(
+        &backup_root,
+        DbTarget::BrainGraph,
+    ));
+    snapshots.extend(backup::list_snapshot_info(
+        &backup_root,
+        DbTarget::BrainRecognition,
+    ));
     snapshots.extend(backup::list_snapshot_info(&backup_root, DbTarget::Spectral));
     Json(ListResponse { snapshots })
 }
 
+async fn run_one(backup_root: PathBuf, source: PathBuf, target: DbTarget) -> RunResult {
+    match tokio::task::spawn_blocking(move || {
+        backup::force_snapshot(
+            &source,
+            &backup_root,
+            target,
+            backup::SnapshotMode::Compacted,
+        )
+    })
+    .await
+    {
+        Ok(Ok(info)) => RunResult::Ok(info),
+        Ok(Err(backup::BackupError::SourceMissing(_))) => RunResult::Skipped {
+            reason: format!("{} does not exist", target.label()),
+        },
+        Ok(Err(e)) => RunResult::Error {
+            message: e.to_string(),
+        },
+        Err(e) => RunResult::Error {
+            message: format!("task panicked: {e}"),
+        },
+    }
+}
+
 #[utoipa::path(post, path = "/api/backups/run",
     responses(
-        (status = 200, description = "Force immediate backup of both databases"),
+        (status = 200, description = "Force immediate backup of memory.db, graph.sqlite, recognition.db, and permagent.db"),
     )
 )]
 async fn run_backup(State(_state): State<Arc<AppState>>) -> Json<RunResponse> {
     let base = permagent::config::paths::Paths::data_dir();
     let backup_root = base.join("backups");
 
-    let brain_result = tokio::task::spawn_blocking({
-        let backup_root = backup_root.clone();
-        move || {
-            let source = permagent::config::paths::Paths::brain_dir().join("memory.db");
-            backup::force_snapshot(
-                &source,
-                &backup_root,
-                DbTarget::Brain,
-                backup::SnapshotMode::Compacted,
-            )
-        }
-    })
+    let brain_dir = permagent::config::paths::Paths::brain_dir();
+    let brain = run_one(
+        backup_root.clone(),
+        brain_dir.join("memory.db"),
+        DbTarget::Brain,
+    )
+    .await;
+    let brain_graph = run_one(
+        backup_root.clone(),
+        brain_dir.join("graph.sqlite"),
+        DbTarget::BrainGraph,
+    )
+    .await;
+    let brain_recognition = run_one(
+        backup_root.clone(),
+        brain_dir.join("recognition.db"),
+        DbTarget::BrainRecognition,
+    )
+    .await;
+    let spectral = run_one(
+        backup_root,
+        permagent::config::paths::Paths::spectral_db(),
+        DbTarget::Spectral,
+    )
     .await;
 
-    let spectral_result = tokio::task::spawn_blocking({
-        let backup_root = backup_root.clone();
-        move || {
-            let source = permagent::config::paths::Paths::spectral_db();
-            backup::force_snapshot(
-                &source,
-                &backup_root,
-                DbTarget::Spectral,
-                backup::SnapshotMode::Compacted,
-            )
-        }
+    Json(RunResponse {
+        brain,
+        brain_graph,
+        brain_recognition,
+        spectral,
     })
-    .await;
-
-    let brain = match brain_result {
-        Ok(Ok(info)) => RunResult::Ok(info),
-        Ok(Err(backup::BackupError::SourceMissing(_))) => RunResult::Skipped {
-            reason: "brain/memory.db does not exist".to_string(),
-        },
-        Ok(Err(e)) => RunResult::Error {
-            message: e.to_string(),
-        },
-        Err(e) => RunResult::Error {
-            message: format!("task panicked: {e}"),
-        },
-    };
-
-    let spectral = match spectral_result {
-        Ok(Ok(info)) => RunResult::Ok(info),
-        Ok(Err(backup::BackupError::SourceMissing(_))) => RunResult::Skipped {
-            reason: "spectral/permagent.db does not exist".to_string(),
-        },
-        Ok(Err(e)) => RunResult::Error {
-            message: e.to_string(),
-        },
-        Err(e) => RunResult::Error {
-            message: format!("task panicked: {e}"),
-        },
-    };
-
-    Json(RunResponse { brain, spectral })
 }
 
 pub fn routes(state: Arc<AppState>) -> Router {

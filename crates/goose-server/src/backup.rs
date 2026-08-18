@@ -1,4 +1,5 @@
-//! Automated backup snapshots for memory.db and permagent.db.
+//! Automated backup snapshots for Spectral's `memory.db`, `graph.sqlite`, and
+//! `recognition.db`, plus `permagent.db`.
 //!
 //! Two write modes, chosen by the caller's latency budget (see [`SnapshotMode`]):
 //! the startup pre-migration snapshot uses SQLite's online backup API (fast,
@@ -9,7 +10,20 @@
 //! Layout:
 //!   ~/.permagent/backups/
 //!     brain/    memory-20260609T080000Z-daily.db
+//!               graph-20260609T080000Z-daily.db
+//!               recognition-20260609T080000Z-daily.db
 //!     spectral/ permagent-20260609T080000Z-daily.db
+//!
+//! Spectral has no cross-database transaction spanning its three brain files.
+//! They are captured independently and can therefore be momentarily
+//! inconsistent: at snapshot time, a memory may have landed in one file but
+//! not yet the others. Reconciling that skew after restore belongs to Spectral,
+//! not this backup layer. `Brain::repair_derivations` rebuilds derived state,
+//! including the case where a memory is recallable but not recognizable; this
+//! is a repair path, not a guarantee that every restored state is consistent.
+//! At the pinned revision, `memory.db` and `recognition.db` use WAL while
+//! `graph.sqlite` does not yet, so all three use SQLite's online backup API
+//! rather than file copies.
 //!
 //! Retention is a ladder of age bands, not a count — one snapshot per band, the
 //! newest that is at least that old. See [`RETENTION_BANDS`] for why span beats
@@ -130,13 +144,15 @@ pub enum SnapshotMode {
 #[derive(Debug, Clone, Copy)]
 pub enum DbTarget {
     Brain,
+    BrainGraph,
+    BrainRecognition,
     Spectral,
 }
 
 impl DbTarget {
     fn subdir(&self) -> &str {
         match self {
-            DbTarget::Brain => "brain",
+            DbTarget::Brain | DbTarget::BrainGraph | DbTarget::BrainRecognition => "brain",
             DbTarget::Spectral => "spectral",
         }
     }
@@ -144,13 +160,17 @@ impl DbTarget {
     fn prefix(&self) -> &str {
         match self {
             DbTarget::Brain => "memory",
+            DbTarget::BrainGraph => "graph",
+            DbTarget::BrainRecognition => "recognition",
             DbTarget::Spectral => "permagent",
         }
     }
 
-    fn label(&self) -> &str {
+    pub(crate) fn label(&self) -> &str {
         match self {
             DbTarget::Brain => "brain/memory.db",
+            DbTarget::BrainGraph => "brain/graph.sqlite",
+            DbTarget::BrainRecognition => "brain/recognition.db",
             DbTarget::Spectral => "spectral/permagent.db",
         }
     }
@@ -221,7 +241,7 @@ pub fn list_snapshot_info(backup_root: &Path, target: DbTarget) -> Vec<SnapshotI
             let size_bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
             let integrity_ok = check_integrity(&path);
             SnapshotInfo {
-                db: target.subdir().to_string(),
+                db: target.label().to_string(),
                 filename: e.filename,
                 timestamp: e.timestamp.to_rfc3339(),
                 tier: e.tier,
@@ -398,7 +418,7 @@ fn take_snapshot(
     prune_files(dest_dir, target.prefix(), &keep);
 
     Ok(SnapshotInfo {
-        db: target.subdir().to_string(),
+        db: target.label().to_string(),
         filename,
         timestamp: now.to_rfc3339(),
         tier: Tier::Daily,
@@ -468,8 +488,24 @@ fn parse_snapshot_filename(filename: &str, expected_prefix: &str) -> Option<Snap
 }
 
 fn list_snapshots_in_dir(dir: &Path, prefix: &str) -> Vec<SnapshotEntry> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        // An absent directory means "no snapshots yet" — normal before the
+        // first backup. Any other error means the snapshots may exist and we
+        // simply could not see them, which must not be reported as zero: the
+        // caller returns an empty list either way, so this log is the only
+        // place the two are distinguishable.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(e) => {
+            tracing::warn!(
+                target: "permagentd::backup",
+                dir = %dir.display(),
+                prefix,
+                error = %e,
+                "Could not read backup directory — reporting no snapshots, but this is not proof there are none"
+            );
+            return Vec::new();
+        }
     };
 
     let mut snapshots: Vec<SnapshotEntry> = entries
@@ -580,6 +616,14 @@ pub async fn backup_scheduler_loop() {
             (
                 permagent::config::paths::Paths::brain_dir().join("memory.db"),
                 DbTarget::Brain,
+            ),
+            (
+                permagent::config::paths::Paths::brain_dir().join("graph.sqlite"),
+                DbTarget::BrainGraph,
+            ),
+            (
+                permagent::config::paths::Paths::brain_dir().join("recognition.db"),
+                DbTarget::BrainRecognition,
             ),
             (
                 permagent::config::paths::Paths::spectral_db(),
@@ -785,5 +829,87 @@ mod tests {
         assert_eq!(infos.len(), 2);
         // Newest first.
         assert!(infos[0].timestamp > infos[1].timestamp);
+    }
+
+    #[test]
+    fn fast_snapshot_captures_uncheckpointed_wal_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        // recognition.db is WAL at the pinned Spectral revision.
+        let source = tmp.path().join("recognition.db");
+        let backup_root = tmp.path().join("backups");
+
+        let conn = rusqlite::Connection::open(&source).unwrap();
+        let journal_mode: String = conn
+            .query_row("PRAGMA journal_mode=WAL;", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(journal_mode, "wal");
+        conn.execute_batch(
+            "CREATE TABLE memories (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO memories (value) VALUES ('still in wal');",
+        )
+        .unwrap();
+        // SQLite appends "-wal" to the full filename, so this is not
+        // `with_extension` — that would replace ".db" and look for a file
+        // SQLite never creates.
+        let wal = {
+            let mut p = source.clone().into_os_string();
+            p.push("-wal");
+            PathBuf::from(p)
+        };
+        assert!(wal.exists(), "row should still be sitting in the WAL");
+
+        let info = force_snapshot(
+            &source,
+            &backup_root,
+            DbTarget::BrainRecognition,
+            SnapshotMode::Fast,
+        )
+        .unwrap();
+        let snapshot = backup_root.join("brain").join(&info.filename);
+
+        assert!(snapshot.exists());
+        assert!(check_integrity(&snapshot));
+        let snapshot_conn = rusqlite::Connection::open(snapshot).unwrap();
+        let value: String = snapshot_conn
+            .query_row("SELECT value FROM memories WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(value, "still in wal");
+    }
+
+    #[test]
+    fn brain_snapshot_prefixes_do_not_cross_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        let backup_root = tmp.path().join("backups");
+        let brain_dir = backup_root.join("brain");
+        std::fs::create_dir_all(&brain_dir).unwrap();
+
+        let source = tmp.path().join("source.db");
+        let conn = rusqlite::Connection::open(&source).unwrap();
+        conn.execute_batch("CREATE TABLE t (id INTEGER);").unwrap();
+        drop(conn);
+
+        for prefix in ["memory", "graph", "recognition"] {
+            std::fs::copy(
+                &source,
+                brain_dir.join(format!("{prefix}-20260609T080000Z-daily.db")),
+            )
+            .unwrap();
+        }
+
+        let memory = list_snapshot_info(&backup_root, DbTarget::Brain);
+        let graph = list_snapshot_info(&backup_root, DbTarget::BrainGraph);
+        let recognition = list_snapshot_info(&backup_root, DbTarget::BrainRecognition);
+
+        assert_eq!(memory.len(), 1);
+        assert_eq!(graph.len(), 1);
+        assert_eq!(recognition.len(), 1);
+        assert!(memory[0].filename.starts_with("memory-"));
+        assert!(graph[0].filename.starts_with("graph-"));
+        assert!(recognition[0].filename.starts_with("recognition-"));
+        assert_ne!(memory[0].db, graph[0].db);
+        assert_ne!(memory[0].db, recognition[0].db);
+        assert_ne!(graph[0].db, recognition[0].db);
     }
 }
