@@ -79,7 +79,7 @@ pub fn is_enabled() -> bool {
 }
 
 /// Spawn the driver. Called once at daemon startup with the app DB pool (cards
-/// + recognition live there). The loop always spawns and re-reads
+/// and recognition live there). The loop always spawns and re-reads
 /// [`is_enabled`] every tick, so flipping `initiative_enabled` in Settings →
 /// Features takes effect at the next tick — no restart. Never silent: logs the
 /// on/off state either way.
