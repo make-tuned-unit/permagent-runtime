@@ -100,6 +100,7 @@ pub mod tracing;
 pub mod turn_sampling;
 pub mod utils;
 pub mod wing_rules;
+pub mod workspace_trust;
 pub mod workspaces;
 
 /// Re-exported so dependents (goose-server) can name pool types from the

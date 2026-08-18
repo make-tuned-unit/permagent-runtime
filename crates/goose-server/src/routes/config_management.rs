@@ -1,6 +1,7 @@
 use crate::routes::errors::ErrorResponse;
 use crate::routes::utils::check_provider_configured;
 use crate::state::AppState;
+use axum::http::StatusCode;
 use axum::routing::put;
 use axum::{
     extract::Path,
@@ -1482,6 +1483,81 @@ pub async fn reload_config(
     }))
 }
 
+#[derive(Deserialize, ToSchema)]
+pub struct WorkspaceTrustQuery {
+    pub path: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct WorkspaceTrustListResponse {
+    pub trusted_workspaces: Vec<String>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct WorkspaceTrustMutationResponse {
+    pub canonical: String,
+    pub trusted_workspaces: Vec<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/config/workspace-trust",
+    responses(
+        (status = 200, description = "Trusted workspace directories", body = WorkspaceTrustListResponse)
+    )
+)]
+pub async fn list_workspace_trust() -> Json<WorkspaceTrustListResponse> {
+    Json(WorkspaceTrustListResponse {
+        trusted_workspaces: permagent::config::list_trusted_workspaces(),
+    })
+}
+
+#[utoipa::path(
+    post,
+    path = "/config/workspace-trust",
+    request_body = WorkspaceTrustQuery,
+    responses(
+        (status = 200, description = "Workspace trusted", body = WorkspaceTrustMutationResponse),
+        (status = 400, description = "Path could not be resolved")
+    )
+)]
+pub async fn trust_workspace(
+    Json(query): Json<WorkspaceTrustQuery>,
+) -> Result<Json<WorkspaceTrustMutationResponse>, ErrorResponse> {
+    let canonical =
+        permagent::config::trust_workspace(&query.path).map_err(|err| ErrorResponse {
+            message: err.to_string(),
+            status: StatusCode::BAD_REQUEST,
+        })?;
+    Ok(Json(WorkspaceTrustMutationResponse {
+        canonical,
+        trusted_workspaces: permagent::config::list_trusted_workspaces(),
+    }))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/config/workspace-trust",
+    request_body = WorkspaceTrustQuery,
+    responses(
+        (status = 200, description = "Workspace trust revoked", body = WorkspaceTrustMutationResponse),
+        (status = 400, description = "Path could not be resolved")
+    )
+)]
+pub async fn untrust_workspace(
+    Json(query): Json<WorkspaceTrustQuery>,
+) -> Result<Json<WorkspaceTrustMutationResponse>, ErrorResponse> {
+    let canonical =
+        permagent::config::untrust_workspace(&query.path).map_err(|err| ErrorResponse {
+            message: err.to_string(),
+            status: StatusCode::BAD_REQUEST,
+        })?;
+    Ok(Json(WorkspaceTrustMutationResponse {
+        canonical,
+        trusted_workspaces: permagent::config::list_trusted_workspaces(),
+    }))
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/config", get(read_all_config))
@@ -1530,6 +1606,9 @@ pub fn routes(state: Arc<AppState>) -> Router {
             "/config/providers/{name}/oauth",
             post(configure_provider_oauth),
         )
+        .route("/config/workspace-trust", get(list_workspace_trust))
+        .route("/config/workspace-trust", post(trust_workspace))
+        .route("/config/workspace-trust", delete(untrust_workspace))
         .with_state(state)
 }
 

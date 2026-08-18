@@ -266,8 +266,16 @@ async fn start_agent(
     let recipe_extensions = original_recipe
         .as_ref()
         .and_then(|r| r.extensions.as_deref());
-    let extensions_to_use =
-        resolve_extensions_for_new_session(recipe_extensions, extension_overrides);
+    let recipe_dir = PathBuf::from(&working_dir);
+    let extensions_to_use = resolve_extensions_for_new_session(
+        recipe_extensions,
+        extension_overrides,
+        Some(recipe_dir.as_path()),
+    )
+    .map_err(|err| ErrorResponse {
+        message: err.to_string(),
+        status: StatusCode::FORBIDDEN,
+    })?;
 
     let mut extension_data = session.extension_data.clone();
     let extension_names: Vec<String> = extensions_to_use.iter().map(|e| e.name()).collect();

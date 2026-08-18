@@ -7,6 +7,7 @@ use crate::config::paths::Paths;
 use crate::recipe::read_recipe_file_content::{read_recipe_file, RecipeFile};
 use crate::recipe::Recipe;
 use crate::recipe::RECIPE_FILE_EXTENSIONS;
+use crate::workspace_trust::WorkspaceTrustStore;
 
 const GOOSE_RECIPE_PATH_ENV_VAR: &str = "GOOSE_RECIPE_PATH";
 
@@ -16,6 +17,39 @@ pub fn get_recipe_library_dir(is_global: bool) -> PathBuf {
     } else {
         env::current_dir().unwrap().join(".goose/recipes")
     }
+}
+
+/// What a directory contributed to recipe discovery.
+///
+/// Empty and untrusted-with-recipes are different states: an untrusted clone
+/// that ships recipes must be reported so the user can trust it, not swallowed
+/// as "nothing here".
+#[derive(Debug, Clone)]
+pub enum RecipeDirInspection {
+    Loaded(Vec<(PathBuf, Recipe)>),
+    Untrusted { dir: PathBuf, recipe_count: usize },
+    Empty,
+}
+
+impl RecipeDirInspection {
+    pub fn loaded_recipes(&self) -> &[(PathBuf, Recipe)] {
+        match self {
+            Self::Loaded(recipes) => recipes,
+            Self::Untrusted { .. } | Self::Empty => &[],
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UntrustedRecipeLocation {
+    pub dir: PathBuf,
+    pub recipe_count: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LocalRecipeDiscovery {
+    pub recipes: Vec<(PathBuf, Recipe)>,
+    pub untrusted: Vec<UntrustedRecipeLocation>,
 }
 
 fn local_recipe_dirs() -> Vec<PathBuf> {
@@ -45,13 +79,120 @@ fn local_recipe_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+fn recipe_file_names_in(dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    if !dir.exists() || !dir.is_dir() {
+        return files;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return files;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if let Some(extension) = path.extension() {
+            if RECIPE_FILE_EXTENSIONS.contains(&extension.to_string_lossy().as_ref()) {
+                files.push(path);
+            }
+        }
+    }
+    files
+}
+
+/// Inspect a single directory under the workspace-trust gate.
+///
+/// Untrusted directories with recipe files are reported, not loaded and not
+/// treated as empty.
+pub fn inspect_recipe_dir(dir: &Path, store: &WorkspaceTrustStore) -> RecipeDirInspection {
+    let files = recipe_file_names_in(dir);
+    if files.is_empty() {
+        return RecipeDirInspection::Empty;
+    }
+    if !store.allows_active_config(dir) {
+        return RecipeDirInspection::Untrusted {
+            dir: dir.to_path_buf(),
+            recipe_count: files.len(),
+        };
+    }
+    RecipeDirInspection::Loaded(load_recipe_files(&files))
+}
+
+fn load_recipe_files(files: &[PathBuf]) -> Vec<(PathBuf, Recipe)> {
+    let mut recipes = Vec::new();
+    for path in files {
+        match Recipe::from_file_path(path) {
+            Ok(recipe) => recipes.push((path.clone(), recipe)),
+            Err(e) => {
+                tracing::error!("Failed to load recipe from file {}: {}", path.display(), e);
+            }
+        }
+    }
+    recipes
+}
+
+pub fn discover_local_recipes_with(store: &WorkspaceTrustStore) -> Result<LocalRecipeDiscovery> {
+    discover_from_dirs(local_recipe_dirs(), store)
+}
+
+pub fn discover_from_dirs(
+    dirs: impl IntoIterator<Item = PathBuf>,
+    store: &WorkspaceTrustStore,
+) -> Result<LocalRecipeDiscovery> {
+    let mut discovery = LocalRecipeDiscovery::default();
+    for dir in dirs {
+        match inspect_recipe_dir(&dir, store) {
+            RecipeDirInspection::Loaded(recipes) => discovery.recipes.extend(recipes),
+            RecipeDirInspection::Untrusted { dir, recipe_count } => {
+                tracing::warn!(
+                    dir = %dir.display(),
+                    recipe_count,
+                    "Recipes found in an untrusted directory; cloning a repository is not consent to run them. Trust this workspace to load them."
+                );
+                discovery
+                    .untrusted
+                    .push(UntrustedRecipeLocation { dir, recipe_count });
+            }
+            RecipeDirInspection::Empty => {}
+        }
+    }
+    Ok(discovery)
+}
+
+pub fn discover_local_recipes() -> Result<LocalRecipeDiscovery> {
+    discover_local_recipes_with(&WorkspaceTrustStore::default_store())
+}
+
 pub fn load_local_recipe_file(recipe_name: &str) -> Result<RecipeFile> {
+    load_local_recipe_file_with(recipe_name, &WorkspaceTrustStore::default_store())
+}
+
+fn untrusted_recipe_message(recipe_name: &str, dir: &Path) -> String {
+    format!(
+        "Recipe '{recipe_name}' was found in {} but that directory is not trusted. \
+         Cloning a repository is not consent to run its recipes. Trust this workspace first.",
+        dir.display()
+    )
+}
+
+pub fn load_local_recipe_file_with(
+    recipe_name: &str,
+    store: &WorkspaceTrustStore,
+) -> Result<RecipeFile> {
     if RECIPE_FILE_EXTENSIONS
         .iter()
         .any(|ext| recipe_name.ends_with(&format!(".{}", ext)))
     {
         let path = PathBuf::from(recipe_name);
-        return read_recipe_file(path);
+        let file = read_recipe_file(path)?;
+        if !store.allows_active_config(&file.parent_dir) {
+            return Err(anyhow!(untrusted_recipe_message(
+                recipe_name,
+                &file.parent_dir
+            )));
+        }
+        return Ok(file);
     }
 
     if is_file_path(recipe_name) || is_file_name(recipe_name) {
@@ -62,10 +203,22 @@ pub fn load_local_recipe_file(recipe_name: &str) -> Result<RecipeFile> {
     }
 
     let search_dirs = local_recipe_dirs();
+    let mut found_untrusted: Option<PathBuf> = None;
     for dir in &search_dirs {
+        if !recipe_exists_in_dir(dir, recipe_name) {
+            continue;
+        }
+        if !store.allows_active_config(dir) {
+            found_untrusted = Some(dir.clone());
+            continue;
+        }
         if let Ok(result) = load_recipe_file_from_dir(dir, recipe_name) {
             return Ok(result);
         }
+    }
+
+    if let Some(dir) = found_untrusted {
+        return Err(anyhow!(untrusted_recipe_message(recipe_name, &dir)));
     }
 
     let search_dirs_str = search_dirs
@@ -82,14 +235,7 @@ pub fn load_local_recipe_file(recipe_name: &str) -> Result<RecipeFile> {
 }
 
 pub fn list_local_recipes() -> Result<Vec<(PathBuf, Recipe)>> {
-    let mut recipes = Vec::new();
-    for dir in local_recipe_dirs() {
-        if let Ok(dir_recipes) = scan_directory_for_recipes(&dir) {
-            recipes.extend(dir_recipes);
-        }
-    }
-
-    Ok(recipes)
+    Ok(discover_local_recipes()?.recipes)
 }
 
 fn is_file_path(recipe_name: &str) -> bool {
@@ -101,6 +247,12 @@ fn is_file_path(recipe_name: &str) -> bool {
 
 fn is_file_name(recipe_name: &str) -> bool {
     Path::new(recipe_name).extension().is_some()
+}
+
+fn recipe_exists_in_dir(dir: &Path, recipe_name: &str) -> bool {
+    RECIPE_FILE_EXTENSIONS
+        .iter()
+        .any(|ext| dir.join(format!("{}.{}", recipe_name, ext)).is_file())
 }
 
 fn load_recipe_file_from_dir(dir: &Path, recipe_name: &str) -> Result<RecipeFile> {
@@ -116,39 +268,6 @@ fn load_recipe_file_from_dir(dir: &Path, recipe_name: &str) -> Result<RecipeFile
         recipe_name,
         dir.display()
     )))
-}
-
-fn scan_directory_for_recipes(dir: &Path) -> Result<Vec<(PathBuf, Recipe)>> {
-    let mut recipes = Vec::new();
-
-    if !dir.exists() || !dir.is_dir() {
-        return Ok(recipes);
-    }
-
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-
-        if path.is_file() {
-            if let Some(extension) = path.extension() {
-                if RECIPE_FILE_EXTENSIONS.contains(&extension.to_string_lossy().as_ref()) {
-                    match Recipe::from_file_path(&path) {
-                        Ok(recipe) => recipes.push((path.clone(), recipe)),
-                        Err(e) => {
-                            let error_message = format!(
-                                "Failed to load recipe from file {}: {}",
-                                path.display(),
-                                e
-                            );
-                            tracing::error!("{}", error_message);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(recipes)
 }
 
 fn generate_recipe_filename(title: &str, recipe_library_dir: &Path) -> PathBuf {

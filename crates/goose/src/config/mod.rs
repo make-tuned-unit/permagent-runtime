@@ -39,6 +39,11 @@ pub use extensions::DEFAULT_EXTENSION;
 pub use extensions::DEFAULT_EXTENSION_DESCRIPTION;
 pub use extensions::DEFAULT_EXTENSION_TIMEOUT;
 
+pub use crate::workspace_trust::{
+    is_workspace_trusted, list_trusted_workspaces, trust_workspace, untrust_workspace,
+    WorkspaceTrustError, WorkspaceTrustStore,
+};
+
 /// The Ollama endpoint the local **batch** workers (Librarian describe/annotate/
 /// entity passes, Reader summarize) talk to. Defaults to a local Ollama; set
 /// `PERMAGENT_OLLAMA_HOST` to offload this heavy, latency-tolerant LLM work to a
