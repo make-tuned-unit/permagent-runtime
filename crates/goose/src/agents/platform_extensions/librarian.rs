@@ -1168,6 +1168,79 @@ pub(crate) async fn call_ollama_streaming_pooled(
     memory_key: &str,
     session_id: Option<&str>,
 ) -> Result<String, String> {
+    // A dedicated Librarian endpoint (`PERMAGENT_LIBRARIAN_ENDPOINT`) wins over
+    // the mesh pool. If it is unreachable — the two-machine split only runs in
+    // the nightly window, and either mini can be down — fall back to the
+    // ordinary Ollama path with the default model rather than fail the pass:
+    // a slightly worse description tonight beats no description.
+    if let Some(endpoint) = crate::config::librarian_endpoint() {
+        let backend = crate::config::librarian_backend();
+        let attempt = if backend == "ollama" {
+            call_ollama_streaming(
+                &endpoint,
+                system,
+                prompt,
+                model,
+                emit_events,
+                memory_key,
+                session_id,
+            )
+            .await
+        } else {
+            call_llamacpp_streaming(
+                &endpoint,
+                system,
+                prompt,
+                model,
+                emit_events,
+                memory_key,
+                session_id,
+            )
+            .await
+        };
+        match attempt {
+            Ok(text) => return Ok(text),
+            Err(err) if is_endpoint_down(&err) => {
+                tracing::warn!(
+                    endpoint = %endpoint,
+                    backend = %backend,
+                    error = %err,
+                    fallback_model = DEFAULT_MODEL,
+                    "Librarian endpoint unreachable; falling back to the Ollama pool with the default model"
+                );
+                // The configured model belongs to the dedicated endpoint; the
+                // Ollama fallback needs a model Ollama actually has.
+                return call_ollama_streaming_pooled_inner(
+                    system,
+                    prompt,
+                    DEFAULT_MODEL,
+                    emit_events,
+                    memory_key,
+                    session_id,
+                )
+                .await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    call_ollama_streaming_pooled_inner(system, prompt, model, emit_events, memory_key, session_id)
+        .await
+}
+
+/// True for the failure shapes that mean "nothing is listening there" (as
+/// opposed to a model error mid-stream, which should surface as-is).
+fn is_endpoint_down(err: &str) -> bool {
+    err.contains("unreachable")
+}
+
+async fn call_ollama_streaming_pooled_inner(
+    system: &str,
+    prompt: &str,
+    model: &str,
+    emit_events: bool,
+    memory_key: &str,
+    session_id: Option<&str>,
+) -> Result<String, String> {
     let lease = crate::mesh::pool::lease_batch(Some(model));
     let endpoint = lease.endpoint().to_string();
     match call_ollama_streaming(
@@ -1206,6 +1279,144 @@ pub(crate) async fn call_ollama_streaming_pooled(
             None => Err(err),
         },
     }
+}
+
+/// One parsed line of an OpenAI-style SSE stream.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct SseEvent {
+    /// Content delta, if the line carried one (empty deltas are dropped).
+    pub token: Option<String>,
+    /// True on `[DONE]` or a chunk with a `finish_reason`.
+    pub done: bool,
+}
+
+/// Parse one line of llama-server's `/v1/chat/completions` SSE stream.
+/// Non-`data:` lines (comments, `event:`) are ignored; a chunk carrying an
+/// `error` object is an error; `[DONE]` and any `finish_reason` mark the end.
+pub(crate) fn parse_openai_sse_line(line: &str) -> Result<SseEvent, String> {
+    let Some(data) = line.strip_prefix("data:") else {
+        return Ok(SseEvent::default());
+    };
+    let data = data.trim();
+    if data.is_empty() {
+        return Ok(SseEvent::default());
+    }
+    if data == "[DONE]" {
+        return Ok(SseEvent {
+            token: None,
+            done: true,
+        });
+    }
+    let parsed: serde_json::Value = serde_json::from_str(data)
+        .map_err(|e| format!("Malformed SSE from llama-server: {} (line: {})", e, data))?;
+    if let Some(err) = parsed.get("error") {
+        return Err(format!("llama-server stream error: {}", err));
+    }
+    let mut event = SseEvent::default();
+    if let Some(choice) = parsed.get("choices").and_then(|c| c.get(0)) {
+        if let Some(token) = choice
+            .get("delta")
+            .and_then(|d| d.get("content"))
+            .and_then(|v| v.as_str())
+        {
+            if !token.is_empty() {
+                event.token = Some(token.to_string());
+            }
+        }
+        if choice
+            .get("finish_reason")
+            .and_then(|v| v.as_str())
+            .is_some()
+        {
+            event.done = true;
+        }
+    }
+    Ok(event)
+}
+
+/// Stream tokens from a llama-server (`/v1/chat/completions`, SSE). Same
+/// contract as [`call_ollama_streaming`]: returns the concatenated content,
+/// emits per-token events, and errors with "unreachable" when nothing is
+/// listening so the caller can fall back. `model` is a label — llama-server
+/// serves whatever it was started with.
+pub(crate) async fn call_llamacpp_streaming(
+    base_url: &str,
+    system: &str,
+    prompt: &str,
+    model: &str,
+    emit_events: bool,
+    memory_key: &str,
+    session_id: Option<&str>,
+) -> Result<String, String> {
+    use futures::StreamExt;
+
+    let client = reqwest::Client::builder()
+        // The split 27B does ~5 tok/s on the minis: 150 tokens plus a
+        // 600-token prompt is ~50 s, so the Ollama-era 120 s is kept.
+        .timeout(std::time::Duration::from_secs(120))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| format!("HTTP client error: {}", e))?;
+
+    let body = crate::mesh::pool::InferenceBody::for_chat_stream(model, prompt, system, 150, 0.2);
+
+    crate::mesh::audit_and_check_mesh_egress(base_url, session_id, model, Some(system), prompt)
+        .await?;
+
+    let resp = client
+        .post(format!("{}/v1/chat/completions", base_url))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("llama-server unreachable: {}", e))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("llama-server error ({}): {}", status, text));
+    }
+
+    let mut stream = resp.bytes_stream();
+    let mut accumulated = String::new();
+    let mut line_buffer = String::new();
+    let mut saw_done = false;
+
+    let mut handle_line = |line: &str| -> Result<(), String> {
+        let event = parse_openai_sse_line(line)?;
+        if let Some(token) = event.token {
+            accumulated.push_str(&token);
+            if emit_events {
+                crate::events::emit(crate::events::librarian_describe_token(memory_key, &token));
+            }
+        }
+        if event.done {
+            saw_done = true;
+        }
+        Ok(())
+    };
+
+    while let Some(chunk_result) = stream.next().await {
+        let chunk = chunk_result
+            .map_err(|e| format!("Stream interrupted during description generation: {}", e))?;
+        line_buffer.push_str(&String::from_utf8_lossy(&chunk));
+        while let Some(newline_pos) = line_buffer.find('\n') {
+            let line: String = line_buffer.drain(..=newline_pos).collect();
+            handle_line(line.trim())?;
+        }
+    }
+    let remaining = line_buffer.trim().to_string();
+    if !remaining.is_empty() {
+        handle_line(&remaining)?;
+    }
+
+    if !saw_done {
+        return Err(
+            "llama-server stream terminated prematurely — no finish signal received. \
+             The split may have lost a node or run out of memory."
+                .to_string(),
+        );
+    }
+    Ok(accumulated)
 }
 
 /// Stream tokens from Ollama's /api/generate endpoint.
@@ -1690,6 +1901,54 @@ CATEGORIES: Technology, Data Migration, Networking";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn openai_sse_line_parses_delta_done_and_error() {
+        assert_eq!(
+            parse_openai_sse_line(r#"data: {"choices":[{"delta":{"content":"FACTS: "}}]}"#)
+                .unwrap(),
+            SseEvent {
+                token: Some("FACTS: ".into()),
+                done: false
+            }
+        );
+        assert_eq!(
+            parse_openai_sse_line(r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}]}"#)
+                .unwrap(),
+            SseEvent {
+                token: None,
+                done: true
+            }
+        );
+        assert_eq!(
+            parse_openai_sse_line("data: [DONE]").unwrap(),
+            SseEvent {
+                token: None,
+                done: true
+            }
+        );
+        // Comments / event lines are not data.
+        assert_eq!(
+            parse_openai_sse_line(": keep-alive").unwrap(),
+            SseEvent::default()
+        );
+        assert!(parse_openai_sse_line(r#"data: {"error":{"message":"boom"}}"#).is_err());
+        assert!(parse_openai_sse_line("data: not json").is_err());
+    }
+
+    #[test]
+    fn librarian_endpoint_fallback_only_on_unreachable() {
+        assert!(is_endpoint_down(
+            "llama-server unreachable: connection refused"
+        ));
+        assert!(!is_endpoint_down(
+            "llama-server error (500): Compute error."
+        ));
+        assert!(!is_endpoint_down(
+            "llama-server stream terminated prematurely"
+        ));
+    }
+
     use crate::session::SessionManager;
     use std::sync::Arc;
 

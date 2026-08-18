@@ -482,6 +482,42 @@ impl InferenceBody {
     }
 }
 
+impl InferenceBody {
+    /// Wire body for a streaming OpenAI-style `/v1/chat/completions` — the
+    /// shape llama-server speaks. Same choke-point, same payload discipline:
+    /// a system contract and one prompt, nothing else. Thinking is disabled
+    /// per request because the Librarian caps output at `max_tokens`; a
+    /// reasoning model would spend the whole budget deliberating and return
+    /// no fields.
+    pub fn for_chat_stream(
+        model: &str,
+        prompt: &str,
+        system: &str,
+        max_tokens: u32,
+        temperature: f32,
+    ) -> Self {
+        assert_inference_only(&InferencePayload::Prompt);
+        let mut body = serde_json::Map::new();
+        body.insert("model".into(), Value::String(model.to_string()));
+        body.insert(
+            "messages".into(),
+            serde_json::json!([
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ]),
+        );
+        body.insert("stream".into(), Value::Bool(true));
+        body.insert("max_tokens".into(), Value::from(max_tokens));
+        body.insert("temperature".into(), Value::from(temperature));
+        body.insert("cache_prompt".into(), Value::Bool(true));
+        body.insert(
+            "chat_template_kwargs".into(),
+            serde_json::json!({"enable_thinking": false}),
+        );
+        Self(Value::Object(body))
+    }
+}
+
 impl serde::Serialize for InferenceBody {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         self.0.serialize(serializer)
@@ -1196,6 +1232,19 @@ pub async fn generate(req: GenerateRequest) -> Result<GenerateResponse, PoolErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chat_stream_body_disables_thinking_and_caps_output() {
+        let body = InferenceBody::for_chat_stream("qwen3.8-27b", "P", "S", 150, 0.2);
+        let v = serde_json::to_value(&body).unwrap();
+        assert_eq!(v["stream"], true);
+        assert_eq!(v["max_tokens"], 150);
+        assert_eq!(v["chat_template_kwargs"]["enable_thinking"], false);
+        assert_eq!(v["messages"][0]["role"], "system");
+        assert_eq!(v["messages"][0]["content"], "S");
+        assert_eq!(v["messages"][1]["role"], "user");
+        assert_eq!(v["messages"][1]["content"], "P");
+    }
 
     fn peer(endpoint: &str, trusted: bool) -> PeerConfig {
         PeerConfig::new(endpoint, label_for_endpoint(endpoint), trusted)

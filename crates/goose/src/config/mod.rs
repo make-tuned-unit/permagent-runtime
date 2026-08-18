@@ -72,6 +72,33 @@ pub fn ollama_host() -> String {
     )
 }
 
+/// Optional Librarian-only inference endpoint (`PERMAGENT_LIBRARIAN_ENDPOINT`).
+///
+/// When set, the Librarian's describe passes go here instead of the mesh
+/// pool / `PERMAGENT_OLLAMA_HOST`, so a larger model served by a different
+/// engine (today: a two-machine `llama-server` split of Qwen3.8-27B) can do
+/// the nightly archiving without touching the app's other Ollama uses. Unset
+/// means today's behaviour exactly. Trailing slashes are stripped.
+pub fn librarian_endpoint() -> Option<String> {
+    Config::global()
+        .get_param::<String>("PERMAGENT_LIBRARIAN_ENDPOINT")
+        .ok()
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Wire protocol spoken by [`librarian_endpoint`]: `"llamacpp"` (default —
+/// llama-server's OpenAI-compatible `/v1/chat/completions`) or `"ollama"`
+/// (an Ollama `/api/generate` host that is not the app-wide one).
+pub fn librarian_backend() -> String {
+    Config::global()
+        .get_param::<String>("PERMAGENT_LIBRARIAN_BACKEND")
+        .ok()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "llamacpp".to_string())
+}
+
 /// Pure core of [`ollama_host`], split out so it is unit-testable without
 /// touching the process-global environment (env-mutating tests flake under
 /// parallel `cargo test`).
