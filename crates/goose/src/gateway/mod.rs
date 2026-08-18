@@ -12,6 +12,36 @@ use utoipa::ToSchema;
 
 use handler::GatewayHandler;
 
+/// Self-knowledge descriptor for the Telegram gateway — the one registered
+/// [`Gateway`] today (`telegram.rs`, run by [`manager::GatewayManager`]).
+/// A Surface in the self-knowledge sense: it is a way to reach the agent, like
+/// voice or a paired device, not a background loop with a live status to
+/// merge. Static, and honest that it is set up from the CLI — there is no
+/// in-app switch for it. Registered in
+/// [`crate::agents::self_knowledge::SURFACE_DESCRIPTORS`].
+pub const TELEGRAM_GATEWAY_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "telegram_gateway",
+        display_name: "Telegram gateway",
+        category: crate::agents::self_knowledge::FeatureCategory::Surface,
+        what_it_does:
+            "A Telegram bot the user can message to reach you from any phone or desktop that has \
+             Telegram — plain text and voice notes (a voice note arrives as an audio file you \
+             are asked to transcribe with local tools). Each Telegram user pairs once by typing a \
+             short-lived pairing code into the chat and then talks to their own session on this \
+             daemon. It is set up from the terminal today, not from the app: `permagent gateway \
+             start telegram --bot-token …` saves the bot token in the secret store, `permagent \
+             gateway pair telegram` mints a code, and `permagent gateway status` / `permagent \
+             gateway stop telegram` round it out; a saved gateway starts again with the daemon",
+        why_it_matters:
+            "It is the lowest-friction remote channel: no pairing URL, no tailnet, just a chat \
+             the user already has open. When they want to reach you from anywhere and the iOS \
+             companion is not an option, this is the answer — but be honest that enabling it is \
+             a terminal step, and never invent an in-app switch for it",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        teaching: &[],
+    };
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlatformUser {
     pub platform: String,

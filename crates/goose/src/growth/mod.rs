@@ -29,3 +29,38 @@ pub mod metrics;
 pub mod power;
 pub mod store;
 pub mod sweep;
+
+/// Self-knowledge descriptor for the measurement worker. The behavior is the
+/// daemon's nightly pass (`growth_sweep.rs`, over [`sweep::run`]); the identity
+/// lives here, in the lib half, because that is where the self-knowledge
+/// registry is (the Echo/Watcher split). Registered in
+/// [`crate::agents::self_knowledge::WORKER_DESCRIPTORS`].
+///
+/// Queryable by the worker contract, but there is no cheap live signal to
+/// merge yet, so `worker_live_state_for` returns `None` and it renders
+/// editorially — the same as the Watcher.
+pub const GROWTH_MEASUREMENT_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "growth_measurement",
+        display_name: "Growth measurement",
+        category: crate::agents::self_knowledge::FeatureCategory::Worker,
+        what_it_does:
+            "A nightly measurement pass that closes the Grow loop — action, verify, measure, \
+             learn. When a suggested growth action is verified as shipped, the target metric and \
+             the direction it should move are pre-registered and the before-window is frozen; \
+             then, as each 7-, 14- and 28-day window closes, the pass compares after with before \
+             against the project's own week-to-week swing and records a verdict: helped, \
+             hindered, no effect, inconclusive, or confounded when another action overlaps. \
+             Inconclusive is a first-class outcome — at typical traffic it is the common one — \
+             and every verdict carries the two numbers it rests on; when there is nothing to \
+             judge it says nothing",
+        why_it_matters:
+            "It is what makes growth advice accountable instead of self-assessed prose: the \
+             grade is computed from the project's own analytics events, never written by a \
+             model. When the user asks whether something worked, read the verdict and its \
+             numbers, say \"inconclusive\" plainly when that is the answer, and never say an \
+             action caused a change — this is a before-and-after with an honesty gate, not an \
+             experiment",
+        state_source: crate::agents::self_knowledge::StateSource::Queryable,
+        teaching: &[],
+    };
