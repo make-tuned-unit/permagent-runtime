@@ -184,15 +184,24 @@ pub fn load_local_recipe_file_with(
         .iter()
         .any(|ext| recipe_name.ends_with(&format!(".{}", ext)))
     {
+        // An explicitly named path is NOT gated, deliberately.
+        //
+        // The threat this module exists for is AMBIENT discovery: cloning a
+        // repository and opening the folder must not be enough to run code the
+        // repository chose. Naming a file is a different act — it is the same
+        // consent as `bash ./script.sh`, and the user performed it. Refusing to
+        // run a file its owner just asked for by name is not security, only
+        // obstruction.
+        //
+        // An earlier revision of this gate did exactly that and broke eight
+        // `permagent-cli` recipe tests that write a recipe to a temp dir and
+        // load it back by path. The tests were right and the gate was wrong.
+        //
+        // If a named recipe's declared extensions ever warrant confirmation,
+        // that belongs in a per-extension prompt about what will be spawned —
+        // not in a question about whether its directory is trusted.
         let path = PathBuf::from(recipe_name);
-        let file = read_recipe_file(path)?;
-        if !store.allows_active_config(&file.parent_dir) {
-            return Err(anyhow!(untrusted_recipe_message(
-                recipe_name,
-                &file.parent_dir
-            )));
-        }
-        return Ok(file);
+        return read_recipe_file(path);
     }
 
     if is_file_path(recipe_name) || is_file_name(recipe_name) {
