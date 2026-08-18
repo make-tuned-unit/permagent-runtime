@@ -24,6 +24,7 @@ import { InboxPanel } from '../inbox/InboxPanel';
 import { ExecutionTrace } from '../trace/ExecutionTrace';
 import { SpendPanel } from './SpendPanel';
 import { AgentsPanel } from './agents/AgentsPanel';
+import { FeaturesPanel } from './features/FeaturesPanel';
 import { timeAgo } from './format';
 import { useDecisions } from '../dashboard/decisions/useDecisions';
 import { DecisionInbox } from '../dashboard/decisions/DecisionInbox';
@@ -85,6 +86,7 @@ const CATEGORIES = [
     { key: 'shortcuts',   label: 'Shortcuts',        icon: 'M4 6h16v12H4zM8 10h.01M12 10h.01M16 10h.01M7 14h10' },
     { key: 'data',        label: 'Data & privacy',   icon: 'M12 2l9 4v6c0 5-4 9-9 10-5-1-9-5-9-10V6l9-4zM9 12l2 2 4-4' },
     { key: 'sovereignty', label: 'Sovereignty',      icon: 'M7 11V7a5 5 0 0110 0v4M5 11h14v9H5zM12 15v2' },
+    { key: 'features',    label: 'Features',         icon: 'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01' },
   ]},
 ];
 
@@ -1445,6 +1447,7 @@ const PANELS: Record<string, (props: PanelProps) => JSX.Element> = {
   sovereignty: SovereigntyPanel,
   sessions: SessionsPane, inbox: InboxPane, activity: ActivityPane, spend: SpendPane,
   agents: AgentsPanel,
+  features: FeaturesPanel,
 };
 
 

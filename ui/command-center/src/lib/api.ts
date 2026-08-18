@@ -1045,6 +1045,13 @@ export const api = {
   // Config
   getConfig: () => apiFetch<PermagentConfig>('/config'),
 
+  /** Read-only connection status per integration (`gmail`, `slack`). Reports
+   *  whether a token is stored — never the token. The daemon's Gmail connect
+   *  flow is CLI-only today (`permagent integrations connect gmail`); the app
+   *  only shows the precondition, it does not drive the OAuth dance. */
+  getIntegrations: () =>
+    apiFetch<Array<{ provider: string; connected: boolean; token_present: boolean }>>('/integrations'),
+
   /**
    * Read a NON-SECRET config value. The daemon answers with the **bare JSON
    * value** — `true`, `24`, `"anthropic"` — or `null` when the key is unset.

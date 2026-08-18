@@ -149,10 +149,10 @@ pub static WORKER_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::echo::SELF_KNOWLEDGE_FEATURE,
     usage::ONBOARDING_COACH_FEATURE,
     // Render-gated (see `worker_descriptor_visible`): hidden from the brief
-    // while `PERMAGENT_PLAYBOOK_ENABLED` is off, so this experimental, unproven
+    // while `playbook_enabled` is off (Settings → Features), so this experimental, unproven
     // capability does not enter every user's Henry until deliberately enabled.
     crate::playbook::PLAYBOOK_SYNTHESIS_FEATURE,
-    // Render-gated on `PERMAGENT_CONCIERGE_ENABLED` (default OFF): the Concierge
+    // Render-gated on `concierge_enabled` (Settings → Features, default OFF): the Concierge
     // inbox-triage character (#640) is hidden from the brief until deliberately
     // enabled, so the canonical prompt snapshots stay byte-for-byte identical.
     crate::concierge::SELF_KNOWLEDGE_FEATURE,
@@ -786,7 +786,7 @@ mod tests {
         // In the registry always (so `find_descriptor` resolves it); its render
         // into the brief is flag-gated (see `worker_descriptor_visible`).
         "playbook",
-        // Same render-gated contract as the playbook (PERMAGENT_CONCIERGE_ENABLED).
+        // Same render-gated contract as the playbook (`concierge_enabled`).
         "concierge",
         // Same render-gated contract, on the `strix_enabled` config key.
         "strix",
