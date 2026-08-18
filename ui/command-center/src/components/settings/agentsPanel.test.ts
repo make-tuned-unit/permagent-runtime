@@ -7,6 +7,8 @@ import {
   liveStateLabel,
   presenceLabel,
   requiredSecretsLabel,
+  requiredSecretHint,
+  requiredSecretHints,
   defaultEnabledLabel,
   NOT_DECLARED_SECRETS,
   NO_DEFAULT_DECLARED,
@@ -144,6 +146,33 @@ describe('requiredSecretsLabel / defaultEnabledLabel', () => {
     expect(requiredSecretsLabel({ status: 'not_declared' }).toLowerCase()).not.toContain(
       'needs no secrets',
     );
+  });
+
+  it('renders impact and unlocks as one hint per secret, and nothing when neither ships', () => {
+    expect(requiredSecretHint({ name: 'K', present: false })).toBeNull();
+    expect(requiredSecretHint({ name: 'K', present: false, impact: 'unavailable' })).toBe(
+      'K: unavailable without it',
+    );
+    expect(requiredSecretHint({ name: 'K', present: true, unlocks: 'Sends mail.' })).toBe(
+      'K: Sends mail.',
+    );
+    expect(
+      requiredSecretHint({ name: 'K', present: false, impact: 'degraded', unlocks: 'Sends mail.' }),
+    ).toBe('K: Sends mail. — degraded without it');
+  });
+
+  it('collects hints only for secrets that carry them', () => {
+    expect(requiredSecretHints({ status: 'not_declared' })).toEqual([]);
+    expect(
+      requiredSecretHints({
+        status: 'declared',
+        truncated: false,
+        items: [
+          { name: 'A', present: false },
+          { name: 'B', present: false, impact: 'unavailable', unlocks: 'Everything.' },
+        ],
+      }),
+    ).toEqual(['B: Everything. — unavailable without it']);
   });
 
   it('renders null default as no default declared, never off', () => {

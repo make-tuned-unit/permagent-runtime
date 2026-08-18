@@ -58,8 +58,20 @@ export interface DispatchPersona {
   secrets: Secrets;
 }
 
+/** One declared secret. `impact`/`unlocks` are serialised only for platform
+ *  extensions (registry declarations); configured-transport entries omit
+ *  both, mirroring `#[serde(skip_serializing_if = "Option::is_none")]`. */
+export interface RequiredSecret {
+  name: string;
+  present: boolean;
+  /** "degraded" = still works with gaps; "unavailable" = cannot do its job. */
+  impact?: 'degraded' | 'unavailable' | string;
+  /** Human sentence for what the secret unlocks. */
+  unlocks?: string;
+}
+
 export type RequiredSecrets =
-  | { status: 'declared'; items: { name: string; present: boolean }[]; truncated: boolean }
+  | { status: 'declared'; items: RequiredSecret[]; truncated: boolean }
   | { status: 'not_declared' };
 
 export interface Capability {

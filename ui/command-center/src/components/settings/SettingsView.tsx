@@ -17,7 +17,7 @@ import { usePersona } from './useSettings';
 import { resolveSettingsSection } from './sections';
 import { trustEnvOverrideNotice } from './autonomy';
 import { VoicePicker } from '../voice/VoicePicker';
-import { H1, Section, Row, TextInput, Chip, Toggle, Slider, Kbd, SaveButton, StatRow } from './atoms';
+import { H1, Section, Row, TextInput, Chip, Toggle, Slider, Kbd, SaveButton } from './atoms';
 import { makeQrMatrix } from '../../lib/qrMatrix';
 import { SessionsList } from '../sessions/SessionsList';
 import { InboxPanel } from '../inbox/InboxPanel';
@@ -29,7 +29,6 @@ import { useDecisions } from '../dashboard/decisions/useDecisions';
 import { DecisionInbox } from '../dashboard/decisions/DecisionInbox';
 import { formatAge } from '../dashboard/decisions/format';
 import { getOpenOnLaunch, setOpenOnLaunch, OPEN_ON_LAUNCH_OPTIONS, type OpenOnLaunch } from '../../lib/openOnLaunch';
-import type { WorkerInfo } from '../../lib/api';
 
 // The PreviewBadge/PreviewNotice machinery (2026-07-10 audit) is gone: every
 // preview-only control has been either wired to real state or removed
@@ -567,7 +566,7 @@ function ModelStateBadge({ state }: { state: 'running' | 'installed' | 'missing'
   );
 }
 
-function ModelsPanel({ goto }: PanelProps) {
+export function ModelsPanel({ goto }: PanelProps) {
   const { colors } = useThemeHook();
   const [ollama, setOllama] = useState<OllamaStatus | null>(null);
   const [schedule, setSchedule] = useState<LibSchedule | null>(null);
@@ -575,11 +574,10 @@ function ModelsPanel({ goto }: PanelProps) {
   const [runningNow, setRunningNow] = useState(false);
   const [libError, setLibError] = useState<string | null>(null);
 
-  // Primary-model readout + worker roster (merged from the retired Governance
-  // → Models panel; GET /api/agent/workers is its unique surface). Read-only:
-  // the model/provider switch itself lives in the provider modal on API keys.
+  // Primary-model readout (merged from the retired Governance → Models panel).
+  // Read-only: the model/provider switch itself lives in the provider modal on
+  // API keys, and the per-role roster lives on Settings → Agents.
   const [primary, setPrimary] = useState<{ model: string | null; provider: string | null; mode: string | null } | null>(null);
-  const [workers, setWorkers] = useState<WorkerInfo[] | null>(null);
   useEffect(() => {
     let active = true;
     api.getConfig().then(cfg => {
@@ -591,9 +589,6 @@ function ModelsPanel({ goto }: PanelProps) {
         mode: ((cfg as Record<string, unknown>)['effective_goose_mode'] as string) ?? null,
       });
     }).catch(() => {});
-    api.getWorkers()
-      .then(ws => { if (active) setWorkers(Object.values(ws)); })
-      .catch(() => { if (active) setWorkers([]); });
     return () => { active = false; };
   }, []);
 
@@ -734,34 +729,13 @@ function ModelsPanel({ goto }: PanelProps) {
           wired to nothing (2026-07-10 settings audit). The real model/default
           switch lives in the provider modal on the API keys tab. */}
 
-      {/* ── Worker roster (GET /api/agent/workers) ───────────────── */}
-      <Section title="Worker roster" sub="The models each role can dispatch to, with live availability.">
-        {workers === null ? (
-          <div style={{ color: colors.textDim, fontSize: 13 }}>Loading roster…</div>
-        ) : workers.length === 0 ? (
-          <div style={{ color: colors.textMuted, fontSize: 13 }}>
-            No workers configured. The primary model handles every role.
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {workers.map(w => (
-              <StatRow
-                key={w.key}
-                left={w.display_name}
-                sub={`${w.role} · ${w.engine}`}
-                right={
-                  <span style={{
-                    fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 999,
-                    border: `1px solid ${colors.border}`,
-                    color: w.available ? colors.success : colors.textDim,
-                  }} title={w.reason ?? undefined}>
-                    {w.available ? 'available' : 'unavailable'}
-                  </span>
-                }
-              />
-            ))}
-          </div>
-        )}
+      {/* ── Roster pointer ───────────────────────────────────────── */}
+      {/* The per-role roster used to be duplicated here off GET /api/agent/workers
+          with less fidelity than the Agents page (no probe-failed state, no
+          grants or secrets). One surface now: Settings → Agents over
+          /api/agents/roster. */}
+      <Section title="Worker roster" sub="Which model each role dispatches to, with live availability, grants and required secrets.">
+        <button data-testid="models-open-agents" style={ghost(colors)} onClick={() => goto('agents')}>Open Agents</button>
       </Section>
 
       {/* ── Ollama Status ────────────────────────────────────────── */}
