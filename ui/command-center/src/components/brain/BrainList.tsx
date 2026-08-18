@@ -31,6 +31,10 @@ interface BrainListProps {
   selectedId: string | null;
   timeValue: number;
   searchQuery?: string;
+  /** Ranked hits from GET /api/brain/search — when set, browse pagination is bypassed. */
+  searchResults?: GraphMemory[] | null;
+  searchLoading?: boolean;
+  searchError?: string | null;
   entities?: GraphEntity[];
   filters?: TypeFilters;
 }
@@ -50,7 +54,10 @@ interface PageState {
   searchOffset: number;
 }
 
-export function BrainList({ onSelect, selectedId, timeValue, searchQuery, entities = [], filters }: BrainListProps) {
+export function BrainList({
+  onSelect, selectedId, timeValue, searchQuery, searchResults, searchLoading, searchError,
+  entities = [], filters,
+}: BrainListProps) {
   const { colors } = useTheme();
 
   // Filter entities by type
@@ -70,14 +77,16 @@ export function BrainList({ onSelect, selectedId, timeValue, searchQuery, entiti
   const requestGeneration = useRef(0);
   const isSearch = !!(searchQuery && searchQuery.trim());
 
-  // Reset and load first page when query or time changes
+  // Reset and load first page when query or time changes (browse mode only)
   useEffect(() => {
+    if (isSearch) return;
     setState({ memories: [], total: 0, hasMore: false, loading: true, error: false, lastTimestamp: null, lastId: null, searchOffset: 0 });
     loadPage(true);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchQuery, timeValue]);
+  }, [searchQuery, timeValue, isSearch]);
 
   const loadPage = useCallback(async (reset = false) => {
+    if (isSearch) return;
     if (loadingMore.current && !reset) return;
     loadingMore.current = true;
     const generation = reset ? ++requestGeneration.current : requestGeneration.current;
@@ -90,20 +99,15 @@ export function BrainList({ onSelect, selectedId, timeValue, searchQuery, entiti
 
       const params: Parameters<typeof api.getBrainMemories>[0] = { limit: 50 };
 
-      if (isSearch) {
-        params.q = searchQuery!.trim();
-        params.offset = reset ? 0 : currentState.searchOffset;
-      } else {
-        if (!reset && currentState.lastTimestamp) {
-          params.before = currentState.lastTimestamp;
-          if (currentState.lastId) params.before_id = currentState.lastId;
-        }
-        // Time slider → server-side after filter (0 = today, 1 = all time)
-        if (timeValue < 1.0) {
-          const maxAgeDays = 90;
-          const cutoffMs = Date.now() - timeValue * maxAgeDays * 24 * 60 * 60 * 1000;
-          params.after = new Date(cutoffMs).toISOString();
-        }
+      if (!reset && currentState.lastTimestamp) {
+        params.before = currentState.lastTimestamp;
+        if (currentState.lastId) params.before_id = currentState.lastId;
+      }
+      // Time slider → server-side after filter (0 = today, 1 = all time)
+      if (timeValue < 1.0) {
+        const maxAgeDays = 90;
+        const cutoffMs = Date.now() - timeValue * maxAgeDays * 24 * 60 * 60 * 1000;
+        params.after = new Date(cutoffMs).toISOString();
       }
 
       const res = await api.getBrainMemories(params);
@@ -135,15 +139,19 @@ export function BrainList({ onSelect, selectedId, timeValue, searchQuery, entiti
 
   // Infinite scroll
   const handleScroll = useCallback(() => {
+    if (isSearch) return;
     const el = scrollRef.current;
     if (!el || !state.hasMore || state.loading) return;
     const threshold = 200;
     if (el.scrollHeight - el.scrollTop - el.clientHeight < threshold) {
       loadPage(false);
     }
-  }, [loadPage, state.hasMore, state.loading]);
+  }, [loadPage, state.hasMore, state.loading, isSearch]);
 
-  const filtered = state.memories;
+  const displayMemories = isSearch ? (searchResults ?? []) : state.memories;
+  const displayLoading = isSearch ? !!searchLoading : state.loading;
+  const displayError = isSearch ? searchError : (state.error ? 'Could not load memories' : null);
+  const displayTotal = isSearch ? displayMemories.length : state.total;
 
   return (
     <div style={{
@@ -156,12 +164,12 @@ export function BrainList({ onSelect, selectedId, timeValue, searchQuery, entiti
         fontFamily: font.mono, fontSize: 10, color: colors.textDim,
       }}>
         <span>
-          {filteredEntities.length > 0 && `${filteredEntities.length} entities`}
-          {filteredEntities.length > 0 && showMemories && ' · '}
-          {showMemories && `${state.total.toLocaleString()} memories`}
+          {!isSearch && filteredEntities.length > 0 && `${filteredEntities.length} entities`}
+          {!isSearch && filteredEntities.length > 0 && showMemories && ' · '}
+          {showMemories && `${displayTotal.toLocaleString()} memories`}
           {isSearch ? ` matching "${searchQuery}"` : ''}
         </span>
-        <span>{filteredEntities.length + filtered.length} shown</span>
+        <span>{(isSearch ? 0 : filteredEntities.length) + displayMemories.length} shown</span>
       </div>
 
       {/* Scrollable list */}
@@ -173,7 +181,7 @@ export function BrainList({ onSelect, selectedId, timeValue, searchQuery, entiti
         }}
       >
         {/* Entity rows */}
-        {showEntities && filteredEntities.length > 0 && (
+        {showEntities && !isSearch && filteredEntities.length > 0 && (
           <>
             <div style={{
               padding: '6px 14px 4px', fontFamily: font.mono, fontSize: 10,
@@ -206,7 +214,7 @@ export function BrainList({ onSelect, selectedId, timeValue, searchQuery, entiti
           </>
         )}
 
-        {showMemories && filtered.map(mem => (
+        {showMemories && displayMemories.map(mem => (
           <MemoryRow
             key={mem.id}
             memory={mem}
@@ -222,35 +230,39 @@ export function BrainList({ onSelect, selectedId, timeValue, searchQuery, entiti
           />
         ))}
 
-        {showMemories && state.loading && (
+        {showMemories && displayLoading && (
           <div style={{ padding: 20, textAlign: 'center', fontFamily: font.mono, fontSize: 11, color: colors.textDim }}>
             Loading...
           </div>
         )}
 
-        {showMemories && !state.loading && state.error && filtered.length === 0 && (
+        {showMemories && !displayLoading && displayError && displayMemories.length === 0 && (
           <div style={{ padding: 40, textAlign: 'center', fontFamily: font.body, fontSize: 13 }}>
-            <div style={{ color: colors.textMuted, marginBottom: 10 }}>Couldn't load memories.</div>
-            <button
-              onClick={() => loadPage(true)}
-              style={{
-                fontSize: 12, fontFamily: font.body, fontWeight: 600, color: colors.cyan,
-                background: 'none', border: `1px solid ${colors.borderHi}`, borderRadius: 8,
-                padding: '5px 14px', cursor: 'pointer',
-              }}
-            >
-              Retry
-            </button>
+            <div style={{ color: colors.textMuted, marginBottom: 10 }}>
+              {isSearch ? `Could not search your Brain: ${displayError}` : "Couldn't load memories."}
+            </div>
+            {!isSearch && (
+              <button
+                onClick={() => loadPage(true)}
+                style={{
+                  fontSize: 12, fontFamily: font.body, fontWeight: 600, color: colors.cyan,
+                  background: 'none', border: `1px solid ${colors.borderHi}`, borderRadius: 8,
+                  padding: '5px 14px', cursor: 'pointer',
+                }}
+              >
+                Retry
+              </button>
+            )}
           </div>
         )}
 
-        {showMemories && !state.loading && !state.error && filtered.length === 0 && (
+        {showMemories && !displayLoading && !displayError && displayMemories.length === 0 && (
           <div style={{ padding: 40, textAlign: 'center', fontFamily: font.body, fontSize: 13, color: colors.textMuted }}>
-            {isSearch ? 'No memories match your search.' : 'No memories yet.'}
+            {isSearch ? `No memories match "${searchQuery}"` : 'No memories yet.'}
           </div>
         )}
 
-        {showMemories && state.hasMore && !state.loading && (
+        {showMemories && !isSearch && state.hasMore && !state.loading && (
           <div style={{ padding: 12, textAlign: 'center', fontFamily: font.mono, fontSize: 10, color: colors.textDim }}>
             Scroll for more...
           </div>

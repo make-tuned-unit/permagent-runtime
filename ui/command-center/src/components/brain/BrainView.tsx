@@ -8,6 +8,12 @@ import { BrainScene, type TypeFilters } from './BrainScene';
 import { useBrainData, type GraphMemory, type GraphEntity } from './useBrainData';
 import { BrainList } from './BrainList';
 import { resolveFocusedMemory, deriveMemoryTitle } from './brainMemoryFocus';
+import {
+  resolveSearchGraphNode,
+  searchResultToGraphMemory,
+  useBrainSearch,
+  type BrainSearchResult,
+} from './brainSearch';
 
 type ViewMode = 'graph' | 'list';
 
@@ -50,7 +56,12 @@ export function BrainView() {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [modeBeforeSearch, setModeBeforeSearch] = useState<ViewMode>('graph');
 
-  const { data, loading, error, refresh } = useBrainData(debouncedSearch);
+  const { data, loading, error, refresh } = useBrainData();
+  const { results: searchResults, loading: searchLoading, error: searchError } = useBrainSearch(debouncedSearch);
+  const searchMemories = useMemo(
+    () => (searchResults ?? []).map(searchResultToGraphMemory),
+    [searchResults],
+  );
   const [filters, setFilters] = useState<TypeFilters>({ person: true, project: true, tool: true, location: true, organization: true, concept: true, memory: true });
   const [topicsExpanded, setTopicsExpanded] = useState(false);
   const [timeValue, setTimeValue] = useState(1);
@@ -171,6 +182,23 @@ export function BrainView() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search]);
 
+  // Centre the graph on the top ranked hit once search results land.
+  useEffect(() => {
+    if (!debouncedSearch.trim()) {
+      sceneRef.current?.clearSearchFocus();
+      return;
+    }
+    const top = searchResults?.[0];
+    if (!top) return;
+    const nodeId = resolveSearchGraphNode(top, data?.memories ?? []);
+    sceneRef.current?.focusSearchHit(nodeId, top.preview);
+  }, [debouncedSearch, searchResults, data]);
+
+  const openSearchResult = useCallback((result: BrainSearchResult) => {
+    const mem = searchResultToGraphMemory(result);
+    selectMemory(mem, !resolveSearchGraphNode(result, data?.memories ?? []));
+  }, [data, selectMemory]);
+
   // Filters
   useEffect(() => { sceneRef.current?.setTypeFilter(filters); }, [filters]);
 
@@ -213,6 +241,9 @@ export function BrainView() {
             selectedId={selected?.id ?? null}
             timeValue={timeValue}
             searchQuery={debouncedSearch}
+            searchResults={searchMemories}
+            searchLoading={searchLoading}
+            searchError={searchError}
             entities={data?.entities ?? []}
             filters={filters}
           />
@@ -293,6 +324,12 @@ export function BrainView() {
         <div style={{ flex: 1, maxWidth: 360 }}>
           <input
             value={search} onChange={e => setSearch(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && debouncedSearch.trim() && searchResults?.[0]) {
+                e.preventDefault();
+                openSearchResult(searchResults[0]);
+              }
+            }}
             placeholder="search the shape of what we've built..."
             style={{
               width: '100%', fontFamily: font.body, fontSize: 13, color: colors.text,
