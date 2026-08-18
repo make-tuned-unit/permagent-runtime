@@ -371,9 +371,10 @@ pub struct InternalSubagentEngine {
     /// The workflow role the selected worker plays (for the live cache guard).
     /// `None` when the worker yields no role signal.
     pub role: Option<crate::cost_router::WorkflowRole>,
-    /// The role's CONFIGURED provider+model (#730 wiring). `Some` ⇒ route the goal
-    /// to it; `None` ⇒ clone the parent session's model — the single-model
-    /// fallback, never a baked-in vendor default.
+    /// The role's provider+model (#730 wiring) — hand-configured, else the
+    /// recommender-derived best fit from the models the user actually has.
+    /// `Some` ⇒ route the goal to it; `None` ⇒ clone the parent session's model
+    /// — the single-model fallback, never a baked-in vendor default.
     pub model_override: Option<crate::cost_router::RoleModel>,
 }
 
@@ -407,8 +408,8 @@ impl GoalEngine for InternalSubagentEngine {
         .await?;
         let work_dir = worktree.clone();
 
-        // Route this goal to its workflow role's CONFIGURED model (#730 wiring)
-        // when the orchestrator resolved one; otherwise clone the parent session's
+        // Route this goal to its workflow role's model (#730 wiring — configured,
+        // else derived) when the orchestrator resolved one; otherwise clone the parent session's
         // provider+model — the single-model fallback, never a baked-in default.
         let (provider_name, model_config) = match &self.model_override {
             Some(rm) => {

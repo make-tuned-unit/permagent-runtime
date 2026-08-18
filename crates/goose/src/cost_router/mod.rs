@@ -40,6 +40,7 @@ pub mod best_of_n;
 pub mod budget;
 pub mod cache;
 pub mod cheap;
+pub mod derived;
 pub mod escalation;
 pub mod hold_done;
 pub mod knowledge;
@@ -69,6 +70,10 @@ pub use cache::{
 pub use cheap::{
     build_ladder, default_anchor, discover_priced_candidates, is_key_configured, load_ladder,
     reference_cost_for, CheapCandidate, CheapLadder, PricedCandidate,
+};
+pub use derived::{
+    config_key_affects_derived_map, derive_role_map, derived_role_map, invalidate_derived_role_map,
+    model_routing_receipt, DerivedRoleMap, Provenance, RoleSource, DERIVED_ROLE_MAP_TTL,
 };
 pub use escalation::{
     build_handoff, decide_escalation, load_max_escalations, max_escalations_from,
@@ -101,7 +106,8 @@ pub use review_gate::{
 };
 pub use role_map::{
     cache_guard_should_warn, clear_role_model, configured as configured_role_models, derive_role,
-    mappings_to_persist, resolve_role_model, role_model, set_role_model, RoleModel,
+    mappings_to_persist, resolve_role_model, resolve_role_model_or_derived, role_model,
+    role_model_or_derived, set_role_model, RoleModel,
 };
 pub use snapshot::{RoutingSnapshot, ROUTING_SNAPSHOT_KEY};
 pub use tier::{
@@ -134,10 +140,14 @@ pub const COST_OPTIMIZER_FEATURE: crate::agents::self_knowledge::FeatureDescript
              it, so MECHANICAL is the cheapest model that can do the job rather than the cheapest \
              model, and it says plainly when nothing clears a floor. Its per-role suggestion is \
              shown by `permagent packs recommend` and persisted by `permagent packs apply`. The \
-             ROUTER then dispatches DELEGATED work — subagents and goal workers — to the model \
-             configured for its role; with no per-role mapping configured, everything runs on the \
-             single session model, and there is no baked-in vendor default it silently falls back \
-             to. The interactive main loop always stays on one model to keep its prompt cache \
+             ROUTER then dispatches DELEGATED work — subagents and goal workers — by role: a \
+             hand-configured mapping wins; otherwise it derives a best-fit map from the models \
+             you actually have (keyed providers and installed local models) — for each role the \
+             cheapest, local or cloud, that clears the role's bar — and routes on that by \
+             default; a role nothing clears stays on the single session model. There is no \
+             baked-in vendor default it silently falls back to, and the goal card's routing \
+             receipt says which source picked the model (configured, derived with its floor and \
+             confidence, or session). The interactive main loop always stays on one model to keep its prompt cache \
              warm; latency-tolerant sub-work goes to separate subagents, and a cache-heavy role \
              routed to a non-caching provider is flagged at dispatch. Every dispatched GOAL is \
              assessed to a starting tier before any model runs — deterministic, zero-LLM: the \
@@ -159,11 +169,12 @@ pub const COST_OPTIMIZER_FEATURE: crate::agents::self_knowledge::FeatureDescript
              surprise bills and no vendor lock-in: the recommender picks, per role, the cheapest \
              model that clears that role's capability floor, whether local or cloud, with no bias \
              toward the vendor whose runtime this is; delegated work then runs on the mapping the \
-             user configured or applied from that recommendation, and nothing routes to a model \
-             the user did not choose. When the user asks what a build will cost, worries about \
-             spend, or asks which models to use where, point them at the live meter and the \
-             objective per-role recommendation (`permagent packs recommend`), and explain that \
-             setting no mapping keeps everything on their one model. When you dispatch work of \
+             user hand-configured, else on that derived best fit, under the same spend caps — and \
+             nothing routes to a model the user does not have. When the user asks what a build \
+             will cost, worries about spend, or asks which models to use where, point them at the \
+             live meter and the objective per-role recommendation (`permagent packs recommend`), \
+             and explain that a hand-set mapping pins a role while an unset one is derived from \
+             the models they have. When you dispatch work of \
              ANY kind — a blog post, a lookup, a refactor, a build from scratch — you can state \
              with confidence HOW the path was chosen: which worker won and why (cost rank or an \
              explicit pin), which tier the goal was assessed to and the recorded reason, and that \
@@ -186,12 +197,15 @@ pub const COST_OPTIMIZER_FEATURE: crate::agents::self_knowledge::FeatureDescript
             crate::agents::self_knowledge::TeachingStep {
                 title: "Explain per-role routing (no vendor default)",
                 body: "Explain the per-role routing in plain terms: each workflow role runs on \
-                       the model they configured for it — or, with nothing configured, on their \
-                       single session model, never a built-in vendor default — picked by an \
-                       objective recommender from measured reliability and price, not vendor \
-                       preference. Point them at `permagent packs recommend` to see the \
-                       best-fit-per-role suggestion for the models they already have, and \
-                       `permagent packs apply` to route each role to it.",
+                       the model they configured for it — or, with nothing configured, on the \
+                       best fit derived from the models they actually have (local or cloud, the \
+                       cheapest that clears the role's bar), and on their single session model \
+                       when nothing clears it — never a built-in vendor default. The pick comes \
+                       from an objective recommender using measured reliability and price, not \
+                       vendor preference, and each goal card's routing receipt says whether the \
+                       model was configured or derived. Point them at `permagent packs recommend` \
+                       to see the best-fit-per-role suggestion, and `permagent packs set` / \
+                       `apply` to pin a role by hand.",
                 open_surface: None,
                 confirm: None,
             },

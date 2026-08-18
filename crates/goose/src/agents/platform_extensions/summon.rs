@@ -1331,14 +1331,39 @@ impl SummonClient {
         session: &crate::session::Session,
     ) -> Result<Arc<dyn crate::providers::base::Provider>, anyhow::Error> {
         // The objective role→model layer (#730 wiring). If the delegate carries a
-        // worker persona whose workflow role has a CONFIGURED model, route to it —
-        // slotted after an explicit param / recipe setting, before the
-        // GOOSE_SUBAGENT_* fallback. Unset ⇒ `None` ⇒ fall through to the current
-        // single-model behaviour (parent/session model). It is NEVER a baked-in
-        // vendor default: the tier-pack Opus/Sonnet/Haiku is not reachable from
-        // here — nothing configured means nothing changes.
+        // worker persona with a workflow role, route to that role's model — the
+        // hand-CONFIGURED mapping first, else the recommender-DERIVED best-fit
+        // pick (Jesse's 2026-08-18 ruling: the cheapest model the user actually
+        // has that clears the role's floor, local or cloud) — slotted after an
+        // explicit param / recipe setting, before the GOOSE_SUBAGENT_* fallback.
+        // Neither ⇒ `None` ⇒ fall through to the current single-model behaviour
+        // (parent/session model). It is NEVER a baked-in vendor default: the
+        // derived map is built only from keyed providers and installed local
+        // models; the tier-pack Opus/Sonnet/Haiku is not reachable from here.
+        // The derived map is only fetched when a role needs it (cached process-
+        // wide; the first fetch may probe the local Ollama daemon, bounded).
         let role = Self::role_for_persona(params.worker_persona.as_deref());
-        let role_model = role.and_then(crate::cost_router::role_model);
+        let role_model = match role {
+            Some(r) => match crate::cost_router::role_model(r) {
+                Some(rm) => Some((rm, crate::cost_router::RoleSource::Configured)),
+                None => crate::cost_router::derived_role_map()
+                    .await
+                    .get(r)
+                    .map(|(rm, _)| (rm.clone(), crate::cost_router::RoleSource::Derived)),
+            },
+            None => None,
+        };
+        if let (Some(r), Some((rm, source))) = (role, role_model.as_ref()) {
+            tracing::debug!(
+                target: "permagentd::brain",
+                role = r.as_str(),
+                provider = %rm.provider,
+                model = %rm.model,
+                source = source.as_str(),
+                "subagent role→model resolved",
+            );
+        }
+        let role_model = role_model.map(|(rm, _)| rm);
 
         let recipe_provider = recipe
             .settings
@@ -2044,6 +2069,65 @@ mod tests {
             Some(pack_default),
             "unset role must not route to the tier-pack default"
         );
+    }
+
+    /// The DERIVED default at the role step (Jesse's 2026-08-18 ruling), asserted
+    /// on PROVENANCE rather than a vendor name: with NO available providers the
+    /// derived map is empty and the role step yields nothing — the fallthrough
+    /// is still the session model; with available providers the derived pick is
+    /// one of THEM (whatever they are), and it slots into the precedence exactly
+    /// where a hand-configured role does — below param/recipe, above
+    /// GOOSE_SUBAGENT_*/session.
+    #[test]
+    fn unset_role_derives_only_from_available_providers_else_session_model() {
+        use crate::cost_router::{derive_role_map, AvailableModel, WorkflowRole};
+        // No available (scorable) providers → nothing derived → session model.
+        let empty = derive_role_map(&[]);
+        let role_step = empty
+            .get(WorkflowRole::Edit)
+            .map(|(rm, _)| (Some(rm.provider.clone()), Some(rm.model.clone())))
+            .unwrap_or((None, None));
+        assert_eq!(role_step, (None, None));
+        assert_eq!(
+            resolve_subagent_provider(None, None, role_step.0, None, s("session-provider")),
+            s("session-provider"),
+        );
+        // Available providers → the derived pick is one of them, by provenance.
+        let available = vec![
+            AvailableModel::new("acme-cloud", "unknown-to-kb"), // unscorable: never picked
+            AvailableModel::new("google", "gemini-3-pro"),
+            AvailableModel::new("ollama", "qwen3-coder:30b"),
+        ];
+        let derived = derive_role_map(&available);
+        let (rm, _) = derived
+            .get(WorkflowRole::Edit)
+            .expect("a floor-clearing available model derives EDIT");
+        assert!(
+            available
+                .iter()
+                .any(|a| a.provider == rm.provider && a.model == rm.model),
+            "derived {}/{} must be one of the user's available models",
+            rm.provider,
+            rm.model
+        );
+        // It slots in at the role step: below an explicit param, above env.
+        assert_eq!(
+            resolve_subagent_model(
+                s("param-model"),
+                None,
+                s(&rm.model),
+                s("GOOSE_SUBAGENT_MODEL")
+            ),
+            s("param-model"),
+        );
+        assert_eq!(
+            resolve_subagent_model(None, None, s(&rm.model), s("GOOSE_SUBAGENT_MODEL")),
+            s(&rm.model),
+        );
+        // The pack default is not "available" here, so by construction it is
+        // not the derived pick — the assertion is on provenance, not the name.
+        let pack_default = crate::cost_router::packs::ModelPacks::default().hard;
+        assert!(!(rm.provider == pack_default.provider && rm.model == pack_default.model));
     }
 
     // ── Subagent target consistency (robustness-audit F5.2) ──────────────────

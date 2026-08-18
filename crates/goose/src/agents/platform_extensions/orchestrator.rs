@@ -1030,7 +1030,7 @@ pub(crate) async fn dispatch_goal_fn(
         None => select_worker_detailed(&pool, probe_cache, &card).await?,
     };
     let worker_key = selection.worker_key.clone();
-    let capability_snapshot = selection.snapshot;
+    let mut capability_snapshot = selection.snapshot;
 
     // Resolve worker persona for the subagent
     let config = agent_identity::load_agent_config();
@@ -1229,27 +1229,35 @@ pub(crate) async fn dispatch_goal_fn(
                 ),
                 dispatch_scope.as_deref(),
             );
-            // Resolve the worker's workflow role → its CONFIGURED model (#730
-            // wiring). Unset ⇒ None ⇒ the engine clones the parent session
-            // model (single-model fallback; never a baked-in vendor default).
+            // Resolve the worker's workflow role → its model (#730 wiring): the
+            // hand-CONFIGURED mapping wins; otherwise the recommender-DERIVED
+            // best-fit map (Jesse's 2026-08-18 ruling — the cheapest model the
+            // user actually has that clears the role's floor, local or cloud);
+            // otherwise None ⇒ the engine clones the parent session model. Never
+            // a baked-in vendor default: the derived map is built only from
+            // keyed providers and installed local models. The map is computed
+            // ONCE per dispatch (cached process-wide) and the routing receipt
+            // records which source picked the model.
+            let derived = crate::cost_router::derived_role_map().await;
             let worker_role = worker_cfg.and_then(|w| w.routing_role());
             let mut role = worker_role;
-            let mut model_override = worker_role.and_then(crate::cost_router::role_model);
+            let mut resolved =
+                worker_role.and_then(|r| crate::cost_router::role_model_or_derived(r, &derived));
 
             // Verify-loop escalation override: an escalated re-dispatch runs
-            // the CONFIGURED model for the climbed tier. This is never a baked
-            // default — `escalate_verify_fix_loop` only marks a swap when the
-            // next tier is actually configured (else it parks), so an escalated
-            // goal reaching here has a mapped model.
+            // the model for the climbed tier (configured, else derived). This is
+            // never a baked default — `escalate_verify_fix_loop` only marks a
+            // swap when the next tier actually resolves (else it parks), so an
+            // escalated goal reaching here has a mapped model.
             if let Some(tier) = escalation_state
                 .as_ref()
                 .filter(|s| s.is_escalated())
                 .and_then(|s| s.current_tier)
             {
                 let esc_role = crate::cost_router::workflow_role_for_tier(tier);
-                if let Some(rm) = crate::cost_router::role_model(esc_role) {
+                if let Some(hit) = crate::cost_router::role_model_or_derived(esc_role, &derived) {
                     role = Some(esc_role);
-                    model_override = Some(rm);
+                    resolved = Some(hit);
                 }
             } else if escalation_state.is_none() {
                 // First dispatch of a fresh goal: seed the escalation ladder
@@ -1270,18 +1278,21 @@ pub(crate) async fn dispatch_goal_fn(
                     &card.metadata_json,
                 );
                 let assessed_role = crate::cost_router::workflow_role_for_tier(assessment.tier);
-                if let Some(rm) = crate::cost_router::role_model(assessed_role) {
+                if let Some(hit) =
+                    crate::cost_router::role_model_or_derived(assessed_role, &derived)
+                {
                     tracing::info!(
                         target: "permagentd::brain",
                         card_id,
                         tier = assessment.tier.as_str(),
                         reason = assessment.reason,
-                        provider = %rm.provider,
-                        model = %rm.model,
+                        provider = %hit.0.provider,
+                        model = %hit.0.model,
+                        source = hit.1.as_str(),
                         "goal assessed to a starting tier",
                     );
                     role = Some(assessed_role);
-                    model_override = Some(rm);
+                    resolved = Some(hit);
                 }
                 let seed = crate::cost_router::GoalEscalationState::seed(Some(assessment.tier));
                 if let Err(e) = persist_escalation_state(&pool, card_id, &seed, None).await {
@@ -1293,6 +1304,16 @@ pub(crate) async fn dispatch_goal_fn(
                     );
                 }
             }
+            // The routing receipt (#211 snapshot): configured / derived (with
+            // provenance) / session model — so the goal card says HOW the model
+            // was chosen, not just which worker ran.
+            if let Some(obj) = capability_snapshot.as_object_mut() {
+                obj.insert(
+                    "model_routing".to_string(),
+                    crate::cost_router::model_routing_receipt(role, resolved.as_ref(), &derived),
+                );
+            }
+            let model_override = resolved.map(|(rm, _)| rm);
             Box::new(goal_engine::InternalSubagentEngine {
                 session_manager: context.session_manager.clone(),
                 provider,
@@ -5504,10 +5525,37 @@ async fn capture_worktree_diff(working_dir: &std::path::Path) -> String {
     }
 }
 
+/// The model a tier's work runs on for the verify-loop climb: the tier's workflow
+/// role resolved hand-CONFIGURED first, else from the DERIVED best-fit map
+/// (`derived`). A DERIVED pick that is the very model the goal is already on
+/// (`current`) resolves to `None` — the derived map is the recommender's best fit
+/// per role, not a statement that the next rung is stronger, and a single-model
+/// user's map names the same model for every role; "escalating" to it would kill
+/// and re-run the identical model. A hand-CONFIGURED identical mapping is left
+/// as the user set it. Pure over a config-key reader and the map so the rule is
+/// unit-testable without the process-global config.
+pub(crate) fn resolve_tier_model(
+    tier: crate::cost_router::Tier,
+    read: impl Fn(&str) -> Option<String>,
+    derived: &crate::cost_router::DerivedRoleMap,
+    current: Option<&crate::cost_router::RoleModel>,
+) -> Option<(
+    crate::cost_router::RoleModel,
+    crate::cost_router::RoleSource,
+)> {
+    let role = crate::cost_router::workflow_role_for_tier(tier);
+    let (rm, source) = crate::cost_router::resolve_role_model_or_derived(role, read, derived)?;
+    if source == crate::cost_router::RoleSource::Derived && current == Some(&rm) {
+        return None;
+    }
+    Some((rm, source))
+}
+
 /// THE live verifier-driven escalation (completes #739's decision core). Fired
 /// from the runaway-loop monitor's detached task when a goal's `verify` has failed
 /// identically `consecutive` times. Within the four guardrails it AUTO-re-attempts
-/// the fix on a stronger CONFIGURED model — no human gate — or parks at a ceiling:
+/// the fix on a stronger model — hand-configured, else the derived best-fit map's
+/// pick for the next tier — with no human gate, or parks at a ceiling:
 ///
 /// - **Swap** ([`crate::cost_router::EscalationOutcome::Swap`]): persist the
 ///   climbed per-goal tier + a diff/failure handoff (R2), emit an AMBIENT,
@@ -5520,7 +5568,8 @@ async fn capture_worktree_diff(working_dir: &std::path::Path) -> String {
 ///   is `!Send` and can only run in the orchestrator's own context, never from
 ///   this spawned monitor task — so the swap requeues rather than dispatching
 ///   inline.
-/// - **Park**: no configured stronger tier (single-model / unmapped — the
+/// - **Park**: no stronger tier resolves (single-model / unmapped and not
+///   derivable, or the derived pick is the model already running — the
 ///   no-default rule), the per-goal `max_escalations` cap, the tier ceiling, or
 ///   the spend cap → the EXISTING work-preserving, human-gated park
 ///   ([`escalate_session_loop`]). Park-first is fully preserved.
@@ -5551,10 +5600,19 @@ pub async fn escalate_verify_fix_loop(
         .and_then(crate::cost_router::GoalEscalationState::from_metadata)
         .unwrap_or_else(|| crate::cost_router::GoalEscalationState::seed(None));
 
-    // Guardrail inputs: the user's CONFIGURED ladder (None-when-unset — NEVER the
-    // packs.rs defaults), the per-goal climb budget, and the running spend.
+    // Guardrail inputs: the user's ladder — hand-CONFIGURED roles first, else the
+    // recommender-DERIVED best-fit map (built only from models the user actually
+    // has; NEVER the packs.rs defaults) — the per-goal climb budget, and the
+    // running spend. The derived map is resolved once, before the closure.
+    let derived = crate::cost_router::derived_role_map().await;
+    let cfg = crate::config::Config::global();
+    let read = |k: &str| cfg.get_param::<String>(k).ok();
+    let current_model = state
+        .current_tier
+        .and_then(|t| resolve_tier_model(t, read, &derived, None))
+        .map(|(rm, _)| rm);
     let resolve =
-        |tier| crate::cost_router::role_model(crate::cost_router::workflow_role_for_tier(tier));
+        |tier| resolve_tier_model(tier, read, &derived, current_model.as_ref()).map(|(rm, _)| rm);
     let spent = session_spent_usd(pool, session_id).await;
     let budget_cfg = crate::cost_router::budget::load_budget_config();
     let task_spent = task_spent_usd(pool, session_id).await;
@@ -5597,12 +5655,9 @@ pub async fn escalate_verify_fix_loop(
         } => {
             // R2: hand the prior attempt's failure + diff forward so the stronger
             // model continues rather than restarting cold.
-            let prior_model = state
-                .current_tier
-                .and_then(|t| {
-                    crate::cost_router::role_model(crate::cost_router::workflow_role_for_tier(t))
-                })
-                .map(|rm| rm.model)
+            let prior_model = current_model
+                .as_ref()
+                .map(|rm| rm.model.clone())
                 .unwrap_or_else(|| "the previous model".to_string());
             let working_dir = crate::projects::get_project(pool, &project_id)
                 .await
@@ -6904,6 +6959,66 @@ mod tests {
             .map(|s| s.is_escalated())
             .unwrap_or(false);
         assert!(!escalated, "a single-model park must not record a climb");
+    }
+
+    /// The verify-loop tier resolver over the DERIVED map: hand-configured wins;
+    /// a derived pick for the next tier that is a DIFFERENT model than the one
+    /// running resolves (→ Swap upstream); a derived pick that IS the running
+    /// model resolves to None (→ park) — a single-model user's derived map names
+    /// the same model for every role and "escalating" to it would re-run it.
+    #[test]
+    fn resolve_tier_model_prefers_configured_then_derived_never_the_same_model() {
+        use crate::cost_router::{derive_role_map, AvailableModel, RoleModel, RoleSource, Tier};
+        let none = |_: &str| None;
+        // Two OpenAI models: MECHANICAL (cheap_cloud) and ORCHESTRATE (frontier)
+        // derive to different picks → the frontier resolves as a swap target.
+        let two = derive_role_map(&[
+            AvailableModel::new("openai", "gpt-5.6"),
+            AvailableModel::new("openai", "gpt-5.6-mini"),
+        ]);
+        let (cheap, src) = resolve_tier_model(Tier::CheapCloud, none, &two, None).unwrap();
+        assert_eq!(src, RoleSource::Derived);
+        let (frontier, src) = resolve_tier_model(Tier::Frontier, none, &two, Some(&cheap)).unwrap();
+        assert_eq!(src, RoleSource::Derived);
+        assert_ne!(
+            frontier, cheap,
+            "the derived frontier pick must differ from the running model"
+        );
+
+        // One model: every role derives to it → the next tier is the SAME model → None.
+        let one = derive_role_map(&[AvailableModel::new("openai", "gpt-5.6")]);
+        let (only, _) = resolve_tier_model(Tier::CheapCloud, none, &one, None).unwrap();
+        assert_eq!(
+            resolve_tier_model(Tier::Frontier, none, &one, Some(&only)),
+            None,
+            "a derived pick equal to the running model is not an escalation"
+        );
+
+        // Hand-configured wins over derived, and an identical configured mapping
+        // is honoured as the user set it (not second-guessed).
+        let pinned = RoleModel {
+            provider: "openai".into(),
+            model: "gpt-5.6".into(),
+        };
+        let cfg = |k: &str| match k {
+            "PERMAGENT_ROLE_ORCHESTRATE_PROVIDER" => Some("openai".to_string()),
+            "PERMAGENT_ROLE_ORCHESTRATE_MODEL" => Some("gpt-5.6".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            resolve_tier_model(Tier::Frontier, cfg, &one, Some(&pinned)),
+            Some((pinned.clone(), RoleSource::Configured))
+        );
+        // Nothing configured, nothing derivable → None (session model / park).
+        assert_eq!(
+            resolve_tier_model(
+                Tier::Frontier,
+                none,
+                &crate::cost_router::DerivedRoleMap::empty(),
+                None
+            ),
+            None
+        );
     }
 
     #[tokio::test]
