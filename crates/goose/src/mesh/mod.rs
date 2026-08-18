@@ -285,7 +285,11 @@ pub(crate) fn warn_pool_untrusted_once(detail: &str) {
 
 /// Pure core of [`resolve_route`] — the routing table, unit-testable without
 /// touching process env (env-mutating tests flake under parallel `cargo test`).
-fn resolve_route_inner(workload: Workload, trusted: bool, pool: Option<String>) -> InferenceRoute {
+pub(crate) fn resolve_route_inner(
+    workload: Workload,
+    trusted: bool,
+    pool: Option<String>,
+) -> InferenceRoute {
     match workload {
         // Never route interactive off-device yet (vision open-question #1:
         // WAN latency breaks the interactive budget). Unlocks per phase.
@@ -303,7 +307,7 @@ fn resolve_route_inner(workload: Workload, trusted: bool, pool: Option<String>) 
 /// The pool endpoint to offload batch work to, if one is configured. An explicit
 /// `PERMAGENT_MESH_POOL` wins; otherwise the #698 batch host
 /// (`config::ollama_host()`) counts as a pool when it is not the local default.
-fn configured_pool_endpoint() -> Option<String> {
+pub(crate) fn configured_pool_endpoint() -> Option<String> {
     resolve_pool_endpoint(
         std::env::var("PERMAGENT_MESH_POOL").ok(),
         crate::config::ollama_host(),

@@ -16,6 +16,10 @@
 //! exactly one place.
 
 use sqlx::{Pool, Row, Sqlite};
+use std::path::{Path, PathBuf};
+
+use crate::config::paths::Paths;
+use crate::meeting_writeup::WriteupProvenance;
 
 /// `source` tag on every memory a note writes. Deliberately NOT
 /// `permagent.activity` (which pruning/consolidation reap) so notes are durable,
@@ -119,6 +123,158 @@ pub async fn create_note_indexed_with_id(
     insert_note(pool, note_id, project_id, title, body, stored_memory_key).await
 }
 
+/// Attach the permagent-owned markdown export path for API responses.
+pub fn with_export_path(mut note: ProjectNote, project_slug: &str) -> ProjectNote {
+    note.export_path = Some(
+        note_export_path(project_slug, &note)
+            .to_string_lossy()
+            .into_owned(),
+    );
+    note
+}
+
+/// Slug for the markdown filename — title when present, else a short id prefix.
+pub fn note_filename_slug(note: &ProjectNote) -> String {
+    note.title
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(crate::projects::slugify)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| note.id.chars().take(8).collect())
+}
+
+/// Permagent-owned export path: `notes/<project-slug>/<YYYY-MM-DD>-<note-slug>.md`.
+pub fn note_export_path(project_slug: &str, note: &ProjectNote) -> PathBuf {
+    note_export_path_in(&Paths::in_state_dir("notes"), project_slug, note)
+}
+
+pub(crate) fn note_export_path_in(
+    notes_root: &Path,
+    project_slug: &str,
+    note: &ProjectNote,
+) -> PathBuf {
+    let date = note.created_at.get(..10).unwrap_or("unknown-date");
+    let slug = note_filename_slug(note);
+    notes_root
+        .join(project_slug)
+        .join(format!("{date}-{slug}.md"))
+}
+
+fn yaml_escape(value: &str) -> String {
+    if value.contains([':', '#', '\n', '"', '\'']) {
+        format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        value.to_string()
+    }
+}
+
+/// Render a note as markdown with YAML frontmatter (export-only; DB row is canonical).
+pub fn render_note_markdown(
+    project_name: &str,
+    note: &ProjectNote,
+    kind: Option<&str>,
+    provenance: Option<&WriteupProvenance>,
+) -> String {
+    let title = note
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .unwrap_or("Untitled note");
+    let date = note.created_at.get(..10).unwrap_or("unknown-date");
+    let kind = kind.unwrap_or("note");
+    let mut frontmatter = format!(
+        "---\ntitle: {}\nproject: {}\ndate: {}\nkind: {}\n",
+        yaml_escape(title),
+        yaml_escape(project_name),
+        yaml_escape(date),
+        yaml_escape(kind),
+    );
+    if let Some(p) = provenance {
+        frontmatter.push_str(&format!(
+            "writeup_provider: {}\nwriteup_model: {}\nwriteup_privacy: {}\n",
+            yaml_escape(&p.provider),
+            yaml_escape(&p.model),
+            yaml_escape(match p.privacy {
+                crate::meeting_writeup::WriteupPrivacy::LocalOnly => "local_only",
+                crate::meeting_writeup::WriteupPrivacy::TrustedPool => "trusted_pool",
+                crate::meeting_writeup::WriteupPrivacy::CloudSession => "cloud_session",
+            }),
+        ));
+    }
+    frontmatter.push_str("---\n\n");
+    format!("{frontmatter}{}", note.body)
+}
+
+async fn write_note_export_inner(
+    notes_root: &Path,
+    project_slug: &str,
+    project_name: &str,
+    note: &ProjectNote,
+    kind: Option<&str>,
+    provenance: Option<&WriteupProvenance>,
+) -> Result<PathBuf, String> {
+    let path = note_export_path_in(notes_root, project_slug, note);
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("create export dir: {e}"))?;
+    }
+    let markdown = render_note_markdown(project_name, note, kind, provenance);
+    tokio::fs::write(&path, markdown)
+        .await
+        .map_err(|e| format!("write export file: {e}"))?;
+    Ok(path)
+}
+
+/// Best-effort markdown export on save / rewrite. Failures are logged only.
+pub async fn write_note_export(
+    project_slug: &str,
+    project_name: &str,
+    note: &ProjectNote,
+    kind: Option<&str>,
+    provenance: Option<&WriteupProvenance>,
+) {
+    if let Err(error) = write_note_export_inner(
+        &Paths::in_state_dir("notes"),
+        project_slug,
+        project_name,
+        note,
+        kind,
+        provenance,
+    )
+    .await
+    {
+        tracing::warn!(
+            project = %note.project_id,
+            note = %note.id,
+            %error,
+            "project note markdown export failed (note still saved)"
+        );
+    }
+}
+
+#[cfg(test)]
+pub(crate) async fn write_note_export_to_root(
+    notes_root: &Path,
+    project_slug: &str,
+    project_name: &str,
+    note: &ProjectNote,
+    kind: Option<&str>,
+    provenance: Option<&WriteupProvenance>,
+) -> Result<PathBuf, String> {
+    write_note_export_inner(
+        notes_root,
+        project_slug,
+        project_name,
+        note,
+        kind,
+        provenance,
+    )
+    .await
+}
+
 /// Replace a note's body in place and re-index it into the Brain under the
 /// SAME memory key, so the enriched text supersedes the original rather than
 /// accumulating a second memory for the same note.
@@ -172,7 +328,8 @@ pub async fn update_note_body(
 
 /// One project note: the DB row. `memory_key` is the Brain key the note's text
 /// was indexed under (`None` if the Brain write was skipped/failed — the row is
-/// still the durable record of the note).
+/// still the durable record of the note). `export_path` is the permagent-owned
+/// markdown export path (computed, not stored in SQLite).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ProjectNote {
     pub id: String,
@@ -182,6 +339,8 @@ pub struct ProjectNote {
     pub memory_key: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub export_path: Option<String>,
 }
 
 /// Insert a new project-note row. Returns the full [`ProjectNote`] (with the
@@ -279,6 +438,7 @@ fn row_to_note(r: &sqlx::sqlite::SqliteRow) -> ProjectNote {
         memory_key: r.get("memory_key"),
         created_at: r.get("created_at"),
         updated_at: r.get("updated_at"),
+        export_path: None,
     }
 }
 
@@ -445,5 +605,97 @@ mod tests {
         crate::session::spectral_schema::migrate_v24_to_v25(&pool)
             .await
             .unwrap();
+    }
+
+    /// Guard 5: markdown export exists after save and is rewritten after write-up.
+    #[tokio::test]
+    async fn guard_markdown_export_written_on_save_and_rewrite() {
+        let pool = test_pool().await;
+        let proj_id = a_project(&pool, "Acme").await;
+        let slug = "acme";
+        let root = tempfile::tempdir().unwrap();
+        let note = insert_note(
+            &pool,
+            "note-meeting",
+            &proj_id,
+            Some("Standup"),
+            "raw transcript only",
+            None,
+        )
+        .await
+        .unwrap();
+        let raw_path =
+            write_note_export_to_root(root.path(), slug, "Acme", &note, Some("meeting"), None)
+                .await
+                .unwrap();
+        let raw_bytes = std::fs::read(&raw_path).unwrap();
+        assert!(!raw_bytes.is_empty(), "export must not be zero bytes");
+        assert!(String::from_utf8_lossy(&raw_bytes).contains("raw transcript only"));
+
+        let provenance = WriteupProvenance {
+            provider: "ollama".to_string(),
+            model: "qwen3".to_string(),
+            privacy: crate::meeting_writeup::WriteupPrivacy::LocalOnly,
+        };
+        let structured = "## Summary\n\n- shipped\n\n## Transcript\n\nraw transcript only";
+        update_note_body(&pool, None, &note.id, &proj_id, structured)
+            .await
+            .unwrap();
+        let updated = get_note(&pool, &proj_id, &note.id).await.unwrap().unwrap();
+        let structured_path = write_note_export_to_root(
+            root.path(),
+            slug,
+            "Acme",
+            &updated,
+            Some("meeting"),
+            Some(&provenance),
+        )
+        .await
+        .unwrap();
+        assert_eq!(raw_path, structured_path);
+        let structured_bytes = std::fs::read(&structured_path).unwrap();
+        let structured_text = String::from_utf8_lossy(&structured_bytes);
+        assert!(structured_bytes.len() > raw_bytes.len());
+        assert!(structured_text.contains("writeup_provider: ollama"));
+        assert!(structured_text.contains("## Summary"));
+        assert!(structured_text.contains("raw transcript only"));
+    }
+
+    /// Guard 6: a failed file write leaves the note saved (export errors do not propagate).
+    #[tokio::test]
+    async fn guard_export_failure_does_not_block_note_save() {
+        let pool = test_pool().await;
+        let proj_id = a_project(&pool, "Acme").await;
+        let note = insert_note(&pool, "note-1", &proj_id, None, "still here", None)
+            .await
+            .unwrap();
+        let blocking_file = tempfile::NamedTempFile::new().unwrap();
+        let err =
+            write_note_export_to_root(blocking_file.path(), "acme", "Acme", &note, None, None)
+                .await
+                .unwrap_err();
+        assert!(err.contains("export"), "expected export error, got: {err}");
+        let fetched = get_note(&pool, &proj_id, "note-1").await.unwrap().unwrap();
+        assert_eq!(fetched.body, "still here");
+    }
+
+    /// Guard 7: export file is non-empty and contains the transcript text.
+    #[tokio::test]
+    async fn guard_export_file_nonempty_and_contains_transcript() {
+        let pool = test_pool().await;
+        let proj_id = a_project(&pool, "Acme").await;
+        let transcript = "Alice: we ship Friday\nBob: agreed";
+        let note = insert_note(&pool, "note-2", &proj_id, Some("Sync"), transcript, None)
+            .await
+            .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let path =
+            write_note_export_to_root(root.path(), "acme", "Acme", &note, Some("meeting"), None)
+                .await
+                .unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(!bytes.is_empty());
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains(transcript));
     }
 }
