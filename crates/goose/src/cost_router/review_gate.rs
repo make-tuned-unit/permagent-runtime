@@ -11,6 +11,11 @@
 //!   than EDIT ([`super::recommend`]). Unset ⇒ [`reviewer_routing`] falls the
 //!   review back to the main session model and surfaces the recommender's
 //!   single-family diversity warning (no baked-in vendor default, the standing rule).
+//!   The live seam is `summon`'s provider resolution: when the delegate is the
+//!   `reviewer` persona it calls [`reviewer_dispatch`] with the session's
+//!   (provider, model) as the author, slots the returned role model into the
+//!   ordinary param → recipe → role → env → session precedence, and logs the
+//!   returned warning.
 //! - **The summon** is the existing delegate path
 //!   ([`crate::agents::platform_extensions::summon`]) — the recipe SUMMONS the
 //!   `reviewer` persona with a READ-ONLY extension scope ([`REVIEWER_EXTENSIONS`])
@@ -559,6 +564,91 @@ pub fn reviewer_routing(review_role_model: Option<RoleModel>) -> ReviewerRouting
     }
 }
 
+/// The dispatch-time reviewer decision the live seam consumes
+/// (`summon`'s provider resolution, when the delegate is the `reviewer` persona):
+/// the role model to slot into the delegate's precedence chain, plus the
+/// diversity warning to surface, if any. Pure — the seam logs `warning` and
+/// passes `role_model` on unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewerDispatch {
+    /// `Some` ⇒ route the review to this configured REVIEW-role model; `None` ⇒
+    /// nothing configured — the delegate inherits the main session model exactly
+    /// as it did before the gate existed.
+    pub role_model: Option<RoleModel>,
+    /// The diversity warning to log at dispatch: the single-family fallback
+    /// ([`REVIEWER_DIVERSITY_WARNING`]) when nothing is configured, or the
+    /// same-family notice when the configured reviewer shares the author's family.
+    pub warning: Option<String>,
+}
+
+/// Resolve where the review runs, given the AUTHOR's (provider, model) — the
+/// main session pair — and the configured REVIEW-role model, composing
+/// [`reviewer_routing`] with the same-family check:
+///
+/// - unset ⇒ `role_model: None` (behaviour-neutral: the review inherits the
+///   session model as before) and the fallback diversity warning;
+/// - configured, different family ⇒ route to it, no warning;
+/// - configured, SAME family as the author (the same model, or two models the
+///   knowledge base files under one vendor family) ⇒ still route to it — an
+///   explicit operator mapping is honoured, never silently rerouted — but warn
+///   that the review has no cross-family diversity.
+pub fn reviewer_dispatch(
+    author_provider: Option<&str>,
+    author_model: Option<&str>,
+    review_role_model: Option<RoleModel>,
+) -> ReviewerDispatch {
+    match reviewer_routing(review_role_model) {
+        ReviewerRouting::FallbackToMain { warning } => ReviewerDispatch {
+            role_model: None,
+            warning: Some(warning),
+        },
+        ReviewerRouting::CrossVendor(rm) => {
+            let warning = shares_family(author_provider, author_model, &rm).then(|| {
+                format!(
+                    "the model configured for review ({}/{}) shares the author's model family \
+                     ({}/{}) — the review still runs on it as configured, but there is no \
+                     cross-family diversity; map the review role to a model from another vendor \
+                     (see `permagent packs recommend`) so an independent, different-family \
+                     reviewer checks the diff",
+                    rm.provider,
+                    rm.model,
+                    author_provider.unwrap_or("?"),
+                    author_model.unwrap_or("?")
+                )
+            });
+            ReviewerDispatch {
+                role_model: Some(rm),
+                warning,
+            }
+        }
+    }
+}
+
+/// Does the configured reviewer share the author's model family? True for the
+/// literal same (provider, model) pair (case-insensitive), or when both are in
+/// the knowledge base under the same vendor family. An author or reviewer the
+/// knowledge base does not know is NOT assumed to share a family — an unknown
+/// pairing stays silent rather than crying wolf.
+fn shares_family(
+    author_provider: Option<&str>,
+    author_model: Option<&str>,
+    reviewer: &RoleModel,
+) -> bool {
+    let (Some(ap), Some(am)) = (author_provider, author_model) else {
+        return false;
+    };
+    if ap.eq_ignore_ascii_case(&reviewer.provider) && am.eq_ignore_ascii_case(&reviewer.model) {
+        return true;
+    }
+    match (
+        super::knowledge::lookup(ap, am),
+        super::knowledge::lookup(&reviewer.provider, &reviewer.model),
+    ) {
+        (Some(a), Some(r)) => a.family == r.family,
+        _ => false,
+    }
+}
+
 // ── Prompts (data-fenced; adversarial diverse-lens core) ──────────────────────
 
 /// The reviewer's system prompt: a DIFFERENT engineer instructed to REFUTE the
@@ -927,6 +1017,89 @@ mod tests {
             }
             other => panic!("expected FallbackToMain, got {other:?}"),
         }
+    }
+
+    // ── Dispatch-time routing (the summon seam's decision) ────────────────────
+
+    fn rm(provider: &str, model: &str) -> RoleModel {
+        RoleModel {
+            provider: provider.to_string(),
+            model: model.to_string(),
+        }
+    }
+
+    #[test]
+    fn dispatch_unset_review_role_keeps_the_session_model_and_warns() {
+        // Behaviour-neutral: nothing configured ⇒ no role model is slotted, so the
+        // delegate inherits the session pair exactly as before the gate existed.
+        let d = reviewer_dispatch(Some("anthropic"), Some("claude-sonnet-5"), None);
+        assert_eq!(d.role_model, None);
+        assert_eq!(d.warning.as_deref(), Some(REVIEWER_DIVERSITY_WARNING));
+    }
+
+    #[test]
+    fn dispatch_configured_different_family_is_chosen_without_warning() {
+        let review = rm("openai", "gpt-x");
+        let d = reviewer_dispatch(
+            Some("anthropic"),
+            Some("claude-sonnet-5"),
+            Some(review.clone()),
+        );
+        assert_eq!(d.role_model, Some(review));
+        assert_eq!(d.warning, None, "a cross-family reviewer carries no warning");
+    }
+
+    #[test]
+    fn dispatch_configured_same_model_as_author_routes_but_warns() {
+        // The operator's explicit mapping is honoured (still routed), but the
+        // same-family notice is surfaced — the review has no diversity.
+        let review = rm("anthropic", "claude-sonnet-5");
+        let d = reviewer_dispatch(
+            Some("anthropic"),
+            Some("claude-sonnet-5"),
+            Some(review.clone()),
+        );
+        assert_eq!(d.role_model, Some(review));
+        let w = d.warning.expect("same-model reviewer must warn");
+        assert!(w.contains("shares the author's model family"), "{w}");
+        assert!(w.contains("still runs on it as configured"), "{w}");
+        assert!(w.contains("another vendor"), "{w}");
+    }
+
+    #[test]
+    fn dispatch_same_family_different_model_warns_via_knowledge_base() {
+        // Two known rows under one vendor family: no cross-family diversity.
+        let author = super::super::knowledge::KNOWN_MODELS
+            .iter()
+            .find(|m| m.family == "anthropic")
+            .expect("knowledge base has an anthropic row");
+        let reviewer = super::super::knowledge::KNOWN_MODELS
+            .iter()
+            .find(|m| m.family == "anthropic" && m.model != author.model)
+            .expect("knowledge base has a second anthropic row");
+        let d = reviewer_dispatch(
+            Some(author.provider),
+            Some(author.model),
+            Some(rm(reviewer.provider, reviewer.model)),
+        );
+        assert!(d.role_model.is_some());
+        assert!(d.warning.is_some(), "same family via the knowledge base must warn");
+    }
+
+    #[test]
+    fn dispatch_unknown_pairing_does_not_assume_a_shared_family() {
+        // Neither side is in the knowledge base and they are not the same pair:
+        // stay silent rather than cry wolf.
+        let d = reviewer_dispatch(
+            Some("custom"),
+            Some("model-a"),
+            Some(rm("custom", "model-b")),
+        );
+        assert!(d.role_model.is_some());
+        assert_eq!(d.warning, None);
+        // No author at all ⇒ nothing to compare against ⇒ no warning.
+        let d = reviewer_dispatch(None, None, Some(rm("openai", "gpt-x")));
+        assert_eq!(d.warning, None);
     }
 
     // ── Data-fencing present ──────────────────────────────────────────────────
