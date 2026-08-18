@@ -162,13 +162,14 @@ pub fn resolve_live_writeup_plan(config: &crate::config::Config) -> MeetingWrite
         (Ok(provider), Ok(model)) => Some((provider, model)),
         _ => None,
     };
-    resolve_meeting_writeup_plan(
-        mesh::trusted_pool_enabled(),
-        mesh::configured_pool_endpoint(),
-        local_only,
-        &local_pack,
-        session,
-    )
+    // Use the live seam (engine when on, otherwise the #702 table) so provenance
+    // names the endpoint that `pool::generate` will actually call.
+    let route = mesh::resolve_route(Workload::Batch);
+    let (trusted, pool) = match route.approach {
+        PrivacyApproach::TrustedPool => (true, Some(route.endpoint)),
+        PrivacyApproach::LocalOnly => (false, None),
+    };
+    resolve_meeting_writeup_plan(trusted, pool, local_only, &local_pack, session)
 }
 
 pub const EXTRACTION_SYSTEM: &str =
