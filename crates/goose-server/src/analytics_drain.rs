@@ -264,8 +264,11 @@ async fn drain_project(
     let mut retention_warning: Option<String> = None;
     for _ in 0..MAX_PAGES_PER_TICK {
         let since = config.cursor.clone().unwrap_or_else(|| "0".to_string());
-        let sep = if drain_url.contains('?') { '&' } else { '?' };
-        let url = format!("{drain_url}{sep}since={since}&limit={PAGE_LIMIT}");
+        // Strips any since/limit already baked into the configured URL — see
+        // `drain_page_url` for the silent stall this prevents.
+        let url = crate::routes::first_party_analytics::drain_page_url(
+            drain_url, &since, PAGE_LIMIT,
+        );
 
         let resp = http_client()
             .get(&url)
