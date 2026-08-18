@@ -32,7 +32,9 @@
 //! The seed values are drawn from PUBLIC, measured sources and are **approximate
 //! and updatable** — the recommender's correctness is in its *logic* (which is
 //! unit-tested against synthetic rows), not in any single seed number. Update a
-//! row when a fresher measurement lands. Per-metric sources:
+//! row when a fresher measurement lands — and bump [`KB_SNAPSHOT_DATE`], which
+//! [`kb_is_stale`] measures against so surfaces can say how old the numbers are.
+//! Per-metric sources:
 //!
 //! - `edit_format_reliability` ← the aider polyglot "percent using correct edit
 //!   format" / pass-rate leaderboard (aider.chat/docs/leaderboards). Diff-format
@@ -353,6 +355,57 @@ fn strip_date_suffix(s: &str) -> &str {
     s
 }
 
+/// The date the seed numbers were last read from the public leaderboards / price
+/// lists (see the module note). The numeric scores are NOT refreshed by code —
+/// a scored refresh is a reviewed, cited edit to [`KNOWN_MODELS`]. Exposed so
+/// surfaces can show how old the snapshot is ([`kb_is_stale`]).
+pub const KB_SNAPSHOT_DATE: &str = "2026-07-15";
+
+/// After this many days the snapshot is considered stale: model releases and
+/// price changes land roughly quarterly, so a recommendation built on a snapshot
+/// more than 90 days old should carry a "refresh the knowledge base" note rather
+/// than be presented as current. Advisory only — nothing stops working.
+pub const KB_SNAPSHOT_STALE_AFTER_DAYS: i64 = 90;
+
+/// The snapshot date as a `NaiveDate`. Panics only if the const above is not a
+/// valid `YYYY-MM-DD` — guarded by a test.
+pub fn kb_snapshot_date() -> chrono::NaiveDate {
+    chrono::NaiveDate::parse_from_str(KB_SNAPSHOT_DATE, "%Y-%m-%d")
+        .expect("KB_SNAPSHOT_DATE must be a valid YYYY-MM-DD date")
+}
+
+/// Whether the seed snapshot is older than [`KB_SNAPSHOT_STALE_AFTER_DAYS`] as of
+/// `today`. Pure (the caller passes today's date) so the UI/CLI can show a
+/// "knowledge base snapshot is N days old — scores are estimates" note and tests
+/// don't depend on the wall clock.
+pub fn kb_is_stale(today: chrono::NaiveDate) -> bool {
+    (today - kb_snapshot_date()).num_days() > KB_SNAPSHOT_STALE_AFTER_DAYS
+}
+
+/// How a [`lookup_with_confidence`] hit was resolved — so a caller can say
+/// honestly whether the row's numbers describe the exact model or the nearest
+/// known member of its family.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LookupConfidence {
+    /// Exact `provider`/`model` id (or a case-only difference).
+    Exact,
+    /// Dated/undated alias of the same model (`claude-haiku-4-5` ↔
+    /// `claude-haiku-4-5-20251001`) — the same weights, so the row is exact.
+    Alias,
+    /// Resolved by family prefix: the query carried an Ollama-style `:tag`
+    /// (`qwen3-coder:30b`, `qwen3:latest`) and matched the row for the untagged
+    /// base id. The row is an ESTIMATE for that variant — a 30B and a 480B pull
+    /// share a family, not a score. Surfaces should label it as such.
+    FamilyEstimate,
+}
+
+/// Strip an Ollama-style `:tag` (`qwen3-coder:30b` → `qwen3-coder`,
+/// `qwen3:latest` → `qwen3`). Returns `s` unchanged when there is no tag.
+fn strip_ollama_tag(s: &str) -> &str {
+    s.split_once(':').map(|(base, _)| base).unwrap_or(s)
+}
+
 /// Look up a `provider`/`model` in the knowledge base. Provider match is exact;
 /// model match is exact first, then a case-insensitive fallback so a configured
 /// id that differs only in case still resolves, then a dated/undated-alias
@@ -360,24 +413,53 @@ fn strip_date_suffix(s: &str) -> &str {
 /// resolves to the row keyed by the canonical `claude-haiku-4-5-20251001` (and
 /// vice-versa) instead of falling into `unknown_models`. `None` = not in the KB
 /// (the caller reports it as "unknown — add it to be objectively recommended").
+///
+/// Finally a **family-prefix** fallback strips an Ollama-style `:tag` and matches
+/// the untagged base id, so the models an Ollama install actually reports
+/// (`qwen3-coder:30b`, `qwen3:latest`) resolve to the nearest known row instead
+/// of being unrecommendable. That hit is an estimate — use
+/// [`lookup_with_confidence`] to tell the cases apart.
 pub fn lookup(provider: &str, model: &str) -> Option<&'static ModelKnowledge> {
-    KNOWN_MODELS
+    lookup_with_confidence(provider, model).map(|(m, _)| m)
+}
+
+/// [`lookup`] plus HOW the row was matched ([`LookupConfidence`]).
+pub fn lookup_with_confidence(
+    provider: &str,
+    model: &str,
+) -> Option<(&'static ModelKnowledge, LookupConfidence)> {
+    let exact = KNOWN_MODELS
         .iter()
         .find(|m| m.provider == provider && m.model == model)
         .or_else(|| {
             KNOWN_MODELS.iter().find(|m| {
                 m.provider.eq_ignore_ascii_case(provider) && m.model.eq_ignore_ascii_case(model)
             })
-        })
-        .or_else(|| {
-            // Alias fallback: compare with any trailing date suffix removed on both
-            // sides, provider-scoped so it can never collide across vendors.
-            let q = strip_date_suffix(model);
-            KNOWN_MODELS.iter().find(|m| {
-                m.provider.eq_ignore_ascii_case(provider)
-                    && strip_date_suffix(m.model).eq_ignore_ascii_case(q)
-            })
-        })
+        });
+    if let Some(m) = exact {
+        return Some((m, LookupConfidence::Exact));
+    }
+    // Alias fallback: compare with any trailing date suffix removed on both
+    // sides, provider-scoped so it can never collide across vendors.
+    let q = strip_date_suffix(model);
+    if let Some(m) = KNOWN_MODELS.iter().find(|m| {
+        m.provider.eq_ignore_ascii_case(provider)
+            && strip_date_suffix(m.model).eq_ignore_ascii_case(q)
+    }) {
+        return Some((m, LookupConfidence::Alias));
+    }
+    // Family-prefix fallback: an Ollama-style `:tag` stripped, matched on the
+    // untagged base id. Provider-scoped; only fires when there WAS a tag, so an
+    // unrelated untagged id still misses.
+    let base = strip_ollama_tag(model);
+    if base != model && !base.is_empty() {
+        if let Some(m) = KNOWN_MODELS.iter().find(|m| {
+            m.provider.eq_ignore_ascii_case(provider) && m.model.eq_ignore_ascii_case(base)
+        }) {
+            return Some((m, LookupConfidence::FamilyEstimate));
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -498,5 +580,48 @@ mod tests {
             assert!((0.0..=1.0).contains(&m.edit_format_reliability));
             assert!((0.0..=1.0).contains(&m.orchestration_strength));
         }
+    }
+
+    /// Installed Ollama models carry a `:tag` (`qwen3-coder:30b`, `qwen3:latest`);
+    /// they resolve to the untagged family row — flagged as an ESTIMATE, not an
+    /// exact score — instead of falling into `unknown_models`.
+    #[test]
+    fn ollama_tagged_ids_resolve_to_the_family_row_as_an_estimate() {
+        let (row, conf) = lookup_with_confidence("ollama", "qwen3-coder:30b")
+            .expect("a tagged Ollama id must resolve to its family row");
+        assert_eq!(row.model, "qwen3-coder");
+        assert_eq!(conf, LookupConfidence::FamilyEstimate);
+        let (row, conf) = lookup_with_confidence("ollama", "qwen3:latest").unwrap();
+        assert_eq!(row.model, "qwen3");
+        assert_eq!(conf, LookupConfidence::FamilyEstimate);
+        // Exact and alias hits are reported as such.
+        assert_eq!(
+            lookup_with_confidence("ollama", "qwen3-coder").unwrap().1,
+            LookupConfidence::Exact
+        );
+        assert_eq!(
+            lookup_with_confidence("anthropic", "claude-haiku-4-5")
+                .unwrap()
+                .1,
+            LookupConfidence::Alias
+        );
+        // Provider-scoped and only for a tagged query: no cross-vendor or
+        // untagged-unknown collision.
+        assert!(lookup("openai", "qwen3-coder:30b").is_none());
+        assert!(lookup("ollama", "qwen2.5-coder:7b").is_none());
+        assert!(lookup("ollama", "qwen3-coderx").is_none());
+    }
+
+    #[test]
+    fn kb_staleness_is_measured_from_the_snapshot_date() {
+        let snap = kb_snapshot_date();
+        assert_eq!(snap.to_string(), KB_SNAPSHOT_DATE);
+        assert!(!kb_is_stale(snap));
+        assert!(!kb_is_stale(
+            snap + chrono::Duration::days(KB_SNAPSHOT_STALE_AFTER_DAYS)
+        ));
+        assert!(kb_is_stale(
+            snap + chrono::Duration::days(KB_SNAPSHOT_STALE_AFTER_DAYS + 1)
+        ));
     }
 }

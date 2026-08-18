@@ -10,14 +10,15 @@
 
 use anyhow::Result;
 use permagent::cost_router::{
-    clear_role_model, configured_role_models, mappings_to_persist, recommend_configured,
-    recommend_from_available, set_role_model, AvailableModel, Recommendation, WorkflowRole,
+    clear_role_model, configured_role_models, kb_is_stale, mappings_to_persist,
+    recommend_configured_async, recommend_from_available, set_role_model, AvailableModel,
+    Recommendation, WorkflowRole, KB_SNAPSHOT_DATE,
 };
 
 pub async fn handle_packs_command(command: PacksCommand) -> Result<()> {
     match command {
-        PacksCommand::Recommend { json, models } => recommend_cmd(json, models),
-        PacksCommand::Apply { models, dry_run } => apply_cmd(models, dry_run),
+        PacksCommand::Recommend { json, models } => recommend_cmd(json, models).await,
+        PacksCommand::Apply { models, dry_run } => apply_cmd(models, dry_run).await,
         PacksCommand::Set {
             role,
             provider,
@@ -60,11 +61,12 @@ fn parse_declared_models(spec: &str) -> Result<Vec<AvailableModel>> {
     Ok(out)
 }
 
-/// Resolve a recommendation from either declared `--models` or auto-detection.
-fn resolve_recommendation(models: Option<String>) -> Result<Recommendation> {
+/// Resolve a recommendation from either declared `--models` or auto-detection
+/// (configured keys + a live probe of the local Ollama daemon for pulled models).
+async fn resolve_recommendation(models: Option<String>) -> Result<Recommendation> {
     match models {
         Some(spec) => Ok(recommend_from_available(&parse_declared_models(&spec)?)),
-        None => Ok(recommend_configured()),
+        None => Ok(recommend_configured_async().await),
     }
 }
 
@@ -79,8 +81,8 @@ fn parse_role(tag: &str) -> Result<WorkflowRole> {
     })
 }
 
-fn recommend_cmd(json: bool, models: Option<String>) -> Result<()> {
-    let result = resolve_recommendation(models)?;
+async fn recommend_cmd(json: bool, models: Option<String>) -> Result<()> {
+    let result = resolve_recommendation(models).await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);
@@ -113,8 +115,13 @@ fn recommend_cmd(json: bool, models: Option<String>) -> Result<()> {
         if r.model.is_empty() {
             println!("  {role} (none) — {}", r.reason);
         } else {
+            let fit = if r.floor_met {
+                ""
+            } else {
+                "  (below capability floor)"
+            };
             println!(
-                "  {role} {}/{}  [{}]  ~${:.2}/Mtok",
+                "  {role} {}/{}  [{}]  ~${:.2}/Mtok{fit}",
                 r.provider, r.model, r.display_name, r.blended_cost_per_mtok
             );
             println!("              {} — {}", r.role.description(), r.reason);
@@ -124,10 +131,22 @@ fn recommend_cmd(json: bool, models: Option<String>) -> Result<()> {
         }
     }
 
+    if !result.estimated_models.is_empty() {
+        println!(
+            "\nScored by model family (an estimate for that variant, not a measured row): {}",
+            result.estimated_models.join(", ")
+        );
+    }
     if !result.unknown_models.is_empty() {
         println!(
             "\nNot in the knowledge base (add a row to include in the recommendation): {}",
             result.unknown_models.join(", ")
+        );
+    }
+    if kb_is_stale(chrono::Utc::now().date_naive()) {
+        println!(
+            "\nNote: the model knowledge base snapshot is dated {KB_SNAPSHOT_DATE} — scores and \
+             prices are older than a quarter; treat them as estimates until refreshed."
         );
     }
     println!(
@@ -137,8 +156,8 @@ fn recommend_cmd(json: bool, models: Option<String>) -> Result<()> {
     Ok(())
 }
 
-fn apply_cmd(models: Option<String>, dry_run: bool) -> Result<()> {
-    let result = resolve_recommendation(models)?;
+async fn apply_cmd(models: Option<String>, dry_run: bool) -> Result<()> {
+    let result = resolve_recommendation(models).await?;
     let to_persist = mappings_to_persist(&result.recommendations);
 
     if to_persist.is_empty() {

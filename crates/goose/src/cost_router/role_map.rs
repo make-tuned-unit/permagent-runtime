@@ -402,6 +402,7 @@ mod tests {
             blended_cost_per_mtok: 0.0,
             reason: String::new(),
             warnings: Vec::new(),
+            floor_met: true,
         };
         let recs = vec![
             rec(WorkflowRole::Edit, "openai", "gpt-5.6"),
