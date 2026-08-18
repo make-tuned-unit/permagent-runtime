@@ -42,3 +42,31 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
         state_source: crate::agents::self_knowledge::StateSource::Queryable,
         teaching: &[],
     };
+
+/// Self-knowledge descriptor for the Watcher's project-insights card (the
+/// daemon's `watcher_insights` loop, Jesse 2026-07-28). The Watcher worker
+/// above says it composes insights; this is the SURFACE where they land — the
+/// Overview card on each project — so the agent can point the user at it.
+/// Registered in [`crate::agents::self_knowledge::SURFACE_DESCRIPTORS`].
+/// Static: editorial, no live claim.
+pub const PROJECT_INSIGHTS_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "project_insights",
+        display_name: "Project insights",
+        category: crate::agents::self_knowledge::FeatureCategory::Surface,
+        what_it_does:
+            "A card on each project's Overview where the Watcher leaves a short, grounded \
+             observation once or twice a day per project — composed only from REAL per-project \
+             signals (notes added, kanban cards touched, stalled cards named by title, the \
+             recorded stack, the site's 7-day pageviews) and never invented. There is no \
+             notification and no badge; the user reads them as they browse the project, and \
+             when a project has no signals or no model is available the card stays quiet rather \
+             than filling with boilerplate",
+        why_it_matters:
+            "It is the Watcher's written trace inside the project itself — the place to point \
+             the user when they ask what has moved on a project lately, and the reason you can \
+             mention a stalled card by name. Silence over filler is the rule: an empty card \
+             means nothing cleared the bar, not that the Watcher is broken",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        teaching: &[],
+    };

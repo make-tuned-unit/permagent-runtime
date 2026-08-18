@@ -326,10 +326,11 @@ pub const GROW_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
         what_it_does: "A per-project go-to-market workspace: strategy pillars (audience, value \
              proposition, positioning, channels, content) you think through with the user, a \
-             content calendar of drafted posts, and a growth view with a live analytics lens — a \
-             provider-pluggable stats client (Plausible or GoatCounter) that pulls the project's \
-             real visitor and traffic numbers into the view — with any post or outreach you draft \
-             written in a crisp human voice, never chatbot boilerplate",
+             content calendar of drafted posts, and a growth view with a live analytics lens that \
+             shows the project's real visitor and traffic numbers — from the daemon's own \
+             first-party collector, or from a provider the user already has (Plausible or \
+             GoatCounter) — with any post or outreach you draft written in a crisp human voice, \
+             never chatbot boilerplate",
         why_it_matters:
             "It is where the user takes a project to market with you. When they want to reach an \
              audience, plan a launch, or draft a post, bring them here and draft it in their \
@@ -356,6 +357,39 @@ pub const GROW_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
         ],
     };
 
+/// Self-knowledge descriptor for the daemon's own web-analytics collector
+/// (#23, `routes/first_party_analytics.rs` in the daemon; the connector lens in
+/// `grow_analytics.rs` remains for people who already have a provider). Lives
+/// beside GROW_FEATURE because the Grow tab's analytics lens is where it is
+/// switched on and read; the descriptor is in the lib because the
+/// self-knowledge registry is. Static surface: editorial, no live claim.
+pub const FIRST_PARTY_ANALYTICS_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "first_party_analytics",
+        display_name: "First-party analytics",
+        category: crate::agents::self_knowledge::FeatureCategory::Surface,
+        what_it_does:
+            "The daemon is itself a web-analytics collector for the user's own sites, with no \
+             third-party analytics vendor in the data path: per project the user opts in from \
+             the Grow tab's analytics lens, the daemon mints a random site key and hands back a \
+             snippet (plus a prompt for a coding agent) to drop into the site. Beacons land \
+             either directly at the daemon's collect endpoint — which can only ever insert \
+             events, is rate-limited, and accepts a fixed whitelist of fields — or, for public \
+             sites whose visitors cannot reach a home machine, by relay-and-drain: the site \
+             buffers events same-origin in its own database and the daemon pulls them outbound \
+             on a timer, so daemon downtime loses nothing. Visitor uniques are \
+             privacy-preserving — a daily-rotating hash, no IP address ever stored — and \
+             pageviews, referrers, campaigns, funnels and custom events render in Grow",
+        why_it_matters:
+            "It is how a project gets real visitor numbers without handing a vendor the data. \
+             When the user asks how their site is doing, or whether a launch moved anything, \
+             this is where the numbers come from — read them with observe_app before \
+             suggesting Google Analytics or Plausible or saying analytics are unavailable, and \
+             if a project has no collector yet, offer to set this one up",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        teaching: &[],
+    };
+
 /// Self-knowledge descriptor for the Projects tab itself (#471). Each project
 /// opens into a workspace with two lenses: an Overview dashboard (summary, key
 /// facts, links, live task status) and the Kanban board. Static — always-on
@@ -371,9 +405,11 @@ pub const DEVICES_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
         what_it_does:
             "Settings → Devices pairs the user's other devices to this machine (the hub): it \
-             shows a pairing URL carrying the daemon token, auto-fills the hub's Tailscale \
-             MagicDNS name when a tailnet is detected, and any browser on the tailnet that \
-             opens the URL becomes a full Permagent client. Paired devices are listed by name \
+             names the device and mints a pairing URL carrying a one-time claim code (single \
+             use, ten-minute expiry) that the device exchanges for its own bearer token, \
+             auto-fills the hub's Tailscale MagicDNS name when a tailnet is detected, and any \
+             browser on the tailnet that opens the URL becomes a full Permagent client with a \
+             token of its own. Paired devices are listed by name \
              with a last-seen time, and each one is revocable — the user can name a device, see \
              when it last connected, and revoke its access from this surface. One Brain on the \
              hub — other devices connect to it, nothing syncs",
@@ -399,6 +435,34 @@ pub const DEVICES_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
             }),
             confirm: None,
         }],
+    };
+
+/// Self-knowledge for the native iOS companion (`ios/PermagentMobile`,
+/// MULTI_DEVICE.md). There is no Rust module for the app, so the descriptor
+/// sits beside DEVICES_FEATURE: the companion is the far end of the Devices
+/// pairing flow, and keeping the two adjacent keeps them from contradicting
+/// each other. Static surface — the hub cannot cheaply observe the phone.
+pub const IOS_COMPANION_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "ios_companion",
+        display_name: "iOS companion",
+        category: crate::agents::self_knowledge::FeatureCategory::Surface,
+        what_it_does:
+            "A native iPhone app that is a pocket client of the hub — paired by pasting the \
+             Settings → Devices URL. From it the user chats with you live (the phone and the \
+             desktop are the same sessions on the same daemon), sees decisions pending and goals \
+             in flight, and dictates a note that the hub transcribes with its own local Whisper \
+             (no cloud speech-to-text) and files as a project note. Everything you do from the \
+             phone acts on the hub and every connected screen renders it live; the phone keeps \
+             only its pairing token in the Keychain and holds no user data",
+        why_it_matters:
+            "It is how the user reaches you away from the desk: an ask from the phone runs on \
+             the Mac, so a request to open a site steers the desktop browser and a dispatched \
+             goal moves the desktop board. Because it is remote hands rather than a second \
+             brain, nothing syncs and a lost phone leaks one individually revocable device \
+             token, zero data",
+        state_source: crate::agents::self_knowledge::StateSource::Static,
+        teaching: &[],
     };
 
 pub const PROJECT_WORKSPACE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
