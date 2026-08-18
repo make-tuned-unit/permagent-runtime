@@ -27,7 +27,69 @@ fn write_secrets_file(path: &Path, content: &str) -> std::io::Result<()> {
 
 const KEYRING_SERVICE: &str = "permagent";
 const KEYRING_USERNAME: &str = "secrets";
+/// Longest we wait for one system-keychain operation before reporting it as
+/// failed.
+///
+/// The keyring crate's calls are synchronous FFI (`SecKeychainFindGenericPassword`
+/// on macOS) and can park the calling thread indefinitely — observed when an
+/// ACL refusal raises an authorisation prompt no headless daemon can answer.
+/// A `tokio::time::timeout` around such a call is a deadline that cannot fire:
+/// the timer is polled inline by the very task that is blocked. So the bound
+/// lives HERE, at the one place every read and write goes through, and is
+/// enforced by running the call on its own OS thread and waiting on a channel.
+///
+/// 30 s is long enough for a human to answer a legitimate keychain prompt, and
+/// short enough that a wedged read surfaces in the log as an error that names
+/// the keychain — instead of a daemon that serves HTTP, has no provider, and
+/// says nothing about why. When it elapses the wedged thread stays parked until
+/// the OS returns; that is a real remaining cost, and one parked thread beats a
+/// silent daemon.
+const KEYRING_OP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 pub const CONFIG_YAML_NAME: &str = "config.yaml";
+
+/// Why a bounded keychain operation produced no result.
+#[derive(Debug)]
+enum KeyringOpFailure {
+    /// The OS call did not return within the deadline. The worker thread is
+    /// still parked on it.
+    DeadlineElapsed(std::time::Duration),
+    /// The worker thread could not be spawned, or exited (panicked) before
+    /// sending a result.
+    WorkerLost,
+}
+
+/// Run one keyring operation on a dedicated OS thread and wait at most
+/// `deadline` for its answer. See [`KEYRING_OP_DEADLINE`] for why.
+///
+/// The `Entry` is constructed on the worker too, so the whole FFI surface is
+/// behind the bound. `Ok(Err(_))` is the keyring's own verdict (absent, refused,
+/// unavailable) and is classified by the caller; `Err(_)` means there was no
+/// verdict at all.
+fn run_keyring_op_with_deadline<T: Send + 'static>(
+    service: &str,
+    operation: impl FnOnce(keyring::Entry) -> Result<T, keyring::Error> + Send + 'static,
+    deadline: std::time::Duration,
+) -> Result<Result<T, keyring::Error>, KeyringOpFailure> {
+    let service = service.to_string();
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let spawned = std::thread::Builder::new()
+        .name("keychain-op".to_string())
+        .spawn(move || {
+            let outcome = Entry::new(&service, KEYRING_USERNAME).and_then(operation);
+            // The receiver is gone only if the caller already gave up on us.
+            let _ = tx.send(outcome);
+        });
+    if spawned.is_err() {
+        return Err(KeyringOpFailure::WorkerLost);
+    }
+    match rx.recv_timeout(deadline) {
+        Ok(outcome) => Ok(outcome),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            Err(KeyringOpFailure::DeadlineElapsed(deadline))
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(KeyringOpFailure::WorkerLost),
+    }
+}
 
 #[derive(Error, Debug)]
 pub enum ConfigError {
@@ -1111,8 +1173,12 @@ impl Config {
         primary: &str,
         maybe_secret: &[&str],
     ) -> Result<HashMap<String, String>, ConfigError> {
-        // Try keychain first for the primary key
-        let keychain_values = self.all_secrets().unwrap_or_default();
+        // Try keychain first for the primary key. A store that cannot be read
+        // is an error, not an empty store: `all_secrets` already maps a
+        // genuinely absent entry to an empty map, so anything that reaches
+        // here as `Err` is a refusal, a timeout, or corruption — and reporting
+        // it as "no keys" is the misdiagnosis this file exists to prevent.
+        let keychain_values = self.all_secrets()?;
         let primary_in_keychain = keychain_values
             .get(primary)
             .and_then(|v| v.as_str())
@@ -1216,7 +1282,7 @@ impl Config {
             SecretStorage::Keyring { service } => {
                 let json_value = serde_json::to_string(&values)?;
                 match self.handle_keyring_operation(
-                    |entry| entry.set_password(&json_value),
+                    move |entry| entry.set_password(&json_value),
                     service,
                     Some(&values),
                 ) {
@@ -1257,7 +1323,7 @@ impl Config {
             SecretStorage::Keyring { service } => {
                 let json_value = serde_json::to_string(&values)?;
                 match self.handle_keyring_operation(
-                    |entry| entry.set_password(&json_value),
+                    move |entry| entry.set_password(&json_value),
                     service,
                     Some(&values),
                 ) {
@@ -1387,11 +1453,6 @@ impl Config {
         }
     }
 
-    /// Get a keyring entry for the specified service
-    fn get_keyring_entry(service: &str) -> Result<keyring::Entry, keyring::Error> {
-        Entry::new(service, KEYRING_USERNAME)
-    }
-
     /// Handle keyring errors, falling back to file storage ONLY when there is
     /// no secret store to talk to.
     ///
@@ -1466,10 +1527,15 @@ impl Config {
         Err(ConfigError::FallbackToFileStorage)
     }
 
-    /// Handle keyring operation with automatic fallback to file storage
-    fn handle_keyring_operation<T>(
+    /// Handle keyring operation with automatic fallback to file storage.
+    ///
+    /// Every keychain read and write in this type funnels through here, and the
+    /// OS call runs under [`KEYRING_OP_DEADLINE`] on its own thread — this is
+    /// the single place that guarantees no caller, sync or async, blocks on the
+    /// keychain forever.
+    fn handle_keyring_operation<T: Send + 'static>(
         &self,
-        operation: impl FnOnce(keyring::Entry) -> Result<T, keyring::Error>,
+        operation: impl FnOnce(keyring::Entry) -> Result<T, keyring::Error> + Send + 'static,
         service: &str,
         fallback_values: Option<&HashMap<String, Value>>,
     ) -> Result<T, ConfigError> {
@@ -1477,18 +1543,35 @@ impl Config {
             return self.activate_file_fallback(fallback_values);
         }
 
-        // Try to get the keyring entry and perform the operation
-        let entry = match Self::get_keyring_entry(service) {
-            Ok(entry) => entry,
-            Err(keyring_err) => {
-                return self.handle_keyring_fallback_error(&keyring_err, fallback_values);
-            }
-        };
+        #[cfg(test)]
+        if let Some(injected) = tests::injected_keyring_fault() {
+            return self.handle_keyring_fallback_error(&injected, fallback_values);
+        }
 
-        // Perform the operation
-        match operation(entry) {
-            Ok(result) => Ok(result),
-            Err(keyring_err) => self.handle_keyring_fallback_error(&keyring_err, fallback_values),
+        match run_keyring_op_with_deadline(service, operation, KEYRING_OP_DEADLINE) {
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(keyring_err)) => {
+                self.handle_keyring_fallback_error(&keyring_err, fallback_values)
+            }
+            // No verdict from the keychain is not "no keychain": it must not
+            // trigger the file fallback (which would synthesise an empty secret
+            // set over real saved data) and it must name itself.
+            Err(KeyringOpFailure::DeadlineElapsed(deadline)) => {
+                tracing::error!(
+                    "Secret store did not answer within {:?} — your saved keys still exist but \
+                     could not be read this time, so providers may look unconfigured. On macOS \
+                     this usually means a keychain authorisation prompt is waiting to be \
+                     answered, or the app's code signature is not on the item's access list.",
+                    deadline
+                );
+                Err(ConfigError::KeyringError(format!(
+                    "keychain operation did not complete within {deadline:?} (the keychain may \
+                     be waiting on an authorisation prompt); saved keys were not read"
+                )))
+            }
+            Err(KeyringOpFailure::WorkerLost) => Err(ConfigError::KeyringError(
+                "keychain worker thread exited without a result".to_string(),
+            )),
         }
     }
 }
@@ -1577,6 +1660,162 @@ pub fn load_init_config_from_workspace() -> Result<Mapping, ConfigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+
+    // ── Keychain fault injection ────────────────────────────────────────
+    //
+    // The keyring crate exposes no trait to stand a fake store behind, and the
+    // suite must never touch the developer's real keychain. This is the
+    // minimal seam: `handle_keyring_operation` consults it (under `cfg(test)`
+    // only) BEFORE spawning the OS call, and reports the injected error
+    // exactly as if the keychain had returned it. Thread-local, so it scopes to
+    // the one test that set it — the harness gives each test its own thread.
+
+    thread_local! {
+        static INJECTED_KEYRING_FAULT: Cell<Option<fn() -> keyring::Error>> = const { Cell::new(None) };
+    }
+
+    pub(super) fn injected_keyring_fault() -> Option<keyring::Error> {
+        INJECTED_KEYRING_FAULT.with(|f| f.get().map(|make| make()))
+    }
+
+    /// Makes every keychain operation on this thread fail with `make()` until
+    /// dropped.
+    struct InjectedKeyringFault;
+
+    impl InjectedKeyringFault {
+        fn arm(make: fn() -> keyring::Error) -> Self {
+            INJECTED_KEYRING_FAULT.with(|f| f.set(Some(make)));
+            Self
+        }
+    }
+
+    impl Drop for InjectedKeyringFault {
+        fn drop(&mut self) {
+            INJECTED_KEYRING_FAULT.with(|f| f.set(None));
+        }
+    }
+
+    fn macos_acl_refusal() -> keyring::Error {
+        // Verbatim cause the Security framework hands back when the calling
+        // binary's code signature is not on the item's access list.
+        keyring::Error::PlatformFailure(Box::new(std::io::Error::other(
+            "Unable to obtain authorization for this operation.",
+        )))
+    }
+
+    /// The rule at `handle_keyring_fallback_error`, exercised through the real
+    /// read path rather than the classifier alone: a keychain that REFUSES a
+    /// read must come back from `get_secret` as an error that names the
+    /// refusal. It must not fall back to the secrets file, must not write an
+    /// empty secrets file, and must not leave an empty set in the cache for
+    /// the next read to report as "no keys configured".
+    ///
+    /// Historical failure this pins (2026-08-12): a rebuilt binary was refused
+    /// the keychain item, the refusal was classed as "keyring unavailable", an
+    /// empty secrets file was swapped in, every provider read as unconfigured
+    /// and the user concluded 25 saved keys had been deleted.
+    #[test]
+    fn refused_keychain_read_is_an_error_not_an_empty_secret_set() {
+        let cfg = Config::new(
+            tempfile::NamedTempFile::new().unwrap().path(),
+            "refused-read-test",
+        )
+        .unwrap();
+        let fallback_file = Config::secrets_file_path();
+        let fallback_before = std::fs::read(&fallback_file).ok();
+
+        let _fault = InjectedKeyringFault::arm(macos_acl_refusal);
+
+        // The full store: an error, never Ok(empty).
+        let all = cfg.all_secrets();
+        let Err(ConfigError::KeyringError(msg)) = all else {
+            panic!("refused read must be KeyringError, got {all:?}");
+        };
+        assert!(
+            msg.contains("Unable to obtain authorization"),
+            "error must name the refusal so the user knows the keys exist and cannot be \
+             read; got: {msg}"
+        );
+
+        // One key: the same error, not NotFound (which the UI renders as
+        // "unconfigured").
+        let one: Result<String, _> = cfg.get_secret("OPENAI_API_KEY");
+        assert!(
+            matches!(&one, Err(ConfigError::KeyringError(m)) if m.contains("Unable to obtain authorization")),
+            "get_secret must surface the refusal, got {one:?}"
+        );
+
+        // A key group: the same error, not a silent fall-through to env vars.
+        let group = cfg.get_secrets("OPENAI_API_KEY", &["OPENAI_CUSTOM_HEADERS"]);
+        assert!(
+            matches!(&group, Err(ConfigError::KeyringError(_))),
+            "get_secrets must surface the refusal, got {group:?}"
+        );
+
+        // No fallback was activated, no empty secrets file was synthesised,
+        // and nothing was cached — a later read (say, once the ACL is fixed)
+        // must go back to the keychain rather than report the empty set.
+        assert!(
+            !cfg.keyring_fallback_active.load(Ordering::Acquire),
+            "a refusal must not switch this Config to file storage"
+        );
+        assert_eq!(
+            std::fs::read(&fallback_file).ok(),
+            fallback_before,
+            "a refusal must not write (or rewrite) the fallback secrets file"
+        );
+        assert!(
+            cfg.secrets_cache.lock().unwrap().is_none(),
+            "a refusal must not leave an empty secret set in the cache"
+        );
+    }
+
+    /// The bound in `run_keyring_op_with_deadline`: a keychain call that never
+    /// returns comes back as a named failure within the deadline, and the
+    /// caller's thread is not the one left holding the bag.
+    #[test]
+    fn keychain_op_that_never_returns_is_reported_within_the_deadline() {
+        let deadline = std::time::Duration::from_millis(50);
+        let started = std::time::Instant::now();
+        let outcome = run_keyring_op_with_deadline(
+            "deadline-test",
+            |_entry| {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                Ok(())
+            },
+            deadline,
+        );
+        assert!(
+            matches!(outcome, Err(KeyringOpFailure::DeadlineElapsed(d)) if d == deadline),
+            "got {outcome:?}"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "the caller must be released at the deadline, not when the OS call returns"
+        );
+    }
+
+    /// The bound must not change the answer when the keychain does answer.
+    #[test]
+    fn keychain_op_that_returns_in_time_passes_its_verdict_through() {
+        let ok = run_keyring_op_with_deadline(
+            "deadline-test",
+            |_entry| Ok::<_, keyring::Error>("blob".to_string()),
+            std::time::Duration::from_secs(5),
+        );
+        assert!(matches!(ok, Ok(Ok(ref s)) if s == "blob"), "got {ok:?}");
+
+        let refused = run_keyring_op_with_deadline(
+            "deadline-test",
+            |_entry| Err::<(), _>(macos_acl_refusal()),
+            std::time::Duration::from_secs(5),
+        );
+        assert!(
+            matches!(refused, Ok(Err(keyring::Error::PlatformFailure(_)))),
+            "got {refused:?}"
+        );
+    }
 
     /// The suite must never read the config of whoever launched it. If this
     /// fails, `Config::global()` resolved to the developer's real
