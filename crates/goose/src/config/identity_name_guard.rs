@@ -36,6 +36,13 @@
 //! apostrophe in JSX text, hides the rest of *that line* (only). It cannot
 //! produce a false positive.
 
+// string_slice: every byte index below is a `find()` result (a char boundary),
+// a hit offset from `word_hits` (likewise), or such an offset plus the byte
+// length of an ASCII delimiter (`//`, `/*`, `*/`, quotes), and ASCII bytes are
+// themselves char boundaries — so no slice can split a UTF-8 sequence. Same
+// argument as `rss::parse_items`.
+#![allow(clippy::string_slice)]
+
 use std::path::{Path, PathBuf};
 
 /// The out-of-box persona name this repo shipped under before it became

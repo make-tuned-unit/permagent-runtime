@@ -1313,10 +1313,7 @@ mod tests {
         .unwrap()
         .expect("proposal files");
         let d = decisions::get_decision(pool, &id).await.unwrap().unwrap();
-        assert_eq!(
-            d.tier, 2,
-            "repo hygiene must resolve to the user-only tier"
-        );
+        assert_eq!(d.tier, 2, "repo hygiene must resolve to the user-only tier");
         decisions::answer_decision(
             pool,
             &id,

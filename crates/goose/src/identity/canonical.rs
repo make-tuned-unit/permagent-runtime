@@ -216,9 +216,8 @@ mod tests {
     #[test]
     fn graph_entity_id_hex_matches_spectral_and_is_bare_hex() {
         let got = graph_entity_id_hex("person", "Ada Lovelace");
-        let expect = hex::encode(
-            spectral::core::entity_id::entity_id("person", "ada lovelace").as_bytes(),
-        );
+        let expect =
+            hex::encode(spectral::core::entity_id::entity_id("person", "ada lovelace").as_bytes());
         assert_eq!(got, expect);
         assert_eq!(got.len(), 64); // bare 64-hex, no "e:" prefix
     }
@@ -228,9 +227,8 @@ mod tests {
         // The bug Decision B originally specified: hashing the dash-slug instead of
         // the graph canonical produces a DIFFERENT id that mis-joins to no node.
         let correct = graph_entity_id_hex("person", "Ada Lovelace");
-        let wrong = hex::encode(
-            spectral::core::entity_id::entity_id("person", "ada-lovelace").as_bytes(),
-        );
+        let wrong =
+            hex::encode(spectral::core::entity_id::entity_id("person", "ada-lovelace").as_bytes());
         assert_ne!(correct, wrong);
     }
 
