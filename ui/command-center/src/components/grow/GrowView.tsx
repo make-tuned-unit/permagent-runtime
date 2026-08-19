@@ -1121,7 +1121,10 @@ interface ActionOutcome {
  */
 interface ActionIdentity {
   id: string;
-  /** suggested | dismissed | done | verified | measuring | judged */
+  /** suggested | dismissed | done | verified | measuring | judged | archived.
+   *  `archived` is the user's shelf: the action leaves the active board but
+   *  keeps being measured while it still owes a window, and keeps feeding the
+   *  agent's learning (store.rs `board`, `pending_measurement`). */
   status: string;
   /** pageviews | sessions | aeo_visits | bounce_rate */
   targetMetric: string | null;
@@ -1142,25 +1145,91 @@ interface GrowthVerifyResponse {
   reason: string | null;
 }
 
+/** One measured result from another project, named so the claim can be audited. */
+interface TransferExample {
+  projectName: string;
+  title: string;
+  /** helped | hindered | no_effect */
+  verdict: string;
+  deltaPct: number | null;
+}
+
+/**
+ * What this action's CATEGORY has actually done on the user's other active
+ * projects. Mirrors `TransferNote` in routes/growth_actions.rs:102.
+ *
+ * Computed server-side from measured outcomes and never authored by the model,
+ * which is the whole point: a model writing "this worked on three similar
+ * projects" is self-assessed prose, while the same sentence derived from
+ * `growth_action_outcomes` is a claim the user can check — hence `examples`,
+ * which is why the disclosure below is not optional decoration.
+ *
+ * The aggregate and the segment halves are separate fields on purpose. Merging
+ * them would hide the Simpson's paradox the proposal warns about: an overall
+ * "helped" that quietly fails on projects shaped like this one.
+ */
+interface TransferNote {
+  category: string;
+  /** Distinct OTHER active projects that measured this category. */
+  projects: number;
+  helped: number;
+  hindered: number;
+  noEffect: number;
+  medianDeltaPct: number | null;
+  /** e.g. "content site, 300+ views/wk, mostly search" — THIS project's shape. */
+  segmentLabel: string;
+  segmentProjects: number;
+  segmentHelped: number;
+  segmentHindered: number;
+  segmentNoEffect: number;
+  /** At most three, projects like this one first. */
+  examples: TransferExample[];
+}
+
 interface GrowthAction {
   title: string;
+  /** MAY be the empty string. The durable `growth_actions` row is the truth and
+   *  it has no column for evidence, so this comes from the prose cache — which
+   *  a later review can prune. Absent prose renders as nothing rather than as a
+   *  guess, for the same reason the backend refuses to default a target. */
   evidence: string;
   recommendation: string;
+  /** MAY be empty, for the reason `evidence` may be. */
   steps: string[];
   /** prompt (paste into a coding harness) | post (social copy) | none */
   artifactKind: string;
   artifact: string | null;
   category: string;
+  /** MAY be the empty string — see `evidence`. */
   impact: string;
+  /** MAY be the empty string — see `evidence`. */
   confidence: string;
+  /** Absent entirely when no other active project has ever measured this
+   *  category (`skip_serializing_if`), because a badge that says nothing is
+   *  worse than no badge. */
+  transfer?: TransferNote | null;
   identity?: ActionIdentity | null;
 }
 
 interface GrowthActionsData {
+  /** The active board. Assembled from the durable rows, so an action the last
+   *  review did not re-emit is still here while the sweep still measures it. */
   actions: GrowthAction[];
+  /** Filed away by the user, newest first. */
+  archived: GrowthAction[];
+  /** Advice the user turned down, newest first. Distinct from `archived`
+   *  because a dismissed action stays on the agent's board — its text can never
+   *  be re-proposed — while an archived one is released. */
+  dismissed: GrowthAction[];
   generatedAt: string | null;
   reason: string | null;
   periodDays: number | null;
+  /** How many suggestions the last review discarded for naming no measurable
+   *  prediction, and how many for restating something already on the board.
+   *  Both are surfaced because a drop withholds advice, and a silent drop is
+   *  not auditable. */
+  droppedForNoTarget: number;
+  droppedAsRestatement: number;
 }
 
 /** The closed set an action may pre-register against (metrics.rs:41-47). Kept
@@ -1248,19 +1317,23 @@ const FINAL_WINDOW_DAYS = 28;
  * changes, so no stale verdict can be inherited.
  */
 function ActionVerify({
-  projectId, action, colors,
+  projectId, action, colors, readOnly = false,
 }: {
   projectId: string;
   action: GrowthAction;
   colors: ThemeColors;
+  /**
+   * The archived shelf. Every CONTROL disappears — a filed action is a record,
+   * not a thing still asking to be done — but the verdict does not. Suppressing
+   * the whole component instead would hide the measured outcome of exactly the
+   * actions the archive exists to keep as data points, which is the opposite of
+   * what filing one away is supposed to mean.
+   */
+  readOnly?: boolean;
 }) {
   const [result, setResult] = useState<GrowthVerifyResponse | null>(null);
   const [busy, setBusy] = useState(false);
   const [metric, setMetric] = useState('');
-  // Set when the user rejects the agent's prediction and picks their own
-  // target. One-way for the life of the card: re-hiding their choice behind
-  // the agent's would discard what they just typed.
-  const [overriding, setOverriding] = useState(false);
   const [dir, setDir] = useState('');
 
   const identity = result?.identity ?? action.identity ?? null;
@@ -1306,6 +1379,11 @@ function ActionVerify({
     fontFamily: font.body, fontSize: 11,
   };
 
+  // On the shelf there is nothing to say unless a check actually confirmed
+  // something: the controls are gone, so "this can't be verified" would be a
+  // prompt to do something the card no longer offers.
+  if (readOnly && (!identity || !identity.verifiedBy)) return null;
+
   // No row, no identity, nothing to attach a verdict to. Said out loud rather
   // than rendered as a missing button, which is indistinguishable from a
   // feature that was never built.
@@ -1328,8 +1406,20 @@ function ActionVerify({
   // The agent predicted this only when BOTH halves are present. A metric with
   // no direction is not a prediction — "bounce rate moves" is true either way —
   // so a half-filled pair falls back to asking rather than guessing "up".
-  const predicted = !overriding && !!identity.targetMetric && !!identity.targetDir;
+  const predicted = !!identity.targetMetric && !!identity.targetDir;
   const predictedLabel = target ?? identity.targetMetric;
+
+  // The claim every verify call must carry. The row's own pre-registration wins
+  // whenever it exists; the selects below only ever fill in for a row that has
+  // none. Without this, the self-attest and re-check buttons — which now render
+  // for a predicted action too — would post `targetMetric: ''` and take a 400
+  // from `parse_target`, which reads on screen as "the check is broken".
+  const targetBody = (): Record<string, unknown> => {
+    if (identity.targetMetric && identity.targetDir) {
+      return { targetMetric: identity.targetMetric, targetDir: identity.targetDir };
+    }
+    return metric && dir ? { targetMetric: metric, targetDir: dir } : {};
+  };
 
   return (
     <div style={rule}>
@@ -1415,6 +1505,29 @@ function ActionVerify({
               </span>
             );
           })()}
+
+          {/* The evidence a check found is NOT persisted — there is no
+              `verified_detail` column — so a reload leaves the badge above with
+              nothing behind it. This recovers it by re-running the checks.
+
+              It is safe because `verify_mode` (growth_actions.rs) returns
+              `Recheck` once `verified_at` is set and the handler then skips BOTH
+              writes, returning the stored identity and the frozen baseline. It
+              is NOT safe "by construction": only `baseline_json` coalesces.
+              `record_verification` also writes `status = 'verified'` and
+              `verified_at = now`, and `verified_at` is the pivot
+              `metrics::pivot_date` measures every comparison window from — so
+              without that guard this button would slide the after-windows
+              forward against a baseline frozen days earlier and drag a judged
+              action back into measurement. Do not delete one half without the
+              other. */}
+          {!readOnly && (
+            <button
+              onClick={() => verify(targetBody())}
+              disabled={busy}
+              style={{ ...button, alignSelf: 'flex-start' }}
+            >{busy ? 'Re-checking…' : 'Re-check'}</button>
+          )}
         </>
       ) : (
         <>
@@ -1439,20 +1552,21 @@ function ActionVerify({
                   {identity.targetDir === 'down' ? 'down' : 'up'}
                 </strong>. I’ll check at 7, 14 and 28 days and record whether I was right.
               </span>
+              {/* The one control here on purpose. There used to be a
+                  "Measure something else" button beside it that revealed the
+                  selects below and let the user replace the agent's target.
+                  It is gone: the target is the AGENT's prediction and this loop
+                  exists to grade the agent, so measuring a claim the agent
+                  never made produces a verdict about nobody — the exact
+                  unfalsifiability the pre-registration gate was built to stop.
+                  The selects survive only for a row that genuinely carries no
+                  prediction. */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                 <button
-                  onClick={() => verify({
-                    targetMetric: identity.targetMetric!,
-                    targetDir: identity.targetDir!,
-                  })}
+                  onClick={() => verify(targetBody())}
                   disabled={busy}
                   style={{ ...button, opacity: busy ? 0.5 : 1 }}
                 >{busy ? 'Checking…' : 'I did this — start measuring'}</button>
-                <button
-                  onClick={() => setOverriding(true)}
-                  disabled={busy}
-                  style={{ ...button, opacity: busy ? 0.5 : 1 }}
-                >Measure something else</button>
               </div>
             </>
           ) : (
@@ -1492,34 +1606,321 @@ function ActionVerify({
               </div>
             </>
           )}
-
-          {result && !result.verified && (
-            <div style={{
-              background: colors.bgDeeper, border: `1px solid ${colors.border}`,
-              borderRadius: radius.md, padding: 10,
-              display: 'flex', flexDirection: 'column', gap: 6,
-            }}>
-              {/* "Could not confirm" is not "not done", and the checks say
-                  which one it was (growth_verify.rs:9-11). */}
-              <span style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>
-                {result.reason ?? 'Nothing could confirm the change landed.'}
-              </span>
-              {result.checks.map((c) => (
-                <div key={c.id} style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>
-                  <span style={{ color: c.passed ? colors.success : colors.textDim }}>
-                    {c.passed ? '✓' : '·'}
-                  </span>{' '}
-                  {c.label} — {c.detail}
-                </div>
-              ))}
-              <button
-                onClick={() => verify({ targetMetric: metric, targetDir: dir, selfAttested: true })}
-                disabled={busy}
-                style={{ ...button, alignSelf: 'flex-start' }}
-              >It did land — record my word</button>
-            </div>
-          )}
         </>
+      )}
+
+      {/* OUTSIDE the verified/not-verified ternary on purpose. This used to
+          render only under `result && !result.verified`, so a PASS showed a
+          bare badge and threw away the one thing the user could audit — which
+          commit, which path, which string on which page. A pass that also says
+          "live page does not contain it" teaches something the badge hides. */}
+      {result && (
+        <div style={{
+          background: colors.bgDeeper, border: `1px solid ${colors.border}`,
+          borderRadius: radius.md, padding: 10,
+          display: 'flex', flexDirection: 'column', gap: 6,
+        }}>
+          {/* "Could not confirm" is not "not done", and the checks say which
+              one it was (growth_verify.rs:9-11). */}
+          {/* "What confirmed it" only when something below actually did. A
+              re-check of a self-attested action re-runs the real strategies and
+              they can all come back empty — the action IS verified, on the
+              user's word, and heading that list with "what confirmed it" would
+              dress four failed checks up as corroboration. */}
+          <span style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>
+            {result.verified
+              ? ((result.checks ?? []).some((c) => c.passed)
+                ? 'What confirmed it'
+                : 'What the checks found')
+              : result.reason ?? 'Nothing could confirm the change landed.'}
+          </span>
+          {/* `?? []` because this block now renders on a PASS too, and a
+              payload from an older daemon — or a truncated one — carries no
+              `checks`. A missing list must cost the evidence line, not take the
+              whole Grow tab down with a TypeError. */}
+          {(result.checks ?? []).map((c) => (
+            <div key={c.id} style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>
+              <span style={{ color: c.passed ? colors.success : colors.textDim }}>
+                {c.passed ? '✓' : '·'}
+              </span>{' '}
+              {c.label} — {c.detail}
+            </div>
+          ))}
+          {!result.verified && (
+            <button
+              onClick={() => verify({ ...targetBody(), selfAttested: true })}
+              disabled={busy}
+              style={{ ...button, alignSelf: 'flex-start' }}
+            >It did land — record my word</button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Category → tint, at module scope so the archived shelf and the active board
+ * colour the same category identically. Two copies drifted apart is the kind of
+ * difference a reader would read as meaning.
+ */
+function categoryColor(category: string, colors: ThemeColors): string {
+  const map: Record<string, string> = {
+    conversion: colors.cyan,
+    retention: colors.success,
+    churn: colors.danger,
+    ux: colors.purple,
+    acquisition: colors.warning ?? colors.cyan,
+    measurement: colors.textMuted,
+    content: colors.cyan,
+    seo: colors.success,
+    aeo: colors.purple,
+  };
+  return map[category] ?? colors.textDim;
+}
+
+/**
+ * The states an action may be filed away from.
+ *
+ * `suggested` is absent deliberately, and `reject_pointless_archive`
+ * (growth_actions.rs) refuses it on the server for the same reason: archiving
+ * is what releases an action's text for re-proposal, so filing away something
+ * that was never acted on would hand the identical advice straight back on the
+ * next review. Dismissal is the control for advice the user does not want, and
+ * it keeps the text off the board.
+ */
+const ARCHIVABLE = ['done', 'verified', 'measuring', 'judged', 'dismissed'];
+
+/**
+ * One action, on the board or on the archived shelf.
+ *
+ * Its own top-level component rather than a block inside `GrowActions`' map
+ * because the archived list renders the same card read-only, and because the
+ * copy-confirmation flag belongs to a card rather than to an index into a list
+ * that reorders on every review.
+ */
+function ActionCard({
+  projectId, action, colors, readOnly, onChanged,
+}: {
+  projectId: string;
+  action: GrowthAction;
+  colors: ThemeColors;
+  /** The archived shelf: no Verify, no Archive. Filed work is a record. */
+  readOnly: boolean;
+  /** Refetch the board. Archiving moves a card between two lists, so the
+   *  parent has to re-read rather than this card patching itself. */
+  onChanged: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const [moving, setMoving] = useState<string | null>(null);
+  const [moveError, setMoveError] = useState<string | null>(null);
+
+  const copyArtifact = useCallback((text: string) => {
+    navigator.clipboard?.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    });
+  }, []);
+
+  const identity = action.identity ?? null;
+  const actionId = identity?.id ?? null;
+
+  /** One lifecycle route, two exits. Dismiss is the only way a `suggested`
+   *  card can leave the active list — the server refuses to archive one, on the
+   *  grounds that archiving releases the text for re-proposal and would hand
+   *  the same advice straight back. Without this control nothing the user could
+   *  press ever shortened the panel, so it could only grow. */
+  const move = useCallback((status: string) => {
+    if (!actionId) return;
+    setMoving(status);
+    setMoveError(null);
+    apiFetch(
+      `/api/projects/${encodeURIComponent(projectId)}/growth-actions/`
+      + `${encodeURIComponent(actionId)}/status`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status }),
+      },
+    )
+      .then(() => onChanged())
+      // A refused move says why. The server's refusals are written to be read
+      // ("Nothing has happened to this action yet…"), and swallowing one would
+      // look like a dead button.
+      .catch((e) => setMoveError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setMoving(null));
+  }, [projectId, actionId, onChanged]);
+
+  const tint = categoryColor(action.category, colors);
+  const transfer = action.transfer ?? null;
+  const canArchive = !readOnly && !!identity && ARCHIVABLE.includes(identity.status);
+  const canDismiss = !readOnly && !!identity && identity.status === 'suggested';
+
+  const smallButton: CSSProperties = {
+    background: colors.surface, border: `1px solid ${colors.border}`,
+    borderRadius: radius.sm, padding: '3px 10px', cursor: 'pointer',
+    color: colors.text, fontFamily: font.body, fontSize: 11,
+  };
+
+  return (
+    <div style={{
+      background: colors.surface, border: `1px solid ${colors.border}`,
+      borderRadius: radius.lg, padding: 14,
+      // Filed work reads as a record, not as something still asking to be done.
+      opacity: readOnly ? 0.75 : 1,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
+        <span style={{
+          fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em',
+          textTransform: 'uppercase', color: tint,
+          border: `1px solid ${tint}`,
+          borderRadius: 999, padding: '1px 7px', flexShrink: 0,
+        }}>{action.category}</span>
+        <span style={{ fontFamily: font.display, fontSize: 14, fontWeight: 600, color: colors.text }}>
+          {action.title}
+        </span>
+        <div style={{ flex: 1 }} />
+        {/* Only when the prose cache still holds both. "medium impact · medium
+            confidence" invented for a card whose cache entry was pruned is the
+            same fabrication the backend refuses when it declines to default a
+            target. */}
+        {action.impact && action.confidence && (
+          <span style={{ fontFamily: font.mono, fontSize: 9, color: colors.textDim, flexShrink: 0 }}>
+            {action.impact} impact · {action.confidence} confidence
+          </span>
+        )}
+      </div>
+
+      {/* What this CATEGORY has measurably done elsewhere — derived from
+          `growth_action_outcomes` on the user's other active projects, never
+          asserted by the model. The provenance disclosure is mandatory: a card
+          that appears because something worked elsewhere and will not say where
+          is not auditable, and is indistinguishable from the model flattering
+          its own suggestion. */}
+      {transfer && (
+        <div style={{ marginBottom: 6, display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <span style={{ fontSize: 11, color: colors.textDim }}>
+            {transfer.helped > 0
+              ? `Worked on ${transfer.helped} of ${transfer.projects} other project(s)`
+                + ` — on projects like this one, ${transfer.segmentHelped} of`
+                + ` ${transfer.segmentProjects} (${transfer.segmentLabel})`
+              : transfer.hindered > 0
+                ? `Hindered on ${transfer.hindered} of ${transfer.projects} other project(s)`
+                : `Tried on ${transfer.projects} other project(s), with no detectable change`}
+          </span>
+          {transfer.examples.length > 0 && (
+            <details>
+              <summary style={{
+                fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em',
+                textTransform: 'uppercase', color: colors.textDim, cursor: 'pointer',
+              }}>Where that comes from</summary>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 4 }}>
+                {transfer.examples.map((ex, xi) => (
+                  <div key={`${ex.projectName}-${xi}`} style={{ fontSize: 11, color: colors.textDim }}>
+                    &ldquo;{ex.title}&rdquo; on {ex.projectName} —{' '}
+                    {verdictMeta(ex.verdict, colors).label}
+                    {ex.deltaPct !== null && (
+                      `, ${ex.deltaPct > 0 ? '+' : ''}${(ex.deltaPct * 100).toFixed(0)}%`
+                    )}
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+        </div>
+      )}
+
+      {/* Evidence first: the number is what makes this checkable. Rendered only
+          when there is one — an empty rail beside a card whose prose the cache
+          no longer holds reads as a missing figure rather than as no figure. */}
+      {action.evidence && (
+        <div style={{
+          fontSize: 11, color: colors.textDim, fontFamily: font.mono,
+          borderLeft: `2px solid ${colors.border}`, paddingLeft: 8, marginBottom: 6,
+        }}>{action.evidence}</div>
+      )}
+      <div style={{ fontSize: 13, color: colors.textMuted, lineHeight: 1.5 }}>
+        {action.recommendation}
+      </div>
+
+      {/* Ordered steps: an action nobody knows how to start is an observation
+          wearing an action's clothes. */}
+      {action.steps?.length > 0 && (
+        <ol style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 12, color: colors.textMuted, lineHeight: 1.6 }}>
+          {action.steps.map((step, si) => <li key={si}>{step}</li>)}
+        </ol>
+      )}
+
+      {/* The deliverable — a coding-harness prompt or drafted post, ready to
+          use. This is what turns "improve your SEO" into something that
+          actually gets done. */}
+      {action.artifact && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+            <span style={{ fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em', textTransform: 'uppercase', color: colors.textDim }}>
+              {action.artifactKind === 'post' ? 'Draft post' : 'Prompt for your coding agent'}
+            </span>
+            <div style={{ flex: 1 }} />
+            <button
+              onClick={() => copyArtifact(action.artifact!)}
+              style={smallButton}
+            >{copied ? 'Copied ✓' : 'Copy'}</button>
+          </div>
+          <pre style={{
+            margin: 0, background: colors.bgDeeper, border: `1px solid ${colors.border}`,
+            borderRadius: radius.md, padding: 10, fontSize: 11, fontFamily: font.mono,
+            color: colors.textMuted, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+            maxHeight: 200, overflowY: 'auto',
+          }}>{action.artifact}</pre>
+        </div>
+      )}
+
+      {/* OUTSIDE the artifact block on purpose. Verification applies to every
+          action including artifactKind "none" — that is the `self` fallback row
+          of the proposal's table (proposal:105) — and putting this beside Copy
+          would hide it for exactly the actions with no deliverable to copy. */}
+      <ActionVerify
+        key={actionId ?? action.title}
+        projectId={projectId}
+        action={action}
+        colors={colors}
+        readOnly={readOnly}
+      />
+
+      {canArchive && (
+        <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          {/* Not deletion, and the wording must not promise permanence: an
+              archived action keeps being measured while it still owes a window,
+              keeps feeding the agent's learning, and releases its text back for
+              re-proposal. */}
+          <button
+            onClick={() => move('archived')}
+            disabled={!!moving}
+            style={{ ...smallButton, opacity: moving ? 0.5 : 1 }}
+          >{moving === 'archived' ? 'Filing…' : 'Archive'}</button>
+          <span style={{ fontSize: 10, color: colors.textDim }}>
+            Files it away. It keeps being measured and keeps teaching the agent.
+          </span>
+        </div>
+      )}
+      {canDismiss && (
+        <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <button
+            onClick={() => move('dismissed')}
+            disabled={!!moving}
+            style={{ ...smallButton, opacity: moving ? 0.5 : 1 }}
+          >{moving === 'dismissed' ? 'Dismissing…' : 'Not interested'}</button>
+          {/* The distinction matters and is the whole reason dismissal is not
+              archiving: a dismissed action stays ON the board, so the generator
+              still sees it and cannot propose it again. Archiving releases the
+              text. */}
+          <span style={{ fontSize: 10, color: colors.textDim }}>
+            Takes it off the list. The agent keeps it in view, so it will not suggest it again.
+          </span>
+        </div>
+      )}
+      {moveError && (
+        <div style={{ marginTop: 6, fontSize: 11, color: colors.danger }}>{moveError}</div>
       )}
     </div>
   );
@@ -1596,27 +1997,12 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
     return () => { ++inboxGen.current; ++actionsGen.current; };
   }, [project.id, loadInbox, loadActions]);
 
-  const CATEGORY_COLOR: Record<string, string> = {
-    conversion: colors.cyan,
-    retention: colors.success,
-    churn: colors.danger,
-    ux: colors.purple,
-    acquisition: colors.warning ?? colors.cyan,
-    measurement: colors.textMuted,
-    content: colors.cyan,
-    seo: colors.success,
-    aeo: colors.purple,
-  };
-
-  const [copiedArtifact, setCopiedArtifact] = useState<number | null>(null);
-  const copyArtifact = useCallback((index: number, text: string) => {
-    navigator.clipboard?.writeText(text).then(() => {
-      setCopiedArtifact(index);
-      setTimeout(() => setCopiedArtifact((c) => (c === index ? null : c)), 1600);
-    });
-  }, []);
-
   const hasActions = (actions?.actions?.length ?? 0) > 0;
+  const archived = actions?.archived ?? [];
+  const dismissed = actions?.dismissed ?? [];
+  const droppedRestated = actions?.droppedAsRestatement ?? 0;
+  const droppedNoTarget = actions?.droppedForNoTarget ?? 0;
+  const onChanged = useCallback(() => loadActions(project.id), [loadActions, project.id]);
 
   return (
     <>
@@ -1671,90 +2057,91 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
             // Identity first: the durable id survives a regeneration that
             // rewords the title, so an in-flight verify stays attached to the
             // card it was started from rather than jumping to a neighbour.
-            <div key={a.identity?.id ?? `${a.title}-${i}`} style={{
-              background: colors.surface, border: `1px solid ${colors.border}`,
-              borderRadius: radius.lg, padding: 14,
-            }}>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
-                <span style={{
-                  fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em',
-                  textTransform: 'uppercase', color: CATEGORY_COLOR[a.category] ?? colors.textDim,
-                  border: `1px solid ${CATEGORY_COLOR[a.category] ?? colors.border}`,
-                  borderRadius: 999, padding: '1px 7px', flexShrink: 0,
-                }}>{a.category}</span>
-                <span style={{ fontFamily: font.display, fontSize: 14, fontWeight: 600, color: colors.text }}>
-                  {a.title}
-                </span>
-                <div style={{ flex: 1 }} />
-                <span style={{ fontFamily: font.mono, fontSize: 9, color: colors.textDim, flexShrink: 0 }}>
-                  {a.impact} impact · {a.confidence} confidence
-                </span>
-              </div>
-              {/* Evidence first: the number is what makes this checkable. */}
-              <div style={{
-                fontSize: 11, color: colors.textDim, fontFamily: font.mono,
-                borderLeft: `2px solid ${colors.border}`, paddingLeft: 8, marginBottom: 6,
-              }}>{a.evidence}</div>
-              <div style={{ fontSize: 13, color: colors.textMuted, lineHeight: 1.5 }}>
-                {a.recommendation}
-              </div>
-
-              {/* Ordered steps: an action nobody knows how to start is an
-                  observation wearing an action's clothes. */}
-              {a.steps?.length > 0 && (
-                <ol style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 12, color: colors.textMuted, lineHeight: 1.6 }}>
-                  {a.steps.map((step, si) => <li key={si}>{step}</li>)}
-                </ol>
-              )}
-
-              {/* The deliverable — a coding-harness prompt or drafted post,
-                  ready to use. This is what turns "improve your SEO" into
-                  something that actually gets done. */}
-              {a.artifact && (
-                <div style={{ marginTop: 10 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                    <span style={{ fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em', textTransform: 'uppercase', color: colors.textDim }}>
-                      {a.artifactKind === 'post' ? 'Draft post' : 'Prompt for your coding agent'}
-                    </span>
-                    <div style={{ flex: 1 }} />
-                    <button
-                      onClick={() => copyArtifact(i, a.artifact!)}
-                      style={{
-                        background: colors.surface, border: `1px solid ${colors.border}`,
-                        borderRadius: radius.sm, padding: '3px 10px', cursor: 'pointer',
-                        color: colors.text, fontFamily: font.body, fontSize: 11,
-                      }}
-                    >{copiedArtifact === i ? 'Copied ✓' : 'Copy'}</button>
-                  </div>
-                  <pre style={{
-                    margin: 0, background: colors.bgDeeper, border: `1px solid ${colors.border}`,
-                    borderRadius: radius.md, padding: 10, fontSize: 11, fontFamily: font.mono,
-                    color: colors.textMuted, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                    maxHeight: 200, overflowY: 'auto',
-                  }}>{a.artifact}</pre>
-                </div>
-              )}
-
-              {/* OUTSIDE the artifact block on purpose. Verification applies to
-                  every action including artifactKind "none" — that is the
-                  `self` fallback row of the proposal's table (proposal:105) —
-                  and putting this beside Copy would hide it for exactly the
-                  actions with no deliverable to copy. */}
-              <ActionVerify
-                key={a.identity?.id ?? `${a.title}-${i}`}
-                projectId={project.id}
-                action={a}
-                colors={colors}
-              />
-            </div>
+            <ActionCard
+              key={a.identity?.id ?? `${a.title}-${i}`}
+              projectId={project.id}
+              action={a}
+              colors={colors}
+              readOnly={false}
+              onChanged={onChanged}
+            />
           ))}
         </div>
+
+        {/* The shelf. Collapsed, because filed work is a record the user goes
+            looking for rather than something competing with the board — but
+            present, because an archive you cannot open is a delete. */}
+        {archived.length > 0 && (
+          <details style={{ marginTop: 12 }}>
+            <summary style={{
+              fontFamily: font.mono, fontSize: 10, letterSpacing: '0.08em',
+              textTransform: 'uppercase', color: colors.textDim, cursor: 'pointer',
+            }}>Archived ({archived.length})</summary>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
+              {archived.map((a, i) => (
+                <ActionCard
+                  key={a.identity?.id ?? `archived-${a.title}-${i}`}
+                  projectId={project.id}
+                  action={a}
+                  colors={colors}
+                  readOnly
+                  onChanged={onChanged}
+                />
+              ))}
+            </div>
+          </details>
+        )}
+
+        {/* Advice the user turned down. Its own section rather than the archive
+            because the two are opposites to the agent: dismissed text stays on
+            the board and can never be proposed again, archived text is
+            released. Collapsed for the same reason as the archive — a refusal
+            is a record, not work. */}
+        {dismissed.length > 0 && (
+          <details style={{ marginTop: 12 }}>
+            <summary style={{
+              fontFamily: font.mono, fontSize: 10, letterSpacing: '0.08em',
+              textTransform: 'uppercase', color: colors.textDim, cursor: 'pointer',
+            }}>Dismissed ({dismissed.length})</summary>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
+              {dismissed.map((a, i) => (
+                <ActionCard
+                  key={a.identity?.id ?? `dismissed-${a.title}-${i}`}
+                  projectId={project.id}
+                  action={a}
+                  colors={colors}
+                  readOnly
+                  onChanged={onChanged}
+                />
+              ))}
+            </div>
+          </details>
+        )}
 
         {hasActions && (
           <div style={{ fontSize: 10, color: colors.textDim, marginTop: 10 }}>
             Read from your own analytics by your agent, over the last{' '}
             {actions?.periodDays ?? 30} days. Each item cites the figure it came from — check it
             before acting.
+          </div>
+        )}
+
+        {/* Both guards can silently withhold advice — the reword guard drops a
+            suggestion the user never sees, and an untargeted action is discarded
+            outright. Counting them out loud is what keeps that auditable; a
+            drop nobody is told about is indistinguishable from a model that had
+            less to say. */}
+        {(droppedRestated > 0 || droppedNoTarget > 0) && (
+          <div style={{ fontSize: 10, color: colors.textDim, marginTop: 6 }}>
+            Last review dropped {droppedRestated + droppedNoTarget} suggestion(s):{' '}
+            {[
+              droppedRestated > 0
+                ? `${droppedRestated} restated something already on your board`
+                : null,
+              droppedNoTarget > 0
+                ? `${droppedNoTarget} made no measurable prediction`
+                : null,
+            ].filter(Boolean).join(', ')}.
           </div>
         )}
       </section>

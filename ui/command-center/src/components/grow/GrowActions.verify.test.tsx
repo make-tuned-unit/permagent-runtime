@@ -72,9 +72,13 @@ function actionsPayload(identity: Partial<Identity> | null) {
         verifiedBy: null, verifiedAt: null, outcomes: [], ...identity,
       },
     }],
+    archived: [],
+    dismissed: [],
     generatedAt: '2026-08-11T10:00:00Z',
     reason: null,
     periodDays: 30,
+    droppedForNoTarget: 0,
+    droppedAsRestatement: 0,
   };
 }
 
@@ -167,6 +171,8 @@ describe('Verify change', () => {
         targetMetric: 'bounce_rate', targetDir: 'down',
         verifiedBy: 'self', verifiedAt: '2026-08-14T10:00:00Z', outcomes: [],
       },
+      checks: [],
+      reason: null,
     });
     await render(<GrowActions project={project} colors={colors} />);
 
@@ -192,13 +198,34 @@ describe('Verify change', () => {
     expect(container.querySelector('select[aria-label="Target direction"]')).toBeTruthy();
   });
 
-  it('lets the user overrule the agent and measure something else', async () => {
+  /// Deliberately the reverse of what this file asserted until 2026-08-19.
+  ///
+  /// There WAS a "Measure something else" button here that revealed the metric
+  /// selects and let the user substitute their own target for the agent's. It
+  /// is gone, and the reversal is a product decision rather than a refactor:
+  /// the target is the AGENT's prediction and this loop exists to grade the
+  /// agent, so measuring a claim the agent never made produces a verdict about
+  /// nobody — the exact unfalsifiability the pre-registration gate was built to
+  /// stop. Now that the generator is required to name a target (an untargeted
+  /// action is dropped rather than persisted), the selects are reachable only
+  /// by a row that genuinely has none.
+  it('will not let the user replace the agent’s prediction', async () => {
     routeTo(actionsPayload({ targetMetric: 'sessions', targetDir: 'up' }));
     await render(<GrowActions project={project} colors={colors} />);
 
     expect(container.querySelector('select[aria-label="Target metric"]')).toBeNull();
-    await act(async () => { button('Measure something else').click(); });
-    expect(container.querySelector('select[aria-label="Target metric"]')).toBeTruthy();
+    expect(container.querySelector('select[aria-label="Target direction"]')).toBeNull();
+    expect(
+      Array.from(container.querySelectorAll('button'))
+        .find((b) => b.textContent?.includes('Measure something else')),
+      'the override control is back',
+    ).toBeUndefined();
+
+    // The only thing offered is measuring against the agent's own claim, and
+    // nothing on screen can reveal the selects.
+    expect(button('I did this').disabled).toBe(false);
+    await act(async () => { button('I did this').click(); });
+    expect(container.querySelector('select[aria-label="Target metric"]')).toBeNull();
   });
 
   it('will not check anything until the claim is pre-registered', async () => {

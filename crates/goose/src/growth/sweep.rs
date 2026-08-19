@@ -9,7 +9,7 @@ use super::metrics::{
     self, DateRange, MetricWindow, TargetDir, TargetMetric, HISTORY_WEEKS, WINDOW_DAYS,
 };
 use super::power::{self, JudgeInput, Judgement};
-use super::store::{self, GrowthActionRow, STATUS_JUDGED, STATUS_MEASURING};
+use super::store::{self, GrowthActionRow, STATUS_ARCHIVED, STATUS_JUDGED, STATUS_MEASURING};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Sqlite};
@@ -225,7 +225,13 @@ pub async fn run(pool: &Pool<Sqlite>, now: DateTime<Utc>) -> anyhow::Result<Swee
         } else {
             STATUS_MEASURING
         };
-        if action.status != next && judged > 0 {
+        // An archived action keeps being MEASURED (see
+        // `store::pending_measurement`) but never moves status. Archiving is the
+        // user filing a card away; setting it back to `measuring` or `judged`
+        // would push it onto the board they just cleared, and they would have
+        // to archive it again after every pass. The outcomes are still written,
+        // so the verdict lands — the card simply stays filed.
+        if action.status != next && judged > 0 && action.status != STATUS_ARCHIVED {
             if let Err(e) =
                 store::set_status(pool, &action.project_id, &action.id, next, None).await
             {
@@ -603,6 +609,53 @@ mod tests {
             store::outcomes_for(&pool, &action.id).await.unwrap().len(),
             3
         );
+    }
+
+    /// REGRESSION. `pending_measurement` was widened so an archived action
+    /// still owed a window keeps being measured; on its own that would let this
+    /// same loop set the archived action's status back to `measuring` and then
+    /// `judged`, putting the card the user just filed away back on the board on
+    /// the next tick. The two changes only make sense together, so this test
+    /// asserts both halves: the outcomes are written AND the status is
+    /// untouched.
+    #[tokio::test]
+    async fn the_sweep_does_not_pull_an_archived_action_back_onto_the_board() {
+        let pool = pool().await;
+        traffic_over(&pool, "p1", day("2026-05-01"), 103, 100).await;
+        traffic_over(&pool, "p1", day("2026-08-12"), 28, 160).await;
+        let (action, _) = verified_action(
+            &pool,
+            "p1",
+            "t",
+            "2026-08-11T14:00:00Z",
+            TargetMetric::Pageviews,
+            TargetDir::Up,
+        )
+        .await;
+        store::set_status(&pool, "p1", &action.id, STATUS_ARCHIVED, None)
+            .await
+            .unwrap();
+
+        let report = run(&pool, at("2026-09-10T03:00:00Z")).await.unwrap();
+        assert_eq!(report.windows_judged, 3, "the verdict still lands");
+        assert_eq!(report.actions_completed, 1);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(
+            store::outcomes_for(&pool, &action.id).await.unwrap().len(),
+            3
+        );
+        assert_eq!(
+            store::get(&pool, "p1", &action.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            STATUS_ARCHIVED,
+            "a filed card must not be dragged back to measuring or judged"
+        );
+        // And with every window written it drops out of the sweep for good.
+        let again = run(&pool, at("2026-09-10T04:00:00Z")).await.unwrap();
+        assert_eq!(again.actions_considered, 0);
     }
 
     /// The history that feeds the variance estimate must not overlap the

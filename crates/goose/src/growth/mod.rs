@@ -26,6 +26,14 @@
 //! an honesty gate, not an experiment (proposal "Non-goals").
 
 pub mod metrics;
+/// Cross-project pooled learning. It is what rescues the low-traffic projects:
+/// one action on one small site is underpowered forever, while the same
+/// strategy tried across every active project has a sample size worth reasoning
+/// about. It segments before it pools — by traffic tier and site shape —
+/// because a naive aggregate over projects that are not exchangeable produces
+/// exactly the Simpson's paradox the proposal names, an aggregate reading
+/// "helped" while quietly failing on the segment it is about to be applied to.
+pub mod pooled;
 pub mod power;
 pub mod store;
 pub mod sweep;

@@ -46,8 +46,11 @@ describe('the verify control', () => {
     // them. So this walks the braces rather than comparing offsets: an
     // ActionVerify placed after the artifact block AND a second one inside it
     // both read as "after" to a positional check.
-    const card = fn('GrowActions');
-    const open = card.indexOf('{a.artifact && (');
+    // The card body moved out of GrowActions' map into its own top-level
+    // component when the archived shelf started rendering the same card
+    // read-only. The assertion is unchanged and still worth pinning.
+    const card = fn('ActionCard');
+    const open = card.indexOf('{action.artifact && (');
     expect(open, 'the artifact block moved or was renamed').toBeGreaterThan(-1);
 
     let depth = 0;
@@ -171,5 +174,133 @@ describe('the numbers only appear where a verdict rests on them', () => {
     const v = fn('ActionVerify');
     expect(v).toContain('identity.outcomes.length === 0');
     expect(v).toContain('Measuring. The first');
+  });
+});
+
+describe('the agent owns the prediction', () => {
+  /**
+   * The metric selects are the FALLBACK, not a control.
+   *
+   * There used to be a "Measure something else" button beside the agent's
+   * prediction that revealed these selects and let the user substitute their
+   * own target. That produces a verdict against a claim the agent never made —
+   * the exact unfalsifiability the pre-registration gate exists to stop — and
+   * it is one JSX line away from coming back. This walks the ternary rather
+   * than grepping, because a select rendered ABOVE the ternary would satisfy
+   * any positional check while being visible in both branches.
+   */
+  it('keeps the metric selects inside the branch for an action with no prediction', () => {
+    const v = fn('ActionVerify');
+    // The CONTROL, not the phrase: the source still names what was removed and
+    // why, and that comment is the thing most likely to stop it coming back.
+    expect(v, 'the override state is back').not.toContain('setOverriding');
+    expect(v, 'the override control is back')
+      .not.toContain('>Measure something else</button>');
+
+    const head = '{predicted ? (';
+    const at = v.indexOf(head);
+    expect(at, 'the prediction branch moved or was renamed').toBeGreaterThan(-1);
+
+    // Walk from the paren that opens the TRUE branch to its match; everything
+    // after it is the false branch.
+    let depth = 0;
+    let i = at + head.length - 1;
+    for (; i < v.length; i += 1) {
+      if (v[i] === '(') depth += 1;
+      else if (v[i] === ')') {
+        depth -= 1;
+        if (depth === 0) break;
+      }
+    }
+    const predictedBranch = v.slice(at, i);
+    const unpredictedBranch = v.slice(i);
+
+    expect(predictedBranch, 'the agent’s own prediction can be swapped out')
+      .not.toContain('aria-label="Target metric"');
+    expect(unpredictedBranch, 'the fallback selects are gone entirely')
+      .toContain('aria-label="Target metric"');
+  });
+
+  it('sends the row’s own pre-registration rather than an empty string', () => {
+    // The self-attest and re-check buttons now render for a PREDICTED action
+    // too, where `metric`/`dir` are never filled in. Posting those empty would
+    // take a 400 from `parse_target` and read on screen as a broken check.
+    const v = fn('ActionVerify');
+    expect(v).toContain('const targetBody =');
+    expect(v).toMatch(/verify\(\{ \.\.\.targetBody\(\), selfAttested: true \}\)/);
+  });
+});
+
+describe('the archive', () => {
+  it('is never offered for an action nothing has happened to', () => {
+    // `reject_pointless_archive` (growth_actions.rs) refuses this on the server
+    // with a 400, so offering the button would turn a rule into an error the
+    // user has to decode. Archiving is also what releases an action's text for
+    // re-proposal, so filing away something never acted on would hand the same
+    // advice back next review.
+    const list = SOURCE.slice(SOURCE.indexOf('const ARCHIVABLE'));
+    const decl = list.slice(0, list.indexOf(';'));
+    expect(decl).toContain("'done'");
+    expect(decl).toContain("'dismissed'");
+    expect(decl, 'suggested must not be archivable').not.toContain("'suggested'");
+
+    const card = fn('ActionCard');
+    // Anchored to the declaration rather than searching the whole component for
+    // the token: a bare `toContain('!readOnly')` matched any stray occurrence
+    // anywhere in the body and would have survived the guard being moved off
+    // this control entirely.
+    const canArchive = card.slice(card.indexOf('const canArchive'));
+    expect(canArchive.slice(0, canArchive.indexOf(';'))).toContain(
+      '!readOnly && !!identity && ARCHIVABLE.includes(identity.status)',
+    );
+  });
+
+  it('gives a suggested action the one exit the server will accept', () => {
+    // The other half of the same rule, and the defect it left behind: with
+    // `suggested` unarchivable and no control anywhere posting `dismissed`,
+    // nothing the user could press removed a card. The active list is now every
+    // non-archived row, so the panel could only grow — and past the generator's
+    // board window the oldest work stops being checked for duplication at all.
+    const card = fn('ActionCard');
+    const canDismiss = card.slice(card.indexOf('const canDismiss'));
+    expect(canDismiss.slice(0, canDismiss.indexOf(';'))).toContain(
+      "identity.status === 'suggested'",
+    );
+    expect(card).toContain("move('dismissed')");
+  });
+
+  it('posts both lifecycle moves to the one route', () => {
+    const card = fn('ActionCard');
+    expect(card).toContain("move('archived')");
+    // One helper, one route, one body shape — so a second exit cannot drift on
+    // to a second endpoint.
+    const move = card.slice(card.indexOf('const move = useCallback'));
+    const body = move.slice(0, move.indexOf('}, [projectId'));
+    expect(body).toContain('/status`');
+    expect(body).toContain('JSON.stringify({ status })');
+    // The card cannot move itself between two lists; the parent re-reads.
+    expect(body).toContain('onChanged()');
+  });
+});
+
+describe('what the row says and what the cache says', () => {
+  it('renders absent prose as nothing rather than as a guess', () => {
+    // The durable row is the truth and has no column for evidence, impact or
+    // confidence; those come from a prose cache a later review can prune.
+    // Defaulting them to "medium" would be the same invention the backend
+    // refuses when it declines to default a target metric.
+    const card = fn('ActionCard');
+    expect(card).toContain('{action.evidence && (');
+    expect(card).toContain('{action.impact && action.confidence && (');
+  });
+
+  it('names the project every transferred result came from', () => {
+    // A card that appears because a category worked elsewhere and will not say
+    // where is not auditable, and is indistinguishable from a model flattering
+    // its own suggestion.
+    const card = fn('ActionCard');
+    expect(card).toContain('ex.projectName');
+    expect(card).toContain('ex.title');
+    expect(card).toContain('transfer.segmentLabel');
   });
 });
