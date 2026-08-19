@@ -255,17 +255,28 @@ describe('the archive', () => {
     );
   });
 
-  it('gives a suggested action the one exit the server will accept', () => {
-    // The other half of the same rule, and the defect it left behind: with
-    // `suggested` unarchivable and no control anywhere posting `dismissed`,
-    // nothing the user could press removed a card. The active list is now every
-    // non-archived row, so the panel could only grow — and past the generator's
-    // board window the oldest work stops being checked for duplication at all.
+  // REGRESSION for the user report of 2026-08-19: "some of the actions I am
+  // seeing in the Grow tab are stale ones that I already ran. I should be able
+  // to dismiss it."
+  //
+  // This was `identity.status === 'suggested'` — a claim about lifecycle, where
+  // the need is about the list. A `done` card whose work the user no longer
+  // cares about could only be ARCHIVED, and archiving is precisely what
+  // releases an action's text for re-proposal, so filing stale advice away
+  // handed the identical advice back on the next review. The gate is now the
+  // durable row: if the Actions lane can render it, the Actions lane can post a
+  // dismissal for it.
+  it('lets any card on the Actions lane be dismissed, whatever its status', () => {
     const card = fn('ActionCard');
     const canDismiss = card.slice(card.indexOf('const canDismiss'));
-    expect(canDismiss.slice(0, canDismiss.indexOf(';'))).toContain(
-      "identity.status === 'suggested'",
-    );
+    const decl = canDismiss.slice(0, canDismiss.indexOf(';'));
+    expect(decl).toContain("lane === 'actions'");
+    // The DURABLE row id, not the prose cache and not a status allowlist. The
+    // four actions this project has carried since 2026-08-14 have no cache
+    // entry left, and every control hangs off the identity.
+    expect(decl).toContain('!!actionId');
+    expect(decl, 'a status allowlist is what left `done` with no exit')
+      .not.toContain("identity.status ===");
     expect(card).toContain("move('dismissed')");
   });
 

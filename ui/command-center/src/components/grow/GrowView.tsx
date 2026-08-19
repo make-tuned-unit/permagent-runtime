@@ -19,6 +19,7 @@ import { apiFetch } from '../../lib/api';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { ViewHeader } from '../common/ViewHeader';
 import type { Project } from '../projects/types';
+import { FiLoader } from 'react-icons/fi';
 import { FunnelPanel } from './FunnelPanel';
 import { drainFreshness } from './analyticsFormat';
 import {
@@ -43,6 +44,10 @@ const SWAP_FADE_MS = 140;
 /** How long the outgoing height stays pinned after the swap, so a panel that
  *  is still fetching cannot collapse the scroll container under the cursor. */
 const SWAP_SETTLE_MS = 600;
+/** How often the Grow panel re-reads while a review is running on the server.
+ *  Only ticks while `generating` is true (see `GrowActions`), so this is a
+ *  progress check on a job the user started, not a background poll. */
+const GENERATION_POLL_MS = 4000;
 
 const HUMANIZE_VOICE =
   ' Write it the way a sharp person actually writes: lead with the point, stay specific and concrete, keep sentences short, and cut every AI tell (no em-dashes, no hype words like "seamless" or "leverage" or "unlock", no throat-clearing openers). Apply your "humanize" skill for the full voice spec before you hand it back.';
@@ -1134,6 +1139,38 @@ interface ActionIdentity {
   verifiedBy: string | null;
   verifiedAt: string | null;
   outcomes: ActionOutcome[];
+  /** The reading frozen at verification — what every window is compared
+   *  against. Absent for an action that was never verified, and for one whose
+   *  stored baseline no longer parses (the backend sends nothing rather than a
+   *  zero, which would read as "there was no traffic before the change"). */
+  baseline?: BaselineView | null;
+}
+
+/** One window of the frozen baseline. Mirrors `BaselineWindow` in
+ *  routes/growth_actions.rs. */
+interface BaselineWindow {
+  windowDays: number;
+  /** Inclusive UTC date, `YYYY-MM-DD`. */
+  start: string;
+  /** Exclusive UTC date, `YYYY-MM-DD`. */
+  end: string;
+  value: number;
+  /** What the value rests on — the count itself, or the session denominator for
+   *  a rate. "70% bounce over 8 sessions" and "over 800" are different claims. */
+  denominator: number;
+}
+
+/** The frozen baseline as the Tracking card renders it. Mirrors `BaselineView`
+ *  in routes/growth_actions.rs. */
+interface BaselineView {
+  /** pageviews | sessions | aeo_visits | bounce_rate */
+  metric: string;
+  /** up | down */
+  dir: string;
+  /** First fully-post-change UTC day, `YYYY-MM-DD`. */
+  pivot: string;
+  takenAt: string;
+  windows: BaselineWindow[];
 }
 
 interface GrowthVerifyResponse {
@@ -1212,9 +1249,18 @@ interface GrowthAction {
 }
 
 interface GrowthActionsData {
-  /** The active board. Assembled from the durable rows, so an action the last
-   *  review did not re-emit is still here while the sweep still measures it. */
+  /** The active board: work still asking the user for a decision. Assembled
+   *  from the durable rows, so an action the last review did not re-emit is
+   *  still in the payload while the sweep still measures it — in `tracking`. */
   actions: GrowthAction[];
+  /** What we changed and are now measuring — verified, measuring and judged.
+   *
+   *  Its own list because Actions and Tracking answer different questions:
+   *  "what should I do" and "did what I did work". #1053 kept these rows on the
+   *  active board so in-flight work could not silently vanish while the sweep
+   *  still measured it; that guarantee is kept by MOVING them somewhere they
+   *  are still visible, never by hiding them. */
+  tracking: GrowthAction[];
   /** Filed away by the user, newest first. */
   archived: GrowthAction[];
   /** Advice the user turned down, newest first. Distinct from `archived`
@@ -1230,6 +1276,17 @@ interface GrowthActionsData {
    *  not auditable. */
   droppedForNoTarget: number;
   droppedAsRestatement: number;
+  /** A review is running on the server right now.
+   *
+   *  Server truth, and that is the whole point. The spinner used to be a
+   *  `useState` in the panel component, so leaving the tab unmounted it and the
+   *  flag was lost: the user came back to an idle button while the review was
+   *  still running, and its result landed in the database unseen. Every read of
+   *  this surface reports what is actually in flight, so the UI reconciles with
+   *  the server on remount instead of trusting its own memory. */
+  generating: boolean;
+  /** When the running review started (RFC3339). Absent when none is. */
+  generationStartedAt?: string | null;
 }
 
 /** The closed set an action may pre-register against (metrics.rs:41-47). Kept
@@ -1302,9 +1359,62 @@ function windowDueAt(verifiedAt: string | null, days: number): Date | null {
   return due;
 }
 
+/** The measurement windows, in the order and spelling the sweep uses
+ *  (`metrics.rs` WINDOW_DAYS). The Tracking view walks all three; anything that
+ *  shows only the first tells the user a 28-day verdict is not coming. */
+const WINDOW_DAYS = [7, 14, 28];
 /** The shortest window is 7 days (metrics.rs WINDOW_DAYS), the longest 28. */
-const FIRST_WINDOW_DAYS = 7;
-const FINAL_WINDOW_DAYS = 28;
+const FIRST_WINDOW_DAYS = WINDOW_DAYS[0];
+const FINAL_WINDOW_DAYS = WINDOW_DAYS[WINDOW_DAYS.length - 1];
+
+/** Where one measurement window has got to.
+ *
+ *  `judged` — the sweep has written an outcome for it.
+ *  `due`    — the window has fully elapsed but no outcome exists yet (the sweep
+ *             runs nightly, so this is a real and honest state, not an error).
+ *  `open`   — still accumulating; `dueAt` says when it closes.
+ */
+type WindowState = 'judged' | 'due' | 'open';
+
+interface WindowProgress {
+  days: number;
+  state: WindowState;
+  dueAt: Date | null;
+  outcome: ActionOutcome | null;
+}
+
+/**
+ * How far through the 7/14/28-day windows an action is.
+ *
+ * Derived here rather than sent by the server because every input is already on
+ * the wire — `verifiedAt` and the outcomes — and a second source for the same
+ * fact is a second thing that can disagree with the sweep. The boundary is the
+ * same one `metrics::window_is_complete` uses: the pivot is the day AFTER
+ * verification, and the window closes once `days` have fully elapsed from it.
+ */
+function windowProgress(
+  identity: ActionIdentity,
+  now: Date = new Date(),
+): WindowProgress[] {
+  return WINDOW_DAYS.map((days) => {
+    const outcome = identity.outcomes.find((o) => o.windowDays === days) ?? null;
+    const dueAt = windowDueAt(identity.verifiedAt, days);
+    const state: WindowState = outcome
+      ? 'judged'
+      : dueAt && dueAt.getTime() <= now.getTime()
+        ? 'due'
+        : 'open';
+    return { days, state, dueAt, outcome };
+  });
+}
+
+/** A metric value in the units the metric is actually in. A bounce rate is a
+ *  proportion in [0,1] and rendering it as "0.99" beside a pageview count reads
+ *  as a broken number rather than as 99%. */
+function metricValue(metric: string, value: number): string {
+  if (metric === 'bounce_rate') return `${(value * 100).toFixed(0)}%`;
+  return value.toLocaleString(undefined, { maximumFractionDigits: 1 });
+}
 
 /**
  * "Verify change" plus everything the verdict has to say — the honest half of
@@ -1691,6 +1801,87 @@ function categoryColor(category: string, colors: ThemeColors): string {
  */
 const ARCHIVABLE = ['done', 'verified', 'measuring', 'judged', 'dismissed'];
 
+/** Which list a card is in. See `ActionCard`'s `lane` prop. */
+type ActionLane = 'actions' | 'tracking' | 'shelf';
+
+/**
+ * The measurement rail on a Tracking card: the frozen baseline, and how far
+ * through the 7/14/28-day windows this action is.
+ *
+ * `ActionVerify` already renders the verdicts themselves, so this deliberately
+ * does not repeat them — it renders what the card was missing, which is the
+ * "before" every verdict is computed against and the windows that have not
+ * reported yet. An empty outcome list with no rail reads as "the measurement
+ * found nothing"; the truth is almost always "it is not due until the 26th".
+ */
+function TrackingRail({ identity, colors }: { identity: ActionIdentity; colors: ThemeColors }) {
+  const metric = identity.targetMetric ?? identity.baseline?.metric ?? null;
+  const progress = windowProgress(identity);
+  const baselineByWindow = new Map(
+    (identity.baseline?.windows ?? []).map((w) => [w.windowDays, w]),
+  );
+
+  const label: CSSProperties = {
+    fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em',
+    textTransform: 'uppercase', color: colors.textDim,
+  };
+
+  return (
+    <div style={{
+      marginTop: 10, background: colors.bgDeeper, border: `1px solid ${colors.border}`,
+      borderRadius: radius.md, padding: 10,
+      display: 'flex', flexDirection: 'column', gap: 8,
+    }}>
+      <span style={label}>Measuring against</span>
+      {identity.baseline ? (
+        <span style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>
+          Baseline frozen {new Date(identity.baseline.takenAt).toLocaleDateString()}. Windows
+          start {identity.baseline.pivot} — the change day itself is in neither half.
+        </span>
+      ) : (
+        // Never a zero. A baseline of nought would render as "there was no
+        // traffic before the change", which is a claim nothing here can make.
+        <span style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>
+          No baseline was frozen for this action, so its windows cannot be compared.
+        </span>
+      )}
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        {progress.map((w) => {
+          const before = baselineByWindow.get(w.days) ?? null;
+          return (
+            <div key={w.days} style={{
+              display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap',
+              fontSize: 11, color: colors.textDim,
+            }}>
+              <span style={{ ...label, minWidth: 52 }}>{w.days}-day</span>
+              <span style={{
+                color: w.state === 'judged' ? colors.text : colors.textDim,
+              }}>
+                {w.state === 'judged'
+                  ? `read ${new Date(w.outcome!.judgedAt).toLocaleDateString()} — ${verdictMeta(w.outcome!.verdict, colors).label.toLowerCase()}`
+                  : w.state === 'due'
+                    // The sweep is nightly, so "due" is a real state and saying
+                    // so is honest. Silence here reads as a stuck experiment.
+                    ? 'window closed — the next nightly sweep will read it'
+                    : `closes ${w.dueAt ? w.dueAt.toLocaleDateString() : 'once verified'}`}
+              </span>
+              {before && metric && (
+                <span style={{ fontFamily: font.mono, color: colors.textDim }}>
+                  before: {metricValue(metric, before.value)}
+                  {before.denominator > 0 && metric === 'bounce_rate'
+                    ? ` of ${before.denominator.toLocaleString()} sessions`
+                    : ''}
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 /**
  * One action, on the board or on the archived shelf.
  *
@@ -1700,17 +1891,27 @@ const ARCHIVABLE = ['done', 'verified', 'measuring', 'judged', 'dismissed'];
  * that reorders on every review.
  */
 function ActionCard({
-  projectId, action, colors, readOnly, onChanged,
+  projectId, action, colors, lane, onChanged,
 }: {
   projectId: string;
   action: GrowthAction;
   colors: ThemeColors;
-  /** The archived shelf: no Verify, no Archive. Filed work is a record. */
-  readOnly: boolean;
+  /** Which list this card is in — it decides which exits the card offers.
+   *
+   *  `actions`  work still asking for a decision. Dismiss is offered whatever
+   *             the status, because this is the list the user is trying to
+   *             shorten and a row here with no control is the defect.
+   *  `tracking` work being measured. Archive is the exit: it files the card
+   *             away and KEEPS measuring it, which is what filing away
+   *             in-flight work has to mean. Dismiss is not offered — it would
+   *             drop a live experiment into the refused pile.
+   *  `shelf`    archived or dismissed. A record: no controls at all. */
+  lane: ActionLane;
   /** Refetch the board. Archiving moves a card between two lists, so the
    *  parent has to re-read rather than this card patching itself. */
   onChanged: () => void;
 }) {
+  const readOnly = lane === 'shelf';
   const [copied, setCopied] = useState(false);
   const [moving, setMoving] = useState<string | null>(null);
   const [moveError, setMoveError] = useState<string | null>(null);
@@ -1725,11 +1926,16 @@ function ActionCard({
   const identity = action.identity ?? null;
   const actionId = identity?.id ?? null;
 
-  /** One lifecycle route, two exits. Dismiss is the only way a `suggested`
-   *  card can leave the active list — the server refuses to archive one, on the
-   *  grounds that archiving releases the text for re-proposal and would hand
-   *  the same advice straight back. Without this control nothing the user could
-   *  press ever shortened the panel, so it could only grow. */
+  /** One lifecycle route, two exits, and they are not interchangeable.
+   *
+   *  Archiving RELEASES an action's text for re-proposal (`board` excludes
+   *  archived rows and `restates` is checked against `board`), so it is the
+   *  wrong exit for advice the user is done with — and the server refuses it
+   *  outright on a `suggested` row for that reason. Dismissal keeps the text on
+   *  the generator's board where it can never be proposed again, which is why
+   *  it is the exit offered on every card in the Actions list whatever its
+   *  status. Without it nothing the user could press ever shortened the panel,
+   *  so it could only grow. */
   const move = useCallback((status: string) => {
     if (!actionId) return;
     setMoving(status);
@@ -1754,7 +1960,22 @@ function ActionCard({
   const tint = categoryColor(action.category, colors);
   const transfer = action.transfer ?? null;
   const canArchive = !readOnly && !!identity && ARCHIVABLE.includes(identity.status);
-  const canDismiss = !readOnly && !!identity && identity.status === 'suggested';
+  /** Keyed on the DURABLE ROW, not on a status allowlist and not on the prose
+   *  cache.
+   *
+   *  This was `identity.status === 'suggested'`, which is a claim about
+   *  lifecycle where the user's need is about the list: they can see the row,
+   *  they have already done it (or never will), and they want it gone. On this
+   *  project four actions have been on the board since 2026-08-14 with no entry
+   *  left in the prose cache; every control the panel offers hangs off the
+   *  identity, so the rule now is simply "the board can reach this row" — which
+   *  is true for every card the board renders, because `render_board` builds
+   *  the list FROM the rows. `done` in particular had no dismissal at all, and
+   *  its only other exit — Archive — releases the text for re-proposal, so
+   *  filing away stale advice handed the identical advice back on the next
+   *  review. That is exactly what happened here: the 2026-08-19 review restated
+   *  the 2026-08-14 funnel action. */
+  const canDismiss = lane === 'actions' && !!actionId;
 
   const smallButton: CSSProperties = {
     background: colors.surface, border: `1px solid ${colors.border}`,
@@ -1887,6 +2108,12 @@ function ActionCard({
         readOnly={readOnly}
       />
 
+      {/* Only on the Tracking lane. On the Actions lane there is nothing to
+          measure yet, and on the shelf the card is a record. */}
+      {lane === 'tracking' && identity && (
+        <TrackingRail identity={identity} colors={colors} />
+      )}
+
       {canArchive && (
         <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           {/* Not deletion, and the wording must not promise permanence: an
@@ -1960,12 +2187,41 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
 
   const [actions, setActions] = useState<GrowthActionsData | null>(null);
   const [actionsState, setActionsState] = useState<LoadState>('loading');
-  const [generating, setGenerating] = useState(false);
   const actionsGen = useRef(0);
 
-  const loadActions = useCallback((id: string) => {
+  /**
+   * The review is running ON THE SERVER.
+   *
+   * This replaced a `useState(false)` set by the click handler. That flag was
+   * component-local, and this component unmounts when the user leaves the tab
+   * (`lens === 'actions' && <GrowActions …>`) or switches project — so the flag
+   * was destroyed while the review carried on, and coming back showed an idle
+   * button over a review that was still running. The result then landed in the
+   * database with nothing on screen to say it had.
+   *
+   * The truth now lives where the work does. Every GET reports it, so a remount
+   * reconciles instead of guessing.
+   */
+  const serverGenerating = actions?.generating ?? false;
+  /**
+   * The click, before the server has answered.
+   *
+   * Only bridges the round trip between pressing the button and the POST's
+   * reply — the spinner must be on screen from the moment the click is
+   * registered, and without this it would appear a request later. It is NOT
+   * the source of truth and never outlives the request: if this component
+   * unmounts mid-flight, the server's flag is what the next mount reads.
+   */
+  const [pending, setPending] = useState(false);
+  const busyGenerating = pending || serverGenerating;
+
+  /** `silent` keeps the current cards on screen while re-reading. The poll
+   *  below runs every few seconds during a review; dropping the board to
+   *  skeletons each time would make the panel flash for as long as the review
+   *  takes. */
+  const loadActions = useCallback((id: string, opts?: { silent?: boolean }) => {
     const generation = ++actionsGen.current;
-    setActionsState('loading');
+    if (!opts?.silent) setActionsState('loading');
     apiFetch<GrowthActionsData>(`/api/projects/${encodeURIComponent(id)}/growth-actions`)
       .then((d) => {
         if (generation !== actionsGen.current) return;
@@ -1974,22 +2230,30 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
       })
       .catch(() => {
         if (generation !== actionsGen.current) return;
-        setActionsState('error');
+        if (!opts?.silent) setActionsState('error');
       });
   }, []);
 
   // Regeneration is explicit. It spends a model call, and actions that
   // reshuffle on every render cannot be acted on.
+  //
+  // The POST now returns as soon as the review has been STARTED — the work runs
+  // in a task on the daemon that no longer belongs to this request — so the
+  // reply carries the board as it stands with `generating: true`. `pending` is
+  // set first and synchronously so the spinner is on screen from the moment the
+  // click is registered rather than one round trip later; the server's flag
+  // takes over from it as soon as the reply lands.
   const generate = useCallback((id: string) => {
-    setGenerating(true);
+    if (busyGenerating) return;
+    setPending(true);
     apiFetch<GrowthActionsData>(
       `/api/projects/${encodeURIComponent(id)}/growth-actions/generate`,
       { method: 'POST' },
     )
       .then((d) => { setActions(d); setActionsState('ready'); })
       .catch(() => setActionsState('error'))
-      .finally(() => setGenerating(false));
-  }, []);
+      .finally(() => setPending(false));
+  }, [busyGenerating]);
 
   useEffect(() => {
     loadInbox(project.id);
@@ -1997,7 +2261,34 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
     return () => { ++inboxGen.current; ++actionsGen.current; };
   }, [project.id, loadInbox, loadActions]);
 
+  // While a review is running, keep asking. This is what makes returning to the
+  // tab mid-run show it still running and, when it lands, show the new actions
+  // with nothing to press: the flag is on the server, so a remount reads it
+  // from the GET above and this poll carries it to completion.
+  //
+  // It runs ONLY while `generating` is true — it is not a background poll of
+  // the panel, and it stops the moment the review does.
+  useEffect(() => {
+    if (!serverGenerating) return;
+    const t = setInterval(() => loadActions(project.id, { silent: true }), GENERATION_POLL_MS);
+    return () => clearInterval(t);
+  }, [serverGenerating, project.id, loadActions]);
+
+  // Multi-client liveness (#629): the daemon emits `project_changed` when a
+  // review finishes, which `livenessSync` turns into a `projectsRev` bump. This
+  // is the fast path — the poll above is the belt that still works if the
+  // socket is down. Skipped on the first render so it does not double the load
+  // the mount effect already did.
+  const projectsRev = useCommandCenter((st) => st.projectsRev);
+  const seenRev = useRef(projectsRev);
+  useEffect(() => {
+    if (seenRev.current === projectsRev) return;
+    seenRev.current = projectsRev;
+    loadActions(project.id, { silent: true });
+  }, [projectsRev, project.id, loadActions]);
+
   const hasActions = (actions?.actions?.length ?? 0) > 0;
+  const tracking = actions?.tracking ?? [];
   const archived = actions?.archived ?? [];
   const dismissed = actions?.dismissed ?? [];
   const droppedRestated = actions?.droppedAsRestatement ?? 0;
@@ -2025,16 +2316,51 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
               {new Date(actions.generatedAt).toLocaleString()}
             </span>
           )}
+          {/* Two clicks cannot start two reviews: the button is disabled for as
+              long as either half of `busyGenerating` holds, and the daemon
+              refuses a second review for a project that already has one running
+              (`begin_review`). The disabled attribute is the courtesy; the
+              server is the rule. */}
           <button
             onClick={() => generate(project.id)}
-            disabled={generating}
+            disabled={busyGenerating}
+            aria-busy={busyGenerating}
             style={{
               background: colors.surface, border: `1px solid ${colors.border}`,
-              borderRadius: radius.md, padding: '5px 12px', cursor: generating ? 'default' : 'pointer',
-              color: colors.text, fontFamily: font.body, fontSize: 12, opacity: generating ? 0.6 : 1,
+              borderRadius: radius.md, padding: '5px 12px',
+              cursor: busyGenerating ? 'default' : 'pointer',
+              color: colors.text, fontFamily: font.body, fontSize: 12,
+              opacity: busyGenerating ? 0.7 : 1,
+              display: 'inline-flex', alignItems: 'center', gap: 6,
             }}
-          >{generating ? 'Reviewing…' : hasActions ? 'Review again' : 'Review my analytics'}</button>
+          >
+            {/* A MOVING affordance, not a text swap. "Reviewing…" is
+                indistinguishable from a stuck button, and this one can be on
+                screen for the length of a model call. `pa-spin` is the app's
+                spinner utility (index.css) and honours prefers-reduced-motion
+                through the global block there. */}
+            {busyGenerating && <FiLoader size={12} className="pa-spin" aria-hidden />}
+            {busyGenerating
+              ? 'Reviewing your analytics…'
+              : hasActions ? 'Review again' : 'Review my analytics'}
+          </button>
         </div>
+
+        {/* Said out loud, because the one thing the user could not tell before
+            was whether anything was still happening. The review runs on the
+            daemon, so this is true whether or not this tab is open. */}
+        {busyGenerating && (
+          <div style={{
+            fontSize: 11, color: colors.textDim, marginBottom: 10,
+            display: 'flex', alignItems: 'center', gap: 6,
+          }}>
+            <FiLoader size={11} className="pa-spin" aria-hidden />
+            <span>
+              Your agent is reading the last {actions?.periodDays ?? 30} days. This keeps running
+              if you leave the tab — come back and the new actions will be here.
+            </span>
+          </div>
+        )}
 
         {actionsState === 'loading' && <SkeletonCards colors={colors} count={2} height={92} />}
         {actionsState === 'error' && (
@@ -2043,12 +2369,18 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
 
         {/* An empty list ALWAYS explains itself — silence is indistinguishable
             from breakage, and this panel is allowed to have nothing to say. */}
-        {actionsState === 'ready' && !hasActions && (
+        {actionsState === 'ready' && !hasActions && !busyGenerating && (
           <div style={{
             fontSize: 12, color: colors.textMuted, background: colors.bgDeeper,
             border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: 12,
           }}>
-            {actions?.reason ?? 'No review yet — run one to see what your data suggests.'}
+            {/* An empty Actions list with a full Tracking list is not "nothing
+                to say" — it is "everything you were offered is now being
+                measured", and saying the wrong one of those reads as data
+                loss. */}
+            {tracking.length > 0
+              ? 'Nothing is waiting on you. Everything you took on is being measured below.'
+              : actions?.reason ?? 'No review yet — run one to see what your data suggests.'}
           </div>
         )}
 
@@ -2062,11 +2394,47 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
               projectId={project.id}
               action={a}
               colors={colors}
-              readOnly={false}
+              lane="actions"
               onChanged={onChanged}
             />
           ))}
         </div>
+
+        {/* Tracking — what we changed, and whether it worked.
+
+            Not collapsed and not the archive: this is live work with verdicts
+            still to come, and the user asked for it precisely so a verified
+            action would leave the decision list without leaving their sight.
+            #1053 deliberately kept these rows on the active board so nothing
+            in flight could silently vanish; that guarantee is honoured by
+            MOVING them here, where every one is still rendered with its
+            evidence, its prediction, its baseline and its windows. */}
+        {tracking.length > 0 && (
+          <section style={{ marginTop: 18 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 10 }}>
+              <h3 style={{
+                fontFamily: font.mono, fontSize: 11, color: colors.textDim,
+                textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0,
+              }}>Tracking ({tracking.length})</h3>
+              <span style={{ fontSize: 10, color: colors.textDim }}>
+                Changes you made, measured at {WINDOW_DAYS.join(', ')} days against the
+                traffic before them.
+              </span>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {tracking.map((a, i) => (
+                <ActionCard
+                  key={a.identity?.id ?? `tracking-${a.title}-${i}`}
+                  projectId={project.id}
+                  action={a}
+                  colors={colors}
+                  lane="tracking"
+                  onChanged={onChanged}
+                />
+              ))}
+            </div>
+          </section>
+        )}
 
         {/* The shelf. Collapsed, because filed work is a record the user goes
             looking for rather than something competing with the board — but
@@ -2084,7 +2452,7 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
                   projectId={project.id}
                   action={a}
                   colors={colors}
-                  readOnly
+                  lane="shelf"
                   onChanged={onChanged}
                 />
               ))}
@@ -2110,7 +2478,7 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
                   projectId={project.id}
                   action={a}
                   colors={colors}
-                  readOnly
+                  lane="shelf"
                   onChanged={onChanged}
                 />
               ))}
