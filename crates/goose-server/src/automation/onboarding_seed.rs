@@ -21,6 +21,8 @@ use spectral::{RememberOpts, Visibility};
 const SEED_MARKER_KEY: &str = "onboarding_memories_seeded";
 /// `source` tag recorded on every seeded memory.
 const SEED_SOURCE: &str = "permagent.onboarding";
+/// Episode every seeded memory is filed under — the first-run seeding itself.
+const SEED_EPISODE_ID: &str = "onboarding:first-run";
 
 struct SeedMemory {
     key: &'static str,
@@ -75,6 +77,12 @@ pub async fn seed_onboarding_memories() {
         let opts = RememberOpts {
             source: Some(SEED_SOURCE.to_string()),
             visibility: Visibility::Private,
+            // All three welcome memories are written in one pass, on first run,
+            // and are one episode (R45) — the moment the brain was seeded.
+            // A constant: the seed runs at most once, and a retry after a
+            // partial write rejoins the same episode instead of splitting the
+            // welcome set in two.
+            episode_id: Some(SEED_EPISODE_ID.to_string()),
             ..Default::default()
         };
         match brain.remember_with(mem.key, mem.content, opts).await {

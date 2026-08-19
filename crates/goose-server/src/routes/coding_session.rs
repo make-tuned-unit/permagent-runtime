@@ -153,6 +153,14 @@ async fn summarize_and_store(
                 confidence: Some(1.0),
                 visibility: spectral::Visibility::Private,
                 wing: None,
+                // The coding session is the episode (R45). The harness posts
+                // one summary per session and sends no session id, so the
+                // session's own memory key — project + start stamp — is the
+                // stable identifier available here; it is derived from the
+                // session, not minted per write, and a re-post of the same
+                // session upserts into the same episode. When the harness
+                // starts sending a session id, pass that instead.
+                episode_id: Some(key.clone()),
                 ..Default::default()
             },
         )

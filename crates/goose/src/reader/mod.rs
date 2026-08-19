@@ -190,6 +190,13 @@ async fn finalize_text_ingest(key: String, full_text: String, filename: &str) ->
         let opts = RememberOpts {
             source: Some(READER_SOURCE.to_string()),
             visibility: Visibility::Private,
+            // The ingested document is the episode (R45). `key` is the
+            // content-hash identity of these exact bytes
+            // (`reader:file:{sha256}`), so it is stable for this document
+            // version and shared by every write this ingest makes — while a
+            // different document dropped in the same minute gets its own
+            // episode instead of being merged in by the write-gap heuristic.
+            episode_id: Some(key.clone()),
             ..Default::default()
         };
         if let Err(e) = brain.remember_with(&key, &full_text, opts).await {

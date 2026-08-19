@@ -1643,6 +1643,11 @@ pub async fn reindex_project_code(
     let opts = spectral::RememberOpts {
         source: Some(CODE_MAP_SOURCE.to_string()),
         visibility: spectral::Visibility::Private,
+        // A project's code map is its own episode (R45): the key is stable per
+        // project and every re-index upserts the same memory, so successive
+        // indexes of one project stay one episode instead of being filed apart
+        // by however long passed between them.
+        episode_id: Some(memory_key.clone()),
         ..Default::default()
     };
     brain

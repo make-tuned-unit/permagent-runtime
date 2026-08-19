@@ -27,6 +27,30 @@ use crate::meeting_writeup::WriteupProvenance;
 /// as it does Reader-ingested documents.
 pub const NOTE_SOURCE: &str = "permagent.note";
 
+/// The episode a note's memories belong to (R45).
+///
+/// A note is written once on create and re-written under the SAME memory key by
+/// the enhancement pass (`update_note_body` — a meeting's raw transcript, then
+/// its structured rewrite). Both writes name this episode, so the note and its
+/// enhanced form are one episode rather than two writes an hour apart that
+/// Spectral's 30-minute-gap heuristic would file separately. Derived from the
+/// note's durable row id, so it is stable for the life of the note and never a
+/// fresh per-write id.
+pub fn note_episode_id(project_id: &str, note_id: &str) -> String {
+    format!("note:{project_id}:{note_id}")
+}
+
+/// The `RememberOpts` a note's Brain index is written with. Shared by the
+/// create and update paths so both name the same episode.
+fn note_remember_opts(project_id: &str, note_id: &str) -> spectral::RememberOpts {
+    spectral::RememberOpts {
+        source: Some(NOTE_SOURCE.to_string()),
+        visibility: spectral::Visibility::Private,
+        episode_id: Some(note_episode_id(project_id, note_id)),
+        ..Default::default()
+    }
+}
+
 /// The Brain content for a note: title + body when a title is present, else the
 /// body alone. Mirrors how the Reader stores the full text of a document.
 pub fn note_memory_content(title: Option<&str>, body: &str) -> String {
@@ -87,11 +111,7 @@ pub async fn create_note_indexed_with_id(
     let mut stored_memory_key: Option<&str> = None;
     if let Some(brain) = brain {
         let content = note_memory_content(title, body);
-        let opts = spectral::RememberOpts {
-            source: Some(NOTE_SOURCE.to_string()),
-            visibility: spectral::Visibility::Private,
-            ..Default::default()
-        };
+        let opts = note_remember_opts(project_id, note_id);
         match brain.remember_with(&memory_key, &content, opts).await {
             Ok(_) => {
                 stored_memory_key = Some(&memory_key);
@@ -311,11 +331,7 @@ pub async fn update_note_body(
     if let Some(brain) = brain {
         let memory_key = format!("note:{}:{}", project_id, note_id);
         let content = note_memory_content(title.as_deref(), body);
-        let opts = spectral::RememberOpts {
-            source: Some(NOTE_SOURCE.to_string()),
-            visibility: spectral::Visibility::Private,
-            ..Default::default()
-        };
+        let opts = note_remember_opts(project_id, note_id);
         if let Err(e) = brain.remember_with(&memory_key, &content, opts).await {
             tracing::warn!(
                 project = %project_id, note = %note_id, error = %e,
@@ -447,6 +463,23 @@ mod tests {
     use super::*;
     use crate::projects::{create_project, CreateProject};
     use crate::session::spectral_schema::init_spectral_db;
+
+    /// R45: both Brain writes for a note — the create and the enhancement
+    /// rewrite that lands under the same key later — name one stable episode,
+    /// so they link instead of being filed apart by the write-gap heuristic.
+    #[test]
+    fn note_writes_share_one_stable_episode() {
+        let created = note_remember_opts("proj-1", "note-1");
+        let enhanced = note_remember_opts("proj-1", "note-1");
+
+        assert_eq!(created.episode_id.as_deref(), Some("note:proj-1:note-1"));
+        assert_eq!(created.episode_id, enhanced.episode_id);
+        // Distinct notes are distinct episodes.
+        assert_ne!(
+            created.episode_id,
+            note_remember_opts("proj-1", "note-2").episode_id
+        );
+    }
 
     async fn test_pool() -> Pool<Sqlite> {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()

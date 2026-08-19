@@ -948,6 +948,63 @@ impl SafeBrain {
         .map_err(|e| anyhow::anyhow!("brain task panicked: assert_works_on_edge: {e}"))?
     }
 
+    /// Assert one **typed** triple — `(subject_type, subject_mention)`,
+    /// `predicate`, `(object_type, object_mention)` — through Spectral's
+    /// ontology, off the async executor.
+    ///
+    /// Like every wrapper on this type, the call runs inside
+    /// `tokio::task::spawn_blocking`: the underlying `spectral::Brain` is
+    /// blocking (SQLite + graph writes), so awaiting it directly on the
+    /// executor would stall every other task on that thread. A panic in the
+    /// blocking task becomes an `anyhow` error naming the method; Spectral's
+    /// own error maps through `Into`, matching
+    /// [`assert_works_on_edge`](Self::assert_works_on_edge).
+    ///
+    /// This is the *general* assert surface, and is deliberately different from
+    /// [`assert_works_on_edge`](Self::assert_works_on_edge): that one is a
+    /// narrow edge between two already-resolved, already-materialized node ids
+    /// and never creates anything, whereas here Spectral resolves (or creates)
+    /// both mentions against the ontology and validates the predicate's
+    /// domain/range. Passing the types explicitly is what makes it usable where
+    /// a predicate admits several domains, or where predicate-derived inference
+    /// would pick the wrong type.
+    ///
+    /// **Provenance is not carried yet.** Spectral is adding
+    /// `assert_typed_from(memory_id, …)`, which threads the memory a triple was
+    /// extracted from into the write itself. When that pin lands, switch this
+    /// wrapper over to it and take the memory id as a parameter. Do NOT grow a
+    /// provenance side-table here in the meantime: an unsourced triple is the
+    /// accepted interim state; a second source of truth for provenance is not.
+    ///
+    /// No production caller yet, by design — this is the write seam the
+    /// Librarian RELATIONS extraction pass (R43) will call, landed ahead of it
+    /// so that work starts against a reviewed async boundary. The test below
+    /// keeps the signature compiled and honest until then.
+    pub async fn assert_typed(
+        &self,
+        subject: (String, String),
+        predicate: String,
+        object: (String, String),
+        confidence: f64,
+        visibility: spectral::Visibility,
+    ) -> anyhow::Result<spectral::AssertResult> {
+        let brain = self.inner.clone();
+        tokio::task::spawn_blocking(move || {
+            let (subject_type, subject_mention) = subject;
+            let (object_type, object_mention) = object;
+            brain.assert_typed(
+                (&subject_type, &subject_mention),
+                &predicate,
+                (&object_type, &object_mention),
+                confidence,
+                visibility,
+            )
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("brain task panicked: assert_typed: {e}"))?
+        .map_err(Into::into)
+    }
+
     /// List all graph triples touching a person whose other endpoint is also a
     /// person. Both directions are returned so relationship direction is not
     /// lost (for example `manages`).
@@ -1401,7 +1458,9 @@ impl SafeBrain {
     /// [`remember_with`](Self::remember_with): it stamps `opts.visibility` from
     /// `scope` (overriding whatever the passed `opts` carried) and forwards the
     /// rest of `opts` unchanged — so callers can still set `source`, `wing`,
-    /// `confidence`, etc. alongside the level.
+    /// `confidence`, `episode_id`, etc. alongside the level. In particular the
+    /// caller's `episode_id` (R45) passes straight through: this wrapper never
+    /// invents or drops one.
     ///
     /// **Default is unchanged.** Existing write paths that never call this keep
     /// their `Visibility::Private` writes. Nothing here flips a global default;
@@ -1751,5 +1810,49 @@ mod tests {
                 .mode,
             SpreadMode::Off
         );
+    }
+}
+
+/// Compile-level use of [`SafeBrain::assert_typed`] (R43a).
+///
+/// The wrapper has no production caller yet — the Librarian RELATIONS
+/// extraction pass that will call it comes later — so nothing else in the tree
+/// pins its shape. This module builds a real argument set and hands it to the
+/// method inside a closure that is never invoked: closure bodies are still
+/// type-checked, so a Spectral pin bump that changes `assert_typed`'s
+/// arity, ownership, or numeric types fails here rather than months from now in
+/// a caller that does not exist yet. Nothing is awaited, so no runtime and no
+/// Brain are needed.
+#[cfg(test)]
+mod assert_typed_compile_use {
+    use super::SafeBrain;
+
+    /// The call the Librarian's extraction pass will make. Never invoked — it
+    /// is here to be *compiled*: an async fn body is fully type-checked, so a
+    /// Spectral pin bump that changes `assert_typed`'s arity, ownership, or
+    /// numeric types breaks this build rather than surfacing months later in a
+    /// caller that does not exist yet.
+    async fn extraction_pass_call_shape(brain: &SafeBrain) -> anyhow::Result<()> {
+        let subject = ("person".to_string(), "the account owner".to_string());
+        let predicate = "works_on".to_string();
+        let object = ("project".to_string(), "permagent".to_string());
+
+        brain
+            .assert_typed(
+                subject,
+                predicate,
+                object,
+                0.9,
+                spectral::Visibility::Private,
+            )
+            .await?;
+        Ok(())
+    }
+
+    #[test]
+    fn assert_typed_takes_owned_typed_endpoints() {
+        // Referenced, not awaited: awaiting would need a live Brain, and the
+        // point of this test is the signature, not a write.
+        let _shape = extraction_pass_call_shape;
     }
 }

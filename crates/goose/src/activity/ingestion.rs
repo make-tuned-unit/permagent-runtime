@@ -321,6 +321,17 @@ impl ActivityIngester {
                 visibility: Visibility::Private,
                 compaction_tier: Some(CompactionTier::Raw),
                 wing: wing_override.clone(),
+                // R45: when the emitting surface tagged the event with a
+                // session (chat turns, terminal runs, agent work), that session
+                // is the episode — every event of that session lands in it.
+                // Left None for genuinely ambient events (a browser
+                // navigation, an app focus change): those arrive with no
+                // session and nothing else on the envelope is stable — the
+                // event id is per-event, and the surface/day would be a bucket
+                // invented here rather than an episode that happened. Spectral's
+                // write-gap heuristic is the honest fallback for exactly that
+                // case.
+                episode_id: event.session_id.clone(),
                 ..Default::default()
             },
         );

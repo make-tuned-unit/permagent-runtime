@@ -6,6 +6,11 @@
 
 use crate::brain_ops::read_only_brain_conn;
 
+/// Episode for every consolidated browser-navigation summary this pass writes
+/// (R45). Stable forever: the summaries are keyed upserts refreshed on each
+/// consolidation pass — see the write site.
+const BROWSER_ROLLUP_EPISODE_ID: &str = "librarian:rollup:browser_navigated";
+
 /// Find groups of memories with identical content that haven't been consolidated yet.
 /// Returns Vec<(content, count)> — each entry is a cluster of exact duplicates.
 pub fn find_exact_duplicate_clusters(
@@ -152,6 +157,12 @@ pub(super) fn run_consolidation_scan_blocking(
             spectral::RememberOpts {
                 source: Some("librarian.consolidation".into()),
                 visibility: spectral::Visibility::Private,
+                // The browser-navigation rollup is one episode (R45): every
+                // domain summary this pass writes belongs to it. A constant,
+                // not a per-pass id — these summaries are keyed upserts
+                // (`consolidated:browser:{domain}`), so a fresh id per pass
+                // would keep moving the same memory between episodes.
+                episode_id: Some(BROWSER_ROLLUP_EPISODE_ID.to_string()),
                 ..Default::default()
             },
         );

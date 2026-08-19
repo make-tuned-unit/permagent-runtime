@@ -51,6 +51,23 @@ pub fn decision_memory_key(project_slug: &str, decision_id: &str) -> String {
     )
 }
 
+/// The episode both of a decision's memories belong to (R45).
+///
+/// One answered decision produces up to two memories written minutes or days
+/// apart — the acceptance (`decision:…`) and, if the user edited the draft
+/// first, the correction (`correction:…`). They are one episode: the same
+/// decision, seen twice. Derived from the decision's own durable id, so it is
+/// stable across re-ingests (an answer edit rewrites in place under the same
+/// key) and identical for both memories, which the write-gap heuristic could
+/// never have inferred once the two writes drifted apart in time.
+pub fn decision_episode_id(project_slug: &str, decision_id: &str) -> String {
+    format!(
+        "decision-episode:{}:{}",
+        sanitize_key_part(project_slug),
+        sanitize_key_part(decision_id)
+    )
+}
+
 /// Keep key parts parseable: colons and whitespace become hyphens so the
 /// `decision:{project}:{id}` structure stays unambiguous. `pub(crate)` so the
 /// playbook module builds its keys with the identical sanitization.
@@ -157,6 +174,10 @@ pub async fn ingest_decision(
                 confidence: Some(1.0),
                 visibility: spectral::Visibility::Private,
                 wing: Some(decision.wing.to_string()),
+                episode_id: Some(decision_episode_id(
+                    decision.project_slug,
+                    decision.decision_id,
+                )),
                 ..Default::default()
             },
         )
@@ -198,6 +219,13 @@ pub async fn ingest_correction(
                 confidence: Some(1.0),
                 visibility: spectral::Visibility::Private,
                 wing: Some(correction.wing.to_string()),
+                // Same episode as the decision this correction belongs to
+                // (R45) — the acceptance and the edit that preceded it are one
+                // event, however far apart the two writes land.
+                episode_id: Some(decision_episode_id(
+                    correction.project_slug,
+                    correction.decision_id,
+                )),
                 ..Default::default()
             },
         )
@@ -536,6 +564,35 @@ mod tests {
     #[test]
     fn key_prefix_matches_recall_filter() {
         assert!(decision_memory_key("p", "1").starts_with(DECISION_KEY_PREFIX));
+    }
+
+    /// R45: a decision and the correction that preceded it are one episode,
+    /// named explicitly, so the two writes link however far apart they land.
+    #[test]
+    fn decision_and_correction_share_one_stable_episode() {
+        assert_eq!(
+            decision_episode_id("permagent", "42"),
+            "decision-episode:permagent:42"
+        );
+        // Distinct memory keys, one episode.
+        assert_ne!(
+            decision_memory_key("permagent", "42"),
+            correction_memory_key("permagent", "42")
+        );
+        assert_eq!(
+            decision_episode_id("permagent", "42"),
+            decision_episode_id("permagent", "42")
+        );
+        // Sanitized like the keys, so a slug with a colon cannot forge another
+        // decision's episode.
+        assert_eq!(
+            decision_episode_id("we:ird slug", "id: 9"),
+            "decision-episode:we-ird-slug:id--9"
+        );
+        assert_ne!(
+            decision_episode_id("permagent", "42"),
+            decision_episode_id("permagent", "43")
+        );
     }
 
     // ── prose formatting ──

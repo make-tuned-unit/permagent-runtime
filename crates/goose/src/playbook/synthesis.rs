@@ -177,7 +177,7 @@ async fn run_pass(
             continue; // unchanged since last pass
         }
         let slug = resolve_slug(pool, &project_key).await;
-        match synthesize_project(brain, &provider, &slug, &decisions).await {
+        match synthesize_project(brain, &provider, &slug, &decisions, sig).await {
             Ok(n) => {
                 tracing::info!(
                     target: "playbook",
@@ -205,6 +205,7 @@ async fn synthesize_project(
     provider: &Arc<dyn Provider>,
     slug: &str,
     decisions: &[Decision],
+    signature: u64,
 ) -> anyhow::Result<usize> {
     let refs = build_refs(decisions);
     let user_text = build_distill_input(slug, &refs);
@@ -220,6 +221,11 @@ async fn synthesize_project(
         .await?;
     let hints = parse_hints(&response.as_concat_text(), &refs);
 
+    // Every hint this pass stores shares one episode (R45): they were distilled
+    // together, from one decision set, in one call — the signature makes that id
+    // deterministic, so a re-run over unchanged decisions reuses it.
+    let episode_id = super::synthesis_episode_id(slug, signature);
+
     let mut stored = 0usize;
     for h in hints.into_iter().take(MAX_HINTS_PER_PROJECT) {
         let entry = super::PlaybookHint {
@@ -227,6 +233,7 @@ async fn synthesize_project(
             wing: slug,
             hint: &h.hint,
             provenance: &h.provenance,
+            episode_id: &episode_id,
         };
         match super::ingest_playbook_hint(brain, &entry).await {
             Ok(_) => stored += 1,
