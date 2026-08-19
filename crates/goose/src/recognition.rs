@@ -44,7 +44,14 @@ pub struct PendingRecognition {
     pool: Pool<Sqlite>,
     retrieval_id: String,
     injected: Arc<[InjectedMemory]>,
-    persistence: tokio::task::JoinHandle<()>,
+    /// Flips to `true` when the `recognition_events` INSERT has finished.
+    ///
+    /// A `watch` rather than the `JoinHandle` this used to hold, because there
+    /// are now TWO writers that must land after the row exists — the citation
+    /// write-back at turn end and the recognize() verdict — and a `JoinHandle`
+    /// can only be awaited once. Both are UPDATEs keyed on `retrieval_id`, so
+    /// running either before the INSERT would silently affect zero rows.
+    persisted: tokio::sync::watch::Receiver<bool>,
 }
 
 fn now_iso() -> String {
@@ -70,7 +77,8 @@ pub fn spawn_persist_recognition(
     let task_retrieval_id = retrieval_id.clone();
     let injected: Arc<[InjectedMemory]> = injected.into();
     let task_injected = Arc::clone(&injected);
-    let persistence = tokio::spawn(async move {
+    let (persisted_tx, persisted) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
         let injected_ids: Vec<String> = task_injected
             .iter()
             .map(|memory| memory.id.clone())
@@ -92,12 +100,17 @@ pub fn spawn_persist_recognition(
                 e
             );
         }
+        // Signal AFTER the write attempt, success or failure: the followers
+        // are best-effort UPDATEs whose own zero-row / error handling is the
+        // right place to notice a missing row, and holding them forever on a
+        // failed INSERT would leak two tasks per recall.
+        let _ = persisted_tx.send(true);
     });
     PendingRecognition {
         pool,
         retrieval_id,
         injected,
-        persistence,
+        persisted,
     }
 }
 
@@ -208,7 +221,8 @@ impl PendingRecognition {
         }
 
         tokio::spawn(async move {
-            if let Err(e) = self.persistence.await {
+            let mut persisted = self.persisted;
+            if let Err(e) = persisted.wait_for(|done| *done).await {
                 warn!(
                     target: "permagent::recognition",
                     "Recognition persistence task failed before citation write-back: {}",
@@ -485,16 +499,69 @@ async fn write_back_outcome(
 }
 
 // ---------------------------------------------------------------------------
-// Spectral-recognition prep (schema v22).
+// Recognition verdicts (schema v22).
 //
 // `record_verdict` writes a recognize() verdict NEXT TO the outcome columns —
 // the pairing that makes this table the recognition validation ground truth.
-// No production caller feeds real verdicts yet (Spectral's recognize() is not
-// in the pinned dep); the sink seam (`crate::recognition_sink`) is where the
-// wiring lands. `spawn_log_tool_event` feeds the `recognition_tool_events`
-// stream (the path-pursuit tracker input); its only caller is feature-gated.
-// Both are best-effort, matching everything else in this module.
+// Real verdicts flow here from `crate::recognition_sink::observe_recall_stimulus`,
+// which calls `SafeBrain::recognize` alongside every recall (feature
+// `spectral-recognition`). `spawn_log_tool_event` feeds the
+// `recognition_tool_events` stream (the path-pursuit tracker input); its only
+// caller is feature-gated. Both are best-effort, matching everything else in
+// this module.
+//
+// Ordering matters: both writes are UPDATEs keyed on `retrieval_id`, and the
+// row is INSERTed by a detached task. Go through [`VerdictWriteHandle`] rather
+// than calling `record_verdict` directly on a recall that is still in flight.
 // ---------------------------------------------------------------------------
+
+/// Permission to attach a recognize() verdict to one in-flight recall,
+/// chained behind that recall's own `recognition_events` INSERT.
+///
+/// Cheap to clone and to hold: the recognize() call it accompanies runs
+/// detached, so nothing on the reply path waits for either.
+#[derive(Clone)]
+pub struct VerdictWriteHandle {
+    pool: Pool<Sqlite>,
+    retrieval_id: String,
+    persisted: tokio::sync::watch::Receiver<bool>,
+}
+
+impl VerdictWriteHandle {
+    /// The `recognition_events` row this verdict will be written onto.
+    pub fn retrieval_id(&self) -> &str {
+        &self.retrieval_id
+    }
+
+    /// Wait for the recall row to exist, then record the verdict on it.
+    /// Best-effort throughout: a dead persistence task or a failed UPDATE is
+    /// logged and dropped, never propagated.
+    pub async fn record(self, verdict: &str, familiarity: f64) {
+        let mut persisted = self.persisted;
+        if let Err(e) = persisted.wait_for(|done| *done).await {
+            warn!(
+                target: "permagent::recognition",
+                "Recognition persistence task failed before verdict write-back: {}",
+                e
+            );
+            return;
+        }
+        record_verdict(&self.pool, &self.retrieval_id, verdict, familiarity).await;
+    }
+}
+
+impl PendingRecognition {
+    /// A handle for writing this recall's recognize() verdict, correctly
+    /// ordered against the row's INSERT. Taken by reference: the caller keeps
+    /// the `PendingRecognition` for turn-end citation detection.
+    pub fn verdict_handle(&self) -> VerdictWriteHandle {
+        VerdictWriteHandle {
+            pool: self.pool.clone(),
+            retrieval_id: self.retrieval_id.clone(),
+            persisted: self.persisted.clone(),
+        }
+    }
+}
 
 /// Record a recognition verdict + familiarity on an already-persisted recall
 /// event, keyed on `retrieval_id` (schema v22 columns). Best-effort.
@@ -692,6 +759,18 @@ pub async fn recognition_prune_loop(pool: Pool<Sqlite>) {
 mod tests {
     use super::*;
     use sqlx::Row;
+
+    /// A `persisted` signal that is already flipped — these tests INSERT the
+    /// row themselves, so there is no detached write to wait behind.
+    ///
+    /// Dropping the sender here is deliberate and safe: `wait_for` evaluates
+    /// the predicate before it looks at whether the channel closed, so an
+    /// already-satisfied signal returns immediately either way. A sender that
+    /// closes while the value is still `false` is the real failure case, and
+    /// that one does report an error.
+    fn already_persisted() -> tokio::sync::watch::Receiver<bool> {
+        tokio::sync::watch::channel(true).1
+    }
 
     async fn test_pool() -> Pool<Sqlite> {
         use crate::session::spectral_schema::init_spectral_db;
@@ -1034,7 +1113,7 @@ mod tests {
             pool: pool.clone(),
             retrieval_id: retrieval_id.into(),
             injected: Arc::from([]),
-            persistence: tokio::spawn(async {}),
+            persisted: already_persisted(),
         }
         .spawn_record_reply_usage(String::new());
 
@@ -1081,7 +1160,7 @@ mod tests {
             pool: pool.clone(),
             retrieval_id: retrieval_id.into(),
             injected: Arc::from([]),
-            persistence: tokio::spawn(async {}),
+            persisted: already_persisted(),
         }
         .spawn_record_reply_usage("Yes.".into());
 
@@ -1316,6 +1395,43 @@ mod tests {
             row.get::<Option<String>, _>("outcome_kind").as_deref(),
             Some("TaskResolved")
         );
+    }
+
+    /// The verdict write is an UPDATE and the row it targets is INSERTed by a
+    /// detached task, so the two can race. [`VerdictWriteHandle`] exists to
+    /// order them; without it the UPDATE silently affects zero rows and the
+    /// verdict column stays NULL forever, which looks exactly like "no
+    /// recognition happened".
+    #[tokio::test]
+    async fn verdict_handle_lands_after_the_row_it_updates() {
+        let pool = test_pool().await;
+        let pending = spawn_persist_recognition(
+            pool.clone(),
+            ctx("sess-order"),
+            "how do I configure voice?".into(),
+            "cascade".into(),
+            vec![],
+            vec![],
+        );
+        let handle = pending.verdict_handle();
+        assert!(!handle.retrieval_id().is_empty());
+
+        // Issued immediately, while the INSERT is still in flight.
+        handle.record("recognized", 0.91).await;
+
+        let row = sqlx::query(
+            "SELECT recognition_verdict, familiarity FROM recognition_events
+              WHERE session_id = 'sess-order'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("the recall row exists and the verdict found it");
+        assert_eq!(
+            row.get::<Option<String>, _>("recognition_verdict")
+                .as_deref(),
+            Some("recognized")
+        );
+        assert_eq!(row.get::<Option<f64>, _>("familiarity"), Some(0.91));
     }
 
     #[tokio::test]

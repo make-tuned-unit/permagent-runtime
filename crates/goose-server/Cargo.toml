@@ -12,7 +12,23 @@ description.workspace = true
 workspace = true
 
 [features]
-default = ["code-mode", "local-inference", "aws-providers", "telemetry", "otel", "rustls-tls"]
+# `spectral-recognition` is ON by default HERE and nowhere else. The daemon is
+# what actually runs, and a flag nobody flips is not a wired feature — this one
+# stayed off for months behind a docstring claiming the dependency was missing
+# (see crates/goose/src/recognition_sink.rs). The library keeps it off so
+# `-p permagent` still builds and tests both ways.
+#
+# What turning it on switches on, and why each is safe:
+#   * recognize() alongside every recall — detached, budgeted, observer-only:
+#     a recall returns whether recognition succeeds, fails or hangs, and no
+#     brain at all means inject_recall is never reached in the first place.
+#   * the v22 verdict columns — already applied unconditionally on every boot
+#     by `apply_recognition_v22_columns`, so this changes nothing.
+#   * per-project wing rules — a FIX: with the flag off the live brain runs on
+#     Spectral's fixture wings (alice/apollo/acme/…), which are actively wrong
+#     labels on real memories. See the builder call in state.rs.
+#   * the content-free tool-event feed and the consent-gated ambient cue log.
+default = ["code-mode", "local-inference", "aws-providers", "telemetry", "otel", "rustls-tls", "spectral-recognition"]
 code-mode = ["permagent/code-mode"]
 local-inference = ["permagent/local-inference"]
 aws-providers = ["permagent/aws-providers"]

@@ -358,6 +358,38 @@ impl SafeBrain {
             .map_err(Into::into)
     }
 
+    /// Recognition: "have I encountered this stimulus before, and what
+    /// exactly did it match?" — Spectral's third operation alongside recall
+    /// and the graph (`Brain::recognize`). Deterministic, embedding-free, no
+    /// LLM; the returned [`spectral::RecognitionResult`] carries the verdict,
+    /// corpus familiarity, and the matched features behind it.
+    ///
+    /// Distinct from [`recall`](Self::recall): recall asks "what is relevant
+    /// to this query?", recognize asks "is this a re-encounter, and of what?".
+    ///
+    /// Like every wrapper on this type, the call runs inside
+    /// `tokio::task::spawn_blocking`: the underlying `spectral::Brain` is
+    /// blocking (SQLite reads against the `recognition.db` sidecar), so
+    /// awaiting it directly on the executor would stall every other task on
+    /// that thread. A panic in the blocking task becomes an `anyhow` error
+    /// naming the method; Spectral's own error maps through `Into`, matching
+    /// [`recall`](Self::recall) and [`assert_typed`](Self::assert_typed).
+    ///
+    /// Callers must treat this as an OBSERVER: it is measured at median
+    /// 12.9 ms / p99 86 ms on a 2,818-memory brain, which is affordable per
+    /// recall only because no reply waits on it. Never let a failure here fail
+    /// the recall it rides along with — see
+    /// `crate::recognition_sink::observe_recall_stimulus`, the only production
+    /// caller, which runs it detached and swallows every error.
+    pub async fn recognize(&self, stimulus: &str) -> anyhow::Result<spectral::RecognitionResult> {
+        let brain = self.inner.clone();
+        let stimulus = stimulus.to_string();
+        tokio::task::spawn_blocking(move || brain.recognize(&stimulus))
+            .await
+            .map_err(|e| anyhow::anyhow!("brain task panicked: recognize: {e}"))?
+            .map_err(Into::into)
+    }
+
     /// Recall via the integrated cascade pipeline.
     ///
     /// Uses `CascadePipelineConfig::default()` for every layer except `spread`

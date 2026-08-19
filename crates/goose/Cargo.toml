@@ -11,11 +11,14 @@ description.workspace = true
 [features]
 default = ["code-mode", "local-inference", "aws-providers", "telemetry", "otel", "rustls-tls"]
 telemetry = []
-# Consumer-side prep for Spectral's recognition subsystem (recognize() query
-# mode + session stream tracker, branch tier0-oracle-and-levers). Gates the
-# RecognitionSink seam, per-project wing rules, the v22 verdict-column
-# migration, and tool-event feed writes. OFF by default: a default build has
-# zero behavior change. Enabling requires NO Spectral dep upgrade.
+# Spectral's recognition subsystem, consumer side. Gates the RecognitionSink
+# seam (recognize() alongside every recall), per-project wing rules, the v22
+# verdict-column migration, and tool-event feed writes. Requires NO Spectral
+# dep upgrade — recognize() has been on the pinned facade since 2026-07-12.
+#
+# Off in the LIBRARY so `-p permagent` builds and tests both ways and a
+# feature-off build has zero behavior change; ON by default in the DAEMON,
+# which is what actually runs (see crates/goose-server/Cargo.toml).
 spectral-recognition = []
 otel = [
     "dep:tracing-opentelemetry",
