@@ -1,15 +1,26 @@
 /**
- * Settings → Features — pure helpers for the switches pane. The four workers
+ * Settings → Features — pure helpers for the switches pane. The five workers
  * here are OFF by default; each is a plain boolean config key the daemon
  * re-reads on every tick of its loop, so a flip lands at the next tick with no
  * restart. Kept free of React so the copy and the key table are unit-testable.
+ *
+ * These keys are ALSO written by the agent's own page under Settings → Agents,
+ * and `strix_enabled` additionally by the Guard block in the Models pane. One
+ * key, three places, never a second key — the daemon serialises the key it reads
+ * on every agent row (`gate.config_key`), and every surface writes THAT through
+ * the same `/config/upsert` call, so the surfaces cannot drift apart.
+ *
+ * The set mirrors the Rust gate table
+ * (`crates/goose/src/agents/self_knowledge/mod.rs::worker_gate`), which pins it
+ * from the other side.
  */
 
 export type FeatureKey =
   | 'initiative_enabled'
   | 'playbook_enabled'
   | 'concierge_enabled'
-  | 'steward_scan_enabled';
+  | 'steward_scan_enabled'
+  | 'strix_enabled';
 
 export type FeatureRow = {
   key: FeatureKey;
@@ -45,6 +56,12 @@ export const FEATURE_ROWS: readonly FeatureRow[] = [
     label: 'Steward git-health',
     what: 'Sweeps one active project per pass for repo hygiene (stale branches, unpushed work, dirty trees) and files proposals only — every cleanup is a Decision-Inbox approval.',
     effect: 'Off by default. Takes effect within about 15 minutes, no restart.',
+  },
+  {
+    key: 'strix_enabled',
+    label: 'The Guard (security sweeps)',
+    what: 'Sweeps ONE of your own projects per pass — rotating, least-recently-scanned first — for exposed secrets, vulnerable dependencies, injection and access-control weaknesses, and files a security report with a fix plan as a note on that project. It reports only: it never edits code to fix what it found. Needs Docker and the external `strix` scanner installed, and each sweep spends your API credits.',
+    effect: 'Off by default. Takes effect within about 15 minutes, no restart. Sweep cadence is a cost dial under Settings → Models.',
   },
 ];
 

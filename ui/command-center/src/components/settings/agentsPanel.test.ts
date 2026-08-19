@@ -12,6 +12,10 @@ import {
   defaultEnabledLabel,
   NOT_DECLARED_SECRETS,
   NO_DEFAULT_DECLARED,
+  NO_AGENT_SECRETS_NOTE,
+  STORED_SECRETS_NOTE,
+  gateRowHint,
+  readAgentGate,
 } from './agentsPanel';
 
 describe('liveStateLabel', () => {
@@ -178,5 +182,47 @@ describe('requiredSecretsLabel / defaultEnabledLabel', () => {
   it('renders null default as no default declared, never off', () => {
     expect(defaultEnabledLabel(null)).toBe(NO_DEFAULT_DECLARED);
     expect(defaultEnabledLabel(null).toLowerCase()).not.toBe('off');
+  });
+});
+
+describe('readAgentGate', () => {
+  // A daemon older than this app serialises no `gate` at all. Reading that
+  // absence as "off" would render a live toggle whose write lands in a key that
+  // daemon never reads — a control that appears to work and does nothing.
+  it('reads a missing or malformed switch as unknown, never as off', () => {
+    expect(readAgentGate({})).toBeNull();
+    expect(readAgentGate({ gate: null })).toBeNull();
+    expect(readAgentGate({ gate: { config_key: 'x' } })).toBeNull();
+    expect(readAgentGate({ gate: { config_key: 'x', enabled: 'true' } })).toBeNull();
+    expect(readAgentGate({ gate: { config_key: '', enabled: false } })).toBeNull();
+    expect(readAgentGate(null)).toBeNull();
+    expect(readAgentGate('strix')).toBeNull();
+  });
+
+  it('parses a well-formed switch', () => {
+    expect(readAgentGate({ gate: { config_key: 'strix_enabled', enabled: false } })).toEqual({
+      config_key: 'strix_enabled',
+      enabled: false,
+    });
+  });
+});
+
+describe('gateRowHint', () => {
+  it('names the key and the pane that shares it', () => {
+    const hint = gateRowHint({ config_key: 'strix_enabled', enabled: false });
+    expect(hint).toContain('strix_enabled');
+    expect(hint).toContain('Features');
+    expect(hint).toContain('no restart');
+  });
+});
+
+describe('per-agent secret copy', () => {
+  // The product owner asked, of the Guard's page, "what am I supposed to put
+  // there?". "No per-agent secrets listed." does not answer that; it implies a
+  // list that could fill up. Nothing in the runtime reads these at all.
+  it('says nothing reads them, not merely that none are set', () => {
+    expect(NO_AGENT_SECRETS_NOTE).toContain('nothing in the runtime reads');
+    expect(NO_AGENT_SECRETS_NOTE).toContain('nothing to enter');
+    expect(STORED_SECRETS_NOTE).toContain('values never are');
   });
 });

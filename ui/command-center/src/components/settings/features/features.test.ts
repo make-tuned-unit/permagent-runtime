@@ -9,13 +9,40 @@ import {
 } from './features';
 
 describe('features helpers', () => {
-  it('names exactly the four daemon config keys, in display order', () => {
+  it('names exactly the five daemon config keys, in display order', () => {
     expect(FEATURE_KEYS).toEqual([
       'initiative_enabled',
       'playbook_enabled',
       'concierge_enabled',
       'steward_scan_enabled',
+      'strix_enabled',
     ]);
+  });
+
+  // REGRESSION. The Guard's only toggle used to live in the Models pane, three
+  // groups away from every other worker switch, and a product owner looking for
+  // it under Features could not find it. Before this row existed the assertion
+  // below found no such key.
+  it('lists the Guard among the switches', () => {
+    const guard = FEATURE_ROWS.find(r => r.key === 'strix_enabled');
+    expect(guard).toBeDefined();
+    expect(guard!.label).toMatch(/Guard/);
+  });
+
+  // A half-added row — key in the union, no copy, or copy that promises a
+  // restart the daemon does not need — renders a switch the user cannot reason
+  // about. FEATURE_KEYS is derived from FEATURE_ROWS, so a duplicate key would
+  // also mean two toggles writing one flag.
+  it('every switch states what it does and when it takes effect', () => {
+    expect(FEATURE_KEYS).toEqual(FEATURE_ROWS.map(r => r.key));
+    expect(new Set(FEATURE_KEYS).size).toBe(FEATURE_ROWS.length);
+    expect(FEATURE_ROWS).toHaveLength(5);
+    for (const row of FEATURE_ROWS) {
+      expect(row.what.length).toBeGreaterThan(0);
+      expect(row.label.length).toBeGreaterThan(0);
+      expect(row.effect).toContain('no restart');
+      expect(`${row.what} ${row.effect}`).not.toMatch(/restart (the )?(daemon|app|Permagent)/i);
+    }
   });
 
   it('every row says it is off by default and how soon a flip lands', () => {

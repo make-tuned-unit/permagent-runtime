@@ -163,23 +163,107 @@ pub static WORKER_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::strix::SELF_KNOWLEDGE_FEATURE,
 ];
 
+/// The Git Steward's worker-descriptor id. The descriptor itself spells the id
+/// as a literal (`steward::SELF_KNOWLEDGE_FEATURE`), so there is no const to
+/// import; `gate_ids_match_the_descriptors_that_own_them` pins this one against
+/// it, because a renamed descriptor id would otherwise turn its gate into a
+/// silent no-op rather than a compile error.
+pub const GIT_STEWARD_FEATURE_ID: &str = "git_steward";
+
+/// The Initiative driver's worker-descriptor id. Same reason as
+/// [`GIT_STEWARD_FEATURE_ID`]: the descriptor names it as a literal.
+pub const INITIATIVE_FEATURE_ID: &str = "initiative";
+
+/// The config key that switches the Steward's git-health sweep on.
+///
+/// The loop that actually reads it lives in the daemon crate
+/// (`crates/goose-server/src/steward_sweep.rs`), which this crate cannot depend
+/// on, so the key is named HERE — where the gate table needs it — and pinned by
+/// `steward_gate_key_is_the_key_the_descriptor_names` against the Steward's own
+/// descriptor prose. That is the strongest in-crate pin available; a rename in
+/// the daemon crate alone would still drift.
+pub const STEWARD_SCAN_ENABLED_KEY: &str = "steward_scan_enabled";
+
+/// The single boolean config key that switches one worker on.
+///
+/// Two consumers read this table and they deliberately differ:
+///
+/// * The `permagent_self` brief renders only what the agent can actually DO, so
+///   a gated-off worker is ABSENT from it — which is also what keeps the
+///   canonical prompt snapshots byte-for-byte identical.
+/// * Settings → Agents must LIST a gated-off worker, because the switch lives on
+///   its page. Hiding the thing the user came to switch on is a dead end, and it
+///   is the one that sent a product owner hunting through five panes.
+///
+/// `hides_from_brief` is that difference, and nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkerGate {
+    pub key: &'static str,
+    pub hides_from_brief: bool,
+}
+
+impl WorkerGate {
+    /// Whether this gate is currently on, read from an already-loaded
+    /// [`FeatureFlags`] rather than from live config, so a renderer stays a pure
+    /// function of its inputs.
+    ///
+    /// The `_ => false` arm exists only because the key is a string; a gate key
+    /// that was never wired to a `FeatureFlags` field would read as permanently
+    /// off, which is why `every_gate_key_resolves_from_feature_flags` asserts
+    /// every gate reads TRUE under all-flags-on.
+    pub fn is_on(&self, flags: FeatureFlags) -> bool {
+        match self.key {
+            "playbook_enabled" => flags.playbook_enabled,
+            "concierge_enabled" => flags.concierge_enabled,
+            "strix_enabled" => flags.strix_enabled,
+            "initiative_enabled" => flags.initiative_enabled,
+            STEWARD_SCAN_ENABLED_KEY => flags.steward_scan_enabled,
+            _ => false,
+        }
+    }
+}
+
+/// The gate table — the one source of truth for "which key switches this worker
+/// on". `None` means the worker has no boolean switch at all, which a surface
+/// must not confuse with a switch that is off.
+pub fn worker_gate(descriptor_id: &str) -> Option<WorkerGate> {
+    let gate = |key, hides_from_brief| {
+        Some(WorkerGate {
+            key,
+            hides_from_brief,
+        })
+    };
+    match descriptor_id {
+        // Experimental or cost-bearing workers stay out of the brief until they
+        // are deliberately enabled, so the prompt is byte-identical to one built
+        // before the descriptor existed.
+        id if id == crate::playbook::PLAYBOOK_FEATURE_ID => gate("playbook_enabled", true),
+        id if id == crate::concierge::CONCIERGE_FEATURE_ID => gate("concierge_enabled", true),
+        id if id == crate::strix::STRIX_FEATURE_ID => gate("strix_enabled", true),
+        // These two are ALWAYS described: their descriptors report the real
+        // on/off switch as a state label, which is honest without hiding them.
+        INITIATIVE_FEATURE_ID => gate("initiative_enabled", false),
+        GIT_STEWARD_FEATURE_ID => gate(STEWARD_SCAN_ENABLED_KEY, false),
+        _ => None,
+    }
+}
+
 /// Whether a worker descriptor should be rendered into the `permagent_self`
-/// brief and the Agents API. Almost all are always visible; a flag-gated, experimental worker is
+/// brief. Almost all are always visible; a flag-gated, experimental worker is
 /// hidden until its flag is on, so the capability the agent can DESCRIBE is
 /// exactly the one it can DO — and, with the flag off, the brief is byte-for-
 /// byte identical to before the descriptor existed (the canonical snapshots
 /// stay unchanged; a dedicated test covers the enabled rendering).
+///
+/// DERIVED from [`worker_gate`] so the brief and the Agents surface cannot
+/// disagree about which key gates which worker. This is a brief-only predicate:
+/// Settings → Agents deliberately does NOT filter on it, because the switch
+/// lives on the page a hidden worker would be missing from.
 pub fn worker_descriptor_visible(d: &FeatureDescriptor, flags: FeatureFlags) -> bool {
-    if d.id == crate::playbook::PLAYBOOK_FEATURE_ID {
-        return flags.playbook_enabled;
+    match worker_gate(d.id) {
+        Some(gate) if gate.hides_from_brief => gate.is_on(flags),
+        _ => true,
     }
-    if d.id == crate::concierge::CONCIERGE_FEATURE_ID {
-        return flags.concierge_enabled;
-    }
-    if d.id == crate::strix::STRIX_FEATURE_ID {
-        return flags.strix_enabled;
-    }
-    true
 }
 
 /// Live state line for a worker descriptor, or `None` when the worker
@@ -294,6 +378,12 @@ pub struct FeatureFlags {
     pub concierge_enabled: bool,
     pub strix_enabled: bool,
     pub initiative_enabled: bool,
+    /// The Steward's git-health sweep. Read here so the gate table can answer
+    /// for every worker, and DELIBERATELY not rendered anywhere in the brief:
+    /// the Steward descriptor already states the flag in its prose, and a new
+    /// live-state line would move the line counts the canonical snapshot tests
+    /// pin.
+    pub steward_scan_enabled: bool,
 }
 
 impl FeatureFlags {
@@ -304,6 +394,13 @@ impl FeatureFlags {
             concierge_enabled: crate::concierge::is_enabled(),
             strix_enabled: crate::strix::is_enabled(),
             initiative_enabled: crate::initiative::driver::is_enabled(),
+            // The loop that acts on this lives in the daemon crate
+            // (`steward_sweep.rs`), which cannot be imported here, so the value
+            // is read straight from config rather than through an `is_enabled`
+            // helper like its four siblings.
+            steward_scan_enabled: crate::config::Config::global()
+                .get_param::<bool>(STEWARD_SCAN_ENABLED_KEY)
+                .unwrap_or(false),
         }
     }
 }
@@ -726,6 +823,148 @@ fn confirm_hint(c: &ConfirmCheck) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// All five gates, on. Written once so a test asserting the ON half cannot
+    /// silently stop covering a newly added gate.
+    fn all_flags_on() -> FeatureFlags {
+        FeatureFlags {
+            playbook_enabled: true,
+            concierge_enabled: true,
+            strix_enabled: true,
+            initiative_enabled: true,
+            steward_scan_enabled: true,
+        }
+    }
+
+    /// The LITERAL set of workers the brief withholds while their flag is off.
+    ///
+    /// Named, not re-derived: `worker_descriptor_visible` IS
+    /// `worker_gate(..).hides_from_brief`, so asserting one against the other
+    /// compares the function to a copy of itself and passes whatever the table
+    /// says. Spelling the three ids out is what makes flipping a
+    /// `hides_from_brief` — which silently adds or removes a paragraph from
+    /// every brief the agent renders — a test failure instead of a diff nobody
+    /// reads. The Steward and Initiative are deliberately absent: they are
+    /// always described, with their switch reported as a state label.
+    #[test]
+    fn brief_withholds_exactly_the_experimental_workers() {
+        let mut hidden: Vec<&str> = WORKER_DESCRIPTORS
+            .iter()
+            .filter(|d| !worker_descriptor_visible(d, FeatureFlags::default()))
+            .map(|d| d.id)
+            .collect();
+        hidden.sort_unstable();
+        assert_eq!(hidden, vec!["concierge", "playbook", "strix"]);
+
+        // With every flag on nothing is withheld — which is also what makes the
+        // `_ => false` arm of `is_on` safe to have.
+        for d in WORKER_DESCRIPTORS {
+            assert!(
+                worker_descriptor_visible(d, all_flags_on()),
+                "{} stayed hidden with every flag on",
+                d.id
+            );
+        }
+    }
+
+    /// `WorkerGate::is_on` matches on a STRING key, so an unwired key would
+    /// compile and read as permanently off. Asserting the all-on half is what
+    /// makes the `_ => false` arm safe: a gate whose key reaches no
+    /// `FeatureFlags` field fails here instead of quietly never switching on.
+    #[test]
+    fn every_gate_key_resolves_from_feature_flags() {
+        let gates: Vec<WorkerGate> = WORKER_DESCRIPTORS
+            .iter()
+            .filter_map(|d| worker_gate(d.id))
+            .collect();
+        assert_eq!(
+            gates.len(),
+            5,
+            "expected five gated workers, found {gates:?}"
+        );
+        for gate in gates {
+            assert!(
+                gate.is_on(all_flags_on()),
+                "{} is not wired to any FeatureFlags field",
+                gate.key
+            );
+            assert!(
+                !gate.is_on(FeatureFlags::default()),
+                "{} reads as on with every flag off",
+                gate.key
+            );
+        }
+    }
+
+    /// The Steward's and Initiative's descriptor ids are literals in their own
+    /// modules, so the gate table repeats them. A rename there would turn the
+    /// gate into a silent no-op — the switch would write a key and the roster
+    /// would show no gate — rather than failing to compile.
+    #[test]
+    fn gate_ids_match_the_descriptors_that_own_them() {
+        assert_eq!(
+            GIT_STEWARD_FEATURE_ID,
+            crate::steward::SELF_KNOWLEDGE_FEATURE.id
+        );
+        assert_eq!(
+            INITIATIVE_FEATURE_ID,
+            crate::initiative::SELF_KNOWLEDGE_FEATURE.id
+        );
+        for id in [
+            GIT_STEWARD_FEATURE_ID,
+            INITIATIVE_FEATURE_ID,
+            crate::strix::STRIX_FEATURE_ID,
+            crate::playbook::PLAYBOOK_FEATURE_ID,
+            crate::concierge::CONCIERGE_FEATURE_ID,
+        ] {
+            assert!(worker_gate(id).is_some(), "{id} lost its gate");
+            assert!(
+                WORKER_DESCRIPTORS.iter().any(|d| d.id == id),
+                "{id} names no worker descriptor"
+            );
+        }
+    }
+
+    /// The only in-crate pin against the daemon-side literal at
+    /// `crates/goose-server/src/steward_sweep.rs`, which this crate cannot
+    /// import. The Steward descriptor's own prose names the key so the agent can
+    /// tell the user how to switch the sweep on; if the table and the prose
+    /// disagree, one of them is lying to the user.
+    #[test]
+    fn steward_gate_key_is_the_key_the_descriptor_names() {
+        assert_eq!(
+            worker_gate(GIT_STEWARD_FEATURE_ID).unwrap().key,
+            STEWARD_SCAN_ENABLED_KEY
+        );
+        assert!(crate::steward::SELF_KNOWLEDGE_FEATURE
+            .what_it_does
+            .contains(STEWARD_SCAN_ENABLED_KEY));
+    }
+
+    /// The gate table IS the set of switches Settings → Features renders. When a
+    /// worker gains or loses a gate here,
+    /// `ui/command-center/src/components/settings/features/features.ts` must
+    /// move with it, or the pane will be missing a switch the daemon honours —
+    /// which is exactly how the Guard came to have no toggle outside the Models
+    /// pane.
+    #[test]
+    fn gate_set_is_exactly_the_features_pane_set() {
+        let mut keys: Vec<&str> = WORKER_DESCRIPTORS
+            .iter()
+            .filter_map(|d| worker_gate(d.id).map(|g| g.key))
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "concierge_enabled",
+                "initiative_enabled",
+                "playbook_enabled",
+                "steward_scan_enabled",
+                "strix_enabled",
+            ]
+        );
+    }
 
     /// Rerunnable raw evidence for descriptor audits. Kept ignored because it
     /// prints the full registries and MCP tool copy rather than asserting.

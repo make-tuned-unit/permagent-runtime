@@ -69,15 +69,25 @@ afterEach(async () => {
 });
 
 describe('FeaturesPanel', () => {
-  it('reads the four config keys and renders one toggle per row', async () => {
+  // REGRESSION on the Guard's row: `strix_enabled` used to be switchable only
+  // from the Models pane, so this pane read four keys and the Guard was not
+  // among them. The assertion below fails on that roster.
+  it('reads every config key, the Guard included, and renders one toggle per row', async () => {
     await mount();
     const keys = readConfig.mock.calls.map(c => c[0]).sort();
-    expect(keys).toEqual(['concierge_enabled', 'initiative_enabled', 'playbook_enabled', 'steward_scan_enabled']);
-    expect(toggles()).toHaveLength(4);
+    expect(keys).toEqual([
+      'concierge_enabled',
+      'initiative_enabled',
+      'playbook_enabled',
+      'steward_scan_enabled',
+      'strix_enabled',
+    ]);
+    expect(toggles()).toHaveLength(5);
     expect(container.textContent).toContain('Initiative');
     expect(container.textContent).toContain('Decision Playbook');
     expect(container.textContent).toContain('Concierge');
     expect(container.textContent).toContain('Steward git-health');
+    expect(container.textContent).toContain('The Guard');
     // The read-back value is honoured: initiative on, the rest off.
     expect(toggles()[0].style.transform).toBe('');
     const knob = (t: HTMLButtonElement) => (t.firstElementChild as HTMLElement).style.transform;
@@ -123,6 +133,34 @@ describe('FeaturesPanel', () => {
     const line = container.querySelector('[data-testid="concierge-precondition"]');
     expect(line?.textContent).toContain('Gmail token present');
     expect(line?.textContent).not.toContain(GMAIL_CONNECT_COMMAND);
+  });
+
+  // REGRESSION, the write half of the Guard's row. Before `strix_enabled` joined
+  // FEATURE_ROWS this pane had four toggles and none of them wrote that key —
+  // toggles()[4] did not exist.
+  it('flipping the Guard row writes strix_enabled and nothing else', async () => {
+    await mount();
+    expect(toggles()).toHaveLength(5);
+    await act(async () => { toggles()[4].click(); });
+    await flush();
+    expect(upsertConfig).toHaveBeenCalledTimes(1);
+    expect(upsertConfig).toHaveBeenCalledWith('strix_enabled', true);
+  });
+
+  // REGRESSION on the hand-written UNLOADED map. It listed the four original
+  // keys by hand, so a newly added row read as `undefined` — which is not
+  // `null`, so the panel skipped "Loading…" and drew a toggle claiming OFF
+  // before the daemon had answered. With that map, the Guard row below renders
+  // a fifth toggle instead of the loading line.
+  it('shows Loading for an unread flag rather than a toggle claiming off', async () => {
+    readConfig.mockImplementation((key: string) =>
+      key === 'strix_enabled'
+        ? new Promise(() => {})            // never settles: the daemon has not answered
+        : Promise.resolve(key === 'initiative_enabled'),
+    );
+    await mount();
+    expect(toggles()).toHaveLength(4);
+    expect(container.textContent).toContain('Loading…');
   });
 
   it('links to Settings → Agents for the live roster', async () => {
