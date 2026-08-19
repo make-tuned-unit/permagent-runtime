@@ -175,11 +175,24 @@ jobs:
       # real UI build is gated by the frontend job).
       - name: Stage placeholder bundle inputs
         run: |
+          set -euo pipefail
           mkdir -p ui/command-center/dist
           cd ui/desktop/src-tauri
           mkdir -p binaries resources/mcp-runtime resources/whisper
-          touch binaries/permagentd-aarch64-apple-darwin binaries/permagentd-x86_64-apple-darwin
-          chmod +x binaries/permagentd-aarch64-apple-darwin binaries/permagentd-x86_64-apple-darwin
+          # Read the sidecar list out of tauri.conf.json rather than repeating
+          # it here. A hand-kept copy silently falls behind: adding the CLI to
+          # bundle.externalBin left this step still staging only the daemon,
+          # and the build script stopped the job with "resource path
+          # `binaries/permagent-aarch64-apple-darwin` doesn't exist". Derived,
+          # a new sidecar is staged the moment it is declared.
+          # Tauri looks for <name>-<target triple>; stage both macOS triples so
+          # this step does not depend on the runner's architecture.
+          jq -r '.bundle.externalBin[]' tauri.conf.json | while read -r bin; do
+            for triple in aarch64-apple-darwin x86_64-apple-darwin; do
+              touch "$bin-$triple"
+              chmod +x "$bin-$triple"
+            done
+          done
           touch binaries/libsherpa-onnx-c-api.dylib binaries/libonnxruntime.1.24.4.dylib binaries/libonnxruntime.dylib
       - name: Check shell crate
         run: cargo check --locked --manifest-path ui/desktop/src-tauri/Cargo.toml

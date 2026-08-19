@@ -159,15 +159,24 @@ jobs:
       - name: Build daemon (sidecar binary)
         run: cargo build --release --locked --bin permagentd
 
-      # The bundle embeds the daemon as a sidecar + the MCP runtime + the local
-      # Whisper dictation model. build:icons is intentionally NOT run: the app
-      # icons are committed (generating them needs Pillow, absent on runners).
+      # The `permagent` CLI is a sidecar too: it is what the Build tab's
+      # "Permagent" button runs in the project terminal. tauri.conf.json
+      # declares it in bundle.externalBin, so the bundle cannot even be built
+      # without it.
+      - name: Build CLI (sidecar binary)
+        run: cargo build --release --locked -p permagent-cli --bin permagent
+
+      # The bundle embeds the daemon and the CLI as sidecars + the MCP runtime
+      # + the local Whisper dictation model. build:icons is intentionally NOT
+      # run: the app icons are committed (generating them needs Pillow, absent
+      # on runners).
       - name: Stage sidecar + resources
         working-directory: ui/desktop
         run: |
           npm ci
           npm run build:ui
           npm run build:sidecar
+          npm run build:cli-sidecar
           npm run build:mcp-runtime
           npm run build:whisper-model
 
@@ -182,6 +191,7 @@ jobs:
           set -euo pipefail
           bin_dir=ui/desktop/src-tauri/binaries
           daemon="$bin_dir/permagentd-aarch64-apple-darwin"
+          cli="$bin_dir/permagent-aarch64-apple-darwin"
 
           # Backfill dylibs from the sherpa prebuilt staging if the cargo build
           # didn't drop them into target/release (mirrors copy-sidecar.sh's
@@ -203,6 +213,8 @@ jobs:
           # resources) must exist, or the bundle is broken/unbuildable.
           test -x "$daemon" || { echo "::error::sidecar missing: $daemon"; exit 1; }
           file "$daemon" | grep -q arm64 || { echo "::error::sidecar is not arm64"; exit 1; }
+          test -x "$cli" || { echo "::error::CLI sidecar missing: $cli"; exit 1; }
+          file "$cli" | grep -q arm64 || { echo "::error::CLI sidecar is not arm64"; exit 1; }
           for f in libsherpa-onnx-c-api.dylib libonnxruntime.1.24.4.dylib libonnxruntime.dylib; do
             test -f "$bin_dir/$f" || { echo "::error::dylib missing: $bin_dir/$f (referenced by tauri.conf.json macOS.frameworks)"; exit 1; }
           done
@@ -213,7 +225,7 @@ jobs:
           # No load command may point at a path that only exists on this runner
           # (absolute paths into $HOME, homebrew, or the target dir). Allowed:
           # system libs and relative @rpath/@loader_path/@executable_path.
-          for bin in "$daemon" "$bin_dir"/*.dylib; do
+          for bin in "$daemon" "$cli" "$bin_dir"/*.dylib; do
             bad="$(otool -L "$bin" | tail -n +2 | awk '{print $1}' \
               | grep -Ev '^(/usr/lib|/System|@rpath|@loader_path|@executable_path)' || true)"
             if [ -n "$bad" ]; then
