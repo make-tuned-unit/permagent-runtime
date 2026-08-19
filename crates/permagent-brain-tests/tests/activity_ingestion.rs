@@ -209,6 +209,162 @@ fn brain_failure_increments_counter_without_panic() {
     assert_eq!(ingester.always_count(), 2, "both events should be counted");
 }
 
+// ── recurrence: a repeated project selection must REINFORCE, not insert ──
+
+/// Row-level state of the one memory a repeated project selection should own.
+struct MemoryRow {
+    rows: i64,
+    signal_score: f64,
+    last_reinforced_at: Option<String>,
+}
+
+fn read_memory_row(db: &std::path::Path, key: &str) -> MemoryRow {
+    // A fresh runtime, created only after every blocking Brain write has
+    // returned: the Brain drives its own runtime with `block_on`, so the
+    // ingester cannot be exercised from inside an async context.
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    rt.block_on(async {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&format!("sqlite://{}?mode=ro", db.display()))
+            .await
+            .expect("open memory.db");
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memories WHERE key = ?")
+            .bind(key)
+            .fetch_one(&pool)
+            .await
+            .expect("count");
+        let (signal_score, last_reinforced_at): (f64, Option<String>) =
+            sqlx::query_as("SELECT signal_score, last_reinforced_at FROM memories WHERE key = ?")
+                .bind(key)
+                .fetch_one(&pool)
+                .await
+                .expect("read row");
+        MemoryRow {
+            rows,
+            signal_score,
+            last_reinforced_at,
+        }
+    })
+}
+
+/// The second selection of the same project must land on the FIRST memory and
+/// strengthen it.
+///
+/// Collapsing the duplicates is only half the fix, and it is the half that can
+/// pass on its own for the wrong reason: "the row count stopped growing" is
+/// also true when ingestion silently stops writing. So this asserts both
+/// halves, and asserts them from the two places they actually show up:
+///
+/// - the write outcome, via `reinforced_count` — which moves only when Spectral
+///   reports the write was not an `Inserted` AND the follow-up reinforce found
+///   the memory;
+/// - the reinforcement itself, on the stored row: `signal_score` up and
+///   `last_reinforced_at` set, where it had been null after the insert.
+///
+/// `always_count` and `failure_count` pin that both events were in fact
+/// processed and neither write failed, so a green result cannot mean "nothing
+/// happened". `last_reinforced_at` is the field to watch downstream: if
+/// duplicate groups collapse but that stays null on the survivors, the key
+/// change shipped without its other half.
+#[test]
+fn second_selection_of_a_project_reinforces_rather_than_inserts() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let brain_path = temp.path().join("brain");
+    let ontology_path = temp.path().join("ontology.toml");
+    std::fs::write(&ontology_path, ONTOLOGY_TOML).unwrap();
+    let brain = Arc::new(
+        Brain::builder()
+            .data_dir(&brain_path)
+            .ontology_path(&ontology_path)
+            .device_id(spectral::DeviceId::from_descriptor("test-recurrence"))
+            .build()
+            .expect("test brain"),
+    );
+    let db = brain_path.join("memory.db");
+    let ingester = ActivityIngester::new(SafeBrain::from_arc(brain), "test-device".into());
+    let key = "activity:project_selected:project:permagent";
+
+    ingester.handle_event_blocking(&make_project_selected("project:permagent", "Permagent"));
+    assert_eq!(
+        ingester.reinforced_count(),
+        0,
+        "the first occurrence must INSERT, not reinforce"
+    );
+    let first = read_memory_row(&db, key);
+    assert_eq!(first.rows, 1, "first selection creates the memory");
+    assert!(
+        first.last_reinforced_at.is_none(),
+        "an insert is not a reinforcement"
+    );
+
+    ingester.handle_event_blocking(&make_project_selected("project:permagent", "Permagent"));
+
+    assert_eq!(
+        ingester.always_count(),
+        2,
+        "both events were processed — the writes did not silently stop"
+    );
+    assert_eq!(ingester.failure_count(), 0, "and neither write failed");
+    assert_eq!(
+        ingester.reinforced_count(),
+        1,
+        "the second write reported a non-Inserted outcome and reinforced the existing memory"
+    );
+
+    let second = read_memory_row(&db, key);
+    assert_eq!(
+        second.rows, 1,
+        "still exactly one memory — one project, one identity"
+    );
+    assert!(
+        second.signal_score > first.signal_score,
+        "recurrence must strengthen the memory: {} -> {}",
+        first.signal_score,
+        second.signal_score
+    );
+    assert!(
+        second.last_reinforced_at.is_some(),
+        "recurrence must reset the decay clock"
+    );
+}
+
+/// Selecting a different project must not reinforce the first one.
+#[test]
+fn selecting_a_different_project_inserts_a_second_memory() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let brain_path = temp.path().join("brain");
+    let ontology_path = temp.path().join("ontology.toml");
+    std::fs::write(&ontology_path, ONTOLOGY_TOML).unwrap();
+    let brain = Arc::new(
+        Brain::builder()
+            .data_dir(&brain_path)
+            .ontology_path(&ontology_path)
+            .device_id(spectral::DeviceId::from_descriptor("test-two-projects"))
+            .build()
+            .expect("test brain"),
+    );
+    let db = brain_path.join("memory.db");
+    let ingester = ActivityIngester::new(SafeBrain::from_arc(brain), "test-device".into());
+
+    ingester.handle_event_blocking(&make_project_selected("project:permagent", "Permagent"));
+    ingester.handle_event_blocking(&make_project_selected("project:get-ladle", "Get Ladle"));
+
+    assert_eq!(
+        ingester.reinforced_count(),
+        0,
+        "two different projects are two different facts"
+    );
+    assert_eq!(
+        read_memory_row(&db, "activity:project_selected:project:permagent").rows,
+        1
+    );
+    assert_eq!(
+        read_memory_row(&db, "activity:project_selected:project:get-ladle").rows,
+        1
+    );
+}
+
 #[test]
 fn chat_turn_completed_filtered_by_ingester() {
     let brain = common::shared_ingestion_brain();

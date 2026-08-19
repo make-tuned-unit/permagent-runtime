@@ -59,67 +59,181 @@ const NOISE_FILTER: &str = "\
 /// Returns the number of memories deleted.
 pub fn prune_noise_memories() -> Result<usize> {
     let db_path = crate::config::paths::Paths::brain_dir().join("memory.db");
-    let mut conn = open_cleanup_conn(&db_path)?;
-    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+    // Read-only here: the deletes go through the Brain (see `forget_memories`), so
+    // this connection never writes and needs no FK enforcement of its own.
+    let conn = open_cleanup_conn(&db_path)?;
 
-    // First, count how many will be pruned (for logging)
-    let noise_count: usize = conn.query_row(
-        &format!("SELECT COUNT(*) FROM memories WHERE {f}", f = NOISE_FILTER),
-        [],
-        |r| r.get(0),
-    )?;
+    let keys: Vec<String> = {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT key FROM memories WHERE {f}",
+            f = NOISE_FILTER
+        ))?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    // Release the reader before the Brain writes — SQLite serializes writers
+    // and a second live handle only invites SQLITE_BUSY.
+    drop(conn);
 
-    if noise_count == 0 {
+    if keys.is_empty() {
         info!(target: "permagent::cleanup", "No noise memories to prune");
         return Ok(0);
     }
 
     info!(
         target: "permagent::cleanup",
-        count = noise_count,
+        count = keys.len(),
         "Pruning noise memories"
     );
 
-    let mut deleted = 0;
-    let mut fingerprints_deleted = 0;
-    let mut spectrograms_deleted = 0;
-    let mut annotations_deleted = 0;
-    loop {
-        // Keep write transactions bounded while selecting each batch under the
-        // same lock that protects its child + parent deletes.
-        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let ids = {
-            let mut stmt = tx.prepare(&format!(
-                "SELECT id FROM memories WHERE {f} LIMIT 100",
-                f = NOISE_FILTER
-            ))?;
-            let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-            rows.collect::<rusqlite::Result<Vec<_>>>()?
-        };
-        if ids.is_empty() {
-            tx.rollback()?;
-            break;
-        }
-        for id in &ids {
-            let counts = delete_memory_with_children(&tx, id)?;
-            fingerprints_deleted += counts.fingerprints;
-            spectrograms_deleted += counts.spectrograms;
-            annotations_deleted += counts.annotations;
-            deleted += counts.memories;
-        }
-        tx.commit()?;
-    }
+    let report = forget_memories(
+        &keys,
+        "noise prune",
+        std::time::Instant::now() + STARTUP_FORGET_BUDGET,
+    );
 
     info!(
         target: "permagent::cleanup",
-        deleted,
-        fingerprints_deleted,
-        spectrograms_deleted,
-        annotations_deleted,
+        deleted = report.forgotten.len(),
+        remaining = report.remaining,
+        elapsed_ms = report.elapsed.as_millis() as u64,
         "Noise prune complete"
     );
 
-    Ok(deleted)
+    Ok(report.forgotten.len())
+}
+
+/// How long a startup cleanup pass may spend deleting before it stops and
+/// leaves the rest for the next run.
+///
+/// A budget, not a count, because the per-delete cost is not constant — see
+/// [`forget_memories`].
+const STARTUP_FORGET_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// What one bounded delete pass did.
+pub struct ForgetPassReport {
+    /// Keys that were actually removed.
+    pub forgotten: Vec<String>,
+    /// Of those, how many failed their post-delete verification probe.
+    pub residual: usize,
+    /// Keys the budget did not reach. They stay put for the next pass.
+    pub remaining: usize,
+    pub elapsed: std::time::Duration,
+}
+
+/// Hard-delete memories by key through the Brain, stopping at `deadline`.
+///
+/// **Why not a raw `DELETE FROM memories`.** Turning `PRAGMA foreign_keys = ON`
+/// (#276) makes a raw delete cascade to the child tables of `memories` inside
+/// `memory.db`. It cannot do more than that: a foreign key cannot cross a
+/// database file, and recognition state lives in its own file
+/// (`~/.permagent/brain/recognition.db`). Every raw delete therefore left the
+/// memory's whole recognition footprint behind — on this machine's brain, 5
+/// memories pruned by a Librarian pass had orphaned 154 recognition rows
+/// (5 enrolments, 96 pairs, 5 grams, 5 minhash signatures, 43 minhash bands,
+/// ~31 rows each), measured 2026-08-19. An orphaned enrolment is not inert
+/// bookkeeping: recognition can return a verdict naming a memory id that no
+/// longer resolves.
+///
+/// [`spectral::Brain::forget`] removes the row, its FTS shadow, fingerprints,
+/// spectrogram, annotations, consolidation edges, co-retrieval pairs,
+/// retrieval-event references AND the recognition sidecar, then probes recall
+/// and recognition to verify.
+///
+/// **Why the deadline.** That verification is not free and its cost grows with
+/// the corpus: on a synthetic corpus of near-identical activity memories
+/// (`tests/forget_cost.rs`, unoptimized profile) one delete cost 130 ms at 250
+/// memories and 2.1 s at 1,000 — 12x and 65x a raw delete, with the recognition
+/// probe the dominant term. An unbounded pass over a large brain would run for
+/// a very long time holding the write lock. So the pass is bounded by wall
+/// clock and what it does not reach is simply left for the next run: these are
+/// periodic sweeps of noise, and finishing late is a far better failure than
+/// deleting fast and leaving the recognition index pointing at memories that no
+/// longer exist.
+///
+/// Must be called from a blocking context (all callers are inside
+/// `spawn_blocking`).
+pub fn forget_memories(
+    keys: &[String],
+    pass: &str,
+    deadline: std::time::Instant,
+) -> ForgetPassReport {
+    let started = std::time::Instant::now();
+    let mut report = ForgetPassReport {
+        forgotten: Vec::new(),
+        residual: 0,
+        remaining: keys.len(),
+        elapsed: std::time::Duration::ZERO,
+    };
+
+    let safe_brain = match crate::agents::platform_extensions::get_global_brain() {
+        Some(b) => b,
+        None => {
+            warn!(
+                target: "permagent::cleanup",
+                pass,
+                "No global brain — deletes skipped rather than done unsafely"
+            );
+            return report;
+        }
+    };
+    let brain = safe_brain.raw_blocking_handle();
+
+    for (i, key) in keys.iter().enumerate() {
+        if std::time::Instant::now() >= deadline {
+            report.remaining = keys.len() - i;
+            warn!(
+                target: "permagent::cleanup",
+                pass,
+                forgotten = report.forgotten.len(),
+                remaining = report.remaining,
+                "Delete budget exhausted — the rest is left for the next pass"
+            );
+            report.elapsed = started.elapsed();
+            return report;
+        }
+        match brain.forget(key) {
+            Ok(r) => {
+                if !r.store.existed {
+                    continue;
+                }
+                if !r.fully_forgotten() {
+                    report.residual += 1;
+                }
+                report.forgotten.push(key.clone());
+            }
+            Err(e) => {
+                warn!(
+                    target: "permagent::cleanup",
+                    pass,
+                    key = %key,
+                    error = %e,
+                    "Forget failed — memory left in place"
+                );
+            }
+        }
+    }
+
+    report.remaining = 0;
+    report.elapsed = started.elapsed();
+
+    if report.residual > 0 {
+        warn!(
+            target: "permagent::cleanup",
+            pass,
+            residual = report.residual,
+            "Some forgotten memories failed their verification probe"
+        );
+    }
+    debug!(
+        target: "permagent::cleanup",
+        pass,
+        forgotten = report.forgotten.len(),
+        elapsed_ms = report.elapsed.as_millis() as u64,
+        "Forget pass complete"
+    );
+
+    report
 }
 
 /// Find clusters of redundant browser_navigated memories and consolidate them.
@@ -131,8 +245,8 @@ pub fn prune_noise_memories() -> Result<usize> {
 /// Returns the number of clusters consolidated.
 pub fn consolidate_clusters_blocking() -> Result<usize> {
     let db_path = crate::config::paths::Paths::brain_dir().join("memory.db");
-    let mut conn = open_cleanup_conn(&db_path)?;
-    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+    // Read-only: the originals are deleted through the Brain (`forget_memories`).
+    let conn = open_cleanup_conn(&db_path)?;
 
     // Find domain clusters from browser_navigated activity events.
     // Content format: "Navigated to <title> (<url>) in tab <id>."
@@ -201,6 +315,9 @@ pub fn consolidate_clusters_blocking() -> Result<usize> {
     };
     let brain = safe_brain.raw_blocking_handle();
 
+    // One budget for the whole sweep, not one per cluster: what it does not
+    // reach stays put and is consolidated on the next startup.
+    let deadline = std::time::Instant::now() + STARTUP_FORGET_BUDGET;
     let mut consolidated = 0;
 
     for cluster in &clusters {
@@ -232,11 +349,9 @@ pub fn consolidate_clusters_blocking() -> Result<usize> {
 
         match result {
             Ok(_) => {
-                let tx =
-                    conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-                let ids = {
-                    let mut stmt = tx.prepare(
-                        "SELECT id FROM memories \
+                let original_keys = {
+                    let mut stmt = conn.prepare(
+                        "SELECT key FROM memories \
                          WHERE key LIKE 'activity:%browser_navigated%' \
                            AND content LIKE '%' || ?1 || '%' \
                            AND key != ?2",
@@ -247,11 +362,10 @@ pub fn consolidate_clusters_blocking() -> Result<usize> {
                         })?;
                     rows.collect::<rusqlite::Result<Vec<_>>>()?
                 };
-                let mut originals_deleted = 0;
-                for id in &ids {
-                    originals_deleted += delete_memory_with_children(&tx, id)?.memories;
-                }
-                tx.commit()?;
+                let originals_deleted =
+                    forget_memories(&original_keys, "cluster consolidation", deadline)
+                        .forgotten
+                        .len();
 
                 debug!(
                     target: "permagent::cleanup",
@@ -279,44 +393,6 @@ pub fn consolidate_clusters_blocking() -> Result<usize> {
     );
 
     Ok(consolidated)
-}
-
-#[derive(Default)]
-struct DeleteCounts {
-    fingerprints: usize,
-    spectrograms: usize,
-    annotations: usize,
-    memories: usize,
-}
-
-/// Delete one memory and all of its explicit FK children as an atomic unit.
-///
-/// The caller owns the transaction so candidate selection can share the same
-/// write lock. Any child or parent failure aborts the caller before commit.
-fn delete_memory_with_children(
-    tx: &rusqlite::Transaction<'_>,
-    memory_id: &str,
-) -> rusqlite::Result<DeleteCounts> {
-    let fingerprints = tx.execute(
-        "DELETE FROM constellation_fingerprints \
-         WHERE anchor_memory_id = ?1 OR target_memory_id = ?1",
-        [memory_id],
-    )?;
-    let spectrograms = tx.execute(
-        "DELETE FROM memory_spectrogram WHERE memory_id = ?1",
-        [memory_id],
-    )?;
-    let annotations = tx.execute(
-        "DELETE FROM memory_annotations WHERE memory_id = ?1",
-        [memory_id],
-    )?;
-    let memories = tx.execute("DELETE FROM memories WHERE id = ?1", [memory_id])?;
-    Ok(DeleteCounts {
-        fingerprints,
-        spectrograms,
-        annotations,
-        memories,
-    })
 }
 
 // ── Part A: one-shot FK orphan cleanup ───────────────────────────
@@ -471,7 +547,26 @@ pub fn cleanup_buggy_domain_clusters() -> Result<(usize, usize)> {
         return Ok((0, 0));
     }
 
-    let (un_consolidated, deleted) = run_domain_cluster_cleanup_sql(&conn)?;
+    let (un_consolidated, catchall_keys) = run_domain_cluster_cleanup_sql(&conn)?;
+    // The catchall summaries are deleted through the Brain, not on this
+    // connection — see `forget_memories`. Do it before marking the migration
+    // applied so a Brain-less run retries rather than silently skipping.
+    let deleted = forget_memories(
+        &catchall_keys,
+        "domain-cluster cleanup",
+        std::time::Instant::now() + STARTUP_FORGET_BUDGET,
+    )
+    .forgotten
+    .len();
+    if deleted < catchall_keys.len() {
+        warn!(
+            target: "permagent::cleanup",
+            deleted,
+            expected = catchall_keys.len(),
+            "domain-cluster cleanup: not every catchall summary was forgotten — leaving the migration unmarked so it retries"
+        );
+        return Ok((un_consolidated, deleted));
+    }
     mark_migration_applied(&conn, MIGRATION_DOMAIN_CLUSTER_CLEANUP)?;
 
     info!(
@@ -486,9 +581,16 @@ pub fn cleanup_buggy_domain_clusters() -> Result<(usize, usize)> {
     Ok((un_consolidated, deleted))
 }
 
-/// Run the buggy domain cluster cleanup SQL on an arbitrary connection.
+/// Un-consolidate the victims of the buggy catchall clusters and return the
+/// KEYS of the catchall summaries to delete.
+///
+/// Deliberately does not delete them: a raw `DELETE FROM memories` cannot reach
+/// the recognition sidecar in the other database file (see [`forget_memories`]),
+/// and these summaries were enrolled there like any other memory. The caller
+/// forgets the returned keys through the Brain.
+///
 /// Exposed for testing — the production entrypoint is `cleanup_buggy_domain_clusters`.
-pub fn run_domain_cluster_cleanup_sql(conn: &rusqlite::Connection) -> Result<(usize, usize)> {
+pub fn run_domain_cluster_cleanup_sql(conn: &rusqlite::Connection) -> Result<(usize, Vec<String>)> {
     let un_consolidated: usize = conn.execute(
         "UPDATE memories SET _pm_consolidated_into = NULL \
          WHERE _pm_consolidated_into IN ( \
@@ -498,14 +600,17 @@ pub fn run_domain_cluster_cleanup_sql(conn: &rusqlite::Connection) -> Result<(us
         [],
     )?;
 
-    let deleted: usize = conn.execute(
-        "DELETE FROM memories \
-         WHERE key LIKE 'consolidated:browser:tps:%' \
-            OR key LIKE 'consolidated:browser:ttp:%'",
-        [],
-    )?;
+    let catchall_keys = {
+        let mut stmt = conn.prepare(
+            "SELECT key FROM memories \
+             WHERE key LIKE 'consolidated:browser:tps:%' \
+                OR key LIKE 'consolidated:browser:ttp:%'",
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
 
-    Ok((un_consolidated, deleted))
+    Ok((un_consolidated, catchall_keys))
 }
 
 // ── Permagent-side migration tracking ────────────────────────────
@@ -932,88 +1037,6 @@ pub fn run_consolidate_into_migration_sql(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn cleanup_test_conn() -> rusqlite::Connection {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "PRAGMA foreign_keys = ON;
-             CREATE TABLE memories (id TEXT PRIMARY KEY);
-             CREATE TABLE constellation_fingerprints (
-                 id TEXT PRIMARY KEY,
-                 anchor_memory_id TEXT NOT NULL,
-                 target_memory_id TEXT NOT NULL
-             );
-             CREATE TABLE memory_spectrogram (
-                 memory_id TEXT PRIMARY KEY
-             );
-             CREATE TABLE memory_annotations (
-                 memory_id TEXT PRIMARY KEY
-             );
-             INSERT INTO memories (id) VALUES ('m1');
-             INSERT INTO constellation_fingerprints
-                 (id, anchor_memory_id, target_memory_id)
-                 VALUES ('fp1', 'm1', 'm1');
-             INSERT INTO memory_spectrogram (memory_id) VALUES ('m1');
-             INSERT INTO memory_annotations (memory_id) VALUES ('m1');",
-        )
-        .unwrap();
-        conn
-    }
-
-    fn cleanup_row_counts(conn: &rusqlite::Connection) -> (usize, usize, usize, usize) {
-        let count = |table: &str| {
-            conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
-                row.get(0)
-            })
-            .unwrap()
-        };
-        (
-            count("memories"),
-            count("constellation_fingerprints"),
-            count("memory_spectrogram"),
-            count("memory_annotations"),
-        )
-    }
-
-    #[test]
-    fn parent_delete_failure_rolls_back_child_deletes() {
-        let mut conn = cleanup_test_conn();
-        conn.execute_batch(
-            "CREATE TRIGGER reject_memory_delete
-             BEFORE DELETE ON memories
-             BEGIN
-                 SELECT RAISE(ABORT, 'injected parent delete failure');
-             END;",
-        )
-        .unwrap();
-
-        let result = {
-            let tx = conn.transaction().unwrap();
-            delete_memory_with_children(&tx, "m1")
-        };
-
-        assert!(result.is_err(), "injected parent failure must propagate");
-        assert_eq!(
-            cleanup_row_counts(&conn),
-            (1, 1, 1, 1),
-            "the memory and every child must survive the rolled-back unit"
-        );
-    }
-
-    #[test]
-    fn normal_memory_cleanup_deletes_parent_and_children() {
-        let mut conn = cleanup_test_conn();
-        let tx = conn.transaction().unwrap();
-        let counts = delete_memory_with_children(&tx, "m1").unwrap();
-        tx.commit().unwrap();
-
-        assert_eq!(counts.memories, 1);
-        assert_eq!(
-            cleanup_row_counts(&conn),
-            (0, 0, 0, 0),
-            "the committed unit deletes the memory and every child"
-        );
-    }
 
     /// #122 regression: a cleanup connection must wait out the write lock held
     /// by another connection (the Brain at startup) instead of failing

@@ -25,8 +25,8 @@
 
 use crate::brain_handle::SafeBrain;
 use crate::events::activity::{ActivityEvent, ActivityEventType, EventTier};
-use spectral::ingest::CompactionTier;
-use spectral::{DeviceId, RememberOpts, Visibility};
+use spectral::ingest::{CompactionTier, WriteOutcome};
+use spectral::{DeviceId, ReinforceOpts, RememberOpts, Visibility};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, RwLock};
 use tracing::{debug, error, warn};
@@ -38,6 +38,14 @@ pub struct ActiveProject {
     pub project_name: String,
     pub wing: String,
 }
+
+/// Signal added to a memory each time a stable-keyed activity fact recurs.
+///
+/// Matches the strength Spectral applies to a recurrence it detects by content
+/// (`RECURRENCE_STRENGTH`, spectral-graph/src/brain.rs), so a re-encounter the
+/// store recognizes and a re-encounter this caller recognizes by key are worth
+/// the same to a memory.
+const RECURRENCE_STRENGTH: f64 = 0.05;
 
 /// Hard-block patterns for ad/tracking domains in content.
 const AD_TRACKING_PATTERNS: &[&str] = &[
@@ -176,6 +184,11 @@ pub struct ActivityIngester {
     filtered_count: AtomicU64,
     /// Events deduplicated by domain within the 24h window.
     deduped_count: AtomicU64,
+    /// Writes that landed on an existing memory instead of minting a new one,
+    /// and were therefore followed by an explicit reinforce. Only stable-keyed
+    /// events (see [`brain_key`]) can produce these — an instant-keyed event is
+    /// always a fresh insert.
+    reinforced_count: AtomicU64,
     last_ingested_at: Mutex<Option<chrono::DateTime<chrono::Utc>>>,
     aggregation_queue: Mutex<Vec<String>>,
     /// The user's currently-active project. Set when ProjectSelected events
@@ -198,6 +211,7 @@ impl ActivityIngester {
             ephemeral_count: AtomicU64::new(0),
             filtered_count: AtomicU64::new(0),
             deduped_count: AtomicU64::new(0),
+            reinforced_count: AtomicU64::new(0),
             last_ingested_at: Mutex::new(None),
             aggregation_queue: Mutex::new(Vec::new()),
             active_project: RwLock::new(None),
@@ -231,12 +245,7 @@ impl ActivityIngester {
     }
 
     fn update_active_project(&self, event: &ActivityEvent) {
-        let project_id = event
-            .project_id
-            .as_deref()
-            .or_else(|| event.payload.get("project_id").and_then(|v| v.as_str()));
-
-        let project_id = match project_id {
+        let project_id = match event_project_id(event) {
             Some(id) => id,
             None => return,
         };
@@ -270,12 +279,7 @@ impl ActivityIngester {
     }
 
     fn ingest_to_brain_blocking(&self, event: &ActivityEvent) {
-        let key = format!(
-            "activity:{}:{}:{}",
-            event.timestamp.timestamp(),
-            event_type_str(&event.event_type),
-            event.event_id.get(..8).unwrap_or(&event.event_id),
-        );
+        let key = brain_key(event);
         let content = render_content(event);
 
         let device_id = self.device_id;
@@ -311,7 +315,8 @@ impl ActivityIngester {
             .and_then(|ap| ap.as_ref().map(|p| p.wing.clone()));
 
         // Called from spawn_blocking context (state.rs activity event loop).
-        let result = self.brain.raw_blocking_handle().remember_with(
+        let brain = self.brain.raw_blocking_handle();
+        let result = brain.remember_with(
             &key,
             &content,
             RememberOpts {
@@ -341,22 +346,23 @@ impl ActivityIngester {
                 if let Ok(mut ts) = self.last_ingested_at.lock() {
                     *ts = Some(chrono::Utc::now());
                 }
-                // Live event for World View consumers (river rainfall / ore bank).
-                // Payload discipline: ids/keys/category only — never raw content.
-                crate::events::emit(crate::events::memory_added(
-                    &result.memory_id,
-                    &key,
-                    &event_type_name,
-                    wing_override.as_deref(),
-                ));
-                // Real-time graph growth (#24): ambient memories link to the
-                // entities they mention, same as the SafeBrain write path
-                // (this path goes through raw_blocking_handle, so the SafeBrain
-                // choke point never sees it). Already on a blocking thread.
-                if matches!(
-                    result.write_outcome,
-                    spectral::ingest::WriteOutcome::Inserted
-                ) {
+                if matches!(result.write_outcome, WriteOutcome::Inserted) {
+                    // Live event for World View consumers (river rainfall / ore
+                    // bank). Payload discipline: ids/keys/category only — never
+                    // raw content. Gated on `Inserted` because a stable-keyed
+                    // recurrence adds no memory: announcing one would have the
+                    // World View count 25 project selections as 25 new memories,
+                    // which is the very miscount this key change removes.
+                    crate::events::emit(crate::events::memory_added(
+                        &result.memory_id,
+                        &key,
+                        &event_type_name,
+                        wing_override.as_deref(),
+                    ));
+                    // Real-time graph growth (#24): ambient memories link to the
+                    // entities they mention, same as the SafeBrain write path
+                    // (this path goes through raw_blocking_handle, so the SafeBrain
+                    // choke point never sees it). Already on a blocking thread.
                     let brain_dir = crate::config::paths::Paths::brain_dir();
                     match crate::brain_enrichment::link_new_memory(
                         &brain_dir.join("graph.sqlite"),
@@ -376,6 +382,50 @@ impl ActivityIngester {
                         }
                         Err(e) => {
                             tracing::debug!("activity mention linking skipped: {e}")
+                        }
+                    }
+                } else {
+                    // The write landed on a memory that already existed — a
+                    // stable-keyed fact recurring (see [`brain_key`]).
+                    //
+                    // remember → inspect the outcome → reinforce is the intended
+                    // pattern, not a workaround. Spectral's keyed upsert is
+                    // deliberately a true no-op for identical content: a write
+                    // carries whatever `signal_score` its CALLER constructed, so
+                    // reinforcing automatically on every repeat would let a
+                    // replay, a crash retry, or a federation re-sync clobber an
+                    // accumulated score with a stale one — or inflate it merely
+                    // for arriving twice. Idempotence is the store's job; only
+                    // the caller can tell "the same event arriving again" from
+                    // "the event happening again".
+                    //
+                    // This caller sees the live activity bus, which emits once
+                    // per real selection, so a repeat here is unambiguously the
+                    // second kind: the user picked the project again. Hence the
+                    // explicit ask. (Confirmed with the Spectral maintainers
+                    // 2026-08-19; the behaviour is the same on their main, so
+                    // this call is not something to drop at a pin bump.)
+                    match brain.reinforce(ReinforceOpts {
+                        memory_keys: vec![key.clone()],
+                        strength: RECURRENCE_STRENGTH,
+                    }) {
+                        Ok(r) if r.memories_reinforced > 0 => {
+                            self.reinforced_count.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Ok(_) => {
+                            debug!(
+                                target: "permagent::activity::ingestion",
+                                key = %key,
+                                "Recurrence had no memory to reinforce"
+                            );
+                        }
+                        Err(e) => {
+                            debug!(
+                                target: "permagent::activity::ingestion",
+                                key = %key,
+                                error = %e,
+                                "Recurrence reinforcement failed (non-fatal)"
+                            );
                         }
                     }
                 }
@@ -411,6 +461,11 @@ impl ActivityIngester {
 
     pub fn failure_count(&self) -> u64 {
         self.failure_count.load(Ordering::Relaxed)
+    }
+
+    /// Writes that reinforced an existing memory instead of creating one.
+    pub fn reinforced_count(&self) -> u64 {
+        self.reinforced_count.load(Ordering::Relaxed)
     }
 
     pub fn always_count(&self) -> u64 {
@@ -471,6 +526,49 @@ fn derive_wing_slug(canonical_project_id: &str) -> Option<String> {
     } else {
         Some(slug.to_string())
     }
+}
+
+/// The project an event is about: envelope field first, payload second — the
+/// same resolution order the active-project tracker uses.
+fn event_project_id(event: &ActivityEvent) -> Option<&str> {
+    event
+        .project_id
+        .as_deref()
+        .or_else(|| event.payload.get("project_id").and_then(|v| v.as_str()))
+}
+
+/// The Brain key an activity event is written under.
+///
+/// Most activity events are *instants* — a command ran, a page loaded — and no
+/// two of them are the same fact, so the key carries the instant plus a slice
+/// of the event id to separate two events inside one second.
+///
+/// `ProjectSelected` is not an instant. "I work in project X" is one fact about
+/// X that recurs every time X is picked, and `render_content` renders it
+/// byte-identically every time. Keyed on the instant, each selection minted a
+/// fresh identity: on this machine's brain one project had accumulated 25 rows
+/// of the same sentence, with recency and strength split 25 ways instead of
+/// accumulating on one memory (115 of 154 duplicated activity rows were
+/// `project_selected`, measured 2026-08-19). Keyed on the PROJECT, the Nth
+/// selection lands on the first memory, and the caller reinforces it on seeing
+/// a non-`Inserted` outcome — see the `WriteOutcome` branch in
+/// `ingest_to_brain_blocking`.
+///
+/// An event with no project id falls back to the instant key: with no subject
+/// there is nothing stable to key on, and inventing a bucket would merge
+/// unrelated selections.
+fn brain_key(event: &ActivityEvent) -> String {
+    if event.event_type == ActivityEventType::ProjectSelected {
+        if let Some(project_id) = event_project_id(event) {
+            return format!("activity:project_selected:{}", project_id);
+        }
+    }
+    format!(
+        "activity:{}:{}:{}",
+        event.timestamp.timestamp(),
+        event_type_str(&event.event_type),
+        event.event_id.get(..8).unwrap_or(&event.event_id),
+    )
 }
 
 fn event_type_str(t: &ActivityEventType) -> &'static str {
@@ -771,6 +869,75 @@ mod tests {
         let content = render_content(&event);
         assert!(content.contains("Example"));
         assert!(content.contains("https://example.com"));
+    }
+
+    // ── brain key tests ──
+
+    /// The defect: two selections of the same project rendered byte-identical
+    /// content under two different keys, so the brain held two memories where
+    /// it should hold one that had been selected twice.
+    #[test]
+    fn project_selected_keys_on_the_project_not_the_instant() {
+        let first = make_project_selected("project:permagent", "Permagent");
+        let second = make_project_selected("project:permagent", "Permagent");
+
+        assert_ne!(
+            first.event_id, second.event_id,
+            "two genuinely distinct events"
+        );
+        assert_eq!(
+            render_content(&first),
+            render_content(&second),
+            "…rendering the same fact"
+        );
+        assert_eq!(
+            brain_key(&first),
+            "activity:project_selected:project:permagent"
+        );
+        assert_eq!(
+            brain_key(&first),
+            brain_key(&second),
+            "…and therefore sharing one memory identity"
+        );
+    }
+
+    #[test]
+    fn different_projects_keep_different_keys() {
+        let a = make_project_selected("project:permagent", "Permagent");
+        let b = make_project_selected("project:get-ladle", "Get Ladle");
+        assert_ne!(brain_key(&a), brain_key(&b));
+    }
+
+    /// No subject, no stable key: fall back to the instant rather than merge
+    /// unrelated selections into one bucket.
+    #[test]
+    fn project_selected_without_a_project_id_falls_back_to_the_instant_key() {
+        let mut event = make_project_selected("project:permagent", "Permagent");
+        event.project_id = None;
+        event.payload = serde_json::json!({"project_name": "Permagent"});
+
+        let key = brain_key(&event);
+        assert!(
+            key.starts_with(&format!(
+                "activity:{}:project_selected:",
+                event.timestamp.timestamp()
+            )),
+            "expected an instant key, got {key}"
+        );
+    }
+
+    /// Instants stay instants: a command that ran twice is two facts.
+    #[test]
+    fn instant_events_keep_the_timestamped_key() {
+        let first = make_always_event();
+        let second = make_always_event();
+        assert!(brain_key(&first).starts_with("activity:"));
+        assert!(brain_key(&first).contains(":chat_turn_completed:"));
+        assert_ne!(
+            brain_key(&first),
+            brain_key(&second),
+            "distinct instants must not collide"
+        );
     }
 
     // ── ingest filter tests ──

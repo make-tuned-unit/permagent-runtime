@@ -3,32 +3,88 @@
 //! Conservative noise removal. Only runs when pruning_enabled = true
 //! in the LibrarianSchedule. ALL conditions must be true to prune a memory.
 
+/// One memory the pruning predicate has cleared for deletion.
+pub(super) struct PruneCandidate {
+    pub key: String,
+    pub content: String,
+}
+
+/// How long one Librarian pruning pass may spend deleting.
+///
+/// Shorter than the startup budget: this runs on a daily schedule alongside the
+/// consolidation scan, and anything it does not reach is picked up tomorrow.
+/// See `permagent::activity::cleanup::forget_memories` for why deletes are
+/// bounded by wall clock at all.
+const PRUNE_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+
 pub(super) fn run_pruning_pass() -> Result<usize, String> {
     let db_path = permagent::config::paths::Paths::brain_dir().join("memory.db");
     let conn = rusqlite::Connection::open(&db_path)
         .map_err(|e| format!("Failed to open brain DB: {e}"))?;
 
-    // #276: enforce foreign keys on this raw write connection.
-    //
-    // `PRAGMA foreign_keys` is *per-connection* and defaults OFF. The child
-    // tables of `memories` (memory_annotations, memory_spectrogram,
-    // constellation_fingerprints) all carry `ON DELETE CASCADE` in the pinned
-    // Spectral schema, but a bare `DELETE FROM memories` on a connection with
-    // FKs OFF silently orphans them — the exact bug PR #260 had to clean up
-    // (110,982 orphaned rows). With FKs ON the delete cascades for free, no
-    // explicit child deletes required. Must be set before any statement.
-    conn.execute_batch("PRAGMA foreign_keys = ON;")
-        .map_err(|e| format!("Failed to enable foreign_keys: {e}"))?;
+    let candidates = prune_candidates(&conn)?;
+    // Release the read connection before the Brain writes: SQLite serializes
+    // writers, and holding a second handle over the delete loop only invites
+    // SQLITE_BUSY.
+    drop(conn);
 
-    prune_pass_on_conn(&conn)
+    if candidates.is_empty() {
+        return Ok(0);
+    }
+
+    let contents: std::collections::HashMap<&str, &str> = candidates
+        .iter()
+        .map(|c| (c.key.as_str(), c.content.as_str()))
+        .collect();
+    let keys: Vec<String> = candidates.iter().map(|c| c.key.clone()).collect();
+
+    // Called from spawn_blocking (scheduling.rs), which is what the Brain
+    // handle inside `forget_memories` requires.
+    let report = permagent::activity::cleanup::forget_memories(
+        &keys,
+        "librarian prune",
+        std::time::Instant::now() + PRUNE_BUDGET,
+    );
+
+    for key in &report.forgotten {
+        tracing::info!(
+            target: "permagentd::librarian",
+            key,
+            content = contents.get(key.as_str()).copied().unwrap_or(""),
+            reason = "short content, no entities, no recall, activity source",
+            "Pruned noise memory"
+        );
+    }
+
+    tracing::info!(
+        target: "permagentd::librarian",
+        pruned = report.forgotten.len(),
+        candidates = candidates.len(),
+        remaining = report.remaining,
+        residual = report.residual,
+        elapsed_ms = report.elapsed.as_millis() as u64,
+        "Pruning pass complete"
+    );
+
+    Ok(report.forgotten.len())
 }
 
-/// Run the pruning pass on an arbitrary connection.
+/// Select the memories this pass is allowed to delete.
 ///
-/// The connection MUST already have `PRAGMA foreign_keys = ON` set so that
-/// deletes cascade to child tables (see [`run_pruning_pass`]). Exposed for
-/// testing — the production entrypoint is [`run_pruning_pass`].
-pub(super) fn prune_pass_on_conn(conn: &rusqlite::Connection) -> Result<usize, String> {
+/// Conservative by construction: short content, written by the activity
+/// ingester, never recalled, not a consolidation source, and carrying no
+/// entity annotations. Read-only — the caller deletes.
+///
+/// Deletion is deliberately NOT done on this connection. `PRAGMA
+/// foreign_keys = ON` (#276) cascades to the child tables of `memories`, but a
+/// foreign key cannot cross database files and recognition state lives in a
+/// separate one (`recognition.db`). A raw `DELETE FROM memories` therefore left
+/// the whole recognition footprint behind: on this machine's brain, 5 pruned
+/// memories had orphaned 154 recognition rows (5 enrolments, 96 pairs, 5 grams,
+/// 5 minhash signatures, 43 minhash bands — ~31 rows each), measured
+/// 2026-08-19. `Brain::forget` reaches every substrate including that sidecar,
+/// and verifies afterwards, so the delete goes through it.
+pub(super) fn prune_candidates(conn: &rusqlite::Connection) -> Result<Vec<PruneCandidate>, String> {
     let annotation_table_exists: bool = conn
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='memory_annotations'",
@@ -49,7 +105,7 @@ pub(super) fn prune_pass_on_conn(conn: &rusqlite::Connection) -> Result<usize, S
         )
         .map_err(|e| format!("Prune query failed: {e}"))?;
 
-    let candidates: Vec<(String, String, String)> = stmt
+    let rows: Vec<(String, String, String)> = stmt
         .query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -61,14 +117,14 @@ pub(super) fn prune_pass_on_conn(conn: &rusqlite::Connection) -> Result<usize, S
         .filter_map(|r| r.ok())
         .collect();
 
-    let mut pruned = 0usize;
-    for (id, key, content) in &candidates {
+    let mut candidates = Vec::new();
+    for (id, key, content) in rows {
         // Check: zero entity connections
         if annotation_table_exists {
             let ann_count: usize = conn
                 .query_row(
                     "SELECT COUNT(*) FROM memory_annotations WHERE memory_id = ?1",
-                    [id],
+                    [&id],
                     |r| r.get(0),
                 )
                 .unwrap_or(0);
@@ -76,36 +132,10 @@ pub(super) fn prune_pass_on_conn(conn: &rusqlite::Connection) -> Result<usize, S
                 continue;
             }
         }
-
-        // All conditions met — prune (hard delete). FK enforcement (set by the
-        // caller) cascades the delete to child tables instead of orphaning them.
-        match conn.execute("DELETE FROM memories WHERE id = ?1", [id]) {
-            Ok(_) => {
-                tracing::info!(
-                    target: "permagentd::librarian",
-                    key,
-                    content,
-                    reason = "short content, no entities, no recall, activity source",
-                    "Pruned noise memory"
-                );
-                pruned += 1;
-            }
-            Err(e) => {
-                // With FKs ON and the pinned CASCADE schema this should not
-                // happen; if a legacy NO-ACTION table is ever encountered the
-                // delete is refused (RESTRICT) rather than orphaning children —
-                // safe, but log it so the stale schema is visible.
-                tracing::warn!(
-                    target: "permagentd::librarian",
-                    key,
-                    error = %e,
-                    "Prune delete failed (FK enforcement refused it or DB busy) — skipping"
-                );
-            }
-        }
+        candidates.push(PruneCandidate { key, content });
     }
 
-    Ok(pruned)
+    Ok(candidates)
 }
 
 #[cfg(test)]
@@ -180,61 +210,45 @@ mod tests {
             .unwrap()
     }
 
-    /// #276 regression: with FK enforcement ON (as `run_pruning_pass` sets),
-    /// deleting a pruned memory must cascade to its child rows — no orphans.
+    /// The pass must select exactly the memories its predicate clears, and
+    /// hand back the KEY — `Brain::forget` is keyed, and the key is what makes
+    /// the delete reach the recognition sidecar in the other database file.
     #[test]
-    fn prune_cascades_children_with_fk_enforcement() {
+    fn prune_selects_noise_by_key() {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         schema(&conn);
         insert_noise_with_children(&conn, "m1", "activity:noise:1");
 
-        assert_eq!(count(&conn, "constellation_fingerprints"), 1);
-        assert_eq!(count(&conn, "memory_spectrogram"), 1);
+        let candidates = prune_candidates(&conn).unwrap();
 
-        let pruned = prune_pass_on_conn(&conn).unwrap();
-
-        assert_eq!(pruned, 1, "the noise memory should be pruned");
-        assert_eq!(count(&conn, "memories"), 0, "parent gone");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].key, "activity:noise:1");
+        assert_eq!(candidates[0].content, "x");
         assert_eq!(
-            count(&conn, "constellation_fingerprints"),
-            0,
-            "fingerprint child must cascade — no orphan (#276)"
-        );
-        assert_eq!(
-            count(&conn, "memory_spectrogram"),
-            0,
-            "spectrogram child must cascade — no orphan (#276)"
+            count(&conn, "memories"),
+            1,
+            "selection must not delete anything — the Brain owns the delete"
         );
     }
 
-    /// Negative control proving the bug: the SAME prune on a connection with
-    /// FK enforcement OFF deletes the parent but ORPHANS the children — the
-    /// pre-fix behavior the pragma in `run_pruning_pass` prevents.
+    /// #276 was fixed by turning FK enforcement on so a raw delete cascaded to
+    /// the child tables of `memories`. That cascade cannot cross a database
+    /// file, and recognition state lives in `recognition.db`, so a raw delete
+    /// still orphaned it. Deleting through `Brain::forget` subsumes the #276
+    /// cascade AND reaches the sidecar — this test pins that the pass no longer
+    /// has a raw delete to get wrong.
     #[test]
-    fn prune_without_fk_enforcement_orphans_children() {
+    fn prune_selection_never_writes() {
         let conn = Connection::open_in_memory().unwrap();
-        // Explicitly disable FK enforcement — the `foreign_keys` default is
-        // build-dependent (some SQLite builds compile it ON), so force OFF to
-        // deterministically reproduce the pre-fix orphaning behavior.
         conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
         schema(&conn);
         insert_noise_with_children(&conn, "m1", "activity:noise:1");
 
-        let pruned = prune_pass_on_conn(&conn).unwrap();
+        let _ = prune_candidates(&conn).unwrap();
 
-        assert_eq!(pruned, 1);
-        assert_eq!(count(&conn, "memories"), 0, "parent gone");
-        assert_eq!(
-            count(&conn, "constellation_fingerprints"),
-            1,
-            "without FK enforcement the fingerprint is orphaned — this is the #276 bug"
-        );
-        assert_eq!(
-            count(&conn, "memory_spectrogram"),
-            1,
-            "spectrogram orphaned"
-        );
+        assert_eq!(count(&conn, "memories"), 1);
+        assert_eq!(count(&conn, "constellation_fingerprints"), 1);
+        assert_eq!(count(&conn, "memory_spectrogram"), 1);
     }
 
     /// Pruning must respect its conservative predicate: memories with an
@@ -280,8 +294,11 @@ mod tests {
             [],
         ).unwrap();
 
-        let pruned = prune_pass_on_conn(&conn).unwrap();
-        assert_eq!(pruned, 0, "no protected memory should be pruned");
+        let candidates = prune_candidates(&conn).unwrap();
+        assert!(
+            candidates.is_empty(),
+            "no protected memory should be selected for pruning"
+        );
         assert_eq!(count(&conn, "memories"), 4);
     }
 }
