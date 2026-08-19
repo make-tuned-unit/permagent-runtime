@@ -16,7 +16,7 @@ use candle_transformers::models::whisper::{self as m, audio, Config, N_FRAMES};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use symphonia::core::audio::{AudioBufferRef, Layout, Signal};
+use symphonia::core::audio::{AudioBufferRef, Signal};
 use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
@@ -916,31 +916,41 @@ fn decode_audio_simple(audio_data: &[u8]) -> Result<Vec<f32>> {
         .default_track()
         .context("No default audio track found")?;
 
-    let sample_rate = track
-        .codec_params
-        .sample_rate
-        .context("No sample rate in audio track")?;
+    let track_id = track.id;
+    let codec_params = track.codec_params.clone();
 
-    let channels = if let Some(ch) = track.codec_params.channels {
-        ch.count()
-    } else if let Some(layout) = track.codec_params.channel_layout {
-        match layout {
-            Layout::Mono => 1,
-            Layout::Stereo => 2,
-            _ => 1,
-        }
-    } else {
-        anyhow::bail!("No channel information in audio track (neither channels nor channel_layout)")
-    };
+    // What the *container* claims. This is a hint, not a precondition.
+    //
+    // A compressed track in MP4/M4A describes itself almost entirely inside its
+    // codec-specific config, and symphonia's isomp4 demuxer copies that config
+    // into `extra_data` without unpacking it: `EsdsAtom::fill_codec_params`
+    // (AAC) and `AlacAtom::fill_codec_params` set the codec type and the extra
+    // data and nothing else, so `channels` and `channel_layout` both stay
+    // `None`. Only the decoder, which parses that config, knows the answer.
+    // Demanding the channel count up front therefore rejected files that decode
+    // perfectly -- absence of metadata was being reported as a decode failure.
+    let declared_channels = codec_params.channels.map(|ch| ch.count()).or_else(|| {
+        codec_params
+            .channel_layout
+            .map(|l| l.into_channels().count())
+    });
+    let declared_sample_rate = codec_params.sample_rate;
 
-    tracing::debug!(sample_rate, channels, "audio format detected");
+    tracing::debug!(
+        ?declared_sample_rate,
+        ?declared_channels,
+        "container audio metadata (may be incomplete)"
+    );
 
     let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &DecoderOptions::default())
-        .context("Failed to create audio decoder - please ensure browser sends WAV format audio")?;
+        .make(&codec_params, &DecoderOptions::default())
+        .context("Failed to create audio decoder - unsupported audio codec")?;
 
     let mut pcm_data = Vec::new();
     let mut packet_count = 0;
+    // Channel count and sample rate as reported by the frames we actually
+    // decoded, filled in from the first successful packet.
+    let mut decoded_spec: Option<(usize, u32)> = None;
 
     loop {
         let packet = match format.next_packet() {
@@ -953,8 +963,35 @@ fn decode_audio_simple(audio_data: &[u8]) -> Result<Vec<f32>> {
             Err(e) => return Err(e).context("Failed to read audio packet")?,
         };
 
+        // An MP4 can carry video and other tracks alongside the audio one; the
+        // decoder must only ever see packets belonging to the track it was
+        // built for.
+        if packet.track_id() != track_id {
+            continue;
+        }
+
         match decoder.decode(&packet) {
             Ok(decoded) => {
+                let spec = *decoded.spec();
+                let frame_channels = spec.channels.count();
+
+                match decoded_spec {
+                    None => decoded_spec = Some((frame_channels, spec.rate)),
+                    // `pcm_data` is a single interleaved run: `audio_buffer_to_f32`
+                    // writes each frame at the buffer's own channel stride, and
+                    // `convert_to_mono` later reads it back at one fixed stride.
+                    // A stream that changed its channel count partway would shear
+                    // every sample after the change, silently. Refuse instead.
+                    Some((prev_channels, _)) if prev_channels != frame_channels => {
+                        anyhow::bail!(
+                            "Audio track changes channel count mid-stream ({} then {}) - unsupported",
+                            prev_channels,
+                            frame_channels
+                        );
+                    }
+                    Some(_) => {}
+                }
+
                 pcm_data.extend(audio_buffer_to_f32(&decoded));
                 packet_count += 1;
             }
@@ -970,6 +1007,54 @@ fn decode_audio_simple(audio_data: &[u8]) -> Result<Vec<f32>> {
         pcm_samples = pcm_data.len(),
         "decoded audio packets"
     );
+
+    // Resolve the format of the samples now in hand. The decoded frames win over
+    // the container when the two disagree, because these *are* the frames we
+    // hold: `audio_buffer_to_f32` interleaved them at the decoder's channel
+    // count, so anything else would de-interleave them wrongly. The container is
+    // not merely silent about compressed tracks, it can be wrong about them --
+    // an ALAC sample entry written by AVFoundation carries a legacy 44100 Hz /
+    // 2-channel placeholder while the true 16000 Hz / 1-channel values live in
+    // the ALAC magic cookie that only the decoder reads (verified against
+    // afconvert output, 2026-08-19). Trusting the placeholder would resample
+    // 16 kHz speech as if it were 44.1 kHz and hand Whisper gibberish. The
+    // container values remain the fallback for when nothing decoded at all.
+    let (channels, sample_rate) = match decoded_spec {
+        Some((decoded_channels, decoded_rate)) => {
+            if matches!(declared_channels, Some(c) if c != decoded_channels) {
+                tracing::warn!(
+                    ?declared_channels,
+                    decoded_channels,
+                    "container disagrees with decoder about channel count, trusting decoder"
+                );
+            }
+            let sample_rate = if decoded_rate > 0 {
+                if matches!(declared_sample_rate, Some(r) if r != decoded_rate) {
+                    tracing::warn!(
+                        ?declared_sample_rate,
+                        decoded_rate,
+                        "container disagrees with decoder about sample rate, trusting decoder"
+                    );
+                }
+                decoded_rate
+            } else {
+                declared_sample_rate
+                    .context("No sample rate from either the container or the decoder")?
+            };
+            (decoded_channels, sample_rate)
+        }
+        None => {
+            // Nothing decoded, so there is no authority but the container.
+            let channels = declared_channels.context(
+                "No channel information from either the container or the decoder \
+                 (the audio track produced no decodable frames)",
+            )?;
+            let sample_rate = declared_sample_rate.context("No sample rate in audio track")?;
+            (channels, sample_rate)
+        }
+    };
+
+    tracing::debug!(sample_rate, channels, "audio format resolved");
 
     let mono_data = if channels > 1 {
         tracing::debug!(channels, "converting to mono");
@@ -1232,5 +1317,165 @@ mod tests {
                 model.id
             );
         }
+    }
+
+    // ---- audio decoding ----
+    //
+    // These read real encoder output (see testdata/README.md). A hand-built
+    // fixture cannot exercise the bug they guard: the defect was that a
+    // container which declares *no* channel count was rejected before the
+    // decoder -- the only component that can read the count out of the codec's
+    // own config -- was ever built.
+
+    const WAV_MONO: &[u8] = include_bytes!("testdata/speech_mono_16k.wav");
+    const AAC_MONO: &[u8] = include_bytes!("testdata/speech_mono_16k_aac.m4a");
+    const AAC_STEREO: &[u8] = include_bytes!("testdata/speech_stereo_16k_aac.m4a");
+    const ALAC_MONO: &[u8] = include_bytes!("testdata/speech_mono_16k_alac.m4a");
+
+    /// What the container alone says, before any decoder exists. This is the
+    /// exact information the old guard had to work with.
+    fn container_metadata(audio: &[u8]) -> (Option<usize>, Option<u32>) {
+        let mss = MediaSourceStream::new(Box::new(Cursor::new(audio.to_vec())), Default::default());
+        let probed = symphonia::default::get_probe()
+            .format(
+                &Hint::new(),
+                mss,
+                &FormatOptions::default(),
+                &MetadataOptions::default(),
+            )
+            .expect("fixture should probe");
+        let params = &probed
+            .format
+            .default_track()
+            .expect("fixture has a track")
+            .codec_params;
+        let channels = params
+            .channels
+            .map(|c| c.count())
+            .or_else(|| params.channel_layout.map(|l| l.into_channels().count()));
+        (channels, params.sample_rate)
+    }
+
+    fn peak(samples: &[f32]) -> f32 {
+        samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max)
+    }
+
+    /// The precondition of the bug: MP4/M4A says nothing about channels for a
+    /// compressed track, while WAV does. If this ever stops holding, the
+    /// regression tests below stop testing anything.
+    #[test]
+    fn compressed_m4a_declares_no_channel_count_but_wav_does() {
+        assert_eq!(
+            container_metadata(WAV_MONO).0,
+            Some(1),
+            "WAV should declare its channel count in the container"
+        );
+        for (name, bytes) in [
+            ("aac", AAC_MONO),
+            ("aac stereo", AAC_STEREO),
+            ("alac", ALAC_MONO),
+        ] {
+            assert_eq!(
+                container_metadata(bytes).0,
+                None,
+                "{name} in M4A is expected to declare no channel count at the container level"
+            );
+        }
+    }
+
+    /// The regression. On the old code this returned
+    /// "No channel information in audio track (neither channels nor
+    /// channel_layout)" for a file that decodes perfectly.
+    #[test]
+    fn decodes_aac_in_m4a() {
+        let samples = decode_audio_simple(AAC_MONO).expect("AAC-LC in M4A should decode");
+        let wav = decode_audio_simple(WAV_MONO).expect("WAV should decode");
+
+        assert!(!samples.is_empty(), "AAC decode produced no samples");
+        assert!(peak(&samples) > 0.01, "AAC decode produced silence");
+
+        // AAC carries encoder priming, so it runs slightly long; it must not
+        // run short, and must not be off by a resampling factor.
+        let ratio = samples.len() as f64 / wav.len() as f64;
+        assert!(
+            (0.98..1.15).contains(&ratio),
+            "AAC length {} vs WAV length {} (ratio {ratio:.3}) - wrong sample rate or channel count",
+            samples.len(),
+            wav.len()
+        );
+    }
+
+    /// ALAC is lossless, so it must reproduce the WAV's sample count exactly.
+    /// This also pins the sample rate: AVFoundation writes a legacy 44100 Hz
+    /// placeholder into the ALAC sample entry while the true rate lives in the
+    /// magic cookie, and believing the placeholder resamples the audio to 36%
+    /// of its true length.
+    #[test]
+    fn decodes_alac_in_m4a_at_its_true_sample_rate() {
+        assert_eq!(
+            container_metadata(ALAC_MONO).1,
+            Some(44100),
+            "this fixture is only interesting because the container misreports the rate"
+        );
+
+        let samples = decode_audio_simple(ALAC_MONO).expect("ALAC in M4A should decode");
+        let wav = decode_audio_simple(WAV_MONO).expect("WAV should decode");
+
+        assert!(peak(&samples) > 0.01, "ALAC decode produced silence");
+        assert_eq!(
+            samples.len(),
+            wav.len(),
+            "lossless ALAC should yield exactly as many 16 kHz samples as the WAV"
+        );
+    }
+
+    /// Container metadata is still consulted first and the paths that had it
+    /// are unchanged: mono and stereo WAV both land on the same mono sample
+    /// count, so the stereo de-interleave still runs at the right stride.
+    #[test]
+    fn mono_and_stereo_produce_matching_sample_counts() {
+        let wav = decode_audio_simple(WAV_MONO).expect("mono WAV should decode");
+        let aac_mono = decode_audio_simple(AAC_MONO).expect("mono AAC should decode");
+        let aac_stereo = decode_audio_simple(AAC_STEREO).expect("stereo AAC should decode");
+
+        assert_eq!(
+            aac_mono.len(),
+            aac_stereo.len(),
+            "stereo should downmix to the same number of mono samples as the mono encode"
+        );
+        assert!(
+            peak(&aac_stereo) > 0.01,
+            "stereo AAC decode produced silence"
+        );
+
+        // A channel count taken from the decoder rather than the container must
+        // not corrupt the de-interleave: a stride of 1 where 2 was correct
+        // would leave twice as many samples.
+        let ratio = aac_stereo.len() as f64 / wav.len() as f64;
+        assert!(
+            (0.98..1.15).contains(&ratio),
+            "stereo AAC downmix length {} vs mono WAV {} (ratio {ratio:.3})",
+            aac_stereo.len(),
+            wav.len()
+        );
+    }
+
+    /// Widening the guard must not turn undecodable input into silent success.
+    #[test]
+    fn undecodable_input_still_errors() {
+        let err = decode_audio_simple(b"this is not audio, not even a little").unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("Failed to probe audio format"),
+            "unhelpful error for garbage input: {msg}"
+        );
+
+        // A truncated but well-formed header is the nastier case: it must not
+        // come back as an empty-but-successful transcript source.
+        let truncated = &AAC_MONO[..64];
+        assert!(
+            decode_audio_simple(truncated).is_err(),
+            "a truncated M4A should not decode successfully"
+        );
     }
 }
