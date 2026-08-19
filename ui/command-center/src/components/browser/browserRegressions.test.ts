@@ -15,6 +15,7 @@ import {
   extractTitle,
   isPlaceholderUrl,
   pageLoadUpdate,
+  popupTabDecision,
   replayEvents,
   shouldOpenPopupTab,
   titleUpdate,
@@ -370,8 +371,29 @@ describe('browser event-source contract', () => {
     // Without this listener, WKWebView's nil createWebView response makes
     // every target=_blank / window.open click a silent no-op (#240 / #709).
     expect(BROWSER_TSX).toContain(`api.listen('${NEW_WINDOW_EVENT}'`);
-    expect(BROWSER_TSX).toContain('shouldOpenPopupTab');
+    expect(BROWSER_TSX).toContain('popupTabDecision');
     expect(BROWSER_TSX).toContain('openUrlRef');
+  });
+
+  it('says WHY when it declines to open a tab', () => {
+    // #240, #709 and #973 each survived for weeks because the failure was
+    // invisible: the click did nothing and nothing anywhere said so. A bare
+    // `return` in this listener is what that looks like in code.
+    const listener = BROWSER_TSX.slice(
+      BROWSER_TSX.indexOf(`api.listen('${NEW_WINDOW_EVENT}'`),
+      BROWSER_TSX.indexOf('browser_open_url'),
+    );
+    expect(listener).toContain('decision.reason');
+    expect(listener).toMatch(/console\.(warn|error)\(/);
+  });
+
+  it('opens the tab from exactly one place', () => {
+    // Two sources feed this listener (WebKit's own new-frame path and the
+    // injected gesture bridge). One code path must open the tab, or the two
+    // will drift and one of them will rot unnoticed — which is the shape of
+    // all three prior regressions.
+    const opens = BROWSER_TSX.split('openUrlRef.current(').length - 1;
+    expect(opens).toBe(2); // the popup listener and the OAuth listener
   });
 });
 
@@ -399,6 +421,84 @@ describe('popup → in-app tab gate', () => {
 
   it('ignores a missing source id rather than opening unbound', () => {
     expect(shouldOpenPopupTab(owned, '', 'https://example.com')).toBe(false);
+  });
+
+  // Every drop must be attributable. A boolean cannot be logged usefully.
+  it('names the reason for every decision', () => {
+    expect(popupTabDecision(owned, 'browser-0', 'https://example.com').reason).toBe('ok');
+    expect(popupTabDecision(owned, 'browser-99', 'https://example.com').reason).toBe(
+      'not-owned-by-this-browser',
+    );
+    expect(popupTabDecision(owned, 'browser-0', 'about:blank').reason).toBe('placeholder-url');
+    expect(popupTabDecision(owned, '', 'https://example.com').reason).toBe('no-source-webview-id');
+  });
+});
+
+// ── 10. One gesture, exactly one tab ────────────────────────────────────────
+//
+// Reported 2026-08-18: "I still cant click a link in one tab in browser and
+// have it open in a new tab", with "I am not pressing cmd + click fyi, i am
+// just left clicking with my mouse. we need normal mouse nav functionality."
+//
+// Four gestures ask for a new tab. Only the first two ever reached the native
+// hook — WebKit sends createWebViewWithConfiguration: only when the CONTENT
+// asks for a new frame. The other two arrive at the navigation-policy delegate,
+// whose wry binding is `Fn(String) -> bool` and has already discarded the
+// button number and the modifier flags; and WKWebView has no "Open Link in New
+// Tab" menu item at all (that one is Safari's). browser_links.js re-expresses
+// them all as `window.open(url, '_blank')`, so every gesture arrives here as
+// the same `browser_new_window_request` — and must produce exactly one tab.
+//
+// The gestures themselves are exercised against the real injected script in
+// `src/lib/browserLinks.test.ts`; this pins the shell's half of the contract.
+describe('every new-tab gesture opens exactly one tab', () => {
+  const owned = ['browser-3'];
+  const gestures = [
+    ['plain left-click on target=_blank', 'https://mail.example.com/thread/1'],
+    ['window.open from a page script', 'https://calendar.example.com/event/2'],
+    ['middle-click on an ordinary link', 'https://news.example.com/story/3'],
+    ['Cmd-click on an ordinary link', 'https://docs.example.com/page/4'],
+    ['right-click → Open Link in New Tab', 'https://wiki.example.com/entry/5'],
+  ] as const;
+
+  /** What Browser.tsx's listener does, with its dedupe state carried across. */
+  function deliver(events: ReadonlyArray<{ url: string; at: number }>): string[] {
+    let last: { url: string; at: number } | null = null;
+    const openedTabs: string[] = [];
+    for (const ev of events) {
+      const decision = popupTabDecision(owned, 'browser-3', ev.url, last, ev.at);
+      if (!decision.open) continue;
+      last = { url: ev.url, at: ev.at };
+      openedTabs.push(ev.url);
+    }
+    return openedTabs;
+  }
+
+  for (const [name, url] of gestures) {
+    it(`${name} opens one tab`, () => {
+      expect(deliver([{ url, at: 1000 }])).toEqual([url]);
+    });
+
+    it(`${name} opens ONE tab even if the native hook fires alongside the bridge`, () => {
+      // Belt and braces: the interceptor cancels the default before calling
+      // window.open, so WebKit's own path should never also fire. If it ever
+      // does, the user still gets one tab rather than two.
+      expect(deliver([{ url, at: 1000 }, { url, at: 1004 }])).toEqual([url]);
+    });
+  }
+
+  it('still opens a second tab when the user really asks twice', () => {
+    const url = 'https://news.example.com/story/3';
+    expect(deliver([{ url, at: 1000 }, { url, at: 4000 }])).toEqual([url, url]);
+  });
+
+  it('does not let one link suppress a different one', () => {
+    expect(
+      deliver([
+        { url: 'https://a.example.com/', at: 1000 },
+        { url: 'https://b.example.com/', at: 1010 },
+      ]),
+    ).toEqual(['https://a.example.com/', 'https://b.example.com/']);
   });
 });
 

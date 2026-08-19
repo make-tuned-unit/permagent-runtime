@@ -137,12 +137,55 @@ export function bufferEvent(
  *      that as a tab littered the strip with empty "New Tab"s while real
  *      target=_blank hrefs arrive as absolute http(s) and pass.
  */
+export type PopupDropReason =
+  | 'ok'
+  | 'no-source-webview-id'
+  | 'not-owned-by-this-browser'
+  | 'placeholder-url'
+  | 'duplicate-within-window';
+
+export interface PopupDecision {
+  open: boolean;
+  reason: PopupDropReason;
+}
+
+/** How close together two identical popups must be to count as one click.
+ *  The page-side interceptor cancels the default before re-expressing a
+ *  gesture as `window.open`, so a double-open should be impossible — this is
+ *  the brace for that belt, not the mechanism. */
+export const POPUP_DUPLICATE_WINDOW_MS = 500;
+
+/**
+ * The full decision, WITH the reason it went that way.
+ *
+ * `shouldOpenPopupTab` (below) is the boolean face of this. The reason exists
+ * because the entire history of this bug — #240, #709, #973 — is "the click
+ * did nothing" with nothing in any log to say why. Browser.tsx logs this
+ * verbatim on every drop.
+ */
+export function popupTabDecision(
+  ownedWebviewIds: ReadonlyArray<string | null | undefined>,
+  sourceWebviewId: string,
+  url: string,
+  lastOpened?: { url: string; at: number } | null,
+  now: number = Date.now(),
+  windowMs: number = POPUP_DUPLICATE_WINDOW_MS,
+): PopupDecision {
+  if (!sourceWebviewId) return { open: false, reason: 'no-source-webview-id' };
+  if (!ownedWebviewIds.includes(sourceWebviewId)) {
+    return { open: false, reason: 'not-owned-by-this-browser' };
+  }
+  if (isPlaceholderUrl(url)) return { open: false, reason: 'placeholder-url' };
+  if (lastOpened && lastOpened.url === url && now - lastOpened.at < windowMs) {
+    return { open: false, reason: 'duplicate-within-window' };
+  }
+  return { open: true, reason: 'ok' };
+}
+
 export function shouldOpenPopupTab(
   ownedWebviewIds: ReadonlyArray<string | null | undefined>,
   sourceWebviewId: string,
   url: string,
 ): boolean {
-  if (!sourceWebviewId || !ownedWebviewIds.includes(sourceWebviewId)) return false;
-  if (isPlaceholderUrl(url)) return false;
-  return true;
+  return popupTabDecision(ownedWebviewIds, sourceWebviewId, url).open;
 }

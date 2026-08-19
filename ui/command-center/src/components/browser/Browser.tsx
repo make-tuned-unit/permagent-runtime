@@ -20,8 +20,8 @@ import {
   bufferEvent,
   extractTitle,
   isPlaceholderUrl,
+  popupTabDecision,
   replayEvents,
-  shouldOpenPopupTab,
   type PendingEvent,
 } from './tabIdentity';
 import { CHAT_LAUNCHER_MARGIN } from '../chat/ChatLauncher';
@@ -515,6 +515,12 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
   // then looks like it did nothing.
   const openUrlRef = useRef<(url: string, label?: string) => Promise<void>>(async () => {});
 
+  // Last popup this instance turned into a tab. Guards the belt-and-braces
+  // path: the injected interceptor cancels the default before re-expressing a
+  // gesture as window.open, so WebKit's own new-frame path should never also
+  // fire — but one click must be one tab even if it does.
+  const lastPopupRef = useRef<{ url: string; at: number } | null>(null);
+
   // Listen for navigation events from Tauri
   useEffect(() => {
     if (!api) return;
@@ -554,14 +560,40 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
       unlistenTitle = fn;
     });
 
-    // target=_blank / window.open from a child webview. Rust denies the native
-    // popup and emits here; without this listener the click is a no-op
-    // (WKWebView returns nil from createWebViewWithConfiguration).
+    // Every "open in a new tab" gesture lands here, and this is the ONLY place
+    // that turns one into a tab. Two sources feed it, both via browser.rs's
+    // `on_new_window`: WebKit's own new-frame path (window.open, target=_blank)
+    // and browser_links.js, which re-expresses the mouse gestures WebKit will
+    // not route there (right-click menu, middle-click, Cmd-click) as a
+    // window.open. Without this listener every one of them is a silent no-op —
+    // WKWebView returns nil from createWebViewWithConfiguration and the click
+    // just does nothing (#240 / #709 / #973).
+    //
+    // A DECLINE IS LOGGED WITH ITS REASON. That is the whole point: those three
+    // regressions each survived weeks because a dropped popup left no trace.
     let unlistenNewWindow: (() => void) | null = null;
     api.listen('browser_new_window_request', (e) => {
       const payload = e.payload as { source_webview_id: string; url: string };
       const owned = tabsRef.current.map((t) => t.webviewId);
-      if (!shouldOpenPopupTab(owned, payload.source_webview_id, payload.url)) return;
+      const decision = popupTabDecision(
+        owned,
+        payload.source_webview_id,
+        payload.url,
+        lastPopupRef.current,
+      );
+      if (!decision.open) {
+        console.warn(
+          `[browser] new-tab request DROPPED (${decision.reason}):`,
+          payload.url,
+          'from',
+          payload.source_webview_id,
+          'owned by this Browser:',
+          owned,
+        );
+        return;
+      }
+      lastPopupRef.current = { url: payload.url, at: Date.now() };
+      console.info('[browser] new-tab request accepted:', payload.url, 'from', payload.source_webview_id);
       void openUrlRef.current(payload.url);
     }).then((fn) => {
       unlistenNewWindow = fn;
