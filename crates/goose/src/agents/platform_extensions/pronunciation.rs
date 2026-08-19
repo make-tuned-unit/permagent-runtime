@@ -64,16 +64,45 @@ impl PronunciationClient {
         if let Some(token) = daemon_token().await {
             req = req.bearer_auth(token);
         }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| format!("Failed to reach the voice service: {e}"))?;
+        let resp = req.send().await.map_err(|e| {
+            format!(
+                "NOT SAVED — could not reach the voice service: {e}. Tell the user the word \
+                 was not learned; do not claim it was."
+            )
+        })?;
         if !resp.status().is_success() {
-            return Err(format!("Pronunciation save rejected: {}", resp.status()));
+            return Err(format!(
+                "NOT SAVED — pronunciation save rejected: {}. Tell the user the word was not \
+                 learned; do not claim it was.",
+                resp.status()
+            ));
         }
+        // Read the confirmation back off the store's own response rather than
+        // echoing the request. The point of the read-back is that the model can
+        // only report what actually persisted, so a save that silently did not
+        // happen cannot be narrated as if it had.
+        let body: serde_json::Value = resp.json().await.unwrap_or_default();
+        if !body
+            .get("saved")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        {
+            return Err(
+                "NOT SAVED — the voice service did not confirm the write. Tell the user the \
+                 word was not learned; do not claim it was."
+                    .to_string(),
+            );
+        }
+        let total = body
+            .get("total")
+            .and_then(serde_json::Value::as_u64)
+            .map(|n| format!(" ({n} pronunciations now stored)"))
+            .unwrap_or_default();
         Ok(vec![Content::text(format!(
-            "Saved: '{word}' will be pronounced \"{sounds_like}\" from the very next sentence. \
-             Say it aloud now so the user can confirm it sounds right."
+            "STORED and confirmed by the lexicon{total}: '{word}' is now spoken as \
+             \"{sounds_like}\", effective from your very next spoken sentence. Now read that \
+             respelling back to the user and say '{word}' aloud, so they hear what was saved \
+             instead of being promised it."
         ))])
     }
 }
@@ -106,12 +135,19 @@ impl PronunciationClient {
 
         vec![Tool::new(
             "save_pronunciation".to_string(),
-            "Save how a word is pronounced so speech says it correctly forever. THE RULE: never \
-             spell a word out letter by letter. If you are unsure how a name will sound, or the \
-             user corrects you, ask how it is said, respell it using REAL English words, save it \
-             here, then say the word back so they can confirm. Give `sounds_like` only — never \
-             IPA; the speech engine derives the phonemes itself. A refused save means one of your \
-             parts is not a real word: swap it for one that sounds the same and retry."
+            "Save how a word is pronounced so speech says it correctly forever. CALLING THIS IS \
+             REQUIRED, NOT OPTIONAL: the moment the user tells you how a word is said, corrects \
+             your pronunciation, or winces at it, you MUST call this tool in that same turn, \
+             before you write your reply. Replying \"I'll remember that\" without calling it \
+             saves NOTHING — the correction dies with the turn and the user has to teach you the \
+             same word again, which is exactly what a promise-only answer feels like to them. A \
+             pronunciation is only learned once this tool returns. THE RULE: never spell a word \
+             out letter by letter. If you are unsure how a name will sound, ask how it is said, \
+             respell it using REAL English words, save it here, then READ BACK the respelling \
+             this tool confirms and say the word aloud so the user hears that it stuck. Give \
+             `sounds_like` only — never IPA; the speech engine derives the phonemes itself. A \
+             refused save means one of your parts is not a real word: swap it for one that \
+             sounds the same and retry."
                 .to_string(),
             schema,
         )]
@@ -162,6 +198,149 @@ impl McpClientTrait for PronunciationClient {
             _ => Ok(CallToolResult::error(vec![Content::text(format!(
                 "Unknown tool: {name}"
             ))])),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One place a model reads pronunciation guidance from. `refers_by_name` is
+    /// false for the tool's own description, which is attached to the tool and
+    /// says "this tool" — only prose written elsewhere has to name it.
+    struct Surface {
+        what: &'static str,
+        text: String,
+        refers_by_name: bool,
+    }
+
+    /// Every surface a model reads pronunciation guidance from, named so a
+    /// failure says which one regressed.
+    fn guidance_surfaces() -> Vec<Surface> {
+        let tool = PronunciationClient::get_tools();
+        let tool = tool
+            .iter()
+            .find(|t| t.name == "save_pronunciation")
+            .expect("save_pronunciation tool is declared");
+        vec![
+            Surface {
+                what: "save_pronunciation tool description",
+                text: tool.description.clone().unwrap_or_default().to_string(),
+                refers_by_name: false,
+            },
+            Surface {
+                what: "pronunciation extension why_it_matters",
+                text: crate::agents::platform_extensions::PLATFORM_EXTENSIONS
+                    .get(EXTENSION_NAME)
+                    .expect("pronunciation extension is registered")
+                    .why_it_matters
+                    .to_string(),
+                refers_by_name: true,
+            },
+            Surface {
+                what: "VOICE_FEATURE why_it_matters",
+                text: crate::config::agent_identity::VOICE_FEATURE
+                    .why_it_matters
+                    .to_string(),
+                refers_by_name: true,
+            },
+        ]
+    }
+
+    /// THE REGRESSION GUARD (2026-08-19).
+    ///
+    /// The tool is registered, enabled, reaches a live session's toolset, and
+    /// its loopback write works — verified end to end. What failed was the
+    /// *instruction*: it described calling `save_pronunciation` as the thing to
+    /// do when corrected, which a model satisfies conversationally ("I'll
+    /// remember that") without ever emitting a call. The user taught the same
+    /// word repeatedly and nothing was ever stored.
+    ///
+    /// So the guidance must REQUIRE the call, not suggest it. This pins that
+    /// property on every surface a model reads it from — the tool description
+    /// (in every request's tool list), the extension registry, and the Voice
+    /// feature brief — so weakening any one of them back to advice fails here.
+    #[test]
+    fn pronunciation_guidance_requires_the_call_not_just_suggests_it() {
+        for Surface {
+            what: surface,
+            text,
+            refers_by_name,
+        } in guidance_surfaces()
+        {
+            let lower = text.to_lowercase();
+
+            assert!(
+                !refers_by_name || lower.contains("save_pronunciation"),
+                "{surface} must name the tool the model has to call"
+            );
+
+            // Non-optional phrasing. Advice ("call it when…") reads as satisfied
+            // by an agreeable sentence; an obligation does not.
+            assert!(
+                lower.contains("must call")
+                    || lower.contains("requires a save_pronunciation")
+                    || lower.contains("required, not optional"),
+                "{surface} states the save as advice, not an obligation — a model \
+                 will satisfy it by agreeing in prose and never emit a tool call. \
+                 Say the call is required (\"you MUST call\" / \"REQUIRED, NOT \
+                 OPTIONAL\"), in the same turn as the correction."
+            );
+
+            // The specific failure mode has to be named, or "must" is just a
+            // stronger adjective on the same sentence the model already
+            // rationalised its way past.
+            assert!(
+                lower.contains("stores nothing")
+                    || lower.contains("saves nothing")
+                    || lower.contains("nothing is stored"),
+                "{surface} must rule out the promise-only reply explicitly — say \
+                 that answering \"I'll remember that\" without the call stores \
+                 nothing. This is the exact behaviour that was reported."
+            );
+
+            // Confirmation must come from the store, not from the model's word.
+            assert!(
+                lower.contains("read back") || lower.contains("read that respelling back"),
+                "{surface} must tell the model to read back what the tool \
+                 confirmed, so the user gets confirmation instead of a promise"
+            );
+        }
+    }
+
+    /// The registry text drifted out of sync with the schema: it told the model
+    /// to save "word + sounds-like + IPA" long after the `ipa` parameter was
+    /// deliberately removed, because authoring IPA you cannot hear is not
+    /// something a model can be right about. No surface may ask for it again.
+    #[test]
+    fn no_guidance_surface_asks_for_ipa() {
+        let schema_has_ipa = PronunciationClient::get_tools()[0]
+            .input_schema
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .is_some_and(|p| p.contains_key("ipa"));
+        assert!(
+            !schema_has_ipa,
+            "the `ipa` parameter is deliberately absent from the schema"
+        );
+
+        for Surface {
+            what: surface,
+            text,
+            ..
+        } in guidance_surfaces()
+        {
+            let lower = text.to_lowercase();
+            if !lower.contains("ipa") {
+                continue;
+            }
+            // Mentioning IPA is fine only to forbid it.
+            assert!(
+                lower.contains("never ipa") || lower.contains("(never ipa"),
+                "{surface} mentions IPA without forbidding it, contradicting the \
+                 tool schema, which has no `ipa` parameter"
+            );
         }
     }
 }

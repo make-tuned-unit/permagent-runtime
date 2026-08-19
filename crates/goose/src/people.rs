@@ -50,6 +50,14 @@ pub struct Person {
     pub birthday: Option<String>,
     pub relationship_strength: Option<String>,
     pub how_met: Option<String>,
+    /// Enricher-sourced profile links (#495 slice 4 vocab). Like the three
+    /// above these have **no people-table column** — they live only in the
+    /// graph's `entity_fields` and reach the client through the read overlay.
+    /// Before 2026-08-19 the Enricher wrote these names and the overlay had no
+    /// arm for them, so an approved enrichment was stored and never displayed.
+    pub linkedin: Option<String>,
+    pub x_handle: Option<String>,
+    pub personal_site: Option<String>,
     /// Immutable bridge key to the Spectral graph node (bare 64-hex blake3
     /// `EntityId`). Set once at creation, never rewritten on rename — the durable
     /// anchor that carries this identity row to its graph attributes (#255/B).
@@ -87,10 +95,16 @@ pub struct PeopleFilter {
 /// from `entity_fields` and the slice-2b write path writes the same names. Kept
 /// here (plain strings — no Spectral dependency) so both sides share one list.
 ///
-/// The last three (`birthday`, `relationship_strength`, `how_met`) are #495
-/// manual-only fields with no people-table column — graph-`entity_fields`-only,
-/// written exclusively through the `FieldSource::Manual` edit path (slice 2b).
-pub const PERSON_FIELD_NAMES: [&str; 9] = [
+/// `birthday`, `relationship_strength` and `how_met` are #495 manual-only
+/// fields with no people-table column — graph-`entity_fields`-only, written
+/// exclusively through the `FieldSource::Manual` edit path (slice 2b).
+///
+/// `linkedin`, `x_handle` and `personal_site` joined this list on 2026-08-19.
+/// They are also in [`ENRICHABLE_FIELD_NAMES`]: the Enricher had been writing
+/// them since slice 4 while the reader had no arm for them, so approved
+/// enrichments were durable and invisible. Every enrichable name must be
+/// readable — `enrichable_fields_are_all_readable` fails the build otherwise.
+pub const PERSON_FIELD_NAMES: [&str; 12] = [
     "role",
     "company",
     "email",
@@ -100,7 +114,33 @@ pub const PERSON_FIELD_NAMES: [&str; 9] = [
     "birthday",
     "relationship_strength",
     "how_met",
+    "linkedin",
+    "x_handle",
+    "personal_site",
 ];
+
+/// Graph field names that are *synonyms* of a canonical [`PERSON_FIELD_NAMES`]
+/// entry rather than attributes of their own: `(written_name, canonical_name)`.
+///
+/// `job_title` is what the Enricher proposes; `role` is what the CRM row, the
+/// `PeopleFilter` and the UI have always called the same thing. Rather than
+/// rename a column and a wire key that predate the Enricher, the reader folds
+/// the synonym onto the canonical slot. Aliases are deliberately NOT accepted by
+/// the manual `PATCH` vocabulary — one writable name per attribute, so a manual
+/// edit and an enrichment can never land in two different rows for one concept.
+pub const PERSON_FIELD_ALIASES: [(&str, &str); 1] = [("job_title", "role")];
+
+/// Resolve a graph field name to the canonical attribute it populates.
+/// Non-alias names pass through unchanged.
+pub fn canonical_person_field(field_name: &str) -> &str {
+    match PERSON_FIELD_ALIASES
+        .iter()
+        .find(|(alias, _)| *alias == field_name)
+    {
+        Some((_, canonical)) => canonical,
+        None => field_name,
+    }
+}
 
 /// Fields the Enricher may propose (#495 slice 4, design ruled 2026-06-24).
 /// STRUCTURED, verifiable fields only — lower confabulation. Manual-only
@@ -109,6 +149,12 @@ pub const PERSON_FIELD_NAMES: [&str; 9] = [
 /// malformed at decision creation AND skipped at apply time. Independently,
 /// Spectral's store never lets an `Enriched` write overwrite a field whose
 /// stored provenance is `Manual` — three layers, all load-bearing.
+///
+/// Every name here MUST be readable: either a [`PERSON_FIELD_NAMES`] entry or a
+/// [`PERSON_FIELD_ALIASES`] synonym of one. The two lists drifted apart between
+/// slice 2b and slice 4 and nothing caught it, so
+/// `enrichable_fields_are_all_readable` now pins the invariant against the
+/// reader itself rather than against a second hand-maintained list.
 pub const ENRICHABLE_FIELD_NAMES: [&str; 5] = [
     "linkedin",
     "job_title",
@@ -132,12 +178,16 @@ impl Person {
         self.birthday = None;
         self.relationship_strength = None;
         self.how_met = None;
+        self.linkedin = None;
+        self.x_handle = None;
+        self.personal_site = None;
     }
 
-    /// Set one attribute by its `entity_fields` field name (graph overlay). Names
-    /// outside [`PERSON_FIELD_NAMES`] are ignored.
+    /// Set one attribute by its `entity_fields` field name (graph overlay).
+    /// [`PERSON_FIELD_ALIASES`] synonyms resolve to their canonical slot first;
+    /// names outside [`PERSON_FIELD_NAMES`] are ignored.
     pub fn set_attribute(&mut self, field_name: &str, value: String) {
-        match field_name {
+        match canonical_person_field(field_name) {
             "role" => self.role = Some(value),
             "company" => self.company = Some(value),
             "email" => self.email = Some(value),
@@ -147,6 +197,9 @@ impl Person {
             "birthday" => self.birthday = Some(value),
             "relationship_strength" => self.relationship_strength = Some(value),
             "how_met" => self.how_met = Some(value),
+            "linkedin" => self.linkedin = Some(value),
+            "x_handle" => self.x_handle = Some(value),
+            "personal_site" => self.personal_site = Some(value),
             _ => {}
         }
     }
@@ -168,6 +221,9 @@ fn row_to_person(r: &sqlx::sqlite::SqliteRow) -> Person {
         birthday: None,
         relationship_strength: None,
         how_met: None,
+        linkedin: None,
+        x_handle: None,
+        personal_site: None,
         graph_entity_id: r.get("graph_entity_id"),
         created_at: r.get("created_at"),
         updated_at: r.get("updated_at"),
@@ -459,6 +515,9 @@ mod tests {
             birthday: Some("old".into()),
             relationship_strength: Some("old".into()),
             how_met: Some("old".into()),
+            linkedin: Some("old".into()),
+            x_handle: Some("old".into()),
+            personal_site: Some("old".into()),
             graph_entity_id: Some("hex".into()),
             created_at: "t".into(),
             updated_at: "t".into(),
@@ -491,6 +550,133 @@ mod tests {
             Some("v-relationship_strength")
         );
         assert_eq!(p.how_met.as_deref(), Some("v-how_met"));
+        // The slice-4 enrichable names map too (2026-08-19).
+        assert_eq!(p.linkedin.as_deref(), Some("v-linkedin"));
+        assert_eq!(p.x_handle.as_deref(), Some("v-x_handle"));
+        assert_eq!(p.personal_site.as_deref(), Some("v-personal_site"));
+    }
+
+    /// A `Person` with identity set and every attribute blank.
+    fn blank_person() -> Person {
+        let mut p = Person {
+            entity_uuid: "u".into(),
+            canonical_id: "person:x".into(),
+            display_name: "X".into(),
+            role: None,
+            company: None,
+            email: None,
+            phone: None,
+            notes: None,
+            last_contact_at: None,
+            birthday: None,
+            relationship_strength: None,
+            how_met: None,
+            linkedin: None,
+            x_handle: None,
+            personal_site: None,
+            graph_entity_id: Some("hex".into()),
+            created_at: "t".into(),
+            updated_at: "t".into(),
+        };
+        p.clear_attributes();
+        p
+    }
+
+    /// Does the serialized person carry `sentinel` in any attribute slot?
+    /// Asks the wire shape rather than a named field, so this stays true for
+    /// attributes added later without anyone remembering to extend it.
+    fn wire_contains(p: &Person, sentinel: &str) -> bool {
+        let json = serde_json::to_value(p).expect("Person serializes");
+        json.as_object()
+            .expect("Person serializes to an object")
+            .values()
+            .any(|v| v.as_str() == Some(sentinel))
+    }
+
+    /// THE DRIFT GUARD (2026-08-19). Every name the Enricher may write must be
+    /// something the read overlay can surface — directly or through a
+    /// [`PERSON_FIELD_ALIASES`] synonym. Before this, `job_title`, `linkedin`,
+    /// `x_handle` and `personal_site` were all written by an approved
+    /// enrichment, stored durably with `source = enriched`, and dropped on the
+    /// floor by [`Person::set_attribute`]'s catch-all arm: the user saw an
+    /// enrichment succeed and no new data appear.
+    ///
+    /// Deliberately asserted against the *reader's behaviour* — feed the name
+    /// in, look for the value on the wire — not against a second hand-kept
+    /// list. A future field added to `ENRICHABLE_FIELD_NAMES` without a
+    /// matching `set_attribute` arm fails here; there is no list to forget to
+    /// update, which is exactly how the two vocabularies drifted apart before.
+    #[test]
+    fn enrichable_fields_are_all_readable() {
+        for name in ENRICHABLE_FIELD_NAMES {
+            let sentinel = format!("sentinel-{name}");
+            let mut p = blank_person();
+            p.set_attribute(name, sentinel.clone());
+            assert!(
+                wire_contains(&p, &sentinel),
+                "enrichable field `{name}` is written by the Enricher but the \
+                 read overlay drops it: `Person::set_attribute` has no arm for \
+                 it and `PERSON_FIELD_ALIASES` has no synonym mapping it onto \
+                 one. An approved enrichment would be stored and never shown. \
+                 Add the arm (and a `Person` slot) or an alias entry."
+            );
+        }
+    }
+
+    /// The reader's other half: whatever `set_attribute` can populate,
+    /// `clear_attributes` must be able to null. The overlay clears first so the
+    /// response reflects the graph alone (Decision A, #255); an attribute that
+    /// can be set but not cleared would let a stale value survive a graph read
+    /// that no longer carries it.
+    #[test]
+    fn every_settable_attribute_is_clearable() {
+        for name in PERSON_FIELD_NAMES
+            .iter()
+            .chain(PERSON_FIELD_ALIASES.iter().map(|(alias, _)| alias))
+        {
+            let sentinel = format!("sentinel-{name}");
+            let mut p = blank_person();
+            p.set_attribute(name, sentinel.clone());
+            assert!(
+                wire_contains(&p, &sentinel),
+                "`{name}` is in the read vocabulary but `set_attribute` ignores it"
+            );
+            p.clear_attributes();
+            assert!(
+                !wire_contains(&p, &sentinel),
+                "`clear_attributes` leaves `{name}` set — a stale value can \
+                 outlive the graph read that dropped it (Decision A, #255)"
+            );
+        }
+    }
+
+    /// `job_title` (what the Enricher proposes) and `role` (what the CRM row,
+    /// the filter and the UI call it) are one attribute. The alias folds the
+    /// former onto the latter; the canonical name wins when both are present so
+    /// a manual edit is never overwritten by an enrichment of the synonym —
+    /// the collision Spectral's same-name provenance rule cannot see.
+    #[test]
+    fn job_title_aliases_role() {
+        assert_eq!(canonical_person_field("job_title"), "role");
+        assert_eq!(canonical_person_field("company"), "company");
+        assert_eq!(canonical_person_field("not_a_field"), "not_a_field");
+
+        let mut p = blank_person();
+        p.set_attribute("job_title", "Director of Field Operations".into());
+        assert_eq!(p.role.as_deref(), Some("Director of Field Operations"));
+
+        // No alias may name an attribute that is itself directly writable, or
+        // the manual PATCH path and the Enricher get two rows for one concept.
+        for (alias, canonical) in PERSON_FIELD_ALIASES {
+            assert!(
+                !PERSON_FIELD_NAMES.contains(&alias),
+                "`{alias}` is both an alias and a canonical name"
+            );
+            assert!(
+                PERSON_FIELD_NAMES.contains(&canonical),
+                "alias `{alias}` points at `{canonical}`, which is not readable"
+            );
+        }
     }
 
     #[tokio::test]

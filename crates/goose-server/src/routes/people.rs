@@ -41,6 +41,10 @@ use std::time::Instant;
 /// 2b/4 write them). The columns remain in the DB as a safety net until the
 /// Step-3 drop, but are never the response source. Logs the read-through latency
 /// for the Decision E (measure-before-cache) ruling.
+///
+/// [`Person::set_attribute`] owns the name→slot mapping, including the
+/// `job_title`→`role` synonym; this function only fixes the *order* fields are
+/// applied in, which is what decides an alias collision.
 pub(crate) async fn overlay_graph_attributes(brain: Option<&SafeBrain>, people: Vec<&mut Person>) {
     // Decision A: the response reflects the graph only — clear column-sourced
     // values first so a stale/empty column can never leak through.
@@ -91,7 +95,17 @@ pub(crate) async fn overlay_graph_attributes(brain: Option<&SafeBrain>, people: 
         "Graph attribute read-through (Decision E latency)"
     );
 
-    for (hex, fields) in fields_map {
+    for (hex, mut fields) in fields_map {
+        // Apply `Enriched` fields before `Manual` ones so a manual value always
+        // wins. Spectral's store already refuses an `Enriched` write over a
+        // `Manual` value of the *same name*, but an alias collides across names:
+        // `job_title` (enrichable) and `role` (manually editable) are one
+        // attribute, and nothing below the reader can see that. Stable sort, so
+        // fields of equal provenance keep the store's order.
+        fields.sort_by_key(|f| match f.source {
+            spectral::ingest::FieldSource::Manual => 1u8,
+            _ => 0u8,
+        });
         if let Some(idxs) = by_hex.get(&hex) {
             for &i in idxs {
                 for f in &fields {
@@ -151,6 +165,9 @@ pub struct SetFieldsRequest {
 
 const MAX_PERSON_FIELD_VALUE_LEN: usize = 2_000;
 
+/// Person fields whose value is a URL the UI turns into a navigation target.
+const PERSON_LINK_FIELDS: [&str; 2] = ["linkedin", "personal_site"];
+
 fn validate_person_field(name: &str, value: &str) -> Result<(), String> {
     if !people::PERSON_FIELD_NAMES.contains(&name) {
         return Err(format!("Unknown person field: {name}"));
@@ -191,6 +208,17 @@ fn validate_person_field(name: &str, value: &str) -> Result<(), String> {
         let day: u8 = value.get(8..10).and_then(|s| s.parse().ok()).unwrap_or(0);
         if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
             return Err("Invalid birthday; expected YYYY-MM-DD".to_string());
+        }
+    }
+    // Profile links are rendered as a click target that navigates the in-app
+    // browser, so the scheme is a security boundary, not cosmetics: reject
+    // anything that is not http(s) rather than hand `javascript:` or `file:` to
+    // the webview. Enriched values reaching the same button are checked again
+    // client-side, since they never pass through this handler.
+    if PERSON_LINK_FIELDS.contains(&name) && !value.is_empty() {
+        let lower = value.to_ascii_lowercase();
+        if !(lower.starts_with("https://") || lower.starts_with("http://")) {
+            return Err(format!("Person field {name} must be an http(s) URL"));
         }
     }
     Ok(())
