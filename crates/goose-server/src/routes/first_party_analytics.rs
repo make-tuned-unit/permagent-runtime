@@ -824,6 +824,45 @@ async fn rotate_drain_secret(
     )))
 }
 
+/// Build one drain page request from the configured drain URL.
+///
+/// The configured URL is whatever the operator pasted, and the install brief's
+/// verification example is `…/drain?since=0&limit=5`; pasting that verbatim
+/// (Evntally, 2026-08-13) produced `?since=0&limit=500&since=506&limit=500`.
+/// Every framework's `searchParams.get` returns the FIRST value, so the relay
+/// served ids 1..500 on every tick, `INSERT OR IGNORE` swallowed them, and the
+/// project reported a clean drain with `lastError: null` while its data
+/// silently stopped the day the table crossed one page. Any `since`/`limit`
+/// already on the URL is therefore ours to own: drop them, then append the
+/// cursor. Unrelated params (a routing token, say) are preserved.
+pub(crate) fn drain_page_url(drain_url: &str, since: &str, limit: u32) -> String {
+    let base = strip_cursor_params(drain_url);
+    let sep = if base.contains('?') { '&' } else { '?' };
+    format!("{base}{sep}since={since}&limit={limit}")
+}
+
+/// Remove `since` and `limit` from a drain URL's query, keeping everything
+/// else. Falls back to the input untouched if it does not parse as a URL — the
+/// poller then fails loudly on the request instead of us guessing here.
+pub(crate) fn strip_cursor_params(drain_url: &str) -> String {
+    let Ok(mut parsed) = url::Url::parse(drain_url) else {
+        return drain_url.to_string();
+    };
+    let kept: Vec<(String, String)> = parsed
+        .query_pairs()
+        .filter(|(k, _)| k != "since" && k != "limit")
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+    parsed.set_query(None);
+    if !kept.is_empty() {
+        let mut q = parsed.query_pairs_mut();
+        for (k, v) in &kept {
+            q.append_pair(k, v);
+        }
+    }
+    parsed.to_string()
+}
+
 /// Point the daemon at the site's drain endpoint (the value the coding agent
 /// reports back after installing the relay). Clearing it stops ingestion.
 async fn set_drain(
@@ -835,7 +874,10 @@ async fn set_drain(
     let requested = body
         .and_then(|Json(b)| b.drain_url)
         .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        // The poller owns the cursor params; a pasted verification URL that
+        // carries `?since=0&limit=…` must not pin every request to page one.
+        .map(|s| strip_cursor_params(&s));
 
     if let Some(url) = requested.as_deref() {
         // Reject anything the poller could not use, loudly, at config time —
@@ -1548,10 +1590,7 @@ async fn verify_install(
         .unwrap_or_else(|| format!("{origin}{DRAIN_PATH}"));
     let drain_get = |since: String, key: Option<String>| {
         let client = client.clone();
-        let url = format!(
-            "{drain_url}{}since={since}&limit=1000",
-            if drain_url.contains('?') { '&' } else { '?' }
-        );
+        let url = drain_page_url(&drain_url, &since, 1000);
         async move {
             let mut req = client.get(&url);
             if let Some(k) = key {
@@ -1877,6 +1916,32 @@ mod tests {
     use axum::http::Request;
     use serial_test::serial;
     use tower::ServiceExt;
+
+    /// Regression: a drain URL pasted with the verification example's
+    /// `?since=0&limit=500` pinned every request to page one, so the relay
+    /// served the same 500 rows forever and the project silently stalled.
+    #[test]
+    fn drain_page_url_owns_cursor_params() {
+        assert_eq!(
+            drain_page_url("https://x.test/api/permagent-analytics/drain", "506", 500),
+            "https://x.test/api/permagent-analytics/drain?since=506&limit=500"
+        );
+        assert_eq!(
+            drain_page_url(
+                "https://x.test/api/permagent-analytics/drain?since=0&limit=500",
+                "506",
+                500
+            ),
+            "https://x.test/api/permagent-analytics/drain?since=506&limit=500"
+        );
+        // Unrelated params survive; ours are replaced, not appended.
+        assert_eq!(
+            drain_page_url("https://x.test/drain?token=abc&since=0", "9", 1000),
+            "https://x.test/drain?token=abc&since=9&limit=1000"
+        );
+        // Not a URL: pass through untouched so the request fails loudly.
+        assert_eq!(strip_cursor_params("not a url"), "not a url");
+    }
 
     async fn request(
         app: &Router,
