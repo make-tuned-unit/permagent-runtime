@@ -18,6 +18,7 @@
 //! source's own timestamp is written to `created_at` rather than letting it
 //! default to the fetch time, which would collapse history into one day.
 
+use crate::routes::analytics_behaviour;
 use crate::routes::analytics_classify as classify;
 use crate::state::AppState;
 use permagent::projects;
@@ -172,8 +173,8 @@ async fn run_once(state: &AppState) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     prune_old_events(&pool).await;
     let projects = projects::list_projects(&pool, Some("active")).await?;
-    for project in projects {
-        let Some(mut config) = crate::routes::first_party_analytics::drain_config(&project) else {
+    for project in &projects {
+        let Some(mut config) = crate::routes::first_party_analytics::drain_config(project) else {
             continue;
         };
         let Some(drain_url) = config.drain_url.clone() else {
@@ -203,8 +204,7 @@ async fn run_once(state: &AppState) -> Result<(), String> {
         // must keep its progress, and a failure must be visible in the UI
         // rather than looking like a quiet traffic day.
         if let Err(e) =
-            crate::routes::first_party_analytics::persist_drain_state(&pool, &project, &config)
-                .await
+            crate::routes::first_party_analytics::persist_drain_state(&pool, project, &config).await
         {
             tracing::warn!(target: "analytics_drain", "could not persist drain state: {e}");
         }
@@ -220,7 +220,58 @@ async fn run_once(state: &AppState) -> Result<(), String> {
             ),
         }
     }
+    sweep_behavioural_bots(&pool, &projects).await;
     Ok(())
+}
+
+/// Behavioural bot classification — the second half of bot detection.
+///
+/// The UA test runs at ingest and cannot see a headless browser, which sends a
+/// stock Chrome UA (see `routes::analytics_behaviour` for the 2026-08-13/14
+/// crawl this exists for). This pass reads behaviour out of what is already
+/// stored instead, so it must run AFTER the drain: the rows that need it most
+/// are the ones that just arrived in a backfill, days after the traffic
+/// happened.
+///
+/// Best-effort and non-fatal, like the prune above.
+///
+/// It LOGS whenever it changes anything, because it changes numbers the user
+/// reads — a guard that silently rewrites history is indistinguishable from a
+/// bug in the dashboard. It stays silent when it changes nothing, which is
+/// every tick but the rare one.
+async fn sweep_behavioural_bots(pool: &Pool<Sqlite>, projects: &[projects::Project]) {
+    match analytics_behaviour::flag_behavioural_bots(pool, analytics_behaviour::WINDOW_DAYS).await {
+        Ok(sweep) if !sweep.is_empty() => {
+            // Project names where we have them; a sweep can touch a project
+            // that is no longer active, and an id is better than nothing.
+            let named = sweep
+                .projects
+                .iter()
+                .map(|id| {
+                    projects
+                        .iter()
+                        .find(|p| &p.id == id)
+                        .map(|p| p.name.clone())
+                        .unwrap_or_else(|| id.clone())
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            tracing::info!(
+                target: "analytics_drain",
+                rows = sweep.rows_flagged,
+                device_days = sweep.device_days,
+                projects = %named,
+                "reclassified traffic as automated by behaviour \
+                 (>= {} pageviews with a distinct session per pageview)",
+                analytics_behaviour::MIN_PAGEVIEWS
+            );
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(
+            target: "analytics_drain",
+            "behavioural bot classification failed: {e}"
+        ),
+    }
 }
 
 /// Retention. `analytics_events` otherwise grows forever: the drain is a

@@ -4,6 +4,7 @@ pub mod agent;
 pub mod agents;
 pub mod agents_surface;
 pub mod analytics_attribution;
+pub mod analytics_behaviour;
 pub mod analytics_classify;
 pub mod analytics_funnel;
 pub mod analytics_verify;
