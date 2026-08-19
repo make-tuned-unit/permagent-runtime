@@ -166,6 +166,56 @@ struct PtyDataPayload {
     seq: u64,
 }
 
+// ── Bundled CLIs on the terminal's PATH ─────────────────────────────────────
+//
+// The Build tab's launch buttons type a command into this PTY, and the PTY is
+// a LOGIN shell (`-l` below) — so it inherits the user's PATH and knows
+// nothing about the app bundle. The "Permagent" button has run
+// `permagent run --recipe permagent-coding --interactive` since it was added,
+// while the bundle shipped no `permagent` at all; it only ever worked where a
+// hand-built CLI happened to be on PATH. The CLI is now an externalBin
+// sidecar (tauri.conf.json), which puts it in Contents/MacOS/ next to this
+// executable, and this makes the spawned shell able to see it.
+//
+// APPENDED, never prepended. A user who has deliberately installed their own
+// `permagent` (a cargo build, a symlink in ~/.local/bin) must keep getting
+// theirs — the bundle is the fallback for a clean install, not an override.
+// Verified 2026-08-19 that this survives the login shell: macOS
+// /etc/zprofile runs path_helper, which rebuilds PATH as the /etc/paths
+// entries followed by the pre-existing ones in their original order, and rc
+// files prepend. An appended directory therefore stays last; a prepended one
+// would not reliably stay first anyway.
+
+/// Directory holding the executables shipped inside the app bundle
+/// (`Contents/MacOS`, where Tauri places every `externalBin` sidecar).
+///
+/// In `tauri dev` this is `target/debug`, which usually holds no sidecars —
+/// the terminal then behaves exactly as it did before, falling through to the
+/// developer's own PATH.
+fn bundled_bin_dir() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.to_path_buf())
+}
+
+/// `existing` with `bundled` appended as the lowest-priority entry.
+///
+/// Pure so the precedence contract is testable without a bundle: the whole
+/// point is the ORDER, and the order is the part a future edit can silently
+/// invert.
+fn path_with_bundled_bin_last(existing: &str, bundled: &str) -> String {
+    if bundled.is_empty() {
+        return existing.to_string();
+    }
+    if existing.is_empty() {
+        return bundled.to_string();
+    }
+    if existing.split(':').any(|entry| entry == bundled) {
+        // Already reachable — re-adding it would only lengthen PATH.
+        return existing.to_string();
+    }
+    format!("{existing}:{bundled}")
+}
+
 #[derive(Clone, Serialize)]
 pub struct SpawnResult {
     session_id: String,
@@ -226,6 +276,14 @@ pub async fn spawn_pty_session(
     // CLAUDECODE is set by Claude Code sessions and blocks nested `claude` invocations.
     cmd.env_remove("CLAUDECODE");
     cmd.env_remove("CLAUDE_CODE_SESSION");
+    // Make the CLIs we ship reachable by name, without shadowing the user's.
+    if let Some(dir) = bundled_bin_dir() {
+        let existing = std::env::var("PATH").unwrap_or_default();
+        cmd.env(
+            "PATH",
+            path_with_bundled_bin_last(&existing, &dir.to_string_lossy()),
+        );
+    }
     if let Some(dir) = cwd {
         cmd.cwd(dir);
     }
@@ -556,5 +614,160 @@ mod tests {
         let (data, eof) = coalesce_frames(TeeFrame::Eof, &rx, 1024);
         assert_eq!(data, "");
         assert!(eof);
+    }
+
+    #[test]
+    fn bundled_bin_dir_is_appended_not_prepended() {
+        let path = path_with_bundled_bin_last(
+            "/usr/bin:/bin:/Users/dev/.local/bin",
+            "/Applications/Permagent.app/Contents/MacOS",
+        );
+        assert_eq!(
+            path, "/usr/bin:/bin:/Users/dev/.local/bin:/Applications/Permagent.app/Contents/MacOS",
+            "the bundle is the FALLBACK. A user who installed their own CLI \
+             into ~/.local/bin must keep resolving to theirs; prepending would \
+             silently replace it with whatever version this build shipped."
+        );
+    }
+
+    #[test]
+    fn bundled_bin_dir_is_not_added_twice() {
+        let dir = "/Applications/Permagent.app/Contents/MacOS";
+        assert_eq!(
+            path_with_bundled_bin_last(&format!("/usr/bin:{dir}"), dir),
+            format!("/usr/bin:{dir}")
+        );
+    }
+
+    #[test]
+    fn empty_inputs_degrade_to_the_other_side() {
+        assert_eq!(path_with_bundled_bin_last("", "/a"), "/a");
+        assert_eq!(path_with_bundled_bin_last("/a", ""), "/a");
+    }
+
+    // ── Build-tab launcher guard ────────────────────────────────────────────
+    //
+    // The class of defect: a control that points at something that isn't
+    // there. The Build tab's "Permagent" button ran
+    // `permagent run --recipe permagent-coding --interactive` from the day it
+    // was added, and no build ever produced a `permagent` binary for the
+    // bundle — Contents/MacOS/ held permagent-app and permagentd only. It
+    // worked on exactly one machine, because a hand-built CLI happened to sit
+    // on that user's PATH, and was broken for every clean install.
+    //
+    // Nothing in the type system connects a button's command string to what
+    // the bundler stages, so this guard reads both real artefacts: the button
+    // definitions in ProjectChip.tsx, and `bundle.externalBin` in
+    // tauri.conf.json (the sidecars Tauri places in Contents/MacOS — the same
+    // directory `bundled_bin_dir` puts on the terminal's PATH above).
+    //
+    // `include_str!` on purpose rather than a runtime read: it resolves at
+    // compile time relative to this file, so moving or renaming either
+    // artefact is a build error rather than a guard that silently stops
+    // guarding.
+
+    const PROJECT_CHIP_TSX: &str =
+        include_str!("../../../command-center/src/components/build/ProjectChip.tsx");
+    const TAURI_CONF_JSON: &str = include_str!("../tauri.conf.json");
+
+    /// CLIs the user installs themselves. Each entry is a decision: we do not
+    /// ship these, the button is expected to fail with "command not found"
+    /// until the user installs it, and its tooltip says how.
+    const USER_INSTALLED_CLIS: &[&str] = &["claude", "codex", "cursor-agent"];
+
+    /// Every command string handed to `onLaunch` in ProjectChip.tsx.
+    fn build_tab_launch_commands() -> Vec<String> {
+        const CALL: &str = "onLaunch(project, ";
+        const FORWARDER_ARG: &str = "agent)";
+        let mut out = Vec::new();
+        let mut rest = PROJECT_CHIP_TSX;
+        while let Some(at) = rest.find(CALL) {
+            rest = &rest[at + CALL.len()..];
+            // The one call that does not name a command is the component's
+            // own forwarder, `onLaunch(project, agent)`, which re-emits what a
+            // button below already passed literally. Anything else non-literal
+            // is a launcher this guard cannot check — fail rather than skip it.
+            if rest.starts_with(FORWARDER_ARG) {
+                continue;
+            }
+            let quote = match rest.chars().next() {
+                Some(q @ ('\'' | '"' | '`')) => q,
+                _ => panic!(
+                    "ProjectChip.tsx passes a non-literal command to onLaunch: \
+                     `{}`. Every Build-tab launcher must name its executable \
+                     literally so this guard can check that it is shipped.",
+                    rest.chars().take(40).collect::<String>()
+                ),
+            };
+            rest = &rest[quote.len_utf8()..];
+            let end = rest
+                .find(quote)
+                .expect("unterminated command string literal in ProjectChip.tsx");
+            out.push(rest[..end].to_string());
+            rest = &rest[end..];
+        }
+        out
+    }
+
+    /// Executables Tauri stages into `Contents/MacOS` (`bundle.externalBin`,
+    /// minus the target triple the bundler strips).
+    fn bundled_executables() -> Vec<String> {
+        let conf: serde_json::Value =
+            serde_json::from_str(TAURI_CONF_JSON).expect("tauri.conf.json must be valid JSON");
+        conf["bundle"]["externalBin"]
+            .as_array()
+            .expect("bundle.externalBin must be an array")
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .expect("externalBin entries are strings")
+                    .rsplit('/')
+                    .next()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_build_tab_launcher_is_shipped_or_user_installed() {
+        let commands = build_tab_launch_commands();
+        assert!(
+            commands.len() >= 4,
+            "expected the Build tab's launch buttons to be found in \
+             ProjectChip.tsx, got {commands:?}. If the buttons moved, point \
+             this guard at their new home — do not delete it."
+        );
+        let bundled = bundled_executables();
+        for command in &commands {
+            let program = command
+                .split_whitespace()
+                .next()
+                .expect("a launch command names a program");
+            assert!(
+                USER_INSTALLED_CLIS.contains(&program) || bundled.iter().any(|b| b == program),
+                "The Build tab offers to launch `{program}` (from `{command}`), \
+                 but nothing ships it: it is not in tauri.conf.json's \
+                 bundle.externalBin {bundled:?}, and it is not one of the \
+                 third-party CLIs the user installs themselves \
+                 {USER_INSTALLED_CLIS:?}. On a clean install that button does \
+                 nothing but print `command not found`. Either add the binary \
+                 to the bundle (see scripts/copy-cli.sh and build:cli in \
+                 package.json) or add it to USER_INSTALLED_CLIS with a tooltip \
+                 telling the user how to install it."
+            );
+        }
+    }
+
+    /// The specific regression, pinned: dropping the CLI from the bundle
+    /// while leaving the button in place is what shipped before.
+    #[test]
+    fn the_permagent_cli_is_bundled_because_a_button_launches_it() {
+        let bundled = bundled_executables();
+        assert!(
+            bundled.iter().any(|b| b == "permagent"),
+            "bundle.externalBin must stage the `permagent` CLI — the Build \
+             tab's Permagent button runs it. Found: {bundled:?}"
+        );
     }
 }
