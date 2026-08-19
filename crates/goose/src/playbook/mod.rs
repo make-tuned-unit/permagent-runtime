@@ -187,6 +187,21 @@ pub struct PlaybookHint<'a> {
     /// Human-readable provenance refs (e.g. "decision d-42"), rendered into the
     /// stored prose so the agent can see — and look up — what a hint came from.
     pub provenance: &'a [String],
+    /// The synthesis pass this hint came out of (R45). Every hint distilled in
+    /// one pass over one project shares it, so the pass reads back as a single
+    /// episode. Built by [`synthesis_episode_id`] from the pass's decision-set
+    /// signature, so it is deterministic rather than a fresh id per write.
+    pub episode_id: &'a str,
+}
+
+/// The episode id for one playbook synthesis pass over one project (R45).
+///
+/// `signature` is the pass's stable FNV-1a signature of the answered-decision
+/// set it distilled from (`synthesis::project_signature`) — the same value the
+/// worker already uses to skip an unchanged project. Re-distilling the same
+/// decisions therefore lands in the same episode rather than minting a new one.
+pub fn synthesis_episode_id(project_slug: &str, signature: u64) -> String {
+    format!("playbook:{project_slug}:{signature:016x}")
 }
 
 /// Ingest one distilled hint into the Brain. Keyed upsert on the hint
@@ -216,6 +231,8 @@ pub async fn ingest_playbook_hint(
                 confidence: Some(0.7),
                 visibility: spectral::Visibility::Private,
                 wing: Some(entry.wing.to_string()),
+                // One synthesis pass over one project = one episode (R45).
+                episode_id: Some(entry.episode_id.to_string()),
                 ..Default::default()
             },
         )

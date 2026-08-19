@@ -307,6 +307,12 @@ impl StewardClient {
                     confidence: Some(1.0),
                     visibility: spectral::Visibility::Private,
                     wing: None,
+                    // One day's repo-health report is one episode (R45). The
+                    // key is already date-scoped and the write is a keyed
+                    // upsert, so a second report the same day refreshes the
+                    // memory inside the same episode rather than opening a new
+                    // one.
+                    episode_id: Some(key.clone()),
                     ..Default::default()
                 },
             )

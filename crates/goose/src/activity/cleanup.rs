@@ -7,6 +7,11 @@
 use anyhow::Result;
 use tracing::{debug, info, warn};
 
+/// Episode for every consolidated browser-navigation summary (R45). Stable
+/// forever, because these summaries are keyed upserts refreshed on each
+/// startup sweep — see the write site for why a per-run id would be wrong.
+const BROWSER_ROLLUP_EPISODE_ID: &str = "activity:rollup:browser_navigated";
+
 /// How long a cleanup connection will wait to acquire SQLite's write lock
 /// before giving up with SQLITE_BUSY.
 const CLEANUP_BUSY_TIMEOUT_MS: u64 = 30_000;
@@ -214,6 +219,13 @@ pub fn consolidate_clusters_blocking() -> Result<usize> {
                 source: Some("permagent.cleanup".to_string()),
                 visibility: spectral::Visibility::Private,
                 compaction_tier: Some(spectral::ingest::CompactionTier::Raw),
+                // The browser-navigation rollup is one episode (R45): every
+                // domain summary this sweep writes belongs to it. Deliberately
+                // a constant and not a per-sweep id — these summaries are
+                // keyed upserts (`activity:consolidated:browser_navigated:*`),
+                // so a fresh id each startup would keep migrating the SAME
+                // memory into a new episode, which is worse than no episode.
+                episode_id: Some(BROWSER_ROLLUP_EPISODE_ID.to_string()),
                 ..Default::default()
             },
         );

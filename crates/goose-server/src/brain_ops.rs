@@ -296,6 +296,31 @@ pub async fn inject_recall(
 
 // ── Chat turn persistence ────────────────────────────────────────────────
 
+/// The `RememberOpts` every chat turn is written with.
+///
+/// Split out of [`spawn_persist_chat_turn`] so the metadata a chat memory
+/// carries can be asserted in a unit test without a Brain, a runtime, or a
+/// detached task.
+pub fn chat_turn_opts(session_id: &str, device_id: spectral::DeviceId) -> spectral::RememberOpts {
+    spectral::RememberOpts {
+        source: Some("chat".into()),
+        device_id: Some(device_id),
+        confidence: Some(1.0),
+        visibility: spectral::Visibility::Private,
+        // Associate this memory with its originating session so
+        // same-session memories co-rank on recall (#131).
+        session_id: Some(session_id.to_string()),
+        // The chat session IS the episode (R45): every turn of one conversation
+        // lands in a single episode, explicitly. Left to Spectral, episode
+        // boundaries come from a 30-minute write-gap heuristic per wing, which
+        // splits a conversation the user paused mid-way and merges two
+        // back-to-back conversations into one.
+        episode_id: Some(session_id.to_string()),
+        wing: None,
+        ..Default::default()
+    }
+}
+
 /// Persist a chat turn's memories via SafeBrain::remember_with.
 /// Spawns a detached background task — fire-and-forget.
 pub fn spawn_persist_chat_turn(
@@ -312,21 +337,7 @@ pub fn spawn_persist_chat_turn(
         let key_for_log = key.clone();
 
         match brain
-            .remember_with(
-                &key,
-                &content,
-                spectral::RememberOpts {
-                    source: Some("chat".into()),
-                    device_id: Some(device_id),
-                    confidence: Some(1.0),
-                    visibility: spectral::Visibility::Private,
-                    // Associate this memory with its originating session so
-                    // same-session memories co-rank on recall (#131).
-                    session_id: Some(session_id.clone()),
-                    wing: None,
-                    ..Default::default()
-                },
-            )
+            .remember_with(&key, &content, chat_turn_opts(&session_id, device_id))
             .await
         {
             Ok(_) => {
@@ -428,4 +439,26 @@ pub fn read_only_brain_conn() -> Result<rusqlite::Connection, rusqlite::Error> {
         &db_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// R45: a chat turn must name its episode explicitly. The session id is the
+    /// episode — stable for every turn of the conversation, and already the
+    /// value carried in `session_id`, so no new identifier is minted.
+    #[test]
+    fn chat_turn_opts_carry_the_session_as_the_episode() {
+        let device_id = spectral::DeviceId::from_bytes([7u8; 32]);
+        let opts = chat_turn_opts("session-abc", device_id);
+
+        assert_eq!(opts.episode_id.as_deref(), Some("session-abc"));
+        assert_eq!(opts.session_id.as_deref(), Some("session-abc"));
+
+        // Stable across turns: the same session yields the same episode, which
+        // is the whole point — a per-write id would link nothing.
+        let later_turn = chat_turn_opts("session-abc", device_id);
+        assert_eq!(opts.episode_id, later_turn.episode_id);
+    }
 }

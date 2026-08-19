@@ -2271,7 +2271,14 @@ async fn execute_job(
                             visibility: spectral::Visibility::Private,
                             // Associate with the scheduled run's session so
                             // same-session memories co-rank on recall (#131).
-                            session_id: Some(remember_session_id),
+                            session_id: Some(remember_session_id.clone()),
+                            // This run IS the episode (R45). The session id is
+                            // minted once per scheduled run, so every turn of
+                            // one run shares it — the job id would instead merge
+                            // every run the job has ever made into a single
+                            // unbounded episode, and the time-gap heuristic
+                            // would split a long run in half.
+                            episode_id: Some(remember_session_id),
                             wing: None,
                             ..Default::default()
                         },
