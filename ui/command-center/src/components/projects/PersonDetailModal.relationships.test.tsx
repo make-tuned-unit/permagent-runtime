@@ -12,7 +12,8 @@ import type { ProjectPerson } from './types';
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 const person = { entity_uuid: 'alice', display_name: 'Alice', canonical_id: 'person:alice',
   role: null, company: null, email: null, phone: null, notes: null, last_contact_at: null,
-  birthday: null, relationship_strength: null, how_met: null, created_at: '', updated_at: '',
+  birthday: null, relationship_strength: null, how_met: null,
+  linkedin: null, x_handle: null, personal_site: null, created_at: '', updated_at: '',
   project_role: null, associated_at: '' } satisfies ProjectPerson;
 let container: HTMLDivElement; let root: Root;
 

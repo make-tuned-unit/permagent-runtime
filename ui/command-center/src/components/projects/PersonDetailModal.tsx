@@ -28,9 +28,10 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { FiBookOpen, FiCheckSquare, FiFileText, FiPlus, FiTrash2 } from 'react-icons/fi';
+import { FiBookOpen, FiCheckSquare, FiExternalLink, FiFileText, FiPlus, FiTrash2 } from 'react-icons/fi';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
+import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { DetailModal } from '../common/DetailModal';
@@ -53,8 +54,21 @@ const EDITABLE_FIELDS: { key: EditableKey; label: string; multiline?: boolean; p
   { key: 'birthday', label: 'Birthday', placeholder: 'YYYY-MM-DD' },
   { key: 'relationship_strength', label: 'Relationship' },
   { key: 'how_met', label: 'How met' },
+  { key: 'linkedin', label: 'LinkedIn', placeholder: 'https://www.linkedin.com/in/…' },
   { key: 'notes', label: 'Notes', multiline: true },
 ];
+
+/**
+ * Only http(s) links become a click target. The value can arrive from the
+ * Enricher, which never passes through the PATCH validator, so the scheme is
+ * re-checked here before it is handed to the in-app browser — a `javascript:`
+ * or `file:` value renders as plain text instead.
+ */
+function safeLink(url: string | null): string | null {
+  if (!url) return null;
+  const trimmed = url.trim();
+  return /^https?:\/\//i.test(trimmed) ? trimmed : null;
+}
 
 type EditableKey =
   | 'role'
@@ -64,6 +78,7 @@ type EditableKey =
   | 'birthday'
   | 'relationship_strength'
   | 'how_met'
+  | 'linkedin'
   | 'notes';
 
 type Draft = Record<EditableKey, string>;
@@ -77,6 +92,7 @@ function draftFrom(p: Person): Draft {
     birthday: p.birthday ?? '',
     relationship_strength: p.relationship_strength ?? '',
     how_met: p.how_met ?? '',
+    linkedin: p.linkedin ?? '',
     notes: p.notes ?? '',
   };
 }
@@ -239,6 +255,9 @@ export function PersonDetailModal({
         birthday: updated.birthday,
         relationship_strength: updated.relationship_strength,
         how_met: updated.how_met,
+        linkedin: updated.linkedin,
+        x_handle: updated.x_handle,
+        personal_site: updated.personal_site,
       }));
       setEditing(false);
       // Decoupled panel has no people event stream yet — nudge it to refetch.
@@ -387,11 +406,39 @@ function PersonActivityTimeline({ colors, rows, status, onRetry }: { colors: Ret
 function SectionLabel({ colors, children }: { colors: ReturnType<typeof useTheme>['colors']; children: ReactNode }) { return <div style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono, textTransform: 'uppercase', letterSpacing: '.04em' }}>{children}</div>; }
 function Small({ colors, children }: { colors: ReturnType<typeof useTheme>['colors']; children: ReactNode }) { return <div style={{ fontSize: 11, color: colors.textDim, marginTop: 6 }}>{children}</div>; }
 
+/** A profile link rendered as a button: clicking navigates the in-app browser
+ *  on the Build tab. Not an <a href>, deliberately — an anchor would hand the
+ *  URL to the host/system browser and leave the app. */
+function LinkButton({ colors, label, title, onClick }: {
+  colors: ReturnType<typeof useTheme>['colors'];
+  label: string;
+  title: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 4, padding: 0,
+        background: 'none', border: 'none', cursor: 'pointer',
+        color: colors.cyan, fontSize: 'inherit', fontFamily: 'inherit',
+      }}
+    >
+      <FiExternalLink size={11} /> {label}
+    </button>
+  );
+}
+
 function ReadView({ colors, person, association }: {
   colors: ReturnType<typeof useTheme>['colors'];
   person: Person;
   association?: PersonAssociation | null;
 }) {
+  const openInBrowser = useBrowserNavigate();
+  const linkedin = safeLink(person.linkedin);
+  const personalSite = safeLink(person.personal_site);
+
   const rows = useMemo<[string, ReactNode][]>(() => [
     ['Role', person.role || '—'],
     ['Company', person.company || '—'],
@@ -404,6 +451,15 @@ function ReadView({ colors, person, association }: {
     ['Birthday', person.birthday || '—'],
     ['Relationship', person.relationship_strength || '—'],
     ['How met', person.how_met || '—'],
+    // Profile links open in the in-app browser on the Build tab (the shared
+    // `useBrowserNavigate` seam), never the system browser.
+    ['LinkedIn', linkedin
+      ? <LinkButton colors={colors} label="Open profile" title={linkedin} onClick={() => openInBrowser(linkedin)} />
+      : '—'],
+    ['Site', personalSite
+      ? <LinkButton colors={colors} label="Open site" title={personalSite} onClick={() => openInBrowser(personalSite)} />
+      : '—'],
+    ['X', person.x_handle || '—'],
     // Project-scoped rows only exist when opened from a project's People panel.
     ...(association
       ? ([
@@ -412,7 +468,7 @@ function ReadView({ colors, person, association }: {
         ] as [string, ReactNode][])
       : []),
     ['Last contact', fmtTime(person.last_contact_at)],
-  ], [colors, person, association]);
+  ], [colors, person, association, linkedin, personalSite, openInBrowser]);
 
   return (
     <>

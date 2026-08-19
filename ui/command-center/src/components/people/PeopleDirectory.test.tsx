@@ -30,6 +30,9 @@ const base = {
   birthday: null,
   relationship_strength: null,
   how_met: null,
+  linkedin: null,
+  x_handle: null,
+  personal_site: null,
   created_at: '',
   updated_at: '',
 };

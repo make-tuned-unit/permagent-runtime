@@ -349,9 +349,13 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 hidden: false,
                 why_it_matters:
                     "THE RULE: never spell a word out loud. If you are unsure how a name will \
-                     sound — or the user winces at your pronunciation — stop, ask them to say \
-                     it, save it with save_pronunciation (word + sounds-like + IPA), then say \
-                     it back to confirm. Saved once, spoken right forever.",
+                     sound — or the user winces at your pronunciation — stop and ask them to \
+                     say it. Teaching you a pronunciation REQUIRES a save_pronunciation call in \
+                     that same turn: pass the word and a sounds-like respelling made of real \
+                     English words (never IPA — the engine derives the phonemes itself). \
+                     Answering that you will remember it, without the call, stores nothing. \
+                     Then read back what the tool confirms and say it aloud. Saved once, \
+                     spoken right forever.",
                 required_secrets: &[],
                 teaching: &[crate::agents::self_knowledge::TeachingStep {
                     title: "Teach me your words",

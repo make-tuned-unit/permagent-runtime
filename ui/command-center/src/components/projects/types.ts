@@ -73,6 +73,15 @@ export interface ProjectPerson {
   birthday: string | null;
   relationship_strength: string | null;
   how_met: string | null;
+  /**
+   * Profile links (#495 slice 4 Enricher vocabulary, surfaced 2026-08-19).
+   * Also graph-only. The Enricher had been writing these since slice 4 while
+   * the backend overlay had no mapping for them, so they never reached the
+   * wire; they are readable now and `linkedin` is manually editable too.
+   */
+  linkedin: string | null;
+  x_handle: string | null;
+  personal_site: string | null;
   created_at: string;
   updated_at: string;
   /** Role within *this* project (project_people.role), distinct from CRM role. */
