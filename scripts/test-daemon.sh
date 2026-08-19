@@ -37,7 +37,16 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-PROFILE_DIR="${CARGO_TARGET_DIR:-$ROOT/target}/debug"
+# Cargo's target dir can be redirected by CARGO_TARGET_DIR *or* by a
+# `[build] target-dir` in any .cargo/config.toml cargo merges from an ancestor
+# directory — which is how the git worktrees here share one warm target instead
+# of growing a ~40 GB copy each. Guessing "$ROOT/target" silently signed zero
+# dylibs and pointed DYLD_LIBRARY_PATH at a directory that did not exist, so the
+# test binary was SIGKILLed with an invalid signature and no hint why. Ask cargo
+# where it actually builds; fall back to the guess only if that fails.
+TARGET_DIR="$(cargo metadata --no-deps --format-version 1 2>/dev/null \
+  | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')"
+PROFILE_DIR="${TARGET_DIR:-${CARGO_TARGET_DIR:-$ROOT/target}}/debug"
 FILTER="${1:-}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
