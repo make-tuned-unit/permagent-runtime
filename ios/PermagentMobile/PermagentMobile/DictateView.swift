@@ -47,10 +47,15 @@ final class DictationRecorder: NSObject, ObservableObject, AVAudioRecorderDelega
         try session.setCategory(.record, mode: .default)
         try session.setActive(true)
 
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("dictation-\(UUID().uuidString).wav")
-        // LinearPCM into a .wav container — decodes cleanly on any daemon build
-        // (mirrors the desktop composer's "PCM as WAV" choice).
+        // Application Support, NOT `FileManager.temporaryDirectory`. iOS is
+        // free to empty the temporary directory whenever it likes, so a clip
+        // written there was never durable even before the `defer` deleted it.
+        // `RecordingStore` sweeps staging at launch and KEEPS whatever it
+        // finds, so a crash between recording and transcribing costs nothing.
+        let url = RecordingStore.shared.stageURL(fileExtension: "wav")
+        // LinearPCM into a .wav container — the one format the hub is measured
+        // to decode (see the note at the top of MeetingCapture.swift), and what
+        // the desktop composer already sends.
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
             AVSampleRateKey: 16_000.0,
@@ -172,6 +177,14 @@ struct DictateView: View {
     }
 
     @StateObject private var recorder = DictationRecorder()
+    /// Observed so the "waiting to send" count on the meeting row is live
+    /// rather than a number somebody remembered to refresh.
+    @ObservedObject private var store = RecordingStore.shared
+    /// Also observed, so a meeting recording in progress is visible from the
+    /// tab the user is most likely to be looking at. The recorder outlives the
+    /// meeting screen deliberately; a live recording that is invisible outside
+    /// one screen is the same dishonesty as a silent ten-minute stop.
+    @ObservedObject private var capture = MeetingCapture.shared
     @State private var phase: Phase = .idle
     @State private var transcript = ""
     @State private var todos: [ProposedTodo] = []
@@ -230,8 +243,9 @@ struct DictateView: View {
                         .foregroundStyle(ChatSurface.text)
                         .animation(Motion.ease, value: Int(recorder.elapsed))
                     LevelMeter(levels: recorder.levels)
-                    Text("Tap stop when you're done — up to ten minutes.")
+                    Text("Tap stop when you're done. A quick note stops itself at ten minutes — for anything longer, use Record a meeting.")
                         .font(.brandCaption).foregroundStyle(ChatSurface.dim)
+                        .multilineTextAlignment(.center).padding(.horizontal, 36)
                 }
                 .transition(.opacity)
             case .transcribing:
@@ -312,17 +326,75 @@ struct DictateView: View {
             // three levels down under More → Control. Idle only — while
             // recording or transcribing the screen stays single-purpose.
             if phase == .idle {
-                NavigationLink { NotesView() } label: { notesRow }
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 6)
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                VStack(spacing: 10) {
+                    NavigationLink { MeetingView() } label: { meetingRow }
+                        .buttonStyle(.plain)
+                    NavigationLink { NotesView() } label: { notesRow }
+                        .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 6)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
             Spacer()
         }
         .animation(Motion.ease, value: errorText)
         .animation(Motion.ease, value: phase)
+    }
+
+    /// The row that opens meeting mode.
+    ///
+    /// A quick note and an hour-long meeting are different jobs that have been
+    /// wearing the same microphone icon. This row is where they part company,
+    /// and it carries the count of anything still only on this phone so that
+    /// number is never hidden a level down.
+    private var meetingRow: some View {
+        HStack(spacing: 13) {
+            Image(systemName: capture.isRecording ? "record.circle.fill" : "waveform.circle.fill")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(capture.isRecording ? Brand.danger : ChatSurface.spark)
+                .frame(width: 34, height: 34)
+                .background(ChatSurface.control, in: Circle())
+            VStack(alignment: .leading, spacing: 2) {
+                Text(capture.isRecording ? "Meeting recording" : "Record a meeting")
+                    .font(.brandHeading).foregroundStyle(ChatSurface.text)
+                Text(meetingRowCaption)
+                    .font(.brandCaption).monospacedDigit()
+                    .foregroundStyle(meetingRowTint)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(ChatSurface.dim)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(ChatSurface.raised, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .strokeBorder(meetingRowTint == ChatSurface.muted ? ChatSurface.border : meetingRowTint.opacity(0.35), lineWidth: 1)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+    }
+
+    private var waitingCount: Int { store.recordingsWaiting }
+
+    private var meetingRowCaption: String {
+        if capture.isRecording {
+            return "\(CaptureText.elapsed(capture.elapsed)) — tap to see it"
+        }
+        if waitingCount > 0 {
+            return "\(waitingCount) recording\(waitingCount == 1 ? "" : "s") waiting to send"
+        }
+        return "Phone on the table. Runs locked, no time limit."
+    }
+
+    private var meetingRowTint: Color {
+        if capture.isRecording { return Brand.danger }
+        if waitingCount > 0 { return Brand.warning }
+        return ChatSurface.muted
     }
 
     /// The row that opens the notes library — a raised card in the chat
@@ -568,25 +640,44 @@ struct DictateView: View {
         }
         withAnimation(Motion.ease) { phase = .transcribing }
         Task {
-            defer { try? FileManager.default.removeItem(at: url) }
+            // THE LOST MEETING (2026-08-18) DIED HERE. This used to be
+            // `defer { try? FileManager.default.removeItem(at: url) }`, which
+            // ran on the failure path exactly as it ran on the success one:
+            // the app reported "couldn't reach your hub" and destroyed the
+            // only copy of the audio in the same breath.
+            //
+            // There is now exactly one condition under which the clip is
+            // deleted — the hub answered with words for these exact bytes —
+            // and it is expressed through `RetentionPolicy`, not through
+            // control flow that cannot tell success from failure. Everything
+            // else keeps the audio and puts it in the queue, where it is
+            // visible, retryable, and the user's to delete.
+            var hubHasTheWords = false
+            defer {
+                RecordingStore.shared.retire(clipAt: url, hubConfirmedReceipt: hubHasTheWords)
+            }
             do {
                 let wav = try Data(contentsOf: url)
                 let text = try await APIClient.shared.transcribe(wav: wav)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !text.isEmpty else {
-                    errorText = "Didn't catch anything — try again a little closer to the mic."
+                    // The hub took the audio and heard nothing in it. That is
+                    // not a confirmation worth deleting over — a better model,
+                    // or a listen back, may still recover it.
+                    errorText = "Didn't catch anything. The recording is kept — it's in Record a meeting → waiting to send."
                     withAnimation(Motion.ease) { phase = .idle }
                     return
                 }
+                hubHasTheWords = true
                 transcript = text
                 todos = TodoExtractor.propose(from: text).map { ProposedTodo(text: $0) }
                 projects = (try? await APIClient.shared.projects()) ?? []
                 withAnimation(Motion.spring) { phase = .review }
             } catch APIError.dictationUnavailable {
-                errorText = "Your hub has no dictation model yet — open the desktop app once to set up local Whisper."
+                errorText = "Your hub has no dictation model yet — open the desktop app once to set up local Whisper. Your recording is kept and will send itself when it can."
                 withAnimation(Motion.ease) { phase = .idle }
             } catch {
-                errorText = "Couldn't reach your hub — is your Mac awake and on the tailnet?"
+                errorText = "Couldn't reach your hub — is your Mac awake and on the tailnet? Your recording is kept, not lost: it's waiting under Record a meeting."
                 withAnimation(Motion.ease) { phase = .idle }
             }
         }
@@ -686,7 +777,8 @@ private struct RecordingPulse: View {
 }
 
 /// Live mic-level meter: a scrolling row of capsules, cyan-bright with voice.
-private struct LevelMeter: View {
+/// Shared with the meeting recorder — one meter, one look.
+struct LevelMeter: View {
     let levels: [CGFloat]
 
     var body: some View {

@@ -72,7 +72,7 @@ targets:
         # has any effect on the shipped bundle.
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
-        NSMicrophoneUsageDescription: Permagent uses the microphone to dictate notes and talk with Henry.
+        NSMicrophoneUsageDescription: Permagent uses the microphone to dictate notes, record meetings you choose to record, and talk with your agent.
         NSCameraUsageDescription: Permagent uses the camera to scan the pairing QR code displayed on your Mac.
         NSLocalNetworkUsageDescription: Permagent connects to your Permagent hub on your local network or tailnet.
         # App Transport Security. NSAllowsArbitraryLoads used to sit here beside
@@ -145,6 +145,10 @@ targets:
       - path: PermagentMobileTests
       - path: PermagentMobile/VoiceVAD.swift
       - path: PermagentMobile/ChatStream.swift
+      # The meeting recorder's durable queue. Foundation-only on purpose, so
+      # the state machine that decides when audio may be deleted is tested
+      # here — without a microphone, a hub, or the app target.
+      - path: PermagentMobile/MeetingQueue.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ai.permagent.mobile.tests

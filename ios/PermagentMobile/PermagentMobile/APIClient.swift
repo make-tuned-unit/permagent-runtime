@@ -309,9 +309,19 @@ extension APIClient {
     }
 
     func createNote(projectId: String, title: String?, body: String) async throws -> CreatedNote {
-        struct Req: Encodable { let title: String?; let body: String }
+        try await createNote(projectId: projectId, title: title, body: body, kind: nil)
+    }
+
+    /// `kind: "meeting"` is not decoration — it is what makes the hub run its
+    /// write-up pass over the transcript and file the action items it finds as
+    /// cards on this project's board (`extract_meeting_todos`,
+    /// crates/goose-server/src/routes/projects.rs). It is the same field the
+    /// desktop meeting recorder sends, so a meeting captured on the phone and
+    /// one captured on the Mac land through one path, not two.
+    func createNote(projectId: String, title: String?, body: String, kind: String?) async throws -> CreatedNote {
+        struct Req: Encodable { let title: String?; let body: String; let kind: String? }
         return try await post("/api/projects/\(projectId)/notes",
-                              body: Req(title: title, body: body), as: CreatedNote.self)
+                              body: Req(title: title, body: body, kind: kind), as: CreatedNote.self)
     }
 
     /// One confirmed to-do → a standard card. `columnId` nil lets the daemon
@@ -356,6 +366,51 @@ extension APIClient {
         if http.statusCode == 401 { throw APIError.unauthorized }
         if http.statusCode == 503 { throw APIError.dictationUnavailable }
         guard (200..<300).contains(http.statusCode) else { throw APIError.badStatus(http.statusCode) }
+        struct Resp: Decodable { let text: String }
+        return try JSONDecoder().decode(Resp.self, from: data).text
+    }
+
+    /// Upload one meeting SEGMENT for transcription.
+    ///
+    /// Distinct from `transcribe(wav:)` in the two ways the meeting queue
+    /// needs. It gives the segment a long enough timeout to be transcribed —
+    /// minutes of audio on a CPU Whisper, where the default 60 seconds would
+    /// abandon a request the hub was still working on and make a working setup
+    /// look broken. And it preserves the daemon's own error text as
+    /// `APIError.daemon`, because "the hub could not decode this segment" and
+    /// "the hub is asleep" call for completely different words on screen, and
+    /// a bare status code cannot tell them apart.
+    ///
+    /// Returning normally is the ONLY signal that authorises deleting the
+    /// audio this data came from. Every throw retains it.
+    func transcribeSegment(_ audio: Data, filename: String, mimeType: String) async throws -> String {
+        guard let config else { throw APIError.notPaired }
+        let boundary = "permagent-\(UUID().uuidString)"
+        var req = URLRequest(url: config.baseURL.appendingPathComponent("/api/dictation/transcribe"))
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(config.token)", forHTTPHeaderField: "Authorization")
+        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        // A meeting segment is minutes of audio and the hub transcribes it on
+        // CPU; the default 60 s resource timeout would abandon a request the
+        // hub was still working on and make a working setup look broken.
+        req.timeoutInterval = 300
+        var body = Data()
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"audio\"; filename=\"\(filename)\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: \(mimeType)\r\n\r\n".data(using: .utf8)!)
+        body.append(audio)
+        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+        req.httpBody = body
+
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse else { throw APIError.badStatus(0) }
+        if http.statusCode == 401 { throw APIError.unauthorized }
+        if http.statusCode == 503 { throw APIError.dictationUnavailable }
+        guard (200..<300).contains(http.statusCode) else {
+            let detail = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            throw APIError.daemon(detail.isEmpty ? "HTTP \(http.statusCode)" : detail)
+        }
         struct Resp: Decodable { let text: String }
         return try JSONDecoder().decode(Resp.self, from: data).text
     }

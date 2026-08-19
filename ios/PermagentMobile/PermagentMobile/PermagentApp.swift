@@ -56,9 +56,20 @@ final class HubSession: ObservableObject {
     @Published var unread = 0
 
     func bootstrap() async {
+        // Before anything else: reclaim recordings the last run left behind.
+        // An upload that was in flight when the process died goes back in the
+        // queue, a recording still marked open is closed, and a clip left in
+        // staging is adopted rather than swept. Audio survives an app kill and
+        // a device restart because this runs before any code path could look
+        // at a half-finished recording and decide it was rubbish.
+        RecordingStore.shared.recoverAfterLaunch()
+
         await APIClient.shared.loadSavedPairing()
         isPaired = await APIClient.shared.isPaired
         if isPaired {
+            // Drain on launch, so a meeting recorded with the Mac asleep
+            // sends itself the next time the app is opened in range.
+            MeetingUploader.shared.requestDrain()
             // The agent's name comes from the hub, never a literal — see
             // AgentIdentity. Fetched before `listen()` so the first render of
             // any surface already has the real name rather than the generic
