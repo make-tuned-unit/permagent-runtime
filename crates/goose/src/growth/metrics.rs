@@ -17,6 +17,39 @@ use sqlx::{Pool, Sqlite};
 /// one rather than declaring a second copy.
 pub const ANSWER_ENGINE_VISIT_EVENT: &str = "answer_engine_visit";
 
+/// Referrer hosts that mean a generated answer cited this site. Distinct from
+/// ordinary search: the content was quoted, not merely ranked.
+///
+/// This lives here, in the shared crate, rather than beside the prompt that
+/// renders it. `render_summary` (goose-server) labels a project's AEO signal
+/// from this list and [`crate::growth::pooled::segment_for`] (goose) decides a
+/// project's dominant acquisition channel from it; two copies would let the
+/// brief tell the model "answer engines are your biggest source" while the
+/// segment those results are pooled against says "search", and neither line
+/// would look wrong on its own.
+pub const ANSWER_ENGINE_HOSTS: &[&str] = &[
+    "chatgpt.com",
+    "chat.openai.com",
+    "perplexity.ai",
+    "claude.ai",
+    "copilot.microsoft.com",
+    "gemini.google.com",
+    "you.com",
+    "phind.com",
+];
+
+/// Does this path hold written content — a post, a guide, an article?
+///
+/// One definition for the same reason as the list above: `render_summary` uses
+/// it to tell the model which pages are worth expanding, and
+/// [`crate::growth::pooled::segment_for`] uses it to decide whether a project
+/// is a content site at all. If the two ever drifted, an action would be
+/// pooled against a segment the brief never described.
+pub fn is_content_path(path: &str) -> bool {
+    let p = path.to_ascii_lowercase();
+    p.contains("/blog") || p.contains("/guide") || p.contains("/article") || p.contains("/post")
+}
+
 /// The whole-week windows an action is measured over, shortest first (proposal
 /// "Open decisions" 2: 7/14/28 evaluated progressively, early ones provisional).
 pub const WINDOW_DAYS: [u32; 3] = [7, 14, 28];
@@ -418,6 +451,29 @@ mod tests {
         assert!(window_is_complete(pivot, 7, at("2026-08-19T00:01:00Z")));
         assert!(!window_is_complete(pivot, 28, at("2026-09-08T00:00:00Z")));
         assert!(window_is_complete(pivot, 28, at("2026-09-09T00:00:00Z")));
+    }
+
+    /// Pins the single definition both crates now share. Before this const
+    /// existed the goose-server summary carried its own inline closure, so a
+    /// path could be "content" to the brief and not to the segment it was
+    /// pooled against.
+    #[test]
+    fn is_content_path_matches_what_the_summary_calls_content() {
+        for content in [
+            "/blog/x",
+            "/guides/y",
+            "/article/z",
+            "/posts/1",
+            "/BLOG/Caps",
+        ] {
+            assert!(is_content_path(content), "{content} should be content");
+        }
+        for not_content in ["/", "/pricing", "/app/dashboard", "/about"] {
+            assert!(
+                !is_content_path(not_content),
+                "{not_content} should not be content"
+            );
+        }
     }
 
     #[test]

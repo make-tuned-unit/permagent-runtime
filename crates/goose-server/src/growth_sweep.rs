@@ -5,6 +5,12 @@
 //! and never mutates a repo — the arithmetic is entirely local
 //! (`permagent::growth::sweep`).
 //!
+//! The pass also measures an ARCHIVED action that still owes a window, and
+//! never moves an archived action's status. Those two together are what make
+//! filing a card away safe: the remaining windows are still written, so the
+//! data point the archive exists to keep survives, and the card the user
+//! cleared off the board is not pushed back onto it on the next tick.
+//!
 //! Deliberately a plain loop rather than an `automation` starter recipe. The
 //! starters run an LLM against a prompt; a verdict produced that way would be
 //! self-assessed prose, and the proposal is explicit that grading "must never be

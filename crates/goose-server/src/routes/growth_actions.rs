@@ -26,19 +26,46 @@ use crate::state::AppState;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
+    response::{IntoResponse, Response},
     routing::post,
     Json, Router,
 };
 use permagent::conversation::message::Message;
-use permagent::growth::metrics::{TargetDir, TargetMetric};
+use permagent::growth::metrics::{self as growth_metrics, TargetDir, TargetMetric};
+use permagent::growth::pooled;
 use permagent::growth::power::Confounder;
 use permagent::growth::store::{self as growth_store, ActionSeed};
 use permagent::growth::sweep::{self, Baseline};
 use permagent::projects::{self, Project, UpdateProject};
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Sqlite};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
+
+/// A refusal the user can read.
+///
+/// `Result<_, (StatusCode, String)>` renders as `text/plain`, and the UI's
+/// `apiFetch` parses every error body as JSON and falls back to the literal
+/// string "Unknown error" when that fails. So every deliberate, carefully
+/// worded refusal this module makes — "nothing has happened to this action
+/// yet", "its baseline is frozen, so the claim cannot be changed now" — reached
+/// the user as "Could not run the check: Unknown error". The reason existed and
+/// was thrown away one layer above the person it was written for.
+///
+/// The field name is `message` because that is what `apiFetch` reads.
+pub struct ApiError(pub StatusCode, pub String);
+
+impl From<(StatusCode, String)> for ApiError {
+    fn from((status, message): (StatusCode, String)) -> Self {
+        ApiError(status, message)
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (self.0, Json(serde_json::json!({ "message": self.1 }))).into_response()
+    }
+}
 
 /// Metadata bag key holding the cached actions.
 const METADATA_KEY: &str = "growth_actions";
@@ -72,6 +99,48 @@ pub struct ActionIdentity {
     pub verified_by: Option<String>,
     pub verified_at: Option<String>,
     pub outcomes: Vec<OutcomeView>,
+}
+
+/// One measured result from another project, named so the claim can be audited.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferExample {
+    pub project_name: String,
+    pub title: String,
+    pub verdict: String,
+    pub delta_pct: Option<f64>,
+}
+
+/// What this action's CATEGORY has done on the user's other active projects.
+///
+/// Computed server-side from `growth_action_outcomes` (see
+/// `permagent::growth::pooled`) and never authored by the model. That
+/// distinction is the whole feature: a model asserting "this worked on three
+/// similar projects" is the self-assessed prose the proposal rules out, while
+/// the same sentence derived from measured outcomes is evidence the user can
+/// check — which is why every note carries its provenance.
+///
+/// The aggregate and the segment are separate fields on purpose. Merging them
+/// would produce exactly the Simpson's paradox the proposal warns about: an
+/// overall "helped" that quietly fails on projects shaped like this one.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferNote {
+    pub category: String,
+    /// Distinct OTHER active projects that measured this category.
+    pub projects: usize,
+    pub helped: usize,
+    pub hindered: usize,
+    pub no_effect: usize,
+    pub median_delta_pct: Option<f64>,
+    /// THIS project's segment, e.g. "content site, 300+ views/wk, mostly search".
+    pub segment_label: String,
+    pub segment_projects: usize,
+    pub segment_helped: usize,
+    pub segment_hindered: usize,
+    pub segment_no_effect: usize,
+    /// At most three, projects like this one first.
+    pub examples: Vec<TransferExample>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -121,22 +190,60 @@ pub struct GrowthAction {
     /// and without this one of them would score as a success either way.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_dir: Option<String>,
+    /// What this category has done on the user's other active projects.
+    /// Computed from measured outcomes at render time; absent when no other
+    /// project has ever measured this category, because a badge that says
+    /// nothing is worse than no badge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer: Option<TransferNote>,
     /// Filled in from `growth_actions` on read, never from the model. Absent
     /// only when the row could not be reached.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<ActionIdentity>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+/// The whole panel, assembled from the durable `growth_actions` rows.
+///
+/// Both GET and POST /generate return this, built by the same [`render_board`]
+/// — the metadata bag only ever contributes prose. Before that, the rendered
+/// list WAS the bag, which `store` overwrites wholesale, so an action the last
+/// review did not re-emit vanished from the panel while the sweep was still
+/// measuring it.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct GrowthActionsData {
+    /// The active board, ordered. Excludes archived.
     pub actions: Vec<GrowthAction>,
+    /// Filed away by the user, newest first. Still measured while they owe a
+    /// window, and still feeding learning.
+    #[serde(default)]
+    pub archived: Vec<GrowthAction>,
+    /// Advice the user turned down, newest first.
+    ///
+    /// Separate from `archived` because the two mean opposite things to the
+    /// generator: a dismissed action stays ON the board, so its text can never
+    /// be re-proposed, while an archived one has been released. Kept out of
+    /// `actions` because a card the user has already refused is not work in
+    /// flight, and before this it sat in the active list forever — `suggested`
+    /// had no exit at all, so the panel could only grow.
+    #[serde(default)]
+    pub dismissed: Vec<GrowthAction>,
     pub generated_at: Option<String>,
     /// Why the list is empty, when it is. Shown verbatim — an empty panel with
     /// no explanation is indistinguishable from a broken one.
     pub reason: Option<String>,
     /// The window the actions were derived from.
     pub period_days: Option<u32>,
+    /// How many suggestions the last review discarded for naming no measurable
+    /// prediction. Reported rather than defaulted: inventing a target would
+    /// grade a claim the agent never made.
+    #[serde(default)]
+    pub dropped_for_no_target: usize,
+    /// How many suggestions the last review discarded as restatements of
+    /// something already on the board. Surfaced because the guard can withhold
+    /// advice, and a silent drop is not auditable.
+    #[serde(default)]
+    pub dropped_as_restatement: usize,
 }
 
 /// The analytics shape the generator reasons over. Deliberately a plain struct
@@ -252,7 +359,7 @@ pub fn render_summary(project_name: &str, s: &AnalyticsSummary) -> String {
     // referrer list a single chatgpt.com hit reads as noise; named, it is the
     // strongest AEO signal a small site gets — proof the content is being cited
     // by an answer engine and worth making more quotable.
-    let answer_engines: Vec<&str> = ANSWER_ENGINES
+    let answer_engines: Vec<&str> = growth_metrics::ANSWER_ENGINE_HOSTS
         .iter()
         .copied()
         .filter(|host| {
@@ -281,13 +388,7 @@ pub fn render_summary(project_name: &str, s: &AnalyticsSummary) -> String {
     let content_pages: Vec<&(String, i64)> = s
         .top_pages
         .iter()
-        .filter(|(p, _)| {
-            let p = p.to_ascii_lowercase();
-            p.contains("/blog")
-                || p.contains("/guide")
-                || p.contains("/article")
-                || p.contains("/post")
-        })
+        .filter(|(p, _)| growth_metrics::is_content_path(p))
         .collect();
     if !content_pages.is_empty() {
         let total_content: i64 = content_pages.iter().map(|(_, c)| *c).sum();
@@ -305,19 +406,6 @@ pub fn render_summary(project_name: &str, s: &AnalyticsSummary) -> String {
     }
     out
 }
-
-/// Referrer hosts that indicate a generated answer cited this site. Distinct
-/// from ordinary search: it means the content was quoted, not merely ranked.
-const ANSWER_ENGINES: &[&str] = &[
-    "chatgpt.com",
-    "chat.openai.com",
-    "perplexity.ai",
-    "claude.ai",
-    "copilot.microsoft.com",
-    "gemini.google.com",
-    "you.com",
-    "phind.com",
-];
 
 const SYSTEM: &str = "You are a growth analyst reviewing one product's own first-party web \
     analytics. Propose concrete moves that would strengthen the product: increase conversion, \
@@ -350,9 +438,16 @@ const SYSTEM: &str = "You are a growth analyst reviewing one product's own first
     that metric over 7, 14 and 28 days, and the verdict feeds back into how future strategies \
     are ranked. Pick the one metric the action most directly targets, from exactly \
     pageviews | sessions | aeo_visits | bounce_rate — nothing else can be measured. Mind the \
-    direction: for bounce_rate an improvement is DOWN. If an action genuinely does not target \
-    any of these, omit both fields rather than guessing; an unmeasurable prediction is worse \
-    than none, because it produces a verdict that cannot be checked.\n\n\
+    direction: for bounce_rate an improvement is DOWN. EVERY action must carry both fields. An \
+    action you cannot tie to one of those four metrics is not an action this system can grade, \
+    so propose a different one instead — anything that arrives without both is discarded and \
+    never reaches the user.\n\n\
+    You will be shown the actions already on this project's board. They are live work, not \
+    history. Do NOT restate one — not reworded, not narrowed, not broadened. If the only strong \
+    moves left are already on the board, return fewer actions, or an empty list. Two genuinely \
+    new actions beat five with three restatements: a restatement cannot be measured separately \
+    from the action it copies, and it costs the user the attention they would have spent on the \
+    original.\n\n\
     Reply ONLY with JSON:\n\
     {\"actions\":[{\"title\":\"...\",\"evidence\":\"...\",\"recommendation\":\"...\",\
     \"steps\":[\"...\"],\"artifactKind\":\"prompt|post|none\",\"artifact\":\"...\",\
@@ -471,11 +566,104 @@ pub fn parse_actions(text: &str) -> Vec<GrowthAction> {
                     .and_then(|v| v.as_str())
                     .and_then(|d| TargetDir::parse(d).ok())
                     .map(|d| d.as_str().to_string()),
+                // Both of these are derived server-side after parsing, never
+                // read from the reply: a model-authored transfer claim would be
+                // an assertion about other projects it has never seen.
+                transfer: None,
                 identity: None,
             })
         })
         .take(5)
         .collect()
+}
+
+/// Split a parsed batch into the actions that made a gradeable prediction and
+/// the ones that did not, with the reason each was refused.
+///
+/// `parse_actions` deliberately does not default `target_metric`/`target_dir`,
+/// because defaulting would invent a claim the agent never made and then grade
+/// it. That leaves the question of what to do with an untargeted action, and
+/// the answer is: drop it, count it, and say so. Keeping it would put a card on
+/// the board that can never be verified (the verify route refuses without a
+/// target) and would fall back to asking the USER what the agent's own
+/// prediction was — the inversion this whole loop exists to undo.
+pub fn split_targeted(
+    actions: Vec<GrowthAction>,
+) -> (Vec<GrowthAction>, Vec<(GrowthAction, String)>) {
+    let mut kept = Vec::new();
+    let mut dropped = Vec::new();
+    for action in actions {
+        let metric = action
+            .target_metric
+            .as_deref()
+            .and_then(|m| TargetMetric::parse(m).ok());
+        let dir = action
+            .target_dir
+            .as_deref()
+            .and_then(|d| TargetDir::parse(d).ok());
+        match (metric, dir) {
+            (Some(_), Some(_)) => kept.push(action),
+            // Half a prediction is not a prediction: "sessions" with no
+            // direction scores as a success whichever way sessions move.
+            (Some(metric), None) => {
+                let reason = format!("named {} but no direction", metric.as_str());
+                dropped.push((action, reason));
+            }
+            (None, Some(_)) => {
+                dropped.push((action, "named a direction but no metric".to_string()))
+            }
+            (None, None) => dropped.push((action, "named no target metric".to_string())),
+        }
+    }
+    (kept, dropped)
+}
+
+/// The one corrective the generator gets before an untargeted action is thrown
+/// away for good.
+///
+/// It names each offender and what was wrong with it rather than repeating the
+/// rule in the abstract, because the model already had the rule in SYSTEM and
+/// broke it; the new information is which of its own actions failed.
+pub fn retry_correction(dropped: &[(GrowthAction, String)]) -> String {
+    let mut out = String::from(
+        "Your previous reply contained actions this system cannot grade, so they were \
+         discarded:\n",
+    );
+    for (action, reason) in dropped {
+        out.push_str(&format!("- \"{}\" — {reason}.\n", action.title));
+    }
+    out.push_str(
+        "Reply again. Every action must carry `targetMetric`, exactly one of pageviews, \
+         sessions, aeo_visits or bounce_rate, AND `targetDir`, either up or down. For \
+         bounce_rate an improvement is down. If an action cannot be tied to one of those four \
+         metrics, replace it with one that can rather than sending it back untargeted.\n",
+    );
+    out
+}
+
+/// Keep the good actions from both attempts, deduplicated and capped.
+///
+/// Discarding the first attempt wholesale because one sibling was malformed
+/// would throw away advice the user could have used, and the retry is asked for
+/// the same analysis, so its overlap with the first is expected rather than a
+/// sign of anything.
+pub fn merge_attempts(
+    first: Vec<GrowthAction>,
+    second: Vec<GrowthAction>,
+    project_id: &str,
+) -> Vec<GrowthAction> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for action in first.into_iter().chain(second) {
+        if out.len() >= 5 {
+            break;
+        }
+        let fp = growth_store::fingerprint(project_id, &action.title, &action.recommendation);
+        if seen.insert(fp) {
+            out.push(action);
+        }
+    }
+    out
 }
 
 /// Rank so the most actionable surface first: impact, then confidence, then
@@ -530,8 +718,15 @@ async fn category_history(pool: &Pool<Sqlite>, project_id: &str) -> HashMap<Stri
     out
 }
 
-/// Persist the generated list so each action has an identity, and hand back the
-/// rows keyed by fingerprint.
+/// What `persist` did: the rows it wrote, and how many suggestions it refused
+/// as restatements of something already on the board.
+pub struct PersistOutcome {
+    pub rows: HashMap<String, growth_store::GrowthActionRow>,
+    pub restated: usize,
+}
+
+/// Persist the generated list so each action has an identity, dropping anything
+/// that merely restates what is already on the board.
 ///
 /// Failures are logged and swallowed: a database hiccup must not turn a
 /// successful model call into an empty panel. The consequence is a card without
@@ -540,9 +735,36 @@ async fn persist(
     pool: &Pool<Sqlite>,
     project_id: &str,
     actions: &[GrowthAction],
-) -> HashMap<String, growth_store::GrowthActionRow> {
+) -> PersistOutcome {
+    // The board is loaded ONCE and grown as we go, so the same mechanism guards
+    // both across-review duplication (an action restating last week's card) and
+    // within-review duplication (two actions in this batch restating each
+    // other). Two separate checks would have to agree, and eventually would not.
+    let mut board = growth_store::board(pool, project_id)
+        .await
+        .unwrap_or_default();
     let mut rows = HashMap::new();
+    let mut restated = 0usize;
+
     for action in actions {
+        let fp = growth_store::fingerprint(project_id, &action.title, &action.recommendation);
+        let already_here = board.iter().any(|row| row.fingerprint == fp);
+        if !already_here {
+            // Scoped so the immutable borrow of `board` ends before the push
+            // below.
+            let restatement = growth_store::restates(&action.title, &action.recommendation, &board)
+                .map(|row| (row.title.clone(), row.status.clone()));
+            if let Some((existing, status)) = restatement {
+                restated += 1;
+                tracing::info!(
+                    target: "permagentd::growth",
+                    "dropped \"{}\": restates \"{existing}\" already {status} on this board",
+                    action.title
+                );
+                continue;
+            }
+        }
+
         let seed = ActionSeed {
             title: action.title.clone(),
             recommendation: action.recommendation.clone(),
@@ -551,24 +773,40 @@ async fn persist(
             artifact: action.artifact.clone(),
             // Validated here, not trusted: a model that invents a metric the
             // sweep cannot read would pre-register a target that can never be
-            // measured, producing an action stuck in "measuring" forever. An
-            // unparseable value is dropped so the UI falls back to asking,
-            // which is honest, rather than stored so it can fail silently.
+            // measured, producing an action stuck in "measuring" forever.
+            // `split_targeted` has already refused anything unparseable, so by
+            // this point both halves are expected to survive.
             target_metric: action
                 .target_metric
                 .as_deref()
-                .and_then(|m| permagent::growth::metrics::TargetMetric::parse(m).ok())
+                .and_then(|m| TargetMetric::parse(m).ok())
                 .map(|m| m.as_str().to_string()),
-            target_dir: action.target_dir.as_deref().and_then(|d| {
-                match d.trim().to_ascii_lowercase().as_str() {
-                    "up" => Some("up".to_string()),
-                    "down" => Some("down".to_string()),
-                    _ => None,
-                }
-            }),
+            target_dir: action
+                .target_dir
+                .as_deref()
+                .and_then(|d| TargetDir::parse(d).ok())
+                .map(|d| d.as_str().to_string()),
         };
         match growth_store::upsert_suggested(pool, project_id, &seed).await {
+            // An action that comes back still archived is one the store refused
+            // to resurrect: a finished experiment, whose outcomes and frozen
+            // baseline pivot belong to the text being re-proposed. It never
+            // reaches the active list, so recording it as a success here made it
+            // vanish with no card, no counter and no log line. It is a
+            // duplicate of work already on record, which is what this counter
+            // means, so it is counted as one and named.
+            Ok(row) if row.status == growth_store::STATUS_ARCHIVED => {
+                restated += 1;
+                tracing::info!(
+                    target: "permagentd::growth",
+                    "dropped \"{}\": restates an archived action that was already measured",
+                    action.title
+                );
+            }
             Ok(row) => {
+                if !already_here {
+                    board.push(row.clone());
+                }
                 rows.insert(row.fingerprint.clone(), row);
             }
             Err(e) => tracing::warn!(
@@ -577,67 +815,239 @@ async fn persist(
             ),
         }
     }
-    rows
+    PersistOutcome { rows, restated }
 }
 
-/// Attach the durable half to each cached action, by fingerprint.
+/// Where an action sits on the board: new work first, then work being measured,
+/// then work that is finished with.
+fn status_bucket(status: &str) -> u8 {
+    match status {
+        growth_store::STATUS_SUGGESTED | growth_store::STATUS_DONE => 0,
+        growth_store::STATUS_VERIFIED | growth_store::STATUS_MEASURING => 1,
+        growth_store::STATUS_JUDGED => 2,
+        growth_store::STATUS_DISMISSED => 3,
+        _ => 4,
+    }
+}
+
+async fn outcome_views(pool: &Pool<Sqlite>, action_id: &str) -> Vec<OutcomeView> {
+    growth_store::outcomes_for(pool, action_id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|o| OutcomeView {
+            window_days: o.window_days,
+            verdict: o.verdict,
+            rationale: o.rationale,
+            delta_pct: o.delta_pct,
+            confounders: o
+                .confounders
+                .as_deref()
+                .and_then(|raw| serde_json::from_str(raw).ok())
+                .unwrap_or_default(),
+            judged_at: o.judged_at,
+        })
+        .collect()
+}
+
+/// Transfer notes by category, or nothing at all.
 ///
-/// The metadata bag stays the render cache — it holds `evidence` and `steps`,
-/// which are not worth a column — and the table is the identity. They are
-/// joined here rather than merged into one store because `regenerate` overwrites
-/// the bag wholesale (see `store`), so anything durable kept in it would be
-/// destroyed by the next "Review again".
-async fn hydrate(pool: &Pool<Sqlite>, project_id: &str, data: &mut GrowthActionsData) {
+/// The `count(*)` pre-check is not an optimisation detail: with no outcomes
+/// anywhere — which is the state of every install until the first 7-day window
+/// closes — the pooled path would otherwise segment every active project on
+/// every panel open to compute nothing.
+async fn transfer_notes(pool: &Pool<Sqlite>, project_id: &str) -> HashMap<String, TransferNote> {
+    let outcomes: i64 = sqlx::query_scalar("SELECT count(*) FROM growth_action_outcomes")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+    if outcomes == 0 {
+        return HashMap::new();
+    }
+    let now = chrono::Utc::now();
+    let segment = pooled::segment_for(pool, project_id, now).await;
+    let label = segment.label();
+    pooled::pool_by_category(pool, project_id, &segment, now)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|category| {
+            (
+                category.category.clone(),
+                TransferNote {
+                    category: category.category,
+                    projects: category.projects,
+                    helped: category.helped,
+                    hindered: category.hindered,
+                    no_effect: category.no_effect,
+                    median_delta_pct: category.median_delta_pct,
+                    segment_label: label.clone(),
+                    segment_projects: category.segment_projects,
+                    segment_helped: category.segment_helped,
+                    segment_hindered: category.segment_hindered,
+                    segment_no_effect: category.segment_no_effect,
+                    examples: category
+                        .examples
+                        .into_iter()
+                        .map(|e| TransferExample {
+                            project_name: e.project_name,
+                            title: e.title,
+                            verdict: e.verdict,
+                            delta_pct: e.delta_pct,
+                        })
+                        .collect(),
+                },
+            )
+        })
+        .collect()
+}
+
+/// Build the panel from the durable rows, using the metadata bag only for the
+/// prose the table has no column for.
+///
+/// This replaced `hydrate`, which walked the CACHED list and decorated whatever
+/// it found there. Because `store` overwrites that bag wholesale, an action the
+/// latest review did not re-emit simply disappeared from the panel — including
+/// a `measuring` action the sweep was still writing outcomes for. The rows are
+/// the list now; the bag only adds evidence, steps, impact and confidence, and
+/// where it has none the card renders nothing rather than a guess.
+struct RenderedBoard {
+    active: Vec<GrowthAction>,
+    archived: Vec<GrowthAction>,
+    dismissed: Vec<GrowthAction>,
+}
+
+async fn render_board(
+    pool: &Pool<Sqlite>,
+    project_id: &str,
+    cache: &ActionsCache,
+) -> RenderedBoard {
     let rows = match growth_store::list_for_project(pool, project_id).await {
         Ok(rows) => rows,
         Err(e) => {
             tracing::warn!(target: "permagentd::growth", "could not read growth actions: {e}");
-            return;
+            return RenderedBoard {
+                active: Vec::new(),
+                archived: Vec::new(),
+                dismissed: Vec::new(),
+            };
         }
     };
-    let by_fingerprint: HashMap<String, growth_store::GrowthActionRow> = rows
-        .into_iter()
-        .map(|r| (r.fingerprint.clone(), r))
+    let by_fingerprint: HashMap<&str, (&CachedProse, usize)> = cache
+        .prose
+        .iter()
+        .enumerate()
+        .map(|(rank, prose)| (prose.fingerprint.as_str(), (prose, rank)))
         .collect();
+    let transfers = transfer_notes(pool, project_id).await;
 
-    for action in &mut data.actions {
-        let fp = growth_store::fingerprint(project_id, &action.title, &action.recommendation);
-        let Some(row) = by_fingerprint.get(&fp) else {
-            continue;
-        };
-        let outcomes = growth_store::outcomes_for(pool, &row.id)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|o| OutcomeView {
-                window_days: o.window_days,
-                verdict: o.verdict,
-                rationale: o.rationale,
-                delta_pct: o.delta_pct,
-                confounders: o
-                    .confounders
-                    .as_deref()
-                    .and_then(|raw| serde_json::from_str(raw).ok())
-                    .unwrap_or_default(),
-                judged_at: o.judged_at,
-            })
-            .collect();
-        action.identity = Some(ActionIdentity {
-            id: row.id.clone(),
-            status: row.status.clone(),
+    let mut active: Vec<(u8, usize, GrowthAction)> = Vec::new();
+    let mut archived: Vec<GrowthAction> = Vec::new();
+    let mut dismissed: Vec<GrowthAction> = Vec::new();
+    for row in rows {
+        let found = by_fingerprint.get(row.fingerprint.as_str()).copied();
+        let prose = found.map(|(prose, _)| prose);
+        // No cache entry means the card was never in a rendered review, or its
+        // prose has since been pruned. It sorts last within its bucket rather
+        // than being hidden.
+        let rank = found.map(|(_, rank)| rank).unwrap_or(usize::MAX);
+        let action = GrowthAction {
+            title: row.title.clone(),
+            evidence: prose.map(|p| p.evidence.clone()).unwrap_or_default(),
+            recommendation: row.recommendation.clone(),
+            steps: prose.map(|p| p.steps.clone()).unwrap_or_default(),
+            artifact_kind: row
+                .artifact_kind
+                .clone()
+                .unwrap_or_else(|| "none".to_string()),
+            artifact: row.artifact.clone(),
+            category: row.category.clone().unwrap_or_else(|| "ux".to_string()),
+            impact: prose.map(|p| p.impact.clone()).unwrap_or_default(),
+            confidence: prose.map(|p| p.confidence.clone()).unwrap_or_default(),
             target_metric: row.target_metric.clone(),
             target_dir: row.target_dir.clone(),
-            verified_by: row.verified_by.clone(),
-            verified_at: row.verified_at.clone(),
-            outcomes,
-        });
+            transfer: row
+                .category
+                .as_deref()
+                .and_then(|category| transfers.get(category))
+                .cloned(),
+            identity: Some(ActionIdentity {
+                id: row.id.clone(),
+                status: row.status.clone(),
+                target_metric: row.target_metric.clone(),
+                target_dir: row.target_dir.clone(),
+                verified_by: row.verified_by.clone(),
+                verified_at: row.verified_at.clone(),
+                outcomes: outcome_views(pool, &row.id).await,
+            }),
+        };
+        // Three lists, because the user needs three different things from them:
+        // work in flight, work filed away, and advice already refused. A
+        // dismissed card in the active list was the panel's only growth path —
+        // `suggested` cannot be archived, so before this nothing the user could
+        // press ever shortened the list.
+        if row.status == growth_store::STATUS_ARCHIVED {
+            archived.push(action);
+        } else if row.status == growth_store::STATUS_DISMISSED {
+            dismissed.push(action);
+        } else {
+            active.push((status_bucket(&row.status), rank, action));
+        }
+    }
+
+    // `list_for_project` is already id DESC and `sort_by_key` is stable, so
+    // rows with no cache entry keep newest-first order within their bucket.
+    active.sort_by_key(|(bucket, rank, _)| (*bucket, *rank));
+    RenderedBoard {
+        active: active.into_iter().map(|(_, _, action)| action).collect(),
+        archived,
+        dismissed,
     }
 }
 
+/// Everything the generator is shown, assembled from sources that cannot lie
+/// about each other: the analytics summary, the open board, this project's own
+/// measured outcomes, and the same categories measured elsewhere.
+pub struct GenerationBrief<'a> {
+    pub project_name: &'a str,
+    pub summary: &'a AnalyticsSummary,
+    /// The open board (`growth_store::render_board`). Its absence is why the
+    /// generator restated three of its own actions on 2026-08-19: nothing in
+    /// the prompt had ever mentioned that they existed.
+    pub board: Option<String>,
+    /// This project's confirmed outcomes (`growth_store::render_learning`).
+    pub learning: Option<String>,
+    /// The same categories measured on the other active projects
+    /// (`pooled::render_pool`).
+    pub pooled: Option<String>,
+}
+
+/// Render the brief. Pure, so the prompt can be asserted in a unit test without
+/// a provider — the same property `render_summary`'s tests already rely on.
+pub fn render_brief(brief: &GenerationBrief<'_>, correction: Option<&str>) -> String {
+    let mut out = render_summary(brief.project_name, brief.summary);
+    for block in [
+        brief.board.as_deref(),
+        brief.learning.as_deref(),
+        brief.pooled.as_deref(),
+        correction,
+    ] {
+        let Some(block) = block.map(str::trim).filter(|b| !b.is_empty()) else {
+            continue;
+        };
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push('\n');
+        out.push_str(block);
+        out.push('\n');
+    }
+    out
+}
+
 async fn generate(
-    project_name: &str,
-    summary: &AnalyticsSummary,
-    learning: Option<String>,
+    brief: &GenerationBrief<'_>,
+    correction: Option<&str>,
 ) -> Result<Vec<GrowthAction>, String> {
     let config = permagent::config::Config::global();
     let provider_name = config
@@ -658,12 +1068,7 @@ async fn generate(
     // and an explicit "weak evidence" caveat attached (see
     // `growth::store::render_learning`) — a model shown one result without its
     // sample size will over-generalise from it.
-    let mut brief = render_summary(project_name, summary);
-    if let Some(learning) = learning {
-        brief.push('\n');
-        brief.push_str(&learning);
-    }
-    let user = Message::user().with_text(brief);
+    let user = Message::user().with_text(render_brief(brief, correction));
     let (response, _usage) = provider
         .complete_fast("growth-actions", SYSTEM, std::slice::from_ref(&user), &[])
         .await
@@ -769,18 +1174,174 @@ async fn load_summary(pool: &Pool<Sqlite>, project_id: &str, period_days: u32) -
     }
 }
 
-fn cached(project: &Project) -> Option<GrowthActionsData> {
+/// The prose for one action that the `growth_actions` table has no column for.
+///
+/// Keyed by fingerprint rather than by position, because position is exactly
+/// what a regenerate changes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CachedProse {
+    pub fingerprint: String,
+    pub evidence: String,
+    #[serde(default)]
+    pub steps: Vec<String>,
+    pub impact: String,
+    pub confidence: String,
+}
+
+/// What lives in `projects.metadata_json["growth_actions"]` now: prose, and the
+/// facts about the last review itself.
+///
+/// It stopped holding the rendered list because it never could hold it
+/// honestly — `store` replaces it wholesale, so anything durable kept here was
+/// destroyed by the next "Review again". What remains is the text the table has
+/// no column for, joined back on by fingerprint.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionsCache {
+    /// Ranked order of the last review first, then retained entries.
+    #[serde(default)]
+    pub prose: Vec<CachedProse>,
+    pub generated_at: Option<String>,
+    pub reason: Option<String>,
+    pub period_days: Option<u32>,
+    #[serde(default)]
+    pub dropped_for_no_target: usize,
+    #[serde(default)]
+    pub dropped_as_restatement: usize,
+}
+
+/// The pre-change shape of the bag: the whole rendered list.
+///
+/// Every field defaults, so a bag written by any earlier build still parses.
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct LegacyCache {
+    actions: Vec<LegacyAction>,
+    generated_at: Option<String>,
+    reason: Option<String>,
+    period_days: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct LegacyAction {
+    title: String,
+    recommendation: String,
+    evidence: String,
+    steps: Vec<String>,
+    impact: String,
+    confidence: String,
+}
+
+impl ActionsCache {
+    /// Read the bag, upcasting the old shape rather than discarding it.
+    ///
+    /// This is the highest-risk line in the change. Without the upcast, the
+    /// first time the panel is opened after deploy every live action silently
+    /// loses its evidence, steps, impact and confidence — and the rows
+    /// themselves would look untouched, so nothing would appear to be wrong.
+    /// The fingerprint is recomputed from the title and recommendation exactly
+    /// as `persist` computes it, which is what lets the prose find its row
+    /// again.
+    pub fn from_value(project_id: &str, value: &serde_json::Value) -> Self {
+        if value.get("prose").is_some() {
+            return serde_json::from_value(value.clone()).unwrap_or_default();
+        }
+        let legacy: LegacyCache = serde_json::from_value(value.clone()).unwrap_or_default();
+        Self {
+            prose: legacy
+                .actions
+                .into_iter()
+                .filter(|a| !a.title.is_empty())
+                .map(|a| CachedProse {
+                    fingerprint: growth_store::fingerprint(project_id, &a.title, &a.recommendation),
+                    evidence: a.evidence,
+                    steps: a.steps,
+                    impact: a.impact,
+                    confidence: a.confidence,
+                })
+                .collect(),
+            generated_at: legacy.generated_at,
+            reason: legacy.reason,
+            period_days: legacy.period_days,
+            dropped_for_no_target: 0,
+            dropped_as_restatement: 0,
+        }
+    }
+}
+
+/// How many prose entries the bag keeps. Bounded so a long-lived project's
+/// metadata does not grow without limit; the rows themselves are not capped,
+/// so an old card renders without its evidence rather than disappearing.
+const MAX_CACHED_PROSE: usize = 100;
+
+fn cached(project: &Project) -> ActionsCache {
     project
         .metadata_json
         .get(METADATA_KEY)
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .map(|value| ActionsCache::from_value(&project.id, value))
+        .unwrap_or_default()
 }
 
-async fn store(
-    pool: &Pool<Sqlite>,
-    project: &Project,
-    data: &GrowthActionsData,
-) -> Result<(), String> {
+/// Merge this review's prose into what is already there, and write it back.
+///
+/// A merge rather than a replacement, because a regenerate that no longer
+/// proposes an action must not delete the figure that action cited — the action
+/// itself is still on the board, and may still be being measured. Entries whose
+/// fingerprint no longer matches any row are dropped: they belong to advice that
+/// no longer exists in any form.
+async fn store(pool: &Pool<Sqlite>, project: &Project, fresh: &ActionsCache) -> Result<(), String> {
+    let rows = growth_store::list_for_project(pool, &project.id)
+        .await
+        .unwrap_or_default();
+    // `list_for_project` is id DESC, so the index doubles as row recency.
+    let recency: HashMap<&str, usize> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, row)| (row.fingerprint.as_str(), i))
+        .collect();
+
+    let previous = cached(project);
+    let mut merged: Vec<CachedProse> = Vec::new();
+    let mut seen = HashSet::new();
+    for entry in fresh.prose.iter().chain(previous.prose.iter()) {
+        if !recency.contains_key(entry.fingerprint.as_str()) {
+            continue;
+        }
+        if !seen.insert(entry.fingerprint.clone()) {
+            continue;
+        }
+        merged.push(entry.clone());
+    }
+    if merged.len() > MAX_CACHED_PROSE {
+        // Choose what to keep by row recency, but keep the surviving entries in
+        // their existing order — that order is the last review's ranking, which
+        // `render_board` uses as its tiebreak.
+        let mut by_recency: Vec<&CachedProse> = merged.iter().collect();
+        by_recency.sort_by_key(|entry| {
+            recency
+                .get(entry.fingerprint.as_str())
+                .copied()
+                .unwrap_or(usize::MAX)
+        });
+        let keep: HashSet<String> = by_recency
+            .iter()
+            .take(MAX_CACHED_PROSE)
+            .map(|entry| entry.fingerprint.clone())
+            .collect();
+        merged.retain(|entry| keep.contains(&entry.fingerprint));
+    }
+
+    let data = ActionsCache {
+        prose: merged,
+        generated_at: fresh.generated_at.clone(),
+        reason: fresh.reason.clone(),
+        period_days: fresh.period_days,
+        dropped_for_no_target: fresh.dropped_for_no_target,
+        dropped_as_restatement: fresh.dropped_as_restatement,
+    };
+
     let mut metadata = if project.metadata_json.is_object() {
         project.metadata_json.clone()
     } else {
@@ -791,7 +1352,7 @@ async fn store(
     if let Some(obj) = metadata.as_object_mut() {
         obj.insert(
             METADATA_KEY.to_string(),
-            serde_json::to_value(data).map_err(|e| e.to_string())?,
+            serde_json::to_value(&data).map_err(|e| e.to_string())?,
         );
     }
     projects::update_project(
@@ -805,6 +1366,26 @@ async fn store(
     .await
     .map(|_| ())
     .map_err(|e| e.to_string())
+}
+
+/// Assemble the payload both seams return: the rows are the list, the bag adds
+/// prose and the facts about the last review.
+async fn assemble(
+    pool: &Pool<Sqlite>,
+    project: &Project,
+    cache: &ActionsCache,
+) -> GrowthActionsData {
+    let board = render_board(pool, &project.id, cache).await;
+    GrowthActionsData {
+        actions: board.active,
+        archived: board.archived,
+        dismissed: board.dismissed,
+        generated_at: cache.generated_at.clone(),
+        reason: cache.reason.clone(),
+        period_days: cache.period_days,
+        dropped_for_no_target: cache.dropped_for_no_target,
+        dropped_as_restatement: cache.dropped_as_restatement,
+    }
 }
 
 /// GET returns the cached list; POST regenerates.
@@ -821,9 +1402,7 @@ async fn get_actions(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
-    let mut data = cached(&project).unwrap_or_default();
-    hydrate(&pool, &project.id, &mut data).await;
-    Ok(Json(data))
+    Ok(Json(assemble(&pool, &project, &cached(&project)).await))
 }
 
 async fn regenerate(
@@ -843,58 +1422,165 @@ async fn regenerate(
     let period_days = 30;
     let summary = load_summary(&pool, &project.id, period_days).await;
     let now = chrono::Utc::now().to_rfc3339();
-    let learning = growth_store::render_learning(
-        &growth_store::learnable_outcomes(&pool, &project.id, 8)
-            .await
-            .unwrap_or_default(),
-    );
 
-    let mut data = match readiness(&summary) {
-        Err(reason) => GrowthActionsData {
-            actions: Vec::new(),
-            generated_at: Some(now),
-            reason: Some(reason),
-            period_days: Some(period_days),
-        },
-        Ok(()) => match generate(&project.name, &summary, learning).await {
-            Ok(actions) if actions.is_empty() => GrowthActionsData {
-                actions,
-                generated_at: Some(now),
-                reason: Some(
-                    "The data does not support a specific action right now — nothing here is \
-                     strong enough to act on."
-                        .to_string(),
-                ),
-                period_days: Some(period_days),
-            },
-            Ok(actions) => GrowthActionsData {
-                actions,
-                generated_at: Some(now),
-                reason: None,
-                period_days: Some(period_days),
-            },
-            Err(reason) => GrowthActionsData {
-                actions: Vec::new(),
-                generated_at: Some(now),
-                reason: Some(reason),
-                period_days: Some(period_days),
-            },
-        },
+    let mut dropped_for_no_target = 0usize;
+    let (actions, reason) = match readiness(&summary) {
+        Err(reason) => (Vec::new(), Some(reason)),
+        Ok(()) => {
+            // The board is what the generator was blind to. It is rendered from
+            // the same `growth_store::board` a new suggestion is then checked
+            // against, so the prompt and the guard can never describe different
+            // sets of open work.
+            let board = growth_store::render_board(
+                &growth_store::board(&pool, &project.id)
+                    .await
+                    .unwrap_or_default(),
+            );
+            let learning = growth_store::render_learning(
+                &growth_store::learnable_outcomes(&pool, &project.id, 8)
+                    .await
+                    .unwrap_or_default(),
+            );
+            let pooled_block = pooled_learning(&pool, &project.id).await;
+            let brief = GenerationBrief {
+                project_name: &project.name,
+                summary: &summary,
+                board,
+                learning,
+                pooled: pooled_block,
+            };
+
+            match generate(&brief, None).await {
+                Err(reason) => (Vec::new(), Some(reason)),
+                Ok(first) => {
+                    let proposed = first.len();
+                    let (mut kept, dropped) = split_targeted(first);
+                    let mut refused: BTreeSet<String> = BTreeSet::new();
+                    for (action, why) in &dropped {
+                        tracing::warn!(
+                            target: "permagentd::growth",
+                            "dropped \"{}\": {why}", action.title
+                        );
+                        refused.insert(action.title.clone());
+                    }
+                    if !dropped.is_empty() {
+                        // Exactly one corrective. A second would be a loop, and
+                        // a model that ignores a correction naming its own
+                        // offending titles will ignore the next one too.
+                        match generate(&brief, Some(&retry_correction(&dropped))).await {
+                            Ok(second) => {
+                                let (kept_again, dropped_again) = split_targeted(second);
+                                for (action, why) in &dropped_again {
+                                    tracing::warn!(
+                                        target: "permagentd::growth",
+                                        "dropped on retry \"{}\": {why}", action.title
+                                    );
+                                    refused.insert(action.title.clone());
+                                }
+                                kept = merge_attempts(kept, kept_again, &project.id);
+                            }
+                            Err(e) => tracing::warn!(
+                                target: "permagentd::growth",
+                                "the corrective retry failed: {e}"
+                            ),
+                        }
+                    }
+                    // A title the retry brought back correctly was not dropped:
+                    // the user got the advice, which is what the counter is
+                    // reporting on.
+                    for action in &kept {
+                        refused.remove(&action.title);
+                    }
+                    dropped_for_no_target = refused.len();
+
+                    let reason = if kept.is_empty() && proposed > 0 {
+                        Some(format!(
+                            "This review proposed {proposed} action(s) but none of them named a \
+                             metric this system can measure, so none were kept. Run it again — \
+                             that is the agent's failure, not your data's."
+                        ))
+                    } else if kept.is_empty() {
+                        Some(
+                            "The data does not support a specific action right now — nothing here \
+                             is strong enough to act on."
+                                .to_string(),
+                        )
+                    } else {
+                        None
+                    };
+                    (kept, reason)
+                }
+            }
+        }
     };
 
     // Identity first, then rank, then cache: ranking reads what actually worked
     // on this project, which only exists once the rows are there.
-    persist(&pool, &project.id, &data.actions).await;
-    data.actions = rank_with_history(
-        std::mem::take(&mut data.actions),
-        &category_history(&pool, &project.id).await,
-    );
+    let ranked = rank_with_history(actions, &category_history(&pool, &project.id).await);
+    let persisted = persist(&pool, &project.id, &ranked).await;
 
-    if let Err(e) = store(&pool, &project, &data).await {
+    let cache = ActionsCache {
+        // Only actions that reached a row contribute prose. A restatement was
+        // refused, so its evidence would be an orphan the next merge deletes
+        // anyway.
+        prose: ranked
+            .iter()
+            .filter_map(|action| {
+                let fingerprint =
+                    growth_store::fingerprint(&project.id, &action.title, &action.recommendation);
+                persisted
+                    .rows
+                    .contains_key(&fingerprint)
+                    .then(|| CachedProse {
+                        fingerprint,
+                        evidence: action.evidence.clone(),
+                        steps: action.steps.clone(),
+                        impact: action.impact.clone(),
+                        confidence: action.confidence.clone(),
+                    })
+            })
+            .collect(),
+        generated_at: Some(now),
+        reason,
+        period_days: Some(period_days),
+        dropped_for_no_target,
+        dropped_as_restatement: persisted.restated,
+    };
+    if let Err(e) = store(&pool, &project, &cache).await {
         tracing::warn!(target: "permagentd::growth", "could not cache growth actions: {e}");
     }
-    hydrate(&pool, &project.id, &mut data).await;
-    Ok(Json(data))
+
+    // Re-read so the response is assembled from the MERGED cache rather than
+    // this review's half of it. Otherwise a regenerate would render a retained
+    // action with empty evidence and the very next GET would render it with the
+    // evidence intact, which reads as data loss and is not.
+    let project = projects::get_project(&pool, &project.id)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(project);
+    Ok(Json(assemble(&pool, &project, &cached(&project)).await))
+}
+
+/// The pooled cross-project block for the brief, or nothing.
+///
+/// Behind the same `count(*)` guard as `transfer_notes`: until the first window
+/// closes anywhere there is nothing to pool, and segmenting every active
+/// project to discover that on every review is a cost with no possible return.
+async fn pooled_learning(pool: &Pool<Sqlite>, project_id: &str) -> Option<String> {
+    let outcomes: i64 = sqlx::query_scalar("SELECT count(*) FROM growth_action_outcomes")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+    if outcomes == 0 {
+        return None;
+    }
+    let now = chrono::Utc::now();
+    let segment = pooled::segment_for(pool, project_id, now).await;
+    let pools = pooled::pool_by_category(pool, project_id, &segment, now)
+        .await
+        .unwrap_or_default();
+    pooled::render_pool(&pools, &segment)
 }
 
 // ── Pre-registration, verification, measurement ──────────────────────────────
@@ -959,6 +1645,67 @@ fn reject_late_reregistration(
     ))
 }
 
+/// What a verify call is allowed to write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VerifyMode {
+    /// First verification: pre-register the claim, freeze the baseline, stamp
+    /// `verified_at`.
+    Record,
+    /// Already verified: re-run the strategies, report what they find, and
+    /// write nothing at all.
+    Recheck,
+}
+
+/// Which one this call is.
+///
+/// The panel offers a "Re-check" button because the evidence a check found is
+/// not persisted — there is no `verified_detail` column — so after a reload the
+/// badge has nothing behind it and the only route back to "which commit, which
+/// path" is to ask again. That button must not cost anything, and taking the
+/// `Record` path twice costs a great deal:
+///
+///   * `record_verification` sets `verified_at` to now, and `verified_at` IS
+///     the pivot every comparison window is measured from
+///     (`metrics::pivot_date`). A second write slides the after-windows forward
+///     while the baseline stays frozen at the first verification, so the before
+///     and after no longer meet — and the verdict would then be computed with
+///     the result already in view, which is the exact unfalsifiability the
+///     pre-registration gate exists to prevent.
+///   * it also resets `status` to `verified`, dragging a judged action back
+///     into measurement, and the `done` pre-registration write does the same
+///     from the other end.
+fn verify_mode(action: &growth_store::GrowthActionRow) -> VerifyMode {
+    if action.verified_at.is_some() {
+        VerifyMode::Recheck
+    } else {
+        VerifyMode::Record
+    }
+}
+
+/// Refuse to archive something nothing has happened to.
+///
+/// Archiving is what releases an action's text for re-proposal — `board`
+/// excludes archived rows, and `restates` is checked against `board`. Archiving
+/// a card that was never acted on would therefore hand the same advice straight
+/// back on the next review, which is not what "file it away" means to anyone.
+/// Dismissal is the control for advice the user does not want, and it keeps the
+/// text off the board.
+fn reject_pointless_archive(
+    action: &growth_store::GrowthActionRow,
+    requested: &str,
+) -> Result<(), (StatusCode, String)> {
+    if requested == growth_store::STATUS_ARCHIVED && action.status == growth_store::STATUS_SUGGESTED
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Nothing has happened to this action yet, so there is nothing to file away. Dismiss \
+             it instead."
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Move an action through its lifecycle, pre-registering what it claims it will
 /// move.
 ///
@@ -970,7 +1717,7 @@ async fn set_action_status(
     State(state): State<Arc<AppState>>,
     Path((project_id, action_id)): Path<(String, String)>,
     Json(body): Json<StatusRequest>,
-) -> Result<Json<ActionIdentity>, (StatusCode, String)> {
+) -> Result<Json<ActionIdentity>, ApiError> {
     let pool = state
         .session_manager()
         .pool_clone()
@@ -989,6 +1736,7 @@ async fn set_action_status(
     let target = parse_target(body.target_metric.as_deref(), body.target_dir.as_deref())
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     reject_late_reregistration(&action, target)?;
+    reject_pointless_archive(&action, &body.status)?;
 
     let will_have_target =
         target.is_some() || (action.target_metric.is_some() && action.target_dir.is_some());
@@ -999,7 +1747,8 @@ async fn set_action_status(
              pageviews, sessions, aeo_visits, bounce_rate) and targetDir (up or down) — a metric \
              chosen after the result is known cannot be wrong."
                 .to_string(),
-        ));
+        )
+            .into());
     }
 
     let updated = growth_store::set_status(&pool, &project.id, &action_id, &body.status, target)
@@ -1043,7 +1792,7 @@ async fn verify_action(
     State(state): State<Arc<AppState>>,
     Path((project_id, action_id)): Path<(String, String)>,
     body: Option<Json<VerifyRequest>>,
-) -> Result<Json<VerifyResponse>, (StatusCode, String)> {
+) -> Result<Json<VerifyResponse>, ApiError> {
     let body = body.map(|Json(b)| b).unwrap_or_default();
     let pool = state
         .session_manager()
@@ -1076,9 +1825,14 @@ async fn verify_action(
             "This action has no pre-registered metric, so a verdict computed for it could not be \
              wrong. Send targetMetric and targetDir first."
                 .to_string(),
-        ));
+        )
+            .into());
     };
-    if supplied.is_some() {
+    // Every write below is skipped for a re-check. See `verify_mode` for what
+    // taking the recording path a second time would do to the measurement.
+    let rechecking = verify_mode(&action) == VerifyMode::Recheck;
+
+    if supplied.is_some() && !rechecking {
         growth_store::set_status(
             &pool,
             &project.id,
@@ -1098,6 +1852,23 @@ async fn verify_action(
         body.self_attested,
     )
     .await;
+
+    if rechecking {
+        // `verified` reports the stored fact, which has not changed; `checks`
+        // reports what the strategies find NOW. They can honestly disagree — a
+        // commit can be reverted, a page can be edited — and saying so is the
+        // point of showing the checks at all.
+        return Ok(Json(VerifyResponse {
+            verified: true,
+            identity: identity_of(&pool, &action).await,
+            checks: outcome.checks,
+            baseline: action
+                .baseline_json
+                .as_deref()
+                .and_then(|raw| serde_json::from_str::<Baseline>(raw).ok()),
+            reason: None,
+        }));
+    }
 
     let Some(verified_by) = outcome.verified_by else {
         // Not an error: the change may simply not have shipped yet. The checks
@@ -1162,7 +1933,7 @@ async fn verify_action(
 /// Judge every due window now instead of waiting for the nightly pass.
 async fn measure_now(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     let pool = state
         .session_manager()
         .pool_clone()
@@ -1180,23 +1951,7 @@ async fn measure_now(
 }
 
 async fn identity_of(pool: &Pool<Sqlite>, row: &growth_store::GrowthActionRow) -> ActionIdentity {
-    let outcomes = growth_store::outcomes_for(pool, &row.id)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|o| OutcomeView {
-            window_days: o.window_days,
-            verdict: o.verdict,
-            rationale: o.rationale,
-            delta_pct: o.delta_pct,
-            confounders: o
-                .confounders
-                .as_deref()
-                .and_then(|raw| serde_json::from_str(raw).ok())
-                .unwrap_or_default(),
-            judged_at: o.judged_at,
-        })
-        .collect();
+    let outcomes = outcome_views(pool, &row.id).await;
     ActionIdentity {
         id: row.id.clone(),
         status: row.status.clone(),
@@ -1433,6 +2188,26 @@ mod tests {
             confidence: confidence.into(),
             target_metric: None,
             target_dir: None,
+            transfer: None,
+            identity: None,
+        }
+    }
+
+    /// A parsed action carrying whatever prediction the model made.
+    fn targeted(title: &str, metric: Option<&str>, dir: Option<&str>) -> GrowthAction {
+        GrowthAction {
+            title: title.into(),
+            evidence: "1200 pageviews".into(),
+            recommendation: format!("recommendation for {title}"),
+            steps: Vec::new(),
+            artifact_kind: "none".into(),
+            artifact: None,
+            category: "seo".into(),
+            impact: "high".into(),
+            confidence: "medium".into(),
+            target_metric: metric.map(str::to_string),
+            target_dir: dir.map(str::to_string),
+            transfer: None,
             identity: None,
         }
     }
@@ -1524,6 +2299,252 @@ mod tests {
         }
     }
 
+    /// REGRESSION. SYSTEM used to end the pre-registration paragraph with "If
+    /// an action genuinely does not target any of these, omit both fields
+    /// rather than guessing". The model took that escape hatch on every one of
+    /// the seven live actions, including a homepage rewrite that obviously
+    /// targets bounce rate, which left `target_metric` NULL and hard-blocked
+    /// verification, measurement and the whole loop behind it.
+    #[test]
+    fn the_system_prompt_no_longer_offers_a_way_to_skip_the_target() {
+        assert!(
+            !SYSTEM.contains("omit both fields"),
+            "the escape hatch is back"
+        );
+        assert!(SYSTEM.contains("EVERY action must carry both fields"));
+        assert!(SYSTEM.contains("discarded and never reaches the user"));
+    }
+
+    /// REGRESSION. SYSTEM never mentioned that the project already had open
+    /// actions, so on 2026-08-19 the generator proposed three that were rewords
+    /// of three it had proposed on 2026-08-14. Telling it the rule is only half
+    /// the fix — `render_brief` supplies the board itself — but without the
+    /// rule the board reads as background rather than as a constraint.
+    #[test]
+    fn the_system_prompt_forbids_restating_an_open_action() {
+        assert!(SYSTEM.contains("already on this project's board"));
+        assert!(SYSTEM.contains("Do NOT restate"));
+    }
+
+    #[test]
+    fn an_action_with_no_target_is_dropped_not_persisted_untargeted() {
+        let (kept, dropped) = split_targeted(vec![
+            targeted("no prediction", None, None),
+            targeted("real one", Some("bounce_rate"), Some("down")),
+        ]);
+        assert_eq!(titles(&kept), vec!["real one"]);
+        assert_eq!(dropped.len(), 1);
+        assert_eq!(dropped[0].0.title, "no prediction");
+        assert_eq!(dropped[0].1, "named no target metric");
+        // The dropped action never reaches the seed list: `persist` is only ever
+        // handed the kept vec.
+        assert!(!kept.iter().any(|a| a.title == "no prediction"));
+    }
+
+    /// Half a prediction is not a prediction: "sessions" with no direction
+    /// scores as a success whichever way sessions move.
+    #[test]
+    fn a_metric_without_a_direction_is_not_half_kept() {
+        let (kept, dropped) = split_targeted(vec![targeted("half", Some("sessions"), None)]);
+        assert!(kept.is_empty());
+        assert_eq!(dropped[0].1, "named sessions but no direction");
+
+        let (kept, dropped) = split_targeted(vec![targeted("other half", None, Some("up"))]);
+        assert!(kept.is_empty());
+        assert_eq!(dropped[0].1, "named a direction but no metric");
+    }
+
+    #[test]
+    fn the_retry_correction_names_every_offender_and_the_legal_values() {
+        let (_, dropped) = split_targeted(vec![
+            targeted("first offender", None, None),
+            targeted("second offender", Some("sessions"), None),
+        ]);
+        let text = retry_correction(&dropped);
+        assert!(text.contains("first offender"), "{text}");
+        assert!(text.contains("second offender"), "{text}");
+        assert!(text.contains("named no target metric"), "{text}");
+        assert!(text.contains("named sessions but no direction"), "{text}");
+        for metric in ["pageviews", "sessions", "aeo_visits", "bounce_rate"] {
+            assert!(text.contains(metric), "{metric} missing from {text}");
+        }
+        assert!(text.contains("up"), "{text}");
+        assert!(text.contains("down"), "{text}");
+    }
+
+    /// Discarding the first attempt because one sibling was malformed would
+    /// lose advice the user could have used.
+    #[test]
+    fn merging_two_attempts_keeps_the_first_attempts_good_actions() {
+        let first = vec![
+            targeted("kept from the first pass", Some("sessions"), Some("up")),
+            targeted("proposed twice", Some("pageviews"), Some("up")),
+        ];
+        let second = vec![
+            targeted("proposed twice", Some("pageviews"), Some("up")),
+            targeted("fixed on retry", Some("bounce_rate"), Some("down")),
+        ];
+        let merged = merge_attempts(first, second, "p1");
+        assert_eq!(
+            titles(&merged),
+            vec![
+                "kept from the first pass",
+                "proposed twice",
+                "fixed on retry"
+            ]
+        );
+
+        // The panel stays actionable: five is the cap the parser already
+        // enforces per reply, and two replies must not double it.
+        let many: Vec<GrowthAction> = (0..4)
+            .map(|i| targeted(&format!("a{i}"), Some("sessions"), Some("up")))
+            .collect();
+        let more: Vec<GrowthAction> = (0..4)
+            .map(|i| targeted(&format!("b{i}"), Some("sessions"), Some("up")))
+            .collect();
+        assert_eq!(merge_attempts(many, more, "p1").len(), 5);
+    }
+
+    #[test]
+    fn the_brief_carries_the_board_the_learning_and_the_pool() {
+        let summary = busy();
+        let brief = GenerationBrief {
+            project_name: "GrocerySaver",
+            summary: &summary,
+            board: Some(
+                "Already on this project's board (1). Do NOT restate any of these:\n- \"x\" (seo) \
+                 — being measured\n"
+                    .to_string(),
+            ),
+            learning: Some("Previously tried on this project (1 measured action):\n".to_string()),
+            pooled: Some(
+                "Across your other active projects, by category (one measured action per row, \
+                 longest window):\n"
+                    .to_string(),
+            ),
+        };
+        let text = render_brief(&brief, None);
+        let at = |needle: &str| {
+            text.find(needle)
+                .unwrap_or_else(|| panic!("{needle}\n{text}"))
+        };
+        assert!(at("Pageviews:") < at("Already on this project's board"));
+        assert!(at("Already on this project's board") < at("Previously tried on this project"));
+        assert!(at("Previously tried on this project") < at("Across your other active projects"));
+
+        let corrected = render_brief(&brief, Some("Your previous reply was wrong."));
+        assert!(
+            corrected
+                .trim_end()
+                .ends_with("Your previous reply was wrong."),
+            "{corrected}"
+        );
+    }
+
+    /// MIGRATION regression. The bag changed shape from `{actions:[…]}` to
+    /// `{prose:[…]}`. Without this upcast the seven live actions would silently
+    /// lose their evidence, steps, impact and confidence the first time the
+    /// panel was opened — and the rows themselves would look untouched, so
+    /// nothing would appear to be wrong.
+    #[test]
+    fn the_old_metadata_shape_is_upcast_rather_than_discarded() {
+        let legacy = serde_json::json!({
+            "actions": [{
+                "title": "Expand the grocery-stores post",
+                "evidence": "8 of 37 pageviews land on it",
+                "recommendation": "Expand and structure it",
+                "steps": ["Add an FAQ section", "Add schema.org FAQPage"],
+                "artifactKind": "prompt",
+                "artifact": "In this repo, open …",
+                "category": "aeo",
+                "impact": "high",
+                "confidence": "medium"
+            }],
+            "generatedAt": "2026-08-14T00:00:00Z",
+            "reason": null,
+            "periodDays": 30
+        });
+        let cache = ActionsCache::from_value("p1", &legacy);
+        assert_eq!(cache.prose.len(), 1);
+        assert_eq!(
+            cache.prose[0].fingerprint,
+            growth_store::fingerprint(
+                "p1",
+                "Expand the grocery-stores post",
+                "Expand and structure it"
+            ),
+            "the prose must find its row again"
+        );
+        assert_eq!(cache.prose[0].evidence, "8 of 37 pageviews land on it");
+        assert_eq!(cache.prose[0].steps.len(), 2);
+        assert_eq!(cache.prose[0].impact, "high");
+        assert_eq!(cache.prose[0].confidence, "medium");
+        assert_eq!(cache.generated_at.as_deref(), Some("2026-08-14T00:00:00Z"));
+        assert_eq!(cache.period_days, Some(30));
+
+        // And the new shape is read directly, not run through the upcast.
+        let fresh = serde_json::to_value(&cache).unwrap();
+        assert_eq!(ActionsCache::from_value("p1", &fresh), cache);
+    }
+
+    #[test]
+    fn archiving_something_that_never_happened_is_refused_with_a_reason() {
+        let mut suggested = row(None, None);
+        suggested.status = growth_store::STATUS_SUGGESTED.into();
+        let err = reject_pointless_archive(&suggested, growth_store::STATUS_ARCHIVED).unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert!(err.1.contains("Dismiss it instead"), "{}", err.1);
+
+        // Every state where something actually happened may be filed away.
+        for status in [
+            growth_store::STATUS_DONE,
+            growth_store::STATUS_VERIFIED,
+            growth_store::STATUS_MEASURING,
+            growth_store::STATUS_JUDGED,
+            growth_store::STATUS_DISMISSED,
+        ] {
+            let mut action = row(None, None);
+            action.status = status.into();
+            assert!(
+                reject_pointless_archive(&action, growth_store::STATUS_ARCHIVED).is_ok(),
+                "{status} should be archivable"
+            );
+        }
+        // And the gate touches nothing else.
+        assert!(reject_pointless_archive(&suggested, growth_store::STATUS_DONE).is_ok());
+    }
+
+    /// REGRESSION for the "Re-check" button the panel now offers on a verified
+    /// card.
+    ///
+    /// Before this, EVERY verify call took the recording path: it wrote
+    /// `status = 'done'` with the supplied target, then `record_verification`
+    /// stamped `verified_at = now` and `status = 'verified'`. Clicking Re-check
+    /// on a measuring action would therefore have slid the measurement pivot
+    /// forward — `verified_at` is what `metrics::pivot_date` reads — leaving
+    /// the after-windows compared against a baseline frozen days earlier, and
+    /// dragged a judged action back into `measuring`. Both are silent and both
+    /// are data-visible, which is why the classification is a named function
+    /// with a name rather than an inline `is_some()`.
+    #[test]
+    fn a_second_verify_reads_and_never_moves_the_pivot() {
+        let verified = row(Some(("sessions", "up")), Some("{}"));
+        assert_eq!(verify_mode(&verified), VerifyMode::Recheck);
+
+        // A judged action is still a re-check: it has been verified, so its
+        // pivot and its outcomes are settled.
+        let mut judged = verified.clone();
+        judged.status = growth_store::STATUS_JUDGED.into();
+        assert_eq!(verify_mode(&judged), VerifyMode::Recheck);
+
+        // The first verify is the only one that writes.
+        let mut fresh = row(Some(("sessions", "up")), None);
+        fresh.status = growth_store::STATUS_SUGGESTED.into();
+        fresh.verified_by = None;
+        fresh.verified_at = None;
+        assert_eq!(verify_mode(&fresh), VerifyMode::Record);
+    }
+
     /// Once the baseline is frozen the claim is fixed. Editing it afterwards
     /// would mean choosing the hypothesis with the result already in view.
     #[test]
@@ -1546,5 +2567,474 @@ mod tests {
             Some((TargetMetric::Pageviews, TargetDir::Down))
         )
         .is_ok());
+    }
+    // ── The board, rendered from the durable rows ────────────────────────────
+
+    mod board {
+        use super::*;
+        use permagent::projects::CreateProject;
+        use permagent::session::spectral_schema::init_spectral_db;
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        async fn pool() -> Pool<Sqlite> {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .unwrap();
+            init_spectral_db(&pool).await.unwrap();
+            pool
+        }
+
+        async fn project(pool: &Pool<Sqlite>, name: &str) -> Project {
+            permagent::projects::create_project(
+                pool,
+                CreateProject {
+                    name: name.to_string(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+        }
+
+        fn prose_for(project_id: &str, action: &GrowthAction) -> CachedProse {
+            CachedProse {
+                fingerprint: growth_store::fingerprint(
+                    project_id,
+                    &action.title,
+                    &action.recommendation,
+                ),
+                evidence: action.evidence.clone(),
+                steps: action.steps.clone(),
+                impact: action.impact.clone(),
+                confidence: action.confidence.clone(),
+            }
+        }
+
+        /// REGRESSION for the wholesale-overwritten bag. `hydrate` walked the
+        /// NEW cache and attached identity to whatever it found there, so an
+        /// action the latest review did not re-emit was simply absent from the
+        /// panel — while the sweep went on writing outcomes for it. The card
+        /// the user was waiting on disappeared and nothing said why.
+        #[tokio::test]
+        async fn a_measuring_action_survives_a_review_that_did_not_re_emit_it() {
+            let pool = pool().await;
+            let project = project(&pool, "GrocerySaver").await;
+            let underway = targeted("Underway", Some("sessions"), Some("up"));
+            let fresh = targeted("Freshly suggested", Some("pageviews"), Some("up"));
+            persist(&pool, &project.id, &[underway.clone(), fresh.clone()]).await;
+
+            let row = growth_store::get_by_fingerprint(
+                &pool,
+                &project.id,
+                &growth_store::fingerprint(&project.id, &underway.title, &underway.recommendation),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            growth_store::set_status(
+                &pool,
+                &project.id,
+                &row.id,
+                growth_store::STATUS_MEASURING,
+                None,
+            )
+            .await
+            .unwrap();
+
+            // The new review only proposed the other action.
+            let cache = ActionsCache {
+                prose: vec![prose_for(&project.id, &fresh)],
+                ..Default::default()
+            };
+            let board = render_board(&pool, &project.id, &cache).await;
+            let actions = board.active;
+            assert!(board.archived.is_empty());
+            let underway_card = actions
+                .iter()
+                .find(|a| a.title == "Underway")
+                .expect("an in-flight action must not vanish from the panel");
+            assert_eq!(
+                underway_card.identity.as_ref().unwrap().status,
+                growth_store::STATUS_MEASURING
+            );
+            assert_eq!(underway_card.identity.as_ref().unwrap().id, row.id);
+            // The row is the truth; absent prose renders as nothing, never as a
+            // guess.
+            assert_eq!(underway_card.evidence, "");
+            assert_eq!(underway_card.impact, "");
+            assert!(actions.iter().any(|a| a.title == "Freshly suggested"));
+        }
+
+        /// The merge in `store`: a regenerate that no longer proposes an action
+        /// must not delete the figure that action cited, because the action
+        /// itself is still on the board.
+        #[tokio::test]
+        async fn a_regenerate_keeps_the_cached_evidence_of_an_action_it_did_not_re_emit() {
+            let pool = pool().await;
+            let project = project(&pool, "GrocerySaver").await;
+            let kept = targeted("Still on the board", Some("sessions"), Some("up"));
+            persist(&pool, &project.id, std::slice::from_ref(&kept)).await;
+
+            let previous = ActionsCache {
+                prose: vec![
+                    prose_for(&project.id, &kept),
+                    // Prose for advice no row has ever matched.
+                    CachedProse {
+                        fingerprint: "orphaned".into(),
+                        evidence: "e".into(),
+                        steps: Vec::new(),
+                        impact: "high".into(),
+                        confidence: "high".into(),
+                    },
+                ],
+                ..Default::default()
+            };
+            store(&pool, &project, &previous).await.unwrap();
+            let project = permagent::projects::get_project(&pool, &project.id)
+                .await
+                .unwrap()
+                .unwrap();
+
+            // The next review proposes something else entirely.
+            let other = targeted("Something else", Some("pageviews"), Some("up"));
+            persist(&pool, &project.id, std::slice::from_ref(&other)).await;
+            let fresh = ActionsCache {
+                prose: vec![prose_for(&project.id, &other)],
+                ..Default::default()
+            };
+            store(&pool, &project, &fresh).await.unwrap();
+
+            let project = permagent::projects::get_project(&pool, &project.id)
+                .await
+                .unwrap()
+                .unwrap();
+            let merged = cached(&project);
+            let fingerprints: Vec<&str> = merged
+                .prose
+                .iter()
+                .map(|p| p.fingerprint.as_str())
+                .collect();
+            assert!(fingerprints.contains(
+                &growth_store::fingerprint(&project.id, &kept.title, &kept.recommendation).as_str()
+            ));
+            assert!(
+                !fingerprints.contains(&"orphaned"),
+                "prose matching no row is dropped"
+            );
+            assert_eq!(merged.prose.len(), 2);
+        }
+
+        /// The cap is on the bag, not on the rows: an old card renders without
+        /// its evidence rather than disappearing.
+        #[tokio::test]
+        async fn the_prose_cache_is_capped() {
+            let pool = pool().await;
+            let project = project(&pool, "Long lived").await;
+            let actions: Vec<GrowthAction> = (0..MAX_CACHED_PROSE + 1)
+                .map(|i| targeted(&format!("action {i}"), Some("sessions"), Some("up")))
+                .collect();
+            persist(&pool, &project.id, &actions).await;
+            let cache = ActionsCache {
+                prose: actions.iter().map(|a| prose_for(&project.id, a)).collect(),
+                ..Default::default()
+            };
+            store(&pool, &project, &cache).await.unwrap();
+            let project = permagent::projects::get_project(&pool, &project.id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(cached(&project).prose.len(), MAX_CACHED_PROSE);
+        }
+
+        #[tokio::test]
+        async fn an_archived_action_leaves_the_active_list_without_leaving_the_payload() {
+            let pool = pool().await;
+            let project = project(&pool, "GrocerySaver").await;
+            let filed = targeted("Filed away", Some("sessions"), Some("up"));
+            let live = targeted("Still live", Some("pageviews"), Some("up"));
+            persist(&pool, &project.id, &[filed.clone(), live.clone()]).await;
+
+            let row = growth_store::get_by_fingerprint(
+                &pool,
+                &project.id,
+                &growth_store::fingerprint(&project.id, &filed.title, &filed.recommendation),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            growth_store::record_verification(
+                &pool,
+                &project.id,
+                &row.id,
+                growth_store::VERIFIED_BY_GIT,
+                "2026-08-12T00:00:00Z",
+                None,
+            )
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO growth_action_outcomes
+                    (action_id, window_days, before_json, after_json, delta_pct, verdict,
+                     rationale, confounders, judged_at)
+                 VALUES (?1, 28, '{}', '{}', 0.2, 'helped', 'fixture', NULL,
+                         '2026-09-10T00:00:00Z')",
+            )
+            .bind(&row.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+            growth_store::set_status(
+                &pool,
+                &project.id,
+                &row.id,
+                growth_store::STATUS_ARCHIVED,
+                None,
+            )
+            .await
+            .unwrap();
+
+            let board = render_board(&pool, &project.id, &ActionsCache::default()).await;
+            assert_eq!(titles(&board.active), vec!["Still live"]);
+            assert_eq!(titles(&board.archived), vec!["Filed away"]);
+            let identity = board.archived[0].identity.as_ref().unwrap();
+            assert_eq!(identity.status, growth_store::STATUS_ARCHIVED);
+            assert_eq!(identity.outcomes.len(), 1, "the outcomes travel with it");
+            assert_eq!(identity.outcomes[0].verdict, "helped");
+        }
+
+        /// In-flight work stays visible below new suggestions rather than being
+        /// pushed off by them, and a card with no cache entry sorts last within
+        /// its bucket instead of vanishing.
+        #[tokio::test]
+        async fn the_active_list_keeps_in_flight_work_below_new_suggestions() {
+            let pool = pool().await;
+            let project = project(&pool, "GrocerySaver").await;
+            let seeds = [
+                ("dismissed", growth_store::STATUS_DISMISSED),
+                ("judged", growth_store::STATUS_JUDGED),
+                ("measuring", growth_store::STATUS_MEASURING),
+                ("second suggestion", growth_store::STATUS_SUGGESTED),
+                ("first suggestion", growth_store::STATUS_SUGGESTED),
+            ];
+            let mut actions = Vec::new();
+            for (title, status) in seeds {
+                let action = targeted(title, Some("sessions"), Some("up"));
+                persist(&pool, &project.id, std::slice::from_ref(&action)).await;
+                let row = growth_store::get_by_fingerprint(
+                    &pool,
+                    &project.id,
+                    &growth_store::fingerprint(&project.id, &action.title, &action.recommendation),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                growth_store::set_status(&pool, &project.id, &row.id, status, None)
+                    .await
+                    .unwrap();
+                actions.push(action);
+            }
+
+            // The last review ranked the two suggestions in this order and knew
+            // nothing about the rest.
+            let cache = ActionsCache {
+                prose: vec![
+                    prose_for(&project.id, &actions[4]),
+                    prose_for(&project.id, &actions[3]),
+                ],
+                ..Default::default()
+            };
+            let board = render_board(&pool, &project.id, &cache).await;
+            assert_eq!(
+                titles(&board.active),
+                vec![
+                    "first suggestion",
+                    "second suggestion",
+                    "measuring",
+                    "judged"
+                ]
+            );
+            // Dismissed advice leaves the active list entirely. It used to sort
+            // to the bottom of it and stay there for good: `suggested` cannot be
+            // archived, so with dismissal not removing anything either, no
+            // control the user could press ever shortened the panel.
+            assert_eq!(titles(&board.dismissed), vec!["dismissed"]);
+        }
+
+        /// Write a judged outcome for an action on another project, so the
+        /// pooled path has something real to find.
+        async fn measured(
+            pool: &Pool<Sqlite>,
+            project_id: &str,
+            title: &str,
+            category: &str,
+            verdict: &str,
+            delta: f64,
+        ) {
+            let row = growth_store::upsert_suggested(
+                pool,
+                project_id,
+                &ActionSeed {
+                    title: title.into(),
+                    recommendation: format!("recommendation for {title}"),
+                    category: Some(category.into()),
+                    artifact_kind: Some("prompt".into()),
+                    artifact: None,
+                    target_metric: Some("sessions".into()),
+                    target_dir: Some("up".into()),
+                },
+            )
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO growth_action_outcomes
+                    (action_id, window_days, before_json, after_json, delta_pct, verdict,
+                     rationale, confounders, judged_at)
+                 VALUES (?1, 28, '{}', '{}', ?2, ?3, 'fixture', NULL, '2026-08-18T00:00:00Z')",
+            )
+            .bind(&row.id)
+            .bind(delta)
+            .bind(verdict)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+
+        /// REGRESSION for the restatement guard at the point it actually drops
+        /// something. `restates` was unit-tested pure, but nothing exercised
+        /// `persist`, which is what refuses the row and increments the counter
+        /// the panel prints. Every existing `persist` test used titles far
+        /// enough apart to fall under the token floors, so the whole
+        /// `if !already_here { ... restates ... continue }` block could be
+        /// deleted with the suite still green.
+        #[tokio::test]
+        async fn a_reworded_suggestion_is_dropped_rather_than_minted_as_a_second_card() {
+            let pool = pool().await;
+            let project = project(&pool, "GrocerySaver").await;
+            let first = GrowthAction {
+                title: "Instrument missing conversion funnel events to understand why 95% bounce"
+                    .into(),
+                recommendation: "No conversion events are recorded, so the funnel cannot be \
+                                 diagnosed. Add search and detail-view events."
+                    .into(),
+                ..targeted("ignored", Some("sessions"), Some("up"))
+            };
+            let outcome = persist(&pool, &project.id, std::slice::from_ref(&first)).await;
+            assert_eq!(outcome.rows.len(), 1);
+            assert_eq!(outcome.restated, 0);
+
+            // The 2026-08-19 reword: different words, different fingerprint,
+            // the same advice.
+            let reword = GrowthAction {
+                title: "Instrument missing conversion funnel events to diagnose the 99% bounce"
+                    .into(),
+                recommendation: "Conversion events are still not recorded. Instrument search, \
+                                 category and detail-view events."
+                    .into(),
+                ..targeted("ignored", Some("sessions"), Some("up"))
+            };
+            let outcome = persist(&pool, &project.id, std::slice::from_ref(&reword)).await;
+            assert!(outcome.rows.is_empty(), "the reword must not be persisted");
+            assert_eq!(outcome.restated, 1, "and the drop must be counted");
+            assert_eq!(
+                growth_store::list_for_project(&pool, &project.id)
+                    .await
+                    .unwrap()
+                    .len(),
+                1,
+                "one piece of advice is one row"
+            );
+        }
+
+        /// The other half of the same guard, and the one `persist`'s comment
+        /// claims but nothing checked: the board is grown as the loop runs, so
+        /// two actions restating EACH OTHER inside a single review are caught
+        /// too. Without the `board.push` after each upsert this passes twice.
+        #[tokio::test]
+        async fn two_suggestions_in_one_review_that_restate_each_other_yield_one_card() {
+            let pool = pool().await;
+            let project = project(&pool, "GrocerySaver").await;
+            let batch = vec![
+                GrowthAction {
+                    title: "Instrument missing conversion funnel events to understand the bounce"
+                        .into(),
+                    recommendation: "Add search and detail-view conversion events.".into(),
+                    ..targeted("ignored", Some("sessions"), Some("up"))
+                },
+                GrowthAction {
+                    title: "Instrument missing conversion funnel events to diagnose the bounce"
+                        .into(),
+                    recommendation: "Add search and detail-view conversion events now.".into(),
+                    ..targeted("ignored", Some("sessions"), Some("up"))
+                },
+            ];
+            let outcome = persist(&pool, &project.id, &batch).await;
+            assert_eq!(outcome.rows.len(), 1);
+            assert_eq!(outcome.restated, 1);
+        }
+
+        /// REGRESSION. The only test of the transfer note asserted it was
+        /// ABSENT, against a database with no outcomes at all — so stubbing
+        /// `transfer_notes` to an empty map, or deleting the `transfer:` field
+        /// assignment outright, left it green. Nothing anywhere proved the
+        /// `pooled::CategoryPool` -> `TransferNote` -> payload join carried a
+        /// single value. This is that proof.
+        #[tokio::test]
+        async fn a_transfer_note_names_the_project_the_category_worked_on() {
+            let pool = pool().await;
+            let target = project(&pool, "GrocerySaver").await;
+            let elsewhere = project(&pool, "EventFinder").await;
+            measured(
+                &pool,
+                &elsewhere.id,
+                "Add FAQPage schema to the venue pages",
+                "aeo",
+                "helped",
+                0.42,
+            )
+            .await;
+
+            let action = GrowthAction {
+                category: "aeo".into(),
+                ..targeted("Add FAQ schema", Some("sessions"), Some("up"))
+            };
+            persist(&pool, &target.id, std::slice::from_ref(&action)).await;
+
+            let rendered = render_board(&pool, &target.id, &ActionsCache::default())
+                .await
+                .active;
+            let note = rendered[0]
+                .transfer
+                .as_ref()
+                .expect("a measured aeo result on another project must reach the card");
+            assert_eq!(note.category, "aeo");
+            assert_eq!(note.helped, 1);
+            assert!(!note.segment_label.is_empty());
+            let example = note
+                .examples
+                .first()
+                .expect("the note has to say where the result came from");
+            assert_eq!(example.project_name, "EventFinder");
+            assert_eq!(example.verdict, "helped");
+        }
+
+        /// A badge that says nothing is worse than no badge, and until the first
+        /// window closes anywhere there is nothing any badge could say. The
+        /// `count(*)` pre-check in `transfer_notes` is what keeps this case from
+        /// segmenting every active project to discover that.
+        #[tokio::test]
+        async fn a_transfer_note_is_absent_when_no_other_project_measured_that_category() {
+            let pool = pool().await;
+            let project = project(&pool, "GrocerySaver").await;
+            let action = targeted("Add FAQ schema", Some("sessions"), Some("up"));
+            persist(&pool, &project.id, std::slice::from_ref(&action)).await;
+
+            let rendered = render_board(&pool, &project.id, &ActionsCache::default())
+                .await
+                .active;
+            assert_eq!(rendered.len(), 1);
+            assert!(rendered[0].transfer.is_none());
+        }
     }
 }

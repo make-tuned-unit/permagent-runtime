@@ -109,20 +109,130 @@ pub fn named_paths(text: &str) -> Vec<String> {
     out.into_iter().collect()
 }
 
-/// Did any commit change a file the action named?
+/// One commit, as `git log` reported it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Commit {
+    pub sha: String,
+    pub subject: String,
+    pub files: Vec<String>,
+}
+
+impl Commit {
+    /// The short sha the user would recognise from a git UI.
+    fn short(&self) -> &str {
+        self.sha.get(..8).unwrap_or(&self.sha)
+    }
+}
+
+/// Parse `git log --format=%x00%H%x1f%s --name-only` into commits and their
+/// files.
+///
+/// One read, one source of truth. `verify_git` used to run two `git log` calls —
+/// one for subjects, one for changed files — and a commit landing between them
+/// would make the two disagree, so the check could report "3 commits" while
+/// matching a path from four. The NUL record separator is what makes a single
+/// call parseable: a commit subject may contain anything except a NUL, so
+/// splitting on newlines could not tell a subject from a filename.
+pub fn parse_commits(raw: &str) -> Vec<Commit> {
+    let mut out = Vec::new();
+    for record in raw.split('\u{0}') {
+        let record = record.trim_matches('\n');
+        if record.trim().is_empty() {
+            continue;
+        }
+        let mut lines = record.lines();
+        let Some(header) = lines.next() else {
+            continue;
+        };
+        let (sha, subject) = match header.split_once('\u{1f}') {
+            Some((sha, subject)) => (sha.trim(), subject.trim()),
+            // A header with no separator is not a commit record; skipping it is
+            // safer than inventing an empty subject for it.
+            None => continue,
+        };
+        if sha.is_empty() {
+            continue;
+        }
+        out.push(Commit {
+            sha: sha.to_string(),
+            subject: subject.to_string(),
+            // A merge commit reports no files under --name-only, which is not an
+            // error: it is a commit that changed nothing on its own.
+            files: lines
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect(),
+        });
+    }
+    out
+}
+
+/// Did any commit change a file the action named, and which one?
 ///
 /// Matching is suffix-based in both directions so `src/pages/index.astro` in the
 /// prose matches `apps/site/src/pages/index.astro` in the repo, and a bare
-/// `index.astro` matches too.
-fn touches_named_path(changed: &[String], named: &[String]) -> Option<(String, String)> {
-    for want in named {
-        for got in changed {
-            if got == want || got.ends_with(&format!("/{want}")) || want.ends_with(got.as_str()) {
-                return Some((want.clone(), got.clone()));
+/// `index.astro` matches too. The owning commit comes back with the match so a
+/// passing check can name the sha and the subject rather than saying only that
+/// something, somewhere, matched.
+fn touches_named_path<'a>(
+    commits: &'a [Commit],
+    named: &[String],
+) -> Option<(&'a Commit, String, String)> {
+    for commit in commits {
+        for want in named {
+            for got in &commit.files {
+                if got == want || got.ends_with(&format!("/{want}")) || want.ends_with(got.as_str())
+                {
+                    return Some((commit, want.clone(), got.clone()));
+                }
             }
         }
     }
     None
+}
+
+/// The three things a git check can conclude, as pure functions of what was
+/// found.
+///
+/// These are separate from [`verify_git`] because they are the whole
+/// user-visible output of the check and the only part of it a unit test can
+/// reach: `verify_git` needs a `Project`, a repo on disk and a subprocess. When
+/// the strings were inline, the tests that claimed to cover them re-typed the
+/// `format!` in the test body and asserted on their own copy — so deleting the
+/// sha from the real string left them green. Both now call these.
+fn untargeted_detail(commits: &[Commit]) -> String {
+    format!(
+        "{} commit(s) since the action was issued, most recently {} \"{}\". The action names no \
+         file path, so this confirms work happened here, not that this change is the one that \
+         landed.",
+        commits.len(),
+        commits[0].short(),
+        commits[0].subject
+    )
+}
+
+fn passing_detail(commit: &Commit, want: &str, got: &str) -> String {
+    format!(
+        "Commit {} \"{}\" changed {got}, which the action named as {want}.",
+        commit.short(),
+        commit.subject
+    )
+}
+
+fn missing_detail(commits: &[Commit], named: &[String]) -> String {
+    format!(
+        "{} commit(s) landed since the action was issued ({}) but none touched what it named \
+         ({}). Commit the change, or verify another way.",
+        commits.len(),
+        commits
+            .iter()
+            .take(4)
+            .map(Commit::short)
+            .collect::<Vec<_>>()
+            .join(", "),
+        named.join(", ")
+    )
 }
 
 /// `prompt` actions: a commit in the project's repo since the action was issued.
@@ -152,10 +262,17 @@ async fn verify_git(project: &Project, action: &GrowthActionRow) -> Check {
     }
 
     let since = format!("--since={}", action.created_at);
-    let Some(subjects) = git(root, &["log", &since, "--format=%s"]).await else {
+    // ONE read: subjects and changed files in the same log, so the two branches
+    // below can never describe different sets of commits.
+    let Some(raw) = git(
+        root,
+        &["log", &since, "--format=%x00%H%x1f%s", "--name-only"],
+    )
+    .await
+    else {
         return fail(ID, LABEL, "git log failed, so commits could not be read.");
     };
-    let commits: Vec<&str> = subjects.lines().filter(|l| !l.trim().is_empty()).collect();
+    let commits = parse_commits(&raw);
     if commits.is_empty() {
         return fail(
             ID,
@@ -175,44 +292,15 @@ async fn verify_git(project: &Project, action: &GrowthActionRow) -> Check {
     ));
     if named.is_empty() {
         // Honest about the weaker claim: any commit, not a targeted one.
-        return pass(
-            ID,
-            LABEL,
-            format!(
-                "{} commit(s) since the action was issued, most recently \"{}\". The action names \
-                 no file path, so this confirms work happened here, not that this change is the \
-                 one that landed.",
-                commits.len(),
-                commits[0]
-            ),
-        );
+        return pass(ID, LABEL, untargeted_detail(&commits));
     }
 
-    let changed = git(root, &["log", &since, "--name-only", "--format="])
-        .await
-        .unwrap_or_default()
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    match touches_named_path(&changed, &named) {
-        Some((want, got)) => pass(
-            ID,
-            LABEL,
-            format!(
-                "A commit since the action was issued changed {got}, which it named as {want}."
-            ),
-        ),
-        None => fail(
-            ID,
-            LABEL,
-            format!(
-                "{} commit(s) landed since the action was issued, but none touched what it named \
-                 ({}). Commit the change, or verify another way.",
-                commits.len(),
-                named.join(", ")
-            ),
-        ),
+    match touches_named_path(&commits, &named) {
+        // A pass has to say what it found. A bare green tick is indistinguishable
+        // from a check that matched the wrong thing, and the user cannot audit a
+        // verification whose evidence it never shows them.
+        Some((commit, want, got)) => pass(ID, LABEL, passing_detail(commit, &want, &got)),
+        None => fail(ID, LABEL, missing_detail(&commits, &named)),
     }
 }
 
@@ -366,6 +454,21 @@ async fn verify_content(project: &Project, expect: Option<&str>) -> Check {
 /// All checks run even after one passes: the card shows what was and was not
 /// confirmed, and a user who sees "commit found, live page does not contain it"
 /// learns something a single green tick would have hidden.
+/// Whether the `content` strategy has anything to assert.
+///
+/// It needs the caller to say what to look for, and no caller in the product
+/// does — `expectSubstring` appears nowhere in the UI, which posts only
+/// `targetBody()` or `{...targetBody(), selfAttested: true}`. So the check ran
+/// on every `post` action and every artifact-less one and could only come back
+/// red, with the detail "No text to look for was given". A user reads a red
+/// "The live page contains the change" as "my change is not live"; it meant
+/// "nobody told me what to look for". A check that cannot conclude is not
+/// evidence, so it is skipped rather than shown as a failure. The strategy
+/// stays wired for a caller that does supply a substring.
+fn can_check_content(expect: Option<&str>) -> bool {
+    !expect.map(str::trim).unwrap_or_default().is_empty()
+}
+
 pub async fn verify(
     pool: &Pool<Sqlite>,
     project: &Project,
@@ -386,6 +489,9 @@ pub async fn verify(
     let mut checks = Vec::new();
     let mut verified_by = None;
     for strategy in order {
+        if *strategy == VERIFIED_BY_CONTENT && !can_check_content(expect_substring) {
+            continue;
+        }
         let check = match *strategy {
             VERIFIED_BY_GIT => verify_git(project, action).await,
             VERIFIED_BY_EVENT => verify_event(pool, &project.id, action).await,
@@ -443,22 +549,139 @@ mod tests {
         assert!(named_paths("Improve conversion and/or retention").is_empty());
     }
 
+    /// A two-commit log exactly as `git log --format=%x00%H%x1f%s --name-only`
+    /// emits it: a NUL before each record, the sha and subject separated by
+    /// U+001F, then the changed files one per line.
+    fn fixture_log() -> String {
+        concat!(
+            "\u{0}8f2a1c3390ab\u{1f}Add FAQ block to the homepage\n",
+            "src/pages/index.astro\n",
+            "src/components/Faq.astro\n",
+            "\u{0}1122334455ff\u{1f}Merge branch 'main'\n",
+            "\u{0}aabbccddeeff\u{1f}Bump deps\n",
+            "package.json\n"
+        )
+        .to_string()
+    }
+
+    #[test]
+    fn parses_the_null_separated_log_into_commits_and_their_files() {
+        let commits = parse_commits(&fixture_log());
+        assert_eq!(commits.len(), 3);
+        assert_eq!(commits[0].sha, "8f2a1c3390ab");
+        assert_eq!(commits[0].subject, "Add FAQ block to the homepage");
+        assert_eq!(
+            commits[0].files,
+            vec!["src/pages/index.astro", "src/components/Faq.astro"]
+        );
+        // A merge commit reports no files. That is a commit that changed nothing
+        // on its own, not a parse failure.
+        assert_eq!(commits[1].subject, "Merge branch 'main'");
+        assert!(commits[1].files.is_empty());
+        assert_eq!(commits[2].files, vec!["package.json"]);
+        assert!(parse_commits("").is_empty());
+        assert!(parse_commits("   \n").is_empty());
+    }
+
     /// The prose names a repo-relative path; the repo reports one relative to
     /// its own root. Both directions of suffix must match or every real
     /// monorepo fails to verify.
     #[test]
     fn a_named_path_matches_the_repos_own_spelling() {
-        let changed = vec![
-            "apps/site/src/pages/index.astro".to_string(),
-            "package.json".to_string(),
-        ];
-        assert_eq!(
-            touches_named_path(&changed, &["src/pages/index.astro".to_string()]),
-            Some((
-                "src/pages/index.astro".to_string(),
-                "apps/site/src/pages/index.astro".to_string()
-            ))
+        let commits = parse_commits(&fixture_log());
+        let (commit, want, got) =
+            touches_named_path(&commits, &["src/pages/index.astro".to_string()]).unwrap();
+        assert_eq!(commit.sha, "8f2a1c3390ab");
+        assert_eq!(want, "src/pages/index.astro");
+        assert_eq!(got, "src/pages/index.astro");
+
+        let monorepo = parse_commits(
+            "\u{0}deadbeefcafe\u{1f}Ship it\napps/site/src/pages/index.astro\npackage.json\n",
         );
-        assert!(touches_named_path(&changed, &["src/pages/about.astro".to_string()]).is_none());
+        let (_, want, got) =
+            touches_named_path(&monorepo, &["src/pages/index.astro".to_string()]).unwrap();
+        assert_eq!(want, "src/pages/index.astro");
+        assert_eq!(got, "apps/site/src/pages/index.astro");
+        assert!(touches_named_path(&monorepo, &["src/pages/about.astro".to_string()]).is_none());
+    }
+
+    /// REGRESSION. The passing detail used to read "A commit since the action
+    /// was issued changed X, which it named as Y" — no sha, no subject, so a
+    /// user could not tell WHICH commit was credited, and could not tell a
+    /// correct match from a coincidental one. It carried no sha because the
+    /// only `git log` that knew the shas was a separate call whose output was
+    /// thrown away.
+    #[test]
+    fn a_passing_git_check_names_the_commit_and_the_path() {
+        let commits = parse_commits(&fixture_log());
+        let (commit, want, got) =
+            touches_named_path(&commits, &["src/pages/index.astro".to_string()]).unwrap();
+        // Calls the production formatter. This test used to re-type the
+        // `format!` here and assert on its own copy, so deleting `commit.short()`
+        // from the real string left it green — the check it claims to cover was
+        // never executed by anything.
+        let detail = passing_detail(commit, &want, &got);
+        assert!(detail.contains("8f2a1c33"), "{detail}");
+        assert!(detail.contains("Add FAQ block to the homepage"), "{detail}");
+        assert!(detail.contains("src/pages/index.astro"), "{detail}");
+        assert!(detail.contains("which the action named as"), "{detail}");
+    }
+
+    /// The failure rendering is unchanged except that it now names the shas it
+    /// looked through: a failed check still has to say what it saw, or "not
+    /// found" is indistinguishable from "not checked".
+    #[test]
+    fn a_commit_that_touches_nothing_named_still_says_what_it_saw() {
+        let commits = parse_commits(&fixture_log());
+        let named = vec!["src/pages/pricing.astro".to_string()];
+        assert!(touches_named_path(&commits, &named).is_none());
+        // As above: the production formatter, not a copy of it.
+        let detail = missing_detail(&commits, &named);
+        assert!(detail.contains("3 commit(s)"), "{detail}");
+        assert!(detail.contains("8f2a1c33"), "{detail}");
+        assert!(detail.contains("src/pages/pricing.astro"), "{detail}");
+    }
+
+    /// REGRESSION. `verify_content` fails with "No text to look for was given"
+    /// unless the caller supplies `expectSubstring`, and no caller does — the
+    /// panel posts `targetBody()` or `{...targetBody(), selfAttested: true}`,
+    /// and `expectSubstring` appears nowhere in the UI source. So the check ran
+    /// on every `post` action and every artifact-less one, and could only ever
+    /// come back red. A user cannot tell that from a change that did not ship.
+    #[test]
+    fn a_check_with_nothing_to_look_for_is_not_run_at_all() {
+        // The production guard, not a copy of it: `verify` skips the strategy
+        // on exactly this condition.
+        for expect in [None, Some(""), Some("   ")] {
+            assert!(
+                !can_check_content(expect),
+                "content must be skipped for {expect:?}"
+            );
+        }
+        assert!(
+            can_check_content(Some("FAQPage")),
+            "and must still run for a caller that says what to look for"
+        );
+    }
+
+    /// The third branch, which had no test at all: an action that names no file
+    /// path still gets a pass, and that pass must not overclaim. A user who
+    /// reads "confirmed" here has only been told a commit exists, not that it
+    /// is the right one, and the string is the only place that distinction is
+    /// made.
+    #[test]
+    fn a_pass_with_no_named_path_says_it_only_proves_work_happened() {
+        let commits = parse_commits(&fixture_log());
+        let detail = untargeted_detail(&commits);
+        assert!(detail.contains("3 commit(s)"), "{detail}");
+        assert!(detail.contains("8f2a1c33"), "{detail}");
+        assert!(
+            detail.contains("names no file path"),
+            "the weaker claim must be stated: {detail}"
+        );
+        assert!(
+            detail.contains("not that this change is the one that landed"),
+            "{detail}"
+        );
     }
 }
