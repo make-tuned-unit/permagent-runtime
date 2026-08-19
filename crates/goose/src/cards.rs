@@ -1076,7 +1076,12 @@ pub async fn set_card_due_dismissed(
 /// Accept only `YYYY-MM-DD`. The value is interpolated nowhere, but a bad date
 /// would sort into a nonsense position and silently corrupt the ordering, so it
 /// is rejected at the edge instead of being stored and puzzled over later.
-fn validate_due_date(value: &str) -> Result<(), String> {
+///
+/// Public so every writer of a due date validates identically: the UI's PUT
+/// route reaches it through [`set_card_due_date`], and the agent's card tools
+/// call it directly to refuse a malformed date BEFORE a card is created — a
+/// late rejection would leave an orphan card behind.
+pub fn validate_due_date(value: &str) -> Result<(), String> {
     let bytes = value.as_bytes();
     let shaped = bytes.len() == 10
         && bytes[4] == b'-'

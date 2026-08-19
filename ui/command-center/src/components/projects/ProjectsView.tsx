@@ -7,6 +7,7 @@ import { toast } from '../../lib/notifications';
 import { useGoalEvents } from '../../lib/useGoalEvents';
 import { useCommandCenter } from '../../lib/store';
 import { ProjectWorkspace } from './ProjectWorkspace';
+import { CardDetailModal } from './CardDetailModal';
 import { PERSONAL_ID, CANCELLABLE_STATES, type Project, type BoardColumn, type Card } from './types';
 import { ViewHeader } from '../common/ViewHeader';
 import { PeopleDirectory } from '../people/PeopleDirectory';
@@ -599,6 +600,10 @@ export function ProjectKanban({ project }: { project: Project }) {
   // consume it (one-shot deep link — see openCardOnBoard).
   const [highlightedCardId, setHighlightedCardId] = useState<string | null>(null);
   const cardEls = useRef<Map<string, HTMLDivElement>>(new Map());
+  // The non-goal card whose detail modal is open. Goals keep their own modal
+  // (lifecycle, evidence, cancel); every other card type opens this one — until
+  // now they opened nothing at all, which is why a click looked broken.
+  const [detailCardId, setDetailCardId] = useState<string | null>(null);
 
   const getColumnAtPoint = useCallback((x: number, y: number): string | null => {
     for (const [colId, el] of colRefs.current.entries()) {
@@ -687,10 +692,14 @@ export function ProjectKanban({ project }: { project: Project }) {
       setDragOverCol(null);
       pressStart.current = null;
       dragMoved.current = false;
-      // No travel = a click → open the goal-detail modal instead of moving.
+      // No travel = a click → open the card's detail instead of moving it. The
+      // 4px threshold in onMove is what keeps the two apart: a drag sets
+      // dragMoved and never opens anything, a press that never travels opens
+      // the detail and never moves the card.
       if (!moved && cardId) {
         const card = cards.find(c => c.id === cardId);
         if (card?.cardType === 'goal') openGoalDetail(project.id, cardId);
+        else if (card) setDetailCardId(cardId);
         return;
       }
       if (targetCol && cardId) {
@@ -846,7 +855,9 @@ export function ProjectKanban({ project }: { project: Project }) {
                     }}
                     highlighted={highlightedCardId === card.id}
                     onPointerDown={(e) => handleCardPointerDown(e, card.id, card.title)}
-                    onOpen={card.cardType === 'goal' ? () => openGoalDetail(project.id, card.id) : undefined}
+                    onOpen={card.cardType === 'goal'
+                      ? () => openGoalDetail(project.id, card.id)
+                      : () => setDetailCardId(card.id)}
                     isDragging={draggingCard === card.id}
                     onDelete={() => handleDeleteCard(card.id)}
                     onSetDueDate={
@@ -927,6 +938,17 @@ export function ProjectKanban({ project }: { project: Project }) {
         })}
       </div>
 
+      {/* Card detail (#503 sibling) — opened by a click that did not drag. */}
+      {detailCardId && (
+        <CardDetailModal
+          projectId={project.id}
+          projectName={project.name}
+          cardId={detailCardId}
+          onClose={() => setDetailCardId(null)}
+          onSaved={loadBoard}
+        />
+      )}
+
       {/* Drag ghost — follows pointer during card drag */}
       {draggingCard && ghostPos && (
         <div style={{
@@ -949,8 +971,10 @@ function CardItem({
 card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highlighted, cardRef }: {
   card: Card;
   onPointerDown: (e: React.PointerEvent) => void;
-  /** Activate the card (open goal detail) via keyboard — mirrors the click path
-   *  the parent's pointer handler runs. Absent for non-openable cards. */
+  /** Activate the card via keyboard — mirrors the click path the parent's
+   *  pointer handler runs (goal detail for goals, card detail for the rest).
+   *  Every card is openable, so in practice this is always supplied; it stays
+   *  optional so the component does not force a caller to invent a handler. */
   onOpen?: () => void;
   isDragging: boolean;
   onDelete: () => void;
