@@ -23,6 +23,12 @@
 // bundle, a simulator host, a microphone or a hub.
 
 import Foundation
+// `ObservableObject` and `@Published` are Combine's, not Foundation's. The
+// newer SDK re-exports them so `import Foundation` alone compiles there; the
+// Swift 6.0 toolchain CI runs need not, and this file is the only one in the
+// test target that uses them, so there is no precedent proving the re-export.
+// Naming the dependency costs nothing and cannot regress.
+import Combine
 
 // ── Vocabulary ───────────────────────────────────────────────────────────────
 

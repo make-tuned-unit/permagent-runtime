@@ -95,14 +95,21 @@ final class MeetingCapture: NSObject, ObservableObject {
     /// 16 kHz mono 16-bit LinearPCM. Whisper's native rate, so the hub neither
     /// resamples nor downmixes, and the one container/codec pair measured to
     /// decode on the hub — see the note at the top of this file.
-    static let audioSettings: [String: Any] = [
-        AVFormatIDKey: Int(kAudioFormatLinearPCM),
-        AVSampleRateKey: 16_000.0,
-        AVNumberOfChannelsKey: 1,
-        AVLinearPCMBitDepthKey: 16,
-        AVLinearPCMIsFloatKey: false,
-        AVLinearPCMIsBigEndianKey: false,
-    ]
+    ///
+    /// A function returning a fresh dictionary rather than a shared `static
+    /// let`: `[String: Any]` is not `Sendable`, and a stored global of it is a
+    /// concurrency question every compiler answers on its own terms. There is
+    /// no reason for these six constants to be shared mutable state at all.
+    static func audioSettings() -> [String: Any] {
+        [
+            AVFormatIDKey: Int(kAudioFormatLinearPCM),
+            AVSampleRateKey: 16_000.0,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+        ]
+    }
 
     static let fileExtension = "wav"
 
@@ -152,8 +159,14 @@ final class MeetingCapture: NSObject, ObservableObject {
     /// stop: the meeting is over and nothing says so.
     static let shared = MeetingCapture()
 
-    init(store: RecordingStore = .shared) {
-        self.store = store
+    /// `nil` rather than `.shared` as the default: a default-argument
+    /// expression is written outside the initialiser it belongs to, so whether
+    /// it may read main-actor state is a question the two compilers this ships
+    /// under answer differently. Resolving it in the body — which is
+    /// unambiguously main-actor isolated — asks no such question, and the
+    /// injection point tests need is unchanged.
+    init(store: RecordingStore? = nil) {
+        self.store = store ?? RecordingStore.shared
         super.init()
     }
 
@@ -369,7 +382,7 @@ final class MeetingCapture: NSObject, ObservableObject {
     }
 
     private func makeRecorder(index: Int) throws -> AVAudioRecorder {
-        let recorder = try AVAudioRecorder(url: stagingURL(for: index), settings: Self.audioSettings)
+        let recorder = try AVAudioRecorder(url: stagingURL(for: index), settings: Self.audioSettings())
         recorder.delegate = self
         recorder.isMeteringEnabled = true
         recorder.prepareToRecord()

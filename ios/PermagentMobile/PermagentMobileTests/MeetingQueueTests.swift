@@ -18,17 +18,35 @@ import XCTest
 @MainActor
 final class MeetingQueueTests: XCTestCase {
 
-    private var root: URL!
+    private var createdRoot: URL?
 
-    override func setUp() {
-        super.setUp()
-        root = FileManager.default.temporaryDirectory
+    /// A scratch directory belonging to this test, made on first use and
+    /// removed when the test ends.
+    ///
+    /// Deliberately NOT set up in `setUp()`/`tearDown()`. This test case is
+    /// `@MainActor` because the queue it exercises is — `RecordingStore` is
+    /// main-actor isolated so that "persist the transcript, THEN delete the
+    /// audio" is an ordering rather than a race, and the tests have to run
+    /// where that ordering is real. But `XCTestCase.setUp()` and `tearDown()`
+    /// are nonisolated in the superclass, and an override cannot add
+    /// isolation the overridden declaration does not have. Reaching a
+    /// main-actor property from them therefore only compiles where the
+    /// compiler infers the isolation away: accepted by Swift 6.3 (Xcode 26.6,
+    /// where this was written), a hard error under Swift 6.0 (Xcode 16.4, the
+    /// default on CI's macos-15 runner). It failed there and nowhere else.
+    ///
+    /// Every access below happens inside a test body, which IS main-actor
+    /// isolated, so the requirement is stated by where the code lives rather
+    /// than inferred from the compiler's mood. Cleanup is registered as a
+    /// teardown block capturing nothing but the URL — a value — so it needs no
+    /// isolation of its own.
+    private var root: URL {
+        if let createdRoot { return createdRoot }
+        let made = FileManager.default.temporaryDirectory
             .appendingPathComponent("meeting-queue-tests-\(UUID().uuidString)", isDirectory: true)
-    }
-
-    override func tearDown() {
-        try? FileManager.default.removeItem(at: root)
-        super.tearDown()
+        createdRoot = made
+        addTeardownBlock { try? FileManager.default.removeItem(at: made) }
+        return made
     }
 
     private func makeStore() -> RecordingStore { RecordingStore(root: root) }
@@ -45,7 +63,7 @@ final class MeetingQueueTests: XCTestCase {
     }
 
     private func stagedClip(_ store: RecordingStore, bytes: Int = 4_096) -> URL {
-        writeClip(at: store.stageURL(fileExtension: "m4a"), bytes: bytes)
+        writeClip(at: store.stageURL(fileExtension: "wav"), bytes: bytes)
     }
 
     private func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }

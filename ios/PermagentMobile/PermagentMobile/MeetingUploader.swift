@@ -30,8 +30,14 @@ final class MeetingUploader: ObservableObject {
     private let store: RecordingStore
     private var pass: Task<Void, Never>?
 
-    init(store: RecordingStore = .shared) {
-        self.store = store
+    /// `nil` rather than `.shared` as the default: a default-argument
+    /// expression is written outside the initialiser it belongs to, so whether
+    /// it may read main-actor state is a question the two compilers this ships
+    /// under answer differently. Resolving it in the body — which is
+    /// unambiguously main-actor isolated — asks no such question, and the
+    /// injection point tests need is unchanged.
+    init(store: RecordingStore? = nil) {
+        self.store = store ?? RecordingStore.shared
     }
 
     /// Ask for a drain. Cheap and idempotent — safe to call after every
