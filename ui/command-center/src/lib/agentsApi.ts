@@ -11,6 +11,21 @@ export type LiveState =
   | { status: 'not_queryable' }
   | { status: 'unavailable'; reason: string };
 
+/**
+ * The one boolean config key that switches an agent on. PRESENT AND NULL, never
+ * omitted, for every worker row and every dispatch persona: a client must be
+ * able to tell "this agent has no switch" from "the switch is off", and an
+ * omitted field reads as `undefined`, which renders as a toggle claiming off.
+ *
+ * Declared here because this file is the wire mirror — but a daemon OLDER than
+ * this app serialises no gate at all, so the panel still reads it through the
+ * validating `readAgentGate` rather than trusting the type.
+ */
+export interface AgentGateWire {
+  config_key: string;
+  enabled: boolean;
+}
+
 export interface BackgroundWorker {
   id: string;
   display_name: string;
@@ -19,6 +34,7 @@ export interface BackgroundWorker {
   state_source: 'queryable' | 'static';
   live_state: LiveState;
   dispatchable: boolean;
+  gate: AgentGateWire | null;
 }
 
 export type Availability =
@@ -56,6 +72,7 @@ export interface DispatchPersona {
   grants: Grants;
   grants_enforced: boolean;
   secrets: Secrets;
+  gate: AgentGateWire | null;
 }
 
 /** One declared secret. `impact`/`unlocks` are serialised only for platform

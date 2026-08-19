@@ -857,7 +857,7 @@ export function ModelsPanel({ goto }: PanelProps) {
       {/* ── The Guard security sweeps ────────────────────────────── */}
       <Section
         title="Security sweeps (The Guard)"
-        sub="The Guard — born of the Strix pentest engine — probes your own projects for security flaws. Each sweep scans ONE active project (rotating through them, least-recently-scanned first) and files a security report with a fix plan as a note on that project, plus a findings checklist on its Overview. Requires the external `strix` scanner and Docker installed. Scans run on your API credits, so the cadence below is a cost dial. Changes apply within ~15 minutes — no restart needed."
+        sub="The Guard — born of the Strix pentest engine — probes your own projects for security flaws. Each sweep scans ONE active project (rotating through them, least-recently-scanned first) and files a security report with a fix plan as a note on that project, plus a findings checklist on its Overview. Requires the external `strix` scanner and Docker installed. The cadence below is a cost dial that applies once the Guard is on: every sweep runs on your API credits. Changes apply within ~15 minutes — no restart needed."
       >
         {strixError && (
           <div style={{ fontSize: 12, color: colors.danger, padding: '4px 0 8px' }}>{strixError}</div>
@@ -869,6 +869,39 @@ export function ModelsPanel({ goto }: PanelProps) {
             <Toggle on={strix} onChange={saveStrix} />
           )}
         </Row>
+        {/* Three surfaces write this flag and none of them can disagree: there is
+            exactly one config key and no agent-scoped write path, so every one of
+            them upserts `strix_enabled`. Saying so — and pointing at the other
+            two — is what stops the next person hunting for "the real" switch. */}
+        <div style={{ fontSize: 11, color: colors.textMuted, lineHeight: 1.5, padding: '2px 0 10px' }}>
+          This is the same switch as Settings → Features and the Guard's own page under
+          Settings → Agents — one config key (<code style={{ fontFamily: font.mono }}>strix_enabled</code>),
+          so flipping it anywhere is the same flag.
+          <span style={{ display: 'inline-flex', gap: 12, marginLeft: 10 }}>
+            <button
+              type="button"
+              data-testid="guard-open-features"
+              onClick={() => goto('features')}
+              style={{
+                background: 'transparent', border: 'none', padding: 0, cursor: 'pointer',
+                color: colors.cyan, fontFamily: font.body, fontSize: 11, textDecoration: 'underline',
+              }}
+            >
+              All worker switches
+            </button>
+            <button
+              type="button"
+              data-testid="guard-open-agents"
+              onClick={() => goto('agents')}
+              style={{
+                background: 'transparent', border: 'none', padding: 0, cursor: 'pointer',
+                color: colors.cyan, fontFamily: font.body, fontSize: 11, textDecoration: 'underline',
+              }}
+            >
+              The Guard's agent page
+            </button>
+          </span>
+        </div>
         <Row label="Sweep every" hint="How often the Guard scans the next project in the rotation. Daily is the cost-effective default.">
           <select
             value={strixHours}

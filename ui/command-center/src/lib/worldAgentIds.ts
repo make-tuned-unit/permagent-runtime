@@ -15,6 +15,26 @@ const WORLD_TO_AGENT_ID: Readonly<Record<string, string>> = {
   strix: 'strix',
 };
 
+/**
+ * Dispatch-persona keys that name a worker under a SECOND spelling. agent.yaml
+ * coined `steward` while the worker registry coined `git_steward`, so a surface
+ * that resolved only one drew the same character with a portrait on one page and
+ * none on the other.
+ *
+ * NOTE the collision: the string `steward` is a WORLD id AND a persona key at
+ * once, and they happen to mean the same character — which is exactly why this
+ * resolves persona keys BEFORE the world map is consulted, never after.
+ *
+ * Mirrors `agent_identity::descriptor_id_for_worker_key` on the Rust side. Both
+ * are pinned by tests; nothing pins them to each other.
+ */
+const AGENT_ALIASES: Readonly<Record<string, string>> = { steward: 'git_steward' };
+
+/** The agents-API id an id-or-persona-key names. Identity for everything else. */
+export function canonicalAgentId(agentId: string): string {
+  return AGENT_ALIASES[agentId] ?? agentId;
+}
+
 /** null when this in-world character is not an agent the API knows. */
 export function agentIdForWorldAgent(worldId: string): string | null {
   return WORLD_TO_AGENT_ID[worldId] ?? null;
@@ -22,6 +42,7 @@ export function agentIdForWorldAgent(worldId: string): string | null {
 
 /** null when this agent has no in-world character to fly to. */
 export function worldAgentIdForAgent(agentId: string): string | null {
-  const hit = Object.entries(WORLD_TO_AGENT_ID).find(([, id]) => id === agentId);
+  const canonical = canonicalAgentId(agentId);
+  const hit = Object.entries(WORLD_TO_AGENT_ID).find(([, id]) => id === canonical);
   return hit ? hit[0] : null;
 }

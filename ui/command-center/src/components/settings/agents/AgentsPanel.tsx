@@ -6,7 +6,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { Chip, H1, Section, TextInput } from '../atoms';
+import { Chip, H1, Row, Section, Toggle } from '../atoms';
 import {
   availabilityLabel,
   defaultEnabledLabel,
@@ -15,17 +15,23 @@ import {
   EMPTY_JOBS_NOTE,
   EMPTY_SPEND_NOTE,
   engineLabel,
+  gateRowHint,
   grantsNotEnforcedNote,
   grantsSummary,
   liveStateLabel,
+  NO_AGENT_SECRETS_NOTE,
   presenceLabel,
+  readAgentGate,
   requiredSecretsLabel,
   requiredSecretHints,
+  STORED_SECRETS_NOTE,
   truncatedNote,
+  type AgentGate,
   type LabelTone,
 } from '../agentsPanel';
 import { font, radius } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
+import { api } from '../../../lib/api';
 import { useCommandCenter } from '../../../lib/store';
 import {
   fetchAgentDetail,
@@ -44,6 +50,7 @@ import {
 } from '../../../lib/agentsApi';
 import { worldAgentIdForAgent } from '../../../lib/worldAgentIds';
 import { ROSTER } from '../../world/agents/roster';
+import { AgentPortrait } from './AgentPortrait';
 
 type PanelProps = { goto: (key: string) => void };
 
@@ -103,6 +110,16 @@ function WorldLink({ agentId }: { agentId: string }) {
   );
 }
 
+/**
+ * Three honest states, and no add form.
+ *
+ * The form used to offer a blank name/value pair with no hint of what belonged
+ * in it, and the honest answer to "what am I supposed to put there?" turned out
+ * to be *nothing*: `agent_secret.*` has no reader anywhere in the runtime — only
+ * this surface writes and lists it. A field whose value nothing consumes is a
+ * control that does nothing, so it is gone. Already-stored values stay listed
+ * and stay removable; nothing here deletes a secret on its own.
+ */
 function SecretsEditor({
   agentId,
   secrets,
@@ -113,113 +130,97 @@ function SecretsEditor({
   onRefresh: () => Promise<void>;
 }) {
   const { colors } = useTheme();
-  const [name, setName] = useState('');
-  const [value, setValue] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const write = async (secretName: string, secretValue: string | null) => {
+  const remove = async (secretName: string) => {
     setBusy(true);
     setError(null);
     try {
-      await saveSecret(agentId, secretName, secretValue);
-      setName('');
-      setValue(''); // clear so a written value never lingers in React state
+      await saveSecret(agentId, secretName, null);
       await onRefresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not save secret');
+      setError(err instanceof Error ? err.message : 'Could not remove secret');
     } finally {
       setBusy(false);
     }
   };
 
+  // A store that could not be READ is never rendered as "needs none" — those are
+  // opposite claims, and the failure one is the one the user can act on.
+  if (secrets.status === 'unavailable') {
+    return (
+      <div style={{ fontSize: 12, color: colors.danger }}>
+        Secrets could not be read — {secrets.reason}
+      </div>
+    );
+  }
+
+  if (secrets.items.length === 0) {
+    return (
+      <div
+        data-testid="no-agent-secrets"
+        style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}
+      >
+        {NO_AGENT_SECRETS_NOTE}
+      </div>
+    );
+  }
+
   return (
     <div>
       <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 10, lineHeight: 1.5 }}>
-        Write-only: presence is shown, values never are. Setting a name again replaces it; Remove deletes.
+        {STORED_SECRETS_NOTE}
       </div>
-      {secrets.status === 'unavailable' ? (
-        <div style={{ fontSize: 12, color: colors.danger }}>
-          Secrets could not be read — {secrets.reason}
-        </div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14 }}>
-          {secrets.items.length === 0 && (
-            <div style={{ fontSize: 12, color: colors.textDim }}>No per-agent secrets listed.</div>
-          )}
-          {secrets.items.map(item => {
-            const label = presenceLabel(item.presence);
-            return (
-              <div
-                key={item.name}
-                data-testid={`secret-row-${item.name}`}
-                style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
-                  fontSize: 12, fontFamily: font.body,
-                }}
-              >
-                <span style={{ color: colors.text, fontFamily: font.mono }}>{item.name}</span>
-                <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <StatusText text={label.text} tone={label.tone} />
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => { void write(item.name, null); }}
-                    style={{
-                      fontSize: 11, color: colors.danger, background: 'none',
-                      border: `1px solid ${colors.border}`, borderRadius: radius.sm,
-                      padding: '2px 8px', cursor: busy ? 'not-allowed' : 'pointer',
-                    }}
-                  >
-                    Remove
-                  </button>
-                </span>
-              </div>
-            );
-          })}
-          {secrets.truncated && (
-            <div style={{ fontSize: 11, color: colors.textDim }}>
-              {truncatedNote(secrets.items.length)}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {secrets.items.map(item => {
+          const label = presenceLabel(item.presence);
+          return (
+            <div
+              key={item.name}
+              data-testid={`secret-row-${item.name}`}
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+                fontSize: 12, fontFamily: font.body,
+              }}
+            >
+              <span style={{ color: colors.text, fontFamily: font.mono }}>{item.name}</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <StatusText text={label.text} tone={label.tone} />
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => { void remove(item.name); }}
+                  style={{
+                    fontSize: 11, color: colors.danger, background: 'none',
+                    border: `1px solid ${colors.border}`, borderRadius: radius.sm,
+                    padding: '2px 8px', cursor: busy ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  Remove
+                </button>
+              </span>
             </div>
-          )}
-        </div>
-      )}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 420 }}>
-        <TextInput value={name} onChange={setName} placeholder="Secret name" mono disabled={busy} />
-        <input
-          type="password"
-          autoComplete="off"
-          value={value}
-          disabled={busy}
-          placeholder="Value (never shown after save)"
-          onChange={e => setValue(e.target.value)}
-          aria-label="Secret value"
-          style={{
-            width: '100%', padding: '8px 12px', background: colors.inputBg,
-            border: `1px solid ${colors.border}`, borderRadius: 8, color: colors.text,
-            fontFamily: font.mono, fontSize: 12, outline: 'none',
-            opacity: busy ? 0.55 : 1,
-          }}
-        />
-        <button
-          type="button"
-          disabled={busy || !name.trim() || !value.trim()}
-          onClick={() => { void write(name.trim(), value); }}
-          style={{
-            alignSelf: 'flex-start', padding: '7px 14px', borderRadius: radius.sm,
-            border: `1px solid ${colors.border}`, background: colors.surface,
-            color: colors.cyan, fontSize: 12, fontWeight: 600, fontFamily: font.body,
-            cursor: busy ? 'not-allowed' : 'pointer',
-          }}
-        >
-          Set secret
-        </button>
+          );
+        })}
+        {secrets.truncated && (
+          <div style={{ fontSize: 11, color: colors.textDim }}>
+            {truncatedNote(secrets.items.length)}
+          </div>
+        )}
       </div>
       {error && <div style={{ marginTop: 8, fontSize: 12, color: colors.danger }}>{error}</div>}
     </div>
   );
 }
 
+/**
+ * Rendered ONLY for an engine that actually enforces grants
+ * (`WorkerEngineKind::grants_enforced` — today just the internal subagent). The
+ * caller makes that decision, because a greyed-out editor still reads as a
+ * control you could enable somehow, and there is no somehow: on a pending or CLI
+ * engine a saved grant is recorded and enforces nothing.
+ */
 function GrantsEditor({
   persona,
   capabilities,
@@ -230,7 +231,6 @@ function GrantsEditor({
   onUpdated: (p: DispatchPersona) => void;
 }) {
   const { colors } = useTheme();
-  const enforced = persona.grants_enforced;
   const enabledCaps = capabilities.filter(c => c.enabled);
   const enabledKeys = new Set(enabledCaps.map(c => c.key));
   const [mode, setMode] = useState<GrantMode>(() => grantsToMode(persona.grants));
@@ -277,14 +277,6 @@ function GrantsEditor({
 
   return (
     <div>
-      {!enforced && (
-        <div
-          data-testid="grants-not-enforced"
-          style={{ fontSize: 12, color: colors.warning, marginBottom: 12, lineHeight: 1.5 }}
-        >
-          {grantsNotEnforcedNote(persona.engine)}
-        </div>
-      )}
       <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 10 }}>
         Current: {grantsSummary(persona)}
       </div>
@@ -296,24 +288,20 @@ function GrantsEditor({
       )}
       <div
         data-testid="grants-editor"
-        style={{
-          display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12,
-          opacity: enforced ? 1 : 0.55, pointerEvents: enforced ? 'auto' : 'none',
-        }}
-        aria-disabled={!enforced}
+        style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}
       >
-        <Chip on={mode === 'inherit'} onClick={() => enforced && setMode('inherit')}>Inherit global</Chip>
-        <Chip on={mode === 'nothing'} onClick={() => enforced && setMode('nothing')}>Grant nothing</Chip>
-        <Chip on={mode === 'narrowed'} onClick={() => enforced && setMode('narrowed')}>Narrowed</Chip>
+        <Chip on={mode === 'inherit'} onClick={() => setMode('inherit')}>Inherit global</Chip>
+        <Chip on={mode === 'nothing'} onClick={() => setMode('nothing')}>Grant nothing</Chip>
+        <Chip on={mode === 'narrowed'} onClick={() => setMode('narrowed')}>Narrowed</Chip>
       </div>
       {mode === 'narrowed' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12, opacity: enforced ? 1 : 0.55 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
           {enabledCaps.map(cap => (
             <label key={cap.key} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
               <input
                 type="checkbox"
                 checked={selected.includes(cap.key)}
-                disabled={!enforced || busy}
+                disabled={busy}
                 onChange={() => toggle(cap.key)}
               />
               <span style={{ color: colors.text }}>{cap.display_name}</span>
@@ -339,12 +327,12 @@ function GrantsEditor({
       )}
       <button
         type="button"
-        disabled={!enforced || busy || listTruncated}
+        disabled={busy || listTruncated}
         onClick={() => { void save(); }}
         style={{
           padding: '7px 14px', borderRadius: radius.sm, border: `1px solid ${colors.border}`,
-          background: colors.surface, color: enforced ? colors.cyan : colors.textDim,
-          cursor: enforced ? 'pointer' : 'not-allowed', fontSize: 12, fontWeight: 600,
+          background: colors.surface, color: listTruncated ? colors.textDim : colors.cyan,
+          cursor: busy || listTruncated ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 600,
           fontFamily: font.body,
         }}
       >
@@ -485,26 +473,117 @@ function renderGenericSection<T>(
   );
 }
 
+/**
+ * The agent's own on/off switch.
+ *
+ * It writes the SAME config key through the SAME `/config/upsert` route that
+ * Settings → Features uses — there is no agent-scoped write path for a gate
+ * flag at all. That is what makes "one source of truth" structural instead of a
+ * convention: there is no second key for the two surfaces to drift apart on.
+ *
+ * Optimistic write with revert-on-error, matching FeaturesPanel and the Models
+ * pane's Guard block. Three writers, one behaviour.
+ */
+function AgentEnableRow({
+  gate,
+  agentName,
+  onFlipped,
+}: {
+  gate: AgentGate;
+  agentName: string;
+  /** Resolves once the daemon has been re-read, so the guess can be dropped. */
+  onFlipped: () => Promise<void>;
+}) {
+  const { colors } = useTheme();
+  // The optimistic value is an OVERLAY with a lifetime, not a copy of the gate.
+  // An earlier version mirrored `gate.enabled` into state and re-seeded it from
+  // a `[gate.enabled]` effect; React skips an effect whose dep did not change,
+  // so the one case the re-read exists for — the write returns 200 and the flag
+  // is STILL off, which `Config::get_param` produces whenever an env var shadows
+  // the config file — left the toggle stuck ON with no error. Clearing the
+  // overlay instead means the daemon's answer is what renders, equal or not.
+  const [pending, setPending] = useState<boolean | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const on = pending ?? gate.enabled;
+
+  const save = async (v: boolean) => {
+    setPending(v);
+    setError(null);
+    try {
+      await api.upsertConfig(gate.config_key, v);
+    } catch (err) {
+      // A failed write is never shown as a success.
+      setPending(null);
+      setError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    try {
+      await onFlipped();
+    } catch (err) {
+      // The write LANDED; only the read-back failed. Saying "Couldn't save"
+      // here would be the same lie in the other direction, so the switch drops
+      // back to the last value the daemon actually confirmed and says why.
+      setError(`Saved, but could not re-read it: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setPending(null);
+    }
+  };
+
+  return (
+    <div data-testid="agent-gate">
+      <Section
+        title="Enabled"
+        sub="One key, written here and under Settings → Features — flipping it in either place is the same flag, and the daemon picks it up at its next tick."
+      >
+        <Row label={`Enable ${agentName}`} hint={gateRowHint(gate)}>
+          <Toggle on={on} onChange={v => { void save(v); }} />
+          {error && (
+            <div style={{ marginTop: 8, fontSize: 12, color: colors.danger }}>{error}</div>
+          )}
+        </Row>
+      </Section>
+    </div>
+  );
+}
+
 function AgentDetailPane({
   detail,
   capabilities,
   onBack,
   onPersonaUpdated,
+  onDetailReloaded,
+  onRosterStale,
 }: {
   detail: AgentDetail;
   capabilities: Capability[];
   onBack: () => void;
   onPersonaUpdated: (p: DispatchPersona) => void;
+  onDetailReloaded: (d: AgentDetail) => void;
+  /** Re-read the list behind this page — its chips are a snapshot of a flag. */
+  onRosterStale: () => void;
 }) {
   const { colors } = useTheme();
   const [work, setWork] = useState<WorkReview | null>(null);
   const [workError, setWorkError] = useState<string | null>(null);
   const id = detail.kind === 'worker' ? detail.id : detail.key;
 
-  const reloadDetail = useCallback(async () => {
+  // Both kinds, not just the persona: a worker's re-read is what turns
+  // "off (strix_enabled=false)" into its live state after the switch is flipped,
+  // and the earlier version dropped that refresh on the floor.
+  const reload = useCallback(async () => {
     const next = await fetchAgentDetail(id);
-    if (next.kind === 'dispatch_persona') onPersonaUpdated(next);
-  }, [id, onPersonaUpdated]);
+    onDetailReloaded(next);
+  }, [id, onDetailReloaded]);
+
+  // The roster is fetched once, on mount, and its on/off chips are a snapshot of
+  // the flags AT THAT MOMENT. Flipping a switch here and pressing Back therefore
+  // used to land on a list still saying "off" for the agent just switched on —
+  // the same "which of these is telling the truth?" confusion this whole change
+  // exists to remove, only now with two of our own surfaces disagreeing.
+  const reloadAfterFlip = useCallback(async () => {
+    await reload();
+    onRosterStale();
+  }, [reload, onRosterStale]);
 
   useEffect(() => {
     let cancelled = false;
@@ -515,6 +594,11 @@ function AgentDetailPane({
       });
     return () => { cancelled = true; };
   }, [id]);
+
+  // Validated, never cast: an older daemon serialises no gate at all, and a
+  // missing gate must read as "no switch known" rather than as a switch that is
+  // off — offering to flip a key that daemon does not read would be a lie.
+  const gate = readAgentGate(detail);
 
   const headerLive = detail.kind === 'worker'
     ? liveStateLabel(detail.live_state)
@@ -533,9 +617,14 @@ function AgentDetailPane({
         ← Back to agents
       </button>
 
-      <H1 sub={detail.kind === 'worker' ? detail.what_it_does : detail.role}>
-        {detail.display_name}
-      </H1>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
+        <AgentPortrait agentId={id} size={56} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <H1 sub={detail.kind === 'worker' ? detail.what_it_does : detail.role}>
+            {detail.display_name}
+          </H1>
+        </div>
+      </div>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 16px', marginBottom: 20, fontSize: 12, color: colors.textMuted }}>
         <span>{detail.kind === 'worker' ? 'Background worker' : 'Dispatch persona'}</span>
@@ -550,6 +639,14 @@ function AgentDetailPane({
         )}
       </div>
 
+      {gate && (
+        <AgentEnableRow
+          gate={gate}
+          agentName={detail.display_name}
+          onFlipped={reloadAfterFlip}
+        />
+      )}
+
       <Section title="World">
         <WorldLink agentId={id} />
       </Section>
@@ -558,19 +655,39 @@ function AgentDetailPane({
         <>
           <Section
             title="Grants"
-            sub="Narrow this agent to a subset of globally enabled capabilities. Empty grant list means grant nothing; inherit means use the global set."
+            sub={detail.grants_enforced
+              ? 'Narrow this agent to a subset of globally enabled capabilities. Empty grant list means grant nothing; inherit means use the global set.'
+              : 'What this agent is recorded as granted. This engine does not enforce grants, so there is nothing here to narrow.'}
           >
-            <GrantsEditor
-              persona={detail}
-              capabilities={capabilities}
-              onUpdated={onPersonaUpdated}
-            />
+            {detail.grants_enforced ? (
+              <GrantsEditor
+                persona={detail}
+                capabilities={capabilities}
+                onUpdated={onPersonaUpdated}
+              />
+            ) : (
+              // No chips, no checkboxes, no Save. An editor whose engine ignores
+              // what it saves is a control that does nothing; the read-only line
+              // still shows what is recorded on disk, and the sentence says why
+              // it cannot be edited here.
+              <div>
+                <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 10 }}>
+                  Current: {grantsSummary(detail)}
+                </div>
+                <div
+                  data-testid="grants-not-enforced"
+                  style={{ fontSize: 12, color: colors.warning, lineHeight: 1.5 }}
+                >
+                  {grantsNotEnforcedNote(detail.engine)}
+                </div>
+              </div>
+            )}
           </Section>
           <Section title="Secrets">
             <SecretsEditor
               agentId={detail.key}
               secrets={detail.secrets}
-              onRefresh={reloadDetail}
+              onRefresh={reload}
             />
           </Section>
         </>
@@ -666,6 +783,8 @@ export function AgentsPanel({ goto }: PanelProps) {
         capabilities={roster.capabilities}
         onBack={() => { setSelectedId(null); setDetail(null); setDetailError(null); }}
         onPersonaUpdated={p => setDetail({ kind: 'dispatch_persona', ...p })}
+        onDetailReloaded={d => setDetail(d)}
+        onRosterStale={loadRoster}
       />
     );
   }
@@ -692,7 +811,7 @@ export function AgentsPanel({ goto }: PanelProps) {
 
   return (
     <div>
-      <H1 sub="Workers that run themselves, the dispatch roster goals go to, and capabilities with their declared secrets — three populations, kept honest.">
+      <H1 sub="Workers that run themselves, the dispatch roster goals go to, and capabilities with their declared secrets — three populations, kept honest. Flag-gated workers are listed here whether or not they are switched on, each with its own switch.">
         Agents
       </H1>
 
@@ -704,15 +823,15 @@ export function AgentsPanel({ goto }: PanelProps) {
             padding: '10px 12px', borderRadius: radius.md, border: `1px solid ${colors.border}`,
           }}
         >
-          The roster has no agent named {unknownFocus}. A flag-gated worker — the Guard, for
-          instance — is absent from the roster while its flag is off, so this is not proof no
-          such agent exists.
+          The roster the daemon returned has no agent named {unknownFocus}. Flag-gated workers
+          are listed here even while their flag is off, so being switched off is no longer an
+          explanation — a daemon that answered with a partial roster still would be.
         </div>
       )}
 
       <Section
         title="Workers"
-        sub="Background workers run themselves and are not dispatchable."
+        sub="Background workers run themselves and are not dispatchable. A worker whose flag is off is listed here too, marked off — its switch is on its own page."
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {roster.workers.map(worker => (
@@ -758,10 +877,34 @@ export function AgentsPanel({ goto }: PanelProps) {
   );
 }
 
+/**
+ * The on/off chip is why a gated worker is LISTED rather than hidden: the list
+ * itself now answers "is this thing switched on?", which is the question that
+ * previously sent the user hunting through five panes for a control they could
+ * not find because the row it belonged to was filtered away.
+ */
+function GateChip({ id, gate }: { id: string; gate: AgentGate }) {
+  const { colors } = useTheme();
+  return (
+    <span
+      data-testid={`gate-chip-${id}`}
+      style={{
+        fontSize: 10, fontWeight: 600, padding: '1px 7px', borderRadius: 999,
+        border: `1px solid ${gate.enabled ? colors.borderHi : colors.border}`,
+        color: gate.enabled ? colors.cyan : colors.textDim,
+        fontFamily: font.body,
+      }}
+    >
+      {gate.enabled ? 'on' : 'off'}
+    </span>
+  );
+}
+
 function WorkerRow({ worker, onOpen }: { worker: BackgroundWorker; onOpen: () => void }) {
   const { colors } = useTheme();
   const live = liveStateLabel(worker.live_state);
   const problem = worker.live_state.status === 'unavailable';
+  const gate = readAgentGate(worker);
   return (
     <button
       type="button"
@@ -774,11 +917,19 @@ function WorkerRow({ worker, onOpen }: { worker: BackgroundWorker; onOpen: () =>
         cursor: 'pointer', fontFamily: font.body,
       }}
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, marginBottom: 4 }}>
-        <span style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>{worker.display_name}</span>
-        <StatusText text={live.text} tone={live.tone} />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <AgentPortrait agentId={worker.id} size={28} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, marginBottom: 4 }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>{worker.display_name}</span>
+              {gate && <GateChip id={worker.id} gate={gate} />}
+            </span>
+            <StatusText text={live.text} tone={live.tone} />
+          </div>
+          <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.45 }}>{worker.what_it_does}</div>
+        </div>
       </div>
-      <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.45 }}>{worker.what_it_does}</div>
     </button>
   );
 }
@@ -786,6 +937,7 @@ function WorkerRow({ worker, onOpen }: { worker: BackgroundWorker; onOpen: () =>
 function PersonaRow({ persona, onOpen }: { persona: DispatchPersona; onOpen: () => void }) {
   const { colors } = useTheme();
   const avail = availabilityLabel(persona.availability);
+  const gate = readAgentGate(persona);
   return (
     <button
       type="button"
@@ -797,15 +949,23 @@ function PersonaRow({ persona, onOpen }: { persona: DispatchPersona; onOpen: () 
         border: `1px solid ${colors.border}`, cursor: 'pointer', fontFamily: font.body,
       }}
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, marginBottom: 4 }}>
-        <span style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>{persona.display_name}</span>
-        <StatusText text={avail.text} tone={avail.tone} />
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+        <AgentPortrait agentId={persona.key} size={28} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, marginBottom: 4 }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>{persona.display_name}</span>
+              {gate && <GateChip id={persona.key} gate={gate} />}
+            </span>
+            <StatusText text={avail.text} tone={avail.tone} />
+          </div>
+          <div style={{ fontSize: 11, color: colors.textMuted, display: 'flex', flexWrap: 'wrap', gap: '4px 12px' }}>
+            <span>{engineLabel(persona.engine)}</span>
+            <span>{persona.cost_tier}</span>
+          </div>
+          <div style={{ fontSize: 11, color: colors.textDim, marginTop: 6 }}>{grantsSummary(persona)}</div>
+        </div>
       </div>
-      <div style={{ fontSize: 11, color: colors.textMuted, display: 'flex', flexWrap: 'wrap', gap: '4px 12px' }}>
-        <span>{engineLabel(persona.engine)}</span>
-        <span>{persona.cost_tier}</span>
-      </div>
-      <div style={{ fontSize: 11, color: colors.textDim, marginTop: 6 }}>{grantsSummary(persona)}</div>
     </button>
   );
 }

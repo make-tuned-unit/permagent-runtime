@@ -1,9 +1,13 @@
 /**
  * Settings → Features — the switches for the off-by-default workers:
- * Initiative, the Decision Playbook, the Concierge and the Steward's
- * git-health sweep. Each is one boolean config key; the daemon loop behind it
- * always runs and re-reads the flag every tick, so a flip here lands at the
- * next tick with no restart (the Strix / Guard pattern in Models).
+ * Initiative, the Decision Playbook, the Concierge, the Steward's git-health
+ * sweep and the Guard's security sweep. Each is one boolean config key; the
+ * daemon loop behind it always runs and re-reads the flag every tick, so a flip
+ * here lands at the next tick with no restart.
+ *
+ * The same key is written by the agent's own page under Settings → Agents (and,
+ * for the Guard, by the Models pane) through this same `/config/upsert` call.
+ * There is no agent-scoped write path for a flag, so the surfaces cannot drift.
  *
  * Read → optimistic write → revert-on-error, exactly like the Guard toggle.
  * A control is never disabled without saying why; the Concierge toggle stays
@@ -29,12 +33,12 @@ type PanelProps = { goto: (key: string) => void };
 
 type FlagState = Record<FeatureKey, boolean | null>;
 
-const UNLOADED: FlagState = {
-  initiative_enabled: null,
-  playbook_enabled: null,
-  concierge_enabled: null,
-  steward_scan_enabled: null,
-};
+/**
+ * Derived, not listed: a hand-written map silently omitted a newly added row,
+ * and an omitted key reads as `undefined` — which renders a toggle claiming OFF
+ * before the daemon has been asked.
+ */
+const UNLOADED = Object.fromEntries(FEATURE_ROWS.map(r => [r.key, null])) as FlagState;
 
 export function FeaturesPanel({ goto }: PanelProps) {
   const { colors } = useTheme();
@@ -72,7 +76,7 @@ export function FeaturesPanel({ goto }: PanelProps) {
 
   return (
     <div>
-      <H1 sub="Workers that are off until you switch them on. Each flip is written to config and picked up by the running daemon at its next tick — no restart. Enabled workers show up under Settings → Agents.">
+      <H1 sub="Workers that are off until you switch them on. Each flip is written to config and picked up by the running daemon at its next tick — no restart. Every worker listed here also appears under Settings → Agents whether or not it is switched on, each carrying the same switch — one config key, not two.">
         Features
       </H1>
 
@@ -113,7 +117,7 @@ export function FeaturesPanel({ goto }: PanelProps) {
       </Section>
 
       <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>
-        Once enabled, each worker is listed with its live state under{' '}
+        Each worker is listed under{' '}
         <button
           onClick={() => goto('agents')}
           style={{
@@ -123,7 +127,8 @@ export function FeaturesPanel({ goto }: PanelProps) {
         >
           Settings → Agents
         </button>
-        .
+        {' '}whether or not it is switched on — with the same switch on its own page, and
+        its live state once it is on.
       </div>
     </div>
   );

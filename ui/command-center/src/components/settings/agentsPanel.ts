@@ -20,6 +20,54 @@ export interface StatusLabel {
   tone: LabelTone;
 }
 
+/**
+ * The one boolean config key that switches an agent on, as the daemon serialises
+ * it on a worker row and on a dispatch persona.
+ */
+export type AgentGate = { config_key: string; enabled: boolean };
+
+/**
+ * The daemon may be OLDER than this app, so the switch is validated rather than
+ * typed. A missing or malformed gate must read as "no switch known" and render
+ * nothing — never as a switch that is off, which would invite the user to flip a
+ * control writing a key that nothing on that daemon reads.
+ *
+ * It takes the whole row rather than a typed `gate`, so the one cast lives at a
+ * single validated boundary. `lib/agentsApi.ts` declares the field too — that is
+ * what catches a daemon-side RENAME at build time — but a type is a claim about
+ * a daemon we have not spoken to yet, so it cannot be the check.
+ */
+export function readAgentGate(row: unknown): AgentGate | null {
+  if (typeof row !== 'object' || row === null) return null;
+  const gate = (row as { gate?: unknown }).gate;
+  if (typeof gate !== 'object' || gate === null) return null;
+  const { config_key, enabled } = gate as { config_key?: unknown; enabled?: unknown };
+  if (typeof config_key !== 'string' || config_key.length === 0) return null;
+  if (typeof enabled !== 'boolean') return null;
+  return { config_key, enabled };
+}
+
+/**
+ * Names the key and the pane that shares it, because the whole point of the
+ * switch living here is that it is not a SECOND switch: the same key is written
+ * by Settings → Features and by the Models pane's Guard block.
+ */
+export function gateRowHint(gate: AgentGate): string {
+  return `Writes ${gate.config_key} — the same key as Settings → Features. Takes effect at the daemon's next tick, no restart.`;
+}
+
+/**
+ * "No secrets set" would be an answer to a question nobody asked. The honest
+ * answer to "what am I supposed to put here?" is that nothing in the runtime
+ * reads a per-agent secret at all, so the field had no consumer to serve.
+ */
+export const NO_AGENT_SECRETS_NOTE =
+  'This agent declares no secrets, and nothing in the runtime reads a per-agent secret. The Guard, for instance, scans on the model and provider key already stored under API keys. There is nothing to enter here.';
+
+/** Stored values stay listed and removable — presence only, never the value. */
+export const STORED_SECRETS_NOTE =
+  'These values are stored, but nothing in the runtime reads a per-agent secret today. Presence is shown, values never are; Remove deletes.';
+
 /** Empty activity must never read as "this agent did nothing". */
 export const EMPTY_ACTIVITY_NOTE =
   'No activity is attributed to this agent. Rows written before attribution landed carry a different actor, so this is not proof the agent did nothing.';

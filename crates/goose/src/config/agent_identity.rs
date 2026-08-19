@@ -20,6 +20,20 @@ pub fn agent_secret_key(agent_id: &str, name: &str) -> String {
     )
 }
 
+/// The worker-descriptor id a dispatch-persona key names.
+///
+/// The agent.yaml roster key and the self-knowledge descriptor id were coined
+/// separately, and `steward` / `git_steward` is the pair that differs. A surface
+/// that assumed they matched showed one of the Steward's two rows with its
+/// switch and the other without — the same agent, half-wired, depending on which
+/// row you clicked.
+pub fn descriptor_id_for_worker_key(key: &str) -> &str {
+    match key {
+        "steward" => crate::agents::self_knowledge::GIT_STEWARD_FEATURE_ID,
+        other => other,
+    }
+}
+
 /// Whether a per-agent secret is set — presence ONLY. There is deliberately
 /// no public getter returning the value on a read path, and nothing here
 /// may ever reach an API response body; `app_perception`'s settings surface
@@ -854,6 +868,31 @@ pub fn load_shared_persona() -> SharedPersona {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Steward is `steward` in agent.yaml and `git_steward` in the worker
+    /// registry, so a surface that wants the descriptor behind a persona key has
+    /// to translate. Fails before this function existed, and catches an alias
+    /// pointing at a descriptor that was since removed — which would put the
+    /// switch on a page for a worker the daemon no longer has.
+    #[test]
+    fn steward_persona_key_resolves_to_the_worker_descriptor_id() {
+        assert_eq!(descriptor_id_for_worker_key("steward"), "git_steward");
+        assert_eq!(descriptor_id_for_worker_key("strix"), "strix");
+        assert_eq!(descriptor_id_for_worker_key("claude_code"), "claude_code");
+
+        for key in default_roster().keys() {
+            let mapped = descriptor_id_for_worker_key(key);
+            if mapped == key {
+                continue;
+            }
+            assert!(
+                crate::agents::self_knowledge::WORKER_DESCRIPTORS
+                    .iter()
+                    .any(|d| d.id == mapped),
+                "persona key {key:?} aliases {mapped:?}, which is not a worker descriptor id"
+            );
+        }
+    }
 
     #[test]
     fn worker_persona_backward_compat_without_new_fields() {

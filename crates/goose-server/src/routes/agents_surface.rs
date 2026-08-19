@@ -17,8 +17,7 @@ use permagent::agents::platform_extensions::{
     RequiredSecretDef, SecretImpact, PLATFORM_EXTENSIONS,
 };
 use permagent::agents::self_knowledge::{
-    worker_descriptor_visible, worker_live_state_for, FeatureDescriptor, FeatureFlags, StateSource,
-    WORKER_DESCRIPTORS,
+    self, worker_live_state_for, FeatureDescriptor, FeatureFlags, StateSource, WORKER_DESCRIPTORS,
 };
 use permagent::config::agent_identity::{self, WorkerPersona};
 use permagent::config::extensions::name_to_key;
@@ -56,6 +55,31 @@ enum LiveState {
     Unavailable { reason: String },
 }
 
+/// The one boolean config key that switches this agent on.
+///
+/// Serialised on BOTH a worker row and a dispatch persona because a gated agent
+/// appears as either — the Guard is both — and a page that shows the agent
+/// without its switch is what sent a product owner hunting through five panes.
+///
+/// `None` serialises as `null` and is NEVER omitted: a client must be able to
+/// tell "this agent has no switch" from "the switch is off".
+///
+/// There is deliberately no write route for it here. The switch is written with
+/// the existing `POST /config/upsert`, the same call Settings → Features makes,
+/// so a second key for the same flag cannot come into existence.
+#[derive(Serialize, Clone)]
+struct Gate {
+    config_key: &'static str,
+    enabled: bool,
+}
+
+fn gate_for(descriptor_id: &str, flags: FeatureFlags) -> Option<Gate> {
+    self_knowledge::worker_gate(descriptor_id).map(|gate| Gate {
+        config_key: gate.key,
+        enabled: gate.is_on(flags),
+    })
+}
+
 #[derive(Serialize, Clone)]
 struct BackgroundWorker {
     id: String,
@@ -65,6 +89,7 @@ struct BackgroundWorker {
     state_source: &'static str,
     live_state: LiveState,
     dispatchable: bool,
+    gate: Option<Gate>,
 }
 
 #[derive(Serialize, Clone)]
@@ -115,6 +140,7 @@ struct DispatchPersona {
     grants: Grants,
     grants_enforced: bool,
     secrets: Secrets,
+    gate: Option<Gate>,
 }
 
 #[derive(Serialize, Clone)]
@@ -180,11 +206,18 @@ fn bounded<T>(mut items: Vec<T>, limit: usize) -> (Vec<T>, bool) {
     (items, truncated)
 }
 
-fn background_workers(scheduled_job_count: Option<usize>) -> Vec<BackgroundWorker> {
-    let flags = FeatureFlags::from_live_config();
+/// EVERY worker descriptor, gated or not. The `permagent_self` brief still hides
+/// a gated-off worker (`worker_descriptor_visible`, unchanged, at its own call
+/// sites) because the brief describes what the agent can DO. This surface must
+/// list it, because the switch is HERE: a worker that vanished while its flag
+/// was off left the user looking for a control on a page that had removed the
+/// row it belongs to.
+fn background_workers(
+    scheduled_job_count: Option<usize>,
+    flags: FeatureFlags,
+) -> Vec<BackgroundWorker> {
     WORKER_DESCRIPTORS
         .iter()
-        .filter(|d| worker_descriptor_visible(d, flags))
         .map(|d| background_worker(d, scheduled_job_count, flags))
         .collect()
 }
@@ -207,6 +240,7 @@ fn background_worker(
         state_source,
         live_state,
         dispatchable: false,
+        gate: gate_for(d.id, flags),
     }
 }
 
@@ -255,6 +289,7 @@ fn dispatch_persona(
     key: String,
     worker: WorkerPersona,
     availability: Availability,
+    flags: FeatureFlags,
 ) -> DispatchPersona {
     let workflow_role = worker.routing_role().map(|role| role.as_str().to_string());
     let grants = match worker.extension_grants.clone() {
@@ -269,6 +304,11 @@ fn dispatch_persona(
     };
     DispatchPersona {
         secrets: secrets_for_agent(&key),
+        // A persona key and a worker-descriptor id are separate namespaces
+        // (`steward` vs `git_steward`), so the gate is looked up through the
+        // bridge — without it the Steward's persona page would carry no switch
+        // while its worker row did.
+        gate: gate_for(agent_identity::descriptor_id_for_worker_key(&key), flags),
         key,
         display_name: worker.display_name(),
         role: worker.role,
@@ -281,7 +321,7 @@ fn dispatch_persona(
     }
 }
 
-async fn dispatch_roster(state: &AppState) -> Vec<DispatchPersona> {
+async fn dispatch_roster(state: &AppState, flags: FeatureFlags) -> Vec<DispatchPersona> {
     let workers: Vec<(String, WorkerPersona)> = state
         .agent_config
         .read()
@@ -311,7 +351,7 @@ async fn dispatch_roster(state: &AppState) -> Vec<DispatchPersona> {
     match probed {
         Ok(rows) => rows
             .into_iter()
-            .map(|(key, worker, availability)| dispatch_persona(key, worker, availability))
+            .map(|(key, worker, availability)| dispatch_persona(key, worker, availability, flags))
             .collect(),
         Err(error) => {
             let reason = error.to_string();
@@ -328,6 +368,7 @@ async fn dispatch_roster(state: &AppState) -> Vec<DispatchPersona> {
                         Availability::ProbeFailed {
                             reason: reason.clone(),
                         },
+                        flags,
                     )
                 })
                 .collect()
@@ -479,9 +520,10 @@ fn capabilities() -> Vec<Capability> {
 
 async fn roster(State(state): State<Arc<AppState>>) -> Json<RosterResponse> {
     let jobs = state.scheduler().list_scheduled_jobs().await;
+    let flags = FeatureFlags::from_live_config();
     Json(RosterResponse {
-        workers: background_workers(Some(jobs.len())),
-        dispatch_roster: dispatch_roster(&state).await,
+        workers: background_workers(Some(jobs.len()), flags),
+        dispatch_roster: dispatch_roster(&state, flags).await,
         capabilities: capabilities(),
     })
 }
@@ -508,11 +550,12 @@ async fn detail(
             key,
             worker,
             availability,
+            FeatureFlags::from_live_config(),
         ))));
     }
     let jobs = state.scheduler().list_scheduled_jobs().await;
     let flags = FeatureFlags::from_live_config();
-    if let Some(d) = visible_worker_descriptor(&id, flags) {
+    if let Some(d) = worker_descriptor(&id) {
         return Ok(Json(AgentDetail::Worker(background_worker(
             d,
             Some(jobs.len()),
@@ -534,10 +577,12 @@ async fn detail(
     ))
 }
 
-fn visible_worker_descriptor(id: &str, flags: FeatureFlags) -> Option<&'static FeatureDescriptor> {
-    WORKER_DESCRIPTORS
-        .iter()
-        .find(|d| d.id == id && worker_descriptor_visible(d, flags))
+/// A worker descriptor by id, with no flag argument at all. A gated-off worker
+/// EXISTS — its page is where its switch lives — so resolving it must not depend
+/// on the flag. Reporting an absence as a 404 is what made
+/// `GET /api/agents/strix/work` answer "not found" for an agent the daemon ships.
+fn worker_descriptor(id: &str) -> Option<&'static FeatureDescriptor> {
+    WORKER_DESCRIPTORS.iter().find(|d| d.id == id)
 }
 
 #[derive(Deserialize)]
@@ -620,9 +665,8 @@ async fn work(
     Path(id): Path<String>,
     Query(query): Query<LimitQuery>,
 ) -> ApiResult<WorkReview> {
-    let flags = FeatureFlags::from_live_config();
     let known = state.agent_config.read().await.workers.contains_key(&id)
-        || visible_worker_descriptor(&id, flags).is_some();
+        || worker_descriptor(&id).is_some();
     if !known {
         return Err(ApiError(
             StatusCode::NOT_FOUND,
@@ -883,7 +927,14 @@ async fn set_grants(
                 reason: error.to_string(),
             },
         };
-    Ok(Json(dispatch_persona(id, worker, availability)))
+    // Read fresh rather than threaded in: the grants write is unrelated to the
+    // gate, and the response must describe the flag as it stands right now.
+    Ok(Json(dispatch_persona(
+        id,
+        worker,
+        availability,
+        FeatureFlags::from_live_config(),
+    )))
 }
 
 #[derive(Deserialize)]
@@ -973,15 +1024,15 @@ mod tests {
 
     #[test]
     fn workers_are_never_dispatchable_and_have_no_affordance() {
-        let value = serde_json::to_value(background_workers(Some(3))).unwrap();
+        let value =
+            serde_json::to_value(background_workers(Some(3), FeatureFlags::default())).unwrap();
         let workers = value.as_array().unwrap();
-        // "never dispatchable" over an empty roster is vacuously true, so floor
-        // it. Not pinned to WORKER_DESCRIPTORS.len(): the roster is filtered by
-        // worker_descriptor_visible against FeatureFlags::from_live_config(), so
-        // the visible count depends on the host's config (6 of 9 here). Pinning
-        // the count, or naming expected workers, would make this fail on config
-        // rather than on the property. Re-deriving the same filter to compare
-        // against would only assert the function equals a copy of itself.
+        // The roster no longer filters on host config, so the count IS pinnable
+        // now — the caveat this comment used to carry ("6 of 9 here, depends on
+        // the machine") no longer applies. `every_worker_descriptor_reaches_the_roster`
+        // owns that assertion; this one keeps the floor so "never dispatchable"
+        // is not vacuously true over an empty list.
+        assert_eq!(workers.len(), WORKER_DESCRIPTORS.len());
         assert!(
             !workers.is_empty(),
             "roster returned no workers, so the assertions below inspected nothing"
@@ -1037,7 +1088,7 @@ mod tests {
         )]);
         let shaped_secrets = secret_names_from_map("researcher", seeded);
         let roster = RosterResponse {
-            workers: background_workers(Some(0)),
+            workers: background_workers(Some(0), FeatureFlags::default()),
             dispatch_roster: vec![DispatchPersona {
                 key: "researcher".into(),
                 display_name: "Researcher".into(),
@@ -1049,10 +1100,12 @@ mod tests {
                 grants: Grants::InheritGlobal,
                 grants_enforced: true,
                 secrets: shaped_secrets,
+                gate: None,
             }],
             capabilities: capabilities(),
         };
-        let detail = AgentDetail::Worker(background_workers(Some(0)).remove(0));
+        let detail =
+            AgentDetail::Worker(background_workers(Some(0), FeatureFlags::default()).remove(0));
         let work = WorkReview {
             activity: ActivitySection {
                 attribution: "actor_exact_match",
@@ -1232,14 +1285,115 @@ mod tests {
         ));
     }
 
+    /// REGRESSION. Before this change `background_workers` filtered on
+    /// `worker_descriptor_visible`, so with `strix_enabled` off the Guard's row
+    /// was absent from Settings → Agents entirely — the user had to switch the
+    /// agent on before the page that switches it on would show it. The old code
+    /// would return no `strix` row here at all and fail on the `expect`.
     #[test]
-    fn gated_worker_existence_uses_visibility_predicate() {
-        let flags = FeatureFlags::default();
-        for descriptor in WORKER_DESCRIPTORS
+    fn gated_worker_is_listed_while_its_flag_is_off() {
+        let value =
+            serde_json::to_value(background_workers(Some(0), FeatureFlags::default())).unwrap();
+        let guard = value
+            .as_array()
+            .unwrap()
             .iter()
-            .filter(|descriptor| !worker_descriptor_visible(descriptor, flags))
-        {
-            assert!(visible_worker_descriptor(descriptor.id, flags).is_none());
+            .find(|worker| worker["id"] == "strix")
+            .expect("the Guard is listed while its flag is off");
+        assert_eq!(guard["gate"]["config_key"], "strix_enabled");
+        assert_eq!(guard["gate"]["enabled"], false);
+    }
+
+    /// The roster is now a pure function of WORKER_DESCRIPTORS, not of the
+    /// host's config — which is what lets the count be pinned at all.
+    #[test]
+    fn every_worker_descriptor_reaches_the_roster() {
+        let expected: Vec<&str> = WORKER_DESCRIPTORS.iter().map(|d| d.id).collect();
+        for flags in [
+            FeatureFlags::default(),
+            FeatureFlags {
+                playbook_enabled: true,
+                concierge_enabled: true,
+                strix_enabled: true,
+                initiative_enabled: true,
+                steward_scan_enabled: true,
+            },
+        ] {
+            let rows = background_workers(Some(0), flags);
+            assert_eq!(rows.len(), WORKER_DESCRIPTORS.len());
+            let ids: Vec<&str> = rows.iter().map(|w| w.id.as_str()).collect();
+            assert_eq!(ids, expected);
         }
+    }
+
+    /// REGRESSION. `visible_worker_descriptor(id, FeatureFlags::default())`
+    /// returned `None` for a gated-off worker, so `GET /api/agents/playbook` and
+    /// `GET /api/agents/strix/work` answered 404 — an absence reported as a
+    /// not-found for an agent the daemon actually ships, and the 404 landed on
+    /// the very page that carries the switch.
+    ///
+    /// `detail` and `work` need an `AppState` and are not driven here; what is
+    /// driven is the whole of what they consult for a worker id — the lookup
+    /// (`worker_descriptor`, which no longer takes flags at all, so the fix is
+    /// structural) composed with the body `detail` returns
+    /// (`background_worker`). The gated-off Guard must come back with its own
+    /// switch attached, because that is what its page renders.
+    #[test]
+    fn worker_detail_and_work_resolve_while_the_flag_is_off() {
+        let off = FeatureFlags::default();
+        for id in ["playbook", "strix"] {
+            let d = worker_descriptor(id).unwrap_or_else(|| panic!("{id} stopped resolving"));
+            let body = serde_json::to_value(background_worker(d, Some(0), off)).unwrap();
+            assert_eq!(body["id"], id);
+            assert!(
+                body["gate"]["config_key"].is_string(),
+                "{id} resolved without the switch its page renders: {body}"
+            );
+            assert_eq!(body["gate"]["enabled"], false);
+        }
+        // The unknown id still 404s: the fix widened what exists, it did not
+        // make every string an agent.
+        assert!(worker_descriptor("no_such_worker_9f13").is_none());
+    }
+
+    /// REGRESSION. The persona key is `steward` while the descriptor id is
+    /// `git_steward`; without the bridge the Steward's persona page — the page
+    /// the user actually lands on — would carry no switch at all.
+    #[test]
+    fn gate_reaches_a_persona_under_its_own_key() {
+        let persona = |key: &str| {
+            let roster = agent_identity::default_roster();
+            serde_json::to_value(dispatch_persona(
+                key.to_string(),
+                roster[key].clone(),
+                Availability::Available,
+                FeatureFlags::default(),
+            ))
+            .unwrap()
+        };
+        let steward = persona("steward");
+        assert_eq!(steward["gate"]["config_key"], "steward_scan_enabled");
+        assert_eq!(steward["gate"]["enabled"], false);
+
+        let guard = persona("strix");
+        assert_eq!(guard["gate"]["config_key"], "strix_enabled");
+        assert_eq!(guard["gate"]["enabled"], false);
+    }
+
+    /// The key is PRESENT and null, never omitted: a client must be able to tell
+    /// "this agent has no switch" from "the switch is off". An omitted field
+    /// reads as `undefined` in the UI, which renders as a toggle claiming off.
+    #[test]
+    fn an_ungated_persona_serialises_gate_as_null() {
+        let roster = agent_identity::default_roster();
+        let persona = dispatch_persona(
+            "claude_code".to_string(),
+            roster["claude_code"].clone(),
+            Availability::Available,
+            FeatureFlags::default(),
+        );
+        assert!(persona.gate.is_none());
+        let body = serde_json::to_string(&persona).unwrap();
+        assert!(body.contains("\"gate\":null"), "{body}");
     }
 }
