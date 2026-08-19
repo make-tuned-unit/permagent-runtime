@@ -213,6 +213,29 @@ struct BrowserNewWindowPayload {
     url: String,
 }
 
+/// Injected into EVERY frame of every page webview at document start.
+///
+/// `on_new_window` below is the only seam WebKit offers, and it only fires when
+/// the PAGE asks for a new frame (`window.open`, `target=_blank`). The mouse
+/// gestures a person actually uses to open a tab — right-click -> Open Link in
+/// New Tab, middle-click, Cmd-click — never reach it: they arrive at
+/// `decidePolicyForNavigationAction`, whose wry binding is `Fn(String) -> bool`
+/// and has already discarded the button number and the modifier flags. A bare
+/// WKWebView has no "Open Link in New Tab" menu item either; that one is
+/// Safari's, not WebKit's.
+///
+/// So the script claims those gestures in the page and re-expresses them as
+/// `window.open(url, '_blank')` — the one thing WebKit does route here. Every
+/// gesture then converges on this hook and on Browser.tsx's single
+/// tab-opening path, which is why there is no second event channel to rot.
+const LINKS_JS: &str = include_str!("browser_links.js");
+
+/// `browser_links.js` only DEFINES functions (so the vitest+jsdom suite can
+/// load the very same file); this wraps it in an IIFE that installs them.
+fn links_init_script() -> String {
+    format!("(function(){{\n{LINKS_JS}\n__permagentInstallLinks();\n}})()")
+}
+
 #[tauri::command]
 pub async fn create_browser_webview(
     app: AppHandle,
@@ -244,6 +267,10 @@ pub async fn create_browser_webview(
         Arc::new(Mutex::new(HashMap::new()));
     let builder = WebviewBuilder::new(&label, webview_url)
         .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15")
+        // Mouse gestures -> new tabs. All frames, because a link in an iframe
+        // is still a link; the script itself keeps its context menu to the top
+        // frame, where an overlay is not clipped to an ad iframe's box.
+        .initialization_script_for_all_frames(links_init_script())
         .on_download(move |_webview, event| {
             match event {
                 tauri::webview::DownloadEvent::Requested { url, destination } => {
@@ -312,13 +339,26 @@ pub async fn create_browser_webview(
         // panes from each opening a tab. Matching page_load's emit path keeps
         // popup delivery on the channel that is known to reach the shell.
         .on_new_window(move |url, _features| {
-            let _ = popup_app.emit(
+            // Say so, every time. The three prior regressions (#240, #709,
+            // #973) all survived because a dropped popup left NO trace: the
+            // click just did nothing and the logs were silent. This line and
+            // Browser.tsx's matching one make the next one a five-second
+            // diagnosis instead of a month.
+            let target = url.to_string();
+            println!(
+                "[permagent-app] browser: new-window request from {popup_id} -> {target}"
+            );
+            if let Err(e) = popup_app.emit(
                 "browser_new_window_request",
                 BrowserNewWindowPayload {
                     source_webview_id: popup_id.clone(),
-                    url: url.to_string(),
+                    url: target.clone(),
                 },
-            );
+            ) {
+                eprintln!(
+                    "[permagent-app] browser: emit of new-window request for {target} FAILED: {e}"
+                );
+            }
             // Returning Deny is load-bearing: without a Create/Allow response
             // WKWebView cancels the navigation, so the emit above is the ONLY
             // way the URL survives. A missing listener looks like "click did
@@ -1012,6 +1052,84 @@ mod tests {
             "Do not switch popup routing back to emit_to without also changing \
              the frontend listener to a labeled target (getCurrentWindow).\
              listen) and updating this guard deliberately."
+        );
+    }
+
+    /// The mouse gestures WebKit will NOT route to the UI delegate.
+    ///
+    /// `on_new_window` alone is not "open in a new tab" — it is only the
+    /// content-initiated half of it. Right-click, middle-click and Cmd-click
+    /// arrive at the navigation-policy delegate instead, which wry exposes as
+    /// `Fn(String) -> bool`: no button number, no modifier flags. The injected
+    /// script is what turns those into a `window.open` the hook DOES see. It
+    /// keeps getting deleted as "an injected script we don't need", so this
+    /// pins every link in that chain.
+    #[test]
+    fn mouse_gestures_are_bridged_into_the_new_window_hook() {
+        let src = include_str!("browser.rs");
+        assert!(
+            src.contains(concat!("include_", "str!(\"browser_links.js\")")),
+            "The gesture bridge lives in browser_links.js so the vitest+jsdom \
+             suite can exercise the very same file that ships."
+        );
+        assert!(
+            src.contains(concat!(".initialization_script_", "for_all_frames(")),
+            "The bridge must be an INITIALIZATION script, not an eval: it has \
+             to be present before the first click on every document, including \
+             every subsequent navigation and every subframe. Re-injecting on \
+             page load races the user."
+        );
+        assert!(
+            src.contains("links_init_script()"),
+            "create_browser_webview must actually install the bridge; a \
+             constant nobody injects is how this regressed before."
+        );
+        assert!(
+            src.contains("__permagentInstallLinks();"),
+            "The file only DEFINES functions (the jsdom test loads it verbatim), \
+             so the wrapper has to call the installer."
+        );
+    }
+
+    /// The page-side half of the same contract. Split needles so this test
+    /// cannot satisfy itself out of its own source.
+    #[test]
+    fn the_injected_bridge_claims_every_mouse_gesture() {
+        let js = include_str!("browser_links.js");
+        for needle in [
+            concat!("'", "contextmenu'"),
+            concat!("'", "auxclick'"),
+            concat!("meta", "Key"),
+            concat!("'_", "blank'"),
+            "Open Link in New Tab",
+        ] {
+            assert!(
+                js.contains(needle),
+                "browser_links.js must still handle {needle}: it is one of the \
+                 mouse gestures WKWebView drops on the floor."
+            );
+        }
+        assert!(
+            js.contains("window.open("),
+            "window.open is the ONLY channel out of a page webview — a remote \
+             page has no Tauri bridge — so the gesture must be re-expressed as \
+             one, which routes it back through on_new_window."
+        );
+    }
+
+    /// A dropped popup must never again be silent (#240 / #709 / #973).
+    #[test]
+    fn a_new_window_request_is_logged_before_it_is_emitted() {
+        let src = include_str!("browser.rs");
+        assert!(
+            src.contains("browser: new-window request from"),
+            "Every popup the native hook sees must be logged. All three prior \
+             regressions survived because the failure was invisible."
+        );
+        assert!(
+            !src.contains(concat!("let _ = popup_", "app.emit(")),
+            "A discarded emit result hides the one thing worth knowing. Handle \
+             the Err and log it."
         );
     }
 
