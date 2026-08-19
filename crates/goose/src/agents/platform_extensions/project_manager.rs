@@ -89,6 +89,11 @@ struct CardCreateParams {
     /// For social_post cards only: "draft" | "scheduled" | "posted".
     /// Defaults to "draft" when creating a social_post. Rejected on any other card_type.
     post_status: Option<String>,
+    /// Due date as an ISO-8601 calendar date, `YYYY-MM-DD` (e.g. "2026-09-01").
+    /// A standard card WITHOUT one never reaches the Home tab's to-do list — set
+    /// it whenever the user gives or implies a deadline. Rejected on any
+    /// card_type other than 'standard', and on any other date format.
+    due_date: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -115,6 +120,10 @@ struct CardUpdateParams {
     /// For social_post cards only: "draft" | "scheduled" | "posted".
     /// Rejected on any other card_type.
     post_status: Option<String>,
+    /// New due date as an ISO-8601 calendar date, `YYYY-MM-DD`; pass `null` to
+    /// clear it. Setting one puts the to-do on the Home tab's list; clearing it
+    /// takes it off. Omit the field entirely to leave the due date alone.
+    due_date: Option<Option<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -132,6 +141,12 @@ struct CardListParams {
     /// Filter by column name or ID (optional)
     column: Option<String>,
 }
+
+/// `card_due_list` reads the whole cross-project list; there is nothing to
+/// narrow, so it deliberately takes no arguments — the Home tab passes none
+/// either, and a filter here would be a second opinion about scope.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct CardDueListParams {}
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct BoardSummaryParams {
@@ -509,7 +524,12 @@ pub const PROJECT_WORKSPACE_FEATURE: crate::agents::self_knowledge::FeatureDescr
              (partners, adjacent players) and competitive landscape (competitors): findings \
              are review-gated through the Decision Inbox, each cites its source, and a \
              'Refresh intelligence' action re-runs the research) and the Kanban board of \
-             goal and to-do cards. A document dropped into a project is extracted and indexed \
+             goal and to-do cards. Clicking any card on the board opens its detail view — \
+             title, description, column, type, assignee, due date and timestamps — with the \
+             title, description and due date editable in place. A to-do card carries an \
+             optional due date, and a dated one ALSO appears on the Home tab's to-do list, \
+             cross-project and soonest-first; an undated card stays on the board only. \
+             A document dropped into a project is extracted and indexed \
              into your Brain and associated with that project; notes the user writes on a \
              project are indexed into your Brain the same way — both recallable and \
              Librarian-enriched, scoped to the project, and both surface back in the Memories \
@@ -520,7 +540,10 @@ pub const PROJECT_WORKSPACE_FEATURE: crate::agents::self_knowledge::FeatureDescr
              scoped to the project, you can recall a project's files and notes by content without \
              the user re-pasting them. Reach for the project tools (project_list, board_summary) \
              to read or change what this surface shows; the Overview is the summary view, the \
-             Kanban the working board",
+             Kanban the working board. Read the user's to-dos with card_due_list — it returns \
+             the Home tab's list itself, in the same order — and set or clear a card's due \
+             date with card_create / card_update; a card with no due date reaches no to-do \
+             list, which is why one you file undated goes unseen",
         state_source: crate::agents::self_knowledge::StateSource::Static,
         teaching: &[],
     };
@@ -1287,10 +1310,11 @@ impl ProjectManagerClient {
             .unwrap_or(false);
         let scheduled_for = args.get("scheduled_for").and_then(|v| v.as_str());
         let post_status = args.get("post_status").and_then(|v| v.as_str());
+        let due_date = args.get("due_date").and_then(|v| v.as_str());
         let metadata_json =
             social_post_metadata_for_create(card_type_str, scheduled_for, post_status)?;
 
-        let card = cards::create_card(
+        let card = create_card_with_due_date(
             &pool,
             cards::CreateCard {
                 project_id: project.id.clone(),
@@ -1304,6 +1328,7 @@ impl ProjectManagerClient {
                 created_by: Some("user".to_string()),
                 metadata_json,
             },
+            due_date,
         )
         .await?;
 
@@ -1369,17 +1394,36 @@ impl ProjectManagerClient {
             }
         }
 
+        // Say plainly whether this card will reach the Home tab. An undated
+        // standard card lands on the board and NOWHERE else, which is precisely
+        // the "he added it to the Kanban and I don't see it as a to-do"
+        // surprise — so the tool result names the omission instead of leaving
+        // the agent to assume it worked.
+        let stamped_due = card
+            .metadata_json
+            .get(cards::DUE_DATE_KEY)
+            .and_then(|v| v.as_str());
         let json = serde_json::json!({
             "id": card.id, "title": card.title, "card_type": card.card_type,
             "column_id": card.column_id, "position": card.position,
-            "project": project.name,
+            "project": project.name, "due_date": stamped_due,
         });
+        let home_note = match (card.card_type.as_str(), stamped_due) {
+            ("standard", Some(d)) => {
+                format!(" — due {d}, so it shows on the Home tab's to-do list")
+            }
+            ("standard", None) => " — no due date, so it stays on the board and does NOT appear \
+                 on the Home tab's to-do list; set due_date to put it there"
+                .to_string(),
+            _ => String::new(),
+        };
         Ok(vec![Content::text(format!(
-            "Created card \"{}\" in {} (column: {}, type: {})\n\n{}",
+            "Created card \"{}\" in {} (column: {}, type: {}){}\n\n{}",
             card.title,
             project.name,
             card.column_id,
             card.card_type,
+            home_note,
             serde_json::to_string_pretty(&json).unwrap_or_default()
         ))])
     }
@@ -1439,6 +1483,20 @@ impl ProjectManagerClient {
             .map(String::from);
         let scheduled_for = args.get("scheduled_for").and_then(|v| v.as_str());
         let post_status = args.get("post_status").and_then(|v| v.as_str());
+        // Three states, not two: absent leaves the due date alone, explicit
+        // null clears it, a string sets it. `as_str()` alone would collapse
+        // "clear it" into "don't touch it".
+        let due_date = match args.get("due_date") {
+            None => None,
+            Some(serde_json::Value::Null) => Some(None),
+            Some(serde_json::Value::String(d)) => Some(Some(d.as_str())),
+            Some(other) => {
+                return Err(format!(
+                    "due_date must be an ISO-8601 calendar date string (YYYY-MM-DD) or null, \
+                     got {other}"
+                ))
+            }
+        };
 
         let pool = self
             .context
@@ -1461,29 +1519,52 @@ impl ProjectManagerClient {
             None
         };
 
-        if title.is_none() && description.is_none() && metadata_json.is_none() {
+        if title.is_none() && description.is_none() && metadata_json.is_none() && due_date.is_none()
+        {
             return Err(
-                "card_update requires at least one of: title, description, scheduled_for, post_status"
+                "card_update requires at least one of: title, description, due_date, \
+                 scheduled_for, post_status"
                     .to_string(),
             );
         }
 
-        let updated = cards::update_card(
-            &pool,
-            card_id,
-            cards::UpdateCard {
-                title,
-                description,
-                metadata_json,
-                ..Default::default()
-            },
-        )
-        .await?
-        .ok_or("Card not found after update")?;
+        // The due date is validated first so a malformed one rejects the WHOLE
+        // edit: half-applying a title change and then failing would leave the
+        // agent reporting an update it did not fully make.
+        if let Some(Some(date)) = due_date {
+            validated_due_date(&card.card_type, date)?;
+        }
 
+        let mut updated = if title.is_some() || description.is_some() || metadata_json.is_some() {
+            cards::update_card(
+                &pool,
+                card_id,
+                cards::UpdateCard {
+                    title,
+                    description,
+                    metadata_json,
+                    ..Default::default()
+                },
+            )
+            .await?
+            .ok_or("Card not found after update")?
+        } else {
+            card.clone()
+        };
+        // Written through the shared setter (which merges rather than replaces
+        // metadata) AFTER the general update, so it reads the freshest card.
+        if let Some(card) = apply_due_date_update(&pool, &updated, due_date).await? {
+            updated = card;
+        }
+
+        let due_note = match due_date {
+            Some(Some(d)) => format!(" — due {d}, now on the Home tab's to-do list"),
+            Some(None) => " — due date cleared, so it leaves the Home tab's to-do list".to_string(),
+            None => String::new(),
+        };
         Ok(vec![Content::text(format!(
-            "Updated card \"{}\" (id: {})",
-            updated.title, updated.id
+            "Updated card \"{}\" (id: {}){}",
+            updated.title, updated.id, due_note
         ))])
     }
 
@@ -1547,6 +1628,48 @@ impl ProjectManagerClient {
             items.len(),
             project.name,
             serde_json::to_string_pretty(&json).unwrap_or_default()
+        ))])
+    }
+
+    /// Read the user's to-do list — the very list the Home tab renders.
+    ///
+    /// Takes no arguments and asks no question of its own: it calls
+    /// [`due_todos`], which calls `cards::list_due_cards`. If this ever
+    /// disagrees with what the user sees on Home, the query is wrong for both
+    /// of them, not for one.
+    async fn handle_card_due_list(
+        &self,
+        _arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let pool = self
+            .context
+            .session_manager
+            .pool_clone()
+            .await
+            .map_err(|e| e.to_string())?;
+        // The user's local day — "overdue" is a fact about their calendar, not
+        // about UTC, and the Home tab buckets against the same local today.
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let items = due_todos(&pool, &today).await?;
+        let overdue = items
+            .iter()
+            .filter(|v| v["overdue"].as_bool().unwrap_or(false))
+            .count();
+
+        if items.is_empty() {
+            return Ok(vec![Content::text(
+                "No to-dos are due — the Home tab's list is empty. A standard card only \
+                 appears there once it has a due date (set one with card_create or \
+                 card_update)."
+                    .to_string(),
+            )]);
+        }
+        Ok(vec![Content::text(format!(
+            "{} to-do(s) on the Home tab, soonest first ({} overdue as of {})\n\n{}",
+            items.len(),
+            overdue,
+            today,
+            serde_json::to_string_pretty(&items).unwrap_or_default()
         ))])
     }
 
@@ -1728,6 +1851,7 @@ impl ProjectManagerClient {
         let card_update_schema = serde_json::to_value(schema_for!(CardUpdateParams)).unwrap();
         let card_delete_schema = serde_json::to_value(schema_for!(CardDeleteParams)).unwrap();
         let card_list_schema = serde_json::to_value(schema_for!(CardListParams)).unwrap();
+        let card_due_list_schema = serde_json::to_value(schema_for!(CardDueListParams)).unwrap();
         let col_create_schema = serde_json::to_value(schema_for!(ColumnCreateParams)).unwrap();
         let col_delete_schema = serde_json::to_value(schema_for!(ColumnDeleteParams)).unwrap();
         let board_summary_schema = serde_json::to_value(schema_for!(BoardSummaryParams)).unwrap();
@@ -1830,6 +1954,12 @@ impl ProjectManagerClient {
                 "create a task", "track this", etc. Defaults to card_type='standard' and places
                 the card in the first column (Backlog) unless specified.
 
+                DUE DATES: pass due_date="YYYY-MM-DD" to make it a real to-do. A standard card
+                with no due date lives on the board only — it does NOT appear on the Home tab's
+                to-do list. If the user gives or implies a deadline ("by Friday", "next week"),
+                resolve it to a calendar date and set due_date; if they clearly want it on their
+                to-do list but named no date, ask for one rather than filing it undated.
+
                 For goal cards (card_type='goal'): set auto_dispatch=true to immediately
                 assign a worker and begin execution. The card moves Triage → Ready → InProgress
                 automatically. If auto_dispatch is false or omitted, the goal stays in Triage.
@@ -1863,8 +1993,14 @@ impl ProjectManagerClient {
             Tool::new(
                 "card_update".to_string(),
                 indoc! {r#"
-                Edit a card's title, description, or (for social_post) schedule and post_status.
-                Use to rewrite or reschedule a drafted Grow-tab post without recreating it.
+                Edit a card's title, description, due date, or (for social_post) schedule and
+                post_status. Use to rewrite or reschedule a drafted Grow-tab post without
+                recreating it.
+
+                DUE DATES: due_date="YYYY-MM-DD" sets or reschedules one, putting the to-do on
+                the Home tab's list (and un-dismissing it); due_date=null clears it, taking it
+                off. Omit the field to leave the due date untouched. This is how you fix a card
+                the user expected to see on Home but doesn't.
             "#}
                 .to_string(),
                 card_update_schema.as_object().unwrap().clone(),
@@ -1902,6 +2038,28 @@ impl ProjectManagerClient {
             )
             .annotate(ToolAnnotations::from_raw(
                 Some("List Cards".to_string()),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+            )),
+            Tool::new(
+                "card_due_list".to_string(),
+                indoc! {r#"
+                Read the user's to-do list — EXACTLY what the Home tab shows, in the same
+                order (soonest due first). Use it whenever they ask what's on their plate,
+                what's due, what they should do next, or what their to-dos are.
+
+                Returns each to-do with its title, project, board column, due date, and
+                whether it is overdue. Only standard cards that HAVE a due date appear —
+                a Kanban card without one is invisible here and on Home, so if the user
+                expects something that is missing, give it a due date with card_update.
+            "#}
+                .to_string(),
+                card_due_list_schema.as_object().unwrap().clone(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("List To-Dos".to_string()),
                 Some(false),
                 Some(false),
                 Some(false),
@@ -2126,6 +2284,7 @@ impl McpClientTrait for ProjectManagerClient {
             "card_update" => self.handle_card_update(arguments).await,
             "card_delete" => self.handle_card_delete(arguments).await,
             "card_list" => self.handle_card_list(arguments).await,
+            "card_due_list" => self.handle_card_due_list(arguments).await,
             "column_create" => self.handle_column_create(arguments).await,
             "column_delete" => self.handle_column_delete(arguments).await,
             "board_summary" => self.handle_board_summary(arguments).await,
@@ -2181,6 +2340,118 @@ fn social_post_metadata_for_create(
         );
     }
     Ok(Some(serde_json::Value::Object(map)))
+}
+
+/// Validate the agent's `due_date` argument for a card write.
+///
+/// Two ways to be wrong, both refused loudly rather than stored:
+/// - a date that is not `YYYY-MM-DD` — [`cards::validate_due_date`] owns that
+///   message, and it names the expected shape;
+/// - a due date on a card the to-do list can never show. `list_due_cards`
+///   filters to `card_type = 'standard'`, so stamping a date on a goal or a
+///   social_post would write a field that changes nothing — exactly the silent
+///   no-op the user hit from the other direction.
+fn validated_due_date<'a>(card_type: &str, due_date: &'a str) -> Result<&'a str, String> {
+    if card_type != "standard" {
+        return Err(format!(
+            "due_date is only valid for card_type='standard' — the Home tab's to-do list \
+             shows standard cards only (got '{card_type}')"
+        ));
+    }
+    cards::validate_due_date(due_date)?;
+    Ok(due_date)
+}
+
+/// Create a card and, when the agent supplied one, stamp its due date.
+///
+/// The date is validated BEFORE the insert so a malformed one cannot leave an
+/// orphan card behind, and it is written through [`cards::set_card_due_date`] —
+/// the same function the UI's `PUT …/due-date` route calls — rather than by
+/// poking `metadata_json`, so sibling metadata survives and the user's and the
+/// agent's edits converge on one implementation.
+pub(crate) async fn create_card_with_due_date(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    input: cards::CreateCard,
+    due_date: Option<&str>,
+) -> Result<cards::Card, String> {
+    let card_type = input
+        .card_type
+        .clone()
+        .unwrap_or_else(|| "standard".to_string());
+    let due = due_date
+        .map(|d| validated_due_date(&card_type, d))
+        .transpose()?
+        .map(str::to_string);
+
+    let card = cards::create_card(pool, input).await?;
+    match due {
+        Some(date) => cards::set_card_due_date(pool, &card.id, Some(&date))
+            .await?
+            .ok_or_else(|| format!("Card '{}' vanished before its due date landed", card.id)),
+        None => Ok(card),
+    }
+}
+
+/// Apply the agent's due-date edit to a card that already exists.
+///
+/// `None` leaves the due date alone, `Some(None)` clears it, `Some(Some(d))`
+/// sets it. Clearing is allowed on any card type: removing a key that the
+/// to-do list ignores anyway cannot mislead anyone, while *setting* one there
+/// would promise a Home-tab appearance that never comes.
+pub(crate) async fn apply_due_date_update(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    due_date: Option<Option<&str>>,
+) -> Result<Option<cards::Card>, String> {
+    let Some(value) = due_date else {
+        return Ok(None);
+    };
+    if let Some(date) = value {
+        validated_due_date(&card.card_type, date)?;
+    }
+    cards::set_card_due_date(pool, &card.id, value)
+        .await?
+        .ok_or_else(|| format!("Card '{}' not found", card.id))
+        .map(Some)
+}
+
+/// Render one to-do the way the agent needs to talk about it.
+///
+/// `overdue` is a plain string comparison, which is exactly right for
+/// `YYYY-MM-DD`: the shape is guaranteed by [`cards::validate_due_date`] at
+/// every write, and lexical order on a fixed-width ISO date IS chronological
+/// order — no date library, no timezone to get wrong beyond `today` itself.
+fn due_todo_json(items: &[cards::DueCard], today: &str) -> Vec<serde_json::Value> {
+    items
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "id": c.id,
+                "title": c.title,
+                "project": c.project_name,
+                "project_id": c.project_id,
+                "column": c.column_name,
+                "due_date": c.due_date,
+                "overdue": c.due_date.as_str() < today,
+                "assigned_to": c.assigned_to,
+            })
+        })
+        .collect()
+}
+
+/// The user's to-do list, read from the one query the Home tab reads.
+///
+/// It deliberately calls [`cards::list_due_cards`] rather than asking its own
+/// question: scope (standard cards only, dated, unarchived, not dismissed, not
+/// in a terminal column) and ordering (soonest first) live in exactly one
+/// place, so the agent and the Home tab cannot drift into disagreeing about
+/// what the user's to-dos are.
+pub(crate) async fn due_todos(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    today: &str,
+) -> Result<Vec<serde_json::Value>, String> {
+    let items = cards::list_due_cards(pool).await?;
+    Ok(due_todo_json(&items, today))
 }
 
 /// Merge post-schedule keys into existing metadata without clobbering siblings.
@@ -2286,6 +2557,195 @@ mod tests {
         .unwrap_err();
         assert!(
             err.contains("social_post") && err.contains("goal"),
+            "unexpected: {err}"
+        );
+    }
+
+    // ── Due dates on the agent's card path ─────────────────────────────────
+    //
+    // Reported symptoms, all one defect: the orchestrator could not see the
+    // user's to-dos, and a card it filed on the Kanban never showed up on the
+    // Home tab. The Home tab lists `cards::list_due_cards`, which requires a
+    // `dueDate` — and until now no agent tool could write one or read the list.
+
+    use sqlx::{Pool, Sqlite};
+
+    async fn test_pool() -> Pool<Sqlite> {
+        use crate::session::spectral_schema::init_spectral_db;
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        init_spectral_db(&pool).await.unwrap();
+        pool
+    }
+
+    fn new_todo(title: &str) -> cards::CreateCard {
+        cards::CreateCard {
+            project_id: crate::projects::PERSONAL_PROJECT_ID.to_string(),
+            title: title.to_string(),
+            description: None,
+            card_type: Some("standard".to_string()),
+            column_id: None,
+            created_by: Some("user".to_string()),
+            metadata_json: None,
+        }
+    }
+
+    /// The user's exact report: "he added a new item to the Kanban as a backlog
+    /// item and i dont see it as a to do on the Home tab." A card the agent
+    /// files WITH a due date reaches the Home list; the identical card without
+    /// one does not — and now the difference is a parameter the agent controls.
+    #[tokio::test]
+    async fn agent_created_card_reaches_the_home_todo_list_only_when_it_has_a_due_date() {
+        let pool = test_pool().await;
+
+        let undated = create_card_with_due_date(&pool, new_todo("undated backlog item"), None)
+            .await
+            .unwrap();
+        assert!(
+            cards::list_due_cards(&pool).await.unwrap().is_empty(),
+            "an undated card must not reach the Home tab's to-do list"
+        );
+
+        let dated =
+            create_card_with_due_date(&pool, new_todo("dated backlog item"), Some("2026-09-01"))
+                .await
+                .unwrap();
+
+        let due = cards::list_due_cards(&pool).await.unwrap();
+        assert_eq!(due.len(), 1, "exactly the dated card should be listed");
+        assert_eq!(due[0].id, dated.id);
+        assert_eq!(due[0].due_date, "2026-09-01");
+        assert_ne!(due[0].id, undated.id);
+    }
+
+    /// `card_due_list` must be the Home tab's list, not a second opinion about
+    /// it — so this asserts against `cards::list_due_cards` itself rather than
+    /// a hand-written expectation that could drift from the real query.
+    #[tokio::test]
+    async fn card_due_list_returns_exactly_what_the_home_tab_query_returns() {
+        let pool = test_pool().await;
+        create_card_with_due_date(&pool, new_todo("later"), Some("2026-09-01"))
+            .await
+            .unwrap();
+        create_card_with_due_date(&pool, new_todo("overdue"), Some("2026-07-01"))
+            .await
+            .unwrap();
+        create_card_with_due_date(&pool, new_todo("soon"), Some("2026-08-20"))
+            .await
+            .unwrap();
+        // Excluded by the shared query, so it must be absent from both sides.
+        create_card_with_due_date(&pool, new_todo("undated"), None)
+            .await
+            .unwrap();
+
+        let expected = cards::list_due_cards(&pool).await.unwrap();
+        let rendered = due_todos(&pool, "2026-08-19").await.unwrap();
+
+        assert_eq!(rendered.len(), expected.len());
+        for (row, card) in rendered.iter().zip(expected.iter()) {
+            assert_eq!(row["id"], card.id);
+            assert_eq!(row["title"], card.title);
+            assert_eq!(row["project"], card.project_name);
+            assert_eq!(row["project_id"], card.project_id);
+            assert_eq!(row["column"], card.column_name);
+            assert_eq!(row["due_date"], card.due_date);
+        }
+        // Same order as the shared query: soonest first, overdue naturally on top.
+        let titles: Vec<&str> = rendered
+            .iter()
+            .map(|r| r["title"].as_str().unwrap())
+            .collect();
+        assert_eq!(titles, vec!["overdue", "soon", "later"]);
+        assert_eq!(rendered[0]["overdue"], true);
+        assert_eq!(rendered[1]["overdue"], false);
+        assert_eq!(rendered[2]["overdue"], false);
+    }
+
+    /// Mirrors `cards::setting_a_due_date_preserves_other_metadata`: the agent
+    /// writes through the shared setter, so a due date must not flatten the
+    /// sibling keys the card was carrying.
+    #[tokio::test]
+    async fn agent_due_date_update_preserves_unrelated_metadata() {
+        let pool = test_pool().await;
+        let mut input = new_todo("has meta");
+        input.metadata_json = Some(serde_json::json!({ "colour": "blue" }));
+        let card = create_card_with_due_date(&pool, input, None).await.unwrap();
+
+        let updated = apply_due_date_update(&pool, &card, Some(Some("2026-08-05")))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.metadata_json["colour"], "blue");
+        assert_eq!(updated.metadata_json[cards::DUE_DATE_KEY], "2026-08-05");
+
+        // Clearing likewise leaves the siblings alone.
+        let cleared = apply_due_date_update(&pool, &updated, Some(None))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(cleared.metadata_json["colour"], "blue");
+        assert!(cleared.metadata_json.get(cards::DUE_DATE_KEY).is_none());
+        assert!(cards::list_due_cards(&pool).await.unwrap().is_empty());
+    }
+
+    /// A date the agent guessed at ("next tuesday", "01/09/2026") is refused
+    /// with a message that NAMES the shape it wants, so the retry is informed.
+    #[tokio::test]
+    async fn a_malformed_due_date_is_rejected_naming_the_expected_format() {
+        let pool = test_pool().await;
+
+        for bad in ["next tuesday", "01/09/2026", "2026-9-1", ""] {
+            let err = create_card_with_due_date(&pool, new_todo("bad"), Some(bad))
+                .await
+                .unwrap_err();
+            assert!(
+                err.contains("YYYY-MM-DD") && err.contains(bad),
+                "expected '{bad}' refused by format, got: {err}"
+            );
+        }
+        // Correctly shaped but not a day that exists: a different, equally
+        // specific message — the shape is not the complaint here.
+        let err = create_card_with_due_date(&pool, new_todo("bad"), Some("2026-02-30"))
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("2026-02-30") && err.contains("calendar date"),
+            "unexpected: {err}"
+        );
+        // Rejected BEFORE the insert — no orphan card is left behind.
+        assert_eq!(
+            cards::list_cards(&pool, crate::projects::PERSONAL_PROJECT_ID, None, None)
+                .await
+                .unwrap()
+                .len(),
+            0,
+            "a refused due date must not leave a card behind"
+        );
+
+        let card = create_card_with_due_date(&pool, new_todo("good"), None)
+            .await
+            .unwrap();
+        let err = apply_due_date_update(&pool, &card, Some(Some("someday")))
+            .await
+            .unwrap_err();
+        assert!(err.contains("YYYY-MM-DD"), "unexpected: {err}");
+    }
+
+    /// A due date on a goal or a social_post would be written and then ignored
+    /// by `list_due_cards` — the same silent no-op from the other direction.
+    /// Refuse it, and name the type that was passed.
+    #[tokio::test]
+    async fn a_due_date_on_a_non_standard_card_is_refused() {
+        let pool = test_pool().await;
+        let mut goal = new_todo("a goal");
+        goal.card_type = Some("goal".to_string());
+        let err = create_card_with_due_date(&pool, goal, Some("2026-09-01"))
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("standard") && err.contains("goal"),
             "unexpected: {err}"
         );
     }
