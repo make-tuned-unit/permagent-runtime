@@ -620,13 +620,31 @@ mod consolidation_clusters {
         assert!(!ensure_and_check_migration(&conn, "domain_cluster_cleanup_v1").unwrap());
 
         // Run cleanup
-        let (un_consolidated, deleted) = run_domain_cluster_cleanup_sql(&conn).unwrap();
+        let (un_consolidated, catchall_keys) = run_domain_cluster_cleanup_sql(&conn).unwrap();
         mark_migration(&conn, "domain_cluster_cleanup_v1").unwrap();
 
         // 5 memories un-consolidated
         assert_eq!(un_consolidated, 5);
-        // 2 catchall cluster memories deleted
-        assert_eq!(deleted, 2);
+        // The 2 catchall cluster memories are reported for deletion by KEY, not
+        // deleted here: they go through `Brain::forget` so the delete also
+        // reaches the recognition sidecar, which lives in a separate database
+        // file that no foreign key can cascade into.
+        let mut keys = catchall_keys.clone();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![
+                "consolidated:browser:tps:".to_string(),
+                "consolidated:browser:ttp:".to_string()
+            ]
+        );
+
+        // Simulate the Brain-side forget so the rest of the assertions describe
+        // the post-cleanup state.
+        for key in &catchall_keys {
+            conn.execute("DELETE FROM memories WHERE key = ?1", [key])
+                .unwrap();
+        }
 
         // Verify: all 5 now have _pm_consolidated_into = NULL
         let still_consolidated: usize = conn
@@ -658,9 +676,9 @@ mod consolidation_clusters {
         assert!(ensure_and_check_migration(&conn, "domain_cluster_cleanup_v1").unwrap());
 
         // Idempotency: run again — no changes
-        let (un2, del2) = run_domain_cluster_cleanup_sql(&conn).unwrap();
+        let (un2, keys2) = run_domain_cluster_cleanup_sql(&conn).unwrap();
         assert_eq!(un2, 0);
-        assert_eq!(del2, 0);
+        assert!(keys2.is_empty());
     }
 
     // ── Consolidation migration: _pm_consolidated_into → consolidation_edges ──
