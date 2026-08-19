@@ -1199,7 +1199,26 @@ pub(crate) async fn call_ollama_streaming_pooled(
             .await
         };
         match attempt {
-            Ok(text) => return Ok(text),
+            Ok(text) => {
+                // Which engine actually produced this description, per memory.
+                // Within one nightly window the Librarian can legitimately move
+                // between engines — the dedicated endpoint is re-checked on
+                // EVERY call, so a split that comes up at 03:20 starts serving
+                // immediately — and the configured `model` label does not
+                // change when that happens. Without this line a night's
+                // descriptions are an unlabelled mixture of two models, which
+                // is invisible in the product and quietly fatal to any later
+                // comparison between them.
+                tracing::info!(
+                    target: "permagent::librarian",
+                    memory_key = %memory_key,
+                    backend = %backend,
+                    endpoint = %endpoint,
+                    model_label = %model,
+                    "description generated on the dedicated Librarian endpoint"
+                );
+                return Ok(text);
+            }
             Err(err) if is_endpoint_down(&err) => {
                 tracing::warn!(
                     endpoint = %endpoint,
