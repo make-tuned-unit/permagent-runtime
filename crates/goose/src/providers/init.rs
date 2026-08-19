@@ -9,6 +9,7 @@ use super::sagemaker_tgi::SageMakerTgiProvider;
 use super::{
     amp_acp::AmpAcpProvider,
     anthropic::AnthropicProvider,
+    apple_fm::AppleFoundationModelsProvider,
     avian::AvianProvider,
     azure::AzureProvider,
     base::{Provider, ProviderMetadata},
@@ -54,6 +55,9 @@ async fn init_registry() -> RwLock<ProviderRegistry> {
     let mut registry = ProviderRegistry::new().with_providers(|registry| {
         registry.register::<AmpAcpProvider>(false);
         registry.register::<AnthropicProvider>(true);
+        // Not preferred: it is only selectable where Apple Intelligence is on,
+        // and `fetch_supported_models` reports nothing when it is not.
+        registry.register::<AppleFoundationModelsProvider>(false);
         registry.register::<AvianProvider>(false);
         registry.register::<AzureProvider>(false);
         #[cfg(feature = "aws-providers")]

@@ -80,6 +80,17 @@ CATEGORIES: software development, project management, task execution"#;
 /// Default model used when LibrarianSchedule.model is empty or unavailable.
 const DEFAULT_MODEL: &str = "qwen2.5:7b";
 
+/// Output cap and sampling temperature for a describe pass, shared by every
+/// backend so that changing engine is not silently also a change of sampling.
+/// These match what `InferenceBody::for_chat_stream` already sends.
+///
+/// The pass is a ~700-token prompt for a ~150-token answer, which is why it is
+/// the right first consumer for a ~4k on-device window: it is the
+/// highest-volume, lowest-complexity work in the product and it fits with room
+/// to spare.
+const LIBRARIAN_MAX_TOKENS: u32 = 150;
+const LIBRARIAN_TEMPERATURE: f32 = 0.2;
+
 /// Resolve the Librarian model: read from the schedule config file,
 /// fall back to DEFAULT_MODEL if empty or unreadable.
 pub(crate) fn resolve_model() -> String {
@@ -1229,7 +1240,7 @@ pub(crate) async fn call_ollama_streaming_pooled(
                 );
                 // The configured model belongs to the dedicated endpoint; the
                 // Ollama fallback needs a model Ollama actually has.
-                return call_ollama_streaming_pooled_inner(
+                return call_local_backends(
                     system,
                     prompt,
                     DEFAULT_MODEL,
@@ -1242,8 +1253,122 @@ pub(crate) async fn call_ollama_streaming_pooled(
             Err(err) => return Err(err),
         }
     }
-    call_ollama_streaming_pooled_inner(system, prompt, model, emit_events, memory_key, session_id)
-        .await
+    call_local_backends(system, prompt, model, emit_events, memory_key, session_id).await
+}
+
+/// The backends that need no operator configuration, in preference order:
+/// Apple's on-device model, then the Ollama pool.
+///
+/// On-device goes first because it is the cheapest thing available — no dollars
+/// per call, no server to keep running, no multi-gigabyte model to have pulled
+/// — and because the prompt never leaves the machine. It sits *behind*
+/// `PERMAGENT_LIBRARIAN_ENDPOINT` rather than in front of it: that endpoint is
+/// an explicit choice of a larger local model for description quality, it is
+/// already free, and silently overriding it would trade quality away for
+/// nothing.
+async fn call_local_backends(
+    system: &str,
+    prompt: &str,
+    ollama_model: &str,
+    emit_events: bool,
+    memory_key: &str,
+    session_id: Option<&str>,
+) -> Result<String, String> {
+    if let Some(text) = try_apple_on_device(system, prompt, emit_events, memory_key).await {
+        return Ok(text);
+    }
+    call_ollama_streaming_pooled_inner(
+        system,
+        prompt,
+        ollama_model,
+        emit_events,
+        memory_key,
+        session_id,
+    )
+    .await
+}
+
+/// Attempt one description on Apple's on-device model.
+///
+/// Returns `Option`, not `Result`, and that is the point: there is no error for
+/// a describe pass to propagate. Either the on-device model produced a
+/// description, or it could not and the reason has been logged and the pass
+/// moves to the next backend. A user with Apple Intelligence switched off sees
+/// exactly the behaviour they saw before this existed.
+///
+/// Availability is re-checked here on EVERY call, the same shape the dedicated
+/// endpoint uses: Apple Intelligence can be switched off and the OS can evict
+/// the model assets between one memory and the next, and a nightly pass that
+/// cached a startup probe would spend hours failing into a wall.
+async fn try_apple_on_device(
+    system: &str,
+    prompt: &str,
+    emit_events: bool,
+    memory_key: &str,
+) -> Option<String> {
+    use crate::providers::apple_fm;
+
+    // No `audit_and_check_mesh_egress` call, unlike every networked backend
+    // here: inference runs in a child process on this machine, so there is no
+    // egress. Recording one would put a crossing in the audit trail that never
+    // happened.
+    let outcome = apple_fm::generate(
+        system,
+        prompt,
+        LIBRARIAN_MAX_TOKENS,
+        LIBRARIAN_TEMPERATURE,
+        |delta| {
+            if emit_events {
+                crate::events::emit(crate::events::librarian_describe_token(memory_key, delta));
+            }
+        },
+    )
+    .await;
+
+    match outcome {
+        Ok(text) => {
+            // Which engine actually produced this description. The Librarian
+            // can move between engines within a single window, and the
+            // configured `model` label does not change when it does — so
+            // without this line a night's descriptions are an unlabelled
+            // mixture. It is also what makes the ADPLA §3.2(h)(2) constraint
+            // enforceable: output from Apple's model must never be used to
+            // train or improve another model, and a later corpus build needs to
+            // be able to identify and exclude exactly these rows.
+            tracing::info!(
+                target: "permagent::librarian",
+                memory_key = %memory_key,
+                backend = "apple_foundation_models",
+                model_label = apple_fm::DEFAULT_MODEL,
+                "description generated on the Apple on-device model"
+            );
+            Some(text)
+        }
+        Err(apple_fm::AppleFmError::Unavailable(reason)) => {
+            // Expected and ordinary — Apple Intelligence off, assets still
+            // downloading, no sidecar in this build, not a Mac.
+            tracing::info!(
+                target: "permagent::librarian",
+                memory_key = %memory_key,
+                reason = %reason,
+                "on-device model unavailable; using the next backend"
+            );
+            None
+        }
+        Err(err) => {
+            // The model was reachable and still did not produce a description:
+            // a guardrail trip, an over-long prompt, a wedged sidecar. Worth a
+            // human's attention, but still not a failure of the pass.
+            tracing::warn!(
+                target: "permagent::librarian",
+                memory_key = %memory_key,
+                reason = %err.reason(),
+                error = %err,
+                "on-device model could not produce this description; using the next backend"
+            );
+            None
+        }
+    }
 }
 
 /// True for the failure shapes where the dedicated endpoint cannot deliver
@@ -1960,6 +2085,64 @@ mod tests {
         );
         assert!(parse_openai_sse_line(r#"data: {"error":{"message":"boom"}}"#).is_err());
         assert!(parse_openai_sse_line("data: not json").is_err());
+    }
+
+    /// Verbatim output from Apple's on-device model, captured on macOS 26.2 on
+    /// 2026-08-19, must survive the existing structured parser unchanged.
+    ///
+    /// This engine reliably prepends a `Memory: "…"` line that the system
+    /// prompt explicitly forbids ("Do not add any text outside these three
+    /// lines"). The parser scans for the three labelled prefixes and ignores
+    /// everything else, so the preamble is harmless — but that is a property
+    /// worth pinning rather than assuming, because if it ever stopped holding,
+    /// every on-device description would fail to parse, burn its one retry, and
+    /// be stored raw. That would look like a quality regression with no obvious
+    /// cause.
+    #[test]
+    fn on_device_output_parses_despite_the_preamble_line_it_adds_unbidden() {
+        let raw = r#"Memory: "Team standup on Aug 12, 2026"
+FACTS: The team held a standup meeting on August 12, 2026, discussing deployment cadence, incident review, and migrating the scheduling service.
+TERMS: team, standup, meeting, deployment cadence, incident review, scheduling service, queue backend, on-call rotation
+CATEGORIES: team meeting, project planning, engineering"#;
+
+        let parsed = parse_structured_description(raw)
+            .expect("on-device output must parse with the same parser as every other engine");
+        assert!(parsed.starts_with("The team held a standup meeting"));
+        assert!(parsed.contains("Related terms: "));
+        assert!(parsed.trim_end().ends_with('.'));
+        // The unrequested preamble must not leak into the stored description.
+        assert!(!parsed.contains("Memory:"));
+    }
+
+    /// An unavailable on-device model must produce a fallback, not an error.
+    ///
+    /// Runs everywhere: on CI (no Apple Intelligence, no sidecar) it exercises
+    /// the unavailable branch, which is the one that must never be able to fail
+    /// a describe pass.
+    #[tokio::test]
+    async fn an_unavailable_on_device_model_falls_back_instead_of_failing_the_pass() {
+        let availability = crate::providers::apple_fm::availability().await;
+        let outcome = try_apple_on_device(
+            "You write one short factual sentence.",
+            "Summarise: a scheduling service moved to a new queue backend.",
+            false,
+            "test/on-device-fallback",
+        )
+        .await;
+
+        if availability.is_available() {
+            // Nothing to assert about content here — this test is about the
+            // failure contract, and the live round trip is covered by the
+            // provider's own ignored integration test.
+            return;
+        }
+        assert!(
+            outcome.is_none(),
+            "an unavailable on-device model must fall back, not produce text"
+        );
+        // The reason is what gets logged; an empty one would make a silent
+        // fallback undiagnosable.
+        assert!(!availability.reason().is_empty());
     }
 
     #[test]

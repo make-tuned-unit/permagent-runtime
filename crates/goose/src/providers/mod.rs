@@ -2,6 +2,7 @@ mod acp_tooling;
 pub mod amp_acp;
 pub mod anthropic;
 pub mod api_client;
+pub mod apple_fm;
 pub mod avian;
 pub mod azure;
 pub mod azureauth;

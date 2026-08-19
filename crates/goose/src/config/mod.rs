@@ -99,6 +99,42 @@ pub fn librarian_backend() -> String {
         .unwrap_or_else(|| "llamacpp".to_string())
 }
 
+/// Is the Apple on-device Foundation Models backend allowed to serve work
+/// (`PERMAGENT_APPLE_FM_ENABLED`)?
+///
+/// Defaults to **on**: it costs nothing per call and keeps the prompt on the
+/// machine, and every consumer of it falls back cleanly when it cannot serve.
+/// The escape hatch exists for the case the default cannot cover — preferring
+/// a larger local model's output quality over a free one's.
+///
+/// This is a permission, not a promise. It says the backend may be *tried*;
+/// whether it can actually serve a given call is probed against the running
+/// system at call time.
+pub fn apple_fm_enabled() -> bool {
+    Config::global()
+        .get_param::<String>("PERMAGENT_APPLE_FM_ENABLED")
+        .ok()
+        .map(|s| {
+            !matches!(
+                s.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            )
+        })
+        .unwrap_or(true)
+}
+
+/// Explicit path to the `permagent-applefm` sidecar
+/// (`PERMAGENT_APPLE_FM_SIDECAR`), for a layout the default search does not
+/// cover. Unset means the ordinary search: next to the running executable,
+/// then the source tree.
+pub fn apple_fm_sidecar_override() -> Option<String> {
+    Config::global()
+        .get_param::<String>("PERMAGENT_APPLE_FM_SIDECAR")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 /// Pure core of [`ollama_host`], split out so it is unit-testable without
 /// touching the process-global environment (env-mutating tests flake under
 /// parallel `cargo test`).
