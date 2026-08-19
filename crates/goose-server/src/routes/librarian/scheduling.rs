@@ -283,6 +283,26 @@ fn query_memory_counts() -> Result<(usize, usize), String> {
 }
 
 /// Warm-load a model then run the batch. Callers hold BATCH_MUTEX.
+/// How long Ollama should hold the Librarian's model after its last request.
+///
+/// This was the whole window (`duration_minutes * 60`, i.e. four hours), on the
+/// reasoning that the batch should never pay to reload a 4.6 GB model. That
+/// created a deadlock with the nightly Qwen3.8-27B split, which needs the M4's
+/// GPU to be free: the split refuses to start while Ollama holds a model, so
+/// ONE transient refusal (a build running, say) sent the Librarian to its
+/// Ollama fallback, which then pinned the GPU past the end of the window and
+/// locked the split out of every remaining retry slot. Observed 2026-08-19:
+/// five scheduled attempts, three refused for exactly this reason.
+///
+/// Five minutes keeps the model warm across the gaps *inside* a batch — calls
+/// land tens of seconds apart and every one resets the timer — while releasing
+/// the GPU soon after the batch goes idle, so a later slot finds it free. The
+/// reload cost this risks is bounded and rare; the deadlock it removes was
+/// total. `call_ollama_streaming_pooled` re-checks the split endpoint on every
+/// call, so the moment the split does come up the Librarian moves back to it
+/// mid-window without waiting for tomorrow.
+const BATCH_KEEP_ALIVE_SECS: u64 = 300;
+
 async fn warm_and_run(schedule: &LibrarianSchedule, keep_alive_secs: u64) -> Result<usize, String> {
     use permagent::agents::platform_extensions::librarian_state;
 
@@ -525,7 +545,7 @@ pub async fn librarian_scheduler_loop() {
                 "Librarian window active — warm-loading model and running batch"
             );
 
-            let keep_alive_secs = schedule.duration_minutes as u64 * 60;
+            let keep_alive_secs = BATCH_KEEP_ALIVE_SECS;
             let _guard = BATCH_MUTEX.lock().await;
             match warm_and_run(&schedule, keep_alive_secs).await {
                 Ok(n) => {
@@ -809,6 +829,26 @@ mod backoff_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The keep_alive the batch asks Ollama for must NOT scale with the window.
+    /// At `duration_minutes * 60` a 240-minute window pinned the model on the
+    /// GPU for four hours, which outlived the window itself and locked the
+    /// Qwen3.8-27B split out of every retry slot (2026-08-19: five scheduled
+    /// attempts, three refused because Ollama still held the GPU). Bounding it
+    /// is what lets the split and the fallback share one machine.
+    #[test]
+    fn batch_keep_alive_does_not_scale_with_the_window() {
+        // The value the old code would have computed for the real schedule.
+        let window_derived = 240u64 * 60;
+        assert!(
+            BATCH_KEEP_ALIVE_SECS < window_derived,
+            "keep_alive must not follow the window length"
+        );
+        // Long enough to stay warm between calls in a batch (tens of seconds
+        // apart), short enough to release well inside the 30-minute gap
+        // between the split's retry slots.
+        assert!((60..=600).contains(&BATCH_KEEP_ALIVE_SECS));
+    }
 
     // Both tests touch the shared `BATCH_MUTEX` / `RUN_STATUS` statics, so they
     // must not run concurrently with each other (default `cargo test` parallelism
