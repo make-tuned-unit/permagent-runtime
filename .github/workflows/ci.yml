@@ -261,3 +261,8 @@ jobs:
         run: cargo build --locked -p permagent
       - name: Build (minimal features)
         run: cargo build --locked -p permagent --no-default-features --features rustls-tls
+      # The recognition seam is compiled out of the library's default build, so
+      # nothing here would have caught it rotting. It ships enabled in the
+      # daemon; build it explicitly so the library half cannot break silently.
+      - name: Build (spectral-recognition)
+        run: cargo build --locked -p permagent --features spectral-recognition

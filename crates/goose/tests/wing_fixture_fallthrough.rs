@@ -12,8 +12,10 @@
 //! 2026-08-04 — at the rev this repo pins. The cause on our side was
 //! `state.rs` guarding the builder call with `if !rules.is_empty()`, combined
 //! with `spectral-recognition` not being a default feature: in the shipping
-//! daemon the rule set is ALWAYS empty, so the guard meant the live brain ran
-//! on fixtures permanently.
+//! daemon the rule set was ALWAYS empty, so the guard meant the live brain ran
+//! on fixtures permanently. Both halves are now closed: the builder call is
+//! unconditional, and the daemon enables `spectral-recognition` by default,
+//! so the per-project rules are actually compiled in.
 //!
 //! Wing labels are a double lever — recognition-validation ground truth AND
 //! the TACT retrieval gate — so a wrong label is worse than an absent one.

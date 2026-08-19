@@ -270,11 +270,15 @@ impl AppState {
                 // memories sit in fixture wings today, and Spectral observed a
                 // new one landing in `acme` mid-afternoon on 2026-08-04.
                 //
-                // The trap is that `spectral-recognition` is NOT a default
-                // feature, so in the SHIPPING build `project_wing_rules` is
-                // always empty and the old `if !is_empty()` guard meant the
+                // The trap used to be that `spectral-recognition` was not a
+                // default feature, so in the SHIPPING build `project_wing_rules`
+                // was always empty and the old `if !is_empty()` guard meant the
                 // fixture rules were what the live brain always ran on — the
                 // per-project rules built to replace them were compiled out.
+                // The daemon now enables that feature by default (see this
+                // crate's Cargo.toml), so the real rules are compiled in; the
+                // unconditional call below is still what makes an empty set
+                // mean "no rules" rather than "the fixtures".
                 //
                 // Empty here classifies everything to "general", which is
                 // merely uninformative. A fixture wing is actively WRONG: it

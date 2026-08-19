@@ -243,11 +243,16 @@ pub async fn inject_recall(
             });
 
             // Recognition seam (query mode): the verdict-alongside-recall
-            // hook. Today a debug log; when Spectral's recognize() lands, this
-            // is where its RecognitionResult is forwarded to the sink and
-            // persisted next to this recall's outcome row.
+            // hook. Spectral's recognize() runs on a DETACHED task inside this
+            // call and its verdict is persisted onto the row `pending` just
+            // minted (ordered behind that INSERT by the verdict handle). This
+            // returns immediately and cannot fail: the reply below is already
+            // built, and a recognition error, panic or timeout only drops the
+            // verdict. `pending` is kept for turn-end citation detection.
             #[cfg(feature = "spectral-recognition")]
             permagent::recognition_sink::observe_recall_stimulus(
+                brain,
+                pending.as_ref().map(|p| p.verdict_handle()),
                 user_query,
                 recognition_ctx.focus_wing.as_deref(),
                 recognition_ctx.session_id.as_deref(),
