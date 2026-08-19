@@ -70,6 +70,65 @@ impl IntoResponse for ApiError {
 /// Metadata bag key holding the cached actions.
 const METADATA_KEY: &str = "growth_actions";
 
+/// `project_id` → when its review started (RFC3339), for the reviews running
+/// right now.
+///
+/// In memory on purpose. A review is a single model call inside one daemon
+/// process; persisting "in flight" would survive a crash or a restart as a
+/// phantom no task will ever clear, and a Grow tab that says "still reviewing"
+/// forever is worse than one that says nothing. A restart correctly reports
+/// nothing in flight, because nothing is.
+static RUNNING_REVIEWS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, String>>> =
+    std::sync::OnceLock::new();
+
+/// The registry, recovering from a poisoned lock rather than panicking.
+///
+/// A panic inside a review would otherwise poison this for the life of the
+/// process and take every later `unwrap()` — including the ones in GET — down
+/// with it. The map holds ids and timestamps; there is no invariant a panicking
+/// writer could have left half-applied.
+fn running_reviews() -> std::sync::MutexGuard<'static, HashMap<String, String>> {
+    RUNNING_REVIEWS
+        .get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// When the review running for this project started, or `None`.
+fn review_started_at(project_id: &str) -> Option<String> {
+    running_reviews().get(project_id).cloned()
+}
+
+/// Claim the review slot for a project.
+///
+/// `None` means one is already running and the caller must NOT start another.
+/// This is the second click guard, and it lives here rather than in the UI
+/// because a disabled button is a courtesy while this is the rule: two reviews
+/// racing on one project write two caches over each other and can mint a
+/// duplicate row for the same advice.
+fn begin_review(project_id: &str, started_at: String) -> Option<ReviewSlot> {
+    let mut running = running_reviews();
+    if running.contains_key(project_id) {
+        return None;
+    }
+    running.insert(project_id.to_string(), started_at);
+    Some(ReviewSlot(project_id.to_string()))
+}
+
+/// Holds a project's review slot for as long as the review runs.
+///
+/// A guard rather than a `remove` at the end of the task, so a panic or an
+/// early return inside the review releases the slot too. Without that, one
+/// failed review would leave the button spinning for the rest of the daemon's
+/// life with nothing able to clear it.
+struct ReviewSlot(String);
+
+impl Drop for ReviewSlot {
+    fn drop(&mut self) {
+        running_reviews().remove(&self.0);
+    }
+}
+
 /// One judged window, as the card renders it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -99,6 +158,81 @@ pub struct ActionIdentity {
     pub verified_by: Option<String>,
     pub verified_at: Option<String>,
     pub outcomes: Vec<OutcomeView>,
+    /// The reading frozen at verification, decoded from `baseline_json`.
+    ///
+    /// The Tracking view exists to show what we changed and whether it worked,
+    /// and a verdict whose "before" is invisible cannot be argued with — the
+    /// same reason `rationale` is body text rather than a tooltip. Absent for
+    /// an action that was never verified, and for one whose stored baseline no
+    /// longer parses; in both cases the card renders no baseline rather than a
+    /// zero, which would read as "no traffic before the change".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<BaselineView>,
+}
+
+/// One window of the frozen baseline: what the pre-registered metric read over
+/// the `window_days` days ENDING at the change, which is what the matching
+/// after-window is compared against.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BaselineWindow {
+    pub window_days: u32,
+    /// Inclusive UTC date, `YYYY-MM-DD`.
+    pub start: String,
+    /// Exclusive UTC date, `YYYY-MM-DD`.
+    pub end: String,
+    pub value: f64,
+    /// What the value rests on — the count itself, or the session denominator
+    /// for a rate. Carried because "70% bounce over 8 sessions" and "over 800"
+    /// are different claims and the card must not present them identically.
+    pub denominator: f64,
+}
+
+/// The frozen baseline as the Tracking card renders it.
+///
+/// A projection of `growth::sweep::Baseline` rather than that type itself: the
+/// stored blob also carries twelve weeks of variance history and the earliest
+/// event date, which the power check needs and a card has no use for. Sending
+/// the whole blob would put a dozen numbers on the wire that nothing renders.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BaselineView {
+    /// pageviews | sessions | aeo_visits | bounce_rate.
+    pub metric: String,
+    /// up | down.
+    pub dir: String,
+    /// First fully-post-change UTC day, `YYYY-MM-DD`. Every comparison window
+    /// is measured from here (`metrics::pivot_date`).
+    pub pivot: String,
+    pub taken_at: String,
+    /// One entry per measurement window, shortest first.
+    pub windows: Vec<BaselineWindow>,
+}
+
+/// Decode `growth_actions.baseline_json` into what the card needs.
+///
+/// A parse failure is `None`, never a default: a baseline of zero would render
+/// as "there was no traffic before the change", which is a claim this system
+/// has no basis for making.
+fn baseline_view(raw: Option<&str>) -> Option<BaselineView> {
+    let frozen: Baseline = serde_json::from_str(raw?).ok()?;
+    Some(BaselineView {
+        metric: frozen.metric.as_str().to_string(),
+        dir: frozen.dir.as_str().to_string(),
+        pivot: frozen.pivot,
+        taken_at: frozen.taken_at,
+        windows: frozen
+            .before
+            .into_iter()
+            .map(|(window_days, w)| BaselineWindow {
+                window_days,
+                start: w.start,
+                end: w.end,
+                value: w.value,
+                denominator: w.denominator,
+            })
+            .collect(),
+    })
 }
 
 /// One measured result from another project, named so the claim can be audited.
@@ -212,8 +346,19 @@ pub struct GrowthAction {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct GrowthActionsData {
-    /// The active board, ordered. Excludes archived.
+    /// The active board, ordered: work still asking the user for a decision.
+    /// Excludes archived, dismissed and everything in `tracking`.
     pub actions: Vec<GrowthAction>,
+    /// What we changed and are now measuring — `verified`, `measuring` and
+    /// `judged`, newest first.
+    ///
+    /// Its own list because Actions and Tracking answer different questions:
+    /// "what should I do" and "did what I did work". #1053 kept these rows on
+    /// the active board so in-flight work could not silently vanish while the
+    /// sweep still measured it; that guarantee is what this list keeps, by
+    /// MOVING them somewhere they are still visible rather than hiding them.
+    #[serde(default)]
+    pub tracking: Vec<GrowthAction>,
     /// Filed away by the user, newest first. Still measured while they owe a
     /// window, and still feeding learning.
     #[serde(default)]
@@ -244,6 +389,19 @@ pub struct GrowthActionsData {
     /// advice, and a silent drop is not auditable.
     #[serde(default)]
     pub dropped_as_restatement: usize,
+    /// A review is running for this project RIGHT NOW.
+    ///
+    /// Server truth, and the whole point of it: the button's spinner used to be
+    /// a `useState` inside the panel component, so switching tab unmounted it
+    /// and the flag was lost — the user came back to an idle button while the
+    /// review was still running and its result landed in the database unseen.
+    /// Every read of this surface reports what is actually in flight, so the
+    /// UI reconciles on remount instead of trusting its own memory.
+    #[serde(default)]
+    pub generating: bool,
+    /// When the running review started (RFC3339). Absent when none is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation_started_at: Option<String>,
 }
 
 /// The analytics shape the generator reasons over. Deliberately a plain struct
@@ -913,8 +1071,31 @@ async fn transfer_notes(pool: &Pool<Sqlite>, project_id: &str) -> HashMap<String
 /// where it has none the card renders nothing rather than a guess.
 struct RenderedBoard {
     active: Vec<GrowthAction>,
+    /// Verified work whose effect is still being measured, and the verdicts the
+    /// sweep has reached. See [`GrowthActionsData::tracking`].
+    tracking: Vec<GrowthAction>,
     archived: Vec<GrowthAction>,
     dismissed: Vec<GrowthAction>,
+}
+
+/// Is this action being measured rather than waiting on a decision?
+///
+/// The split behind the Tracking view. `verified` and `measuring` are work the
+/// sweep is watching; `judged` is work it has reached a verdict on. None of the
+/// three is asking the user for anything, and leaving them in the Actions list
+/// made a board of ten items where two were decisions and eight were history.
+///
+/// They are MOVED, never hidden: #1053 put them on the active board precisely
+/// so in-flight work could not silently vanish while the sweep still measured
+/// it, and that guarantee is kept — every one of these rows is still in the
+/// payload, still rendered, still carrying its outcomes.
+fn is_tracked(status: &str) -> bool {
+    matches!(
+        status,
+        growth_store::STATUS_VERIFIED
+            | growth_store::STATUS_MEASURING
+            | growth_store::STATUS_JUDGED
+    )
 }
 
 async fn render_board(
@@ -928,6 +1109,7 @@ async fn render_board(
             tracing::warn!(target: "permagentd::growth", "could not read growth actions: {e}");
             return RenderedBoard {
                 active: Vec::new(),
+                tracking: Vec::new(),
                 archived: Vec::new(),
                 dismissed: Vec::new(),
             };
@@ -942,6 +1124,7 @@ async fn render_board(
     let transfers = transfer_notes(pool, project_id).await;
 
     let mut active: Vec<(u8, usize, GrowthAction)> = Vec::new();
+    let mut tracking: Vec<(u8, usize, GrowthAction)> = Vec::new();
     let mut archived: Vec<GrowthAction> = Vec::new();
     let mut dismissed: Vec<GrowthAction> = Vec::new();
     for row in rows {
@@ -971,25 +1154,26 @@ async fn render_board(
                 .as_deref()
                 .and_then(|category| transfers.get(category))
                 .cloned(),
-            identity: Some(ActionIdentity {
-                id: row.id.clone(),
-                status: row.status.clone(),
-                target_metric: row.target_metric.clone(),
-                target_dir: row.target_dir.clone(),
-                verified_by: row.verified_by.clone(),
-                verified_at: row.verified_at.clone(),
-                outcomes: outcome_views(pool, &row.id).await,
-            }),
+            // ALWAYS `Some`, for every row, whatever its status and whether or
+            // not the prose cache still remembers it. This is what the panel's
+            // controls key on: the four actions this project has carried since
+            // 2026-08-14 have no cache entry left, so a card built from the
+            // cache had no id to post a dismissal with and rendered with no
+            // control at all — visible, stale, and impossible to act on.
+            identity: Some(identity_of(pool, &row).await),
         };
-        // Three lists, because the user needs three different things from them:
-        // work in flight, work filed away, and advice already refused. A
-        // dismissed card in the active list was the panel's only growth path —
+        // Four lists, because the user needs four different things from them:
+        // work still asking for a decision, work whose effect is being
+        // measured, work filed away, and advice already refused. A dismissed
+        // card in the active list was the panel's only growth path —
         // `suggested` cannot be archived, so before this nothing the user could
         // press ever shortened the list.
         if row.status == growth_store::STATUS_ARCHIVED {
             archived.push(action);
         } else if row.status == growth_store::STATUS_DISMISSED {
             dismissed.push(action);
+        } else if is_tracked(&row.status) {
+            tracking.push((status_bucket(&row.status), rank, action));
         } else {
             active.push((status_bucket(&row.status), rank, action));
         }
@@ -998,8 +1182,10 @@ async fn render_board(
     // `list_for_project` is already id DESC and `sort_by_key` is stable, so
     // rows with no cache entry keep newest-first order within their bucket.
     active.sort_by_key(|(bucket, rank, _)| (*bucket, *rank));
+    tracking.sort_by_key(|(bucket, rank, _)| (*bucket, *rank));
     RenderedBoard {
         active: active.into_iter().map(|(_, _, action)| action).collect(),
+        tracking: tracking.into_iter().map(|(_, _, action)| action).collect(),
         archived,
         dismissed,
     }
@@ -1376,8 +1562,10 @@ async fn assemble(
     cache: &ActionsCache,
 ) -> GrowthActionsData {
     let board = render_board(pool, &project.id, cache).await;
+    let started_at = review_started_at(&project.id);
     GrowthActionsData {
         actions: board.active,
+        tracking: board.tracking,
         archived: board.archived,
         dismissed: board.dismissed,
         generated_at: cache.generated_at.clone(),
@@ -1385,6 +1573,8 @@ async fn assemble(
         period_days: cache.period_days,
         dropped_for_no_target: cache.dropped_for_no_target,
         dropped_as_restatement: cache.dropped_as_restatement,
+        generating: started_at.is_some(),
+        generation_started_at: started_at,
     }
 }
 
@@ -1405,6 +1595,18 @@ async fn get_actions(
     Ok(Json(assemble(&pool, &project, &cached(&project)).await))
 }
 
+/// Start a review and return immediately.
+///
+/// It used to run to completion inside this handler, which made the whole
+/// feature hostage to one HTTP request: the browser holds a fetch open for the
+/// length of a model call, and the panel's only record that anything was
+/// happening was a `useState` in the component that issued it. Leaving the tab
+/// unmounted that component, so the button reverted to its idle label while the
+/// review went on running and dropped its result into the database unseen.
+///
+/// So the work is spawned and the request answers with the board as it stands,
+/// flagged `generating`. That flag is server state, which is what makes it
+/// survive navigation: any client, on any mount, can ask what is in flight.
 async fn regenerate(
     State(state): State<Arc<AppState>>,
     Path(project_id): Path<String>,
@@ -1419,8 +1621,52 @@ async fn regenerate(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
 
+    // A second click while one is running is answered with the same board and
+    // the same `generating: true`, not with a second model call. Idempotent
+    // rather than a refusal: the user asked for a review and a review is
+    // running, so nothing has gone wrong and an error would say it had.
+    if let Some(slot) = begin_review(&project.id, chrono::Utc::now().to_rfc3339()) {
+        let pool = pool.clone();
+        let id = project.id.clone();
+        tokio::spawn(async move {
+            // Moved into the task so the slot is released when the review ends
+            // — including by panic.
+            let _slot = slot;
+            run_review(&pool, &id).await;
+        });
+    }
+
+    Ok(Json(assemble(&pool, &project, &cached(&project)).await))
+}
+
+/// One review, end to end: generate, persist, cache, announce.
+///
+/// Split out of the handler so it can outlive the request that asked for it.
+/// It re-reads the project rather than taking one captured before the spawn,
+/// because the metadata bag it merges into may have been written since.
+async fn run_review(pool: &Pool<Sqlite>, project_id: &str) {
+    let project = match projects::get_project(pool, project_id).await {
+        Ok(Some(project)) => project,
+        Ok(None) => return,
+        Err(e) => {
+            tracing::warn!(target: "permagentd::growth", "review could not read its project: {e}");
+            return;
+        }
+    };
+    review(pool, &project).await;
+    // Multi-client liveness (#629): the same seam every other project write
+    // uses. The Grow panel refetches on it, so a review that finishes while the
+    // user is on another tab shows its actions the moment they come back — and
+    // on a second open client too — with nothing to press.
+    permagent::events::emit(permagent::events::project_changed(
+        project_id,
+        "growth_actions",
+    ));
+}
+
+async fn review(pool: &Pool<Sqlite>, project: &Project) {
     let period_days = 30;
-    let summary = load_summary(&pool, &project.id, period_days).await;
+    let summary = load_summary(pool, &project.id, period_days).await;
     let now = chrono::Utc::now().to_rfc3339();
 
     let mut dropped_for_no_target = 0usize;
@@ -1432,16 +1678,16 @@ async fn regenerate(
             // against, so the prompt and the guard can never describe different
             // sets of open work.
             let board = growth_store::render_board(
-                &growth_store::board(&pool, &project.id)
+                &growth_store::board(pool, &project.id)
                     .await
                     .unwrap_or_default(),
             );
             let learning = growth_store::render_learning(
-                &growth_store::learnable_outcomes(&pool, &project.id, 8)
+                &growth_store::learnable_outcomes(pool, &project.id, 8)
                     .await
                     .unwrap_or_default(),
             );
-            let pooled_block = pooled_learning(&pool, &project.id).await;
+            let pooled_block = pooled_learning(pool, &project.id).await;
             let brief = GenerationBrief {
                 project_name: &project.name,
                 summary: &summary,
@@ -1516,8 +1762,8 @@ async fn regenerate(
 
     // Identity first, then rank, then cache: ranking reads what actually worked
     // on this project, which only exists once the rows are there.
-    let ranked = rank_with_history(actions, &category_history(&pool, &project.id).await);
-    let persisted = persist(&pool, &project.id, &ranked).await;
+    let ranked = rank_with_history(actions, &category_history(pool, &project.id).await);
+    let persisted = persist(pool, &project.id, &ranked).await;
 
     let cache = ActionsCache {
         // Only actions that reached a row contribute prose. A restatement was
@@ -1546,20 +1792,9 @@ async fn regenerate(
         dropped_for_no_target,
         dropped_as_restatement: persisted.restated,
     };
-    if let Err(e) = store(&pool, &project, &cache).await {
+    if let Err(e) = store(pool, project, &cache).await {
         tracing::warn!(target: "permagentd::growth", "could not cache growth actions: {e}");
     }
-
-    // Re-read so the response is assembled from the MERGED cache rather than
-    // this review's half of it. Otherwise a regenerate would render a retained
-    // action with empty evidence and the very next GET would render it with the
-    // evidence intact, which reads as data loss and is not.
-    let project = projects::get_project(&pool, &project.id)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or(project);
-    Ok(Json(assemble(&pool, &project, &cached(&project)).await))
 }
 
 /// The pooled cross-project block for the brief, or nothing.
@@ -1950,6 +2185,12 @@ async fn measure_now(
     })))
 }
 
+/// The durable half of a card, read from the row.
+///
+/// One function, every seam — the board, the lifecycle route and both verify
+/// replies. `render_board` used to build this struct inline, which is how a
+/// field could be added to the identity the verify reply returns and silently
+/// missing from the identity the board returns for the same action.
 async fn identity_of(pool: &Pool<Sqlite>, row: &growth_store::GrowthActionRow) -> ActionIdentity {
     let outcomes = outcome_views(pool, &row.id).await;
     ActionIdentity {
@@ -1960,6 +2201,7 @@ async fn identity_of(pool: &Pool<Sqlite>, row: &growth_store::GrowthActionRow) -
         verified_by: row.verified_by.clone(),
         verified_at: row.verified_at.clone(),
         outcomes,
+        baseline: baseline_view(row.baseline_json.as_deref()),
     }
 }
 
@@ -2649,9 +2891,14 @@ mod tests {
                 ..Default::default()
             };
             let board = render_board(&pool, &project.id, &cache).await;
-            let actions = board.active;
             assert!(board.archived.is_empty());
-            let underway_card = actions
+            // In the Tracking list rather than the Actions list since the user
+            // asked for that split on 2026-08-19 — but STILL IN THE PAYLOAD,
+            // which is the whole of what this test has ever guarded. Hiding it
+            // would be the defect; moving it somewhere the user can watch it is
+            // what they asked for.
+            let underway_card = board
+                .tracking
                 .iter()
                 .find(|a| a.title == "Underway")
                 .expect("an in-flight action must not vanish from the panel");
@@ -2664,7 +2911,7 @@ mod tests {
             // guess.
             assert_eq!(underway_card.evidence, "");
             assert_eq!(underway_card.impact, "");
-            assert!(actions.iter().any(|a| a.title == "Freshly suggested"));
+            assert!(board.active.iter().any(|a| a.title == "Freshly suggested"));
         }
 
         /// The merge in `store`: a regenerate that no longer proposes an action
@@ -2804,9 +3051,10 @@ mod tests {
             assert_eq!(identity.outcomes[0].verdict, "helped");
         }
 
-        /// In-flight work stays visible below new suggestions rather than being
-        /// pushed off by them, and a card with no cache entry sorts last within
-        /// its bucket instead of vanishing.
+        /// In-flight work stays visible rather than being pushed off by new
+        /// suggestions, and a card with no cache entry sorts last within its
+        /// bucket instead of vanishing. Since 2026-08-19 "visible" means the
+        /// Tracking list rather than below the decisions — moved, never hidden.
         #[tokio::test]
         async fn the_active_list_keeps_in_flight_work_below_new_suggestions() {
             let pool = pool().await;
@@ -2848,18 +3096,181 @@ mod tests {
             let board = render_board(&pool, &project.id, &cache).await;
             assert_eq!(
                 titles(&board.active),
-                vec![
-                    "first suggestion",
-                    "second suggestion",
-                    "measuring",
-                    "judged"
-                ]
+                vec!["first suggestion", "second suggestion"]
             );
+            // In-flight work is not pushed off by new suggestions; since
+            // 2026-08-19 it is not competing with them for the same list
+            // either. The bucket order is what carries over: still being
+            // measured above already judged.
+            assert_eq!(titles(&board.tracking), vec!["measuring", "judged"]);
             // Dismissed advice leaves the active list entirely. It used to sort
             // to the bottom of it and stay there for good: `suggested` cannot be
             // archived, so with dismissal not removing anything either, no
             // control the user could press ever shortened the panel.
             assert_eq!(titles(&board.dismissed), vec!["dismissed"]);
+        }
+
+        /// REGRESSION for the user report of 2026-08-19: "some of the actions I
+        /// am seeing in the Grow tab are stale ones that I already ran. I should
+        /// be able to dismiss it."
+        ///
+        /// The four actions this user's Evntally board has carried since
+        /// 2026-08-14 have no entry left in
+        /// `metadata_json.growth_actions.prose` — the bag holds only the four
+        /// fingerprints the 2026-08-19 reviews wrote — and they predate the
+        /// mandatory-target change, so `target_metric` is NULL. Every control
+        /// the panel offers hangs off `identity`, so if a card could reach the
+        /// screen without one it would render with no way to act on it at all.
+        /// The rows are the list, so the identity comes from the row.
+        #[tokio::test]
+        async fn a_card_the_prose_cache_forgot_still_carries_its_durable_row() {
+            let pool = pool().await;
+            let project = project(&pool, "Evntally").await;
+            let legacy = action("high", "high", "measurement", "Instrument funnel events");
+            persist(&pool, &project.id, std::slice::from_ref(&legacy)).await;
+
+            // The bag remembers a LATER review only — exactly the live shape.
+            let later = targeted("Rewrite the homepage", Some("bounce_rate"), Some("down"));
+            persist(&pool, &project.id, std::slice::from_ref(&later)).await;
+            let cache = ActionsCache {
+                prose: vec![prose_for(&project.id, &later)],
+                ..Default::default()
+            };
+
+            let board = render_board(&pool, &project.id, &cache).await;
+            let stale = board
+                .active
+                .iter()
+                .find(|a| a.title == "Instrument funnel events")
+                .expect("a row the cache forgot must still reach the panel");
+            let identity = stale
+                .identity
+                .as_ref()
+                .expect("no identity means no id to post a dismissal with");
+            assert_eq!(identity.status, growth_store::STATUS_SUGGESTED);
+            assert!(!identity.id.is_empty());
+            // Untargeted, like every row written before the target was
+            // mandatory — and still dismissible, because dismissal needs the
+            // id and nothing else.
+            assert_eq!(identity.target_metric, None);
+            // The row is the truth; absent prose renders as nothing.
+            assert_eq!(stale.evidence, "");
+        }
+
+        /// The user, 2026-08-19: "once a verified action was taken it should
+        /// disappear from the list of Actions and go into a tracker view of
+        /// changes we made that we are tracking".
+        ///
+        /// #1053 put `verified`/`measuring` on the active board on purpose, so
+        /// in-flight work could not silently vanish while the sweep still
+        /// measured it. That guarantee is what this asserts is KEPT: the rows
+        /// move to a list of their own, and they are still in the payload with
+        /// their outcomes.
+        #[tokio::test]
+        async fn measured_work_leaves_the_actions_list_without_leaving_the_payload() {
+            let pool = pool().await;
+            let project = project(&pool, "GetLadle").await;
+            let seeds = [
+                ("still deciding", growth_store::STATUS_SUGGESTED),
+                ("marked done", growth_store::STATUS_DONE),
+                ("verified", growth_store::STATUS_VERIFIED),
+                ("measuring", growth_store::STATUS_MEASURING),
+                ("judged", growth_store::STATUS_JUDGED),
+            ];
+            for (title, status) in seeds {
+                let action = targeted(title, Some("sessions"), Some("up"));
+                persist(&pool, &project.id, std::slice::from_ref(&action)).await;
+                let row = growth_store::get_by_fingerprint(
+                    &pool,
+                    &project.id,
+                    &growth_store::fingerprint(&project.id, &action.title, &action.recommendation),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                growth_store::set_status(&pool, &project.id, &row.id, status, None)
+                    .await
+                    .unwrap();
+            }
+
+            let board = render_board(&pool, &project.id, &ActionsCache::default()).await;
+            let mut active = titles(&board.active);
+            active.sort_unstable();
+            assert_eq!(
+                active,
+                vec!["marked done", "still deciding"],
+                "Actions holds only work still asking for a decision"
+            );
+            let mut tracked = titles(&board.tracking);
+            tracked.sort_unstable();
+            assert_eq!(tracked, vec!["judged", "measuring", "verified"]);
+        }
+
+        /// The Tracking card has to show what the verdict is computed against.
+        /// The baseline was on the row and never on the wire, so the only place
+        /// it could be read was the verify reply — which is gone after a
+        /// reload, which is the same defect the Re-check button exists for.
+        #[tokio::test]
+        async fn a_tracked_card_carries_the_frozen_baseline_it_is_measured_against() {
+            let pool = pool().await;
+            let project = project(&pool, "GetLadle").await;
+            let shipped = targeted("Rewrite the homepage", Some("bounce_rate"), Some("down"));
+            persist(&pool, &project.id, std::slice::from_ref(&shipped)).await;
+            let row = growth_store::get_by_fingerprint(
+                &pool,
+                &project.id,
+                &growth_store::fingerprint(&project.id, &shipped.title, &shipped.recommendation),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let frozen = serde_json::json!({
+                "metric": "bounce_rate",
+                "dir": "down",
+                "pivot": "2026-08-20",
+                "takenAt": "2026-08-19T12:00:00Z",
+                "before": {
+                    "7": {
+                        "start": "2026-08-12", "end": "2026-08-19", "days": 7,
+                        "metric": "bounce_rate", "value": 0.47, "denominator": 220.0,
+                        "pageviews": 310, "sessions": 220
+                    }
+                },
+                "weekly": [1.0, 2.0],
+                "earliestEvent": "2026-05-01"
+            });
+            growth_store::record_verification(
+                &pool,
+                &project.id,
+                &row.id,
+                growth_store::VERIFIED_BY_GIT,
+                "2026-08-19T12:00:00Z",
+                Some(&frozen.to_string()),
+            )
+            .await
+            .unwrap();
+
+            let board = render_board(&pool, &project.id, &ActionsCache::default()).await;
+            let identity = board.tracking[0].identity.as_ref().unwrap();
+            let baseline = identity
+                .baseline
+                .as_ref()
+                .expect("a verdict whose before is invisible cannot be argued with");
+            assert_eq!(baseline.pivot, "2026-08-20");
+            assert_eq!(baseline.windows.len(), 1);
+            assert_eq!(baseline.windows[0].window_days, 7);
+            assert_eq!(baseline.windows[0].value, 0.47);
+            assert_eq!(baseline.windows[0].denominator, 220.0);
+        }
+
+        /// A baseline that no longer parses is absent, never zero. Zero would
+        /// render as "there was no traffic before the change", which is a claim
+        /// nothing here has any basis for.
+        #[test]
+        fn an_unreadable_baseline_is_absent_rather_than_empty() {
+            assert!(baseline_view(None).is_none());
+            assert!(baseline_view(Some("not json")).is_none());
+            assert!(baseline_view(Some("{}")).is_none());
         }
 
         /// Write a judged outcome for an action on another project, so the
@@ -3035,6 +3446,69 @@ mod tests {
                 .active;
             assert_eq!(rendered.len(), 1);
             assert!(rendered[0].transfer.is_none());
+        }
+    }
+
+    // ── A review that outlives the request that asked for it ──────────────────
+
+    mod reviews {
+        use super::*;
+
+        /// REGRESSION for the user report of 2026-08-19: "I pressed Review my
+        /// analytics and then clicked another tab, when I went back it looks
+        /// like it stopped running."
+        ///
+        /// The in-flight flag was a `useState` in the panel component, which the
+        /// tab switch unmounted. It lives on the daemon now, so any client on
+        /// any mount can ask what is actually running.
+        #[test]
+        fn a_running_review_is_reported_to_anyone_who_asks() {
+            let id = "project-reported";
+            assert_eq!(review_started_at(id), None);
+            let slot = begin_review(id, "2026-08-19T13:00:00Z".to_string()).unwrap();
+            assert_eq!(
+                review_started_at(id).as_deref(),
+                Some("2026-08-19T13:00:00Z")
+            );
+            drop(slot);
+            assert_eq!(review_started_at(id), None);
+        }
+
+        /// Two clicks must not start two reviews. The disabled button is the
+        /// courtesy; this is the rule — two reviews racing on one project write
+        /// two caches over each other.
+        #[test]
+        fn a_second_review_cannot_start_while_one_is_running() {
+            let id = "project-double-click";
+            let held = begin_review(id, "2026-08-19T13:00:00Z".to_string()).unwrap();
+            assert!(
+                begin_review(id, "2026-08-19T13:00:01Z".to_string()).is_none(),
+                "a second review must not start"
+            );
+            // Another project is unaffected: the slot is per project, not global.
+            let other = begin_review("project-elsewhere", "2026-08-19T13:00:02Z".to_string());
+            assert!(other.is_some());
+            drop(held);
+            drop(other);
+            assert!(begin_review(id, "2026-08-19T13:00:03Z".to_string()).is_some());
+        }
+
+        /// A guard rather than a `remove` at the end of the task, so a panic
+        /// inside a review releases the slot too. Without this one failed review
+        /// leaves the button spinning for the life of the daemon.
+        #[test]
+        fn a_panicking_review_still_releases_its_slot() {
+            let id = "project-panics";
+            let caught = std::panic::catch_unwind(|| {
+                let _slot = begin_review(id, "2026-08-19T13:00:00Z".to_string()).unwrap();
+                panic!("the review blew up");
+            });
+            assert!(caught.is_err());
+            assert_eq!(
+                review_started_at(id),
+                None,
+                "a review that panicked must not leave the panel spinning forever"
+            );
         }
     }
 }

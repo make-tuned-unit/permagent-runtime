@@ -77,11 +77,13 @@ function payload(over: Record<string, unknown> = {}) {
     actions: [action()],
     archived: [],
     dismissed: [],
+    tracking: [],
     generatedAt: '2026-08-19T10:00:00Z',
     reason: null,
     periodDays: 30,
     droppedForNoTarget: 0,
     droppedAsRestatement: 0,
+    generating: false,
     ...over,
   };
 }
@@ -409,10 +411,47 @@ describe('advice the user does not want', () => {
     expect(getCalls().length).toBeGreaterThan(1);
   });
 
-  it('does not offer a dismissal on work already under way', async () => {
-    routeTo(payload({ actions: [action({}, { status: 'measuring' })] }));
+  // REGRESSION for the user report of 2026-08-19: "some of the actions I am
+  // seeing in the Grow tab are stale ones that I already ran. I should be able
+  // to dismiss it."
+  //
+  // The gate was `identity.status === 'suggested'`, so a `done` card — work the
+  // user HAS already run — had no dismissal at all. Its only exit was Archive,
+  // and archiving is what releases an action's text for re-proposal: filing the
+  // stale card away handed the identical advice straight back on the next
+  // review, which is precisely what happened on this project between 2026-08-14
+  // and 2026-08-19.
+  it('offers a dismissal on a card the user has already acted on', async () => {
+    routeTo(payload({ actions: [action({}, { status: 'done' })] }));
     await render(<GrowActions project={project} colors={colors} />);
-    expect(maybeButton('Not interested')).toBeUndefined();
+
+    await act(async () => { button('Not interested').click(); });
+
+    const post = apiFetch.mock.calls.find(([u]: [string]) => u.includes('/status'));
+    expect(post[0]).toContain('/growth-actions/act-1/status');
+    expect(JSON.parse(post[1].body)).toEqual({ status: 'dismissed' });
+  });
+
+  // The other half: a card whose prose the cache no longer holds. Four actions
+  // on this user's real board have been there since 2026-08-14 with no entry
+  // left in `metadata_json.growth_actions.prose`, so they render with no
+  // evidence, no steps and no impact — and every control the panel offers hangs
+  // off the identity, which comes from the durable ROW. A card the user can see
+  // and cannot act on is the defect.
+  it('offers a dismissal on a legacy card with no prose and no prediction', async () => {
+    routeTo(payload({
+      actions: [action(
+        { evidence: '', steps: [], impact: '', confidence: '' },
+        { status: 'suggested', targetMetric: null, targetDir: null },
+      )],
+    }));
+    await render(<GrowActions project={project} colors={colors} />);
+
+    await act(async () => { button('Not interested').click(); });
+
+    const post = apiFetch.mock.calls.find(([u]: [string]) => u.includes('/status'));
+    expect(post, 'a rendered row must always be dismissible').toBeTruthy();
+    expect(JSON.parse(post[1].body)).toEqual({ status: 'dismissed' });
   });
 
   it('lists dismissed advice in its own section, not the archive', async () => {
@@ -507,5 +546,226 @@ describe('the suggestions that were dropped', () => {
     routeTo(payload());
     await render(<GrowActions project={project} colors={colors} />);
     expect(container.textContent).not.toContain('Last review dropped');
+  });
+});
+
+// ── Tracking: what we changed, and whether it worked ─────────────────────────
+//
+// The user, 2026-08-19: "once a verified action was taken it should disappear
+// from the list of Actions and go into a tracker view of changes we made that
+// we are tracking to see how it impacted the success of the project."
+//
+// #1053 deliberately left `verified`/`measuring` on the active board so nothing
+// in flight could silently vanish while the sweep still measured it. That
+// guarantee is kept — these rows are MOVED, not hidden, and every one is still
+// rendered with its evidence, its prediction, its baseline and its windows.
+
+/** A verified action with a frozen baseline, as `render_board` sends it. */
+function tracked(over: Record<string, unknown> = {}, identity: Identity = {}) {
+  return action({ title: 'Rewrite the homepage', ...over }, {
+    id: 'act-tracked',
+    status: 'verified',
+    targetMetric: 'bounce_rate',
+    targetDir: 'down',
+    verifiedBy: 'git',
+    verifiedAt: '2026-08-19T12:00:00Z',
+    outcomes: [],
+    baseline: {
+      metric: 'bounce_rate',
+      dir: 'down',
+      pivot: '2026-08-20',
+      takenAt: '2026-08-19T12:00:00Z',
+      windows: [
+        { windowDays: 7, start: '2026-08-12', end: '2026-08-19', value: 0.47, denominator: 220 },
+        { windowDays: 14, start: '2026-08-05', end: '2026-08-19', value: 0.44, denominator: 460 },
+        { windowDays: 28, start: '2026-07-22', end: '2026-08-19', value: 0.42, denominator: 910 },
+      ],
+    },
+    ...identity,
+  });
+}
+
+describe('the tracking view', () => {
+  it('renders verified work in its own section, not in the Actions list', async () => {
+    routeTo(payload({ actions: [], tracking: [tracked()] }));
+    await render(<GrowActions project={project} colors={colors} />);
+
+    expect(container.textContent).toContain('Tracking (1)');
+    expect(container.textContent).toContain('Rewrite the homepage');
+    // An empty Actions list beside a full Tracking list is not "nothing to
+    // say" — saying the wrong one of those reads as data loss.
+    expect(container.textContent).toContain('Nothing is waiting on you');
+    expect(container.textContent).not.toContain('No review yet');
+  });
+
+  it('says what was done, how it was confirmed, and what it predicted', async () => {
+    routeTo(payload({ actions: [], tracking: [tracked()] }));
+    await render(<GrowActions project={project} colors={colors} />);
+
+    // The verification KIND, in words — "verified from a commit" and "you told
+    // me so" are different claims (proposal:107-109).
+    expect(container.textContent).toContain('Verified from a commit');
+    expect(container.textContent).toContain('bounce rate should go down');
+  });
+
+  it('shows the frozen baseline every window is measured against', async () => {
+    routeTo(payload({ actions: [], tracking: [tracked()] }));
+    await render(<GrowActions project={project} colors={colors} />);
+
+    expect(container.textContent).toContain('Measuring against');
+    // A rate renders as a rate. "0.47" beside a pageview count reads as a
+    // broken number rather than as 47%.
+    expect(container.textContent).toContain('before: 47%');
+    expect(container.textContent).toContain('of 220 sessions');
+    expect(container.textContent).toContain('Windows start 2026-08-20');
+  });
+
+  it('walks all three windows, not just the first', async () => {
+    // The old card said only "the first 7-day reading is due X", which tells
+    // the user a 28-day verdict is not coming.
+    routeTo(payload({ actions: [], tracking: [tracked()] }));
+    await render(<GrowActions project={project} colors={colors} />);
+
+    for (const days of [7, 14, 28]) {
+      expect(container.textContent, `${days}-day window`).toContain(`${days}-day`);
+    }
+  });
+
+  it('shows the verdict and its reason once the sweep produces one', async () => {
+    routeTo(payload({
+      actions: [],
+      tracking: [tracked({}, {
+        status: 'judged',
+        outcomes: [{
+          windowDays: 7,
+          verdict: 'inconclusive',
+          rationale: '38 sessions before, 41 after — too few to separate from noise.',
+          deltaPct: null,
+          confounders: [],
+          judgedAt: '2026-08-27T00:00:00Z',
+        }],
+      })],
+    }));
+    await render(<GrowActions project={project} colors={colors} />);
+
+    // `inconclusive` is the EXPECTED outcome at this traffic and must read as
+    // neutral, with the numbers it rests on in body text (proposal:46-48).
+    expect(container.textContent).toContain('Not enough data to say');
+    expect(container.textContent).toContain('too few to separate from noise');
+  });
+
+  // Archiving a tracked action keeps measuring it; dismissing would drop a
+  // live experiment into the pile of advice the user refused.
+  it('offers Archive on a tracked card, and not a dismissal', async () => {
+    routeTo(payload({ actions: [], tracking: [tracked()] }));
+    await render(<GrowActions project={project} colors={colors} />);
+
+    expect(maybeButton('Archive')).toBeTruthy();
+    expect(maybeButton('Not interested')).toBeUndefined();
+  });
+});
+
+// ── The background review ────────────────────────────────────────────────────
+//
+// The user, 2026-08-19: "on GetLadle I pressed Review my analytics and then
+// clicked another tab, when I went back it looks like it stopped running. It
+// should run in the background and there should be a loading animation on the
+// button to show that the agent is crunching the numbers."
+//
+// The flag was `useState(false)` inside this component, which unmounts when the
+// tab changes — so it was destroyed while the review carried on, and coming
+// back showed an idle button over a running review whose result then landed in
+// the database unseen.
+
+describe('a review that outlives the tab', () => {
+  it('shows it running on mount when the server says one is', async () => {
+    // Nothing was clicked in THIS component. Its state is the server's.
+    routeTo(payload({ generating: true, generationStartedAt: '2026-08-19T13:00:00Z' }));
+    await render(<GrowActions project={project} colors={colors} />);
+
+    const b = button('Reviewing your analytics…');
+    expect(b.disabled).toBe(true);
+    expect(b.getAttribute('aria-busy')).toBe('true');
+    expect(container.textContent).toContain('This keeps running if you leave the tab');
+  });
+
+  it('puts a moving spinner on the button, not just a different word', async () => {
+    routeTo(payload({ generating: true }));
+    await render(<GrowActions project={project} colors={colors} />);
+
+    // `pa-spin` is the app's spinner utility (index.css), which honours
+    // prefers-reduced-motion through the global block there. A text swap alone
+    // is indistinguishable from a stuck button.
+    expect(button('Reviewing your analytics…').querySelector('.pa-spin')).toBeTruthy();
+  });
+
+  it('spins from the moment the click is registered, before the server answers', async () => {
+    let release: (v: unknown) => void = () => {};
+    apiFetch.mockImplementation((url: string) => {
+      if (url.includes('/generate')) return new Promise((r) => { release = r; });
+      if (url.includes('/growth-actions')) return Promise.resolve(payload({ actions: [] }));
+      return Promise.resolve({});
+    });
+    await render(<GrowActions project={project} colors={colors} />);
+
+    await act(async () => { button('Review my analytics').click(); });
+    // The POST has not resolved. Without a local bridge the button would sit
+    // idle for the whole round trip.
+    expect(maybeButton('Reviewing your analytics…')).toBeTruthy();
+
+    await act(async () => { release(payload({ generating: true })); });
+    expect(button('Reviewing your analytics…').disabled).toBe(true);
+  });
+
+  it('does not start a second review on a second click', async () => {
+    routeTo(payload({ generating: true }));
+    await render(<GrowActions project={project} colors={colors} />);
+
+    const b = button('Reviewing your analytics…');
+    await act(async () => { b.click(); b.click(); });
+
+    const posts = apiFetch.mock.calls.filter(([u]: [string]) => u.includes('/generate'));
+    expect(posts).toHaveLength(0);
+  });
+
+  it('reconciles to the finished result without a manual refresh', async () => {
+    vi.useFakeTimers();
+    try {
+      let running = true;
+      apiFetch.mockImplementation((url: string) => {
+        if (url.includes('/growth-actions/generate')) return Promise.resolve(payload());
+        if (url.includes('/growth-actions')) {
+          return Promise.resolve(running
+            ? payload({ actions: [], generating: true })
+            : payload({ actions: [action({ title: 'Expand the pricing page' })] }));
+        }
+        return Promise.resolve({});
+      });
+      await render(<GrowActions project={project} colors={colors} />);
+      expect(container.textContent).toContain('Reviewing your analytics…');
+
+      // The review finishes on the daemon while nothing is pressed here.
+      running = false;
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+
+      expect(container.textContent).toContain('Expand the pricing page');
+      expect(container.textContent).not.toContain('Reviewing your analytics…');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops polling once the review is done', async () => {
+    vi.useFakeTimers();
+    try {
+      routeTo(payload());
+      await render(<GrowActions project={project} colors={colors} />);
+      const before = getCalls().length;
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      // Not a background poll of the panel: it only ticks while a review runs.
+      expect(getCalls().length).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
