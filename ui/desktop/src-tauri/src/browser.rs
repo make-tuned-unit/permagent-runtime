@@ -15,8 +15,43 @@ use tauri::{AppHandle, Emitter, Manager, WebviewBuilder, WebviewUrl};
 // token-authenticated localhost seam `activity.rs` uses. macOS does not report
 // the final saved path on the `Finished` event, so we remember the destination
 // we set on `Requested` and use that.
+//
+// WHY `on_download` ALONE WAS NEVER ENOUGH (reported 2026-08-19: nothing
+// downloaded ever reached the inbox. `~/.permagent/inbox/` did not exist and
+// `inbox_files` held no rows, and `prepare_inbox_destination` creates that
+// directory on the FIRST `Requested` event — so the hook had never fired once.)
+//
+// The hook is wired correctly and it IS forwarded on the child-webview path.
+// This is NOT the `on_new_window` story #1050 fixed. Traced through the pinned
+// dependencies:
+//
+//   * tauri 2.11.0 `WebviewBuilder::into_pending_webview` moves
+//     `download_handler` onto the `PendingWebview` — the one function BOTH
+//     `Window::add_child` and window creation go through;
+//   * tauri-runtime-wry 2.11.0's `create_webview` installs
+//     `with_download_started_handler` / `with_download_completed_handler` on
+//     the same `WebViewBuilder` it later finishes with `build_as_child`.
+//
+// What never happens is WebKit minting a `WKDownload` at all. wry asks for one
+// in exactly two places (`wry-0.55.0/src/wkwebview/navigation.rs`):
+// `navigation_policy` returns `WKNavigationActionPolicy::Download` when
+// `WKNavigationAction.shouldPerformDownload` is set — that flag is the HTML
+// `download` attribute — and `navigation_policy_response` returns
+// `WKNavigationResponsePolicy::Download` only when `!canShowMIMEType`. A PDF, a
+// Word document, a CSV, an image, or anything served `Content-Disposition:
+// attachment` under a displayable MIME type all report `canShowMIMEType ==
+// true`, so WebKit RENDERS them in a native viewer instead. That single fact is
+// also why the agent sees an empty string for an attachment tab: no download
+// event, and no HTML body to scrape either.
+//
+// So capture cannot be an event we wait for; it has to be an action the shell
+// can take on a tab — `save_tab_to_inbox` below. It runs shell -> page, the
+// same direction as `get_page_content`, so it opens no new channel a remote
+// page could reach for. That was #1050's reasoning and it still holds.
 
-/// A download whose destination we redirected on `Requested`, awaiting `Finished`.
+/// A file destined for the inbox: bytes already on disk, metadata not yet
+/// recorded. Also the carrier for a native download between `Requested` and
+/// `Finished`.
 struct PendingInboxDownload {
     /// Source URL the file was downloaded from.
     url: String,
@@ -24,6 +59,11 @@ struct PendingInboxDownload {
     abs_path: PathBuf,
     /// On-disk basename, also the `disk_path` relative to the inbox dir.
     filename: String,
+    /// Project this file belongs to, when the caller knew one. `None` leaves
+    /// the row unscoped, and the Inbox panel's "File it" picker assigns it
+    /// later. The column and the routing endpoint already existed; what did not
+    /// exist was any way for the capture site to say which project it was in.
+    project_id: Option<String>,
 }
 
 fn inbox_dir() -> PathBuf {
@@ -89,17 +129,23 @@ fn dedupe_filename(dir: &Path, name: &str) -> String {
     format!("{}-{name}", uuid::Uuid::new_v4())
 }
 
+/// Ensure `dir` exists and compute a sanitized, collision-free target from a
+/// suggested name. Split out from `prepare_inbox_destination` so the naming and
+/// de-collision rules can be tested against a temp dir instead of `$HOME`.
+fn prepare_destination_in(dir: &Path, suggested: &str) -> Result<(PathBuf, String), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("create inbox dir: {e}"))?;
+    let unique = dedupe_filename(dir, &sanitize_filename(suggested));
+    Ok((dir.join(&unique), unique))
+}
+
 /// Ensure the inbox dir exists and compute a sanitized, collision-free target
 /// from the browser's suggested destination. Returns (absolute path, filename).
 fn prepare_inbox_destination(suggested: &Path) -> Result<(PathBuf, String), String> {
-    let dir = inbox_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("create inbox dir: {e}"))?;
     let raw = suggested
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("download");
-    let unique = dedupe_filename(&dir, &sanitize_filename(raw));
-    Ok((dir.join(&unique), unique))
+    prepare_destination_in(&inbox_dir(), raw)
 }
 
 /// Best-effort content-type from the filename extension. `None` when unknown —
@@ -140,6 +186,10 @@ async fn record_inbox_file(pending: PendingInboxDownload) -> Result<(), String> 
         "content_type": guess_content_type(&pending.filename),
         "size_bytes": size_bytes,
         "disk_path": pending.filename,
+        // `NewInboxFile` has always accepted this and `inbox_files.project_id`
+        // has always existed; nothing on the capture side ever sent it, so
+        // every intake arrived unscoped even when the shell knew the project.
+        "project_id": pending.project_id,
     });
 
     let client = reqwest::Client::new();
@@ -158,6 +208,309 @@ async fn record_inbox_file(pending: PendingInboxDownload) -> Result<(), String> 
         let text = resp.text().await.unwrap_or_default();
         Err(format!("daemon returned {status}: {text}"))
     }
+}
+
+// ── Capturing an open tab into the inbox ────────────────────────────────────
+//
+// The action half of the intake path (see the long note at the top of this
+// file for why an event-driven one cannot exist for the documents people
+// actually open). The shell calls this for the tab in front of the user; the
+// agent's read path calls it when a tab turns out not to be an HTML document,
+// so "read this attachment" becomes "read this file" — the Reader and the local
+// OCR already know how to do that, and neither can do anything with a native
+// PDF viewer's empty `document.body`.
+
+/// The user agent the in-app browser presents. Shared with `save_tab_to_inbox`
+/// so a capture is fetched as the same client that rendered the tab — sites
+/// that vary a document by user agent hand back the same bytes.
+const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15";
+
+/// Hard cap on a captured document. Big enough for the reports, decks and
+/// scanned PDFs this is for; small enough that a mis-aimed capture cannot fill
+/// the disk. A larger file is refused by name rather than truncated — half a
+/// PDF in the inbox is worse than none.
+const MAX_CAPTURE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// What a capture produced, returned to the caller so the UI can name the file
+/// and the agent can go straight to reading it.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct InboxCapture {
+    /// On-disk basename inside the inbox directory.
+    pub filename: String,
+    /// Absolute path, so an agent can read the file without knowing the layout.
+    pub path: String,
+    pub size_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    /// Source URL, echoed back for the confirmation message.
+    pub url: String,
+}
+
+/// Pull a filename out of a `Content-Disposition` header. Handles the plain
+/// `filename="x.pdf"` form and RFC 5987's `filename*=UTF-8''x%20y.pdf`, which is
+/// what any server sending a non-ASCII name uses. Returns `None` rather than
+/// guessing, so the URL path gets its turn.
+fn filename_from_disposition(header: &str) -> Option<String> {
+    // `filename*` first: when both are present it is the authoritative one.
+    for part in header.split(';') {
+        let part = part.trim();
+        if let Some(rest) = part.strip_prefix("filename*=") {
+            // charset'language'percent-encoded-value
+            let value = rest.rsplit('\'').next().unwrap_or(rest);
+            let decoded = percent_decode(value);
+            if !decoded.trim().is_empty() {
+                return Some(decoded);
+            }
+        }
+    }
+    for part in header.split(';') {
+        let part = part.trim();
+        if let Some(rest) = part.strip_prefix("filename=") {
+            let value = rest.trim().trim_matches('"').trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Minimal `%XX` decoder for a Content-Disposition value or a URL path segment.
+/// Invalid escapes are left verbatim — a filename is not worth an error.
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
+            if let Some(b) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+/// The extension we would give a file of this content type. Inverse of
+/// `guess_content_type`, and only for the types worth naming.
+fn extension_for_content_type(content_type: &str) -> Option<&'static str> {
+    let base = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    let ext = match base.as_str() {
+        "application/pdf" => "pdf",
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/svg+xml" => "svg",
+        "text/plain" => "txt",
+        "text/csv" => "csv",
+        "application/json" => "json",
+        "text/html" | "application/xhtml+xml" => "html",
+        "application/zip" => "zip",
+        "application/msword" => "doc",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => "docx",
+        "application/vnd.ms-excel" => "xls",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => "xlsx",
+        _ => return None,
+    };
+    Some(ext)
+}
+
+/// The last path segment of a URL, percent-decoded, if it looks like a filename.
+fn filename_from_url(url: &url::Url) -> Option<String> {
+    let last = url
+        .path_segments()
+        .and_then(|mut s| s.next_back())
+        .unwrap_or("");
+    let decoded = percent_decode(last);
+    let trimmed = decoded.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+/// Name a captured file: `Content-Disposition`, else the URL's last path
+/// segment, else the host. An extension is appended from the content type when
+/// the chosen name has none — the Reader dispatches on extension, so a PDF
+/// called `view` would be unreadable for want of four characters.
+fn capture_filename(
+    url: &url::Url,
+    disposition: Option<&str>,
+    content_type: Option<&str>,
+) -> String {
+    let chosen = disposition
+        .and_then(filename_from_disposition)
+        .or_else(|| filename_from_url(url))
+        .unwrap_or_else(|| url.host_str().unwrap_or("download").to_string());
+    let name = sanitize_filename(&chosen);
+    let (_, ext) = split_ext(&name);
+    if !ext.is_empty() {
+        return name;
+    }
+    match content_type.and_then(extension_for_content_type) {
+        Some(ext) => format!("{name}.{ext}"),
+        None => name,
+    }
+}
+
+/// True when the bytes are an HTML document.
+///
+/// This is the honesty check. A capture that is not carrying the browser's
+/// session cookies gets a sign-in page or an error page back with HTTP 200, and
+/// storing that as `invoice.pdf` would be a lie the agent then reads and
+/// summarises. When the tab claimed to be a PDF and the bytes are HTML, we
+/// refuse and say why.
+fn looks_like_html(content_type: Option<&str>, bytes: &[u8]) -> bool {
+    if let Some(ct) = content_type {
+        let base = ct
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        if base == "text/html" || base == "application/xhtml+xml" {
+            return true;
+        }
+    }
+    let head = &bytes[..bytes.len().min(512)];
+    let text = String::from_utf8_lossy(head).to_ascii_lowercase();
+    let text = text.trim_start();
+    text.starts_with("<!doctype html")
+        || text.starts_with("<html")
+        || text.starts_with("<?xml-stylesheet")
+}
+
+/// Write captured bytes into `dir` and return the pending record for the daemon.
+/// Separated from the HTTP fetch so the naming, de-collision and on-disk result
+/// are testable without a network or a webview.
+fn store_capture_in(
+    dir: &Path,
+    url: &url::Url,
+    filename: &str,
+    bytes: &[u8],
+    project_id: Option<String>,
+) -> Result<PendingInboxDownload, String> {
+    let (abs_path, filename) = prepare_destination_in(dir, filename)?;
+    std::fs::write(&abs_path, bytes).map_err(|e| format!("write inbox file: {e}"))?;
+    Ok(PendingInboxDownload {
+        url: url.to_string(),
+        abs_path,
+        filename,
+        project_id,
+    })
+}
+
+/// Capture the document a tab is showing into the inbox, as a real file.
+///
+/// `expect_document` is set by the agent's read path, which only calls this
+/// because the tab is NOT an HTML document. In that mode an HTML response is
+/// treated as a failure (a sign-in wall or an error page), because storing it
+/// would put a plausible lie in the inbox.
+///
+/// LIMITATION, stated rather than hidden: the fetch is made from this process,
+/// so it carries no WKWebView cookies. A download that only works while signed
+/// in fails here and says so. It is not silently wrong, and the native
+/// `on_download` path — which DOES run inside the browser's session — still
+/// covers `download`-attribute links and non-displayable MIME types.
+#[tauri::command]
+pub async fn save_tab_to_inbox(
+    app: AppHandle,
+    webview_id: String,
+    project_id: Option<String>,
+    expect_document: Option<bool>,
+) -> Result<InboxCapture, String> {
+    let webview = app
+        .get_webview(&webview_id)
+        .ok_or_else(|| "Webview not found".to_string())?;
+    let raw_url = webview
+        .url()
+        .map(|u| u.to_string())
+        .map_err(|e| format!("Read url failed: {e}"))?;
+    let url: url::Url = raw_url.parse().map_err(|e| format!("Invalid URL: {e}"))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(format!(
+            "Only http(s) pages can be saved to the inbox; this tab is {}",
+            url.scheme()
+        ));
+    }
+
+    let client = reqwest::Client::builder()
+        .user_agent(BROWSER_USER_AGENT)
+        .build()
+        .map_err(|e| format!("build http client: {e}"))?;
+    let resp = client
+        .get(url.clone())
+        .send()
+        .await
+        .map_err(|e| format!("fetch failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("the server answered {}", resp.status()));
+    }
+
+    let header = |name: &str| {
+        resp.headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+    };
+    let disposition = header("content-disposition");
+    let content_type = header("content-type");
+
+    if let Some(len) = resp.content_length() {
+        if len > MAX_CAPTURE_BYTES {
+            return Err(format!(
+                "that file is {len} bytes, over the {MAX_CAPTURE_BYTES}-byte inbox limit"
+            ));
+        }
+    }
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("read body failed: {e}"))?;
+    if bytes.len() as u64 > MAX_CAPTURE_BYTES {
+        return Err(format!(
+            "that file is {} bytes, over the {MAX_CAPTURE_BYTES}-byte inbox limit",
+            bytes.len()
+        ));
+    }
+    if bytes.is_empty() {
+        return Err("the server returned an empty response".to_string());
+    }
+
+    if expect_document.unwrap_or(false) && looks_like_html(content_type.as_deref(), &bytes) {
+        return Err(
+            "the server returned a web page rather than the document — it probably needs the \
+             sign-in session the browser holds. Open the file's own download link instead."
+                .to_string(),
+        );
+    }
+
+    let filename = capture_filename(&url, disposition.as_deref(), content_type.as_deref());
+    let pending = store_capture_in(&inbox_dir(), &url, &filename, &bytes, project_id)?;
+    let capture = InboxCapture {
+        filename: pending.filename.clone(),
+        path: pending.abs_path.display().to_string(),
+        size_bytes: bytes.len() as u64,
+        content_type,
+        url: url.to_string(),
+    };
+    println!(
+        "[permagent-app] inbox: captured {} ({} bytes) from {}",
+        capture.filename, capture.size_bytes, capture.url
+    );
+    record_inbox_file(pending).await?;
+    Ok(capture)
 }
 
 struct BrowserWebview {
@@ -266,7 +619,7 @@ pub async fn create_browser_webview(
     let pending: Arc<Mutex<HashMap<String, PendingInboxDownload>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let builder = WebviewBuilder::new(&label, webview_url)
-        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15")
+        .user_agent(BROWSER_USER_AGENT)
         // Mouse gestures -> new tabs. All frames, because a link in an iframe
         // is still a link; the script itself keeps its context menu to the top
         // frame, where an overlay is not clipped to an ad iframe's box.
@@ -277,6 +630,10 @@ pub async fn create_browser_webview(
                     match prepare_inbox_destination(destination) {
                         Ok((abs_path, filename)) => {
                             let key = url.to_string();
+                            // Say so, every time. Until 2026-08-19 nobody could
+                            // tell "the hook is not wired" from "WebKit never
+                            // minted a download" — both look like silence.
+                            println!("[permagent-app] inbox: native download {key} -> {filename}");
                             *destination = abs_path.clone();
                             if let Ok(mut map) = pending.lock() {
                                 map.insert(
@@ -285,6 +642,10 @@ pub async fn create_browser_webview(
                                         url: key,
                                         abs_path,
                                         filename,
+                                        // The native hook has no shell context,
+                                        // so it cannot know the project. The
+                                        // Inbox panel files it afterwards.
+                                        project_id: None,
                                     },
                                 );
                             }
@@ -296,8 +657,15 @@ pub async fn create_browser_webview(
                     // Allow the download regardless; redirection is best-effort.
                     true
                 }
-                tauri::webview::DownloadEvent::Finished { url, path: _, success } => {
-                    let entry = pending.lock().ok().and_then(|mut m| m.remove(&url.to_string()));
+                tauri::webview::DownloadEvent::Finished {
+                    url,
+                    path: _,
+                    success,
+                } => {
+                    let entry = pending
+                        .lock()
+                        .ok()
+                        .and_then(|mut m| m.remove(&url.to_string()));
                     if success {
                         if let Some(entry) = entry {
                             tauri::async_runtime::spawn(async move {
@@ -345,9 +713,7 @@ pub async fn create_browser_webview(
             // Browser.tsx's matching one make the next one a five-second
             // diagnosis instead of a month.
             let target = url.to_string();
-            println!(
-                "[permagent-app] browser: new-window request from {popup_id} -> {target}"
-            );
+            println!("[permagent-app] browser: new-window request from {popup_id} -> {target}");
             if let Err(e) = popup_app.emit(
                 "browser_new_window_request",
                 BrowserNewWindowPayload {
@@ -629,11 +995,34 @@ pub struct PageContent {
     pub title: String,
     pub url: String,
     pub content: String,
+    /// "ok" for an HTML document, `NON_HTML_STATUS` when the tab is a native
+    /// viewer (a PDF, a Word document, an image) rather than a DOM.
     #[serde(default = "default_status")]
     pub status: String,
     #[serde(default)]
     pub truncated: bool,
+    /// `document.contentType` as the page itself reports it. Present so the
+    /// caller can say WHAT the tab is instead of guessing from the URL. The
+    /// alias is the key the injected script uses; the wire name stays snake
+    /// case like every other field the shell reads.
+    #[serde(
+        default,
+        alias = "contentType",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub content_type: Option<String>,
 }
+
+/// Status for "this tab is not an HTML document".
+///
+/// Extraction has always been `document.body.innerText`. For a PDF or a Word
+/// document WKWebView renders a NATIVE viewer: there is no body text, so the
+/// agent got `""` and the bridge turned that into "the page appears to be blank
+/// or still loading" — which reads as "there is nothing there" when in fact
+/// there is a whole document there. An empty string is the one answer that is
+/// never honest here, so the page reports what it actually is and the caller
+/// captures the FILE instead (`save_tab_to_inbox`).
+pub const NON_HTML_STATUS: &str = "non_html_document";
 
 fn default_status() -> String {
     "ok".to_string()
@@ -668,6 +1057,81 @@ fn truncate_page_content(content: &mut String) -> bool {
     true
 }
 
+/// The read-page script.
+///
+/// It reports only FACTS — the title, the URL, whatever body text exists, and
+/// `document.contentType`. Deciding what those facts mean is
+/// `classify_page_content`'s job, in Rust, where it can be unit-tested; there
+/// is no WKWebView in CI to run a decision written in here.
+fn page_content_js() -> String {
+    r#"
+        (function() {
+            var title = document.title || '';
+            var url = location.href || '';
+            var content = document.body ? document.body.innerText : '';
+            var contentType = '';
+            try { contentType = String(document.contentType || ''); } catch (e) { contentType = ''; }
+            return JSON.stringify({
+                title: title, url: url, content: content, contentType: contentType
+            });
+        })()
+    "#
+    .to_string()
+}
+
+/// True when a content type describes something with a DOM worth scraping.
+///
+/// Anything else — `application/pdf`, `application/msword`, `image/*` — is
+/// rendered by a NATIVE viewer inside WKWebView. There is no body text in those
+/// documents, and none is coming.
+fn is_dom_content_type(content_type: &str) -> bool {
+    let base = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    // An empty value means the page declined to say (about:blank, some older
+    // WebKit builds). Treat that as a DOM: the body text is then the truth.
+    base.is_empty()
+        || base == "text/html"
+        || base == "application/xhtml+xml"
+        || base == "text/plain"
+        || base == "text/xml"
+        || base == "application/xml"
+        || base.ends_with("+xml")
+}
+
+/// Turn a page's raw facts into an honest answer.
+///
+/// The bug this exists for: extraction is `document.body.innerText`, and for a
+/// PDF or a Word document that is `""`. The bridge then reported "the page
+/// appears to be blank or still loading", so the agent said it could not read
+/// the document — when what actually happened is that the document is not a DOM
+/// at all. An empty string is the one answer that is never true here.
+///
+/// Only a tab that is BOTH non-DOM and empty is reclassified: an inline PDF
+/// viewer that does expose selectable text stays `ok` and keeps it.
+fn classify_page_content(page: &mut PageContent) {
+    let content_type = page.content_type.clone().unwrap_or_default();
+    if is_dom_content_type(&content_type) || !page.content.trim().is_empty() {
+        return;
+    }
+    // Non-empty by construction: an empty content type counts as a DOM above.
+    let label = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    page.status = NON_HTML_STATUS.to_string();
+    page.content = format!(
+        "This tab is a {label} document, not an HTML page. WebKit renders it in a native viewer, \
+         so it has no page text to read. Save it to the inbox with `save_tab_to_inbox` and read \
+         the file instead."
+    );
+}
+
 #[tauri::command]
 pub async fn get_page_content(app: AppHandle, webview_id: String) -> Result<PageContent, String> {
     let webview = app
@@ -676,14 +1140,8 @@ pub async fn get_page_content(app: AppHandle, webview_id: String) -> Result<Page
 
     let (tx, rx) = std::sync::mpsc::channel::<String>();
 
-    let js = r#"
-        (function() {
-            var title = document.title || '';
-            var url = location.href || '';
-            var content = document.body ? document.body.innerText : '';
-            return JSON.stringify({ title: title, url: url, content: content });
-        })()
-    "#;
+    let js = page_content_js();
+    let js = js.as_str();
 
     webview
         .eval_with_callback(js, move |result| {
@@ -700,6 +1158,10 @@ pub async fn get_page_content(app: AppHandle, webview_id: String) -> Result<Page
     let json_str: String = serde_json::from_str(&raw).unwrap_or_else(|_| raw.clone());
     let mut page: PageContent =
         serde_json::from_str(&json_str).map_err(|e| format!("Parse failed: {e}"))?;
+
+    // Classify BEFORE truncating: the honest non-HTML message is short, and
+    // truncating a message about emptiness would be its own small absurdity.
+    classify_page_content(&mut page);
 
     if truncate_page_content(&mut page.content) {
         page.truncated = true;
@@ -1143,6 +1605,229 @@ mod tests {
             "Without this the address bar goes stale on every SPA route change, \
              and the only alternative anyone reaches for is a poll."
         );
+    }
+
+    // ── File intake: the download that never arrived ────────────────────────
+    //
+    // Reported 2026-08-19. `~/.permagent/inbox/` did not exist and
+    // `inbox_files` had no rows, and `prepare_inbox_destination` creates that
+    // directory on the FIRST `Requested` event — so `on_download` had never
+    // fired once since the feature shipped.
+
+    /// Source guard, in the spirit of the popup one above.
+    ///
+    /// The native hook is the only capture path that runs INSIDE the browser's
+    /// session, so it is the one that works for `download`-attribute links and
+    /// for MIME types WebKit cannot render. It is also the one that looks like
+    /// dead code, because the directory it writes to stays empty until someone
+    /// downloads a `.zip`. Both halves have to stay: the hook for the cases
+    /// WebKit does hand us, and the capture command for the far more common
+    /// ones it renders instead (a PDF, a Word document, an image).
+    #[test]
+    fn both_halves_of_the_file_intake_path_are_wired() {
+        let src = include_str!("browser.rs");
+        assert!(
+            src.contains(concat!(".on_", "download(")),
+            "create_browser_webview must keep the native download hook. It is \
+             the only intake path that carries the browser's own cookies, so \
+             deleting it because the inbox looks empty removes the half that \
+             works."
+        );
+        assert!(
+            src.contains(concat!("prepare_inbox_", "destination(destination)")),
+            "The hook must REDIRECT the download into the inbox. Without the \
+             redirect the file lands in ~/Downloads and the metadata row \
+             points at a path that is not there."
+        );
+        assert!(
+            src.contains(concat!("fn save_tab_to_", "inbox(")),
+            "WebKit renders a PDF / Word document rather than downloading it \
+             (canShowMIMEType is true), so no download event exists for the \
+             documents people actually open. The capture command is how those \
+             reach the inbox at all."
+        );
+        assert!(
+            src.contains(concat!("\"/api/", "inbox\"")) || src.contains("api/inbox"),
+            "Both halves must record the row through the daemon's inbox \
+             endpoint — one intake path, not two."
+        );
+        assert!(
+            src.contains("\"project_id\": pending.project_id"),
+            "A captured file must be able to arrive already filed. The column \
+             and the routing endpoint always existed; nothing on this side \
+             ever sent the project, so every intake was unscoped."
+        );
+    }
+
+    #[test]
+    fn a_capture_is_named_from_the_content_disposition_first() {
+        let url: url::Url = "https://example.com/download?id=91".parse().unwrap();
+        assert_eq!(
+            capture_filename(
+                &url,
+                Some("attachment; filename=\"Q3 report.pdf\""),
+                Some("application/pdf"),
+            ),
+            "Q3 report.pdf"
+        );
+    }
+
+    /// RFC 5987. Any server sending a non-ASCII name uses this form, and
+    /// `filename*` wins over `filename` when both are present.
+    #[test]
+    fn rfc5987_filenames_are_decoded() {
+        let url: url::Url = "https://example.com/d".parse().unwrap();
+        assert_eq!(
+            capture_filename(
+                &url,
+                Some("attachment; filename=\"fallback.pdf\"; filename*=UTF-8''facture%20mai.pdf"),
+                Some("application/pdf"),
+            ),
+            "facture mai.pdf"
+        );
+    }
+
+    /// The Reader dispatches on extension, so a PDF served from a bare path
+    /// would be unreadable for want of four characters.
+    #[test]
+    fn a_capture_falls_back_to_the_url_and_gains_an_extension() {
+        let url: url::Url = "https://example.com/files/statement".parse().unwrap();
+        assert_eq!(
+            capture_filename(&url, None, Some("application/pdf; charset=binary")),
+            "statement.pdf"
+        );
+    }
+
+    /// The honesty check. A capture made outside the browser's session gets a
+    /// sign-in page back with HTTP 200; storing that as `invoice.pdf` would put
+    /// a plausible lie in the inbox for the agent to read and summarise.
+    #[test]
+    fn a_sign_in_page_is_not_mistaken_for_the_document() {
+        assert!(looks_like_html(
+            Some("text/html; charset=utf-8"),
+            b"anything"
+        ));
+        assert!(looks_like_html(None, b"\n  <!DOCTYPE html>\n<html><body>"));
+        assert!(!looks_like_html(
+            Some("application/pdf"),
+            b"%PDF-1.7\n%\xE2\xE3"
+        ));
+    }
+
+    #[test]
+    fn a_capture_lands_on_disk_and_never_overwrites_an_earlier_one() {
+        let dir =
+            std::env::temp_dir().join(format!("permagent-inbox-test-{}", uuid::Uuid::new_v4()));
+        let url: url::Url = "https://example.com/report.pdf".parse().unwrap();
+
+        let first = store_capture_in(&dir, &url, "report.pdf", b"%PDF-1.7 first", None).unwrap();
+        let second = store_capture_in(
+            &dir,
+            &url,
+            "report.pdf",
+            b"%PDF-1.7 second",
+            Some("proj-1".to_string()),
+        )
+        .unwrap();
+
+        assert_eq!(first.filename, "report.pdf");
+        assert_eq!(second.filename, "report-1.pdf");
+        assert_eq!(std::fs::read(&first.abs_path).unwrap(), b"%PDF-1.7 first");
+        assert_eq!(std::fs::read(&second.abs_path).unwrap(), b"%PDF-1.7 second");
+        assert_eq!(second.project_id.as_deref(), Some("proj-1"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Reading a tab that is not a DOM ─────────────────────────────────────
+
+    /// The reported defect: the agent "cannot read" an attachment. What it
+    /// actually received was `""`, which the bridge turned into "the page
+    /// appears to be blank or still loading" — an answer that is never true for
+    /// a tab showing a document.
+    #[test]
+    fn a_pdf_tab_says_what_it_is_instead_of_returning_nothing() {
+        let mut page = PageContent {
+            title: "invoice.pdf".to_string(),
+            url: "https://example.com/invoice.pdf".to_string(),
+            // What `document.body.innerText` gives for WebKit's native viewer.
+            content: String::new(),
+            status: default_status(),
+            truncated: false,
+            content_type: Some("application/pdf".to_string()),
+        };
+
+        classify_page_content(&mut page);
+
+        assert_eq!(page.status, NON_HTML_STATUS);
+        assert!(
+            !page.content.trim().is_empty(),
+            "an empty string is the one answer that is never honest here"
+        );
+        assert!(page.content.contains("application/pdf"));
+        assert!(
+            page.content.contains("save_tab_to_inbox"),
+            "the honest answer must also say what to do instead — read the file"
+        );
+    }
+
+    /// A real HTML page that happens to be empty is still just an empty page,
+    /// and a PDF viewer that DOES expose selectable text keeps its text.
+    #[test]
+    fn only_a_non_dom_tab_with_no_text_is_reclassified() {
+        let base = |ct: Option<&str>, body: &str| PageContent {
+            title: String::new(),
+            url: "https://example.com/".to_string(),
+            content: body.to_string(),
+            status: default_status(),
+            truncated: false,
+            content_type: ct.map(|s| s.to_string()),
+        };
+
+        let mut html_blank = base(Some("text/html; charset=utf-8"), "");
+        classify_page_content(&mut html_blank);
+        assert_eq!(html_blank.status, "ok");
+        assert_eq!(html_blank.content, "");
+
+        let mut pdf_with_text = base(Some("application/pdf"), "Invoice 91");
+        classify_page_content(&mut pdf_with_text);
+        assert_eq!(pdf_with_text.status, "ok");
+        assert_eq!(pdf_with_text.content, "Invoice 91");
+
+        let mut unknown = base(None, "");
+        classify_page_content(&mut unknown);
+        assert_eq!(unknown.status, "ok");
+    }
+
+    #[test]
+    fn dom_content_types_are_recognised() {
+        for ct in [
+            "",
+            "text/html",
+            "TEXT/HTML; charset=utf-8",
+            "application/xhtml+xml",
+            "text/plain",
+            "image/svg+xml",
+        ] {
+            assert!(is_dom_content_type(ct), "{ct} has a DOM");
+        }
+        for ct in [
+            "application/pdf",
+            "application/msword",
+            "image/png",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ] {
+            assert!(!is_dom_content_type(ct), "{ct} is a native viewer");
+        }
+    }
+
+    /// The script must stay a reporter of facts. Any decision written into it
+    /// is a decision no test in this repo can run.
+    #[test]
+    fn the_read_script_reports_the_content_type() {
+        let js = page_content_js();
+        assert!(js.contains("document.contentType"));
+        assert!(js.contains("document.body.innerText"));
     }
 
     #[test]

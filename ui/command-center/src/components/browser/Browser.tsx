@@ -12,6 +12,7 @@ import {
   FiAlertTriangle,
   FiShield,
   FiGlobe,
+  FiInbox,
 } from 'react-icons/fi';
 import { BrowserTabs, type BrowserTab } from './BrowserTabs';
 import { BookmarksBar } from './BookmarksBar';
@@ -26,6 +27,7 @@ import {
 } from './tabIdentity';
 import { CHAT_LAUNCHER_MARGIN } from '../chat/ChatLauncher';
 import { nextPaneTabId, usePaneTabCycling } from '../build/paneTabCycling';
+import { createBoundsPump } from './boundsPump';
 
 // ── Tauri API loader (cached, no module-level mutation) ──
 
@@ -138,6 +140,12 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
   // Stable handle to syncBounds for effects registered before its definition
   // (the pane_redock listener needs to snap bounds on arrival).
   const syncBoundsRef = useRef<(() => void) | null>(null);
+
+  // The rect we last actually handed to `update_browser_bounds`. The suspended
+  // pump's drift probe compares the container against this: if they disagree,
+  // the native surface is somewhere the container is not — which is the
+  // stranded-after-restore symptom, stated as a checkable fact.
+  const lastAppliedBoundsRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
   // Events that arrived for a webview React does not know about yet.
   // `create_browser_webview` starts loading the page before it returns, so the
   // first `browser_page_load` can beat the `setTabs` that records the
@@ -352,6 +360,7 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
     // without this check they snapped the webview back over the overlay
     // within a tick of the hide (reported live 2026-08-06).
     if (useCommandCenter.getState().overlayBlockingBrowser > 0) {
+      lastAppliedBoundsRef.current = null;
       tabsRef.current.forEach((t) => {
         if (t.webviewId) inv.invoke('hide_browser', { webviewId: t.webviewId }).catch(() => {});
       });
@@ -365,6 +374,7 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
 
     // Hide webviews when container is hidden (workspace switch)
     if (rect.width === 0 || rect.height === 0) {
+      lastAppliedBoundsRef.current = null;
       currentTabs.forEach((t) => {
         if (t.webviewId) inv.invoke('hide_browser', { webviewId: t.webviewId }).catch(() => {});
       });
@@ -400,6 +410,7 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
     currentTabs.forEach((t) => {
       if (!t.webviewId) return;
       if (t.id === currentActiveId) {
+        lastAppliedBoundsRef.current = { x: rect.x, y: rect.y, width, height };
         inv.invoke('update_browser_bounds', {
           webviewId: t.webviewId,
           x: rect.x,
@@ -449,36 +460,92 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
     observer.observe(containerRef.current);
 
     // The 500 ms poll exists because ResizeObserver doesn't fire on display:none
-    // changes (workspace switches). Gate it on visibility so it never runs while
-    // occluded.
-    let pump: ReturnType<typeof setInterval> | null = null;
-    const startPump = () => {
-      if (pump === null) pump = setInterval(syncBounds, 500);
-    };
-    const stopPump = () => {
-      if (pump !== null) {
-        clearInterval(pump);
-        pump = null;
-      }
-    };
+    // changes (workspace switches). It suspends while the surface is off screen
+    // (the #562 C1 nap-safety property), but WHO gets to say "off screen" is no
+    // longer the Page Visibility API alone — see boundsPump.ts. Reported
+    // 2026-08-19: minimised for ten minutes, and on restore the browser was
+    // still painting at the coordinates it had before, because the
+    // `visibilitychange` that says "back" never arrived.
+    const pump = createBoundsPump({
+      sync: syncBounds,
+      // The last-resort drift check, run only while suspended. It performs NO
+      // native op — it compares the container's rect against the bounds we last
+      // actually applied — so it cannot reintroduce the idle wedge.
+      probe: () => {
+        const el = containerRef.current;
+        const last = lastAppliedBoundsRef.current;
+        if (!el || !last) return false;
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return false;
+        return (
+          Math.abs(rect.x - last.x) > 0.5 ||
+          Math.abs(rect.y - last.y) > 0.5 ||
+          Math.abs(rect.width - last.width) > 0.5 ||
+          Math.abs(rect.height - last.height) > 0.5
+        );
+      },
+    });
+    pump.signal(document.hidden ? 'page-hidden' : 'page-visible');
+
     const onVisibility = () => {
-      if (document.hidden) {
-        stopPump();
-      } else {
-        syncBounds(); // re-align immediately on return
-        startPump();
-      }
+      pump.signal(document.hidden ? 'page-hidden' : 'page-visible');
     };
-    if (!document.hidden) startPump();
     document.addEventListener('visibilitychange', onVisibility);
 
+    // NATIVE window events. These are the signals that actually survive a
+    // macOS minimise/restore, and the window — not the page — is asked whether
+    // it is miniaturised, because `document.hidden` is precisely the value that
+    // cannot be trusted here. Asking also stops the `Resized` macOS emits ON
+    // minimise from restarting the pump behind a miniaturised window.
+    let disposed = false;
+    const windowUnlisteners: Array<() => void> = [];
+    (async () => {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        const win = getCurrentWindow();
+        const onWindowSignal = async () => {
+          if (disposed) return;
+          let minimized = false;
+          try {
+            minimized = await win.isMinimized();
+          } catch {
+            minimized = false;
+          }
+          if (disposed) return;
+          pump.signal(minimized ? 'window-occluded' : 'window-active');
+        };
+        const handlers = await Promise.all([
+          win.onFocusChanged(({ payload: focused }) => {
+            if (focused) void onWindowSignal();
+          }),
+          win.onResized(() => void onWindowSignal()),
+          win.onMoved(() => void onWindowSignal()),
+        ]);
+        if (disposed) {
+          handlers.forEach(fn => fn());
+          return;
+        }
+        windowUnlisteners.push(...handlers);
+      } catch {
+        // Not running under Tauri (unit tests, a browser preview): the Page
+        // Visibility path above is all there is, which is where we started.
+      }
+    })();
+
+    // DOM focus as well. Cheap, and it lands in cases where the native event is
+    // late — it can only ever cause an extra idempotent re-align.
+    const onWindowFocus = () => pump.signal('window-active');
+    window.addEventListener('focus', onWindowFocus);
     window.addEventListener('resize', syncBounds);
 
     return () => {
+      disposed = true;
       settleTimers.forEach(clearTimeout);
       observer.disconnect();
-      stopPump();
+      pump.dispose();
+      windowUnlisteners.forEach(fn => fn());
       document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('focus', onWindowFocus);
       window.removeEventListener('resize', syncBounds);
     };
   }, [api, syncBounds]);
@@ -837,6 +904,35 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
       .catch(() => {});
   }, [resyncUrl]);
 
+  // Save the open tab into the Downloads inbox (#392/#393, and the 2026-08-19
+  // report that nothing downloaded ever arrived there).
+  //
+  // This is the human-facing half of the capture path. WebKit renders a PDF or
+  // a Word document instead of downloading it — `canShowMIMEType` is true for
+  // both — so there is no download event to hook and no amount of fixing
+  // `on_download` produces one. The only way such a file reaches the inbox is
+  // for someone to ask for it, so: a button.
+  const [savingToInbox, setSavingToInbox] = useState<null | 'busy' | 'done' | 'failed'>(null);
+  const saveToInbox = useCallback(async () => {
+    const inv = apiRef.current;
+    const tab = tabsRef.current.find(t => t.id === activeTabIdRef.current);
+    if (!inv || !tab?.webviewId) return;
+    setSavingToInbox('busy');
+    try {
+      const capture = await inv.invoke('save_tab_to_inbox', {
+        webviewId: tab.webviewId,
+        projectId: null,
+        expectDocument: false,
+      }) as { filename: string };
+      console.info('[permagent] browser: saved to inbox:', capture.filename);
+      setSavingToInbox('done');
+    } catch (err) {
+      console.error('[permagent] browser: save to inbox failed:', err);
+      setSavingToInbox('failed');
+    }
+    setTimeout(() => setSavingToInbox(null), 2500);
+  }, []);
+
   const handleReload = useCallback(() => {
     if (!activeTab?.webviewId || !apiRef.current) return;
     apiRef.current.invoke('navigate_browser', {
@@ -987,6 +1083,29 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
             disabled={!activeTab?.webviewId}
           >
             <FiRefreshCw size={14} className={activeTab?.loading ? 'animate-spin' : ''} />
+          </button>
+          <button
+            onClick={saveToInbox}
+            className="p-1.5 rounded hover:bg-white/5 transition-colors disabled:opacity-30 disabled:hover:bg-transparent"
+            style={{
+              color:
+                savingToInbox === 'done'
+                  ? colors.cyan
+                  : savingToInbox === 'failed'
+                    ? colors.danger
+                    : colors.textMuted,
+            }}
+            title={
+              savingToInbox === 'done'
+                ? 'Saved to your inbox'
+                : savingToInbox === 'failed'
+                  ? 'Could not save this tab — see the console for why'
+                  : 'Save this page or document to your Downloads inbox'
+            }
+            aria-label="Save to inbox"
+            disabled={!activeTab?.webviewId || savingToInbox === 'busy'}
+          >
+            <FiInbox size={14} />
           </button>
         </div>
 

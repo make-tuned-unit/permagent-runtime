@@ -8,6 +8,7 @@ import {
   describeRouteResult,
   fetchRoutableProjects,
   needsProject,
+  projectLabel,
   routeInboxFile,
   statusLabel,
   type RouteDestination,
@@ -34,7 +35,7 @@ function receivedLabel(iso: string): string {
   return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-const COLS = '1fr 130px 70px 130px 80px';
+const COLS = '1fr 120px 64px 118px 118px 76px';
 
 interface PendingPick {
   fileId: string;
@@ -78,6 +79,17 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
     api.getInbox()
       .then(rows => { if (active) { setFiles(rows); setError(null); } })
       .catch(() => { if (active) { setFiles([]); setError('Could not load your inbox.'); } });
+    return () => { active = false; };
+  }, []);
+
+  // Projects load on mount now, not only when a picker opens: the Project
+  // column needs names to show, and a file that HAS been filed must look
+  // different from one that has not.
+  useEffect(() => {
+    let active = true;
+    fetchRoutableProjects()
+      .then(rows => { if (active) setProjects(rows); })
+      .catch(() => { if (active) setProjects([]); });
     return () => { active = false; };
   }, []);
 
@@ -169,7 +181,7 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <div style={{ display: 'grid', gridTemplateColumns: COLS, gap: 12, padding: '0 12px', fontSize: 10, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: colors.textDim }}>
-              <div>Filename</div><div>Source</div><div>Size</div><div>Received</div><div>Status</div>
+              <div>Filename</div><div>Source</div><div>Size</div><div>Received</div><div>Project</div><div>Status</div>
             </div>
             {files.map(f => {
               const busy = busyId === f.id;
@@ -183,6 +195,10 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
                     <div style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12, color: colors.textMuted }} title={f.original_url ?? undefined}>{sourceLabel(f.original_url)}</div>
                     <div style={{ fontSize: 12, color: colors.textMuted, fontFamily: font.mono }}>{formatBytes(f.size_bytes)}</div>
                     <div style={{ fontSize: 12, color: colors.textMuted }}>{receivedLabel(f.created_at)}</div>
+                    <div
+                      style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12, color: f.project_id ? colors.text : colors.textDim }}
+                      title={projectLabel(f.project_id, projects) ?? 'Not filed to a project yet'}
+                    >{projectLabel(f.project_id, projects) ?? '—'}</div>
                     <div>
                       <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.04em', padding: '2px 8px', borderRadius: 999, border: `1px solid ${colors.border}`, color: f.status === 'received' ? colors.text : colors.textMuted }}>
                         {statusLabel(f.status)}

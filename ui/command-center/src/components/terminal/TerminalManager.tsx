@@ -7,6 +7,14 @@ import { resolvePtyInjection } from './terminalDrop';
 import { font } from '../../styles/tokens';
 import { CycleTabsButton } from '../build/CycleTabsButton';
 import { nextPaneTabId, usePaneTabCycling } from '../build/paneTabCycling';
+import {
+  TERMINAL_STATE_KEY,
+  readStoredState,
+  writeStoredState,
+  reconcileTabs,
+  resolveActiveTabId,
+  type PtySessionInfo,
+} from './terminalReattach';
 
 export interface TerminalManagerHandle {
   createProjectTab: (cwd: string, label: string, initialCommand?: string, supervisedSessionId?: string) => void;
@@ -57,8 +65,55 @@ function createTab(cwd?: string): TerminalTab {
 let persistedTabs: TerminalTab[] | null = null;
 let persistedActiveTabId: string | null = null;
 
-/** Test-only: clear the module-level persistence between test cases. */
+// Sessions handed to a detached pane window. That window keeps its own copy in
+// its own realm, so the docked manager must never adopt one back — two panes
+// writing into one PTY is a worse outcome than an orphan.
+let detachedSessionIds: string[] = [];
+
+// ── …and a DURABLE copy, because module-level state is not durable ──────────
+//
+// The module variables above survive a React unmount. They do not survive
+// re-evaluation of the JS realm, and that is what actually happened on
+// 2026-08-19: the window was minimised for ten minutes, macOS reclaimed the
+// occluded WebContent process, the page came back freshly evaluated, and this
+// file's `persistedTabs` was `null` again. The manager then made one empty tab,
+// `Terminal` saw no `sessionId` and spawned a new shell at `$HOME`, and a live
+// `claude` session — still running, still owned by the app — became reachable
+// by nothing. The owner reasonably believed an hour of work was gone.
+//
+// So the record is mirrored into localStorage, which does survive, and the
+// backend is asked what is actually running (`list_pty_sessions`) so anything
+// the record still lost can be adopted rather than buried.
+function storage(): Storage | null {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Test-only: a genuinely cold start — module cache AND durable record cleared.
+ * The durable half matters: leaving it behind would leak one case's tabs into
+ * the next, which is precisely the class of confusion this record introduces.
+ */
 export function __resetTerminalPersistenceForTests() {
+  persistedTabs = null;
+  persistedActiveTabId = null;
+  detachedSessionIds = [];
+  try {
+    storage()?.removeItem(TERMINAL_STATE_KEY);
+  } catch {
+    /* no storage in this environment */
+  }
+}
+
+/**
+ * Test-only: drop the module-level cache the way a realm re-evaluation does,
+ * WITHOUT touching the durable record. This is the shape of the reported bug —
+ * the process kept its PTYs, the page forgot their ids.
+ */
+export function __simulateRealmReloadForTests() {
   persistedTabs = null;
   persistedActiveTabId = null;
 }
@@ -67,13 +122,45 @@ interface TerminalManagerProps { initialTab?: TerminalTab | null; detached?: boo
 
 export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManagerProps>(function TerminalManager({ initialTab, detached = false }, ref) {
   const { colors } = useTheme();
+  // Read the durable record ONCE, during the render phase, the same way the
+  // module cache is read — a later effect would be too late, because `Terminal`
+  // spawns on its own mount.
+  const storedRef = useRef<ReturnType<typeof readStoredState> | undefined>(undefined);
+  if (storedRef.current === undefined) {
+    storedRef.current = detached || initialTab ? null : readStoredState(storage());
+  }
+  const stored = storedRef.current;
+
+  // A COLD start: neither the module cache nor the durable record knows
+  // anything. That is exactly the state a re-evaluated realm comes back in, and
+  // the only state in which an unclaimed live PTY means "the UI forgot me".
+  // Start with NO tabs so nothing spawns before the backend has been asked; the
+  // reconcile effect below fills the pane a tick later. Every other path keeps
+  // its tabs immediately, so an ordinary pane toggle is unchanged.
+  //
+  // Only when there IS a backend to ask. Without the Tauri bridge (a browser
+  // preview, a unit test) there is no question to wait for and no PTY to
+  // collide with, so deferring would just be an empty pane for no reason.
+  const coldRef = useRef<boolean | undefined>(undefined);
+  if (coldRef.current === undefined) {
+    const hasBridge = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+    coldRef.current = hasBridge && !detached && !initialTab && !persistedTabs && !stored;
+  }
+  const coldStart = coldRef.current;
+
   const [tabs, setTabs] = useState<TerminalTab[]>(() => {
     if (initialTab) return [initialTab];
     if (!detached && persistedTabs) return persistedTabs;
-    return [createTab()];
+    if (stored) return stored.tabs;
+    return coldStart ? [] : [createTab()];
   });
   const [activeTabId, setActiveTabId] = useState<string>(() => {
-    return initialTab?.id || (!detached ? persistedActiveTabId : null) || tabs[0].id;
+    return (
+      initialTab?.id ||
+      (!detached ? persistedActiveTabId || stored?.activeTabId : null) ||
+      tabs[0]?.id ||
+      ''
+    );
   });
   const [closingTabId, setClosingTabId] = useState<string | null>(null);
   // Drop-to-CC-terminal (#557): visual state while a file is dragged over the pane.
@@ -117,17 +204,69 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
   // the module vars current on every change makes the initializer read the
   // truth no matter how the remount is scheduled.
   useEffect(() => {
-    if (!detached) {
-      persistedTabs = tabs;
-      persistedActiveTabId = activeTabId;
+    if (detached) return;
+    persistedTabs = tabs;
+    persistedActiveTabId = activeTabId;
+    // …and durably, so the ids outlive the realm that is holding them.
+    // Deliberately skipped while the cold start is still empty: writing `[]`
+    // would erase the very record the next reload needs.
+    if (tabs.length > 0) {
+      writeStoredState(storage(), { tabs, activeTabId, detachedSessionIds });
     }
   }, [tabs, activeTabId, detached]);
+
+  // ── Reconcile against the PTYs that actually exist ────────────────────────
+  //
+  // Runs once per mount. Two jobs, both of which used to be impossible because
+  // nothing could ask the backend anything:
+  //
+  //   * a tab whose session has exited loses its id, so it gets a working shell
+  //     instead of a pane wired to a session that is not there;
+  //   * on a cold start, a live session no tab claims is ADOPTED — that is the
+  //     session the user was working in, and burying it under a fresh shell is
+  //     the reported bug.
+  //
+  // A FAILED listing changes nothing. Treating "I could not ask" as "nothing is
+  // running" would clear every id and respawn every shell.
+  useEffect(() => {
+    if (detached) return;
+    let cancelled = false;
+    (async () => {
+      let live: PtySessionInfo[] = [];
+      let listed = false;
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        live = (await invoke('list_pty_sessions')) as PtySessionInfo[];
+        listed = Array.isArray(live);
+      } catch {
+        listed = false;
+      }
+      if (cancelled) return;
+      setTabs(prev => {
+        const next = reconcileTabs({
+          tabs: prev,
+          live: listed ? live : [],
+          listed,
+          adopt: coldStart,
+          detachedSessionIds,
+          makeTab: () => createTab(),
+        });
+        setActiveTabId(id => resolveActiveTabId(next, id || null));
+        return next;
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [detached, coldStart]);
 
   useEffect(() => {
     if (detached || !('__TAURI_INTERNALS__' in window)) return;
     let unlisten: (() => void) | undefined;
     import('@tauri-apps/api/event').then(({ listen }) => listen<{ kind: string; tab: TerminalTab }>('pane_redock', e => {
       if (e.payload.kind !== 'terminal') return;
+      const sid = e.payload.tab.sessionId;
+      if (sid) detachedSessionIds = detachedSessionIds.filter(id => id !== sid);
       setTabs(prev => [...prev.filter(t => t.id !== e.payload.tab.id), e.payload.tab]);
       setActiveTabId(e.payload.tab.id);
     })).then(fn => { unlisten = fn; });
@@ -260,6 +399,11 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
     try {
       const { createPaneWindow } = await import('../../lib/paneWindows');
       await createPaneWindow('terminal', tab);
+      // The pane window owns this session now. Remember that, or a cold start
+      // here would adopt it back and wire two panes to one PTY.
+      if (tab.sessionId && !detachedSessionIds.includes(tab.sessionId)) {
+        detachedSessionIds = [...detachedSessionIds, tab.sessionId];
+      }
       setTabs(prev => {
         const next = prev.filter(t => t.id !== tab.id);
         if (next.length) { setActiveTabId(next[0].id); return next; }

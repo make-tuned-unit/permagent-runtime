@@ -36,6 +36,24 @@ export function canRoute(status: string): boolean {
   return status !== 'deleted';
 }
 
+/**
+ * Which project a file belongs to, for the inbox table.
+ *
+ * `inbox_files.project_id` has existed since the table was created and the
+ * route endpoint stamps it — but nothing ever DISPLAYED it, so a filed file was
+ * indistinguishable from an unfiled one and "where did that download go?" had
+ * no answer on screen. `null` means unfiled, which the caller renders as a dash
+ * rather than as a name it invented.
+ */
+export function projectLabel(
+  projectId: string | null | undefined,
+  projects: { id: string; name: string }[] | null,
+): string | null {
+  if (!projectId) return null;
+  if (projects === null) return projectId;
+  return projects.find(p => p.id === projectId)?.name ?? projectId;
+}
+
 /** Status chip text for the inbox table. */
 export function statusLabel(status: string): string {
   switch (status) {
