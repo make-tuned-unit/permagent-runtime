@@ -2,6 +2,13 @@ import { useEffect, useRef } from 'react';
 import { useCommandCenter } from '../lib/store';
 import { eventsWsUrl, apiFetch } from '../lib/api';
 import { wireEventType } from '../lib/wireEvent';
+import {
+  answerForCapture,
+  answerForFailedCapture,
+  pageContentAnswer,
+  type InboxCapture,
+  type PageContentResult,
+} from '../lib/pageContentAnswer';
 
 /**
  * Subscribes to the daemon's global event bus (/events WebSocket).
@@ -65,27 +72,32 @@ export function useBrowserContentBridge(activeWebviewId: string | null | undefin
             const core = await import('@tauri-apps/api/core');
             const result = (await core.invoke('get_page_content', {
               webviewId: wvId,
-            })) as {
-              title: string;
-              url: string;
-              content: string;
-              status: string;
-              truncated: boolean;
-            };
+            })) as PageContentResult;
 
-            // Failure mode 2: tab exists but content is empty (blank/loading)
-            if (!result.content || result.content.trim() === '') {
-              await fulfill(requestId, {
-                title: result.title,
-                url: result.url,
-                content: 'The page appears to be blank or still loading.',
-                status: 'error',
-                truncated: false,
-              });
+            const answer = pageContentAnswer(result);
+
+            // Failure mode 2 used to live here: an empty extraction became "the
+            // page appears to be blank or still loading". That is right for an
+            // HTML page and wrong for a PDF, where the document is present and
+            // simply has no DOM. `pageContentAnswer` tells the two apart.
+            if (!answer.capture) {
+              await fulfill(requestId, answer.reply);
               return;
             }
 
-            await fulfill(requestId, result);
+            // A native-viewer tab: capture the FILE, and answer with its path.
+            // Permagent can read a file; it can do nothing with an empty body.
+            try {
+              const capture = (await core.invoke('save_tab_to_inbox', {
+                webviewId: wvId,
+                projectId: null,
+                expectDocument: true,
+              })) as InboxCapture;
+              await fulfill(requestId, answerForCapture(result, capture));
+            } catch (captureErr) {
+              await fulfill(requestId, answerForFailedCapture(result, String(captureErr)));
+            }
+            return;
           } catch (err) {
             // Failure mode 3: JS eval or Tauri command failed
             await fulfill(requestId, {

@@ -131,11 +131,17 @@ fn spawn_supervised_tee(
 struct PtySession {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
-    _child: Box<dyn portable_pty::Child + Send>,
+    child: Box<dyn portable_pty::Child + Send>,
     output: Arc<Mutex<String>>,
     /// Stream position matching `PtyDataPayload::seq`, so a replay can say
     /// exactly which emitted chunks it already contains.
     produced: Arc<std::sync::atomic::AtomicU64>,
+    /// Directory the shell started in. Carried so an ADOPTED session can be
+    /// labelled without asking the shell — see `list_pty_sessions`.
+    cwd: String,
+    /// When the session was opened, so a reconciling client can present the
+    /// oldest work first (and a human can recognise "the one from an hour ago").
+    started_at: String,
 }
 
 pub struct PtySessions(Mutex<HashMap<String, PtySession>>);
@@ -333,9 +339,11 @@ pub async fn spawn_pty_session(
     let session = PtySession {
         master: pair.master,
         writer,
-        _child: child,
+        child,
         output,
         produced,
+        cwd: resolved_cwd.clone(),
+        started_at: chrono::Utc::now().to_rfc3339(),
     };
 
     app.state::<PtySessions>()
@@ -425,12 +433,80 @@ pub async fn resize_pty(
     Ok(())
 }
 
+/// One live PTY, as the shell sees it from outside.
+///
+/// WHY THIS EXISTS (reported 2026-08-19: "I minimised for ten minutes and my
+/// coding session was gone").
+///
+/// It was not gone. The PTY was still running — a `claude` process under
+/// `/bin/zsh -l`, an hour old, owned by this process. What died was the
+/// FRONTEND's memory of its id. `TerminalManager` kept its tab list in a
+/// module-level variable, which survives a React unmount but not a
+/// re-evaluation of the JS realm — and a WKWebView whose window is fully
+/// occluded for minutes is exactly when macOS reclaims the WebContent process
+/// and the page comes back freshly evaluated. With the id gone the manager
+/// opened a new tab, `Terminal` saw no session and spawned a second shell over
+/// the first, and an hour of work looked lost.
+///
+/// The registry has always been the real source of truth; nothing could ask it
+/// anything. This is the missing question. `browser.rs` learned the same lesson
+/// for native webviews (`reap_orphan_browsers`, "the React shell's memory of
+/// which webview_ids exist dies with the page") — the terminal needs the
+/// opposite operation: adopt, not reap, because a shell holds work and a
+/// webview holds a URL.
+#[derive(Clone, Serialize)]
+pub struct PtySessionInfo {
+    pub session_id: String,
+    /// Directory the shell was started in.
+    pub cwd: String,
+    /// RFC 3339, so the client can order oldest-first.
+    pub started_at: String,
+    /// False once the child has exited. A dead session is still listed — the
+    /// client shows its scrollback rather than pretending it never happened —
+    /// but it is never adopted as a live tab.
+    pub alive: bool,
+    /// Bytes the session has produced. Zero means a shell that has printed
+    /// nothing at all, which is the one kind safe to ignore.
+    pub produced: u64,
+}
+
+/// Every PTY this process owns, live or exited.
+///
+/// Ordered oldest-first so a reconciling client restores the session the user
+/// has had open longest as the first tab.
+#[tauri::command]
+pub async fn list_pty_sessions(app: AppHandle) -> Result<Vec<PtySessionInfo>, String> {
+    let sessions = app.state::<PtySessions>();
+    let mut map = sessions.0.lock().unwrap();
+    let mut out: Vec<PtySessionInfo> = map
+        .iter_mut()
+        .map(|(id, session)| {
+            // `try_wait` needs &mut and does not block; a child that has not
+            // exited reports None, which is the answer we want.
+            let alive = !matches!(session.child.try_wait(), Ok(Some(_)));
+            PtySessionInfo {
+                session_id: id.clone(),
+                cwd: session.cwd.clone(),
+                started_at: session.started_at.clone(),
+                alive,
+                produced: session.produced.load(std::sync::atomic::Ordering::SeqCst),
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        a.started_at
+            .cmp(&b.started_at)
+            .then_with(|| a.session_id.cmp(&b.session_id))
+    });
+    Ok(out)
+}
+
 #[tauri::command]
 pub async fn kill_pty(app: AppHandle, session_id: String) -> Result<(), String> {
     let sessions = app.state::<PtySessions>();
     let mut map = sessions.0.lock().unwrap();
     if let Some(mut session) = map.remove(&session_id) {
-        let _ = session._child.kill();
+        let _ = session.child.kill();
     }
     Ok(())
 }
