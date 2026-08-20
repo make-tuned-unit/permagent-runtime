@@ -12,6 +12,7 @@
 //            binary frames: Float32 LE mono PCM @ 24 kHz (queued, played in order)
 //            {"type":"reply_text","text":…}
 //            {"type":"navigate",…}       (desktop speak-then-act; ignored here)
+//            {"type":"clipboard","text":…}  copy on this device for paste into Notes
 //            {"type":"reply_end","sample_rate":24000}
 //            {"type":"error","message":…}
 //
@@ -23,6 +24,7 @@
 
 import SwiftUI
 import AVFoundation
+import UIKit
 
 // ── Mic pipe: input-format buffers → 16 kHz mono Float32 frames ──────────────
 // Lives on the audio tap thread only (serial), so the converter needs no lock.
@@ -632,6 +634,11 @@ final class VoiceEngine: ObservableObject {
                 if state == .thinking || state == .ready { state = .thinking }
             case "reply_text":
                 reply = msg.text ?? ""
+            case "clipboard":
+                if let body = msg.text, !body.isEmpty {
+                    UIPasteboard.general.string = body
+                    notice = "Copied — paste into Notes"
+                }
             case "reply_end":
                 replyEnded = true
                 if pendingBuffers == 0, state == .speaking || state == .thinking {

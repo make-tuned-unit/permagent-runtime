@@ -670,6 +670,12 @@ enum ServerMessage {
         state: Option<serde_json::Value>,
         reason: String,
     },
+    /// Deferred clipboard write. Sent after narration so the client copies on
+    /// the device that is listening (iPhone pasteboard, Mac Command Center),
+    /// not on the daemon host. Copy happens immediately on receipt — unlike
+    /// navigate, it does not wait for audio to drain.
+    #[serde(rename = "clipboard")]
+    Clipboard { text: String },
     #[serde(rename = "error")]
     Error { message: String },
     #[serde(rename = "ready")]
@@ -701,6 +707,15 @@ struct NavInterceptGuard(String);
 impl Drop for NavInterceptGuard {
     fn drop(&mut self) {
         let _ = permagent::events::nav_intercept::take(&self.0);
+    }
+}
+
+/// RAII cleanup for clipboard interception — same contract as [`NavInterceptGuard`].
+struct ClipboardInterceptGuard(String);
+
+impl Drop for ClipboardInterceptGuard {
+    fn drop(&mut self) {
+        let _ = permagent::events::clipboard_intercept::take(&self.0);
     }
 }
 
@@ -1202,6 +1217,8 @@ async fn stream_reply_with_tts(
     // every exit path, including mid-stream disconnect.
     permagent::events::nav_intercept::begin(&sid);
     let _nav_guard = NavInterceptGuard(sid.clone());
+    permagent::events::clipboard_intercept::begin(&sid);
+    let _clip_guard = ClipboardInterceptGuard(sid.clone());
 
     let user_msg = ChatMessage::user().with_text(transcript);
     let agent = state
@@ -1235,7 +1252,12 @@ async fn stream_reply_with_tts(
              'Here's Settings'. Never narrate the navigation as it happens or reassure them \
              about it: no 'taking you there now', no 'navigating you over', no 'you should be \
              there now'. The view switches on its own — you don't announce progress or confirm \
-             arrival in a separate sentence."
+             arrival in a separate sentence. \
+             When they ask for copyable text — a post, caption, speech, blurb, 'give me the \
+             text', 'copy that', 'so I can paste into Notes' — call copy_to_clipboard with \
+             the exact paste-ready body and speak one short confirmation such as 'It's on \
+             your clipboard.' Do not read the body aloud and do not skip the tool: saying \
+             the words is not the same as putting them on the clipboard."
                 .to_string(),
         )
         .await;
@@ -1467,12 +1489,28 @@ async fn stream_reply_with_tts(
         let _ = socket.send(send_json(&ServerMessage::Stopped)).await;
     }
 
-    // Send reply text and end marker
+    // Send reply text and end marker. If they asked for the text, show the
+    // paste-ready body on screen even when the spoken reply was only a
+    // confirmation — iOS VoiceView (and desktop lastReply) render this field.
+    let clips = permagent::events::clipboard_intercept::take(&sid);
+    let shown = if let Some(clip) = clips.last() {
+        if full_reply.contains(&clip.text) {
+            full_reply.clone()
+        } else {
+            format!("{}\n\n{}", full_reply.trim(), clip.text)
+        }
+    } else {
+        full_reply.clone()
+    };
     let _ = socket
-        .send(send_json(&ServerMessage::ReplyText {
-            text: full_reply.clone(),
-        }))
+        .send(send_json(&ServerMessage::ReplyText { text: shown }))
         .await;
+
+    for clip in clips {
+        let _ = socket
+            .send(send_json(&ServerMessage::Clipboard { text: clip.text }))
+            .await;
+    }
 
     // Forward any navigations captured during this turn AFTER all narration
     // audio — they ride this ordered socket, so by the time the client sees them

@@ -2171,7 +2171,12 @@ mod tests {
             .collect();
         assert_eq!(
             inventory,
-            vec!["navigate_app", "app_action", "open_item"],
+            vec![
+                "navigate_app",
+                "app_action",
+                "open_item",
+                "copy_to_clipboard"
+            ],
             "app_conductor's real tool list changed — update this pin deliberately"
         );
 

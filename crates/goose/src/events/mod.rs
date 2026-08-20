@@ -5,6 +5,7 @@
 //! live stream plus access to the replay buffer (last 1000 events).
 
 pub mod activity;
+pub mod clipboard_intercept;
 pub mod nav_intercept;
 
 use chrono::{DateTime, Utc};
@@ -351,6 +352,10 @@ pub enum PermagentEventType {
     // App open-item — the last mile past a tab: open a SPECIFIC item by id (chat
     // agent → frontend): a goal's detail modal, a project's Grow planner, etc.
     AppOpenItem,
+    // App clipboard — paste-ready text the user asked to copy (chat agent →
+    // frontend). Voice turns intercept this and send it on `/voice` instead so
+    // the copy lands on the device that is listening, not the daemon host.
+    AppClipboard,
     // Project terminal launch (chat agent → frontend Build tab)
     ProjectLaunch,
     // Terminal supervision (S2, #428): a supervised Claude Code session hit a
@@ -751,6 +756,22 @@ pub fn app_action(
     )
 }
 
+/// Emitted when the chat agent wants the user's local clipboard to hold
+/// paste-ready text (a post, a speech, a blurb they asked to copy). The
+/// daemon never writes the pasteboard itself — that would copy on the hub
+/// Mac, not an iPhone talking over `/voice`. Voice turns intercept this
+/// (see [`clipboard_intercept`]); text chat emits here so the Command Center
+/// copies in the focused window.
+pub fn app_clipboard(text: &str, reason: &str) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::AppClipboard,
+        serde_json::json!({
+            "text": text,
+            "reason": reason,
+        }),
+    )
+}
+
 /// Emitted when the chat agent wants to open a SPECIFIC item — the last mile
 /// past a tab. Sibling to [`app_action`]: the daemon never touches the DOM; the
 /// frontend dispatcher catches this and calls the matching store seam that
@@ -1047,6 +1068,15 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"type\":\"daemon_started\""));
         assert!(json.contains("\"version\":\"0.1.0\""));
+    }
+
+    #[test]
+    fn app_clipboard_wire_type_is_snake_case_and_carries_text() {
+        let event = app_clipboard("paste me", "You asked for the caption.");
+        let v = serde_json::to_value(&event).unwrap();
+        assert_eq!(v["type"], "app_clipboard");
+        assert_eq!(v["payload"]["text"], "paste me");
+        assert_eq!(v["payload"]["reason"], "You asked for the caption.");
     }
 
     /// The replay-marker wire contract (#770 follow-up): a plain (emitted /
