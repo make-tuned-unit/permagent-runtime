@@ -9,6 +9,14 @@ import { useTheme } from '../../styles/useTheme';
 import { getXtermTheme } from './xtermTheme';
 import { onRepaintRegain } from '../../lib/repaintOnRegain';
 import { handlePtyData, type PtyDataPayload, type PtyStreamSink } from './ptyStream';
+import {
+  FALLBACK_PTY_GRID,
+  advertisedGrid,
+  containerCanFit,
+  fitVisibleTerminal,
+  remeasureXterm,
+  subscribeTerminalFonts,
+} from './ptyGrid';
 import { api as daemonApi } from '../../lib/api';
 import { buildCodingSessionPayload, isHarnessCommand } from './codingSession';
 
@@ -113,6 +121,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         // look broken and struck through. The DOM renderer cannot compensate:
         // `customGlyphs` (which stretches box glyphs to fill the cell) only
         // applies to the canvas/WebGL renderers.
+        // Overlap is a GRID bug (ptyGrid.ts), not a reason to raise this.
         lineHeight: 1,
         cursorBlink: true,
         cursorStyle: 'bar',
@@ -172,21 +181,35 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         helper.setAttribute('id', 'permagent-terminal-input');
       }
 
-      fitAddon.fit();
+      // Never fit a collapsed box: FitAddon floors 0×0 to 2×1, and a TUI
+      // that paints for one row puts its status line on the prompt
+      // (reported 2026-08-19). Tabs stay mounted behind display:none.
+      fitVisibleTerminal(fitAddon, containerRef.current);
 
       xtermRef.current = term;
       fitAddonRef.current = fitAddon;
 
+      const advertiseGrid = () => {
+        if (!api || !sessionIdRef.current) return;
+        if (!containerCanFit(containerRef.current)) return;
+        const grid = advertisedGrid(term);
+        if (!grid) return;
+        api.invoke('resize_pty', {
+          sessionId: sessionIdRef.current,
+          cols: grid.cols,
+          rows: grid.rows,
+        }).catch(() => {});
+      };
+
       // Spawn PTY if we don't have a session yet
       if (!sessionIdRef.current && api) {
         try {
-          const cols = term.cols;
-          const rows = term.rows;
+          const grid = advertisedGrid(term) ?? FALLBACK_PTY_GRID;
           const result = (await api.invoke('spawn_pty_session', {
             shell: null,
             cwd: cwdRef.current || null,
-            cols,
-            rows,
+            cols: grid.cols,
+            rows: grid.rows,
             supervisedSessionId: supervisedSessionIdRef.current ?? null,
           })) as { session_id: string; cwd: string };
           if (cancelled) return;
@@ -346,13 +369,8 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         // and a TUI keeps painting for the old width, which is the garbled
         // approval-gate bug after a Build pane toggle. Sync the grid
         // explicitly; for a freshly spawned PTY this is a same-size no-op.
-        if (sessionIdRef.current) {
-          api.invoke('resize_pty', {
-            sessionId: sessionIdRef.current,
-            cols: term.cols,
-            rows: term.rows,
-          }).catch(() => {});
-        }
+        // Skip a collapsed box: advertising 2×1 is the 2026-08-19 overlap.
+        advertiseGrid();
         if (cancelled) {
           unlistenData?.();
           unlistenExit?.();
@@ -488,14 +506,8 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         onTitleChangeRef.current?.(title);
       });
 
-      const onResizeDisposable = term.onResize(({ cols, rows }) => {
-        if (api && sessionIdRef.current) {
-          api.invoke('resize_pty', {
-            sessionId: sessionIdRef.current,
-            cols,
-            rows,
-          }).catch(() => {});
-        }
+      const onResizeDisposable = term.onResize(() => {
+        advertiseGrid();
       });
 
       // Debounce ResizeObserver to avoid sending rapid intermediate
@@ -517,16 +529,21 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
           // corrupting fit AND, because the show transition (0 -> full) also
           // fires this observer, re-fits to full width on return.
           const el = containerRef.current;
-          if (fitAddonRef.current && el && el.offsetWidth > 0 && el.offsetHeight > 0) {
-            try {
-              fitAddonRef.current.fit();
-            } catch {
-              // ignore fit errors during layout transitions
-            }
-          }
+          fitVisibleTerminal(fitAddonRef.current, el);
         }, 100);
       });
       resizeObserver.observe(containerRef.current!);
+
+      const unsubFonts = subscribeTerminalFonts(() => {
+        if (cancelled) return;
+        const t = xtermRef.current;
+        if (!t) return;
+        // JetBrains Mono arrives with display:swap after the first measure.
+        // Re-measure, then fit, then tell the PTY — never rewrite the buffer.
+        remeasureXterm(t);
+        if (!fitVisibleTerminal(fitAddonRef.current, containerRef.current)) return;
+        advertiseGrid();
+      });
 
       cleanupRef.current = () => {
         // Activity: terminal session ended
@@ -545,6 +562,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         onResizeDisposable.dispose();
         unlistenData?.();
         unlistenExit?.();
+        unsubFonts();
         if (resizeTimer) clearTimeout(resizeTimer);
         if (flushTimer) clearTimeout(flushTimer);
         cancelInitialCommand?.();
@@ -579,13 +597,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
     if (isVisible && fitAddonRef.current) {
       const timer = setTimeout(() => {
         const el = containerRef.current;
-        if (fitAddonRef.current && el && el.offsetWidth > 0 && el.offsetHeight > 0) {
-          try {
-            fitAddonRef.current.fit();
-          } catch {
-            // ignore
-          }
-        }
+        fitVisibleTerminal(fitAddonRef.current, el);
       }, 50);
       return () => clearTimeout(timer);
     }
@@ -600,9 +612,9 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
     return onRepaintRegain(() => {
       const el = containerRef.current;
       const term = xtermRef.current;
-      if (!term || !el || el.offsetWidth === 0 || el.offsetHeight === 0) return;
+      if (!term || !containerCanFit(el)) return;
       try {
-        fitAddonRef.current?.fit();
+        fitVisibleTerminal(fitAddonRef.current, el);
         term.refresh(0, term.rows - 1);
       } catch {
         /* ignore during layout transitions */
@@ -627,7 +639,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
   return (
     <div
       ref={containerRef}
-      className="h-full w-full"
+      className="pty-terminal h-full w-full"
       style={{ backgroundColor: xtermBg }}
     />
   );

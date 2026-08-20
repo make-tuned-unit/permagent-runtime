@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeAll } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { handlePtyData, type PtyStreamSink } from './ptyStream';
 
 // ── #573 regression pins ────────────────────────────────────────────────────
@@ -23,6 +23,48 @@ function collectingSink() {
     onCwd: (p) => cwds.push(p),
   };
   return { writes, cwds, sink };
+}
+
+function stubMatchMedia() {
+  if (!window.matchMedia) {
+    Object.defineProperty(window, 'matchMedia', {
+      writable: true,
+      value: (query: string) => ({
+        matches: false,
+        media: query,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        addListener: () => {},
+        removeListener: () => {},
+        onchange: null,
+        dispatchEvent: () => false,
+      }),
+    });
+  }
+}
+
+async function renderStream(chunks: string[], size: { cols?: number; rows?: number } = {}): Promise<string[]> {
+  stubMatchMedia();
+  const { Terminal } = await import('@xterm/xterm');
+  const term = new Terminal({
+    cols: size.cols ?? 80,
+    rows: size.rows ?? 24,
+    allowProposedApi: true,
+  });
+  term.open(document.createElement('div'));
+  const sink: PtyStreamSink = { write: (d) => term.write(d) };
+  for (const data of chunks) {
+    handlePtyData({ session_id: SID, data }, SID, sink);
+  }
+  // term.write is async; wait for the parser to drain.
+  await new Promise<void>((resolve) => term.write('', () => resolve()));
+  const lines: string[] = [];
+  const buf = term.buffer.active;
+  for (let i = 0; i < buf.length; i++) {
+    lines.push(buf.getLine(i)?.translateToString(true) ?? '');
+  }
+  term.dispose();
+  return lines;
 }
 
 describe('handlePtyData — verbatim stream contract', () => {
@@ -84,45 +126,6 @@ describe('handlePtyData — verbatim stream contract', () => {
 // ── Rendered-buffer pin: spinner overwrite leaves exactly one status line ───
 
 describe('spinner-overwrite rendering through a real xterm buffer', () => {
-  // jsdom lacks matchMedia; xterm's CoreBrowserService needs a minimal stub
-  // (DPR change tracking only — irrelevant to buffer semantics under test).
-  beforeAll(() => {
-    if (!window.matchMedia) {
-      Object.defineProperty(window, 'matchMedia', {
-        writable: true,
-        value: (query: string) => ({
-          matches: false,
-          media: query,
-          addEventListener: () => {},
-          removeEventListener: () => {},
-          addListener: () => {},
-          removeListener: () => {},
-          onchange: null,
-          dispatchEvent: () => false,
-        }),
-      });
-    }
-  });
-
-  async function renderStream(chunks: string[]): Promise<string[]> {
-    const { Terminal } = await import('@xterm/xterm');
-    const term = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
-    term.open(document.createElement('div'));
-    const sink: PtyStreamSink = { write: (d) => term.write(d) };
-    for (const data of chunks) {
-      handlePtyData({ session_id: SID, data }, SID, sink);
-    }
-    // term.write is async; wait for the parser to drain.
-    await new Promise<void>((resolve) => term.write('', () => resolve()));
-    const lines: string[] = [];
-    const buf = term.buffer.active;
-    for (let i = 0; i < buf.length; i++) {
-      lines.push(buf.getLine(i)?.translateToString(true) ?? '');
-    }
-    term.dispose();
-    return lines;
-  }
-
   it('in-place \\r + EL updates yield exactly one Forging line with the final text', async () => {
     const lines = await renderStream([
       '$ claude\r\n',
@@ -202,5 +205,60 @@ describe('replay/live handoff', () => {
   it('is exact at the boundary — seq equal to the replay position is covered', () => {
     const held = [{ data: 'boundary', seq: 100 }, { data: 'after', seq: 101 }];
     expect(release(held, 100)).toEqual(['after']);
+  });
+});
+
+// ── TUI status-line vs prompt (2026-08-19) ─────────────────────────────────
+//
+// Claude Code paints "Press up to edit queued messages" with CUP onto the
+// last row, and the input on the row above. When the PTY grid matches xterm,
+// those stay distinct. When it does not (xterm wrapped a line the TUI thought
+// was one row), the hint is written onto the wrapped remainder — the
+// concatenated "messagesit. That seems like a pri" screenshot.
+//
+// These tests feed a real xterm buffer through handlePtyData (verbatim, #573).
+// They do not inject spaces or strip ANSI. The grid-sync that prevents the
+// mismatch lives in ptyGrid.ts.
+describe('queued-message hint vs prompt row', () => {
+  const HINT = 'Press up to edit queued messages';
+  const BODY = 'it. That seems like a pri';
+
+  it('CUP to the last row leaves the hint off the prompt when the grid matches', async () => {
+    const lines = await renderStream(
+      [
+        `${ESC}[2J${ESC}[H`,
+        `${ESC}[23;1H> ${BODY}`,
+        `${ESC}[24;1H${HINT}`,
+      ],
+      { cols: 80, rows: 24 },
+    );
+    const joined = lines.join('\n');
+    expect(joined).not.toContain('messagesit');
+    const hintRow = lines.findIndex(l => l.includes(HINT));
+    const bodyRow = lines.findIndex(l => l.includes(BODY));
+    expect(hintRow).toBeGreaterThanOrEqual(0);
+    expect(bodyRow).toBeGreaterThanOrEqual(0);
+    expect(hintRow).not.toBe(bodyRow);
+  });
+
+  it('a cols mismatch splices the hint into the wrapped prompt — that is the bug class', async () => {
+    // 40-col xterm. 40 A's fill row 1. Row 2 holds `HINT.length` placeholder
+    // cells plus a leftover that starts with "it" — the same join as the
+    // screenshot once a TUI that still thinks it has 80 cols CUP-paints the
+    // hint onto row 2 without EL.
+    const prefix = 'A'.repeat(40);
+    const leftover = 'it. That'.slice(0, 40 - HINT.length);
+    const row2 = 'X'.repeat(HINT.length) + leftover;
+    expect(row2).toHaveLength(40);
+    const lines = await renderStream(
+      [
+        prefix + row2,
+        `${ESC}[2;1H${HINT}`,
+      ],
+      { cols: 40, rows: 24 },
+    );
+    const spliced = lines.find(l => l.includes('messagesit'));
+    expect(spliced).toBeTruthy();
+    expect(spliced).toContain(`${HINT}${leftover}`);
   });
 });
