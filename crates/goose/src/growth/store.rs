@@ -465,7 +465,7 @@ pub fn render_board(rows: &[GrowthActionRow]) -> Option<String> {
             STATUS_VERIFIED => "verified, being measured",
             STATUS_MEASURING => "being measured",
             STATUS_JUDGED => "measured, verdict recorded",
-            STATUS_DISMISSED => "dismissed by the user",
+            STATUS_DISMISSED => "dismissed — already in the repo or refused",
             other => other,
         };
         let predicts = match (row.target_metric.as_deref(), row.target_dir.as_deref()) {

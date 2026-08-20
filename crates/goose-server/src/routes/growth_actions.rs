@@ -24,7 +24,7 @@ use crate::routes::analytics_verify::Check;
 use crate::routes::growth_verify;
 use crate::state::AppState;
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::post,
@@ -389,6 +389,11 @@ pub struct GrowthActionsData {
     /// advice, and a silent drop is not auditable.
     #[serde(default)]
     pub dropped_as_restatement: usize,
+    /// How many suggested actions the Steward dismissed because the change is
+    /// already in this project's repo. Surfaced for the same reason as the
+    /// restatement count: a silent dismiss looks like the review did nothing.
+    #[serde(default)]
+    pub dropped_as_already_present: usize,
     /// A review is running for this project RIGHT NOW.
     ///
     /// Server truth, and the whole point of it: the button's spinner used to be
@@ -583,8 +588,10 @@ const SYSTEM: &str = "You are a growth analyst reviewing one product's own first
       agent working in that repo. Name the concrete change — the route, the meta tags, the \
       schema.org type, the heading structure. Assume the agent cannot see this dashboard, so \
       restate what it needs.\n\
-    - artifactKind \"post\": the actual drafted post text, ready to publish, in the product's \
-      voice. Not a description of a post.\n\
+    - artifactKind \"post\": still a coding-agent instruction. Include the drafted copy AND name \
+      the file, collection or route to write it to (e.g. content/blog/....md). A bare blog post \
+      with no path and no instruction is not an artifact — the UI will wrap it, but you must \
+      still say where it belongs.\n\
     - artifactKind \"none\": only when the work is a human decision, not a deliverable.\n\n\
     Content, SEO and AEO specifics worth acting on when the data shows them: a blog post pulling \
     disproportionate traffic is worth expanding and interlinking; search referrals concentrated \
@@ -606,6 +613,12 @@ const SYSTEM: &str = "You are a growth analyst reviewing one product's own first
     new actions beat five with three restatements: a restatement cannot be measured separately \
     from the action it copies, and it costs the user the attention they would have spent on the \
     original.\n\n\
+    You will also be shown this project's git repo as it is right now — recent commits, and any \
+    suggested action the Steward dismissed because the change is already in the tree. Do NOT \
+    propose a change that is already shipped. Rewording \"add FAQPage schema\" when FAQPage is \
+    already in the files is a restatement of work that is done, not a new action. If the only \
+    strong moves left are already in the repo or on the board, return fewer actions, or an empty \
+    list.\n\n\
     Reply ONLY with JSON:\n\
     {\"actions\":[{\"title\":\"...\",\"evidence\":\"...\",\"recommendation\":\"...\",\
     \"steps\":[\"...\"],\"artifactKind\":\"prompt|post|none\",\"artifact\":\"...\",\
@@ -1193,7 +1206,8 @@ async fn render_board(
 
 /// Everything the generator is shown, assembled from sources that cannot lie
 /// about each other: the analytics summary, the open board, this project's own
-/// measured outcomes, and the same categories measured elsewhere.
+/// measured outcomes, the same categories measured elsewhere, and the git repo
+/// as it is right now.
 pub struct GenerationBrief<'a> {
     pub project_name: &'a str,
     pub summary: &'a AnalyticsSummary,
@@ -1206,6 +1220,10 @@ pub struct GenerationBrief<'a> {
     /// The same categories measured on the other active projects
     /// (`pooled::render_pool`).
     pub pooled: Option<String>,
+    /// The Steward's reading of the current tree (`render_codebase_brief`).
+    /// Without it, "Review again" is blind to work that has already landed,
+    /// which is why the same FAQPage / instrumentation cards kept coming back.
+    pub codebase: Option<String>,
 }
 
 /// Render the brief. Pure, so the prompt can be asserted in a unit test without
@@ -1213,6 +1231,7 @@ pub struct GenerationBrief<'a> {
 pub fn render_brief(brief: &GenerationBrief<'_>, correction: Option<&str>) -> String {
     let mut out = render_summary(brief.project_name, brief.summary);
     for block in [
+        brief.codebase.as_deref(),
         brief.board.as_deref(),
         brief.learning.as_deref(),
         brief.pooled.as_deref(),
@@ -1395,6 +1414,8 @@ pub struct ActionsCache {
     pub dropped_for_no_target: usize,
     #[serde(default)]
     pub dropped_as_restatement: usize,
+    #[serde(default)]
+    pub dropped_as_already_present: usize,
 }
 
 /// The pre-change shape of the bag: the whole rendered list.
@@ -1453,6 +1474,7 @@ impl ActionsCache {
             period_days: legacy.period_days,
             dropped_for_no_target: 0,
             dropped_as_restatement: 0,
+            dropped_as_already_present: 0,
         }
     }
 }
@@ -1526,6 +1548,7 @@ async fn store(pool: &Pool<Sqlite>, project: &Project, fresh: &ActionsCache) -> 
         period_days: fresh.period_days,
         dropped_for_no_target: fresh.dropped_for_no_target,
         dropped_as_restatement: fresh.dropped_as_restatement,
+        dropped_as_already_present: fresh.dropped_as_already_present,
     };
 
     let mut metadata = if project.metadata_json.is_object() {
@@ -1573,6 +1596,7 @@ async fn assemble(
         period_days: cache.period_days,
         dropped_for_no_target: cache.dropped_for_no_target,
         dropped_as_restatement: cache.dropped_as_restatement,
+        dropped_as_already_present: cache.dropped_as_already_present,
         generating: started_at.is_some(),
         generation_started_at: started_at,
     }
@@ -1669,6 +1693,12 @@ async fn review(pool: &Pool<Sqlite>, project: &Project) {
     let summary = load_summary(pool, &project.id, period_days).await;
     let now = chrono::Utc::now().to_rfc3339();
 
+    // The Steward reads the repo BEFORE the model does. Suggested work that is
+    // already in the tree comes off the board so the prompt cannot treat it as
+    // open, and so the user is not asked to do it again. This is independent of
+    // whether there is enough analytics to generate new advice.
+    let dismissed_before = growth_verify::dismiss_already_present(pool, project).await;
+
     let mut dropped_for_no_target = 0usize;
     let (actions, reason) = match readiness(&summary) {
         Err(reason) => (Vec::new(), Some(reason)),
@@ -1676,7 +1706,8 @@ async fn review(pool: &Pool<Sqlite>, project: &Project) {
             // The board is what the generator was blind to. It is rendered from
             // the same `growth_store::board` a new suggestion is then checked
             // against, so the prompt and the guard can never describe different
-            // sets of open work.
+            // sets of open work. Loaded AFTER the Steward pass so dismissed-as-
+            // already-present rows show as dismissed, not as open work.
             let board = growth_store::render_board(
                 &growth_store::board(pool, &project.id)
                     .await
@@ -1688,12 +1719,14 @@ async fn review(pool: &Pool<Sqlite>, project: &Project) {
                     .unwrap_or_default(),
             );
             let pooled_block = pooled_learning(pool, &project.id).await;
+            let codebase = growth_verify::render_codebase_brief(project, &dismissed_before).await;
             let brief = GenerationBrief {
                 project_name: &project.name,
                 summary: &summary,
                 board,
                 learning,
                 pooled: pooled_block,
+                codebase,
             };
 
             match generate(&brief, None).await {
@@ -1764,6 +1797,11 @@ async fn review(pool: &Pool<Sqlite>, project: &Project) {
     // on this project, which only exists once the rows are there.
     let ranked = rank_with_history(actions, &category_history(pool, &project.id).await);
     let persisted = persist(pool, &project.id, &ranked).await;
+    // Newly persisted suggestions can themselves already be in the tree — the
+    // model did not see a file the Steward's grep would have. Dismiss those
+    // too, so they land in Dismissed rather than on the active board.
+    let dismissed_after = growth_verify::dismiss_already_present(pool, project).await;
+    let dropped_as_already_present = dismissed_before.len() + dismissed_after.len();
 
     let cache = ActionsCache {
         // Only actions that reached a row contribute prose. A restatement was
@@ -1791,6 +1829,7 @@ async fn review(pool: &Pool<Sqlite>, project: &Project) {
         period_days: Some(period_days),
         dropped_for_no_target,
         dropped_as_restatement: persisted.restated,
+        dropped_as_already_present,
     };
     if let Err(e) = store(pool, project, &cache).await {
         tracing::warn!(target: "permagentd::growth", "could not cache growth actions: {e}");
@@ -2205,6 +2244,639 @@ async fn identity_of(pool: &Pool<Sqlite>, row: &growth_store::GrowthActionRow) -
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResultsQuery {
+    project_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GrowthResultRowView {
+    action_id: String,
+    project_id: String,
+    project_name: String,
+    title: String,
+    category: String,
+    status: String,
+    verdict: Option<String>,
+    delta_pct: Option<f64>,
+    window_days: Option<i64>,
+    judged_at: Option<String>,
+    target_metric: Option<String>,
+    target_dir: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GrowthCategorySummary {
+    category: String,
+    projects: usize,
+    helped: usize,
+    hindered: usize,
+    no_effect: usize,
+    median_delta_pct: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GrowthProjectResults {
+    project_id: String,
+    name: String,
+    segment_label: String,
+    implemented: usize,
+    measuring: usize,
+    judged: usize,
+    helped: usize,
+    hindered: usize,
+    no_effect: usize,
+    inconclusive: usize,
+    actions: Vec<GrowthResultRowView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GrowthTrendPoint {
+    /// Monday UTC of the week, `YYYY-MM-DD`.
+    week: String,
+    helped: u32,
+    hindered: u32,
+    no_effect: u32,
+    /// `helped - hindered` this week.
+    net: i32,
+    /// Running net from the start of the window.
+    cumulative_net: i32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GrowthProjectTrend {
+    project_id: String,
+    project_name: String,
+    helped: u32,
+    hindered: u32,
+    no_effect: u32,
+    points: Vec<GrowthTrendPoint>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GrowthFleetResults {
+    projects: usize,
+    helped: usize,
+    hindered: usize,
+    no_effect: usize,
+    inconclusive: usize,
+    categories: Vec<GrowthCategorySummary>,
+    recent: Vec<GrowthResultRowView>,
+    /// Last 12 weeks, padded with zeros, so two verdicts look like two spikes.
+    trend: Vec<GrowthTrendPoint>,
+    by_project: Vec<GrowthProjectTrend>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GrowthResults {
+    project: Option<GrowthProjectResults>,
+    fleet: GrowthFleetResults,
+}
+
+type FleetJoin = (
+    String,         // o.action_id
+    i64,            // o.window_days
+    String,         // o.verdict
+    Option<f64>,    // o.delta_pct
+    String,         // o.judged_at
+    Option<String>, // a.category
+    String,         // a.title
+    String,         // a.project_id
+    String,         // p.name
+    Option<String>, // a.target_metric
+    Option<String>, // a.target_dir
+    String,         // a.status
+);
+
+fn is_implemented(status: &str) -> bool {
+    matches!(
+        status,
+        growth_store::STATUS_DONE
+            | growth_store::STATUS_VERIFIED
+            | growth_store::STATUS_MEASURING
+            | growth_store::STATUS_JUDGED
+    )
+}
+
+async fn fleet_outcome_rows(pool: &Pool<Sqlite>) -> Vec<FleetJoin> {
+    let rows = sqlx::query_as::<_, FleetJoin>(
+        "SELECT o.action_id, o.window_days, o.verdict, o.delta_pct, o.judged_at,
+                a.category, a.title, a.project_id, p.name,
+                a.target_metric, a.target_dir, a.status
+           FROM growth_action_outcomes o
+           JOIN growth_actions a ON a.id = o.action_id
+           JOIN projects p ON p.id = a.project_id
+          WHERE p.status = 'active'
+          ORDER BY o.window_days DESC, o.judged_at DESC",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    let mut seen = HashSet::new();
+    let mut kept = Vec::new();
+    for row in rows {
+        if seen.insert(row.0.clone()) {
+            kept.push(row);
+        }
+    }
+    kept
+}
+
+fn tally_verdicts(rows: &[FleetJoin]) -> (usize, usize, usize, usize, usize) {
+    let mut helped = 0;
+    let mut hindered = 0;
+    let mut no_effect = 0;
+    let mut inconclusive = 0;
+    let mut projects = HashSet::new();
+    for row in rows {
+        projects.insert(row.7.clone());
+        match row.2.as_str() {
+            "helped" => helped += 1,
+            "hindered" => hindered += 1,
+            "no_effect" => no_effect += 1,
+            _ => inconclusive += 1,
+        }
+    }
+    (projects.len(), helped, hindered, no_effect, inconclusive)
+}
+
+fn category_summaries(rows: &[FleetJoin]) -> Vec<GrowthCategorySummary> {
+    struct Acc {
+        projects: HashSet<String>,
+        helped: usize,
+        hindered: usize,
+        no_effect: usize,
+        deltas: Vec<f64>,
+    }
+    let mut by: HashMap<String, Acc> = HashMap::new();
+    for row in rows {
+        if !matches!(row.2.as_str(), "helped" | "hindered" | "no_effect") {
+            continue;
+        }
+        let category = row.5.clone().unwrap_or_else(|| "uncategorised".to_string());
+        let entry = by.entry(category).or_insert_with(|| Acc {
+            projects: HashSet::new(),
+            helped: 0,
+            hindered: 0,
+            no_effect: 0,
+            deltas: Vec::new(),
+        });
+        entry.projects.insert(row.7.clone());
+        match row.2.as_str() {
+            "helped" => entry.helped += 1,
+            "hindered" => entry.hindered += 1,
+            _ => entry.no_effect += 1,
+        }
+        if let Some(d) = row.3 {
+            entry.deltas.push(d);
+        }
+    }
+    let mut out: Vec<GrowthCategorySummary> = by
+        .into_iter()
+        .map(|(category, acc)| {
+            let mut deltas = acc.deltas;
+            deltas.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let median = if deltas.is_empty() {
+                None
+            } else if deltas.len().is_multiple_of(2) {
+                let mid = deltas.len() / 2;
+                Some((deltas[mid - 1] + deltas[mid]) / 2.0)
+            } else {
+                Some(deltas[deltas.len() / 2])
+            };
+            GrowthCategorySummary {
+                category,
+                projects: acc.projects.len(),
+                helped: acc.helped,
+                hindered: acc.hindered,
+                no_effect: acc.no_effect,
+                median_delta_pct: median,
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| b.helped.cmp(&a.helped).then(a.category.cmp(&b.category)));
+    out
+}
+
+/// How far the Home trend looks back. Twelve weeks matches the growth
+/// history window; shorter would make a quiet month look like a wall of
+/// the few weeks that happened to have a verdict.
+const TREND_WEEKS: i64 = 12;
+
+#[derive(Debug, Clone)]
+struct TrendSeed {
+    project_id: String,
+    project_name: String,
+    verdict: String,
+    judged_at: String,
+}
+
+fn monday_of(d: chrono::NaiveDate) -> chrono::NaiveDate {
+    d - chrono::Duration::days(i64::from(
+        chrono::Datelike::weekday(&d).num_days_from_monday(),
+    ))
+}
+
+fn judged_day(s: &str) -> Option<chrono::NaiveDate> {
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Some(dt.with_timezone(&chrono::Utc).date_naive());
+    }
+    let day = s.get(..10)?;
+    chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()
+}
+
+fn trend_week_starts(today: chrono::NaiveDate) -> Vec<chrono::NaiveDate> {
+    let end = monday_of(today);
+    (0..TREND_WEEKS)
+        .rev()
+        .map(|i| end - chrono::Duration::days(7 * i))
+        .collect()
+}
+
+fn empty_points(weeks: &[chrono::NaiveDate]) -> Vec<GrowthTrendPoint> {
+    weeks
+        .iter()
+        .map(|w| GrowthTrendPoint {
+            week: w.format("%Y-%m-%d").to_string(),
+            helped: 0,
+            hindered: 0,
+            no_effect: 0,
+            net: 0,
+            cumulative_net: 0,
+        })
+        .collect()
+}
+
+fn accumulate_net(points: &mut [GrowthTrendPoint]) {
+    let mut running = 0i32;
+    for p in points.iter_mut() {
+        p.net = p.helped as i32 - p.hindered as i32;
+        running += p.net;
+        p.cumulative_net = running;
+    }
+}
+
+/// Weekly helped/hindered for the fleet and per project.
+///
+/// One row per action (caller already collapsed windows). Weeks with no
+/// verdict stay in the series as zeros so a sparse 12 weeks does not
+/// stretch into a solid block.
+fn build_growth_trend(
+    seeds: &[TrendSeed],
+    today: chrono::NaiveDate,
+) -> (Vec<GrowthTrendPoint>, Vec<GrowthProjectTrend>) {
+    let weeks = trend_week_starts(today);
+    let index: HashMap<chrono::NaiveDate, usize> = weeks
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(i, d)| (d, i))
+        .collect();
+
+    let mut fleet = empty_points(&weeks);
+    struct Acc {
+        name: String,
+        points: Vec<GrowthTrendPoint>,
+        helped: u32,
+        hindered: u32,
+        no_effect: u32,
+        in_window: bool,
+    }
+    let mut by_project: HashMap<String, Acc> = HashMap::new();
+
+    for seed in seeds {
+        let Some(day) = judged_day(&seed.judged_at) else {
+            continue;
+        };
+        let monday = monday_of(day);
+        let Some(&i) = index.get(&monday) else {
+            continue;
+        };
+        let entry = by_project
+            .entry(seed.project_id.clone())
+            .or_insert_with(|| Acc {
+                name: seed.project_name.clone(),
+                points: empty_points(&weeks),
+                helped: 0,
+                hindered: 0,
+                no_effect: 0,
+                in_window: false,
+            });
+        entry.in_window = true;
+        entry.name = seed.project_name.clone();
+        match seed.verdict.as_str() {
+            "helped" => {
+                fleet[i].helped += 1;
+                entry.points[i].helped += 1;
+                entry.helped += 1;
+            }
+            "hindered" => {
+                fleet[i].hindered += 1;
+                entry.points[i].hindered += 1;
+                entry.hindered += 1;
+            }
+            "no_effect" => {
+                fleet[i].no_effect += 1;
+                entry.points[i].no_effect += 1;
+                entry.no_effect += 1;
+            }
+            _ => {}
+        }
+    }
+
+    accumulate_net(&mut fleet);
+    let mut projects: Vec<GrowthProjectTrend> = by_project
+        .into_iter()
+        .filter(|(_, acc)| acc.in_window)
+        .map(|(project_id, mut acc)| {
+            accumulate_net(&mut acc.points);
+            GrowthProjectTrend {
+                project_id,
+                project_name: acc.name,
+                helped: acc.helped,
+                hindered: acc.hindered,
+                no_effect: acc.no_effect,
+                points: acc.points,
+            }
+        })
+        .collect();
+    projects.sort_by(|a, b| {
+        b.helped
+            .cmp(&a.helped)
+            .then(a.project_name.cmp(&b.project_name))
+    });
+    (fleet, projects)
+}
+
+fn fleet_row_view(row: &FleetJoin) -> GrowthResultRowView {
+    GrowthResultRowView {
+        action_id: row.0.clone(),
+        project_id: row.7.clone(),
+        project_name: row.8.clone(),
+        title: row.6.clone(),
+        category: row.5.clone().unwrap_or_else(|| "ux".to_string()),
+        status: row.11.clone(),
+        verdict: Some(row.2.clone()),
+        delta_pct: row.3,
+        window_days: Some(row.1),
+        judged_at: Some(row.4.clone()),
+        target_metric: row.9.clone(),
+        target_dir: row.10.clone(),
+    }
+}
+
+async fn project_results(
+    pool: &Pool<Sqlite>,
+    project: &Project,
+    fleet: &[FleetJoin],
+) -> GrowthProjectResults {
+    let now = chrono::Utc::now();
+    let segment = pooled::segment_for(pool, &project.id, now).await;
+    let rows = growth_store::list_for_project(pool, &project.id)
+        .await
+        .unwrap_or_default();
+    let implemented_rows: Vec<_> = rows
+        .into_iter()
+        .filter(|r| is_implemented(&r.status))
+        .collect();
+    let by_id: HashMap<&str, &FleetJoin> = fleet
+        .iter()
+        .filter(|r| r.7 == project.id)
+        .map(|r| (r.0.as_str(), r))
+        .collect();
+    let mut helped = 0;
+    let mut hindered = 0;
+    let mut no_effect = 0;
+    let mut inconclusive = 0;
+    let mut measuring = 0;
+    let mut judged = 0;
+    let mut actions = Vec::new();
+    for row in &implemented_rows {
+        match row.status.as_str() {
+            s if s == growth_store::STATUS_JUDGED => judged += 1,
+            s if s == growth_store::STATUS_VERIFIED || s == growth_store::STATUS_MEASURING => {
+                measuring += 1
+            }
+            _ => {}
+        }
+        if let Some(outcome) = by_id.get(row.id.as_str()) {
+            match outcome.2.as_str() {
+                "helped" => helped += 1,
+                "hindered" => hindered += 1,
+                "no_effect" => no_effect += 1,
+                _ => inconclusive += 1,
+            }
+            actions.push(fleet_row_view(outcome));
+        } else {
+            actions.push(GrowthResultRowView {
+                action_id: row.id.clone(),
+                project_id: project.id.clone(),
+                project_name: project.name.clone(),
+                title: row.title.clone(),
+                category: row.category.clone().unwrap_or_else(|| "ux".to_string()),
+                status: row.status.clone(),
+                verdict: None,
+                delta_pct: None,
+                window_days: None,
+                judged_at: None,
+                target_metric: row.target_metric.clone(),
+                target_dir: row.target_dir.clone(),
+            });
+        }
+    }
+    GrowthProjectResults {
+        project_id: project.id.clone(),
+        name: project.name.clone(),
+        segment_label: segment.label(),
+        implemented: implemented_rows.len(),
+        measuring,
+        judged,
+        helped,
+        hindered,
+        no_effect,
+        inconclusive,
+        actions,
+    }
+}
+
+async fn get_results(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<ResultsQuery>,
+) -> Result<Json<GrowthResults>, ApiError> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let fleet_rows = fleet_outcome_rows(&pool).await;
+    let (projects, helped, hindered, no_effect, inconclusive) = tally_verdicts(&fleet_rows);
+    let mut recent: Vec<_> = fleet_rows.iter().map(fleet_row_view).collect();
+    recent.sort_by(|a, b| b.judged_at.cmp(&a.judged_at));
+    recent.truncate(12);
+    let seeds: Vec<TrendSeed> = fleet_rows
+        .iter()
+        .map(|r| TrendSeed {
+            project_id: r.7.clone(),
+            project_name: r.8.clone(),
+            verdict: r.2.clone(),
+            judged_at: r.4.clone(),
+        })
+        .collect();
+    let (trend, by_project) = build_growth_trend(&seeds, chrono::Utc::now().date_naive());
+    let fleet = GrowthFleetResults {
+        projects,
+        helped,
+        hindered,
+        no_effect,
+        inconclusive,
+        categories: category_summaries(&fleet_rows),
+        recent,
+        trend,
+        by_project,
+    };
+    let project = if let Some(id) = q.project_id.as_deref() {
+        match projects::get_project_by_id_or_slug(&pool, id).await {
+            Ok(Some(p)) => Some(project_results(&pool, &p, &fleet_rows).await),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    Ok(Json(GrowthResults { project, fleet }))
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CompleteFromHarnessResponse {
+    implemented: bool,
+    verified: bool,
+    identity: ActionIdentity,
+    checks: Vec<Check>,
+    reason: Option<String>,
+}
+
+/// A coding harness launched from this action has exited. Try to confirm the
+/// change in git/content; if that cannot, mark the action implemented so the
+/// user can still verify and measurement can start. Never treat the agent's
+/// own "I did it" line as verification.
+async fn complete_from_harness(
+    State(state): State<Arc<AppState>>,
+    Path((project_id, action_id)): Path<(String, String)>,
+) -> Result<Json<CompleteFromHarnessResponse>, ApiError> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let project = projects::get_project_by_id_or_slug(&pool, &project_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "unknown project".to_string()))?;
+    let action = growth_store::get(&pool, &project.id, &action_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "unknown action".to_string()))?;
+
+    if is_tracked(&action.status) {
+        return Ok(Json(CompleteFromHarnessResponse {
+            implemented: true,
+            verified: true,
+            identity: identity_of(&pool, &action).await,
+            checks: Vec::new(),
+            reason: Some("This action is already being measured.".into()),
+        }));
+    }
+
+    let outcome = growth_verify::verify(&pool, &project, &action, None, false).await;
+    if let Some(verified_by) = outcome.verified_by {
+        let metric_dir = parse_target(
+            action.target_metric.as_deref(),
+            action.target_dir.as_deref(),
+        )
+        .ok()
+        .flatten();
+        if let Some((metric, dir)) = metric_dir {
+            let verified_at = chrono::Utc::now();
+            let existing_baseline = action
+                .baseline_json
+                .as_deref()
+                .and_then(|raw| serde_json::from_str::<Baseline>(raw).ok());
+            let encoded = if existing_baseline.is_some() {
+                None
+            } else {
+                let fresh = sweep::snapshot_baseline(&pool, &project.id, metric, dir, verified_at)
+                    .await
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                Some(
+                    serde_json::to_string(&fresh)
+                        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
+                )
+            };
+            let updated = growth_store::record_verification(
+                &pool,
+                &project.id,
+                &action.id,
+                verified_by,
+                &verified_at.to_rfc3339(),
+                encoded.as_deref(),
+            )
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .ok_or((StatusCode::NOT_FOUND, "unknown action".to_string()))?;
+            permagent::events::emit(permagent::events::project_changed(
+                &project.id,
+                "growth_actions",
+            ));
+            return Ok(Json(CompleteFromHarnessResponse {
+                implemented: true,
+                verified: true,
+                identity: identity_of(&pool, &updated).await,
+                checks: outcome.checks,
+                reason: None,
+            }));
+        }
+    }
+
+    let has_target = action.target_metric.is_some() && action.target_dir.is_some();
+    let updated = if has_target && action.status != growth_store::STATUS_DONE {
+        growth_store::set_status(
+            &pool,
+            &project.id,
+            &action.id,
+            growth_store::STATUS_DONE,
+            None,
+        )
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+        .unwrap_or(action)
+    } else {
+        action
+    };
+    permagent::events::emit(permagent::events::project_changed(
+        &project.id,
+        "growth_actions",
+    ));
+    Ok(Json(CompleteFromHarnessResponse {
+        implemented: has_target,
+        verified: false,
+        identity: identity_of(&pool, &updated).await,
+        checks: outcome.checks,
+        reason: Some(if has_target {
+            "The coding agent finished. Nothing in git confirmed the change yet, so this is marked implemented — verify it when you can see the work, and measurement starts from there.".into()
+        } else {
+            "The coding agent finished, but this action has no pre-registered metric so it cannot be marked implemented.".into()
+        }),
+    }))
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route(
@@ -2223,7 +2895,12 @@ pub fn routes(state: Arc<AppState>) -> Router {
             "/api/projects/{project_id}/growth-actions/{action_id}/verify",
             post(verify_action),
         )
+        .route(
+            "/api/projects/{project_id}/growth-actions/{action_id}/complete-from-harness",
+            post(complete_from_harness),
+        )
         .route("/api/growth-actions/measure", post(measure_now))
+        .route("/api/growth-results", axum::routing::get(get_results))
         .with_state(state)
 }
 
@@ -2568,6 +3245,78 @@ mod tests {
         assert!(SYSTEM.contains("Do NOT restate"));
     }
 
+    /// REGRESSION. `post` used to mean "bare copy, ready to publish". Copying
+    /// that into a coding agent produced a blog post in chat, not a file in
+    /// the repo. SEO/content artifacts have to name where the copy goes.
+    #[test]
+    fn post_artifacts_are_coding_agent_instructions() {
+        assert!(SYSTEM.contains("artifactKind \"post\": still a coding-agent instruction"));
+        assert!(SYSTEM.contains("where it belongs"));
+    }
+
+    #[test]
+    fn growth_trend_pads_twelve_weeks_and_buckets_by_monday() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 8, 20).unwrap();
+        let seeds = vec![
+            TrendSeed {
+                project_id: "p1".into(),
+                project_name: "Alpha".into(),
+                verdict: "helped".into(),
+                judged_at: "2026-08-18T12:00:00Z".into(),
+            },
+            TrendSeed {
+                project_id: "p1".into(),
+                project_name: "Alpha".into(),
+                verdict: "hindered".into(),
+                judged_at: "2026-08-04T08:00:00Z".into(),
+            },
+            TrendSeed {
+                project_id: "p2".into(),
+                project_name: "Beta".into(),
+                verdict: "helped".into(),
+                judged_at: "2026-08-19T00:00:00Z".into(),
+            },
+            // Older than the 12-week window — must not appear.
+            TrendSeed {
+                project_id: "p3".into(),
+                project_name: "Old".into(),
+                verdict: "helped".into(),
+                judged_at: "2026-04-01T00:00:00Z".into(),
+            },
+        ];
+        let (fleet, by_project) = build_growth_trend(&seeds, today);
+        assert_eq!(fleet.len(), 12);
+        assert_eq!(fleet.last().unwrap().week, "2026-08-17");
+        assert_eq!(fleet.last().unwrap().helped, 2);
+        assert_eq!(fleet.last().unwrap().net, 2);
+        let early = fleet.iter().find(|p| p.week == "2026-08-03").unwrap();
+        assert_eq!(early.hindered, 1);
+        assert_eq!(early.net, -1);
+        assert!(
+            fleet.iter().any(|p| p.cumulative_net != 0),
+            "running net should move"
+        );
+        assert_eq!(by_project.len(), 2);
+        assert!(by_project.iter().all(|p| p.project_name != "Old"));
+        let names: Vec<_> = by_project.iter().map(|p| p.project_name.as_str()).collect();
+        assert_eq!(names, ["Alpha", "Beta"]);
+        assert_eq!(by_project[0].helped, 1);
+        assert_eq!(by_project[0].hindered, 1);
+        assert_eq!(by_project[1].helped, 1);
+    }
+
+    /// REGRESSION. Review was blind to the checkout: it saw analytics and the
+    /// open board, never the files, so "Review again" reprinted FAQPage /
+    /// instrumentation cards that were already in the tree. The Steward's
+    /// dismiss pass is the mechanism; this rule is what stops the model
+    /// proposing them again in the same turn.
+    #[test]
+    fn the_system_prompt_forbids_proposing_work_already_in_the_repo() {
+        assert!(SYSTEM.contains("already in the tree"));
+        assert!(SYSTEM.contains("Steward dismissed"));
+        assert!(SYSTEM.contains("already shipped"));
+    }
+
     #[test]
     fn an_action_with_no_target_is_dropped_not_persisted_untargeted() {
         let (kept, dropped) = split_targeted(vec![
@@ -2664,13 +3413,19 @@ mod tests {
                  longest window):\n"
                     .to_string(),
             ),
+            codebase: Some(
+                "This project's git repo, as it is right now. Do NOT propose a change that is \
+                 already in the tree.\nHEAD 8f2a1c33 \"Add FAQPage schema\"\n"
+                    .to_string(),
+            ),
         };
         let text = render_brief(&brief, None);
         let at = |needle: &str| {
             text.find(needle)
                 .unwrap_or_else(|| panic!("{needle}\n{text}"))
         };
-        assert!(at("Pageviews:") < at("Already on this project's board"));
+        assert!(at("Pageviews:") < at("already in the tree"));
+        assert!(at("already in the tree") < at("Already on this project's board"));
         assert!(at("Already on this project's board") < at("Previously tried on this project"));
         assert!(at("Previously tried on this project") < at("Across your other active projects"));
 

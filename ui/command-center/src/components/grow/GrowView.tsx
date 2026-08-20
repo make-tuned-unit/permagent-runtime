@@ -30,6 +30,10 @@ import {
   type PostStatus,
   type SocialCard,
 } from './calendarPosts';
+import { groupActionsByCategory } from './growActionTabs';
+import { codingAgentDirective } from './codingAgentDirective';
+import { CODING_AGENTS, codingAgentById } from './codingAgents';
+import { GrowResults } from './GrowResults';
 
 // Appended to every Grow prompt that DRAFTS user-facing copy (value props,
 // posts, outreach) so the output reads like a sharp human wrote it, not a
@@ -249,13 +253,21 @@ interface FirstPartyStats {
   topEntryPages: { name: string; count: number }[];
 }
 
-type GrowLens = 'actions' | 'strategy' | 'calendar' | 'analytics';
+type GrowLens = 'actions' | 'results' | 'strategy' | 'calendar' | 'analytics';
 // Async lifecycle for data-backed sections — loading / ready / error are
 // distinct so a fetch failure never masquerades as an empty result.
 type LoadState = 'loading' | 'ready' | 'error';
 
 // Actions leads: the point of collecting analytics is deciding what to do.
-const LENSES: GrowLens[] = ['actions', 'strategy', 'calendar', 'analytics'];
+// Results sits next to it so "what I did" is as reachable as "what to do".
+const LENSES: GrowLens[] = ['actions', 'results', 'strategy', 'calendar', 'analytics'];
+const LENS_LABELS: Record<GrowLens, string> = {
+  actions: 'Actions',
+  results: 'Results',
+  strategy: 'Strategy',
+  calendar: 'Calendar',
+  analytics: 'Analytics',
+};
 
 export function GrowView() {
   const { colors, gradient, reduceMotion } = useTheme();
@@ -289,6 +301,8 @@ export function GrowView() {
   const openChatDock = useCommandCenter((st) => st.openChatDock);
   const openGrowForProject = useCommandCenter((st) => st.openGrowForProject);
   const setOpenGrowForProject = useCommandCenter((st) => st.setOpenGrowForProject);
+  const openGrowLens = useCommandCenter((st) => st.openGrowLens);
+  const setOpenGrowLens = useCommandCenter((st) => st.setOpenGrowLens);
   const setPendingProjectNavigation = useCommandCenter((st) => st.setPendingProjectNavigation);
 
   const loadProjects = useCallback(() => {
@@ -409,6 +423,12 @@ export function GrowView() {
     }
   }, [openGrowForProject, setOpenGrowForProject, switchProject]);
 
+  useEffect(() => {
+    if (!openGrowLens) return;
+    setLens(openGrowLens);
+    setOpenGrowLens(null);
+  }, [openGrowLens, setOpenGrowLens]);
+
   // Real project context — Grow feels connected because it shows the project's
   // actual state (people, shipped work), not a blank canvas.
   useEffect(() => {
@@ -509,7 +529,7 @@ export function GrowView() {
                 onFocus={() => setFocusLens(l)}
                 onBlur={() => setFocusLens(null)}
                 style={{
-                  fontSize: 12, fontFamily: font.body, textTransform: 'capitalize',
+                  fontSize: 12, fontFamily: font.body,
                   padding: '5px 12px', borderRadius: radius.sm, cursor: 'pointer', border: 'none',
                   background: selected ? colors.cyanSoft : 'transparent',
                   color: selected ? colors.cyan : colors.textMuted,
@@ -518,7 +538,7 @@ export function GrowView() {
                   boxShadow: focusLens === l ? `0 0 0 2px ${colors.borderHi}` : 'none',
                   transition: reduceMotion ? 'none' : 'background 150ms ease, color 150ms ease',
                 }}
-              >{l}</button>
+              >{LENS_LABELS[l]}</button>
             );
           })}
         </div>
@@ -566,6 +586,7 @@ export function GrowView() {
               flight. That leak was a reported bug on the analytics panels
               (2026-08-04) — see analyticsPanelScope.test.ts. */}
           {lens === 'actions' && <GrowActions key={active.id} project={active} colors={colors} />}
+          {lens === 'results' && <GrowResults key={`${active.id}-results`} project={active} colors={colors} />}
           {lens === 'analytics' && <GrowAnalytics project={active} posts={posts} colors={colors} />}
           {lens === 'strategy' && (
           <section>
@@ -1276,6 +1297,10 @@ interface GrowthActionsData {
    *  not auditable. */
   droppedForNoTarget: number;
   droppedAsRestatement: number;
+  /** Suggested actions the Steward dismissed because the change is already in
+   *  this project's repo. Surfaced because a silent dismiss looks like Review
+   *  did nothing. */
+  droppedAsAlreadyPresent: number;
   /** A review is running on the server right now.
    *
    *  Server truth, and that is the whole point. The spinner used to be a
@@ -1891,9 +1916,9 @@ function TrackingRail({ identity, colors }: { identity: ActionIdentity; colors: 
  * that reorders on every review.
  */
 function ActionCard({
-  projectId, action, colors, lane, onChanged,
+  project, action, colors, lane, onChanged, showCategory = true,
 }: {
-  projectId: string;
+  project: Project;
   action: GrowthAction;
   colors: ThemeColors;
   /** Which list this card is in — it decides which exits the card offers.
@@ -1910,11 +1935,23 @@ function ActionCard({
   /** Refetch the board. Archiving moves a card between two lists, so the
    *  parent has to re-read rather than this card patching itself. */
   onChanged: () => void;
+  /** False inside a category tab — the tab already names the category, and a
+   *  chip that repeats it is how the old long tagged list read. */
+  showCategory?: boolean;
 }) {
   const readOnly = lane === 'shelf';
   const [copied, setCopied] = useState(false);
   const [moving, setMoving] = useState<string | null>(null);
   const [moveError, setMoveError] = useState<string | null>(null);
+  const [agentId, setAgentId] = useState<string>(CODING_AGENTS[0].id);
+  const [sending, setSending] = useState(false);
+  const setPendingTerminalLaunch = useCommandCenter((s) => s.setPendingTerminalLaunch);
+
+  const directive = codingAgentDirective({
+    projectName: project.name,
+    projectRoot: project.rootPath,
+    action,
+  });
 
   const copyArtifact = useCallback((text: string) => {
     navigator.clipboard?.writeText(text).then(() => {
@@ -1941,7 +1978,7 @@ function ActionCard({
     setMoving(status);
     setMoveError(null);
     apiFetch(
-      `/api/projects/${encodeURIComponent(projectId)}/growth-actions/`
+      `/api/projects/${encodeURIComponent(project.id)}/growth-actions/`
       + `${encodeURIComponent(actionId)}/status`,
       {
         method: 'POST',
@@ -1955,7 +1992,28 @@ function ActionCard({
       // look like a dead button.
       .catch((e) => setMoveError(e instanceof Error ? e.message : String(e)))
       .finally(() => setMoving(null));
-  }, [projectId, actionId, onChanged]);
+  }, [project.id, actionId, onChanged]);
+
+  const sendToAgent = useCallback(() => {
+    const agent = codingAgentById(agentId);
+    if (!agent || !project.rootPath) return;
+    setSending(true);
+    const display = agent.command.split(' ')[0] || agent.label;
+    // Queue the launch before switching workspaces: if Build mounts in the
+    // same tick, it must already see the pending payload.
+    setPendingTerminalLaunch({
+      rootPath: project.rootPath,
+      label: `${project.slug} · ${display} · grow`,
+      command: agent.command,
+      followUpInput: directive,
+      growthAction: actionId ? { projectId: project.id, actionId } : undefined,
+    });
+    const opened = navigateToTool('build');
+    if (!opened) {
+      setMoveError('Open the Build workspace to send this to a coding agent.');
+    }
+    setSending(false);
+  }, [agentId, project.rootPath, project.slug, project.id, directive, actionId, setPendingTerminalLaunch]);
 
   const tint = categoryColor(action.category, colors);
   const transfer = action.transfer ?? null;
@@ -1991,12 +2049,14 @@ function ActionCard({
       opacity: readOnly ? 0.75 : 1,
     }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
-        <span style={{
-          fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em',
-          textTransform: 'uppercase', color: tint,
-          border: `1px solid ${tint}`,
-          borderRadius: 999, padding: '1px 7px', flexShrink: 0,
-        }}>{action.category}</span>
+        {showCategory && (
+          <span style={{
+            fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em',
+            textTransform: 'uppercase', color: tint,
+            border: `1px solid ${tint}`,
+            borderRadius: 999, padding: '1px 7px', flexShrink: 0,
+          }}>{action.category}</span>
+        )}
         <span style={{ fontFamily: font.display, fontSize: 14, fontWeight: 600, color: colors.text }}>
           {action.title}
         </span>
@@ -2072,27 +2132,48 @@ function ActionCard({
         </ol>
       )}
 
-      {/* The deliverable — a coding-harness prompt or drafted post, ready to
-          use. This is what turns "improve your SEO" into something that
-          actually gets done. */}
-      {action.artifact && (
+      {/* Always a coding-agent prompt, even when the generator stored a bare
+          post. Copying the raw artifact is how SEO work landed in chat as a
+          blog post with no path and no instruction. */}
+      {lane === 'actions' && (
         <div style={{ marginTop: 10 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
             <span style={{ fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em', textTransform: 'uppercase', color: colors.textDim }}>
-              {action.artifactKind === 'post' ? 'Draft post' : 'Prompt for your coding agent'}
+              Prompt for your coding agent
             </span>
             <div style={{ flex: 1 }} />
             <button
-              onClick={() => copyArtifact(action.artifact!)}
+              onClick={() => copyArtifact(directive)}
               style={smallButton}
             >{copied ? 'Copied ✓' : 'Copy'}</button>
+            <select
+              aria-label="Coding agent"
+              value={agentId}
+              onChange={(e) => setAgentId(e.target.value)}
+              style={{
+                ...smallButton, cursor: 'pointer',
+                opacity: project.rootPath ? 1 : 0.5,
+              }}
+            >
+              {CODING_AGENTS.map((a) => (
+                <option key={a.id} value={a.id}>{a.label}</option>
+              ))}
+            </select>
+            <button
+              onClick={sendToAgent}
+              disabled={sending || !project.rootPath}
+              title={!project.rootPath
+                ? 'Add a root path to this project to launch a coding agent here.'
+                : `Open ${codingAgentById(agentId)?.label ?? 'the agent'} in Build with this prompt`}
+              style={{ ...smallButton, opacity: (sending || !project.rootPath) ? 0.5 : 1 }}
+            >{sending ? 'Sending…' : 'Send'}</button>
           </div>
           <pre style={{
             margin: 0, background: colors.bgDeeper, border: `1px solid ${colors.border}`,
             borderRadius: radius.md, padding: 10, fontSize: 11, fontFamily: font.mono,
             color: colors.textMuted, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
             maxHeight: 200, overflowY: 'auto',
-          }}>{action.artifact}</pre>
+          }}>{directive}</pre>
         </div>
       )}
 
@@ -2102,7 +2183,7 @@ function ActionCard({
           would hide it for exactly the actions with no deliverable to copy. */}
       <ActionVerify
         key={actionId ?? action.title}
-        projectId={projectId}
+        projectId={project.id}
         action={action}
         colors={colors}
         readOnly={readOnly}
@@ -2293,7 +2374,24 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
   const dismissed = actions?.dismissed ?? [];
   const droppedRestated = actions?.droppedAsRestatement ?? 0;
   const droppedNoTarget = actions?.droppedForNoTarget ?? 0;
+  const droppedPresent = actions?.droppedAsAlreadyPresent ?? 0;
   const onChanged = useCallback(() => loadActions(project.id), [loadActions, project.id]);
+
+  const actionGroups = groupActionsByCategory(actions?.actions ?? []);
+  const [categoryTab, setCategoryTab] = useState<string | null>(null);
+  const [focusCategory, setFocusCategory] = useState<string | null>(null);
+  const groupKeys = actionGroups.map((g) => g.key).join(',');
+  useEffect(() => {
+    if (!groupKeys) {
+      setCategoryTab(null);
+      return;
+    }
+    const keys = groupKeys.split(',');
+    if (!categoryTab || !keys.includes(categoryTab)) {
+      setCategoryTab(keys[0]);
+    }
+  }, [groupKeys, categoryTab]);
+  const selectedGroup = actionGroups.find((g) => g.key === categoryTab) ?? actionGroups[0] ?? null;
 
   return (
     <>
@@ -2384,18 +2482,57 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
           </div>
         )}
 
+        {actionGroups.length > 0 && (
+          <div
+            role="tablist"
+            aria-label="Action category"
+            style={{
+              display: 'flex', gap: 2, flexWrap: 'wrap',
+              background: colors.bgDeeper, borderRadius: radius.md, padding: 2,
+              marginBottom: 10,
+            }}
+          >
+            {actionGroups.map((group) => {
+              const selected = selectedGroup?.key === group.key;
+              return (
+                <button
+                  key={group.key}
+                  role="tab"
+                  aria-selected={selected}
+                  tabIndex={0}
+                  onClick={() => setCategoryTab(group.key)}
+                  onFocus={() => setFocusCategory(group.key)}
+                  onBlur={() => setFocusCategory(null)}
+                  style={{
+                    fontSize: 12, fontFamily: font.body,
+                    padding: '5px 12px', borderRadius: radius.sm, cursor: 'pointer', border: 'none',
+                    background: selected ? colors.cyanSoft : 'transparent',
+                    color: selected ? colors.cyan : colors.textMuted,
+                    fontWeight: selected ? 600 : 500,
+                    outline: 'none',
+                    boxShadow: focusCategory === group.key ? `0 0 0 2px ${colors.borderHi}` : 'none',
+                  }}
+                >
+                  {group.label} ({group.actions.length})
+                </button>
+              );
+            })}
+          </div>
+        )}
+
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {actions?.actions?.map((a, i) => (
+          {(selectedGroup?.actions ?? []).map((a, i) => (
             // Identity first: the durable id survives a regeneration that
             // rewords the title, so an in-flight verify stays attached to the
             // card it was started from rather than jumping to a neighbour.
             <ActionCard
               key={a.identity?.id ?? `${a.title}-${i}`}
-              projectId={project.id}
+              project={project}
               action={a}
               colors={colors}
               lane="actions"
               onChanged={onChanged}
+              showCategory={false}
             />
           ))}
         </div>
@@ -2425,7 +2562,7 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
               {tracking.map((a, i) => (
                 <ActionCard
                   key={a.identity?.id ?? `tracking-${a.title}-${i}`}
-                  projectId={project.id}
+                  project={project}
                   action={a}
                   colors={colors}
                   lane="tracking"
@@ -2449,7 +2586,7 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
               {archived.map((a, i) => (
                 <ActionCard
                   key={a.identity?.id ?? `archived-${a.title}-${i}`}
-                  projectId={project.id}
+                  project={project}
                   action={a}
                   colors={colors}
                   lane="shelf"
@@ -2475,7 +2612,7 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
               {dismissed.map((a, i) => (
                 <ActionCard
                   key={a.identity?.id ?? `dismissed-${a.title}-${i}`}
-                  projectId={project.id}
+                  project={project}
                   action={a}
                   colors={colors}
                   lane="shelf"
@@ -2499,15 +2636,18 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
             outright. Counting them out loud is what keeps that auditable; a
             drop nobody is told about is indistinguishable from a model that had
             less to say. */}
-        {(droppedRestated > 0 || droppedNoTarget > 0) && (
+        {(droppedRestated > 0 || droppedNoTarget > 0 || droppedPresent > 0) && (
           <div style={{ fontSize: 10, color: colors.textDim, marginTop: 6 }}>
-            Last review dropped {droppedRestated + droppedNoTarget} suggestion(s):{' '}
+            Last review dropped {droppedRestated + droppedNoTarget + droppedPresent} suggestion(s):{' '}
             {[
               droppedRestated > 0
                 ? `${droppedRestated} restated something already on your board`
                 : null,
               droppedNoTarget > 0
                 ? `${droppedNoTarget} made no measurable prediction`
+                : null,
+              droppedPresent > 0
+                ? `${droppedPresent} already in the repo`
                 : null,
             ].filter(Boolean).join(', ')}.
           </div>

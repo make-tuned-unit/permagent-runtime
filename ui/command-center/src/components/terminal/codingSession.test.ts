@@ -15,10 +15,11 @@ import {
 } from './codingSession';
 
 describe('isHarnessCommand', () => {
-  it('matches the three harness CLIs by first token', () => {
+  it('matches the harness CLIs by first token', () => {
     expect(isHarnessCommand('claude')).toBe(true);
     expect(isHarnessCommand('codex --resume')).toBe(true);
     expect(isHarnessCommand('permagent run --recipe x.yaml')).toBe(true);
+    expect(isHarnessCommand('cursor-agent')).toBe(true);
     expect(isHarnessCommand('~/bin/claude --continue')).toBe(true);
   });
   it('never false-positives on substrings or other commands', () => {

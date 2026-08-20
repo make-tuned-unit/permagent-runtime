@@ -12,7 +12,7 @@ export function isHarnessCommand(command: string | null | undefined): boolean {
   if (!command) return false;
   const first = command.trim().split(/\s+/)[0] ?? '';
   const bin = first.split('/').pop() ?? '';
-  return bin === 'claude' || bin === 'codex' || bin === 'permagent';
+  return bin === 'claude' || bin === 'codex' || bin === 'permagent' || bin === 'cursor-agent';
 }
 
 /** Strip ANSI escapes + terminal control noise so the daemon summarizes

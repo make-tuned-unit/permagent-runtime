@@ -163,7 +163,7 @@ describe('Grow project request ordering', () => {
     await settleSwap();
     await act(async () => { secondPosts.resolve([{ id: 'b', title: 'Target post', description: '' }]); });
 
-    const calendar = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'calendar')!;
+    const calendar = Array.from(container.querySelectorAll('[role="tab"]')).find((button) => button.textContent === 'Calendar')!;
     await act(async () => { calendar.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
     expect(container.textContent).toContain('Target post');
 

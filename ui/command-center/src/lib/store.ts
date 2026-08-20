@@ -118,6 +118,18 @@ export type ActivePanel = 'chat' | 'skills' | 'settings' | 'terminal' | 'browser
 
 export type ToolType = 'chat' | 'skills' | 'trace' | 'world' | 'terminal' | 'browser' | 'memory' | 'dashboard' | 'build' | 'grow' | 'automate' | 'projects';
 
+/** Queued Build-tab PTY launch (project chip, agent event, or a Grow action). */
+export interface PendingTerminalLaunch {
+  rootPath: string;
+  label: string;
+  command?: string;
+  supervisedSessionId?: string;
+  /** Pasted after the CLI is up — a growth-action directive, not the command. */
+  followUpInput?: string;
+  /** When this harness session ends, report the action as implemented. */
+  growthAction?: { projectId: string; actionId: string };
+}
+
 export interface LayoutSplit {
   type: 'split';
   direction: 'horizontal' | 'vertical';
@@ -408,15 +420,11 @@ interface CommandCenterStore {
   clearPendingWorldAgent: () => void;
 
   // --- Project terminal launch (from agent: project_launch event) ---
-  pendingTerminalLaunch: { rootPath: string; label: string; command?: string; supervisedSessionId?: string } | null;
-  setPendingTerminalLaunch: (
-    launch: {
-      rootPath: string;
-      label: string;
-      command?: string;
-      supervisedSessionId?: string;
-    } | null,
-  ) => void;
+  pendingTerminalLaunch: PendingTerminalLaunch | null;
+  setPendingTerminalLaunch: (launch: PendingTerminalLaunch | null) => void;
+  /** One-shot Grow lens (Home growth card → Results). Consumed then cleared. */
+  openGrowLens: 'results' | null;
+  setOpenGrowLens: (lens: 'results' | null) => void;
 
   // --- In-app browser navigation (chat links, agent tour #353) ---
   pendingBrowserUrl: string | null;
@@ -1671,6 +1679,8 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
   pendingTerminalLaunch: null,
   setPendingTerminalLaunch: (launch) => set({ pendingTerminalLaunch: launch }),
+  openGrowLens: null,
+  setOpenGrowLens: (lens) => set({ openGrowLens: lens }),
 
   // In-app browser navigation: post a URL + focus the Build workspace (which
   // hosts the browser). The Browser consumes pendingBrowserUrl on mount, so the

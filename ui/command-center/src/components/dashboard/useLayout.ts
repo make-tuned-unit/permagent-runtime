@@ -20,8 +20,9 @@ export const DEFAULT_LAYOUT: DashboardLayoutData = {
     { id: 'decisions', type: 'decisions', position: { x: 7, y: 0 }, size: { w: 5, h: 4 }, visible: true },
     { id: 'stats', type: 'stats', position: { x: 0, y: 4 }, size: { w: 5, h: 4 }, visible: true },
     { id: 'in_flight', type: 'in_flight', position: { x: 0, y: 8 }, size: { w: 12, h: 3 }, visible: true },
-    { id: 'recent', type: 'recent', position: { x: 0, y: 11 }, size: { w: 12, h: 4 }, visible: true },
-    { id: 'timeline', type: 'timeline', position: { x: 0, y: 15 }, size: { w: 12, h: 6 }, visible: true },
+    { id: 'growth_results', type: 'growth_results', position: { x: 0, y: 11 }, size: { w: 12, h: 6 }, visible: true },
+    { id: 'recent', type: 'recent', position: { x: 0, y: 17 }, size: { w: 12, h: 4 }, visible: true },
+    { id: 'timeline', type: 'timeline', position: { x: 0, y: 21 }, size: { w: 12, h: 6 }, visible: true },
   ],
 };
 
@@ -77,6 +78,68 @@ const COMPACT_SIZES: Record<string, CardSize> = {
  * Client-side because it is a UI preference, not shared state.
  */
 const COMPACT_PASS_KEY = 'permagent.dashboard.compactPass.v1';
+const GROWTH_CARD_PASS_KEY = 'permagent.dashboard.growthResultsCard.v1';
+const GROWTH_CARD_TALL_PASS_KEY = 'permagent.dashboard.growthResultsCard.tall.v1';
+
+export function hasRunGrowthCardPass(): boolean {
+  try { return localStorage.getItem(GROWTH_CARD_PASS_KEY) === '1'; } catch { return false; }
+}
+
+export function markGrowthCardPassDone(): void {
+  try { localStorage.setItem(GROWTH_CARD_PASS_KEY, '1'); } catch { /* private mode — retry next load */ }
+}
+
+/**
+ * Existing dashboards never got a Growth card because DEFAULT_LAYOUT only
+ * applies to first paint. Add it once; if the user later removes it, the
+ * marker keeps this from putting it back.
+ */
+export function ensureGrowthResultsCard(
+  layout: DashboardLayoutData,
+): { layout: DashboardLayoutData; changed: boolean } {
+  if (layout.cards.some((c) => c.type === 'growth_results')) {
+    return { layout, changed: false };
+  }
+  const cards = [
+    ...layout.cards,
+    {
+      id: 'growth_results',
+      type: 'growth_results',
+      position: { x: 0, y: 0 },
+      size: { w: 12, h: 6 },
+      visible: true,
+    },
+  ];
+  return { layout: { cards: reflow(cards) }, changed: true };
+}
+
+export function hasRunGrowthCardTallPass(): boolean {
+  try { return localStorage.getItem(GROWTH_CARD_TALL_PASS_KEY) === '1'; } catch { return false; }
+}
+
+export function markGrowthCardTallPassDone(): void {
+  try { localStorage.setItem(GROWTH_CARD_TALL_PASS_KEY, '1'); } catch { /* private mode — retry next load */ }
+}
+
+/**
+ * The first Growth card was 12×4, which is too short for a fleet trend plus
+ * per-project sparklines. Grow it once if it is still that default; a card
+ * the user already resized is left alone.
+ */
+export function ensureGrowthCardTallEnough(
+  layout: DashboardLayoutData,
+): { layout: DashboardLayoutData; changed: boolean } {
+  let changed = false;
+  const cards = layout.cards.map((card) => {
+    if (card.type !== 'growth_results' || card.size.w !== 12 || card.size.h !== 4) {
+      return card;
+    }
+    changed = true;
+    return { ...card, size: { w: 12, h: 6 } };
+  });
+  if (!changed) return { layout, changed: false };
+  return { layout: { cards: reflow(cards) }, changed: true };
+}
 
 export function hasRunCompactPass(): boolean {
   try { return localStorage.getItem(COMPACT_PASS_KEY) === '1'; } catch { return false; }
@@ -123,11 +186,25 @@ export function useLayout() {
         if (cancelled) return;
         // Run the compaction at most once per machine; afterwards the user's
         // own sizing is authoritative.
-        const { layout: normalized, changed } = hasRunCompactPass()
+        const compacted = hasRunCompactPass()
           ? { layout: fetched, changed: false }
           : compactLayoutPass(fetched);
+        let normalized = compacted.layout;
+        let changed = compacted.changed;
+        if (!hasRunGrowthCardPass()) {
+          const inserted = ensureGrowthResultsCard(normalized);
+          normalized = inserted.layout;
+          changed = changed || inserted.changed;
+        }
+        if (!hasRunGrowthCardTallPass()) {
+          const taller = ensureGrowthCardTallEnough(normalized);
+          normalized = taller.layout;
+          changed = changed || taller.changed;
+        }
         setLayout(normalized);
         markCompactPassDone();
+        markGrowthCardPassDone();
+        markGrowthCardTallPassDone();
         if (changed) {
           apiFetch<DashboardLayoutData>('/api/dashboard/layout', {
             method: 'PUT',

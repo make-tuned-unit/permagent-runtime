@@ -17,7 +17,13 @@ import {
 } from './terminalReattach';
 
 export interface TerminalManagerHandle {
-  createProjectTab: (cwd: string, label: string, initialCommand?: string, supervisedSessionId?: string) => void;
+  createProjectTab: (
+    cwd: string,
+    label: string,
+    initialCommand?: string,
+    supervisedSessionId?: string,
+    extras?: { followUpInput?: string; growthAction?: { projectId: string; actionId: string } },
+  ) => void;
   getActiveTab: () => TerminalTab;
   /** Every tab this manager owns — used by a detached pane window to tear
    *  down all of its PTYs when the window is genuinely closed (not redocked). */
@@ -36,6 +42,8 @@ export interface TerminalTab {
   /** S2 (#428): supervised loop session id — makes the spawned PTY tee its
    *  output to the daemon's gate parser. */
   supervisedSessionId?: string;
+  followUpInput?: string;
+  growthAction?: { projectId: string; actionId: string };
 }
 
 let tabCounter = 0;
@@ -375,12 +383,20 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
     );
   }, []);
 
-  const createProjectTab = useCallback((cwd: string, label: string, initialCommand?: string, supervisedSessionId?: string) => {
+  const createProjectTab = useCallback((
+    cwd: string,
+    label: string,
+    initialCommand?: string,
+    supervisedSessionId?: string,
+    extras?: { followUpInput?: string; growthAction?: { projectId: string; actionId: string } },
+  ) => {
     const tab: TerminalTab = {
       ...createTab(cwd),
       label,
       initialCommand,
       supervisedSessionId,
+      followUpInput: extras?.followUpInput,
+      growthAction: extras?.growthAction,
     };
     setTabs(prev => [...prev, tab]);
     setActiveTabId(tab.id);
@@ -499,6 +515,8 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
               cwd={tab.cwd}
               initialCommand={tab.initialCommand}
               supervisedSessionId={tab.supervisedSessionId}
+              followUpInput={tab.followUpInput}
+              growthAction={tab.growthAction}
               isVisible={tab.id === activeTabId}
             />
           </div>

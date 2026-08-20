@@ -58,6 +58,25 @@ export function scheduleInitialCommand(
   return () => clearTimeout(timer);
 }
 
+/**
+ * Paste a multi-line prompt after the coding CLI has had a moment to draw.
+ *
+ * Bracketed paste keeps embedded newlines from submitting early in a TUI
+ * (Claude Code / Codex treat a raw `\n` as Enter). The trailing CR submits
+ * once the paste completes.
+ */
+export function scheduleFollowUpInput(
+  invoke: TauriApi['invoke'],
+  sessionId: string,
+  text: string,
+): () => void {
+  const timer = setTimeout(() => {
+    const payload = `\x1b[200~${text}\x1b[201~\r`;
+    invoke('write_to_pty', { sessionId, data: payload }).catch(() => {});
+  }, 2200);
+  return () => clearTimeout(timer);
+}
+
 interface TerminalProps {
   sessionId: string | null;
   onSessionSpawned?: (sessionId: string) => void;
@@ -68,10 +87,14 @@ interface TerminalProps {
   /** S2 (#428): supervised loop session id (`sup-<uuid>`) — passed to
    *  `spawn_pty_session` so the Rust PTY reader tees output to the daemon. */
   supervisedSessionId?: string;
+  /** Pasted after `initialCommand` has had time to start a coding TUI. */
+  followUpInput?: string;
+  /** Growth action to mark implemented when this harness session ends. */
+  growthAction?: { projectId: string; actionId: string };
   isVisible: boolean;
 }
 
-export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChange, cwd, initialCommand, supervisedSessionId, isVisible }: TerminalProps) {
+export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChange, cwd, initialCommand, supervisedSessionId, followUpInput, growthAction, isVisible }: TerminalProps) {
   const { theme, colors } = useTheme();
   const containerRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
@@ -85,6 +108,8 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
   const cwdRef = useRef(cwd);
   const initialCommandRef = useRef(initialCommand);
   const supervisedSessionIdRef = useRef(supervisedSessionId);
+  const followUpInputRef = useRef(followUpInput);
+  const growthActionRef = useRef(growthAction);
 
   sessionIdRef.current = sessionId;
   onSessionSpawnedRef.current = onSessionSpawned;
@@ -93,11 +118,14 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
   cwdRef.current = cwd;
   initialCommandRef.current = initialCommand;
   supervisedSessionIdRef.current = supervisedSessionId;
+  followUpInputRef.current = followUpInput;
+  growthActionRef.current = growthAction;
 
   // ── Single setup effect — runs once on mount, cleans up on unmount ──
   useEffect(() => {
     let cancelled = false;
     let cancelInitialCommand: (() => void) | null = null;
+    let cancelFollowUp: (() => void) | null = null;
 
     (async () => {
       if (!containerRef.current) return;
@@ -235,6 +263,11 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
             const cmd = initialCommandRef.current;
             initialCommandRef.current = undefined; // fire once
             cancelInitialCommand = scheduleInitialCommand(api.invoke, result.session_id, cmd);
+            const follow = followUpInputRef.current;
+            followUpInputRef.current = undefined;
+            if (follow) {
+              cancelFollowUp = scheduleFollowUpInput(api.invoke, result.session_id, follow);
+            }
           }
         } catch (err) {
           term.writeln('\r\n\x1b[31mFailed to spawn terminal: ' + err + '\x1b[0m\r\n');
@@ -409,13 +442,24 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
               spawnedAtMs: spawnedAt,
               nowMs: Date.now(),
             });
-            if (!payload) return;
-            await daemonApi.codingSessionSummary(payload);
+            if (payload) {
+              await daemonApi.codingSessionSummary(payload);
+            }
           } catch (err) {
             // Memory is best-effort; the terminal itself must never care.
             console.debug('[terminal] coding-session summary failed:', err);
           }
         })();
+      };
+
+      const reportGrowthAction = () => {
+        const ga = growthActionRef.current;
+        if (!ga) return;
+        growthActionRef.current = undefined;
+        daemonApi.completeGrowthActionFromHarness(ga.projectId, ga.actionId)
+          .catch((err: unknown) => {
+            console.debug('[terminal] growth-action complete failed:', err);
+          });
       };
 
       // OSC 133;D;<exit> — pair the completion mark with the sniffed command
@@ -437,6 +481,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         }
         if (sessionCommand && isHarnessCommand(sessionCommand)) {
           captureCodingSession(sessionCommand);
+          reportGrowthAction();
         }
         if (command && api) {
           const exitCode = Number(data.split(';')[1]);
@@ -566,6 +611,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         if (resizeTimer) clearTimeout(resizeTimer);
         if (flushTimer) clearTimeout(flushTimer);
         cancelInitialCommand?.();
+        cancelFollowUp?.();
         resizeObserver.disconnect();
         term.dispose();
         xtermRef.current = null;
@@ -576,6 +622,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
     return () => {
       cancelled = true;
       cancelInitialCommand?.();
+      cancelFollowUp?.();
       cleanupRef.current?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

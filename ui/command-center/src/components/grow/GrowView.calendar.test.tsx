@@ -81,7 +81,7 @@ async function renderGrow() {
 }
 
 async function openCalendar() {
-  const calendar = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'calendar')!;
+  const calendar = Array.from(container.querySelectorAll('[role="tab"]')).find((b) => b.textContent === 'Calendar')!;
   await act(async () => { calendar.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
 }
 

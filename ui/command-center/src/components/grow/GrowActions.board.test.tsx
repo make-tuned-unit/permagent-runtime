@@ -83,6 +83,7 @@ function payload(over: Record<string, unknown> = {}) {
     periodDays: 30,
     droppedForNoTarget: 0,
     droppedAsRestatement: 0,
+    droppedAsAlreadyPresent: 0,
     generating: false,
     ...over,
   };
@@ -534,12 +535,13 @@ describe('the suggestions that were dropped', () => {
   // the user never sees, and an untargeted action is discarded outright.
   // Counting them out loud is the only thing that makes either auditable.
   it('says how many suggestions the last review dropped and why', async () => {
-    routeTo(payload({ droppedForNoTarget: 1, droppedAsRestatement: 2 }));
+    routeTo(payload({ droppedForNoTarget: 1, droppedAsRestatement: 2, droppedAsAlreadyPresent: 1 }));
     await render(<GrowActions project={project} colors={colors} />);
 
-    expect(container.textContent).toContain('Last review dropped 3 suggestion(s)');
+    expect(container.textContent).toContain('Last review dropped 4 suggestion(s)');
     expect(container.textContent).toContain('2 restated something already on your board');
     expect(container.textContent).toContain('1 made no measurable prediction');
+    expect(container.textContent).toContain('1 already in the repo');
   });
 
   it('says nothing when nothing was dropped', async () => {
@@ -767,5 +769,64 @@ describe('a review that outlives the tab', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('actions grouped by category tab', () => {
+  it('puts mixed actions under Measurement / Acquisition / UX tabs, not one tagged list', async () => {
+    routeTo(payload({
+      actions: [
+        action({ title: 'Instrument search events', category: 'measurement' }, { id: 'm1' }),
+        action({ title: 'List in a directory', category: 'acquisition' }, { id: 'a1' }),
+        action({ title: 'Rewrite the hero', category: 'ux' }, { id: 'u1' }),
+      ],
+    }));
+    await render(<GrowActions project={project} colors={colors} />);
+
+    expect(button('Measurement (1)')).toBeTruthy();
+    expect(button('Acquisition (1)')).toBeTruthy();
+    expect(button('UX (1)')).toBeTruthy();
+    // Stable order, not first-seen: Measurement leads even though it is not
+    // the first row, and that tab is selected so only its cards mount.
+    expect(container.textContent).toContain('Instrument search events');
+    expect(container.textContent).not.toContain('List in a directory');
+    expect(container.textContent).not.toContain('Rewrite the hero');
+
+    await act(async () => { button('UX (1)').click(); });
+    expect(container.textContent).toContain('Rewrite the hero');
+    expect(container.textContent).not.toContain('Instrument search events');
+  });
+
+  it('does not invent a tab for a category with no actions', async () => {
+    routeTo(payload({
+      actions: [action({ title: 'Add FAQPage schema', category: 'aeo' })],
+    }));
+    await render(<GrowActions project={project} colors={colors} />);
+    expect(button('AEO (1)')).toBeTruthy();
+    expect(maybeButton('Measurement')).toBeUndefined();
+    expect(maybeButton('SEO')).toBeUndefined();
+  });
+});
+
+describe('the coding-agent prompt', () => {
+  it('wraps a drafted SEO post as a prompt, with a send-to-agent control', async () => {
+    routeTo(payload({
+      actions: [action({
+        title: 'Publish a comparison post',
+        artifactKind: 'post',
+        artifact: 'Grocery delivery is expensive. Here is how to spend less.',
+        category: 'seo',
+      })],
+    }));
+    await render(<GrowActions project={project} colors={colors} />);
+
+    await act(async () => { button('SEO (1)').click(); });
+    expect(container.textContent).toContain('Prompt for your coding agent');
+    expect(container.textContent).toContain('coding agent');
+    expect(container.textContent).toContain('Grocery delivery is expensive');
+    expect(container.textContent).toContain('GROW_ACTION_DONE act-1');
+    expect(container.querySelector('select[aria-label="Coding agent"]')).toBeTruthy();
+    expect(maybeButton('Send')).toBeTruthy();
+    expect(maybeButton('Copy')).toBeTruthy();
   });
 });
