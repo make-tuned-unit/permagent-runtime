@@ -2796,7 +2796,7 @@ async fn complete_from_harness(
     }
 
     let outcome = growth_verify::verify(&pool, &project, &action, None, false).await;
-    if let Some(verified_by) = outcome.verified_by.clone() {
+    if let Some(verified_by) = outcome.verified_by {
         let metric_dir = parse_target(
             action.target_metric.as_deref(),
             action.target_dir.as_deref(),
@@ -2824,7 +2824,7 @@ async fn complete_from_harness(
                 &pool,
                 &project.id,
                 &action.id,
-                &verified_by,
+                verified_by,
                 &verified_at.to_rfc3339(),
                 encoded.as_deref(),
             )
