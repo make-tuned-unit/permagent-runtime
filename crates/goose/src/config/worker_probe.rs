@@ -4,8 +4,13 @@
 //! `availability_check` string from agent.yaml.
 
 use std::collections::HashMap;
+use std::env;
+use std::ffi::OsStr;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+use crate::config::search_path::SearchPaths;
 
 const CACHE_TTL: Duration = Duration::from_secs(300); // 5 minutes
 
@@ -70,7 +75,9 @@ impl ProbeCache {
 ///
 /// Supported formats:
 /// - `"always"` — always available
-/// - `"bin_exists:<name>"` — check if binary is on PATH
+/// - `"bin_exists:<name>"` — check if binary is on Permagent's search path
+///   (the inherited PATH widened with `~/.local/bin`, `/usr/local/bin`,
+///   Homebrew and npm-global — see [`SearchPaths`])
 /// - `"api_credential:<env_var>"` — check if environment variable is set
 /// - `"model_loaded:<model>"` — check if Ollama model is pulled (HTTP call)
 ///
@@ -99,10 +106,49 @@ pub fn probe_worker(check: &str) -> (bool, Option<String>) {
     )
 }
 
+/// Probe for a binary against Permagent's augmented search path.
+///
+/// `which::which` resolves against the *process* PATH, and that was the bug
+/// (reported 2026-08-18): the daemon is started by launchd, not by a login
+/// shell, so it inherits a bare `/usr/bin:/bin:/usr/sbin:/sbin` with no
+/// Homebrew on it. Every brew- or npm-installed tool in the roster — `docker`
+/// for the Guard, `claude`, `codex`, `cursor-agent` — therefore probed as
+/// missing on machines where the binary was plainly installed, and the user was
+/// told "Binary docker not found on path" while `/opt/homebrew/bin/docker` sat
+/// right there.
+///
+/// [`SearchPaths`] is the same widening the providers already use to *launch*
+/// these binaries (`~/.local/bin`, `/usr/local/bin`, Homebrew, npm-global), so
+/// probing through it makes "is it available" agree with "can we run it"
+/// instead of contradicting it.
 fn probe_bin_exists(name: &str) -> (bool, Option<String>) {
-    match which::which(name) {
+    let search = SearchPaths::builder()
+        .with_npm()
+        .path()
+        // Assembling the path can only fail on a PATH entry containing the
+        // separator itself. Fall back to the inherited PATH rather than
+        // reporting a binary as absent because of it.
+        .unwrap_or_else(|_| env::var_os("PATH").unwrap_or_default());
+    probe_bin_exists_in(name, &search)
+}
+
+/// The resolution step, with the search path passed in so a test can construct
+/// the launchd condition (a minimal PATH plus an off-PATH install directory)
+/// explicitly instead of relying on whatever PATH the test runner inherited.
+fn probe_bin_exists_in(name: &str, search: &OsStr) -> (bool, Option<String>) {
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+    match which::which_in(name, Some(search), cwd) {
         Ok(_) => (true, None),
-        Err(_) => (false, Some(format!("Binary '{}' not found on PATH", name))),
+        // Still honest when the binary really is absent: the name is named, and
+        // the message says where we looked so "not found" is checkable.
+        Err(_) => (
+            false,
+            Some(format!(
+                "Binary '{}' not found on PATH (searched PATH plus ~/.local/bin, \
+                 /usr/local/bin, Homebrew and npm-global)",
+                name
+            )),
+        ),
     }
 }
 
@@ -207,7 +253,103 @@ mod tests {
     fn bin_exists_missing_binary() {
         let (ok, reason) = probe_worker("bin_exists:__nonexistent_binary_xyz__");
         assert!(!ok);
+        let reason = reason.unwrap();
+        // A genuinely absent binary must still say so, and name itself.
+        assert!(reason.contains("not found on PATH"), "{}", reason);
+        assert!(reason.contains("__nonexistent_binary_xyz__"), "{}", reason);
+    }
+
+    /// Regression (reported 2026-08-18): the Guard reported "Binary docker not
+    /// found on path" on a machine with `/opt/homebrew/bin/docker` installed,
+    /// because the probe used `which::which`, which resolves against the
+    /// *process* PATH — and the daemon is started by launchd with a bare
+    /// `/usr/bin:/bin:/usr/sbin:/sbin`.
+    ///
+    /// This builds that condition rather than inheriting it: a PATH containing
+    /// exactly one empty directory, and the binary installed in a second
+    /// directory that stands in for `/opt/homebrew/bin`. Under the old
+    /// `which::which` the probe cannot see the binary at all; it passes only if
+    /// resolution honours the augmented search path.
+    #[cfg(unix)]
+    #[test]
+    fn bin_exists_finds_binary_outside_a_launchd_style_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bare_path = tmp.path().join("bare-path");
+        let brew_bin = tmp.path().join("brew/bin");
+        std::fs::create_dir_all(&bare_path).unwrap();
+        std::fs::create_dir_all(&brew_bin).unwrap();
+
+        let tool = brew_bin.join("permagent-probe-fixture");
+        std::fs::write(&tool, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // The launchd condition: the install directory is NOT on PATH.
+        let minimal_path = bare_path.clone().into_os_string();
+        let (ok, reason) = probe_bin_exists_in("permagent-probe-fixture", &minimal_path);
+        assert!(
+            !ok,
+            "fixture must be invisible to the bare PATH, or the test proves nothing: {:?}",
+            reason
+        );
+
+        // The fix: search the augmented path, and the installed binary is found.
+        let augmented = env::join_paths([brew_bin.as_path(), bare_path.as_path()]).unwrap();
+        let (ok, reason) = probe_bin_exists_in("permagent-probe-fixture", &augmented);
+        assert!(
+            ok,
+            "binary is installed and must probe as present: {:?}",
+            reason
+        );
+        assert!(reason.is_none());
+
+        // And a binary that is absent from every searched directory still
+        // reports absent — the fix must not turn the probe into a rubber stamp.
+        let (ok, reason) = probe_bin_exists_in("permagent-probe-fixture-absent", &augmented);
+        assert!(!ok);
         assert!(reason.unwrap().contains("not found on PATH"));
+    }
+
+    /// The other half of the regression: `probe_bin_exists` must hand
+    /// `probe_bin_exists_in` a path that actually contains the directories
+    /// package managers install into. Without this, the test above could pass
+    /// against a search path the production probe never builds.
+    #[test]
+    fn probe_search_path_covers_the_directories_tools_install_into() {
+        let search = SearchPaths::builder().with_npm().path().unwrap();
+        let entries: Vec<PathBuf> = env::split_paths(&search).collect();
+        let ends_with = |suffix: &str| entries.iter().any(|d| d.ends_with(suffix));
+        let has = |p: &str| entries.iter().any(|d| d == std::path::Path::new(p));
+
+        // pipx installs the Guard's own scanner here; npm-global is where
+        // `claude` and `codex` land.
+        assert!(ends_with(".local/bin"), "search path was {:?}", search);
+        assert!(ends_with(".npm-global/bin"), "search path was {:?}", search);
+
+        #[cfg(unix)]
+        assert!(has("/usr/local/bin"), "search path was {:?}", search);
+
+        if cfg!(target_os = "macos") {
+            assert!(
+                has("/opt/homebrew/bin"),
+                "Homebrew is where `docker`, `claude` and `codex` live on macOS; \
+                 search path was {:?}",
+                search
+            );
+        }
+
+        // And the inherited PATH is still honoured, not replaced.
+        if let Some(inherited) = env::var_os("PATH") {
+            for dir in env::split_paths(&inherited) {
+                assert!(
+                    entries.contains(&dir),
+                    "inherited PATH entry {:?} was dropped from {:?}",
+                    dir,
+                    search
+                );
+            }
+        }
     }
 
     #[test]

@@ -15,7 +15,12 @@
 #                                  Parsed by: crates/goose/src/config/worker_probe.rs :: probe_worker()
 #                                  Valid formats:
 #                                    "always"                — always available (default)
-#                                    "bin_exists:<name>"     — checks `which <name>` on PATH
+#                                    "bin_exists:<name>"     — binary is on the search path:
+#                                                              the inherited PATH widened with
+#                                                              ~/.local/bin, /usr/local/bin,
+#                                                              Homebrew and npm-global, so a
+#                                                              launchd-started daemon still
+#                                                              finds brew/npm installs
 #                                    "api_credential:<var>"  — checks env var is set
 #                                    "model_loaded:<model>"  — checks Ollama localhost:11434/api/tags
 #   cost_tier: String           — used for selection ranking
