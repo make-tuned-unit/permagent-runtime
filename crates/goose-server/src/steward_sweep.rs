@@ -128,6 +128,22 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
     if let Err(e) = stamp_last_scan(&pool, project).await {
         tracing::warn!(target: "permagentd::steward", "last-scan stamp failed: {e}");
     }
+    // Growth actions the generator keeps reprinting because it never looks
+    // at the checkout. The Steward does: if the change is already in this
+    // repo, the card comes off the board so Review cannot propose it again.
+    let dismissed = crate::routes::growth_verify::dismiss_already_present(&pool, project).await;
+    if !dismissed.is_empty() {
+        tracing::info!(
+            target: "permagentd::steward",
+            dismissed = dismissed.len(),
+            project = %project.name,
+            "dismissed growth actions already present in the repo"
+        );
+        permagent::events::emit(permagent::events::project_changed(
+            &project.id,
+            "growth_actions",
+        ));
+    }
     let Some(health) = health else {
         // A non-repo root is a stated fact, not a degraded pretend-survey.
         tracing::info!(

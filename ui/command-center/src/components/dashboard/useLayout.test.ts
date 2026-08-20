@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compactLayoutPass, reflow, type DashboardLayoutData } from './useLayout';
+import { compactLayoutPass, ensureGrowthCardTallEnough, ensureGrowthResultsCard, reflow, type DashboardLayoutData } from './useLayout';
 
 function card(type: string, w: number, h: number) {
   return { id: type, type, position: { x: 0, y: 0 }, size: { w, h }, visible: true };
@@ -97,5 +97,36 @@ describe('reflow', () => {
     const snapshot = JSON.parse(JSON.stringify(input));
     reflow(input);
     expect(input).toEqual(snapshot);
+  });
+});
+
+describe('ensureGrowthResultsCard', () => {
+  it('adds a growth card when the dashboard does not have one', () => {
+    const layout: DashboardLayoutData = { cards: [card('hero', 7, 4)] };
+    const { layout: out, changed } = ensureGrowthResultsCard(layout);
+    expect(changed).toBe(true);
+    expect(out.cards.some((c) => c.type === 'growth_results')).toBe(true);
+  });
+
+  it('is a no-op when the card is already present', () => {
+    const layout: DashboardLayoutData = { cards: [card('growth_results', 12, 6)] };
+    const { layout: out, changed } = ensureGrowthResultsCard(layout);
+    expect(changed).toBe(false);
+    expect(out).toBe(layout);
+  });
+});
+
+describe('ensureGrowthCardTallEnough', () => {
+  it('grows the original 12×4 default to 12×6', () => {
+    const layout: DashboardLayoutData = { cards: [card('growth_results', 12, 4)] };
+    const { layout: out, changed } = ensureGrowthCardTallEnough(layout);
+    expect(changed).toBe(true);
+    expect(out.cards[0].size).toEqual({ w: 12, h: 6 });
+  });
+
+  it('leaves a resized card alone', () => {
+    const layout: DashboardLayoutData = { cards: [card('growth_results', 12, 8)] };
+    const { changed } = ensureGrowthCardTallEnough(layout);
+    expect(changed).toBe(false);
   });
 });

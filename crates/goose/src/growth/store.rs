@@ -465,7 +465,7 @@ pub fn render_board(rows: &[GrowthActionRow]) -> Option<String> {
             STATUS_VERIFIED => "verified, being measured",
             STATUS_MEASURING => "being measured",
             STATUS_JUDGED => "measured, verdict recorded",
-            STATUS_DISMISSED => "dismissed by the user",
+            STATUS_DISMISSED => "dismissed — already in the repo or refused",
             other => other,
         };
         let predicts = match (row.target_metric.as_deref(), row.target_dir.as_deref()) {
@@ -912,10 +912,12 @@ mod tests {
             .await
             .unwrap();
         assert!(get(&pool, "p2", &row.id).await.unwrap().is_none());
-        assert!(set_status(&pool, "p2", &row.id, STATUS_DISMISSED, None)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            set_status(&pool, "p2", &row.id, STATUS_DISMISSED, None)
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             get(&pool, "p1", &row.id).await.unwrap().unwrap().status,
             STATUS_SUGGESTED
@@ -928,9 +930,11 @@ mod tests {
         let row = upsert_suggested(&pool, "p1", &seed("t", "r"))
             .await
             .unwrap();
-        assert!(set_status(&pool, "p1", &row.id, "shipped", None)
-            .await
-            .is_err());
+        assert!(
+            set_status(&pool, "p1", &row.id, "shipped", None)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -1237,19 +1241,23 @@ mod tests {
         let board = vec![grocery_board_row()];
         // Same domain words (FAQ, FAQPage, schema, grocery, post), different page
         // and different change.
-        assert!(restates(
-            "Add an FAQ section to the pricing page",
-            "Add FAQPage schema to the grocery post",
-            &board
-        )
-        .is_none());
+        assert!(
+            restates(
+                "Add an FAQ section to the pricing page",
+                "Add FAQPage schema to the grocery post",
+                &board
+            )
+            .is_none()
+        );
         // A different post entirely.
-        assert!(restates(
-            "Expand the coupon-codes post",
-            "Expand the grocery-stores post",
-            &board
-        )
-        .is_none());
+        assert!(
+            restates(
+                "Expand the coupon-codes post",
+                "Expand the grocery-stores post",
+                &board
+            )
+            .is_none()
+        );
         // Two words sharing one: any ratio over sets this small is noise, which
         // is what the token floors exist for.
         assert!(restates("Expand pricing", "", &board).is_none());

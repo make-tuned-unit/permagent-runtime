@@ -1259,6 +1259,20 @@ export const api = {
       method: 'POST', body: JSON.stringify(payload),
     }),
 
+  /** After a coding harness launched from a growth Action exits: try git/content
+   *  verify, else mark the action implemented so measurement can start. */
+  completeGrowthActionFromHarness: (projectId: string, actionId: string) =>
+    apiFetch<{
+      implemented: boolean;
+      verified: boolean;
+      identity: { id: string; status: string };
+      reason: string | null;
+    }>(
+      `/api/projects/${encodeURIComponent(projectId)}/growth-actions/`
+      + `${encodeURIComponent(actionId)}/complete-from-harness`,
+      { method: 'POST' },
+    ),
+
   setProvider: async (provider: string, model: string): Promise<void> => {
     const url = `${API_BASE_URL}/config/set_provider`;
     const response = await fetch(url, {

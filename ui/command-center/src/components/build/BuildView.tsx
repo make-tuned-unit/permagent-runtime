@@ -110,8 +110,11 @@ export function BuildView() {
   const openChatDock = useCommandCenter(s => s.openChatDock);
   useEffect(() => {
     if (!pendingTerminalLaunch) return;
-    const { rootPath, label, command, supervisedSessionId } = pendingTerminalLaunch;
-    terminalRef.current?.createProjectTab(rootPath, label, command, supervisedSessionId);
+    const { rootPath, label, command, supervisedSessionId, followUpInput, growthAction } = pendingTerminalLaunch;
+    terminalRef.current?.createProjectTab(rootPath, label, command, supervisedSessionId, {
+      followUpInput,
+      growthAction,
+    });
     setPendingTerminalLaunch(null);
   }, [pendingTerminalLaunch, setPendingTerminalLaunch]);
 

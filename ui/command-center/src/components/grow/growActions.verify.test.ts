@@ -50,8 +50,8 @@ describe('the verify control', () => {
     // component when the archived shelf started rendering the same card
     // read-only. The assertion is unchanged and still worth pinning.
     const card = fn('ActionCard');
-    const open = card.indexOf('{action.artifact && (');
-    expect(open, 'the artifact block moved or was renamed').toBeGreaterThan(-1);
+    const open = card.indexOf("{lane === 'actions' && (");
+    expect(open, 'the coding-agent prompt block moved or was renamed').toBeGreaterThan(-1);
 
     let depth = 0;
     let close = -1;
@@ -286,7 +286,7 @@ describe('the archive', () => {
     // One helper, one route, one body shape — so a second exit cannot drift on
     // to a second endpoint.
     const move = card.slice(card.indexOf('const move = useCallback'));
-    const body = move.slice(0, move.indexOf('}, [projectId'));
+    const body = move.slice(0, move.indexOf('}, [project.id'));
     expect(body).toContain('/status`');
     expect(body).toContain('JSON.stringify({ status })');
     // The card cannot move itself between two lists; the parent re-reads.

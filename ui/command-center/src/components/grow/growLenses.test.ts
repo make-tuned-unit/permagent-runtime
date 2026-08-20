@@ -20,6 +20,7 @@ describe('Grow lenses', () => {
       .map((s) => s.trim().replace(/'/g, ''))
       .filter(Boolean);
     expect(lenses[0]).toBe('actions');
+    expect(lenses[1]).toBe('results');
     expect(lenses).toContain('analytics');
   });
 
@@ -29,6 +30,10 @@ describe('Grow lenses', () => {
 
   it('renders the Actions lens', () => {
     expect(SOURCE).toContain("lens === 'actions' && <GrowActions");
+  });
+
+  it('renders the Results lens', () => {
+    expect(SOURCE).toContain("lens === 'results' && <GrowResults");
   });
 
   // The growth inbox moved to Actions. Leaving a copy on Analytics would put

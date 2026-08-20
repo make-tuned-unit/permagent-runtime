@@ -79,6 +79,7 @@ function actionsPayload(identity: Partial<Identity> | null) {
     periodDays: 30,
     droppedForNoTarget: 0,
     droppedAsRestatement: 0,
+    droppedAsAlreadyPresent: 0,
   };
 }
 

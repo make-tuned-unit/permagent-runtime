@@ -13,7 +13,8 @@
 use crate::routes::analytics_verify::Check;
 use permagent::growth::metrics::ANSWER_ENGINE_VISIT_EVENT;
 use permagent::growth::store::{
-    GrowthActionRow, VERIFIED_BY_CONTENT, VERIFIED_BY_EVENT, VERIFIED_BY_GIT, VERIFIED_BY_SELF,
+    self as growth_store, GrowthActionRow, STATUS_DISMISSED, STATUS_DONE, STATUS_SUGGESTED,
+    VERIFIED_BY_CONTENT, VERIFIED_BY_EVENT, VERIFIED_BY_GIT, VERIFIED_BY_SELF,
 };
 use permagent::projects::Project;
 use sqlx::{Pool, Sqlite};
@@ -107,6 +108,311 @@ pub fn named_paths(text: &str) -> Vec<String> {
         out.insert(token.trim_start_matches("./").to_string());
     }
     out.into_iter().collect()
+}
+
+/// Schema.org types a growth action actually proposes, and almost never appear
+/// in a repo by accident. "Event" and "Product" are not on this list — they
+/// match ordinary copy — and a check that matches everything confirms nothing.
+const DISTINCTIVE_SCHEMA: &[&str] = &[
+    "FAQPage",
+    "BreadcrumbList",
+    "HowTo",
+    "QAPage",
+    "SoftwareApplication",
+    "JobPosting",
+    "VideoObject",
+    "HowToStep",
+    "SpeakableSpecification",
+    "ItemList",
+];
+
+/// A marker strong enough that finding it in the current tree means this
+/// action's change has already landed.
+///
+/// Generic English is not a marker: "homepage" and "search" match half the
+/// repo. The Steward will only auto-dismiss when one of these is both named by
+/// the action and present in a file.
+pub fn strong_markers(text: &str) -> Vec<String> {
+    let mut out = BTreeSet::new();
+    let lower = text.to_ascii_lowercase();
+    for schema in DISTINCTIVE_SCHEMA {
+        if text.contains(schema) {
+            out.insert((*schema).to_string());
+        }
+    }
+    if lower.contains("application/ld+json")
+        || lower.contains("json-ld")
+        || lower.contains("jsonld")
+    {
+        out.insert("application/ld+json".into());
+    }
+    let structured = lower.contains("schema.org")
+        || lower.contains("structured data")
+        || lower.contains("json-ld");
+    if structured {
+        for (word, spaced, compact) in [
+            ("Event", r#""@type": "Event""#, r#""@type":"Event""#),
+            ("Product", r#""@type": "Product""#, r#""@type":"Product""#),
+            (
+                "Organization",
+                r#""@type": "Organization""#,
+                r#""@type":"Organization""#,
+            ),
+            ("Article", r#""@type": "Article""#, r#""@type":"Article""#),
+            ("WebSite", r#""@type": "WebSite""#, r#""@type":"WebSite""#),
+        ] {
+            if text.contains(word) {
+                out.insert(spaced.into());
+                out.insert(compact.into());
+            }
+        }
+    }
+    out.into_iter().collect()
+}
+
+/// Where a marker was found. `path` is repo-relative.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Presence {
+    pub marker: String,
+    pub path: String,
+}
+
+impl Presence {
+    pub fn detail(&self) -> String {
+        format!("{} in {}", self.marker, self.path)
+    }
+}
+
+/// Scan already-read files. Pure, so the Steward's dismiss rule can be asserted
+/// without a git repo on disk.
+pub fn presence_in_files(markers: &[String], files: &[(String, String)]) -> Option<Presence> {
+    if markers.is_empty() {
+        return None;
+    }
+    for (path, content) in files {
+        if is_noise_path(path) {
+            continue;
+        }
+        for marker in markers {
+            if content.contains(marker.as_str()) {
+                return Some(Presence {
+                    marker: marker.clone(),
+                    path: path.clone(),
+                });
+            }
+        }
+    }
+    None
+}
+
+fn is_noise_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.contains("node_modules/")
+        || lower.contains("/target/")
+        || lower.contains("package-lock")
+        || lower.ends_with(".lock")
+        || lower.contains("changelog")
+        || lower.contains("/.git/")
+}
+
+const READ_CAP: usize = 256 * 1024;
+
+fn read_capped(path: &Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.len() > READ_CAP {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+
+/// `git grep -l -F`; empty vec means checked, nothing found. `None` means git
+/// could not run — the same distinction `git()` makes for log.
+async fn git_grep_files(dir: &Path, needle: &str) -> Option<Vec<String>> {
+    let out = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["grep", "-l", "-F", "-I", "-z", "--", needle])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .await
+        .ok()?;
+    match out.status.code() {
+        Some(0) => Some(
+            String::from_utf8_lossy(&out.stdout)
+                .split('\0')
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect(),
+        ),
+        Some(1) => Some(Vec::new()),
+        _ => None,
+    }
+}
+
+fn action_text(title: &str, recommendation: &str, artifact: Option<&str>) -> String {
+    format!("{title} {recommendation} {}", artifact.unwrap_or_default())
+}
+
+/// Is this action's change already in the project's working tree or HEAD?
+///
+/// Independent of when the action was suggested: `verify_git` only looks at
+/// commits *since* `created_at`, which is why "Review again" kept proposing
+/// work that had been sitting in the repo the whole time. This looks at the
+/// files as they are.
+pub async fn already_present(project: &Project, text: &str) -> Option<Presence> {
+    let root = project.root_path.as_deref().filter(|p| !p.is_empty())?;
+    let root = Path::new(root);
+    let markers = strong_markers(text);
+    if markers.is_empty() {
+        return None;
+    }
+
+    let named: Vec<String> = named_paths(text)
+        .into_iter()
+        .filter(|rel| root.join(rel).is_file())
+        .collect();
+
+    let mut files: Vec<(String, String)> = Vec::new();
+    let candidates: Vec<String> = if !named.is_empty() {
+        named
+    } else {
+        let mut hits = BTreeSet::new();
+        for marker in &markers {
+            let Some(found) = git_grep_files(root, marker).await else {
+                continue;
+            };
+            for rel in found {
+                if !is_noise_path(&rel) {
+                    hits.insert(rel);
+                }
+            }
+            if hits.len() >= 12 {
+                break;
+            }
+        }
+        hits.into_iter().take(12).collect()
+    };
+
+    for rel in candidates {
+        if files.len() >= 12 {
+            break;
+        }
+        if let Some(content) = read_capped(&root.join(&rel)) {
+            files.push((rel, content));
+        }
+    }
+    presence_in_files(&markers, &files)
+}
+
+/// One suggested action the Steward took off the board because the change is
+/// already in the tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DismissedPresence {
+    pub title: String,
+    pub detail: String,
+}
+
+/// Dismiss `suggested` / `done` actions whose change is already in this
+/// project's repo.
+///
+/// Live experiments (`verified` / `measuring` / `judged`) are left alone — those
+/// are being measured, not waiting on a decision. Dismissed rows stay dismissed
+/// so the generator cannot re-propose them.
+pub async fn dismiss_already_present(
+    pool: &Pool<Sqlite>,
+    project: &Project,
+) -> Vec<DismissedPresence> {
+    let rows = match growth_store::board(pool, &project.id).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(
+                target: "permagentd::growth",
+                "Steward could not read the growth board: {e}"
+            );
+            return Vec::new();
+        }
+    };
+    let mut out = Vec::new();
+    for row in rows {
+        if row.status != STATUS_SUGGESTED && row.status != STATUS_DONE {
+            continue;
+        }
+        let text = action_text(&row.title, &row.recommendation, row.artifact.as_deref());
+        let Some(found) = already_present(project, &text).await else {
+            continue;
+        };
+        match growth_store::set_status(pool, &project.id, &row.id, STATUS_DISMISSED, None).await {
+            Ok(Some(_)) => {
+                let detail = found.detail();
+                tracing::info!(
+                    target: "permagentd::growth",
+                    "Steward dismissed \"{}\": already in the repo ({detail})",
+                    row.title
+                );
+                out.push(DismissedPresence {
+                    title: row.title,
+                    detail,
+                });
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!(
+                target: "permagentd::growth",
+                "Steward could not dismiss \"{}\": {e}",
+                row.title
+            ),
+        }
+    }
+    out
+}
+
+/// What the generator is shown about the repo, so "Review again" is a reading
+/// of the current tree rather than a re-print of last week's suggestions.
+///
+/// `None` when there is no repo to read and nothing was dismissed — silence,
+/// not an empty heading.
+pub async fn render_codebase_brief(
+    project: &Project,
+    dismissed: &[DismissedPresence],
+) -> Option<String> {
+    let root = project.root_path.as_deref().filter(|p| !p.is_empty());
+    let mut out = String::from(
+        "This project's git repo, as it is right now. Do NOT propose a change that is \
+         already in the tree.\n",
+    );
+    let mut has_repo = false;
+    if let Some(root) = root {
+        let root = Path::new(root);
+        if git(root, &["rev-parse", "--git-dir"]).await.is_some() {
+            has_repo = true;
+            if let Some(head) = git(root, &["rev-parse", "--short", "HEAD"]).await {
+                out.push_str(&format!("HEAD {head}"));
+                if let Some(subject) = git(root, &["log", "-1", "--format=%s"]).await {
+                    out.push_str(&format!(" \"{subject}\""));
+                }
+                out.push('\n');
+            }
+            if let Some(log) = git(root, &["log", "-8", "--format=%h %s"]).await {
+                if !log.is_empty() {
+                    out.push_str("Recent commits:\n");
+                    for line in log.lines() {
+                        out.push_str(&format!("- {line}\n"));
+                    }
+                }
+            }
+        }
+    }
+    if !dismissed.is_empty() {
+        out.push_str("The Steward dismissed suggested actions already present in the tree:\n");
+        for row in dismissed {
+            out.push_str(&format!("- \"{}\" — {}\n", row.title, row.detail));
+        }
+    }
+    if !has_repo && dismissed.is_empty() {
+        return None;
+    }
+    Some(out)
 }
 
 /// One commit, as `git log` reported it.
@@ -429,7 +735,7 @@ async fn verify_content(project: &Project, expect: Option<&str>) -> Check {
                     "{url} returned HTTP {}, so its content could not be read.",
                     r.status()
                 ),
-            )
+            );
         }
         Err(e) => return fail(ID, LABEL, format!("Could not fetch {url}: {e}")),
     };
@@ -683,5 +989,151 @@ mod tests {
             detail.contains("not that this change is the one that landed"),
             "{detail}"
         );
+    }
+
+    /// Generic English is not a marker. "Rewrite the homepage" is the 08-14
+    /// action the Steward cannot honestly auto-dismiss: nothing in that prose
+    /// is distinctive enough to grep for without matching half the repo.
+    #[test]
+    fn a_homepage_rewrite_names_no_strong_marker() {
+        let text = "Rewrite the homepage (/) to reduce 13-pageview entry bounce and funnel \
+                    users to category or search. The homepage does not send entering users \
+                    anywhere. Give it category and search entry points.";
+        assert!(
+            strong_markers(text).is_empty(),
+            "a check that matches everything confirms nothing: {:?}",
+            strong_markers(text)
+        );
+        assert!(presence_in_files(
+            &strong_markers(text),
+            &[("src/pages/index.astro".into(), "<h1>Welcome</h1>".into(),)]
+        )
+        .is_none());
+    }
+
+    /// The other 08-14 action: FAQPage in the tree IS the change.
+    #[test]
+    fn faqpage_in_a_named_file_is_already_present() {
+        let text = "Add structured data (schema.org Event + FAQPage) to event detail pages \
+                    in src/pages/events/[slug].astro to enable answer-engine visibility.";
+        let markers = strong_markers(text);
+        assert!(markers.iter().any(|m| m == "FAQPage"), "{markers:?}");
+        let found = presence_in_files(
+            &markers,
+            &[(
+                "src/pages/events/[slug].astro".into(),
+                r#"<script type="application/ld+json">{"@type":"FAQPage"}</script>"#.into(),
+            )],
+        )
+        .expect("FAQPage in the named file is the change");
+        assert_eq!(found.marker, "FAQPage");
+        assert_eq!(found.path, "src/pages/events/[slug].astro");
+        assert_eq!(found.detail(), "FAQPage in src/pages/events/[slug].astro");
+    }
+
+    #[test]
+    fn a_lockfile_hit_is_not_the_change() {
+        let markers = vec!["FAQPage".into()];
+        assert!(presence_in_files(
+            &markers,
+            &[("package-lock.json".into(), r#"{"FAQPage": true}"#.into(),)],
+        )
+        .is_none());
+    }
+
+    fn sh(dir: &std::path::Path, cmd: &str) {
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(cmd)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "command failed: {cmd}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn project_at(root: &std::path::Path) -> permagent::projects::Project {
+        permagent::projects::Project {
+            id: "p1".into(),
+            user_id: "u".into(),
+            slug: "p".into(),
+            name: "P".into(),
+            description: String::new(),
+            status: "active".into(),
+            root_path: Some(root.display().to_string()),
+            site_url: None,
+            repo_url: None,
+            notes: String::new(),
+            metadata_json: serde_json::json!({}),
+            graph_entity_id: None,
+            tags: vec![],
+            created_at: String::new(),
+            updated_at: String::new(),
+            last_opened_at: String::new(),
+        }
+    }
+
+    /// End to end against a real checkout: the files as they are, not commits
+    /// since the action was issued. That window is why Review kept re-proposing
+    /// work that was already in the tree.
+    #[tokio::test]
+    async fn already_present_reads_the_current_tree_not_commits_since_the_card() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        sh(dir, "git init -q -b main");
+        std::fs::create_dir_all(dir.join("src/pages")).unwrap();
+        std::fs::write(
+            dir.join("src/pages/event.astro"),
+            r#"<script type="application/ld+json">{"@type":"FAQPage"}</script>"#,
+        )
+        .unwrap();
+        sh(dir, "git add -A");
+        sh(
+            dir,
+            "git -c user.email=t@t -c user.name=t commit -q -m 'Add FAQPage schema'",
+        );
+
+        let project = project_at(dir);
+        let text = "Add structured data (schema.org Event + FAQPage) to event detail pages";
+        let found = already_present(&project, text)
+            .await
+            .expect("FAQPage is in HEAD");
+        assert_eq!(found.marker, "FAQPage");
+        assert!(found.path.ends_with("event.astro"), "{}", found.path);
+
+        // No marker, no dismiss — a rewrite with nothing to grep for.
+        assert!(already_present(&project, "Rewrite the homepage hero")
+            .await
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn the_codebase_brief_names_head_and_what_the_steward_dismissed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        sh(dir, "git init -q -b main");
+        std::fs::write(dir.join("README.md"), "hi\n").unwrap();
+        sh(dir, "git add -A");
+        sh(
+            dir,
+            "git -c user.email=t@t -c user.name=t commit -q -m 'Add FAQPage schema'",
+        );
+        let project = project_at(dir);
+        let text = render_codebase_brief(
+            &project,
+            &[DismissedPresence {
+                title: "Add FAQPage schema".into(),
+                detail: "FAQPage in src/pages/event.astro".into(),
+            }],
+        )
+        .await
+        .expect("a repo produces a brief");
+        assert!(text.contains("already in the tree"), "{text}");
+        assert!(text.contains("Add FAQPage schema"), "{text}");
+        assert!(text.contains("The Steward dismissed"), "{text}");
+        assert!(text.contains("FAQPage in src/pages/event.astro"), "{text}");
     }
 }
