@@ -108,6 +108,9 @@ hex = "0.4.3"
 # Reader (#296) Phase 2: PDF text-layer extraction (same lopdf approach as the
 # computercontroller pdf_tool; reused here to route output to the Brain).
 lopdf = "0.41.0"
+# Grow stills: branded PNG posters when the local mflux sidecar is down.
+# png-only so we do not pull JPEG/GIF/WebP into the daemon.
+image = { version = "0.25", default-features = false, features = ["png"] }
 base64 = { workspace = true }
 url = { workspace = true }
 axum = { workspace = true }

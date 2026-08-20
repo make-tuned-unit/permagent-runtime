@@ -1865,6 +1865,57 @@ mod tests {
         );
     }
 
+    /// The Grow still loop and per-project publisher must be in the
+    /// `permagent_self` brief so the agent can run them.
+    #[test]
+    fn grow_post_flow_is_in_self_knowledge() {
+        let d = find_descriptor("grow").expect("grow must be discoverable");
+        assert!(
+            d.teaching.len() >= 3,
+            "Grow teaching must cover open, draft, and connect"
+        );
+        let lesson = lesson_for("grow").expect("grow lesson");
+        assert!(
+            lesson.contains("retry_social_media"),
+            "the Grow lesson must name retry_social_media"
+        );
+        assert!(
+            lesson.contains("approve_social_post"),
+            "the Grow lesson must name approve_social_post"
+        );
+        assert!(
+            lesson.contains("connect_project_channel"),
+            "the Grow lesson must name connect_project_channel"
+        );
+
+        let brief = SelfKnowledgeBuilder {
+            agent_display_name: "Aria".to_string(),
+            scheduled_job_count: None,
+            flags: FeatureFlags::default(),
+            dispatchable_workers: Vec::new(),
+            agent_briefings: None,
+        }
+        .build();
+        assert!(brief.contains("**Grow tab**"));
+        assert!(brief.contains("retry_social_media"));
+        assert!(brief.contains("approve_social_post"));
+        assert!(brief.contains("social_content_brief"));
+        assert!(brief.contains("connect_project_channel"));
+        assert!(brief.contains("publisher_status"));
+        assert!(
+            brief.contains("title and body stay")
+                || brief.contains("without rewriting the copy")
+                || brief.contains("never throw away the copy"),
+            "the brief must say regenerating a still keeps the post copy"
+        );
+        assert!(
+            brief.contains("connected account")
+                || brief.contains("schedules the post on the connected")
+                || brief.contains("via Postiz"),
+            "the brief must say Approve posts when this project has connected the channel"
+        );
+    }
+
     /// Tokenize a capability description into whole identifier tokens (split on
     /// any non-`[A-Za-z0-9_]` char, lowercased). A tool counts as "named" only
     /// if its name is one of these tokens — so `search` is not satisfied by

@@ -2,20 +2,16 @@
 // market. Per-project GTM home: the five-pillar strategy canvas, a content
 // calendar of social posts, and Henry-driven growth actions. Henry knows the
 // project (Brain, people, docs, goals), so Grow drafts and schedules with
-// real context — the edge over a generic scheduler.
-//
-// v1 is the surface + the Henry hand-offs (prepared prompts → chat, the
-// pattern used by the Devices/Enricher panels). The multi-platform posting
-// backend (a Postiz-style bridge) and outbound sequences are epic follow-ups
-// (see the Grow epic); the GTM canvas persists per project via project tags/
-// metadata as those land.
+// real context. Publishing goes through Postiz (Cloud or self-hosted) as a
+// separate HTTP publisher — this repo does not vendor Postiz. Each project
+// connects its own Instagram / LinkedIn / X login.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { ease, font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/tokens';
-import { apiFetch } from '../../lib/api';
+import { api, apiFetch } from '../../lib/api';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { ViewHeader } from '../common/ViewHeader';
 import type { Project } from '../projects/types';
@@ -25,6 +21,7 @@ import { drainFreshness } from './analyticsFormat';
 import {
   fromDatetimeLocalValue,
   groupPostsByDay,
+  readMediaMeta,
   readPostMeta,
   toDatetimeLocalValue,
   type PostStatus,
@@ -138,7 +135,37 @@ async function saveStrategy(projectId: string, pillar: string, content: string):
 
 /** Run-all: one turn where Henry produces and SAVES every pillar. */
 function runAllPrompt(projectName: string): string {
-  return `Build the complete go-to-market strategy for "${projectName}" using everything you know about the project (Brain, people, docs, goals). Work through all five pillars — audience, value, positioning, channels, content — and for EACH one, save your result with the set_project_strategy tool (project: "${projectName}", pillar: "<key>"): content = a 2-3 sentence summary, points = [{label, detail}] labeled specifics (personas with watering holes, channels with fit reasons, alternatives with your counter-positioning), metrics = [{label, value}] stat chips (price hypothesis, audience size, post cadence). The Strategy cards render this as rich content, so fill all three fields. Also save the "workback" pillar: the launch workback schedule — points = [{label: "<date or week>", detail: "<milestone>"}] counting back from launch day. THEN turn the workback into real to-dos: create a Kanban card on this project's board for each concrete milestone with the card_create tool (title = the milestone, description = why it matters and its target week). Finish with a one-paragraph summary.${HUMANIZE_VOICE}`;
+  return `Build the complete go-to-market strategy for "${projectName}" using everything you know about the project (Brain, people, docs, goals). Work through all five pillars — audience, value, positioning, channels, content — and for EACH one, save your result with the set_project_strategy tool (project: "${projectName}", pillar: "<key>"): content = a 2-3 sentence summary, points = [{label, detail}] labeled specifics (personas with watering holes, channels with fit reasons, alternatives with your counter-positioning), metrics = [{label, value}] stat chips (price hypothesis, audience size, post cadence). The Strategy cards render this as rich content, so fill all three fields. Also save the "workback" pillar: the launch workback schedule — points = [{label: "<date or week>", detail: "<milestone>"}] counting back from launch day. THEN save this project's brand with set_project_brand (voice, origin story of why it was built, palette from its real product if you know it, donts). THEN turn the workback into real to-dos: create a Kanban card on this project's board for each concrete milestone with the card_create tool (title = the milestone, description = why it matters and its target week). Finish with a one-paragraph summary.${HUMANIZE_VOICE}`;
+}
+
+function draftPostPrompt(projectName: string): string {
+  return `For "${projectName}", call social_content_brief first and draft from THAT project's brief only — a top-performing page, a newly completed goal/feature, or the saved origin story. Create it as a social_post with card_create: title = the hook, description = the post body, post_status = "draft", harvest_kind set, format and channel that fit. Omit scheduled_for so the daemon picks the send time. A still matching this post generates automatically; do not set scheduled yourself.${HUMANIZE_VOICE}`;
+}
+
+function brandPrompt(projectName: string): string {
+  return `For "${projectName}", save this project's brand kit with set_project_brand: voice (how it writes), origin (why it was built, quoted from this project), bg/fg/accent as #RRGGBB from its real site or product UI if you know them, and donts for generated media. Use only this project — do not copy another project's kit.`;
+}
+
+interface ProjectBrand {
+  voice: string;
+  origin: string;
+  bg: string;
+  fg: string;
+  accent: string;
+}
+
+function readBrand(project: Project): ProjectBrand {
+  const raw = (project.metadataJson as { brand?: Record<string, unknown> } | null)?.brand;
+  const s = (k: string) => (typeof raw?.[k] === 'string' ? (raw[k] as string) : '');
+  return { voice: s('voice'), origin: s('origin'), bg: s('bg'), fg: s('fg'), accent: s('accent') };
+}
+
+async function saveBrand(projectId: string, brand: ProjectBrand): Promise<void> {
+  await apiFetch(`/api/projects/${encodeURIComponent(projectId)}/brand`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(brand),
+  });
 }
 
 // The deterministic growth inbox (backend GET /api/projects/:id/growth-inbox).
@@ -339,7 +366,14 @@ export function GrowView() {
       })
       .catch(() => {
         if (generation !== postsRequestGeneration.current) return;
-        if (!opts?.silent) { setPosts([]); setPostsState('error'); }
+        if (opts?.silent) {
+          // Keep a list that's already on screen. If this was racing the
+          // first load, do not leave the calendar stuck on "Loading posts…".
+          setPostsState((s) => (s === 'loading' ? 'error' : s));
+          return;
+        }
+        setPosts([]);
+        setPostsState('error');
       });
   }, []);
 
@@ -348,6 +382,17 @@ export function GrowView() {
     loadPosts(activeId);
     return () => { ++postsRequestGeneration.current; };
   }, [activeId, loadPosts]);
+
+  // project_changed (brand/strategy save, media job finished) refreshes
+  // the calendar without a loading flash. Skip the initial stamp — the
+  // activeId effect already loaded.
+  const seenPostsRev = useRef(projectsRev);
+  useEffect(() => {
+    if (!activeId) return;
+    if (seenPostsRev.current === projectsRev) return;
+    seenPostsRev.current = projectsRev;
+    loadPosts(activeId, { silent: true });
+  }, [projectsRev, activeId, loadPosts]);
 
   // PATCH/DELETE /api/projects/:id/cards/:cardId — confirmed paths in routes/cards.rs
   // (patch + delete on the same resource; there is no PUT /api/cards/:id).
@@ -615,6 +660,13 @@ export function GrowView() {
                   onSave={(content) => saveStrategy(active.id, pillar.key, content)}
                 />
               ))}
+              <BrandCard
+                colors={colors}
+                brand={readBrand(active)}
+                onAsk={() => send(brandPrompt(active.name))}
+                onSave={(next) => saveBrand(active.id, next)}
+                agentName={agentName}
+              />
             </div>
           </section>
           )}
@@ -626,7 +678,7 @@ export function GrowView() {
               <span style={{ fontSize: 10, color: colors.textDim, background: colors.bgDeeper, padding: '1px 6px', borderRadius: radius.pill, fontVariantNumeric: 'tabular-nums' }}>{posts.length}</span>
               <div style={{ flex: 1 }} />
               <button
-                onClick={() => send(`For "${active.name}", draft a social post I can schedule (pick the best channel from the strategy above), and create it as a social_post card on this project with card_create: title = the hook, description = the post body, scheduled_for = an RFC-3339 instant on the day you recommend posting it, post_status = "draft". It lands on this project's content calendar on that day, so pick a real date rather than leaving it unscheduled.${HUMANIZE_VOICE}`)}
+                onClick={() => send(draftPostPrompt(active.name))}
                 style={{
                   fontSize: 11, fontFamily: font.body, color: colors.text,
                   background: 'transparent', border: `1px solid ${colors.border}`,
@@ -634,6 +686,9 @@ export function GrowView() {
                 }}
               >+ Draft a post with {agentName}</button>
             </div>
+            <HiggsfieldConnect colors={colors} />
+            <PostizConnect colors={colors} />
+            <ProjectChannels projectId={active.id} colors={colors} />
             {postsMutationError && (
               <div role="alert" style={{
                 fontSize: 12, color: colors.danger, marginBottom: 10,
@@ -657,7 +712,7 @@ export function GrowView() {
                 border: `1px dashed ${colors.border}`, borderRadius: radius.lg, padding: 28,
                 textAlign: 'center', fontSize: 12, color: colors.textDim,
               }}>
-                No posts yet. Draft one with {agentName} above — it will be written in the project's voice and filed here as a scheduled card.
+                No posts yet. Draft one with {agentName} above — it is written in this project's voice, a still is generated, and Approve schedules it on this project's connected accounts when you are ready.
               </div>
             ) : (
               <CalendarLens
@@ -665,6 +720,7 @@ export function GrowView() {
                 posts={posts}
                 colors={colors}
                 onMutate={mutatePost}
+                onReload={() => loadPosts(active.id, { silent: true })}
               />
             )}
           </section>
@@ -836,6 +892,290 @@ function PillarCard({
   );
 }
 
+function BrandCard({
+  colors, brand, onAsk, onSave, agentName,
+}: {
+  colors: ThemeColors;
+  brand: ProjectBrand;
+  onAsk: () => void;
+  onSave: (brand: ProjectBrand) => Promise<void>;
+  agentName: string;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(brand);
+  const [saving, setSaving] = useState(false);
+  const filled = !!(brand.voice || brand.origin || brand.bg);
+  const shell: CSSProperties = {
+    background: colors.surface, border: `1px solid ${filled ? colors.borderHi : colors.border}`,
+    borderRadius: radius.lg, padding: 16, display: 'flex', flexDirection: 'column', gap: 10, minHeight: 120,
+  };
+  const field: CSSProperties = {
+    width: '100%', fontSize: 12, fontFamily: font.body, color: colors.text,
+    background: colors.bgDeeper, border: `1px solid ${colors.border}`, borderRadius: radius.sm,
+    padding: '6px 8px', boxSizing: 'border-box',
+  };
+  if (editing) {
+    return (
+      <div style={shell}>
+        <div style={{ fontFamily: font.body, fontSize: 14, fontWeight: 600, color: colors.text }}>Brand</div>
+        <textarea value={draft.voice} onChange={(e) => setDraft({ ...draft, voice: e.target.value })} placeholder="Voice" rows={3} style={field} />
+        <textarea value={draft.origin} onChange={(e) => setDraft({ ...draft, origin: e.target.value })} placeholder="Why this was built" rows={3} style={field} />
+        <div style={{ display: 'flex', gap: 6 }}>
+          <input value={draft.bg} onChange={(e) => setDraft({ ...draft, bg: e.target.value })} placeholder="#bg" aria-label="Background hex" style={field} />
+          <input value={draft.fg} onChange={(e) => setDraft({ ...draft, fg: e.target.value })} placeholder="#fg" aria-label="Foreground hex" style={field} />
+          <input value={draft.accent} onChange={(e) => setDraft({ ...draft, accent: e.target.value })} placeholder="#accent" aria-label="Accent hex" style={field} />
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            type="button"
+            disabled={saving}
+            onClick={() => {
+              setSaving(true);
+              void onSave(draft).then(() => setEditing(false)).finally(() => setSaving(false));
+            }}
+            style={{ fontSize: 11, fontFamily: font.body, fontWeight: 600, color: colors.cyan, background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`, borderRadius: radius.md, padding: '5px 12px', cursor: 'pointer' }}
+          >{saving ? 'Saving…' : 'Save'}</button>
+          <button type="button" onClick={() => setEditing(false)} style={{ fontSize: 11, fontFamily: font.body, color: colors.textMuted, background: 'transparent', border: 'none', cursor: 'pointer' }}>Cancel</button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div style={shell}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ fontFamily: font.body, fontSize: 14, fontWeight: 600, color: colors.text }}>Brand</div>
+        <div style={{ flex: 1 }} />
+        <button type="button" onClick={onAsk} style={{ fontSize: 11, fontFamily: font.body, color: colors.text, background: 'transparent', border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: '4px 10px', cursor: 'pointer' }}>Ask {agentName}</button>
+        <button type="button" onClick={() => { setDraft(brand); setEditing(true); }} style={{ fontSize: 11, fontFamily: font.body, color: colors.text, background: 'transparent', border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: '4px 10px', cursor: 'pointer' }}>Edit</button>
+      </div>
+      {filled ? (
+        <>
+          {brand.voice && <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>{brand.voice}</div>}
+          {brand.origin && <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>{brand.origin}</div>}
+          <div style={{ display: 'flex', gap: 6 }}>
+            {[['bg', brand.bg], ['fg', brand.fg], ['accent', brand.accent]].filter(([, v]) => v).map(([k, v]) => (
+              <span key={k} style={{ fontSize: 10, fontFamily: font.mono, color: colors.textDim }}>{k} {v}</span>
+            ))}
+          </div>
+        </>
+      ) : (
+        <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>
+          Voice, palette, and why this project was built. Empty until you save a kit for this project — nothing is shared across projects.
+        </div>
+      )}
+    </div>
+  );
+}
+
+type ChannelBinding = {
+  integrationId?: string;
+  identifier?: string;
+  name?: string;
+  profile?: string;
+};
+
+type PublisherSnap = {
+  configured: boolean;
+  baseUrl?: string;
+  channels?: Record<string, ChannelBinding>;
+  pending?: { channel: string } | null;
+};
+
+const NETWORKS: { id: string; label: string }[] = [
+  { id: 'ig', label: 'Instagram' },
+  { id: 'li', label: 'LinkedIn' },
+  { id: 'x', label: 'X' },
+];
+
+function PostizConnect({ colors }: { colors: ThemeColors }) {
+  const [configured, setConfigured] = useState<boolean | null>(null);
+  const [open, setOpen] = useState(false);
+  const [apiKey, setApiKey] = useState('');
+  const [baseUrl, setBaseUrl] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    apiFetch<PublisherSnap>('/api/grow/postiz')
+      .then((s) => setConfigured(!!s && !Array.isArray(s) && s.configured))
+      .catch(() => setConfigured(false));
+  }, []);
+  const field: CSSProperties = {
+    fontSize: 11, fontFamily: font.mono, color: colors.text, background: colors.bgDeeper,
+    border: `1px solid ${colors.border}`, borderRadius: radius.sm, padding: '4px 6px',
+  };
+  const save = async () => {
+    setBusy(true);
+    try {
+      const s = await apiFetch<PublisherSnap>('/api/grow/postiz', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey, baseUrl: baseUrl.trim() || undefined }),
+      });
+      setConfigured(s.configured);
+      setOpen(false);
+      setApiKey('');
+    } finally { setBusy(false); }
+  };
+  return (
+    <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 8 }}>
+      Posting uses your Postiz account (Cloud by default). {configured ? 'API key saved.' : 'Not connected — Approve stays on this calendar until you save a key and log in to a network for this project.'}
+      {' '}
+      <button type="button" onClick={() => setOpen((v) => !v)} style={{ fontSize: 11, fontFamily: font.body, color: colors.text, background: 'transparent', border: 'none', textDecoration: 'underline', cursor: 'pointer', padding: 0 }}>
+        {configured ? 'Replace key' : 'Save API key'}
+      </button>
+      {open && (
+        <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <input value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="Postiz API key" type="password" aria-label="Postiz API key" style={field} />
+          <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.postiz.com/public/v1" aria-label="Postiz base URL" style={{ ...field, minWidth: 220 }} />
+          <button type="button" disabled={busy || !apiKey.trim()} onClick={() => void save()} style={{ fontSize: 11, fontFamily: font.body, color: colors.cyan, background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`, borderRadius: radius.md, padding: '4px 10px', cursor: 'pointer' }}>Save</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProjectChannels({ projectId, colors }: { projectId: string; colors: ThemeColors }) {
+  const [snap, setSnap] = useState<PublisherSnap | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loginUrl, setLoginUrl] = useState<string | null>(null);
+  const load = useCallback(() => {
+    apiFetch<PublisherSnap>(`/api/projects/${encodeURIComponent(projectId)}/publisher`)
+      .then((s) => {
+        if (!s || Array.isArray(s)) return;
+        setSnap(s);
+        if (!s.pending) setLoginUrl(null);
+      })
+      .catch(() => setSnap({ configured: false, channels: {}, pending: null }));
+  }, [projectId]);
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    if (!snap?.pending) return;
+    const t = window.setInterval(load, 2000);
+    return () => window.clearInterval(t);
+  }, [snap?.pending, load]);
+
+  const connect = async (channel: string) => {
+    setBusy(channel);
+    setError(null);
+    try {
+      const start = await apiFetch<{ url: string; channel: string; label: string }>(
+        `/api/projects/${encodeURIComponent(projectId)}/publisher/connect`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ channel }) },
+      );
+      setLoginUrl(start.url);
+      load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally { setBusy(null); }
+  };
+  const disconnect = async (channel: string) => {
+    setBusy(channel);
+    setError(null);
+    try {
+      const next = await apiFetch<PublisherSnap>(
+        `/api/projects/${encodeURIComponent(projectId)}/publisher/${encodeURIComponent(channel)}`,
+        { method: 'DELETE' },
+      );
+      setSnap(next);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally { setBusy(null); }
+  };
+
+  const channels = snap?.channels ?? {};
+  const pending = snap?.pending?.channel;
+  const configured = !!snap?.configured;
+  const anyBound = NETWORKS.some((n) => channels[n.id]?.integrationId);
+
+  return (
+    <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 12 }}>
+      <div style={{ marginBottom: 8 }}>
+        {anyBound
+          ? 'Approve schedules this post on the connected account for that channel.'
+          : configured
+            ? 'Connect Instagram, LinkedIn, or X for this project. A login window opens; after you sign in, that account is ready to post to.'
+            : 'Approve parks a draft on this calendar until this project has a connected account.'}
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        {NETWORKS.map((n) => {
+          const bound = channels[n.id];
+          const waiting = pending === n.id;
+          const label = bound?.name || bound?.profile
+            ? `${n.label} · ${bound.name || bound.profile}`
+            : n.label;
+          return (
+            <div key={n.id} style={{ display: 'flex', alignItems: 'center', gap: 6, border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: '4px 8px' }}>
+              <span style={{ color: bound ? colors.text : colors.textDim }}>{waiting ? `Waiting for ${n.label} login…` : label}</span>
+              {bound ? (
+                <button type="button" disabled={busy === n.id} onClick={() => void disconnect(n.id)} style={{ fontSize: 11, fontFamily: font.body, color: colors.text, background: 'transparent', border: 'none', textDecoration: 'underline', cursor: 'pointer', padding: 0 }}>
+                  Disconnect
+                </button>
+              ) : (
+                <button type="button" disabled={!configured || busy === n.id} onClick={() => void connect(n.id)} style={{ fontSize: 11, fontFamily: font.body, color: colors.cyan, background: 'transparent', border: 'none', textDecoration: 'underline', cursor: 'pointer', padding: 0 }}>
+                  {waiting ? 'Open login again' : `Connect ${n.label}`}
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {loginUrl && (
+        <div style={{ marginTop: 6 }}>
+          If a browser window did not open,{' '}
+          <a href={loginUrl} target="_blank" rel="noreferrer" style={{ color: colors.cyan }}>open the {pending ? NETWORKS.find((n) => n.id === pending)?.label ?? '' : ''} login</a>.
+        </div>
+      )}
+      {error && <div role="alert" style={{ color: colors.danger, marginTop: 6 }}>{error}</div>}
+    </div>
+  );
+}
+
+function HiggsfieldConnect({ colors }: { colors: ThemeColors }) {
+  const [configured, setConfigured] = useState<boolean | null>(null);
+  const [open, setOpen] = useState(false);
+  const [keyId, setKeyId] = useState('');
+  const [secret, setSecret] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    apiFetch<{ configured: boolean }>('/api/grow/higgsfield')
+      .then((s) => setConfigured(s.configured))
+      .catch(() => setConfigured(false));
+  }, []);
+  const field: CSSProperties = {
+    fontSize: 11, fontFamily: font.mono, color: colors.text, background: colors.bgDeeper,
+    border: `1px solid ${colors.border}`, borderRadius: radius.sm, padding: '4px 6px',
+  };
+  const save = async () => {
+    setBusy(true);
+    try {
+      const s = await apiFetch<{ configured: boolean }>('/api/grow/higgsfield', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keyId, secret }),
+      });
+      setConfigured(s.configured);
+      setOpen(false);
+      setSecret('');
+    } finally { setBusy(false); }
+  };
+  return (
+    <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 12 }}>
+      Reels use your Higgsfield account. {configured ? 'Connected.' : 'Not connected — stills still generate locally.'}
+      {' '}
+      <button type="button" onClick={() => setOpen((v) => !v)} style={{ fontSize: 11, fontFamily: font.body, color: colors.text, background: 'transparent', border: 'none', textDecoration: 'underline', cursor: 'pointer', padding: 0 }}>
+        {configured ? 'Replace keys' : 'Connect'}
+      </button>
+      {open && (
+        <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+          <input value={keyId} onChange={(e) => setKeyId(e.target.value)} placeholder="Key ID" aria-label="Higgsfield key id" style={field} />
+          <input value={secret} onChange={(e) => setSecret(e.target.value)} placeholder="Secret" type="password" aria-label="Higgsfield secret" style={field} />
+          <button type="button" disabled={busy} onClick={() => void save()} style={{ fontSize: 11, fontFamily: font.body, color: colors.cyan, background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`, borderRadius: radius.md, padding: '4px 10px', cursor: 'pointer' }}>Save</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Shared async-state blocks ────────────────────────────────────────────────
 
 /**
@@ -866,12 +1206,13 @@ function SkeletonCards({ colors, count = 2, height = 76 }: { colors: ThemeColors
 }
 
 function CalendarLens({
-  projectId, posts, colors, onMutate,
+  projectId, posts, colors, onMutate, onReload,
 }: {
   projectId: string;
   posts: SocialCard[];
   colors: ThemeColors;
   onMutate: (projectId: string, post: SocialCard, body: Record<string, unknown> | null) => Promise<void>;
+  onReload: () => void;
 }) {
   const groups = groupPostsByDay(posts);
   return (
@@ -890,6 +1231,7 @@ function CalendarLens({
                 post={post}
                 colors={colors}
                 onMutate={onMutate}
+                onReload={onReload}
               />
             ))}
           </div>
@@ -900,31 +1242,32 @@ function CalendarLens({
 }
 
 function CalendarPostRow({
-  projectId, post, colors, onMutate,
+  projectId, post, colors, onMutate, onReload,
 }: {
   projectId: string;
   post: SocialCard;
   colors: ThemeColors;
   onMutate: (projectId: string, post: SocialCard, body: Record<string, unknown> | null) => Promise<void>;
+  onReload: () => void;
 }) {
   const meta = readPostMeta(post);
+  const media = readMediaMeta(post);
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(post.title);
   const [body, setBody] = useState(post.description ?? '');
   const [when, setWhen] = useState(toDatetimeLocalValue(meta.scheduledFor));
   const [status, setStatus] = useState<PostStatus>(meta.status);
   const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState(media.mediaFeedback);
 
-  // Re-seed from the server only when the server's VALUES change. The 15s
-  // calendar poll hands back a fresh object every tick, so depending on `post`
-  // itself would wipe a half-typed reschedule four times a minute.
   useEffect(() => {
     if (editing) return;
     setTitle(post.title);
     setBody(post.description ?? '');
     setWhen(toDatetimeLocalValue(meta.scheduledFor));
     setStatus(meta.status);
-  }, [post.title, post.description, meta.scheduledFor, meta.status, editing]);
+    setFeedback(media.mediaFeedback);
+  }, [post.title, post.description, meta.scheduledFor, meta.status, media.mediaFeedback, editing]);
 
   const btn: CSSProperties = {
     fontSize: 11, fontFamily: font.body, color: colors.text,
@@ -951,8 +1294,6 @@ function CalendarPostRow({
     setWhen(nextWhen);
     setStatus(nextStatus);
     const scheduledFor = fromDatetimeLocalValue(nextWhen);
-    // Writing `null` would be indistinguishable from "never scheduled" on read,
-    // so an emptied field REMOVES the key rather than storing a null.
     const metadataJson = {
       ...(post.metadataJson ?? {}),
       postStatus: nextStatus,
@@ -965,12 +1306,38 @@ function CalendarPostRow({
     finally { setBusy(false); }
   };
 
+  const approve = async () => {
+    setBusy(true);
+    try {
+      await apiFetch(`/api/projects/${encodeURIComponent(projectId)}/cards/${encodeURIComponent(post.id)}/approve`, {
+        method: 'POST',
+      });
+      onReload();
+    } finally { setBusy(false); }
+  };
+
+  const retryMedia = async () => {
+    setBusy(true);
+    try {
+      await apiFetch(`/api/projects/${encodeURIComponent(projectId)}/cards/${encodeURIComponent(post.id)}/media/retry`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ feedback: feedback.trim() || undefined }),
+      });
+      onReload();
+    } catch { /* parent */ }
+    finally { setBusy(false); }
+  };
+
   const remove = async () => {
     setBusy(true);
     try { await onMutate(projectId, post, null); }
     catch { /* surfaced by parent */ }
     finally { setBusy(false); }
   };
+
+  const canApprove = status === 'draft' && media.mediaStatus === 'ready';
+  const canRetryStill = status === 'draft' && media.mediaStatus !== 'generating';
 
   return (
     <div style={{
@@ -979,6 +1346,9 @@ function CalendarPostRow({
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
         <span style={chip}>{status}</span>
+        <span style={chip}>{media.mediaStatus}</span>
+        {media.channel && <span style={chip}>{media.channel}</span>}
+        {media.format && <span style={chip}>{media.format}</span>}
         <div style={{ flex: 1 }} />
         {!editing ? (
           <>
@@ -992,6 +1362,17 @@ function CalendarPostRow({
           </>
         )}
       </div>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+        {media.stillFile && (
+          <PostStill
+            projectId={projectId}
+            cardId={post.id}
+            filename={media.stillFile}
+            cacheKey={media.mediaStatus}
+            colors={colors}
+          />
+        )}
+        <div style={{ flex: 1, minWidth: 0 }}>
       {editing ? (
         <>
           <input
@@ -1024,6 +1405,11 @@ function CalendarPostRow({
           )}
         </>
       )}
+        </div>
+      </div>
+      {media.mediaError && (
+        <div style={{ fontSize: 11, color: colors.textDim, marginTop: 8 }}>{media.mediaError}</div>
+      )}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10, alignItems: 'center' }}>
         <label style={{ fontSize: 11, color: colors.textDim, display: 'flex', alignItems: 'center', gap: 6 }}>
           Schedule
@@ -1032,14 +1418,10 @@ function CalendarPostRow({
             aria-label="Reschedule post"
             value={when}
             disabled={busy}
-            // Commit on blur, not on change: a datetime-local fires change on
-            // every segment the user edits, and reads back "" while the value
-            // is incomplete — saving those would PATCH once per keystroke and
-            // briefly unschedule the post mid-edit.
             onChange={(e) => setWhen(e.target.value)}
             onBlur={() => {
               if (when === toDatetimeLocalValue(meta.scheduledFor)) return;
-              void saveSchedule(when, status === 'draft' && when ? 'scheduled' : status);
+              void saveSchedule(when, status);
             }}
             style={{
               fontSize: 11, fontFamily: font.body, color: colors.text,
@@ -1048,6 +1430,7 @@ function CalendarPostRow({
             }}
           />
         </label>
+        {status !== 'draft' && (
         <label style={{ fontSize: 11, color: colors.textDim, display: 'flex', alignItems: 'center', gap: 6 }}>
           Status
           <select
@@ -1061,13 +1444,95 @@ function CalendarPostRow({
               borderRadius: radius.sm, padding: '4px 6px',
             }}
           >
-            <option value="draft">draft</option>
             <option value="scheduled">scheduled</option>
             <option value="posted">posted</option>
           </select>
         </label>
+        )}
+        {canApprove && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void approve()}
+            style={{
+              ...btn,
+              color: colors.cyan,
+              borderColor: colors.borderHi,
+              fontWeight: 600,
+            }}
+          >Approve</button>
+        )}
       </div>
+      {canRetryStill && (
+        <div style={{ display: 'flex', gap: 8, marginTop: 10, alignItems: 'flex-start' }}>
+          <textarea
+            value={feedback}
+            onChange={(e) => setFeedback(e.target.value)}
+            disabled={busy}
+            aria-label="Still taste notes"
+            placeholder="Taste notes for a new still — copy stays"
+            rows={2}
+            style={{
+              flex: 1, fontSize: 11, fontFamily: font.body, color: colors.text,
+              background: colors.bgDeeper, border: `1px solid ${colors.border}`,
+              borderRadius: radius.sm, padding: '6px 8px', resize: 'vertical',
+              boxSizing: 'border-box',
+            }}
+          />
+          <button
+            type="button"
+            style={btn}
+            disabled={busy}
+            onClick={() => void retryMedia()}
+          >Regenerate still</button>
+        </div>
+      )}
     </div>
+  );
+}
+
+function PostStill({
+  projectId, cardId, filename, cacheKey, colors,
+}: {
+  projectId: string;
+  cardId: string;
+  filename: string;
+  cacheKey?: string;
+  colors: ThemeColors;
+}) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    let objectUrl: string | null = null;
+    api.fetchGrowMediaBlob(projectId, cardId, filename)
+      .then((blob) => {
+        if (!live) return;
+        objectUrl = URL.createObjectURL(blob);
+        setUrl(objectUrl);
+      })
+      .catch(() => { /* still generating or missing */ });
+    return () => {
+      live = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [projectId, cardId, filename, cacheKey]);
+  if (!url) {
+    return (
+      <div style={{
+        width: 72, height: 90, borderRadius: radius.sm,
+        background: colors.bgDeeper, border: `1px solid ${colors.border}`,
+      }} />
+    );
+  }
+  return (
+    <img
+      src={url}
+      alt=""
+      style={{
+        width: 72, height: 90, objectFit: 'cover', borderRadius: radius.sm,
+        border: `1px solid ${colors.border}`,
+      }}
+    />
   );
 }
 

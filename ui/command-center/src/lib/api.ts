@@ -1488,6 +1488,16 @@ export const api = {
     return response.blob();
   },
 
+  fetchGrowMediaBlob: async (projectId: string, cardId: string, filename: string): Promise<Blob> => {
+    if (!_daemonToken) await loadDaemonToken();
+    const response = await fetch(
+      `${API_BASE_URL}/api/projects/${encodeURIComponent(projectId)}/cards/${encodeURIComponent(cardId)}/media/${encodeURIComponent(filename)}`,
+      { headers: authHeaders() },
+    );
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.blob();
+  },
+
   /** Delete a project document (row + on-disk file). */
   deleteProjectDocument: (projectId: string, docId: string) =>
     fetch(

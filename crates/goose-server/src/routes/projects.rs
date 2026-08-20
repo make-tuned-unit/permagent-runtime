@@ -2051,6 +2051,60 @@ async fn set_project_strategy_handler(
     Ok(Json(ProjectResponse::from(updated)))
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct SetBrandBody {
+    #[serde(default)]
+    voice: Option<String>,
+    #[serde(default)]
+    origin: Option<String>,
+    #[serde(default)]
+    bg: Option<String>,
+    #[serde(default)]
+    fg: Option<String>,
+    #[serde(default)]
+    accent: Option<String>,
+    #[serde(default)]
+    typeface: Option<String>,
+    #[serde(default)]
+    donts: Option<Vec<String>>,
+}
+
+/// PUT /api/projects/{id}/brand — merge-write this project's Grow brand kit.
+async fn set_project_brand_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<SetBrandBody>,
+) -> Result<Json<ProjectResponse>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let project = projects::get_project_by_id_or_slug(&pool, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+    let updated = projects::set_project_brand(
+        &pool,
+        &project.id,
+        projects::ProjectBrand {
+            voice: body.voice.unwrap_or_default(),
+            origin: body.origin.unwrap_or_default(),
+            bg: body.bg.unwrap_or_default(),
+            fg: body.fg.unwrap_or_default(),
+            accent: body.accent.unwrap_or_default(),
+            typeface: body.typeface.unwrap_or_default(),
+            donts: body.donts.unwrap_or_default(),
+            updated_at: None,
+        },
+    )
+    .await
+    .map_err(|e| (StatusCode::BAD_REQUEST, e))?
+    .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+    events::emit(events::project_changed(&updated.id, "updated"));
+    Ok(Json(ProjectResponse::from(updated)))
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/projects", get(list_projects_handler))
@@ -2062,6 +2116,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route(
             "/api/projects/{id}/strategy/{pillar}",
             axum::routing::put(set_project_strategy_handler),
+        )
+        .route(
+            "/api/projects/{id}/brand",
+            axum::routing::put(set_project_brand_handler),
         )
         .route("/api/projects/{id}/intel", get(list_project_intel_handler))
         .route(

@@ -605,6 +605,151 @@ pub async fn set_project_strategy(
     .await
 }
 
+/// Visual + voice identity for a project's Grow posts. Stored on
+/// `metadata_json.brand`. Empty until the user (or the agent, at their
+/// request) saves it — never prefilled with another project's kit.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectBrand {
+    pub voice: String,
+    pub origin: String,
+    pub bg: String,
+    pub fg: String,
+    pub accent: String,
+    pub typeface: String,
+    pub donts: Vec<String>,
+    pub updated_at: Option<String>,
+}
+
+impl ProjectBrand {
+    pub fn from_metadata(metadata: &serde_json::Value) -> Self {
+        let raw = metadata
+            .get("brand")
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
+        let str_field = |k: &str| {
+            raw.get(k)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        };
+        let donts = raw
+            .get("donts")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|x| x.as_str().map(|s| s.trim().to_string()))
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            voice: str_field("voice"),
+            origin: str_field("origin"),
+            bg: str_field("bg"),
+            fg: str_field("fg"),
+            accent: str_field("accent"),
+            typeface: str_field("typeface"),
+            donts,
+            updated_at: raw
+                .get("updated_at")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.voice.is_empty()
+            && self.origin.is_empty()
+            && self.bg.is_empty()
+            && self.fg.is_empty()
+            && self.accent.is_empty()
+            && self.typeface.is_empty()
+            && self.donts.is_empty()
+    }
+}
+
+fn valid_hex_color(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 7 && b[0] == b'#' && b[1..].iter().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Merge-write the project's brand bag. Blank fields are omitted rather than
+/// stored as empty strings, so a partial save cannot wipe a previous origin
+/// with "". Pass `Some("")` only when the user cleared a field on purpose —
+/// callers that mean "leave it" should pass `None`.
+pub async fn set_project_brand(
+    pool: &Pool<Sqlite>,
+    project_id: &str,
+    patch: ProjectBrand,
+) -> Result<Option<Project>, String> {
+    for (name, value) in [
+        ("bg", patch.bg.as_str()),
+        ("fg", patch.fg.as_str()),
+        ("accent", patch.accent.as_str()),
+    ] {
+        if !value.is_empty() && !valid_hex_color(value) {
+            return Err(format!("{name} must be a #RRGGBB hex color, got '{value}'"));
+        }
+    }
+    let existing = match get_project(pool, project_id).await? {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+    let mut current = ProjectBrand::from_metadata(&existing.metadata_json);
+    if !patch.voice.is_empty() {
+        current.voice = patch.voice;
+    }
+    if !patch.origin.is_empty() {
+        current.origin = patch.origin;
+    }
+    if !patch.bg.is_empty() {
+        current.bg = patch.bg;
+    }
+    if !patch.fg.is_empty() {
+        current.fg = patch.fg;
+    }
+    if !patch.accent.is_empty() {
+        current.accent = patch.accent;
+    }
+    if !patch.typeface.is_empty() {
+        current.typeface = patch.typeface;
+    }
+    if !patch.donts.is_empty() {
+        current.donts = patch.donts;
+    }
+    current.updated_at = Some(chrono::Utc::now().to_rfc3339());
+
+    let mut metadata = existing.metadata_json.clone();
+    if !metadata.is_object() {
+        metadata = serde_json::json!({});
+    }
+    let brand = serde_json::json!({
+        "voice": current.voice,
+        "origin": current.origin,
+        "bg": current.bg,
+        "fg": current.fg,
+        "accent": current.accent,
+        "typeface": current.typeface,
+        "donts": current.donts,
+        "updated_at": current.updated_at,
+    });
+    metadata
+        .as_object_mut()
+        .expect("just normalized to an object")
+        .insert("brand".to_string(), brand);
+
+    update_project(
+        pool,
+        project_id,
+        UpdateProject {
+            metadata_json: Some(metadata),
+            ..Default::default()
+        },
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -981,5 +1126,78 @@ mod tests {
             .filter(|p| p.id == PERSONAL_PROJECT_ID)
             .count();
         assert_eq!(personal_count, 1);
+    }
+
+    #[test]
+    fn brand_from_empty_metadata_is_blank_not_a_builtin_kit() {
+        let brand = ProjectBrand::from_metadata(&serde_json::json!({}));
+        assert!(brand.is_empty());
+        assert!(brand.voice.is_empty());
+        assert!(brand.origin.is_empty());
+        assert!(brand.bg.is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_project_brand_merges_and_rejects_bad_hex() {
+        let pool = test_pool().await;
+        let p = create_project(
+            &pool,
+            CreateProject {
+                name: "Brandable".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let err = set_project_brand(
+            &pool,
+            &p.id,
+            ProjectBrand {
+                bg: "blue".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("#RRGGBB"), "unexpected: {err}");
+
+        set_project_brand(
+            &pool,
+            &p.id,
+            ProjectBrand {
+                voice: "Short sentences. No hype.".into(),
+                origin: "Built because the old workflow broke.".into(),
+                bg: "#111111".into(),
+                fg: "#F5F5F0".into(),
+                accent: "#C45C26".into(),
+                donts: vec!["fake UI screenshots".into()],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let loaded = get_project(&pool, &p.id).await.unwrap().unwrap();
+        let brand = ProjectBrand::from_metadata(&loaded.metadata_json);
+        assert_eq!(brand.voice, "Short sentences. No hype.");
+        assert_eq!(brand.origin, "Built because the old workflow broke.");
+        assert_eq!(brand.bg, "#111111");
+        assert_eq!(brand.donts, vec!["fake UI screenshots"]);
+        assert!(brand.updated_at.is_some());
+
+        // Partial save keeps origin.
+        set_project_brand(
+            &pool,
+            &p.id,
+            ProjectBrand {
+                voice: "Even shorter.".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let loaded = get_project(&pool, &p.id).await.unwrap().unwrap();
+        let brand = ProjectBrand::from_metadata(&loaded.metadata_json);
+        assert_eq!(brand.voice, "Even shorter.");
+        assert_eq!(brand.origin, "Built because the old workflow broke.");
     }
 }
