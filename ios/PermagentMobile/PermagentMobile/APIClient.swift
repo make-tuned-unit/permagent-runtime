@@ -72,6 +72,23 @@ actor APIClient {
         guard (200..<300).contains(http.statusCode) else { throw APIError.badStatus(http.statusCode) }
     }
 
+    /// POST that returns the raw body. `/config/read` answers a bare JSON
+    /// value (`true` / `null` / a string), not an object `get` can decode —
+    /// same contract the desktop `readConfig` uses.
+    func postData<B: Encodable>(_ path: String, body: B) async throws -> Data {
+        guard let config else { throw APIError.notPaired }
+        var req = URLRequest(url: config.baseURL.appendingPathComponent(path))
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(config.token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONEncoder().encode(body)
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse else { throw APIError.badStatus(0) }
+        if http.statusCode == 401 { throw APIError.unauthorized }
+        guard (200..<300).contains(http.statusCode) else { throw APIError.badStatus(http.statusCode) }
+        return data
+    }
+
     /// Multipart upload of a recorded clip to the local dictation model
     /// (POST /api/dictation/transcribe → `{ text }`). The daemon reads the first
     /// multipart field regardless of name; we send it as `audio`. A 503 surfaces
@@ -413,6 +430,170 @@ extension APIClient {
         }
         struct Resp: Decodable { let text: String }
         return try JSONDecoder().decode(Resp.self, from: data).text
+    }
+
+    /// Bare JSON value from `/config/read`. Only a literal `true` is on —
+    /// matching the desktop `readFlag` (a missing key, `"true"`, or `1` is off).
+    func readConfigFlag(_ key: String) async -> Bool {
+        struct Req: Encodable { let key: String; let is_secret: Bool }
+        guard let data = try? await postData("/config/read", body: Req(key: key, is_secret: false)) else {
+            return false
+        }
+        return (try? JSONDecoder().decode(Bool.self, from: data)) == true
+    }
+
+    func upsertConfig(_ key: String, value: Bool) async throws {
+        struct Req: Encodable { let key: String; let value: Bool; let is_secret: Bool }
+        try await send("/config/upsert", body: Req(key: key, value: value, is_secret: false))
+    }
+
+    func integrations() async throws -> [IntegrationStatus] {
+        try await get("/integrations", as: [IntegrationStatus].self)
+    }
+
+    func agentRoster() async throws -> AgentRoster {
+        try await get("/api/agents/roster", as: AgentRoster.self)
+    }
+
+    func pronunciations() async throws -> [String: PronunciationEntry] {
+        try await get("/voice/pronunciations", as: [String: PronunciationEntry].self)
+    }
+
+    func unresolvedPronunciations() async throws -> [UnresolvedPronunciation] {
+        struct Resp: Decodable { let unresolved: [UnresolvedPronunciation] }
+        return try await get("/voice/pronunciations/unresolved", as: Resp.self).unresolved
+    }
+
+    func savePronunciation(word: String, soundsLike: String) async throws {
+        struct Req: Encodable { let word: String; let sounds_like: String }
+        try await send("/voice/pronunciations", method: "PUT",
+                       body: Req(word: word, sounds_like: soundsLike))
+    }
+
+    func deletePronunciation(_ word: String) async throws {
+        try await send("/voice/pronunciations/\(word)", method: "DELETE")
+    }
+}
+
+struct IntegrationStatus: Decodable {
+    let provider: String
+    let connected: Bool
+    let token_present: Bool
+}
+
+struct PronunciationEntry: Decodable {
+    let ipa: String
+    let sounds_like: String
+}
+
+struct UnresolvedPronunciation: Decodable, Identifiable {
+    let word: String
+    let spelled_out_times: Int
+    var id: String { word }
+}
+
+/// Merged `/api/agents/roster` — the same surface Settings → Agents on the
+/// desktop reads. `gate` is validated rather than trusted: a daemon older
+/// than this app may omit it, and a missing switch must render as "no
+/// switch", never as a toggle claiming off.
+struct AgentRoster: Decodable {
+    let workers: [RosterWorker]
+    let dispatch_roster: [DispatchPersona]
+}
+
+struct AgentGate: Decodable {
+    let config_key: String
+    let enabled: Bool
+}
+
+struct RosterWorker: Decodable, Identifiable {
+    let id: String
+    let display_name: String
+    let what_it_does: String
+    let why_it_matters: String?
+    let gate: AgentGate?
+    let live_state: LiveState?
+
+    enum CodingKeys: String, CodingKey {
+        case id, display_name, what_it_does, why_it_matters, gate, live_state
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        display_name = try c.decode(String.self, forKey: .display_name)
+        what_it_does = try c.decode(String.self, forKey: .what_it_does)
+        why_it_matters = try c.decodeIfPresent(String.self, forKey: .why_it_matters)
+        if let g = try? c.decode(AgentGate.self, forKey: .gate), !g.config_key.isEmpty {
+            gate = g
+        } else {
+            gate = nil
+        }
+        live_state = try? c.decode(LiveState.self, forKey: .live_state)
+    }
+}
+
+struct DispatchPersona: Decodable, Identifiable {
+    let key: String
+    var id: String { key }
+    let display_name: String
+    let role: String
+    let engine: String
+    let gate: AgentGate?
+    let availability: Availability?
+
+    enum CodingKeys: String, CodingKey {
+        case key, display_name, role, engine, gate, availability
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        key = try c.decode(String.self, forKey: .key)
+        display_name = try c.decode(String.self, forKey: .display_name)
+        role = try c.decode(String.self, forKey: .role)
+        engine = try c.decodeIfPresent(String.self, forKey: .engine) ?? ""
+        if let g = try? c.decode(AgentGate.self, forKey: .gate), !g.config_key.isEmpty {
+            gate = g
+        } else {
+            gate = nil
+        }
+        availability = try? c.decode(Availability.self, forKey: .availability)
+    }
+
+    var engineLabel: String { engine.replacingOccurrences(of: "_", with: " ") }
+}
+
+struct LiveState: Decodable {
+    enum Kind { case ok(String), notQueryable, unavailable(String) }
+    let kind: Kind
+    enum CodingKeys: String, CodingKey { case status, value, reason }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        switch try c.decode(String.self, forKey: .status) {
+        case "ok":
+            kind = .ok(try c.decodeIfPresent(String.self, forKey: .value) ?? "")
+        case "unavailable":
+            kind = .unavailable(try c.decodeIfPresent(String.self, forKey: .reason) ?? "")
+        default:
+            kind = .notQueryable
+        }
+    }
+}
+
+struct Availability: Decodable {
+    enum Kind { case available, unavailable(String), probeFailed(String) }
+    let kind: Kind
+    enum CodingKeys: String, CodingKey { case status, reason }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        switch try c.decode(String.self, forKey: .status) {
+        case "available":
+            kind = .available
+        case "probe_failed":
+            kind = .probeFailed(try c.decodeIfPresent(String.self, forKey: .reason) ?? "")
+        default:
+            kind = .unavailable(try c.decodeIfPresent(String.self, forKey: .reason) ?? "")
+        }
     }
 }
 

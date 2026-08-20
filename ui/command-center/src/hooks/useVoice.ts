@@ -8,6 +8,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getApiBaseUrl } from '../lib/api';
+import { copyText } from '../lib/clipboard';
 import { getStreamToken } from '../lib/streamToken';
 import { markReplySpoken } from '../lib/speakReplies';
 import { spectrumLooksLikeVoice } from './vadSpectrum';
@@ -395,6 +396,12 @@ export function useVoice(options: UseVoiceOptions = {}) {
               reason: msg.reason,
             };
             flushNavIfIdle();
+            break;
+          case 'clipboard':
+            // Copy immediately — unlike navigate, the pasteboard should be
+            // ready before they switch to Notes, even while confirmation audio
+            // is still playing.
+            void copyText(msg.text ?? '');
             break;
           case 'error':
             serverErrorRef.current = msg.message ?? null;

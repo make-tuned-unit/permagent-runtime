@@ -1,12 +1,13 @@
 //! App Conductor — lets the chat agent drive the app's UI for the user.
 //!
-//! Exposes three tools: `navigate_app` (go to a tab, optionally a sub-view),
+//! Exposes four tools: `navigate_app` (go to a tab, optionally a sub-view),
 //! `app_action` (act within a surface — open/close/detach the chat dock,
-//! show/hide the Build tab's browser and terminal panes), and `open_item`
+//! show/hide the Build tab's browser and terminal panes), `open_item`
 //! (carry the user the last mile to a specific item — a goal's detail or a
-//! project's Grow planner). Each validates its input against a catalog
-//! (tab catalog / `ACTION_CATALOG` / `ITEM_CATALOG`), emits the matching
-//! event on the global bus, and returns a confirmation to the agent.
+//! project's Grow planner), and `copy_to_clipboard` (put paste-ready text on
+//! the user's local clipboard). Each validates its input, emits the matching
+//! event on the global bus (or intercepts it on a voice turn), and returns a
+//! confirmation to the agent.
 
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
@@ -72,6 +73,35 @@ struct OpenItemParams {
     /// Human-readable explanation shown in chat (e.g. "Opening the goal so you
     /// can see its checklist and evidence").
     reason: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct CopyToClipboardParams {
+    /// The exact paste-ready body. Plain text only — no markdown fences, no
+    /// surrounding commentary. This is what lands on the clipboard.
+    text: String,
+    /// Human-readable explanation shown in chat (e.g. "Copying the caption
+    /// so you can paste it into Notes").
+    reason: String,
+}
+
+/// Hard cap so a runaway dump cannot blow a WebSocket frame or the pasteboard.
+const MAX_CLIPBOARD_CHARS: usize = 32_768;
+
+/// Trim, reject empty, reject oversized. Shared by the tool and its tests.
+fn clipboard_body(raw: &str) -> std::result::Result<String, String> {
+    let text = raw.trim().to_string();
+    if text.is_empty() {
+        return Err(
+            "text is empty — pass the paste-ready body the user asked to copy.".to_string(),
+        );
+    }
+    if text.chars().count() > MAX_CLIPBOARD_CHARS {
+        return Err(format!(
+            "text is too long (max {MAX_CLIPBOARD_CHARS} characters). Shorten it and call again."
+        ));
+    }
+    Ok(text)
 }
 
 /// The catalog of surface → actions the agent may drive. This is the single
@@ -193,8 +223,11 @@ impl AppConductorClient {
                  your other tools (project_resolve for the project id, \
                  board_summary / card_list for a goal card id), then open \
                  the item so the user lands ON it rather than hunting for it. \
+                 Use copy_to_clipboard when they ask for paste-ready text — a \
+                 post, caption, speech, blurb, or \"give me the text\" / \
+                 \"copy that\" so they can paste into Notes or another app. \
                  Prefer doing it over describing it: these tools are the only way \
-                 to actually change what the user sees.",
+                 to actually change what the user sees or what is on their clipboard.",
             );
         Ok(Self { info, context })
     }
@@ -342,6 +375,36 @@ impl AppConductorClient {
             ),
         )]))
     }
+
+    async fn handle_copy(
+        &self,
+        session_id: &str,
+        arguments: Option<JsonObject>,
+    ) -> std::result::Result<CallToolResult, String> {
+        let args: CopyToClipboardParams = arguments
+            .map(|obj| serde_json::from_value(serde_json::Value::Object(obj)))
+            .transpose()
+            .map_err(|e| format!("Invalid arguments: {}", e))?
+            .ok_or_else(|| "Missing arguments".to_string())?;
+
+        let text = clipboard_body(&args.text)?;
+        let intent = crate::events::clipboard_intercept::ClipboardIntent {
+            text: text.clone(),
+            reason: args.reason.clone(),
+        };
+        // Voice turn: the /voice socket copies on the listening device after
+        // narration. Text chat: emit to the bus so the focused window copies.
+        if !crate::events::clipboard_intercept::capture(session_id, intent) {
+            crate::events::emit(crate::events::app_clipboard(&text, &args.reason));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Sent the text to the user's clipboard ({} characters). Confirm briefly \
+             — do not read the body back. {}",
+            text.chars().count(),
+            args.reason
+        ))]))
+    }
 }
 
 impl AppConductorClient {
@@ -395,6 +458,19 @@ impl AppConductorClient {
                     .to_string(),
                 schema::<OpenItemParams>(),
             ),
+            Tool::new(
+                "copy_to_clipboard".to_string(),
+                "Put paste-ready text on the user's clipboard. Call this when they \
+                 ask for a post, caption, speech, blurb, or any short copy they \
+                 want to paste somewhere else (Notes, Messages, a social app) — \
+                 \"give me the text\", \"copy that\", \"put it on my clipboard\". \
+                 Describing the copy in chat does not put it on the clipboard.\n\n\
+                 Pass the EXACT body they will paste: plain text, no markdown \
+                 fences, no surrounding commentary. Speak a short confirmation \
+                 (\"It's on your clipboard\") instead of reading the body aloud."
+                    .to_string(),
+                schema::<CopyToClipboardParams>(),
+            ),
         ]
     }
 }
@@ -427,6 +503,7 @@ impl McpClientTrait for AppConductorClient {
             "navigate_app" => self.handle_navigate(&ctx.session_id, arguments).await,
             "app_action" => self.handle_action(arguments).await,
             "open_item" => self.handle_open_item(arguments).await,
+            "copy_to_clipboard" => self.handle_copy(&ctx.session_id, arguments).await,
             _ => Err(format!("Unknown tool: {}", name)),
         };
 
@@ -531,5 +608,23 @@ mod tests {
         // frontend silently drops. Keep this list in lockstep with dispatchOpenItem.
         let kinds: Vec<&str> = ITEM_CATALOG.iter().map(|(k, _)| *k).collect();
         assert_eq!(kinds, vec!["goal", "grow"]);
+    }
+
+    #[test]
+    fn clipboard_body_trims_and_rejects_empty() {
+        assert_eq!(clipboard_body("  hello \n").unwrap(), "hello");
+        assert!(clipboard_body("   ").is_err());
+        assert!(clipboard_body("").is_err());
+    }
+
+    #[test]
+    fn clipboard_body_rejects_oversized() {
+        let too_long: String = "a".repeat(MAX_CLIPBOARD_CHARS + 1);
+        assert!(clipboard_body(&too_long).is_err());
+        let ok: String = "a".repeat(MAX_CLIPBOARD_CHARS);
+        assert_eq!(
+            clipboard_body(&ok).unwrap().chars().count(),
+            MAX_CLIPBOARD_CHARS
+        );
     }
 }

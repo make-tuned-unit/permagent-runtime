@@ -8,6 +8,9 @@
 // regenerate one set, regenerate the other or the two splashes drift apart.
 
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Frames are named `mobius_00` … `mobius_75` and live flat in the bundle
 /// (xcodegen folds the folder into the resources phase, so there is no
@@ -49,12 +52,37 @@ final class MobiusFrames: ObservableObject {
                       let data = try? Data(contentsOf: url),
                       let image = UIImage(data: data)
                 else { continue }
+                #if os(watchOS)
+                let ready = downscaleImage(image, maxWidth: 240) ?? image
+                #else
                 let ready = image.preparingForDisplay() ?? image
+                #endif
                 await MainActor.run { self.images.append(ready) }
             }
         }
     }
 }
+
+#if os(watchOS)
+/// CoreGraphics downscale — UIGraphicsImageRenderer is unavailable on watchOS.
+private func downscaleImage(_ image: UIImage, maxWidth: CGFloat) -> UIImage? {
+    guard let cg = image.cgImage else { return nil }
+    let w = image.size.width
+    guard w > maxWidth, w > 0 else { return nil }
+    let outW = Int(maxWidth)
+    let outH = max(1, Int(image.size.height * maxWidth / w))
+    guard let ctx = CGContext(
+        data: nil, width: outW, height: outH,
+        bitsPerComponent: 8, bytesPerRow: 0,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else { return nil }
+    ctx.interpolationQuality = .medium
+    ctx.draw(cg, in: CGRect(x: 0, y: 0, width: outW, height: outH))
+    guard let out = ctx.makeImage() else { return nil }
+    return UIImage(cgImage: out)
+}
+#endif
 
 struct MobiusView: View {
     /// Height in points; width follows the source aspect, as on the web.

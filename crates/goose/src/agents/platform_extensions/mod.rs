@@ -635,12 +635,12 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: app_conductor::EXTENSION_NAME,
                 display_name: "App Conductor",
-                description: "Act on the Permagent app: navigate the user to tabs and views (navigate_app), open/close/detach the chat dock or show/hide the Build tab's browser and terminal panes (app_action), and carry them to a specific goal detail or project Grow planner (open_item). These are action-only tools; read app state with observe_app",
+                description: "Act on the Permagent app: navigate the user to tabs and views (navigate_app), open/close/detach the chat dock or show/hide the Build tab's browser and terminal panes (app_action), carry them to a specific goal detail or project Grow planner (open_item), and put paste-ready text on their clipboard (copy_to_clipboard). These are action-only tools; read app state with observe_app",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
                 why_it_matters:
-                    "Drive the app for the user — take them to the right view, operate it, and open the specific goal or project view they mean. Perception stays separate: use observe_app when you need to know what a surface contains.",
+                    "Drive the app for the user — take them to the right view, operate it, open the specific goal or project view they mean, and copy paste-ready text onto their clipboard. Perception stays separate: use observe_app when you need to know what a surface contains.",
                 required_secrets: &[],
                 teaching: &[],
                 client_factory: |ctx| {

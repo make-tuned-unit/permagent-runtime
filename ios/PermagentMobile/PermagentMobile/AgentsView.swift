@@ -1,47 +1,26 @@
-// Agents at work — "what are my agents doing, from my pocket" (#1).
+// Agents at work — "what are my agents doing, from my pocket".
 //
-// The dispatch brief specified GET /api/runs, but that endpoint does NOT exist
-// on the hub (no route, no desktop RunRoster — verified by grep). Rather than
-// call a fake endpoint, this screen is composed from REAL routes that together
-// answer the same question honestly:
-//   • WORKING NOW  — running jobs from GET /schedule/list (currently_running),
-//                    each interruptible via POST /schedule/{id}/kill (the Stop).
-//   • BACKGROUND AGENTS — the worker roster from GET /api/agent/workers, with
-//                    each worker's live availability + engine.
-// It live-updates over the hub's /events WebSocket (work-state events only, so a
-// chat stream doesn't churn it). If a unified /api/runs (worker|schedule|session
-// with live status) is added later, this screen can swap to it.
+// Same merged surface as Settings → Agents on the desktop:
+//   • WORKING NOW     — running jobs from GET /schedule/list
+//   • BACKGROUND      — GET /api/agents/roster workers, each with the same
+//                       on/off gate the Mac writes (`/config/upsert`)
+//   • DISPATCH        — the dispatch roster (availability + engine)
+//
+// A missing or malformed `gate` renders no switch — never a toggle that
+// claims off for a key the daemon does not read.
 
 import SwiftUI
-
-/// A background worker persona from GET /api/agent/workers (the daemon returns a
-/// JSON object keyed by worker key → this shape). Only the fields this screen
-/// renders are decoded; extra keys (traits, tone, nickname…) are ignored. Field
-/// names are the snake_case wire keys (plain JSONDecoder, no key strategy).
-struct AgentWorker: Decodable {
-    let display_name: String
-    let role: String
-    let engine: String
-    let available: Bool
-    let reason: String?
-
-    var engineLabel: String { engine.replacingOccurrences(of: "_", with: " ") }
-}
-
-/// One roster entry — the map key is stable and unique, so it's the identity.
-struct WorkerEntry: Identifiable {
-    let id: String
-    let worker: AgentWorker
-}
 
 struct AgentsView: View {
     @ObservedObject private var identity = AgentIdentity.shared
     @State private var running: [ScheduleJob] = []
-    @State private var workers: [WorkerEntry] = []
+    @State private var workers: [RosterWorker] = []
+    @State private var dispatch: [DispatchPersona] = []
     @State private var loaded = false
     @State private var errorText: String?
     @State private var busy: Set<String> = []
     @State private var stopCount = 0
+    @State private var gateEnabled: [String: Bool] = [:]
 
     var body: some View {
         ScrollView {
@@ -50,7 +29,6 @@ struct AgentsView: View {
                     HubErrorCard(text: errorText) { await load() }
                 }
 
-                // Working now — the interruptible, live rows.
                 RaisedCard {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack(spacing: 8) {
@@ -77,7 +55,6 @@ struct AgentsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                // Background agents — the roster (who your agents are + readiness).
                 RaisedCard {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("BACKGROUND AGENTS")
@@ -90,10 +67,22 @@ struct AgentsView: View {
                                 .font(.brandCaption)
                                 .foregroundStyle(ChatSurface.muted)
                         } else {
-                            ForEach(workers) { entry in workerRow(entry.worker) }
+                            ForEach(workers) { worker in workerRow(worker) }
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                if !dispatch.isEmpty {
+                    RaisedCard {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("DISPATCH")
+                                .font(.brandLabel).tracking(0.88)
+                                .foregroundStyle(ChatSurface.dim)
+                            ForEach(dispatch) { persona in dispatchRow(persona) }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
 
                 RaisedCard {
@@ -101,7 +90,7 @@ struct AgentsView: View {
                         Text("REMOTE HANDS")
                             .font(.brandLabel).tracking(0.88)
                             .foregroundStyle(ChatSurface.dim)
-                        Text("These agents run on your Mac. Stop a job here and it halts on the hub — your desktop updates live.")
+                        Text("These agents run on your Mac. A switch here is the same key as Settings → Agents on the desktop — flip either, both update. Stop a job here and it halts on the hub.")
                             .font(.brandCaption)
                             .foregroundStyle(ChatSurface.muted)
                     }
@@ -149,25 +138,114 @@ struct AgentsView: View {
         }
     }
 
-    private func workerRow(_ w: AgentWorker) -> some View {
-        HStack(spacing: 10) {
+    private func workerRow(_ w: RosterWorker) -> some View {
+        HStack(alignment: .top, spacing: 10) {
             Circle()
-                .fill(w.available ? Brand.success : Brand.textDim)
+                .fill(liveDot(w.live_state))
                 .frame(width: 8, height: 8)
-                .shadow(color: w.available ? Brand.success.opacity(0.6) : .clear, radius: 5)
+                .padding(.top, 6)
             VStack(alignment: .leading, spacing: 2) {
                 Text(w.display_name)
                     .font(.brandCaption)
                     .foregroundStyle(ChatSurface.text)
-                Text(w.available ? w.role : (w.reason ?? "Unavailable"))
+                Text(liveCaption(w))
                     .font(.caption2)
-                    .foregroundStyle(w.available ? ChatSurface.muted : Brand.warning)
+                    .foregroundStyle(ChatSurface.muted)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 8)
+            if let gate = w.gate {
+                Toggle("", isOn: Binding(
+                    get: { gateEnabled[gate.config_key] ?? gate.enabled },
+                    set: { flip(gate.config_key, $0) }
+                ))
+                .labelsHidden()
+                .tint(ChatSurface.spark)
+            }
+        }
+    }
+
+    private func dispatchRow(_ p: DispatchPersona) -> some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(availabilityDot(p.availability))
+                .frame(width: 8, height: 8)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(p.display_name)
+                    .font(.brandCaption)
+                    .foregroundStyle(ChatSurface.text)
+                Text(availabilityCaption(p))
+                    .font(.caption2)
+                    .foregroundStyle(ChatSurface.muted)
                     .lineLimit(1)
             }
             Spacer()
-            Text(w.engineLabel)
-                .font(.jetbrainsMono(11))
-                .foregroundStyle(ChatSurface.dim)
+            if !p.engineLabel.isEmpty {
+                Text(p.engineLabel)
+                    .font(.jetbrainsMono(11))
+                    .foregroundStyle(ChatSurface.dim)
+            }
+            if let gate = p.gate {
+                Toggle("", isOn: Binding(
+                    get: { gateEnabled[gate.config_key] ?? gate.enabled },
+                    set: { flip(gate.config_key, $0) }
+                ))
+                .labelsHidden()
+                .tint(ChatSurface.spark)
+            }
+        }
+    }
+
+    private func liveDot(_ state: LiveState?) -> Color {
+        guard let state else { return Brand.textDim }
+        switch state.kind {
+        case .ok: return Brand.success
+        case .unavailable: return Brand.warning
+        case .notQueryable: return Brand.textDim
+        }
+    }
+
+    private func liveCaption(_ w: RosterWorker) -> String {
+        if let state = w.live_state {
+            switch state.kind {
+            case .ok(let value) where !value.isEmpty: return value
+            case .unavailable(let reason) where !reason.isEmpty: return reason
+            default: break
+            }
+        }
+        return w.what_it_does
+    }
+
+    private func availabilityDot(_ a: Availability?) -> Color {
+        guard let a else { return Brand.textDim }
+        switch a.kind {
+        case .available: return Brand.success
+        case .unavailable, .probeFailed: return Brand.warning
+        }
+    }
+
+    private func availabilityCaption(_ p: DispatchPersona) -> String {
+        if let a = p.availability {
+            switch a.kind {
+            case .available: return p.role
+            case .unavailable(let r): return r.isEmpty ? p.role : r
+            case .probeFailed(let r): return r.isEmpty ? "Probe failed" : r
+            }
+        }
+        return p.role
+    }
+
+    private func flip(_ key: String, _ value: Bool) {
+        let prev = gateEnabled[key] ?? false
+        gateEnabled[key] = value
+        errorText = nil
+        Task {
+            do {
+                try await APIClient.shared.upsertConfig(key, value: value)
+            } catch {
+                gateEnabled[key] = prev
+                errorText = "Couldn't update that switch — is the hub awake?"
+            }
         }
     }
 
@@ -190,16 +268,21 @@ struct AgentsView: View {
     private func load() async {
         struct SchedulesResp: Decodable { let jobs: [ScheduleJob] }
         let jobs = (try? await APIClient.shared.get("/schedule/list", as: SchedulesResp.self))?.jobs
-        let workerMap = try? await APIClient.shared.get("/api/agent/workers", as: [String: AgentWorker].self)
+        let roster = try? await APIClient.shared.agentRoster()
 
         if let jobs { running = jobs.filter { $0.currently_running } }
-        if let workerMap {
-            workers = workerMap
-                .sorted { $0.key < $1.key }
-                .map { WorkerEntry(id: $0.key, worker: $0.value) }
+        if let roster {
+            workers = roster.workers
+            dispatch = roster.dispatch_roster
+            for w in roster.workers {
+                if let g = w.gate { gateEnabled[g.config_key] = g.enabled }
+            }
+            for p in roster.dispatch_roster {
+                if let g = p.gate { gateEnabled[g.config_key] = g.enabled }
+            }
         }
         loaded = true
-        errorText = (jobs == nil && workerMap == nil)
+        errorText = (jobs == nil && roster == nil)
             ? "Couldn't reach the hub — is your Mac awake and on the tailnet?"
             : nil
     }

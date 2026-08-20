@@ -142,4 +142,11 @@ pub trait TextToSpeech: Send + Sync {
     fn phonemize_text(&self, _text: &str) -> anyhow::Result<String> {
         anyhow::bail!("this TTS backend cannot derive phonemes from text")
     }
+
+    /// Words in `text` the backend would have to guess at (spell, or a
+    /// last-resort split). Used to coach the model *before* it speaks a name
+    /// the user just said, rather than discovering the spelling live.
+    fn unresolved_words(&self, _text: &str) -> Vec<String> {
+        Vec::new()
+    }
 }

@@ -36,6 +36,18 @@ struct ControlHubView: View {
                             subtitle: "Switch the chat model — any provider with a saved key",
                             accent: ChatSurface.spark)
 
+                    hubLink(destination: FeaturesView(),
+                            icon: "switch.2",
+                            title: "Features",
+                            subtitle: "Initiative, Playbook, Concierge, Steward, Guard — same switches as the Mac",
+                            accent: Brand.violet)
+
+                    hubLink(destination: PronunciationView(),
+                            icon: "mouth.fill",
+                            title: "Pronunciation",
+                            subtitle: "Teach the voice a word once — remembered on every device",
+                            accent: ChatSurface.spark)
+
                 }
                 .padding()
             }

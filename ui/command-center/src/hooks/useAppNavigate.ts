@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { eventsWsUrl } from '../lib/api';
+import { copyText } from '../lib/clipboard';
 import { wireEventType } from '../lib/wireEvent';
 import { appendTraceRecord, claimTraceEventId, globalFrameToRecord } from '../lib/traceEvents';
 import { useCommandCenter, navigateToTool } from '../lib/store';
@@ -110,6 +111,15 @@ export function dispatchOpenItem(payload: {
   if (payload?.reason) showNavigationCue(payload.reason);
 }
 
+/** Agent-driven clipboard write from a text-chat turn (voice uses `/voice`). */
+function dispatchClipboard(payload: { text?: string; reason?: string }) {
+  const text = payload?.text ?? '';
+  if (!text) return;
+  void copyText(text).then((ok) => {
+    if (ok && payload?.reason) showNavigationCue(payload.reason);
+  });
+}
+
 // Tool types that a workspace layout can host — the ONLY set the tool-host
 // branch below searches. Overlay-only surfaces (inbox, sessions, trace) are
 // deliberately absent: no seeded workspace hosts them, so their catalog entry
@@ -151,7 +161,7 @@ export function recordGlobalTraceFrame(frame: unknown): void {
  * the replay gate below cannot drift out of sync with the routing.
  */
 const ACTION_FRAME_TYPES = new Set([
-  'app_navigate', 'app_action', 'app_open_item', 'project_launch',
+  'app_navigate', 'app_action', 'app_open_item', 'project_launch', 'app_clipboard',
 ]);
 
 /**
@@ -230,6 +240,9 @@ export function routeGlobalFrame(
       break;
     case 'app_navigate':
       handlers.navigate(payload as NavigatePayload);
+      break;
+    case 'app_clipboard':
+      dispatchClipboard(payload as { text?: string; reason?: string });
       break;
   }
 }

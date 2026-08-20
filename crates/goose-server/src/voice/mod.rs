@@ -11,6 +11,7 @@ pub mod kws;
 pub mod oov_log;
 pub mod ort_kokoro_backend;
 pub mod proper_noun_corrector;
+pub mod prosody;
 pub mod provider;
 pub mod sherpa_backend;
 pub mod speakable;

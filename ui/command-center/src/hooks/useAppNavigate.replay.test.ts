@@ -37,7 +37,7 @@ const EPOCH = Date.parse('2026-07-18T12:00:00Z');
 const STALE_TS = '2026-07-18T09:00:00Z'; // hours-old buffered frame
 const LIVE_TS = '2026-07-18T12:00:05Z'; // emitted after this connection opened
 
-const ACTION_TYPES = ['app_navigate', 'app_action', 'app_open_item', 'project_launch'];
+const ACTION_TYPES = ['app_navigate', 'app_action', 'app_open_item', 'project_launch', 'app_clipboard'];
 
 let seq = 0;
 function frame(type: string, payload: Record<string, unknown>, timestamp?: string): unknown {
