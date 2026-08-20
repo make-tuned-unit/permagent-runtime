@@ -117,9 +117,14 @@ describe('PeoplePanel refetches on peopleRev (driven by person_changed)', () => 
   it('keeps the newest people response when an older request finishes last', async () => {
     const oldRequest = deferred<Array<{ entity_uuid: string; display_name: string }>>();
     const newRequest = deferred<Array<{ entity_uuid: string; display_name: string }>>();
-    apiFetch
-      .mockImplementationOnce(() => oldRequest.promise)
-      .mockImplementationOnce(() => newRequest.promise);
+    let peopleCalls = 0;
+    apiFetch.mockImplementation((url: string) => {
+      // Meetings load in parallel with people; they must not steal the
+      // deferred people responses or Promise.all never settles.
+      if (String(url).includes('/meetings')) return Promise.resolve([]);
+      peopleCalls += 1;
+      return peopleCalls === 1 ? oldRequest.promise : newRequest.promise;
+    });
 
     await act(async () => root.render(<PeoplePanel project={project} />));
     await bump('peopleRev');
