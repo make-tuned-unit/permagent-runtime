@@ -28,6 +28,7 @@ import { useCommandCenter } from '../../lib/store';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { contactLabel, isFollowUpDue, isQuiet } from './contactAge';
+import type { DirectoryPerson } from '../projects/types';
 
 type Status = 'loading' | 'error' | 'ready';
 

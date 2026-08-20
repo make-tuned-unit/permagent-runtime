@@ -85,6 +85,6 @@ describe('PersonDetailModal run enrichment', () => {
     expect(writeText).not.toHaveBeenCalled();
     expect(openChatDock).toHaveBeenCalled();
     expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect(sendMessage.mock.calls[0][0]).toBe(buildEnrichmentMessage(person));
+    expect(sendMessage).toHaveBeenCalledWith(buildEnrichmentMessage(person));
   });
 });

@@ -534,10 +534,10 @@ function run(argv) {
         .arg(end.to_rfc3339())
         .arg(notes)
         .output();
-    match tokio::time::timeout(std::time::Duration::from_secs(8), fut).await {
-        Ok(Ok(out)) if out.status.success() => true,
-        _ => false,
-    }
+    matches!(
+        tokio::time::timeout(std::time::Duration::from_secs(8), fut).await,
+        Ok(Ok(out)) if out.status.success()
+    )
 }
 
 /// Normalize for name matching: letters/digits stay, everything else is space.
