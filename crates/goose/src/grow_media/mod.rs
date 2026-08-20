@@ -73,6 +73,7 @@ pub fn resolve_media_file(
 /// Fill format/channel/schedule/mediaStatus on a new social_post. Does not
 /// invent another user's brand or a canned origin story — those come from
 /// the project bag, which may be empty.
+#[allow(clippy::too_many_arguments)]
 pub async fn enrich_new_social_post(
     pool: &Pool<Sqlite>,
     project: &Project,

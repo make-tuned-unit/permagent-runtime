@@ -358,9 +358,7 @@ pub async fn submit_approved(
         .and_then(|v| v.as_str())
         .unwrap_or("");
     let channel = normalize_channel(channel_raw).ok_or_else(|| {
-        format!(
-            "This post has no network channel (ig / li / x). Set channel on the card, then connect that account for this project."
-        )
+        "This post has no network channel (ig / li / x). Set channel on the card, then connect that account for this project.".to_string()
     })?;
     let binding = channels_of(&project).remove(channel).ok_or_else(|| {
         format!(

@@ -106,7 +106,7 @@ async fn save_postiz(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or(POSTIZ_DEFAULT_BASE);
-    cfg.set_param(POSTIZ_BASE_URL_KEY, &base.to_string())
+    cfg.set_param(POSTIZ_BASE_URL_KEY, base.to_string())
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(PostizStatus {
         configured: true,

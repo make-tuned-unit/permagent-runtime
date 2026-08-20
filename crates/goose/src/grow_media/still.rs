@@ -251,6 +251,7 @@ fn glyph(c: char) -> [u8; 5] {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_text(
     img: &mut image::RgbImage,
     text: &str,
