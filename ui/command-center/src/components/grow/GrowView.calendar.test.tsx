@@ -10,7 +10,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
 
 vi.mock('../../lib/api', () => ({
-  api: {},
+  api: { fetchGrowMediaBlob: vi.fn(() => Promise.reject(new Error('no still'))) },
   apiFetch: vi.fn(),
   extractText: vi.fn(() => ''),
   extractThinking: vi.fn(() => ''),
@@ -27,6 +27,16 @@ import { groupPostsByDay, type SocialCard } from './calendarPosts';
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
 const apiFetchMock = vi.mocked(apiFetch);
+
+function growExtras(url: string): unknown | undefined {
+  if (url === '/api/grow/higgsfield' || url === '/api/grow/postiz') {
+    return { configured: false };
+  }
+  if (url.includes('/publisher')) {
+    return { configured: false, channels: {}, pending: null };
+  }
+  return undefined;
+}
 
 const project = (id: string, name: string) => ({
   id,
@@ -117,7 +127,7 @@ describe('Grow calendar lens', () => {
           },
         ]);
       }
-      return Promise.resolve([]);
+      return Promise.resolve(growExtras(url) ?? []);
     }) as typeof apiFetch);
 
     await renderGrow();
@@ -134,7 +144,7 @@ describe('Grow calendar lens', () => {
       if (url.includes('/cards?card_type=social_post')) {
         return Promise.reject(new Error('network down'));
       }
-      return Promise.resolve([]);
+      return Promise.resolve(growExtras(url) ?? []);
     }) as typeof apiFetch);
 
     await renderGrow();
@@ -156,7 +166,7 @@ describe('Grow calendar lens', () => {
       if (url === '/api/projects/p1/cards/post-1') {
         return Promise.resolve(init?.method === 'DELETE' ? undefined : card);
       }
-      return Promise.resolve([]);
+      return Promise.resolve(growExtras(url) ?? []);
     }) as typeof apiFetch);
 
     await renderGrow();
@@ -181,7 +191,8 @@ describe('Grow calendar lens', () => {
     );
     expect(patchCall).toBeTruthy();
     const patchBody = JSON.parse(String((patchCall![1] as RequestInit).body));
-    expect(patchBody.metadataJson.postStatus).toBeTruthy();
+    // Blur reschedules only. Approve is the only draft → scheduled path.
+    expect(patchBody.metadataJson.postStatus).toBe('draft');
     expect(patchBody.metadataJson.scheduledFor).toMatch(/2026-08-19/);
 
     const delBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Delete')!;
@@ -191,5 +202,106 @@ describe('Grow calendar lens', () => {
     expect(apiFetchMock.mock.calls.some(
       (c) => String(c[0]) === '/api/projects/p1/cards/post-1' && (c[1] as RequestInit)?.method === 'DELETE',
     )).toBe(true);
+  });
+
+  it('Approve is offered only when a draft still is ready, and posts /approve', async () => {
+    const card = {
+      id: 'post-2',
+      title: 'Ready draft',
+      description: 'hi',
+      metadataJson: {
+        postStatus: 'draft',
+        scheduledFor: '2026-08-18T12:00:00.000Z',
+        mediaStatus: 'ready',
+        media: [{ kind: 'still', file: 'still.png' }],
+      },
+    };
+    apiFetchMock.mockImplementation(((url: string, init?: RequestInit) => {
+      if (url === '/api/projects') return Promise.resolve([project('p1', 'First')]);
+      if (url === '/api/grow/higgsfield') return Promise.resolve({ configured: false });
+      if (url.includes('/cards?card_type=social_post')) return Promise.resolve([card]);
+      if (url === '/api/projects/p1/cards/post-2/approve' && init?.method === 'POST') {
+        return Promise.resolve({ ...card, metadataJson: { ...card.metadataJson, postStatus: 'scheduled' } });
+      }
+      return Promise.resolve(growExtras(url) ?? []);
+    }) as typeof apiFetch);
+
+    await renderGrow();
+    await openCalendar();
+    const approve = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Approve');
+    expect(approve).toBeTruthy();
+    await act(async () => { approve!.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    await act(async () => { await Promise.resolve(); });
+    expect(apiFetchMock.mock.calls.some(
+      (c) => String(c[0]) === '/api/projects/p1/cards/post-2/approve' && (c[1] as RequestInit)?.method === 'POST',
+    )).toBe(true);
+  });
+
+  it('does not offer Approve while the still is still generating', async () => {
+    const card = {
+      id: 'post-3',
+      title: 'Queued',
+      description: 'hi',
+      metadataJson: { postStatus: 'draft', mediaStatus: 'generating' },
+    };
+    apiFetchMock.mockImplementation(((url: string) => {
+      if (url === '/api/projects') return Promise.resolve([project('p1', 'First')]);
+      if (url === '/api/grow/higgsfield') return Promise.resolve({ configured: false });
+      if (url.includes('/cards?card_type=social_post')) return Promise.resolve([card]);
+      return Promise.resolve(growExtras(url) ?? []);
+    }) as typeof apiFetch);
+
+    await renderGrow();
+    await openCalendar();
+    expect(Array.from(container.querySelectorAll('button')).some((b) => b.textContent === 'Approve')).toBe(false);
+    expect(Array.from(container.querySelectorAll('button')).some((b) => b.textContent === 'Regenerate still')).toBe(false);
+  });
+
+  it('regenerates the still with taste notes and does not rewrite copy', async () => {
+    const card = {
+      id: 'post-4',
+      title: 'Keep this hook',
+      description: 'Keep this body.',
+      metadataJson: {
+        postStatus: 'draft',
+        scheduledFor: '2026-08-18T12:00:00.000Z',
+        mediaStatus: 'ready',
+        media: [{ kind: 'still', file: 'still.png' }],
+      },
+    };
+    apiFetchMock.mockImplementation(((url: string, init?: RequestInit) => {
+      if (url === '/api/projects') return Promise.resolve([project('p1', 'First')]);
+      if (url === '/api/grow/higgsfield') return Promise.resolve({ configured: false });
+      if (url.includes('/cards?card_type=social_post')) return Promise.resolve([card]);
+      if (url === '/api/projects/p1/cards/post-4/media/retry' && init?.method === 'POST') {
+        return Promise.resolve(card);
+      }
+      return Promise.resolve(growExtras(url) ?? []);
+    }) as typeof apiFetch);
+
+    await renderGrow();
+    await openCalendar();
+    expect(container.textContent).toContain('Keep this hook');
+    expect(container.textContent).toContain('Keep this body.');
+    const notes = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Still taste notes"]')!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+      setter?.call(notes, 'darker, less type');
+      notes.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const regen = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Regenerate still')!;
+    await act(async () => { regen.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    await act(async () => { await Promise.resolve(); });
+
+    const retryCall = apiFetchMock.mock.calls.find(
+      (c) => String(c[0]) === '/api/projects/p1/cards/post-4/media/retry' && (c[1] as RequestInit)?.method === 'POST',
+    );
+    expect(retryCall).toBeTruthy();
+    expect(JSON.parse(String((retryCall![1] as RequestInit).body))).toEqual({ feedback: 'darker, less type' });
+    expect(apiFetchMock.mock.calls.some(
+      (c) => String(c[0]) === '/api/projects/p1/cards/post-4' && (c[1] as RequestInit)?.method === 'PATCH',
+    )).toBe(false);
+    expect(container.textContent).toContain('Keep this hook');
+    expect(container.textContent).toContain('Keep this body.');
   });
 });

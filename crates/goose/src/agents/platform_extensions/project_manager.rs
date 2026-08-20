@@ -88,7 +88,14 @@ struct CardCreateParams {
     scheduled_for: Option<String>,
     /// For social_post cards only: "draft" | "scheduled" | "posted".
     /// Defaults to "draft" when creating a social_post. Rejected on any other card_type.
+    /// Create always stores draft — Approve in Grow is the path to scheduled.
     post_status: Option<String>,
+    /// For social_post cards only: text | carousel | reel | compose.
+    format: Option<String>,
+    /// For social_post cards only: channel slug (ig, li, x, …).
+    channel: Option<String>,
+    /// For social_post cards only: blog | feature | origin | insight.
+    harvest_kind: Option<String>,
     /// Due date as an ISO-8601 calendar date, `YYYY-MM-DD` (e.g. "2026-09-01").
     /// A standard card WITHOUT one never reaches the Home tab's to-do list — set
     /// it whenever the user gives or implies a deadline. Rejected on any
@@ -200,6 +207,73 @@ struct SetProjectStrategyParams {
     /// "value": "3"} or {"label": "Price hypothesis", "value": "$9/mo"}.
     #[serde(default)]
     metrics: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct SetProjectBrandParams {
+    /// Project ID, slug, or exact name.
+    project: String,
+    /// How this project writes. Empty leaves the saved voice alone.
+    voice: Option<String>,
+    /// Why this project was built, in the founder's words. Empty leaves origin alone.
+    origin: Option<String>,
+    /// Background hex (#RRGGBB). Empty leaves the saved value alone.
+    bg: Option<String>,
+    /// Foreground hex (#RRGGBB).
+    fg: Option<String>,
+    /// Accent hex (#RRGGBB).
+    accent: Option<String>,
+    /// Optional typeface name for compose overlays.
+    typeface: Option<String>,
+    /// Things generated media must not do, e.g. "fake product UI".
+    donts: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct SocialContentBriefParams {
+    /// Project ID, slug, or exact name.
+    project: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct RetrySocialMediaParams {
+    /// Project ID, slug, or exact name.
+    project: String,
+    /// social_post card ID.
+    card_id: String,
+    /// Taste notes for the next still (darker, less type, show the product, …).
+    /// Omit to reuse notes already on the card. Never rewrites title or body.
+    feedback: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct ApproveSocialPostParams {
+    /// Project ID, slug, or exact name.
+    project: String,
+    /// social_post card ID. mediaStatus must already be ready.
+    card_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct PublisherStatusParams {
+    /// Project ID, slug, or exact name.
+    project: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct ConnectProjectChannelParams {
+    /// Project ID, slug, or exact name.
+    project: String,
+    /// Network to connect for THIS project only: ig, li, or x.
+    channel: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct DisconnectProjectChannelParams {
+    /// Project ID, slug, or exact name.
+    project: String,
+    /// Network to disconnect from THIS project: ig, li, or x.
+    channel: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -362,19 +436,27 @@ pub const GROW_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
         display_name: "Grow tab",
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
         what_it_does: "A per-project go-to-market workspace: strategy pillars (audience, value \
-             proposition, positioning, channels, content) you think through with the user, a \
-             content calendar of drafted posts — you write and schedule them yourself with \
-             `card_create`, rewrite or move them with `card_update`, and each one shows on its \
-             scheduled day as draft, scheduled, or posted — and a growth view with a live \
-             analytics lens that \
+             proposition, positioning, channels, content) you think through with the user; \
+             set_project_brand for THIS project's voice, origin, and palette; a content \
+             calendar of drafted posts you run as a loop — social_content_brief, card_create \
+             as draft, a still generated from this project's kit, retry_social_media with \
+             the user's taste notes when the graphic is off (title and body stay), \
+             card_update only for copy, approve_social_post when they say Approve and \
+             mediaStatus is ready (if this project has connected that channel, that \
+             schedules the post on the connected account via Postiz; otherwise it stays \
+             on the calendar — connect_project_channel first, per project, then \
+             publisher_status to confirm; never copy \
+             another project's Instagram onto this one) — \
+             each post shows on its scheduled day as draft, scheduled, or posted; and a growth view with a live analytics lens that \
              shows the project's real visitor and traffic numbers — from the daemon's own \
              first-party collector, or from a provider the user already has (Plausible or \
              GoatCounter) — with any post or outreach you draft written in a crisp human voice, \
              never chatbot boilerplate",
         why_it_matters:
             "It is where the user takes a project to market with you. When they want to reach an \
-             audience, plan a launch, or draft a post, bring them here and draft it in their \
-             voice — marketing copy the user publishes must not read like AI wrote it",
+             audience, plan a launch, or draft a post, bring them here, draft in their voice, \
+             and manage the still yourself — if they dislike the graphic, take notes and \
+             regenerate; never throw away the copy to get a new image",
         state_source: crate::agents::self_knowledge::StateSource::Static,
         teaching: &[
             crate::agents::self_knowledge::TeachingStep {
@@ -389,9 +471,22 @@ pub const GROW_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
             },
             crate::agents::self_knowledge::TeachingStep {
                 title: "Draft something real",
-                body: "Offer to draft a launch post or outreach message for their project, in a \
-                       sharp human voice, then show them it landed in the content calendar.",
+                body: "Offer to draft a launch post for their project: social_content_brief \
+                       first, then card_create as a draft. Show them it landed in the content \
+                       calendar with a still generating.",
                 open_surface: None,
+                confirm: None,
+            },
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Connect this project's accounts",
+                body: "Each project logs into its own Instagram, LinkedIn, or X. Call \
+                       connect_project_channel for THIS project — a login window opens, they \
+                       sign in, and that account binds only here. publisher_status to see \
+                       what is connected. Then Approve actually schedules on that account.",
+                open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                    tab: "Grow",
+                    section: None,
+                }),
                 confirm: None,
             },
         ],
@@ -584,12 +679,42 @@ impl ProjectManagerClient {
 
                 ## Content calendar
 
-                social_post cards ARE the Grow tab's content calendar, which renders
-                each one on its scheduled day. Create one with card_create
-                card_type='social_post' plus scheduled_for (an RFC-3339 instant) and
-                post_status ('draft', 'scheduled', or 'posted'); rewrite or reschedule
-                it with card_update. Always pick a real date: a post with no
-                scheduled_for lands in the calendar's Unscheduled pile.
+                social_post cards ARE the Grow tab's content calendar. Run this loop
+                yourself — do not send the user to recreate a card:
+
+                  1. social_content_brief for THIS project (brand, origin, top pages,
+                     shipped features). Empty lists mean this project has no data yet.
+                  2. card_create card_type='social_post'. Always leave post_status as
+                     draft. Omit scheduled_for so the daemon picks a send time from this
+                     project's occupancy and the user's local clock. Pass format
+                     (text, carousel, reel, compose), channel (ig, li, …), and
+                     harvest_kind (blog, feature, origin, insight) when you know them.
+                  3. A still matching THIS post and THIS project's brand starts on
+                     create. Tell the user it is generating. card_list
+                     card_type='social_post' to read mediaStatus.
+                  4. If the still is off-taste, take their notes and call
+                     retry_social_media with feedback. That regenerates the still
+                     only — title and description stay. Never card_delete +
+                     card_create just to get a new graphic. card_update of title or
+                     description is for copy edits; after a copy edit, call
+                     retry_social_media so the still matches, unless they only wanted
+                     the words changed.
+                  5. When mediaStatus is ready AND the user says Approve (or "schedule
+                     it"), call approve_social_post. Do not set post_status=scheduled
+                     yourself any other way. If this project has connected that channel
+                     (connect_project_channel — Instagram login for THIS project, not
+                     another project's account), Approve schedules it on that account
+                     via Postiz. If Postiz is not configured or the channel is not
+                     connected, tell them to Connect Instagram (or LinkedIn) on Grow
+                     for this project; do not claim it went live.
+
+                  6. Accounts are per project. Another project's Instagram is not
+                     reused here. publisher_status to see this project's bindings;
+                     disconnect_project_channel to drop one.
+
+                Do not reuse another project's voice or invent a brand that is not on
+                this project. If the brand bag is empty, write in the humanize voice
+                and say so; then offer set_project_brand.
 
                 The copy you put in the description is what the user publishes, so
                 write it in their voice, the way a sharp person actually writes. Lead
@@ -990,6 +1115,178 @@ impl ProjectManagerClient {
         ))])
     }
 
+    async fn handle_set_project_brand(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let params: SetProjectBrandParams = serde_json::from_value(serde_json::Value::Object(args))
+            .map_err(|e| format!("Invalid arguments: {e}"))?;
+        let (project, pool) = self.resolve_intel_project(&params.project).await?;
+        let updated = crate::projects::set_project_brand(
+            &pool,
+            &project.id,
+            crate::projects::ProjectBrand {
+                voice: params.voice.unwrap_or_default(),
+                origin: params.origin.unwrap_or_default(),
+                bg: params.bg.unwrap_or_default(),
+                fg: params.fg.unwrap_or_default(),
+                accent: params.accent.unwrap_or_default(),
+                typeface: params.typeface.unwrap_or_default(),
+                donts: params.donts.unwrap_or_default(),
+                updated_at: None,
+            },
+        )
+        .await?
+        .ok_or_else(|| format!("Project {} disappeared mid-write", project.id))?;
+        crate::events::emit(crate::events::project_changed(&updated.id, "updated"));
+        Ok(vec![Content::text(format!(
+            "Saved the brand kit for \"{}\" — voice, origin, and palette now apply to every social still on this project. Other projects are unchanged.",
+            updated.name
+        ))])
+    }
+
+    async fn handle_social_content_brief(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let params: SocialContentBriefParams =
+            serde_json::from_value(serde_json::Value::Object(args))
+                .map_err(|e| format!("Invalid arguments: {e}"))?;
+        let (project, pool) = self.resolve_intel_project(&params.project).await?;
+        let brief = crate::grow_media::content_brief(&pool, &project.id).await?;
+        Ok(vec![Content::text(format!(
+            "Content brief for \"{}\" (this project only):\n\n{}",
+            brief.project_name,
+            serde_json::to_string_pretty(&brief).unwrap_or_default()
+        ))])
+    }
+
+    async fn handle_retry_social_media(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let params: RetrySocialMediaParams =
+            serde_json::from_value(serde_json::Value::Object(args))
+                .map_err(|e| format!("Invalid arguments: {e}"))?;
+        let (project, pool) = self.resolve_intel_project(&params.project).await?;
+        let before = cards::get_card(&pool, &params.card_id)
+            .await?
+            .ok_or_else(|| format!("Card '{}' not found", params.card_id))?;
+        let card = crate::grow_media::retry_media(
+            &pool,
+            &project.id,
+            &params.card_id,
+            params.feedback.as_deref(),
+        )
+        .await?;
+        Ok(vec![Content::text(format!(
+            "Regenerating the still for \"{}\" on {}. Title and body were not changed (still \"{}\" / {}). mediaStatus is queued; tell the user when it is ready they can Approve.\n\n{}",
+            card.title,
+            project.name,
+            before.title,
+            before.description,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "id": card.id,
+                "title": card.title,
+                "description": card.description,
+                "media_status": card.metadata_json.get(cards::POST_MEDIA_STATUS_KEY),
+                "media_feedback": card.metadata_json.get(cards::POST_MEDIA_FEEDBACK_KEY),
+            })).unwrap_or_default()
+        ))])
+    }
+
+    async fn handle_approve_social_post(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let params: ApproveSocialPostParams =
+            serde_json::from_value(serde_json::Value::Object(args))
+                .map_err(|e| format!("Invalid arguments: {e}"))?;
+        let (project, pool) = self.resolve_intel_project(&params.project).await?;
+        let card = crate::grow_media::approve_post(&pool, &project.id, &params.card_id).await?;
+        let published = card
+            .metadata_json
+            .get(cards::POST_PUBLISHER_POST_ID_KEY)
+            .and_then(|v| v.as_str());
+        let outcome = if let Some(id) = published {
+            format!(
+                "Approved \"{}\" on {} — scheduled on this project's connected account via Postiz (publisher post {id}). Copy was not rewritten.",
+                card.title, project.name
+            )
+        } else {
+            format!(
+                "Approved \"{}\" on {} — status is now scheduled on this project's calendar. Copy was not rewritten. Connect Instagram (or LinkedIn) for this project to send it to the network.",
+                card.title, project.name
+            )
+        };
+        Ok(vec![Content::text(format!(
+            "{outcome}\n\n{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "id": card.id,
+                "title": card.title,
+                "post_status": card.metadata_json.get(cards::POST_STATUS_KEY),
+                "scheduled_for": card.metadata_json.get(cards::POST_SCHEDULED_FOR_KEY),
+                "publisher_post_id": card.metadata_json.get(cards::POST_PUBLISHER_POST_ID_KEY),
+            }))
+            .unwrap_or_default()
+        ))])
+    }
+
+    async fn handle_publisher_status(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let params: PublisherStatusParams = serde_json::from_value(serde_json::Value::Object(args))
+            .map_err(|e| format!("Invalid arguments: {e}"))?;
+        let (project, pool) = self.resolve_intel_project(&params.project).await?;
+        let snap = crate::grow_media::publisher_snapshot(&pool, &project.id).await?;
+        Ok(vec![Content::text(format!(
+            "Publisher status for \"{}\" (this project only):\n\n{}",
+            project.name,
+            serde_json::to_string_pretty(&snap).unwrap_or_default()
+        ))])
+    }
+
+    async fn handle_connect_project_channel(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let params: ConnectProjectChannelParams =
+            serde_json::from_value(serde_json::Value::Object(args))
+                .map_err(|e| format!("Invalid arguments: {e}"))?;
+        let (project, pool) = self.resolve_intel_project(&params.project).await?;
+        let start = crate::grow_media::start_connect(&pool, &project.id, &params.channel).await?;
+        Ok(vec![Content::text(format!(
+            "Opened the {} login for \"{}\". That account will bind only to this project after they finish signing in. If a browser did not open, send them this URL:\n{}\n\nCall publisher_status until the channel shows as connected, then they can Approve.",
+            start.label, project.name, start.url
+        ))])
+    }
+
+    async fn handle_disconnect_project_channel(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let params: DisconnectProjectChannelParams =
+            serde_json::from_value(serde_json::Value::Object(args))
+                .map_err(|e| format!("Invalid arguments: {e}"))?;
+        let (project, pool) = self.resolve_intel_project(&params.project).await?;
+        let snap =
+            crate::grow_media::disconnect_channel(&pool, &project.id, &params.channel).await?;
+        Ok(vec![Content::text(format!(
+            "Disconnected {} from \"{}\". This project will not post there until they connect again.\n\n{}",
+            params.channel,
+            project.name,
+            serde_json::to_string_pretty(&snap).unwrap_or_default()
+        ))])
+    }
+
     async fn handle_dismiss_project_intel(
         &self,
         arguments: Option<JsonObject>,
@@ -1292,6 +1589,10 @@ impl ProjectManagerClient {
             .and_then(|v| v.as_str())
             .ok_or("Missing required parameter: title")?
             .to_string();
+        let description = args
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(String::from);
         let (project, pool) = self.resolve_project(id_or_slug).await?;
 
         let column_id = if let Some(col_ref) = args.get("column").and_then(|v| v.as_str()) {
@@ -1311,18 +1612,30 @@ impl ProjectManagerClient {
         let scheduled_for = args.get("scheduled_for").and_then(|v| v.as_str());
         let post_status = args.get("post_status").and_then(|v| v.as_str());
         let due_date = args.get("due_date").and_then(|v| v.as_str());
-        let metadata_json =
+        let mut metadata_json =
             social_post_metadata_for_create(card_type_str, scheduled_for, post_status)?;
+        if card_type_str == "social_post" {
+            metadata_json = Some(
+                crate::grow_media::enrich_new_social_post(
+                    &pool,
+                    &project,
+                    &title,
+                    description.as_deref(),
+                    metadata_json.unwrap_or_else(|| serde_json::json!({})),
+                    args.get("format").and_then(|v| v.as_str()),
+                    args.get("channel").and_then(|v| v.as_str()),
+                    args.get("harvest_kind").and_then(|v| v.as_str()),
+                )
+                .await?,
+            );
+        }
 
         let card = create_card_with_due_date(
             &pool,
             cards::CreateCard {
                 project_id: project.id.clone(),
                 title,
-                description: args
-                    .get("description")
-                    .and_then(|v| v.as_str())
-                    .map(String::from),
+                description,
                 card_type: Some(card_type_str.to_string()),
                 column_id,
                 created_by: Some("user".to_string()),
@@ -1331,6 +1644,14 @@ impl ProjectManagerClient {
             due_date,
         )
         .await?;
+
+        if card.card_type == "social_post" {
+            crate::grow_media::enqueue_after_create(
+                pool.clone(),
+                project.id.clone(),
+                card.id.clone(),
+            );
+        }
 
         // Auto-dispatch: for goal cards, move Triage → Ready → InProgress via Orchestrator
         if card_type_str == "goal" && auto_dispatch {
@@ -1407,6 +1728,8 @@ impl ProjectManagerClient {
             "id": card.id, "title": card.title, "card_type": card.card_type,
             "column_id": card.column_id, "position": card.position,
             "project": project.name, "due_date": stamped_due,
+            "scheduled_for": card.metadata_json.get(cards::POST_SCHEDULED_FOR_KEY),
+            "media_status": card.metadata_json.get(cards::POST_MEDIA_STATUS_KEY),
         });
         let home_note = match (card.card_type.as_str(), stamped_due) {
             ("standard", Some(d)) => {
@@ -1415,6 +1738,19 @@ impl ProjectManagerClient {
             ("standard", None) => " — no due date, so it stays on the board and does NOT appear \
                  on the Home tab's to-do list; set due_date to put it there"
                 .to_string(),
+            ("social_post", _) => {
+                let when = card
+                    .metadata_json
+                    .get(cards::POST_SCHEDULED_FOR_KEY)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unscheduled");
+                format!(
+                    " — draft on this project's calendar at {when}. A still matching this post \
+                     is generating; tell the user. If they dislike the graphic, retry_social_media \
+                     with their taste notes — do not recreate the card. Approve with \
+                     approve_social_post when mediaStatus is ready."
+                )
+            }
             _ => String::new(),
         };
         Ok(vec![Content::text(format!(
@@ -1509,12 +1845,22 @@ impl ProjectManagerClient {
             .ok_or_else(|| format!("Card '{}' not found", card_id))?;
 
         let metadata_json = if scheduled_for.is_some() || post_status.is_some() {
-            Some(merge_social_post_metadata(
+            let merged = merge_social_post_metadata(
                 &card.card_type,
                 &card.metadata_json,
                 scheduled_for,
                 post_status,
-            )?)
+            )?;
+            if post_status == Some("scheduled") {
+                let was = card
+                    .metadata_json
+                    .get(cards::POST_STATUS_KEY)
+                    .and_then(|v| v.as_str());
+                if was != Some("scheduled") {
+                    cards::assert_ready_to_schedule(&merged)?;
+                }
+            }
+            Some(merged)
         } else {
             None
         };
@@ -1995,7 +2341,9 @@ impl ProjectManagerClient {
                 indoc! {r#"
                 Edit a card's title, description, due date, or (for social_post) schedule and
                 post_status. Use to rewrite or reschedule a drafted Grow-tab post without
-                recreating it.
+                recreating it. Rewriting title/description does NOT regenerate the still —
+                call retry_social_media after a copy change if they also want a matching
+                graphic. Do not use post_status=scheduled; that is approve_social_post.
 
                 DUE DATES: due_date="YYYY-MM-DD" sets or reschedules one, putting the to-do on
                 the Home tab's list (and un-dismissing it); due_date=null clears it, taking it
@@ -2218,6 +2566,168 @@ impl ProjectManagerClient {
                 Some(false),
             )),
             Tool::new(
+                "set_project_brand".to_string(),
+                indoc! {r#"
+                Save THIS project's brand kit for Grow posts: voice, origin story
+                (why it was built), palette (#RRGGBB bg/fg/accent), typeface, and
+                donts. Merge-writes — omit a field to leave it. Use after the user
+                describes how this project should look and sound, or when
+                social_content_brief shows an empty brand. Never copy another
+                project's kit onto this one.
+            "#}
+                .to_string(),
+                serde_json::to_value(schema_for!(SetProjectBrandParams))
+                    .unwrap()
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Save Project Brand".to_string()),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+            )),
+            Tool::new(
+                "social_content_brief".to_string(),
+                indoc! {r#"
+                Load what THIS project can be posted about: its brand (voice,
+                origin, whether a palette is saved), top site pages from its own
+                analytics, recently completed goals (shipped features), and the
+                content strategy pillar. Call this before card_create of a
+                social_post. Empty lists mean this project has no data yet — do
+                not invent another project's stories or traffic.
+            "#}
+                .to_string(),
+                serde_json::to_value(schema_for!(SocialContentBriefParams))
+                    .unwrap()
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Social Content Brief".to_string()),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+            )),
+            Tool::new(
+                "retry_social_media".to_string(),
+                indoc! {r#"
+                Regenerate the still (and Reel video if this is a reel) for an
+                existing social_post WITHOUT changing title or description.
+                Pass the user's taste notes as feedback (darker, less type, show
+                the product, more space). Use this when they dislike the graphic
+                — never delete and recreate the card just to get a new still.
+                After a copy-only card_update, call this so the still matches
+                unless they asked to leave the graphic. mediaStatus returns to
+                queued; wait until ready before approve_social_post.
+            "#}
+                .to_string(),
+                serde_json::to_value(schema_for!(RetrySocialMediaParams))
+                    .unwrap()
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Retry Social Still".to_string()),
+                Some(false),
+                Some(true),
+                Some(false),
+                Some(false),
+            )),
+            Tool::new(
+                "approve_social_post".to_string(),
+                indoc! {r#"
+                Move a draft social_post to scheduled. Only when the user explicitly
+                asks to Approve or schedule it AND mediaStatus is ready. Does not
+                rewrite copy. If this project has connected that channel, this
+                schedules the post on the connected account via Postiz. If not,
+                it stays on the calendar — tell them to connect_project_channel
+                for THIS project first. Do not use card_update post_status=scheduled.
+            "#}
+                .to_string(),
+                serde_json::to_value(schema_for!(ApproveSocialPostParams))
+                    .unwrap()
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Approve Social Post".to_string()),
+                Some(false),
+                Some(true),
+                Some(false),
+                Some(false),
+            )),
+            Tool::new(
+                "publisher_status".to_string(),
+                indoc! {r#"
+                Show whether a Postiz API key is saved on this install, and which
+                Instagram / LinkedIn / X accounts are connected to THIS project.
+                Bindings do not carry over from other projects.
+            "#}
+                .to_string(),
+                serde_json::to_value(schema_for!(PublisherStatusParams))
+                    .unwrap()
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Publisher Status".to_string()),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+            )),
+            Tool::new(
+                "connect_project_channel".to_string(),
+                indoc! {r#"
+                Open a login window so THIS project can connect Instagram (ig),
+                LinkedIn (li), or X (x). After they sign in, that account binds
+                only to this project and Approve can schedule to it. Requires a
+                Postiz API key saved in Grow. Never copy another project's
+                connection onto this one.
+            "#}
+                .to_string(),
+                serde_json::to_value(schema_for!(ConnectProjectChannelParams))
+                    .unwrap()
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Connect Project Channel".to_string()),
+                Some(false),
+                Some(true),
+                Some(false),
+                Some(false),
+            )),
+            Tool::new(
+                "disconnect_project_channel".to_string(),
+                indoc! {r#"
+                Drop THIS project's binding to Instagram, LinkedIn, or X. Does not
+                delete the Postiz account; it just stops this project posting there.
+            "#}
+                .to_string(),
+                serde_json::to_value(schema_for!(DisconnectProjectChannelParams))
+                    .unwrap()
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Disconnect Project Channel".to_string()),
+                Some(false),
+                Some(true),
+                Some(false),
+                Some(false),
+            )),
+            Tool::new(
                 "project_launch".to_string(),
                 indoc! {r#"
                 Open a project-aware terminal in the Build tab, rooted at the project's
@@ -2292,6 +2802,13 @@ impl McpClientTrait for ProjectManagerClient {
             "propose_project_intel" => self.handle_propose_project_intel(arguments).await,
             "dismiss_project_intel" => self.handle_dismiss_project_intel(arguments).await,
             "set_project_strategy" => self.handle_set_project_strategy(arguments).await,
+            "set_project_brand" => self.handle_set_project_brand(arguments).await,
+            "social_content_brief" => self.handle_social_content_brief(arguments).await,
+            "retry_social_media" => self.handle_retry_social_media(arguments).await,
+            "approve_social_post" => self.handle_approve_social_post(arguments).await,
+            "publisher_status" => self.handle_publisher_status(arguments).await,
+            "connect_project_channel" => self.handle_connect_project_channel(arguments).await,
+            "disconnect_project_channel" => self.handle_disconnect_project_channel(arguments).await,
             "project_launch" => self.handle_launch(arguments).await,
             _ => Err(format!("Unknown tool: {}", name)),
         };

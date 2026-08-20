@@ -41,7 +41,7 @@ use axum::{
 };
 use permagent::config::paths::Paths;
 use permagent::inbox::{self, InboxFile, NewInboxFile};
-use permagent::{cards, projects, reader};
+use permagent::{cards, grow_media, projects, reader};
 use std::sync::Arc;
 
 /// Same cap as the Reader ingest route and the project documents path.
@@ -225,34 +225,49 @@ async fn route_inbox_handler(
             // them (same guard the other destinations get by reading the file).
             let _ = read_inbox_bytes(&file).await?;
 
+            let description = format!(
+                "Attachment from the Downloads inbox{}",
+                file.original_url
+                    .as_deref()
+                    .map(|u| format!(" (downloaded from {u})"))
+                    .unwrap_or_default()
+            );
+            let metadata_json = grow_media::enrich_new_social_post(
+                &pool,
+                &project,
+                &file.filename,
+                Some(&description),
+                serde_json::json!({
+                    "attachment": {
+                        "inbox_file_id": file.id,
+                        "filename": file.filename,
+                        "disk_path": file.disk_path,
+                        "content_type": file.content_type,
+                        "size_bytes": file.size_bytes,
+                    }
+                }),
+                Some("compose"),
+                None,
+                None,
+            )
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
             let card = cards::create_card(
                 &pool,
                 cards::CreateCard {
                     project_id: project.id.clone(),
                     title: file.filename.clone(),
-                    description: Some(format!(
-                        "Attachment from the Downloads inbox{}",
-                        file.original_url
-                            .as_deref()
-                            .map(|u| format!(" (downloaded from {u})"))
-                            .unwrap_or_default()
-                    )),
+                    description: Some(description),
                     card_type: Some("social_post".to_string()),
                     column_id: None,
                     created_by: Some("user".to_string()),
-                    metadata_json: Some(serde_json::json!({
-                        "attachment": {
-                            "inbox_file_id": file.id,
-                            "filename": file.filename,
-                            "disk_path": file.disk_path,
-                            "content_type": file.content_type,
-                            "size_bytes": file.size_bytes,
-                        }
-                    })),
+                    metadata_json: Some(metadata_json),
                 },
             )
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+            grow_media::enqueue_after_create(pool.clone(), project.id.clone(), card.id.clone());
             ("routed", Some(project.id), None, None, Some(card.id))
         }
         other => {

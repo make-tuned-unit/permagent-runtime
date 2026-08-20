@@ -815,6 +815,163 @@ pub const POST_STATUS_KEY: &str = "postStatus";
 /// Accepted `postStatus` values for [`POST_STATUS_KEY`].
 const POST_STATUSES: &[&str] = &["draft", "scheduled", "posted"];
 
+/// `social_post` format: `"text"` | `"carousel"` | `"reel"` | `"compose"`.
+pub const POST_FORMAT_KEY: &str = "format";
+/// Channel slug the post is aimed at (`ig`, `li`, …). Not a Postiz id.
+pub const POST_CHANNEL_KEY: &str = "channel";
+/// Why this beat exists: `"blog"` | `"feature"` | `"origin"` | `"insight"`.
+pub const POST_HARVEST_KIND_KEY: &str = "harvestKind";
+/// `"queued"` | `"generating"` | `"ready"` | `"failed"`.
+pub const POST_MEDIA_STATUS_KEY: &str = "mediaStatus";
+/// Array of `{ kind, file, source, prompt? }` — filenames only, never host paths.
+pub const POST_MEDIA_KEY: &str = "media";
+/// Last media-job error, when [`POST_MEDIA_STATUS_KEY`] is `"failed"`.
+pub const POST_MEDIA_ERROR_KEY: &str = "mediaError";
+pub const POST_ARC_ID_KEY: &str = "arcId";
+pub const POST_BEAT_INDEX_KEY: &str = "beatIndex";
+/// `updated_at` of the project brand bag the still was generated against.
+pub const POST_BRAND_REV_KEY: &str = "brandRev";
+/// User/agent taste notes for the next still. Copy (title/description) is never
+/// stored here — regenerating media must not rewrite the post.
+pub const POST_MEDIA_FEEDBACK_KEY: &str = "mediaFeedback";
+/// Postiz post id after Approve submitted this card. Server-owned.
+pub const POST_PUBLISHER_POST_ID_KEY: &str = "publisherPostId";
+/// Postiz integration id the post was scheduled against.
+pub const POST_PUBLISHER_INTEGRATION_KEY: &str = "publisherIntegrationId";
+
+/// Keys the Grow media job owns. HTTP and agent patches keep the existing
+/// values so a stale calendar poll cannot wipe a finished still.
+pub const SOCIAL_POST_MEDIA_KEYS: &[&str] = &[
+    POST_MEDIA_STATUS_KEY,
+    POST_MEDIA_KEY,
+    POST_MEDIA_ERROR_KEY,
+    POST_BRAND_REV_KEY,
+    POST_MEDIA_FEEDBACK_KEY,
+    POST_PUBLISHER_POST_ID_KEY,
+    POST_PUBLISHER_INTEGRATION_KEY,
+];
+
+const POST_FORMATS: &[&str] = &["text", "carousel", "reel", "compose"];
+const POST_HARVEST_KINDS: &[&str] = &["blog", "feature", "origin", "insight"];
+const POST_MEDIA_STATUSES: &[&str] = &["queued", "generating", "ready", "failed"];
+
+/// Copy server-owned media keys from `existing` onto `incoming` so a client
+/// merge cannot clobber a still that finished after the client last fetched.
+pub fn preserve_media_keys(
+    existing: &serde_json::Value,
+    mut incoming: serde_json::Value,
+) -> serde_json::Value {
+    let Some(obj) = incoming.as_object_mut() else {
+        return incoming;
+    };
+    for key in SOCIAL_POST_MEDIA_KEYS {
+        match existing.get(*key) {
+            Some(v) => {
+                obj.insert((*key).to_string(), v.clone());
+            }
+            None => {
+                obj.remove(*key);
+            }
+        }
+    }
+    incoming
+}
+
+/// Merge `patch` into the card's metadata object. `replace_media_keys` is
+/// true only for the Grow media job — every other writer keeps existing
+/// `media*` fields.
+pub async fn merge_card_metadata(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    patch: serde_json::Value,
+    replace_media_keys: bool,
+) -> Result<Option<Card>, String> {
+    let Some(existing) = get_card(pool, card_id).await? else {
+        return Ok(None);
+    };
+    let mut map = existing
+        .metadata_json
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    if let Some(patch_obj) = patch.as_object() {
+        for (k, v) in patch_obj {
+            if !replace_media_keys
+                && existing.card_type == "social_post"
+                && SOCIAL_POST_MEDIA_KEYS.contains(&k.as_str())
+            {
+                continue;
+            }
+            map.insert(k.clone(), v.clone());
+        }
+    }
+    update_card(
+        pool,
+        card_id,
+        UpdateCard {
+            metadata_json: Some(serde_json::Value::Object(map)),
+            ..Default::default()
+        },
+    )
+    .await
+}
+
+pub fn validate_social_format(format: &str) -> Result<(), String> {
+    if POST_FORMATS.contains(&format) {
+        Ok(())
+    } else {
+        Err(format!(
+            "format must be one of {}, got '{format}'",
+            POST_FORMATS.join(", ")
+        ))
+    }
+}
+
+pub fn validate_harvest_kind(kind: &str) -> Result<(), String> {
+    if POST_HARVEST_KINDS.contains(&kind) {
+        Ok(())
+    } else {
+        Err(format!(
+            "harvestKind must be one of {}, got '{kind}'",
+            POST_HARVEST_KINDS.join(", ")
+        ))
+    }
+}
+
+pub fn validate_media_status(status: &str) -> Result<(), String> {
+    if POST_MEDIA_STATUSES.contains(&status) {
+        Ok(())
+    } else {
+        Err(format!(
+            "mediaStatus must be one of {}, got '{status}'",
+            POST_MEDIA_STATUSES.join(", ")
+        ))
+    }
+}
+
+/// `scheduled` is refused until the still (and reel video, if any) is on disk.
+pub fn assert_ready_to_schedule(metadata: &serde_json::Value) -> Result<(), String> {
+    let media = metadata
+        .get(POST_MEDIA_STATUS_KEY)
+        .and_then(|v| v.as_str())
+        .unwrap_or("queued");
+    if media != "ready" {
+        return Err(
+            "Cannot schedule a post until its media is ready. Wait for the still \
+             (and video, if this is a Reel) or retry generation from Grow."
+                .to_string(),
+        );
+    }
+    if metadata
+        .get(POST_SCHEDULED_FOR_KEY)
+        .and_then(|v| v.as_str())
+        .is_none()
+    {
+        return Err("Cannot schedule a post with no scheduledFor instant.".to_string());
+    }
+    Ok(())
+}
+
 /// Validate social-post scheduling metadata before it is written.
 ///
 /// `scheduled_for`, when present, must parse as RFC-3339. `status`, when

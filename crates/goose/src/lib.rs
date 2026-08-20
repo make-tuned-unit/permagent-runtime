@@ -38,6 +38,7 @@ pub mod goal_landing;
 pub mod goal_state;
 pub mod goal_transition;
 pub mod goose_apps;
+pub mod grow_media;
 pub mod growth;
 pub mod hints;
 pub mod identity;

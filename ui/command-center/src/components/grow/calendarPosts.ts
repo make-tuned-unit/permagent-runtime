@@ -2,6 +2,7 @@
  *  the lens can stay honest about schedule/status without growing the view. */
 
 export type PostStatus = 'draft' | 'scheduled' | 'posted';
+export type MediaStatus = 'queued' | 'generating' | 'ready' | 'failed';
 
 export interface SocialCard {
   id: string;
@@ -12,6 +13,13 @@ export interface SocialCard {
 }
 
 const STATUSES: PostStatus[] = ['draft', 'scheduled', 'posted'];
+const MEDIA_STATUSES: MediaStatus[] = ['queued', 'generating', 'ready', 'failed'];
+
+export interface PostMedia {
+  kind: string;
+  file: string;
+  source?: string;
+}
 
 /** Tolerant read: unknown/absent status → draft; unparseable date → unscheduled. */
 export function readPostMeta(card: SocialCard): {
@@ -26,6 +34,40 @@ export function readPostMeta(card: SocialCard): {
   const scheduledFor =
     rawWhen && !Number.isNaN(Date.parse(rawWhen)) ? rawWhen : null;
   return { scheduledFor, status };
+}
+
+export function readMediaMeta(card: SocialCard): {
+  mediaStatus: MediaStatus;
+  mediaError: string | null;
+  stillFile: string | null;
+  format: string | null;
+  channel: string | null;
+  mediaFeedback: string;
+} {
+  const meta = card.metadataJson;
+  const raw = meta && typeof meta.mediaStatus === 'string' ? meta.mediaStatus : null;
+  const mediaStatus: MediaStatus =
+    raw && (MEDIA_STATUSES as string[]).includes(raw) ? (raw as MediaStatus) : 'queued';
+  const mediaError =
+    meta && typeof meta.mediaError === 'string' && meta.mediaError.trim()
+      ? meta.mediaError
+      : null;
+  const items = Array.isArray(meta?.media) ? (meta!.media as unknown[]) : [];
+  const still = items.find((item) => {
+    if (!item || typeof item !== 'object') return false;
+    const rec = item as Record<string, unknown>;
+    return rec.kind === 'still' && typeof rec.file === 'string';
+  }) as Record<string, unknown> | undefined;
+  const mediaFeedback =
+    meta && typeof meta.mediaFeedback === 'string' ? meta.mediaFeedback : '';
+  return {
+    mediaStatus,
+    mediaError,
+    stillFile: still && typeof still.file === 'string' ? still.file : null,
+    format: meta && typeof meta.format === 'string' ? meta.format : null,
+    channel: meta && typeof meta.channel === 'string' ? meta.channel : null,
+    mediaFeedback,
+  };
 }
 
 /** Local calendar day key (`YYYY-MM-DD`), or null when unscheduled. */

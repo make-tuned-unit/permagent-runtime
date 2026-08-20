@@ -27,15 +27,20 @@
 
 use crate::state::AppState;
 use axum::{
+    body::Body,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{header, StatusCode},
+    response::IntoResponse,
     routing::{get, patch, post},
     Json, Router,
 };
 use permagent::cards;
 use permagent::goal_transition::{self, GuardError};
+use permagent::grow_media;
+use permagent::projects;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tokio_util::io::ReaderStream;
 
 /// Map a goal-transition guard error onto the HTTP surface.
 fn guard_status(e: &GuardError) -> StatusCode {
@@ -156,6 +161,13 @@ pub struct UpdateCardRequest {
     assigned_to: Option<Option<String>>,
     metadata_json: Option<serde_json::Value>,
     archived_at: Option<Option<String>>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct RetryMediaRequest {
+    #[serde(default)]
+    feedback: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -313,20 +325,45 @@ async fn create_card_handler(
         .pool_clone()
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let project = projects::get_project_by_id_or_slug(&pool, &project_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+    let card_type = req.card_type.clone().unwrap_or_else(|| "standard".into());
+    let mut metadata_json = req.metadata_json;
+    if card_type == "social_post" {
+        metadata_json = Some(
+            grow_media::enrich_new_social_post(
+                &pool,
+                &project,
+                &req.title,
+                req.description.as_deref(),
+                metadata_json.unwrap_or_else(|| serde_json::json!({})),
+                None,
+                None,
+                None,
+            )
+            .await
+            .map_err(|e| (StatusCode::BAD_REQUEST, e))?,
+        );
+    }
     let card = cards::create_card(
         &pool,
         cards::CreateCard {
-            project_id,
+            project_id: project.id.clone(),
             title: req.title,
             description: req.description,
             card_type: req.card_type,
             column_id: req.column_id,
             created_by: req.created_by,
-            metadata_json: req.metadata_json,
+            metadata_json,
         },
     )
     .await
     .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    if card.card_type == "social_post" {
+        grow_media::enqueue_after_create(pool, project.id, card.id.clone());
+    }
     Ok((StatusCode::CREATED, Json(CardResponse::from(card))))
 }
 
@@ -340,6 +377,30 @@ async fn update_card_handler(
         .pool_clone()
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let existing = cards::get_card(&pool, &card_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Card not found".to_string()))?;
+    let metadata_json = if let Some(incoming) = req.metadata_json {
+        let merged = if existing.card_type == "social_post" {
+            let merged = cards::preserve_media_keys(&existing.metadata_json, incoming);
+            let next = merged.get(cards::POST_STATUS_KEY).and_then(|v| v.as_str());
+            let prev = existing
+                .metadata_json
+                .get(cards::POST_STATUS_KEY)
+                .and_then(|v| v.as_str());
+            if next == Some("scheduled") && prev != Some("scheduled") {
+                cards::assert_ready_to_schedule(&merged)
+                    .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+            }
+            merged
+        } else {
+            incoming
+        };
+        Some(merged)
+    } else {
+        None
+    };
     let updated = cards::update_card(
         &pool,
         &card_id,
@@ -349,7 +410,7 @@ async fn update_card_handler(
             column_id: req.column_id,
             position: req.position,
             assigned_to: req.assigned_to,
-            metadata_json: req.metadata_json,
+            metadata_json,
             archived_at: req.archived_at,
         },
     )
@@ -860,6 +921,87 @@ async fn set_due_dismissed_handler(
     Ok(Json(CardResponse::from(updated)))
 }
 
+async fn approve_social_post_handler(
+    State(state): State<Arc<AppState>>,
+    Path((project_id, card_id)): Path<(String, String)>,
+) -> Result<Json<CardResponse>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let project = projects::get_project_by_id_or_slug(&pool, &project_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+    let card = grow_media::approve_post(&pool, &project.id, &card_id)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(CardResponse::from(card)))
+}
+
+async fn retry_social_media_handler(
+    State(state): State<Arc<AppState>>,
+    Path((project_id, card_id)): Path<(String, String)>,
+    body: Option<Json<RetryMediaRequest>>,
+) -> Result<Json<CardResponse>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let project = projects::get_project_by_id_or_slug(&pool, &project_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+    let feedback = body.as_ref().and_then(|req| req.0.feedback.as_deref());
+    let card = grow_media::retry_media(&pool, &project.id, &card_id, feedback)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(CardResponse::from(card)))
+}
+
+async fn get_social_media_file_handler(
+    State(state): State<Arc<AppState>>,
+    Path((project_id, card_id, filename)): Path<(String, String, String)>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let project = projects::get_project_by_id_or_slug(&pool, &project_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let card = cards::get_card(&pool, &card_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    if card.project_id != project.id || card.card_type != "social_post" {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let path = grow_media::resolve_media_file(&project.id, &card.id, &filename)
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let file = tokio::fs::File::open(&path)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    let content_type = match path.extension().and_then(|e| e.to_str()) {
+        Some("png") => "image/png",
+        Some("svg") => "image/svg+xml",
+        Some("mp4") => "video/mp4",
+        _ => "application/octet-stream",
+    };
+    let body = Body::from_stream(ReaderStream::new(file));
+    Ok((
+        [
+            (header::CONTENT_TYPE, content_type.to_string()),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+        ],
+        body,
+    ))
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         // Active goals — single source of truth for every "in flight" surface
@@ -901,6 +1043,18 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route(
             "/api/projects/{project_id}/cards/{card_id}/cancel",
             post(cancel_card_handler),
+        )
+        .route(
+            "/api/projects/{project_id}/cards/{card_id}/approve",
+            post(approve_social_post_handler),
+        )
+        .route(
+            "/api/projects/{project_id}/cards/{card_id}/media/retry",
+            post(retry_social_media_handler),
+        )
+        .route(
+            "/api/projects/{project_id}/cards/{card_id}/media/{filename}",
+            get(get_social_media_file_handler),
         )
         // Post-creation roadmap editing (#251)
         .route(

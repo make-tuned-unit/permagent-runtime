@@ -33,6 +33,7 @@ pub mod gateway;
 pub mod governance;
 pub mod grow;
 pub mod grow_analytics;
+pub mod grow_media;
 pub mod growth_actions;
 pub mod growth_verify;
 pub mod henry_status;
@@ -201,6 +202,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(cards::routes(state.clone()))
         .merge(grow::routes(state.clone()))
         .merge(grow_analytics::routes(state.clone()))
+        .merge(grow_media::routes(state.clone()))
         .merge(growth_actions::routes(state.clone()))
         .merge(first_party_analytics::routes(state.clone()))
         .merge(governance::routes(state.clone()))

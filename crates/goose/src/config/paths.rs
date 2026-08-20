@@ -76,4 +76,11 @@ impl Paths {
     pub fn skills_dir() -> PathBuf {
         Self::base_dir().join("skills")
     }
+
+    /// Generated Grow stills and Higgsfield downloads, keyed by project then
+    /// card: `grow-media/<project_id>/<card_id>/`. Per-user data dir — never a
+    /// repo path, never a hardcoded project.
+    pub fn grow_media_dir() -> PathBuf {
+        Self::base_dir().join("grow-media")
+    }
 }
