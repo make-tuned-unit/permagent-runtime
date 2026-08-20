@@ -79,6 +79,14 @@ pub struct AppState {
     /// (the hub's own app — legacy, zero-breakage) OR any non-revoked device
     /// token from this registry.
     pub device_registry: Arc<crate::device_registry::DeviceRegistry>,
+    /// Peer code-signature verification policy. DISABLED on every current
+    /// build: the control plane is TCP loopback, which carries no peer
+    /// credentials on macOS, and the app is ad-hoc signed so there is no
+    /// stable identity to pin. Held here so the day both blockers clear the
+    /// change is a construction change, not an auth-layer redesign. See
+    /// `crate::middleware::peer_identity` and
+    /// `docs/design/daemon-trust-boundary.md`.
+    pub peer_gate: Arc<crate::middleware::peer_identity::PeerGate>,
     /// Activity event ingester — writes Always/Aggregated events to Brain.
     pub activity_ingester: Option<Arc<permagent::activity::ingestion::ActivityIngester>>,
     /// Activity context builder — maintains live state for per-turn digests.
@@ -942,6 +950,7 @@ impl AppState {
             daemon_token,
             stream_tokens: StreamTokenStore::default(),
             device_registry,
+            peer_gate: Arc::new(crate::middleware::peer_identity::PeerGate::from_env()),
             activity_ingester,
             context_builder,
             browser_content_bridge: Arc::new(

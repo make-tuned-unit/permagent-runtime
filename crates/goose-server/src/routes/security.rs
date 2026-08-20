@@ -12,6 +12,7 @@
 //!   GET  /api/security/sovereignty  — current status
 //!   POST /api/security/sovereignty  — set { enabled?, capturePrompts?, strictAudit? }
 //!   GET  /api/security/egress-log   — recent cloud-egress audit entries (?limit=)
+//!   GET  /api/security/auth-log     — recent daemon auth events (?limit=)
 
 use axum::{
     extract::{Json, Query},
@@ -24,6 +25,7 @@ use std::sync::Arc;
 
 use permagent::config::{Config, ConfigError};
 use permagent::providers::providers as list_providers;
+use permagent::security::auth_audit::{self, AuthEventEntry};
 use permagent::sovereignty::{self, EgressLogEntry};
 
 use crate::state::AppState;
@@ -123,11 +125,31 @@ async fn get_egress_log(
     Ok(Json(entries))
 }
 
+/// Recent daemon control-plane auth events — every refused request, and every
+/// admitted request whose route can execute code, touch secrets, spend money or
+/// write user data.
+///
+/// This answers "what has used the daemon token, and for what". It does NOT
+/// answer "was that use legitimate": the token is a `0600` file, which cannot
+/// separate processes running as the same user, so every same-user caller is
+/// indistinguishable at the credential layer. See
+/// `docs/design/daemon-trust-boundary.md`.
+async fn get_auth_log(
+    Query(params): Query<LogQuery>,
+) -> Result<Json<Vec<AuthEventEntry>>, (StatusCode, String)> {
+    let limit = params.limit.clamp(1, 1000);
+    let entries = auth_audit::recent_auth_events(limit)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(entries))
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/security/sovereignty", get(get_status))
         .route("/api/security/sovereignty", post(set_status))
         .route("/api/security/egress-log", get(get_egress_log))
+        .route("/api/security/auth-log", get(get_auth_log))
         .with_state(state)
 }
 

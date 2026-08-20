@@ -772,6 +772,12 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // second daemon boot.
     apply_growth_actions_schema(pool).await?;
 
+    // Daemon control-plane auth audit (schema v43). Idempotent; shared with
+    // migrate_v42_to_v43 so a fresh install audits from its first boot rather
+    // than only after a later upgrade pass — an audit that starts late is an
+    // audit with a hole in it exactly where a new machine is least observed.
+    apply_daemon_auth_audit_schema(pool).await?;
+
     // Failure-learning incident capture. Version-independent, additive, and
     // idempotent so the pinned fresh-init base stamp remains unchanged.
     apply_incidents_schema(pool).await?;
@@ -3052,6 +3058,90 @@ pub async fn migrate_v40_to_v41(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
+/// Apply the daemon control-plane auth-audit schema (schema v43):
+/// `daemon_auth_audit` — one row per admitted consequential request and per
+/// refused request on the daemon's HTTP control plane.
+///
+/// Why it exists: the daemon's bearer token lives in a `0600` file inside a
+/// `0700` directory, which separates OTHER USERS from it but cannot separate
+/// OTHER PROCESSES RUNNING AS THIS USER — Unix permissions have no sub-user
+/// granularity. Same-user misuse therefore cannot be prevented, only made
+/// visible; this table is that visibility. See
+/// `docs/design/daemon-trust-boundary.md` and `crate::security::auth_audit`.
+///
+/// Append-only is enforced *at the DB* by `BEFORE UPDATE` / `BEFORE DELETE`
+/// triggers, matching `egress_audit` and `decision_audit`. That stops rewriting
+/// through SQL; it does not stop an attacker who can already run code as this
+/// user from deleting the database file, and the design doc says so plainly.
+///
+/// Purely additive and base-version independent (`CREATE ... IF NOT EXISTS`),
+/// so it applies cleanly over any earlier base and is safe on every boot.
+pub async fn apply_daemon_auth_audit_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut tx = pool.begin().await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS daemon_auth_audit (
+            id         TEXT PRIMARY KEY,
+            ts         TEXT NOT NULL,
+            outcome    TEXT NOT NULL,
+            principal  TEXT,
+            credential TEXT NOT NULL,
+            class      TEXT NOT NULL,
+            method     TEXT NOT NULL,
+            path       TEXT NOT NULL,
+            status     INTEGER,
+            peer       TEXT
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_daemon_auth_audit_ts ON daemon_auth_audit(ts DESC)",
+    )
+    .execute(&mut *tx)
+    .await?;
+    // Denials are the rows an investigation starts from; give them their own
+    // partial index so "what was refused, and when" stays cheap as the
+    // admitted-mutation rows accumulate around them.
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_daemon_auth_audit_denied
+            ON daemon_auth_audit(ts DESC) WHERE outcome = 'denied'",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS trg_daemon_auth_audit_no_update
+            BEFORE UPDATE ON daemon_auth_audit
+            BEGIN SELECT RAISE(ABORT, 'daemon_auth_audit is append-only'); END",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS trg_daemon_auth_audit_no_delete
+            BEFORE DELETE ON daemon_auth_audit
+            BEGIN SELECT RAISE(ABORT, 'daemon_auth_audit is append-only'); END",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// v43: the daemon control-plane auth audit. New table, indexes and triggers
+/// only; additive and base-version independent, so it is safe on every
+/// database and on every boot. Fresh installs get the same table from
+/// `init_spectral_db`, which never reaches the migration ladder.
+pub async fn migrate_v42_to_v43(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v42 -> v43 (daemon auth audit)");
+    apply_daemon_auth_audit_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (43)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v43 (daemon auth audit)");
+    Ok(())
+}
+
 /// v39: drain-ingest idempotency key on `analytics_events`. Additive
 /// (PRAGMA-guarded ADD COLUMN + unique index); safe on every database.
 pub async fn migrate_v38_to_v39(pool: &Pool<Sqlite>) -> Result<()> {
@@ -4813,6 +4903,56 @@ mod inbox_schema_tests {
             // Idempotent: a second run is a no-op, not an error.
             migrate_v41_to_v42(&pool).await.unwrap();
             assert_eq!(current_version(&pool).await, 42, "base v{base}: rerun");
+        }
+    }
+
+    /// migrate_v42_to_v43 is base-independent: it must reach the same shape and
+    /// stamp v43 over any earlier recorded base, and be a no-op on a re-run.
+    #[tokio::test]
+    async fn migrate_v42_to_v43_is_base_independent() {
+        for base in [38, 41, 42] {
+            let pool = mem_pool().await;
+            sqlx::query(
+                "CREATE TABLE schema_version (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO schema_version (version) VALUES (?)")
+                .bind(base)
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            assert!(
+                !object_exists(&pool, "daemon_auth_audit").await,
+                "base v{base}: pre"
+            );
+
+            migrate_v42_to_v43(&pool).await.unwrap();
+
+            assert!(
+                object_exists(&pool, "daemon_auth_audit").await,
+                "base v{base}: daemon_auth_audit"
+            );
+            // The append-only guard is part of the schema, not a convention:
+            // assert the triggers exist, not merely the table.
+            assert!(
+                object_exists(&pool, "trg_daemon_auth_audit_no_update").await,
+                "base v{base}: no_update trigger"
+            );
+            assert!(
+                object_exists(&pool, "trg_daemon_auth_audit_no_delete").await,
+                "base v{base}: no_delete trigger"
+            );
+            assert_eq!(current_version(&pool).await, 43, "base v{base}: version");
+
+            // Idempotent: a second run is a no-op, not an error.
+            migrate_v42_to_v43(&pool).await.unwrap();
+            assert_eq!(current_version(&pool).await, 43, "base v{base}: rerun");
         }
     }
 

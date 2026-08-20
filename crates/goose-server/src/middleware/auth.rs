@@ -35,6 +35,8 @@ use axum::{
 };
 use serde::Deserialize;
 
+use permagent::security::auth_audit::{self, AuthEventRecord, AuthOutcome, CredentialKind};
+
 use crate::device_registry::DeviceRegistry;
 use crate::state::AppState;
 
@@ -107,18 +109,15 @@ pub fn validate_with_devices(
     Err(StatusCode::UNAUTHORIZED)
 }
 
-/// Validate against the daemon token in `AppState` (fail-closed, see
-/// [`validate_token_value`]) or any non-revoked device token (#628). Shared by
-/// every auth path — the HTTP middlewares below, the `/events` WS upgrade, and
-/// the voice WS upgrade — so per-device tokens work on all rails. A device
-/// match touches the registry's last-seen (throttled persistence).
-pub fn validate_daemon_token(state: &AppState, provided: Option<&str>) -> Result<(), StatusCode> {
-    authenticate_daemon_token(state, provided)?;
-    Ok(())
-}
-
 /// Authenticate a long-lived daemon/device credential and return the principal
 /// downstream code may use for audit attribution.
+///
+/// Validates against the daemon token in `AppState` (fail-closed, see
+/// [`validate_token_value`]) or any non-revoked device token (#628). Shared by
+/// every auth path — the HTTP middlewares below, the `/events` WS upgrade and
+/// the voice WS upgrade (both via [`validate_stream_token`]) — so per-device
+/// tokens work on all rails. A device match touches the registry's last-seen
+/// (throttled persistence).
 pub fn authenticate_daemon_token(
     state: &AppState,
     provided: Option<&str>,
@@ -144,12 +143,38 @@ pub fn validate_stream_token(
     existing_provided: Option<&str>,
     query_token: Option<&str>,
 ) -> Result<(), StatusCode> {
-    match validate_daemon_token(state, existing_provided) {
-        Ok(()) => Ok(()),
+    authenticate_stream_token(state, existing_provided, query_token).map(|_| ())
+}
+
+/// Which credential admitted a request on a stream rail.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StreamPrincipal {
+    /// A long-lived daemon or device credential.
+    Long(AuthPrincipal),
+    /// A short-lived, stream-scoped token minted by `/sse-token`.
+    Scoped,
+}
+
+/// Authenticating core behind [`validate_stream_token`], returning the
+/// admitting credential so the auth audit can attribute the request.
+///
+/// This is the SINGLE implementation of the stream-rail decision; the
+/// unit-returning `validate_stream_token` delegates to it. Keeping one body
+/// means the audit cannot drift away from the decision it claims to record.
+/// The decision itself is unchanged: a missing daemon token is still a hard
+/// 503, and only after the established validator returns 401 may a query-borne
+/// scoped token admit the request.
+pub fn authenticate_stream_token(
+    state: &AppState,
+    existing_provided: Option<&str>,
+    query_token: Option<&str>,
+) -> Result<StreamPrincipal, StatusCode> {
+    match authenticate_daemon_token(state, existing_provided) {
+        Ok(principal) => Ok(StreamPrincipal::Long(principal)),
         Err(StatusCode::UNAUTHORIZED)
             if query_token.is_some_and(|token| state.stream_tokens.contains_unexpired(token)) =>
         {
-            Ok(())
+            Ok(StreamPrincipal::Scoped)
         }
         Err(status) => Err(status),
     }
@@ -163,15 +188,109 @@ pub fn bearer_token(headers: &HeaderMap) -> Option<&str> {
         .and_then(|v| v.strip_prefix("Bearer "))
 }
 
+// ── Auth audit (#trust-boundary) ─────────────────────────────────────────────
+//
+// The daemon token is a 0600 file, which separates other USERS from it but not
+// other PROCESSES running as this user. Same-user misuse cannot be prevented
+// here, so it is recorded instead: every refusal, and every admitted request
+// whose route can execute code, touch secrets, spend money or write user data.
+// Reads and status polls are not recorded on success — see
+// `RouteClass::is_audited_on_success`. This is detection, not prevention; the
+// limits are stated in `docs/design/daemon-trust-boundary.md`.
+
+/// The audit labels for an admitted principal: (principal, credential kind).
+fn principal_labels(principal: &AuthPrincipal) -> (String, CredentialKind) {
+    match principal {
+        AuthPrincipal::Master => ("master".to_string(), CredentialKind::Master),
+        AuthPrincipal::Device(id) => (id.clone(), CredentialKind::Device),
+    }
+}
+
+/// What a refused caller presented. A wrong token and no token at all are
+/// different events: only one of them is somebody trying.
+fn denied_credential(provided: Option<&str>) -> CredentialKind {
+    match provided {
+        Some(_) => CredentialKind::Unrecognised,
+        None => CredentialKind::None,
+    }
+}
+
+/// Write one audit row, subject to the class policy. Never fails the request:
+/// `record_auth_event` logs loudly and swallows, because a full disk must not
+/// become a total loss of access to the user's own daemon.
+async fn audit(
+    outcome: AuthOutcome,
+    principal: Option<String>,
+    credential: CredentialKind,
+    method: &str,
+    path: &str,
+    status: Option<u16>,
+) {
+    let class = auth_audit::classify(method, path);
+    if outcome == AuthOutcome::Admitted && !class.is_audited_on_success() {
+        return;
+    }
+    auth_audit::record_auth_event(AuthEventRecord {
+        outcome,
+        principal,
+        credential,
+        class,
+        method: method.to_string(),
+        // Path only, never the query string: the long-lived token rides
+        // `?token=` on the SSE and WebSocket rails.
+        path: path.to_string(),
+        status,
+        peer: None,
+    })
+    .await;
+}
+
+/// Record a refusal on any auth rail.
+async fn audit_denied(provided: Option<&str>, method: &str, path: &str, status: StatusCode) {
+    audit(
+        AuthOutcome::Denied,
+        None,
+        denied_credential(provided),
+        method,
+        path,
+        Some(status.as_u16()),
+    )
+    .await;
+}
+
 /// Standard bearer-header middleware for the protected router.
 pub async fn require_bearer_token(
     State(state): State<Arc<AppState>>,
     mut request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    let principal = authenticate_daemon_token(&state, bearer_token(request.headers()))?;
+    let method = request.method().as_str().to_owned();
+    let path = request.uri().path().to_owned();
+    let provided = bearer_token(request.headers()).map(str::to_owned);
+
+    // The authentication decision itself is UNCHANGED — same validator, same
+    // fail-closed 503, same constant-time compare. Only the recording is new.
+    let principal = match authenticate_daemon_token(&state, provided.as_deref()) {
+        Ok(principal) => principal,
+        Err(status) => {
+            audit_denied(provided.as_deref(), &method, &path, status).await;
+            return Err(status);
+        }
+    };
+
+    let (label, credential) = principal_labels(&principal);
     request.extensions_mut().insert(principal);
-    Ok(next.run(request).await)
+    let response = next.run(request).await;
+    audit(
+        AuthOutcome::Admitted,
+        Some(label),
+        credential,
+        &method,
+        &path,
+        Some(response.status().as_u16()),
+    )
+    .await;
+    Ok(response)
 }
 
 /// Token middleware for streaming endpoints: accepts the bearer header
@@ -184,10 +303,36 @@ pub async fn require_token_header_or_query(
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
+    let method = request.method().as_str().to_owned();
+    let path = request.uri().path().to_owned();
     let header = bearer_token(request.headers());
     let provided = header.or(query.token.as_deref());
-    validate_stream_token(&state, provided, query.token.as_deref())?;
-    Ok(next.run(request).await)
+    // Unchanged decision, evaluated exactly once; the scoped-token fallback
+    // still only applies after the established validator has returned 401.
+    let (label, credential) =
+        match authenticate_stream_token(&state, provided, query.token.as_deref()) {
+            Ok(StreamPrincipal::Long(ref principal)) => principal_labels(principal),
+            Ok(StreamPrincipal::Scoped) => ("stream".to_string(), CredentialKind::Stream),
+            Err(status) => {
+                let owned = provided.map(str::to_owned);
+                audit_denied(owned.as_deref(), &method, &path, status).await;
+                return Err(status);
+            }
+        };
+    // Admitted. These are the stream rails, whose routes classify as reads, so
+    // the class policy normally drops the row; keep the call so a future
+    // audited-class route mounted here is recorded without further wiring.
+    let response = next.run(request).await;
+    audit(
+        AuthOutcome::Admitted,
+        Some(label),
+        credential,
+        &method,
+        &path,
+        Some(response.status().as_u16()),
+    )
+    .await;
+    Ok(response)
 }
 
 /// Token middleware for endpoints whose native and browser clients use either
@@ -199,9 +344,30 @@ pub async fn require_daemon_token_header_or_query(
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
+    let method = request.method().as_str().to_owned();
+    let path = request.uri().path().to_owned();
     let header = bearer_token(request.headers());
-    validate_daemon_token(&state, header.or(query.token.as_deref()))?;
-    Ok(next.run(request).await)
+    let provided = header.or(query.token.as_deref()).map(str::to_owned);
+    // Unchanged decision: scoped stream tokens are still never admitted here.
+    let principal = match authenticate_daemon_token(&state, provided.as_deref()) {
+        Ok(principal) => principal,
+        Err(status) => {
+            audit_denied(provided.as_deref(), &method, &path, status).await;
+            return Err(status);
+        }
+    };
+    let (label, credential) = principal_labels(&principal);
+    let response = next.run(request).await;
+    audit(
+        AuthOutcome::Admitted,
+        Some(label),
+        credential,
+        &method,
+        &path,
+        Some(response.status().as_u16()),
+    )
+    .await;
+    Ok(response)
 }
 
 #[cfg(test)]

@@ -219,7 +219,24 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
     }
 
     let collect_state = state.clone();
+    let peer_gate = state.peer_gate.clone();
     protected = protected.layer(middleware::from_fn_with_state(state, require_bearer_token));
+
+    // Peer code-signature verification, OUTSIDE the bearer layer so an
+    // unverified caller is refused before its token is even considered.
+    //
+    // INERT on every current build. `PeerGate::from_env` reads
+    // `PERMAGENT_PEER_VERIFICATION` and defaults to Disabled, and a disabled
+    // gate passes every request through without consulting the verifier at all.
+    // It is mounted anyway so the seam is wired and switchable rather than
+    // theoretical — but switching it on today refuses everything, because TCP
+    // loopback carries no peer credentials on macOS and the app is ad-hoc
+    // signed. Both blockers, and the work that clears them, are stated in
+    // `docs/design/daemon-trust-boundary.md`.
+    protected = protected.layer(middleware::from_fn_with_state(
+        peer_gate,
+        crate::middleware::peer_identity::require_verified_peer,
+    ));
 
     // Origin guard over EVERYTHING (public + protected): a remote web page in
     // the user's browser must not be able to reach the daemon cross-origin,
