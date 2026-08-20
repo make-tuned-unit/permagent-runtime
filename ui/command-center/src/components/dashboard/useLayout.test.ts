@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { compactLayoutPass, ensureGrowthCardTallEnough, ensureGrowthResultsCard, reflow, type DashboardLayoutData } from './useLayout';
+import {
+  compactLayoutPass,
+  ensureCalendarCard,
+  ensureGrowthCardTallEnough,
+  ensureGrowthResultsCard,
+  reflow,
+  type DashboardLayoutData,
+} from './useLayout';
 
 function card(type: string, w: number, h: number) {
   return { id: type, type, position: { x: 0, y: 0 }, size: { w, h }, visible: true };
@@ -71,6 +78,21 @@ describe('compactLayoutPass', () => {
 
   it('handles an empty dashboard', () => {
     expect(compactLayoutPass({ cards: [] }).changed).toBe(false);
+  });
+});
+
+describe('ensureCalendarCard', () => {
+  it('inserts a calendar card when the layout has none', () => {
+    const { layout, changed } = ensureCalendarCard({ cards: [card('hero', 7, 4)] });
+    expect(changed).toBe(true);
+    expect(layout.cards.some(c => c.type === 'calendar')).toBe(true);
+  });
+
+  it('leaves a layout that already has calendar alone', () => {
+    const input: DashboardLayoutData = { cards: [card('calendar', 5, 4)] };
+    const { layout, changed } = ensureCalendarCard(input);
+    expect(changed).toBe(false);
+    expect(layout).toBe(input);
   });
 });
 

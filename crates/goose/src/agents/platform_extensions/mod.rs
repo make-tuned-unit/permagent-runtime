@@ -805,14 +805,27 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: people::EXTENSION_NAME,
                 display_name: "People",
                 description:
-                    "Create people and associate them with projects (create_person, associate_person_with_project) — minting a durable graph entity plus a CRM directory row in one deterministic step — and enrich a person's professional details: enrich_person returns a research briefing, you research with your web tools, and propose_enrichment files the findings as a review-gated Decision Inbox proposal",
+                    "Create people and associate them with projects (create_person, associate_person_with_project) — minting a durable graph entity plus a CRM directory row in one deterministic step — enrich a person's professional details (enrich_person, propose_enrichment), and log a meeting against their profile (log_person_meeting) so it shows on the People tab, optionally on a project, with a dated follow-up, and writes through Apple Calendar onto the Home tab. Read the directory with observe_app surface people; open someone with navigate_app tab People and state { person: \"<display name>\" }",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
                 why_it_matters:
-                    "When the user says \"add <name>\" or \"associate <name> with <project>\", do it directly — you create and link people, you do not just remember them as a note. When they ask to enrich or refresh a contact's details, start with enrich_person — nothing is written until they approve the proposal.",
+                    "When the user says \"add <name>\" or \"associate <name> with <project>\", do it directly — you create and link people, you do not just remember them as a note. When they ask to enrich or refresh a contact's details, start with enrich_person — nothing is written until they approve the proposal. When they had a meeting with someone, call log_person_meeting rather than leaving it as a chat note; pass a follow-up date when they should check in. Open the People tab with navigate_app when they want to see someone.",
                 required_secrets: &[],
-                teaching: &[],
+                teaching: &[
+                    crate::agents::self_knowledge::TeachingStep {
+                        title: "Open the People tab",
+                        body: "Call navigate_app with tab \"People\" so the user sees the \
+                               directory graph. To open a specific person, pass state: \
+                               { \"person\": \"<display name>\" } — the name observe_app \
+                               surface people returned, never an email or UUID.",
+                        open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                            tab: "People",
+                            section: None,
+                        }),
+                        confirm: None,
+                    },
+                ],
                 client_factory: |ctx| Box::new(people::PeopleClient::new(ctx).unwrap()),
             },
         );

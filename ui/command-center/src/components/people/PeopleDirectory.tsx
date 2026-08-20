@@ -27,7 +27,7 @@ import { apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
-import type { DirectoryPerson } from '../projects/types';
+import { contactLabel, isFollowUpDue, isQuiet } from './contactAge';
 
 type Status = 'loading' | 'error' | 'ready';
 
@@ -79,6 +79,7 @@ export function PeopleDirectory() {
   const [newName, setNewName] = useState('');
   const [addError, setAddError] = useState<string | null>(null);
   const [addBusy, setAddBusy] = useState(false);
+  const [cohort, setCohort] = useState<'all' | 'quiet' | 'followup'>('all');
   /**
    * True when rows came back but every attribute is null — the shape of a
    * Brain-down daemon, because the overlay clears the columns and then returns
@@ -123,6 +124,27 @@ export function PeopleDirectory() {
     () => people.filter(p => p.projects.length === 0).length,
     [people],
   );
+  const quietCount = useMemo(() => people.filter(p => isQuiet(p.last_contact_at)).length, [people]);
+  const followUpCount = useMemo(
+    () => people.filter(p => isFollowUpDue(p.next_follow_up_at)).length,
+    [people],
+  );
+  const visible = useMemo(() => {
+    const filtered = people.filter(p => {
+      if (cohort === 'quiet') return isQuiet(p.last_contact_at);
+      if (cohort === 'followup') return isFollowUpDue(p.next_follow_up_at);
+      return true;
+    });
+    return [...filtered].sort((a, b) => {
+      const aDue = isFollowUpDue(a.next_follow_up_at) ? 0 : 1;
+      const bDue = isFollowUpDue(b.next_follow_up_at) ? 0 : 1;
+      if (aDue !== bDue) return aDue - bDue;
+      const aQ = isQuiet(a.last_contact_at) ? 0 : 1;
+      const bQ = isQuiet(b.last_contact_at) ? 0 : 1;
+      if (aQ !== bQ) return aQ - bQ;
+      return a.display_name.localeCompare(b.display_name);
+    });
+  }, [people, cohort]);
 
   const addPerson = async () => {
     const name = newName.trim();
@@ -273,12 +295,37 @@ export function PeopleDirectory() {
         </div>
       ) : (
         <>
-          <div style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono }}>
-            {people.length} {people.length === 1 ? 'person' : 'people'}
-            {unassignedCount > 0 && ` · ${unassignedCount} in no project`}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <div style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono }}>
+              {visible.length} {visible.length === 1 ? 'person' : 'people'}
+              {unassignedCount > 0 && ` · ${unassignedCount} in no project`}
+            </div>
+            <span style={{ flex: 1 }} />
+            {([
+              ['all', 'All'],
+              ['quiet', `Quiet${quietCount ? ` ${quietCount}` : ''}`],
+              ['followup', `Follow-up${followUpCount ? ` ${followUpCount}` : ''}`],
+            ] as const).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setCohort(key)}
+                style={{
+                  fontSize: 11,
+                  fontFamily: font.body,
+                  padding: '2px 8px',
+                  borderRadius: 4,
+                  cursor: 'pointer',
+                  border: `1px solid ${cohort === key ? colors.cyan : colors.border}`,
+                  background: cohort === key ? colors.cyanSoft : 'transparent',
+                  color: cohort === key ? colors.cyan : colors.textMuted,
+                }}
+              >
+                {label}
+              </button>
+            ))}
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {people.map(p => (
+            {visible.map(p => (
               <button
                 key={p.entity_uuid}
                 onClick={() => openPersonDetail(null, p)}
@@ -316,7 +363,15 @@ export function PeopleDirectory() {
                     possible duplicate
                   </span>
                 )}
+                {isFollowUpDue(p.next_follow_up_at) && (
+                  <span style={{ fontSize: 10, color: colors.cyan, border: `1px solid ${colors.cyan}`, borderRadius: 4, padding: '1px 5px' }}>
+                    follow up
+                  </span>
+                )}
                 <span style={{ flex: 1 }} />
+                <span style={{ fontSize: 10, color: isQuiet(p.last_contact_at) ? colors.textDim : colors.textMuted, fontFamily: font.mono }}>
+                  {contactLabel(p.last_contact_at)}
+                </span>
                 {p.projects.length === 0 ? (
                   <span style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono }}>
                     no project

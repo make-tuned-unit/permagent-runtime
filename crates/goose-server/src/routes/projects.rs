@@ -473,7 +473,35 @@ async fn list_project_people_handler(
         people.iter_mut().map(|pp| &mut pp.person).collect(),
     )
     .await;
+    if let Ok(latest) = permagent::person_meetings::latest_starts_by_person(&pool).await {
+        for pp in &mut people {
+            permagent::person_meetings::merge_last_contact(
+                std::slice::from_mut(&mut pp.person),
+                &latest,
+            );
+        }
+    }
     Ok(Json(people))
+}
+
+/// GET /api/projects/{id}/meetings — 1:1s logged against this project.
+async fn list_project_meetings_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<permagent::person_meetings::PersonMeetingWithName>>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let project = projects::get_project_by_id_or_slug(&pool, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+    let rows = permagent::person_meetings::list_for_project(&pool, &project.id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(rows))
 }
 
 /// POST /api/projects/{id}/people — associate a person with a project.
@@ -2132,6 +2160,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route(
             "/api/projects/{id}/people",
             get(list_project_people_handler),
+        )
+        .route(
+            "/api/projects/{id}/meetings",
+            get(list_project_meetings_handler),
         )
         .route("/api/projects/{id}/people", post(associate_person_handler))
         .route(

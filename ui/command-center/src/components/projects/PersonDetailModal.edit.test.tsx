@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  *
  * PersonDetailModal manual field-edit (CRM slice 2b, #495) — component wiring:
- *  - "Edit fields" reveals inputs seeded from the person; Save PATCHes only the
+ *  - Fields are always inputs (no separate edit mode); Save PATCHes only the
  *    CHANGED fields to `/api/people/{entity_uuid}/fields` (the manual write path).
  *  - On success the view reconciles from the response and the store's peopleRev
  *    bumps so the decoupled panel refetches.
@@ -41,7 +41,11 @@ const person: ProjectPerson = {
   how_met: null,
   linkedin: null,
   x_handle: null,
+  facebook: null,
+  instagram: null,
   personal_site: null,
+  photo_url: null,
+  find_online_hints: null,
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
   project_role: 'Advisor',
@@ -53,7 +57,7 @@ let root: Root;
 
 beforeEach(() => {
   apiFetch.mockReset().mockImplementation((url: string) => {
-    if (url.endsWith('/relationships') || url.endsWith('/activity') || url === '/api/people') return Promise.resolve([]);
+    if (url.endsWith('/relationships') || url.endsWith('/activity') || url.endsWith('/meetings') || url === '/api/people') return Promise.resolve([]);
     return Promise.resolve(undefined);
   });
   useCommandCenter.setState({ peopleRev: 0 });
@@ -108,8 +112,8 @@ describe('PersonDetailModal manual field edit', () => {
     }) : Promise.resolve([]));
     await render();
 
-    await click(buttonByText('Edit fields'));
-    // Seeded from the person: unchanged fields must not be sent.
+    expect([...container.querySelectorAll('button')].some(b => b.textContent === 'Edit fields')).toBe(false);
+    // Always-editable: seeded from the person; unchanged fields must not be sent.
     expect(inputForLabel('Role').value).toBe('CTO');
 
     await setInput(inputForLabel('Email'), 'jane@acme.com');
@@ -124,8 +128,8 @@ describe('PersonDetailModal manual field edit', () => {
     expect(body).toEqual({ fields: { email: 'jane@acme.com', birthday: '1990-04-01' } });
 
     // Reconciled view now shows the persisted value; panel nudged to refetch.
-    expect(container.textContent).toContain('jane@acme.com');
-    expect(container.textContent).toContain('1990-04-01');
+    expect(inputForLabel('Email').value).toBe('jane@acme.com');
+    expect(inputForLabel('Birthday').value).toBe('1990-04-01');
     expect(useCommandCenter.getState().peopleRev).toBe(1);
   });
 
@@ -134,16 +138,15 @@ describe('PersonDetailModal manual field edit', () => {
       ? Promise.reject(Object.assign(new Error('boom'), { status: 500 })) : Promise.resolve([]));
     await render();
 
-    await click(buttonByText('Edit fields'));
     await setInput(inputForLabel('Company'), 'Globex');
     await click(buttonByText('Save'));
 
     expect(apiFetch.mock.calls.some(([url]) => String(url).endsWith('/fields'))).toBe(true);
-    // Error surfaced, still in edit mode, peopleRev untouched (no phantom refetch).
+    // Error surfaced, peopleRev untouched (no phantom refetch).
     expect(container.textContent).toContain("Couldn't save changes");
     expect(container.textContent).toContain('500');
     expect(useCommandCenter.getState().peopleRev).toBe(0);
-    // The draft input still holds the attempted value (edit mode stays open).
+    // The draft input still holds the attempted value.
     expect(inputForLabel('Company').value).toBe('Globex');
   });
 });

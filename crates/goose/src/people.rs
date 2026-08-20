@@ -57,7 +57,17 @@ pub struct Person {
     /// arm for them, so an approved enrichment was stored and never displayed.
     pub linkedin: Option<String>,
     pub x_handle: Option<String>,
+    pub facebook: Option<String>,
+    pub instagram: Option<String>,
     pub personal_site: Option<String>,
+    /// Public headshot URL drawn on the People graph. Direct http(s) image,
+    /// graph-`entity_fields`-only, enrichable from a public page (team page,
+    /// personal site, press) — not a login-walled scrape.
+    pub photo_url: Option<String>,
+    /// Manual-only hint written when an enrichment proposal is rejected, so
+    /// the next enrich pass can find this person online (company, LinkedIn,
+    /// city). Graph-`entity_fields`-only, same overlay as the other extras.
+    pub find_online_hints: Option<String>,
     /// Immutable bridge key to the Spectral graph node (bare 64-hex blake3
     /// `EntityId`). Set once at creation, never rewritten on rename — the durable
     /// anchor that carries this identity row to its graph attributes (#255/B).
@@ -104,7 +114,16 @@ pub struct PeopleFilter {
 /// them since slice 4 while the reader had no arm for them, so approved
 /// enrichments were durable and invisible. Every enrichable name must be
 /// readable — `enrichable_fields_are_all_readable` fails the build otherwise.
-pub const PERSON_FIELD_NAMES: [&str; 12] = [
+///
+/// `facebook` and `instagram` joined on 2026-08-20 — the same public-profile
+/// URL shape as LinkedIn, so they are enrichable and manually editable.
+///
+/// `photo_url` joined on 2026-08-20 — a direct http(s) image for the graph
+/// face. Enrichable from a public page; not a login-walled scrape.
+///
+/// `find_online_hints` is manual-only (written on enrichment reject). It is
+/// deliberately absent from [`ENRICHABLE_FIELD_NAMES`].
+pub const PERSON_FIELD_NAMES: [&str; 16] = [
     "role",
     "company",
     "email",
@@ -116,7 +135,11 @@ pub const PERSON_FIELD_NAMES: [&str; 12] = [
     "how_met",
     "linkedin",
     "x_handle",
+    "facebook",
+    "instagram",
     "personal_site",
+    "photo_url",
+    "find_online_hints",
 ];
 
 /// Graph field names that are *synonyms* of a canonical [`PERSON_FIELD_NAMES`]
@@ -155,12 +178,15 @@ pub fn canonical_person_field(field_name: &str) -> &str {
 /// slice 2b and slice 4 and nothing caught it, so
 /// `enrichable_fields_are_all_readable` now pins the invariant against the
 /// reader itself rather than against a second hand-maintained list.
-pub const ENRICHABLE_FIELD_NAMES: [&str; 5] = [
+pub const ENRICHABLE_FIELD_NAMES: [&str; 8] = [
     "linkedin",
     "job_title",
     "company",
     "x_handle",
+    "facebook",
+    "instagram",
     "personal_site",
+    "photo_url",
 ];
 
 impl Person {
@@ -180,7 +206,11 @@ impl Person {
         self.how_met = None;
         self.linkedin = None;
         self.x_handle = None;
+        self.facebook = None;
+        self.instagram = None;
         self.personal_site = None;
+        self.photo_url = None;
+        self.find_online_hints = None;
     }
 
     /// Set one attribute by its `entity_fields` field name (graph overlay).
@@ -199,7 +229,11 @@ impl Person {
             "how_met" => self.how_met = Some(value),
             "linkedin" => self.linkedin = Some(value),
             "x_handle" => self.x_handle = Some(value),
+            "facebook" => self.facebook = Some(value),
+            "instagram" => self.instagram = Some(value),
             "personal_site" => self.personal_site = Some(value),
+            "photo_url" => self.photo_url = Some(value),
+            "find_online_hints" => self.find_online_hints = Some(value),
             _ => {}
         }
     }
@@ -223,7 +257,11 @@ fn row_to_person(r: &sqlx::sqlite::SqliteRow) -> Person {
         how_met: None,
         linkedin: None,
         x_handle: None,
+        facebook: None,
+        instagram: None,
         personal_site: None,
+        photo_url: None,
+        find_online_hints: None,
         graph_entity_id: r.get("graph_entity_id"),
         created_at: r.get("created_at"),
         updated_at: r.get("updated_at"),
@@ -517,7 +555,11 @@ mod tests {
             how_met: Some("old".into()),
             linkedin: Some("old".into()),
             x_handle: Some("old".into()),
+            facebook: Some("old".into()),
+            instagram: Some("old".into()),
             personal_site: Some("old".into()),
+            photo_url: Some("old".into()),
+            find_online_hints: Some("old".into()),
             graph_entity_id: Some("hex".into()),
             created_at: "t".into(),
             updated_at: "t".into(),
@@ -553,7 +595,11 @@ mod tests {
         // The slice-4 enrichable names map too (2026-08-19).
         assert_eq!(p.linkedin.as_deref(), Some("v-linkedin"));
         assert_eq!(p.x_handle.as_deref(), Some("v-x_handle"));
+        assert_eq!(p.facebook.as_deref(), Some("v-facebook"));
+        assert_eq!(p.instagram.as_deref(), Some("v-instagram"));
         assert_eq!(p.personal_site.as_deref(), Some("v-personal_site"));
+        assert_eq!(p.photo_url.as_deref(), Some("v-photo_url"));
+        assert_eq!(p.find_online_hints.as_deref(), Some("v-find_online_hints"));
     }
 
     /// A `Person` with identity set and every attribute blank.
@@ -573,7 +619,11 @@ mod tests {
             how_met: None,
             linkedin: None,
             x_handle: None,
+            facebook: None,
+            instagram: None,
             personal_site: None,
+            photo_url: None,
+            find_online_hints: None,
             graph_entity_id: Some("hex".into()),
             created_at: "t".into(),
             updated_at: "t".into(),
@@ -621,6 +671,65 @@ mod tests {
                  Add the arm (and a `Person` slot) or an alias entry."
             );
         }
+    }
+
+    #[test]
+    fn find_online_hints_is_readable_and_not_enrichable() {
+        assert!(PERSON_FIELD_NAMES.contains(&"find_online_hints"));
+        assert!(
+            !ENRICHABLE_FIELD_NAMES.contains(&"find_online_hints"),
+            "find_online_hints is a user-typed reject note, never an Enricher field"
+        );
+        let mut p = blank_person();
+        p.set_attribute(
+            "find_online_hints",
+            "works at Example Coworking, Halifax".into(),
+        );
+        assert_eq!(
+            p.find_online_hints.as_deref(),
+            Some("works at Example Coworking, Halifax")
+        );
+        p.clear_attributes();
+        assert_eq!(p.find_online_hints, None);
+    }
+
+    #[test]
+    fn facebook_and_instagram_are_enrichable_profile_links() {
+        for name in ["facebook", "instagram"] {
+            assert!(PERSON_FIELD_NAMES.contains(&name));
+            assert!(
+                ENRICHABLE_FIELD_NAMES.contains(&name),
+                "{name} is a public profile URL, same class as linkedin"
+            );
+        }
+        let mut p = blank_person();
+        p.set_attribute("facebook", "https://www.facebook.com/example".into());
+        p.set_attribute("instagram", "https://www.instagram.com/example".into());
+        assert_eq!(
+            p.facebook.as_deref(),
+            Some("https://www.facebook.com/example")
+        );
+        assert_eq!(
+            p.instagram.as_deref(),
+            Some("https://www.instagram.com/example")
+        );
+    }
+
+    #[test]
+    fn photo_url_is_enrichable_and_readable() {
+        assert!(PERSON_FIELD_NAMES.contains(&"photo_url"));
+        assert!(
+            ENRICHABLE_FIELD_NAMES.contains(&"photo_url"),
+            "photo_url is a public image URL, same class as linkedin"
+        );
+        let mut p = blank_person();
+        p.set_attribute("photo_url", "https://cdn.example.com/ada.jpg".into());
+        assert_eq!(
+            p.photo_url.as_deref(),
+            Some("https://cdn.example.com/ada.jpg")
+        );
+        p.clear_attributes();
+        assert_eq!(p.photo_url, None);
     }
 
     /// The reader's other half: whatever `set_attribute` can populate,

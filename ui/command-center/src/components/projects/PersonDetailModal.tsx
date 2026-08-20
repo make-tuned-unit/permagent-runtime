@@ -10,32 +10,57 @@
  * no project context, so those rows and the Remove-from-project action are
  * absent rather than blank.
  *
- * Slice 2b (#495) adds an **Edit** mode: the typed fields become inputs and Save
- * writes them via `PATCH /api/people/{entity_uuid}/fields`. Those land in the
+ * Every typed field is an input, always — fill in what enrichment missed
+ * without flipping into a separate edit mode. Save (or closing the panel)
+ * writes via `PATCH /api/people/{entity_uuid}/fields`. Those land in the
  * authoritative graph with **manual provenance** (`FieldSource::Manual`), so a
  * later Enricher pass can never clobber them. The edit is optimistic — inputs
  * apply to the view immediately and roll back on a non-2xx — and the response is
  * the re-overlaid person, i.e. the graph's own truth, which we merge back in.
  * On success we bump the store's people revision so the decoupled panel refetches.
  *
- * "Refresh enrichment" (#495 slice 4) mutates nothing here: it copies a prepared
- * prompt and navigates to chat; enriched writes happen only after the user
- * approves the resulting Decision Inbox proposal. Disassociate (DELETE
+ * "Run enrichment" sends a message to the live chat session — the agent
+ * calls enrich_person with this person's entity_uuid, researches, then files
+ * propose_enrichment. Findings wait in the Decision Inbox. Nothing here writes
+ * the profile, and nothing is copied to the clipboard. Disassociate (DELETE
  * /api/projects/{id}/people/{entity_uuid}, #530) is the other mutation.
  *
- * PersonDetailModalHost is mounted once at the app root and renders whenever the
- * store's `personDetail` target is set.
+ * On the People tab the panel docks inline (graph/list shrinks). From a
+ * project's People list it docks on the right of the window. Same body.
+ *
+ * PersonDetailModalHost is mounted once at the app root and renders the overlay
+ * dock when the target was opened from a project (PeopleView owns the inline
+ * case so the graph stays visible beside it).
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { FiBookOpen, FiCheckSquare, FiExternalLink, FiFileText, FiPlus, FiTrash2 } from 'react-icons/fi';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { FiBookOpen, FiCalendar, FiCheck, FiCheckSquare, FiExternalLink, FiFileText, FiPlus, FiTrash2, FiX } from 'react-icons/fi';
 import { apiFetch } from '../../lib/api';
-import { useCommandCenter, navigateToTool } from '../../lib/store';
+import { useCommandCenter } from '../../lib/store';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
-import { font, radius } from '../../styles/tokens';
+import { ease, font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
-import { DetailModal } from '../common/DetailModal';
-import type { Person, PersonActivity, PersonAssociation, PersonRelationship } from './types';
+import type { Person, PersonActivity, PersonAssociation, PersonMeeting, PersonProject, PersonRelationship } from './types';
+import { PersonFace } from '../people/PersonFace';
+
+function pad2(n: number): string { return String(n).padStart(2, '0'); }
+
+function localDateTimeValue(d = new Date()): string {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+function plusDaysLocal(local: string, days: number): string {
+  const d = new Date(local);
+  if (!Number.isFinite(d.getTime())) return local;
+  d.setDate(d.getDate() + days);
+  return localDateTimeValue(d);
+}
+
+function localToRfc3339(local: string): string {
+  const d = new Date(local);
+  if (!Number.isFinite(d.getTime())) throw new Error('Invalid time');
+  return d.toISOString();
+}
 
 function fmtTime(iso: string | null): string {
   if (!iso) return '—';
@@ -46,15 +71,22 @@ function fmtTime(iso: string | null): string {
 /** The person fields this modal lets the user edit, in display order. `notes`
  *  renders as a textarea; the rest as single-line inputs. Field names match the
  *  backend `PERSON_FIELD_NAMES` vocabulary exactly (the wire keys). */
-const EDITABLE_FIELDS: { key: EditableKey; label: string; multiline?: boolean; placeholder?: string }[] = [
+const EDITABLE_FIELDS: { key: EditableKey; label: string; multiline?: boolean; placeholder?: string; link?: boolean }[] = [
+  { key: 'photo_url', label: 'Photo', placeholder: 'https://…/photo.jpg', link: true },
   { key: 'role', label: 'Role' },
   { key: 'company', label: 'Company' },
   { key: 'email', label: 'Email', placeholder: 'name@example.com' },
   { key: 'phone', label: 'Phone' },
+  { key: 'linkedin', label: 'LinkedIn', placeholder: 'https://www.linkedin.com/in/…', link: true },
+  { key: 'x_handle', label: 'X', placeholder: '@handle' },
+  { key: 'facebook', label: 'Facebook', placeholder: 'https://www.facebook.com/…', link: true },
+  { key: 'instagram', label: 'Instagram', placeholder: 'https://www.instagram.com/…', link: true },
+  { key: 'personal_site', label: 'Site', placeholder: 'https://…', link: true },
   { key: 'birthday', label: 'Birthday', placeholder: 'YYYY-MM-DD' },
+  { key: 'last_contact_at', label: 'Last contact', placeholder: 'YYYY-MM-DD or a date you remember' },
   { key: 'relationship_strength', label: 'Relationship' },
   { key: 'how_met', label: 'How met' },
-  { key: 'linkedin', label: 'LinkedIn', placeholder: 'https://www.linkedin.com/in/…' },
+  { key: 'find_online_hints', label: 'Find online', multiline: true, placeholder: 'Company, LinkedIn, city — anything that helps the agent find them' },
   { key: 'notes', label: 'Notes', multiline: true },
 ];
 
@@ -79,6 +111,13 @@ type EditableKey =
   | 'relationship_strength'
   | 'how_met'
   | 'linkedin'
+  | 'x_handle'
+  | 'facebook'
+  | 'instagram'
+  | 'personal_site'
+  | 'photo_url'
+  | 'last_contact_at'
+  | 'find_online_hints'
   | 'notes';
 
 type Draft = Record<EditableKey, string>;
@@ -93,8 +132,33 @@ function draftFrom(p: Person): Draft {
     relationship_strength: p.relationship_strength ?? '',
     how_met: p.how_met ?? '',
     linkedin: p.linkedin ?? '',
+    x_handle: p.x_handle ?? '',
+    facebook: p.facebook ?? '',
+    instagram: p.instagram ?? '',
+    personal_site: p.personal_site ?? '',
+    photo_url: p.photo_url ?? '',
+    last_contact_at: p.last_contact_at ?? '',
+    find_online_hints: p.find_online_hints ?? '',
     notes: p.notes ?? '',
   };
+}
+
+/** Message sent to the agent when the user clicks Run enrichment.
+ *  Uses entity_uuid (strict resolve) and any find-online hints already on file.
+ *  Exported so tests can pin that this is a run instruction, not a copy-paste prompt. */
+export function buildEnrichmentMessage(person: Person): string {
+  const bits = [
+    `Run enrichment for ${person.display_name}.`,
+    `Call enrich_person with person "${person.entity_uuid}" (the directory entity_uuid — do not search by name).`,
+  ];
+  if (person.company) bits.push(`Company on file: ${person.company}.`);
+  if (person.role) bits.push(`Role on file: ${person.role}.`);
+  const hints = person.find_online_hints?.trim();
+  if (hints) bits.push(`How to find them online: ${hints}.`);
+  bits.push(
+    'Research the enrichable fields with your web tools, then call propose_enrichment so I can review the findings in the Decision Inbox. Do not wait for a prompt from me — run it now.',
+  );
+  return bits.join(' ');
 }
 
 export function PersonDetailModal({
@@ -102,6 +166,7 @@ export function PersonDetailModal({
   person,
   association,
   onClose,
+  variant = 'overlay',
 }: {
   /** Null when opened from the global directory — there is no project context. */
   projectId: string | null;
@@ -109,30 +174,46 @@ export function PersonDetailModal({
   /** Null outside a project; gates the project-role badge and Disassociate. */
   association?: PersonAssociation | null;
   onClose: () => void;
+  /** `inline` docks inside PeopleView; `overlay` is a right-side drawer. */
+  variant?: 'inline' | 'overlay';
 }) {
   const { colors } = useTheme();
   const bumpPeople = useCommandCenter(s => s.bumpPeople);
+  const sendMessage = useCommandCenter(s => s.sendMessage);
+  const openChatDock = useCommandCenter(s => s.openChatDock);
   const [confirming, setConfirming] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [promptCopied, setPromptCopied] = useState(false);
+  const [enriching, setEnriching] = useState(false);
 
   // Local view of the person: seeded from the prop, updated optimistically on a
   // field edit and reconciled from the PATCH response (the graph's own truth).
   const [view, setView] = useState<Person>(person);
-  const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Draft>(() => draftFrom(person));
   const [saving, setSaving] = useState(false);
   const [relationships, setRelationships] = useState<PersonRelationship[]>([]);
   const [activity, setActivity] = useState<PersonActivity[]>([]);
+  const [meetings, setMeetings] = useState<PersonMeeting[]>([]);
   const [allPeople, setAllPeople] = useState<Person[]>([]);
   const [relatedStatus, setRelatedStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [activityStatus, setActivityStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [meetingsStatus, setMeetingsStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [addingRelationship, setAddingRelationship] = useState(false);
+  const [addingMeeting, setAddingMeeting] = useState(false);
+  const [meetingTitle, setMeetingTitle] = useState('');
+  const [meetingStarts, setMeetingStarts] = useState(localDateTimeValue);
+  const [meetingNotes, setMeetingNotes] = useState('');
+  const [meetingProjectId, setMeetingProjectId] = useState(projectId ?? '');
+  const [followUp, setFollowUp] = useState(true);
+  const [followUpAt, setFollowUpAt] = useState(() => plusDaysLocal(localDateTimeValue(), 7));
+  const [followUpNote, setFollowUpNote] = useState('');
+  const [personProjects, setPersonProjects] = useState<PersonProject[]>([]);
+  const [savingMeeting, setSavingMeeting] = useState(false);
   const [targetId, setTargetId] = useState('');
   const [predicate, setPredicate] = useState('related_to');
   const relationshipsGeneration = useRef(0);
   const activityGeneration = useRef(0);
+  const meetingsGeneration = useRef(0);
 
   const loadRelationships = useCallback(async () => {
     const generation = ++relationshipsGeneration.current;
@@ -166,7 +247,28 @@ export function PersonDetailModal({
     }
   }, [view.entity_uuid]);
 
-  useEffect(() => { loadRelationships(); loadActivity(); }, [loadRelationships, loadActivity]);
+  const loadMeetings = useCallback(async () => {
+    const generation = ++meetingsGeneration.current;
+    setMeetingsStatus('loading');
+    try {
+      const next = await apiFetch<PersonMeeting[]>(`/api/people/${encodeURIComponent(view.entity_uuid)}/meetings`);
+      if (generation !== meetingsGeneration.current) return;
+      if (!Array.isArray(next)) throw new Error('Invalid meetings response');
+      setMeetings(next);
+      setMeetingsStatus('ready');
+    } catch {
+      if (generation === meetingsGeneration.current) setMeetingsStatus('error');
+    }
+  }, [view.entity_uuid]);
+
+  const loadProjects = useCallback(async () => {
+    try {
+      const rows = await apiFetch<PersonProject[]>(`/api/people/${encodeURIComponent(view.entity_uuid)}/projects`);
+      if (Array.isArray(rows)) setPersonProjects(rows);
+    } catch { setPersonProjects([]); }
+  }, [view.entity_uuid]);
+
+  useEffect(() => { loadRelationships(); loadActivity(); loadMeetings(); loadProjects(); }, [loadRelationships, loadActivity, loadMeetings, loadProjects]);
 
   const addRelationship = async () => {
     if (!targetId || !predicate.trim()) return;
@@ -187,33 +289,73 @@ export function PersonDetailModal({
     } catch (e) { setError(`Couldn't remove relationship: ${(e as Error).message}`); }
   };
 
-  // The Enricher (#495 slice 4), prepared-prompt pattern: copy the enrichment
-  // request to the clipboard and take the user to chat — the agent runs
+  const addMeeting = async () => {
+    setError(null);
+    setSavingMeeting(true);
+    try {
+      await apiFetch(`/api/people/${encodeURIComponent(view.entity_uuid)}/meetings`, {
+        method: 'POST',
+        body: JSON.stringify({
+          title: meetingTitle.trim() || undefined,
+          starts_at: localToRfc3339(meetingStarts),
+          notes: meetingNotes.trim() || undefined,
+          project_id: meetingProjectId || undefined,
+          follow_up_at: followUp ? localToRfc3339(followUpAt) : undefined,
+          follow_up_note: followUp && followUpNote.trim() ? followUpNote.trim() : undefined,
+        }),
+      });
+      setAddingMeeting(false);
+      setMeetingTitle('');
+      setMeetingNotes('');
+      setMeetingProjectId('');
+      setFollowUp(true);
+      setFollowUpNote('');
+      setMeetingStarts(localDateTimeValue());
+      setFollowUpAt(plusDaysLocal(localDateTimeValue(), 7));
+      bumpPeople();
+      await Promise.all([loadMeetings(), loadActivity()]);
+    } catch (e) {
+      setError(`Couldn't log meeting: ${(e as Error).message}`);
+    } finally {
+      setSavingMeeting(false);
+    }
+  };
+
+  const markFollowUpDone = async (meeting: PersonMeeting) => {
+    setError(null);
+    try {
+      await apiFetch(`/api/people/${encodeURIComponent(view.entity_uuid)}/meetings/${encodeURIComponent(meeting.id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ follow_up_done: true }),
+      });
+      bumpPeople();
+      await loadMeetings();
+    } catch (e) {
+      setError(`Couldn't close follow-up: ${(e as Error).message}`);
+    }
+  };
+
+  // The Enricher: send the request to the live session. The agent runs
   // enrich_person → researches with its web tools → propose_enrichment, and
-  // findings wait in the Decision Inbox for approval. Nothing here writes.
-  const requestEnrichment = () => {
-    const prompt =
-      `Refresh enrichment for ${view.display_name}: call enrich_person with ` +
-      `person "${view.display_name}", research the enrichable fields with your ` +
-      `web tools, then call propose_enrichment so I can review the findings in ` +
-      `the Decision Inbox.`;
-    navigator.clipboard?.writeText(prompt).catch(() => {});
-    setPromptCopied(true);
-    navigateToTool('chat');
-  };
-
-  const startEdit = () => {
+  // findings wait in the Decision Inbox for approval. Nothing here writes,
+  // and nothing is copied to the clipboard.
+  const requestEnrichment = async () => {
+    if (enriching) return;
+    setEnriching(true);
     setError(null);
-    setDraft(draftFrom(view));
-    setEditing(true);
+    try {
+      openChatDock();
+      await sendMessage(buildEnrichmentMessage(view));
+    } catch (e) {
+      setError(`Couldn't start enrichment: ${(e as Error).message}`);
+    } finally {
+      setEnriching(false);
+    }
   };
 
-  const cancelEdit = () => {
-    setEditing(false);
-    setError(null);
-  };
+  const dirty = EDITABLE_FIELDS.some(({ key }) => draft[key] !== ((view[key] ?? '') as string));
 
-  const saveEdit = async () => {
+  const saveEdit = async (): Promise<boolean> => {
     // Only send fields that actually changed; a null value and an empty draft
     // are equal (no-op), so clearing a blank field never writes an empty string.
     const changed: Partial<Record<EditableKey, string>> = {};
@@ -222,12 +364,10 @@ export function PersonDetailModal({
       const next = draft[key];
       if (next !== current) changed[key] = next;
     }
-    if (Object.keys(changed).length === 0) {
-      setEditing(false);
-      return;
-    }
+    if (Object.keys(changed).length === 0) return true;
 
     const prior = view;
+    const priorDraft = draft;
     // Optimistic: reflect the edit immediately; roll back on failure.
     const optimistic: Person = { ...view };
     for (const [k, v] of Object.entries(changed)) {
@@ -244,8 +384,8 @@ export function PersonDetailModal({
       );
       // Reconcile with the graph's authoritative truth (the response is the
       // re-overlaid person), keeping this project's join columns.
-      setView(prev => ({
-        ...prev,
+      const next: Person = {
+        ...optimistic,
         role: updated.role,
         company: updated.company,
         email: updated.email,
@@ -257,20 +397,36 @@ export function PersonDetailModal({
         how_met: updated.how_met,
         linkedin: updated.linkedin,
         x_handle: updated.x_handle,
+        facebook: updated.facebook,
+        instagram: updated.instagram,
         personal_site: updated.personal_site,
-      }));
-      setEditing(false);
+        photo_url: updated.photo_url,
+        find_online_hints: updated.find_online_hints,
+      };
+      setView(next);
+      setDraft(draftFrom(next));
       // Decoupled panel has no people event stream yet — nudge it to refetch.
       bumpPeople();
+      return true;
     } catch (e) {
-      // Roll the optimistic view back and keep edit mode open with the reason.
+      // Roll the optimistic view back and keep the draft so nothing is lost.
       setView(prior);
+      setDraft(priorDraft);
       const err = e as Error & { status?: number };
       const code = err.status ? `${err.status} ` : '';
       setError(`Couldn't save changes: ${code}${err.message || 'request failed'}`);
+      return false;
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleClose = async () => {
+    if (dirty) {
+      const ok = await saveEdit();
+      if (!ok) return;
+    }
+    onClose();
   };
 
   const doDisassociate = async () => {
@@ -297,17 +453,7 @@ export function PersonDetailModal({
     ? { label: association.project_role, color: colors.cyan, bg: colors.cyanSoft }
     : null;
 
-  const footer = editing ? (
-    <>
-      <span style={{ flex: 1 }} />
-      <button onClick={cancelEdit} disabled={saving} style={ghostBtn(colors)}>
-        Cancel
-      </button>
-      <button onClick={saveEdit} disabled={saving} style={primaryBtn(colors)}>
-        {saving ? 'Saving…' : 'Save'}
-      </button>
-    </>
-  ) : confirming ? (
+  const footer = confirming ? (
     <>
       <span style={{ flex: 1, fontSize: 12, color: colors.textMuted }}>
         Remove {view.display_name} from this project?
@@ -321,11 +467,11 @@ export function PersonDetailModal({
     </>
   ) : (
     <>
-      <button onClick={startEdit} style={ghostBtn(colors)}>
-        Edit fields
+      <button onClick={requestEnrichment} disabled={enriching} style={ghostBtn(colors)}>
+        {enriching ? 'Running enrichment…' : 'Run enrichment'}
       </button>
-      <button onClick={requestEnrichment} style={ghostBtn(colors)}>
-        {promptCopied ? 'Prompt copied — paste it in chat' : 'Refresh enrichment'}
+      <button onClick={() => void saveEdit()} disabled={saving || !dirty} style={primaryBtn(colors)}>
+        {saving ? 'Saving…' : 'Save'}
       </button>
       <span style={{ flex: 1 }} />
       {projectId && (
@@ -337,20 +483,58 @@ export function PersonDetailModal({
   );
 
   return (
-    <DetailModal title={view.display_name} badge={badge} onClose={onClose} footer={footer}>
+    <PersonDetailShell variant={variant} title={view.display_name} badge={badge} onClose={handleClose} footer={footer}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        {editing ? (
-          <EditForm colors={colors} draft={draft} onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))} />
-        ) : (
-          <>
-            <ReadView colors={colors} person={view} association={association} />
-            <RelatedPeople colors={colors} rows={relationships} people={allPeople} status={relatedStatus}
-              adding={addingRelationship} targetId={targetId} predicate={predicate}
-              onStart={() => setAddingRelationship(true)} onCancel={() => setAddingRelationship(false)}
-              onTarget={setTargetId} onPredicate={setPredicate} onAdd={addRelationship} onRemove={removeRelationship} />
-            <PersonActivityTimeline colors={colors} rows={activity} status={activityStatus} onRetry={loadActivity} />
-          </>
+        <EditForm
+          colors={colors}
+          personName={view.display_name}
+          draft={draft}
+          onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))}
+        />
+        {association && (
+          <div style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono }}>
+            {association.project_role ? `${association.project_role} · ` : ''}Associated {fmtTime(association.associated_at)}
+          </div>
         )}
+        <RelatedPeople colors={colors} rows={relationships} people={allPeople} status={relatedStatus}
+          adding={addingRelationship} targetId={targetId} predicate={predicate}
+          onStart={() => setAddingRelationship(true)} onCancel={() => setAddingRelationship(false)}
+          onTarget={setTargetId} onPredicate={setPredicate} onAdd={addRelationship} onRemove={removeRelationship} />
+        <MeetingsSection
+          colors={colors}
+          personName={view.display_name}
+          rows={meetings}
+          projects={personProjects}
+          status={meetingsStatus}
+          adding={addingMeeting}
+          title={meetingTitle}
+          starts={meetingStarts}
+          notes={meetingNotes}
+          projectId={meetingProjectId}
+          followUp={followUp}
+          followUpAt={followUpAt}
+          followUpNote={followUpNote}
+          saving={savingMeeting}
+          onStart={() => {
+            setAddingMeeting(true);
+            setFollowUpAt(plusDaysLocal(meetingStarts || localDateTimeValue(), 7));
+          }}
+          onCancel={() => setAddingMeeting(false)}
+          onTitle={setMeetingTitle}
+          onStarts={v => {
+            setMeetingStarts(v);
+            if (followUp) setFollowUpAt(plusDaysLocal(v, 7));
+          }}
+          onNotes={setMeetingNotes}
+          onProject={setMeetingProjectId}
+          onFollowUp={setFollowUp}
+          onFollowUpAt={setFollowUpAt}
+          onFollowUpNote={setFollowUpNote}
+          onAdd={addMeeting}
+          onRetry={loadMeetings}
+          onFollowUpDone={markFollowUpDone}
+        />
+        <PersonActivityTimeline colors={colors} rows={activity} status={activityStatus} onRetry={loadActivity} />
 
         {error && (
           <div style={{
@@ -362,7 +546,7 @@ export function PersonDetailModal({
           </div>
         )}
       </div>
-    </DetailModal>
+    </PersonDetailShell>
   );
 }
 
@@ -393,8 +577,68 @@ function RelatedPeople({ colors, rows, people, status, adding, targetId, predica
   </section>;
 }
 
+function MeetingsSection({ colors, personName, rows, projects, status, adding, title, starts, notes, projectId, followUp, followUpAt, followUpNote, saving, onStart, onCancel, onTitle, onStarts, onNotes, onProject, onFollowUp, onFollowUpAt, onFollowUpNote, onAdd, onRetry, onFollowUpDone }: {
+  colors: ReturnType<typeof useTheme>['colors']; personName: string; rows: PersonMeeting[];
+  projects: PersonProject[];
+  status: 'loading' | 'ready' | 'error'; adding: boolean; title: string; starts: string; notes: string;
+  projectId: string; followUp: boolean; followUpAt: string; followUpNote: string; saving: boolean;
+  onStart: () => void; onCancel: () => void; onTitle: (v: string) => void; onStarts: (v: string) => void;
+  onNotes: (v: string) => void; onProject: (v: string) => void; onFollowUp: (v: boolean) => void;
+  onFollowUpAt: (v: string) => void; onFollowUpNote: (v: string) => void;
+  onAdd: () => void; onRetry: () => void; onFollowUpDone: (m: PersonMeeting) => void;
+}) {
+  return <section>
+    <div style={{ display: 'flex', alignItems: 'center', marginBottom: 7 }}>
+      <SectionLabel colors={colors}>Meetings</SectionLabel><span style={{ flex: 1 }} />
+      {!adding && <button aria-label="Log a meeting" onClick={onStart} style={miniBtn(colors)}><FiPlus size={12} /> Add</button>}
+    </div>
+    {status === 'loading' && <Small colors={colors}>Loading meetings…</Small>}
+    {status === 'error' && <Small colors={colors}>Couldn't load meetings. <button onClick={onRetry} style={linkBtn(colors)}>Retry</button></Small>}
+    {status === 'ready' && rows.length === 0 && !adding && <Small colors={colors}>No meetings logged yet. Add one to put it on their profile and Apple Calendar.</Small>}
+    {rows.map(row => <div key={row.id} style={{ display: 'flex', gap: 8, padding: '7px 0', borderBottom: `1px solid ${colors.border}` }}>
+      <span style={{ color: colors.cyan, marginTop: 2 }}><FiCalendar size={12} /></span>
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div style={{ fontSize: 12, color: colors.text, fontWeight: 600 }}>{row.title}</div>
+        <div style={{ fontSize: 11, color: colors.textMuted }}>{fmtTime(row.starts_at)}{row.calendar_synced ? ' · Calendar' : ''}{row.calendar_uid ? ' · from iCal' : ''}</div>
+        {row.notes ? <div style={{ fontSize: 11, color: colors.textDim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.notes}</div> : null}
+        {row.follow_up_at && !row.follow_up_done && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+            <span style={{ fontSize: 11, color: colors.cyan }}>Follow up {fmtTime(row.follow_up_at)}{row.follow_up_note ? ` · ${row.follow_up_note}` : ''}</span>
+            <button aria-label="Mark follow-up done" onClick={() => onFollowUpDone(row)} style={miniBtn(colors)}><FiCheck size={12} /> Done</button>
+          </div>
+        )}
+      </div>
+    </div>)}
+    {adding && <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+      <input aria-label="Meeting title" value={title} onChange={e => onTitle(e.target.value)} placeholder={`Meeting with ${personName}`} style={control(colors)} />
+      <input aria-label="Meeting time" type="datetime-local" value={starts} onChange={e => onStarts(e.target.value)} style={control(colors)} />
+      {projects.length > 0 && (
+        <select aria-label="Meeting project" value={projectId} onChange={e => onProject(e.target.value)} style={control(colors)}>
+          <option value="">No project</option>
+          {projects.map(p => <option key={p.project_id} value={p.project_id}>{p.project_name}</option>)}
+        </select>
+      )}
+      <textarea aria-label="Meeting notes" value={notes} onChange={e => onNotes(e.target.value)} placeholder="What you covered" rows={3} style={{ ...control(colors), resize: 'vertical' }} />
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: colors.text }}>
+        <input aria-label="Schedule a follow-up" type="checkbox" checked={followUp} onChange={e => onFollowUp(e.target.checked)} />
+        Follow up in a week
+      </label>
+      {followUp && (
+        <>
+          <input aria-label="Follow-up time" type="datetime-local" value={followUpAt} onChange={e => onFollowUpAt(e.target.value)} style={control(colors)} />
+          <input aria-label="Follow-up note" value={followUpNote} onChange={e => onFollowUpNote(e.target.value)} placeholder="Send recap, check in…" style={control(colors)} />
+        </>
+      )}
+      <div style={{ display: 'flex', gap: 4 }}>
+        <button onClick={onCancel} style={miniBtn(colors)}>Cancel</button>
+        <button onClick={onAdd} disabled={saving || !starts} style={miniBtn(colors)}>{saving ? 'Saving…' : 'Log meeting'}</button>
+      </div>
+    </div>}
+  </section>;
+}
+
 function PersonActivityTimeline({ colors, rows, status, onRetry }: { colors: ReturnType<typeof useTheme>['colors']; rows: PersonActivity[]; status: 'loading'|'ready'|'error'; onRetry: () => void }) {
-  const icon = (kind: PersonActivity['kind']) => kind === 'memory' ? <FiBookOpen size={12} /> : kind === 'note' ? <FiFileText size={12} /> : <FiCheckSquare size={12} />;
+  const icon = (kind: PersonActivity['kind']) => kind === 'memory' ? <FiBookOpen size={12} /> : kind === 'note' ? <FiFileText size={12} /> : kind === 'meeting' ? <FiCalendar size={12} /> : <FiCheckSquare size={12} />;
   return <section><SectionLabel colors={colors}>Recent activity</SectionLabel>
     {status === 'loading' && <Small colors={colors}>Loading activity…</Small>}
     {status === 'error' && <Small colors={colors}>Couldn't load activity. <button onClick={onRetry} style={linkBtn(colors)}>Retry</button></Small>}
@@ -417,7 +661,8 @@ function LinkButton({ colors, label, title, onClick }: {
 }) {
   return (
     <button
-      onClick={onClick}
+      type="button"
+      onClick={e => { e.preventDefault(); e.stopPropagation(); onClick(); }}
       title={title}
       style={{
         display: 'inline-flex', alignItems: 'center', gap: 4, padding: 0,
@@ -430,122 +675,165 @@ function LinkButton({ colors, label, title, onClick }: {
   );
 }
 
-function ReadView({ colors, person, association }: {
+function EditForm({ colors, personName, draft, onChange }: {
   colors: ReturnType<typeof useTheme>['colors'];
-  person: Person;
-  association?: PersonAssociation | null;
-}) {
-  const openInBrowser = useBrowserNavigate();
-  const linkedin = safeLink(person.linkedin);
-  const personalSite = safeLink(person.personal_site);
-
-  const rows = useMemo<[string, ReactNode][]>(() => [
-    ['Role', person.role || '—'],
-    ['Company', person.company || '—'],
-    ['Email', person.email
-      ? <a href={`mailto:${person.email}`} style={{ color: colors.cyan, textDecoration: 'none' }}>{person.email}</a>
-      : '—'],
-    ['Phone', person.phone
-      ? <a href={`tel:${person.phone}`} style={{ color: colors.cyan, textDecoration: 'none' }}>{person.phone}</a>
-      : '—'],
-    ['Birthday', person.birthday || '—'],
-    ['Relationship', person.relationship_strength || '—'],
-    ['How met', person.how_met || '—'],
-    // Profile links open in the in-app browser on the Build tab (the shared
-    // `useBrowserNavigate` seam), never the system browser.
-    ['LinkedIn', linkedin
-      ? <LinkButton colors={colors} label="Open profile" title={linkedin} onClick={() => openInBrowser(linkedin)} />
-      : '—'],
-    ['Site', personalSite
-      ? <LinkButton colors={colors} label="Open site" title={personalSite} onClick={() => openInBrowser(personalSite)} />
-      : '—'],
-    ['X', person.x_handle || '—'],
-    // Project-scoped rows only exist when opened from a project's People panel.
-    ...(association
-      ? ([
-          ['Project role', association.project_role || '—'],
-          ['Associated', fmtTime(association.associated_at)],
-        ] as [string, ReactNode][])
-      : []),
-    ['Last contact', fmtTime(person.last_contact_at)],
-  ], [colors, person, association, linkedin, personalSite, openInBrowser]);
-
-  return (
-    <>
-      <MetaGrid colors={colors} rows={rows} />
-      {person.notes && (
-        <div>
-          <div style={{
-            fontSize: 11, color: colors.textDim, fontFamily: font.mono,
-            textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4,
-          }}>
-            Notes
-          </div>
-          <div style={{
-            fontSize: 13, color: colors.textMuted, lineHeight: 1.5,
-            whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
-          }}>
-            {person.notes}
-          </div>
-        </div>
-      )}
-    </>
-  );
-}
-
-function EditForm({ colors, draft, onChange }: {
-  colors: ReturnType<typeof useTheme>['colors'];
+  personName: string;
   draft: Draft;
   onChange: (key: EditableKey, value: string) => void;
 }) {
+  const openInBrowser = useBrowserNavigate();
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {EDITABLE_FIELDS.map(({ key, label, multiline, placeholder }) => (
-        <label key={key} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <span style={{
-            fontSize: 11, color: colors.textDim, fontFamily: font.mono,
-            textTransform: 'uppercase', letterSpacing: '0.04em',
-          }}>
-            {label}
-          </span>
-          {multiline ? (
-            <textarea
-              value={draft[key]}
-              onChange={e => onChange(key, e.target.value)}
-              rows={3}
-              placeholder={placeholder}
-              style={{ ...inputStyle(colors), resize: 'vertical', lineHeight: 1.5 }}
-            />
-          ) : (
-            <input
-              value={draft[key]}
-              onChange={e => onChange(key, e.target.value)}
-              placeholder={placeholder}
-              style={inputStyle(colors)}
-            />
-          )}
-        </label>
-      ))}
+      {EDITABLE_FIELDS.map(({ key, label, multiline, placeholder, link }) => {
+        const href = link ? safeLink(draft[key]) : null;
+        return (
+          <label key={key} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              fontSize: 11, color: colors.textDim, fontFamily: font.mono,
+              textTransform: 'uppercase', letterSpacing: '0.04em',
+            }}>
+              {label}
+              {href && (
+                <LinkButton
+                  colors={colors}
+                  label={key === 'personal_site' ? 'Open site' : key === 'photo_url' ? 'Open image' : 'Open profile'}
+                  title={href}
+                  onClick={() => openInBrowser(href)}
+                />
+              )}
+            </span>
+            {key === 'photo_url' && (
+              <PersonFace name={personName} photoUrl={draft.photo_url || null} size={56} accent={colors.cyan} />
+            )}
+            {multiline ? (
+              <textarea
+                value={draft[key]}
+                onChange={e => onChange(key, e.target.value)}
+                rows={3}
+                placeholder={placeholder}
+                style={{ ...inputStyle(colors), resize: 'vertical', lineHeight: 1.5 }}
+              />
+            ) : (
+              <input
+                value={draft[key]}
+                onChange={e => onChange(key, e.target.value)}
+                placeholder={placeholder}
+                style={inputStyle(colors)}
+              />
+            )}
+          </label>
+        );
+      })}
     </div>
   );
 }
 
-function MetaGrid({ colors, rows }: {
-  colors: ReturnType<typeof useTheme>['colors'];
-  rows: [string, ReactNode][];
+function PersonDetailShell({
+  variant,
+  title,
+  badge,
+  onClose,
+  footer,
+  children,
+}: {
+  variant: 'inline' | 'overlay';
+  title: string;
+  badge?: { label: string; color: string; bg: string } | null;
+  onClose: () => void;
+  footer?: ReactNode;
+  children: ReactNode;
 }) {
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 14px' }}>
-      {rows.map(([k, v]) => (
-        <div key={k} style={{ display: 'contents' }}>
-          <span style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono, whiteSpace: 'nowrap' }}>
-            {k}
+  const { colors, theme, reduceMotion } = useTheme();
+
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', handleKey);
+    return () => document.removeEventListener('keydown', handleKey);
+  }, [onClose]);
+
+  const panel = (
+    <div
+      data-testid="person-detail-panel"
+      style={{
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        background: theme === 'silver' ? 'rgba(255,255,255,0.92)' : 'rgba(20,28,48,0.92)',
+        backdropFilter: 'blur(24px) saturate(140%)',
+        WebkitBackdropFilter: 'blur(24px) saturate(140%)',
+        borderLeft: `1px solid ${theme === 'silver' ? 'rgba(167,176,190,0.35)' : 'rgba(0,213,255,0.16)'}`,
+        boxShadow: theme === 'silver'
+          ? '0 24px 60px rgba(30,37,48,0.12)'
+          : '0 24px 60px rgba(0,0,0,0.35)',
+      }}
+    >
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 10,
+        padding: '14px 16px',
+        borderBottom: `1px solid ${colors.border}`,
+        flexShrink: 0,
+      }}>
+        <span style={{
+          fontFamily: font.display, fontSize: 16, fontWeight: 600,
+          color: colors.text, flex: 1, minWidth: 0,
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>
+          {title}
+        </span>
+        {badge && (
+          <span style={{
+            fontFamily: font.mono, fontSize: 10, letterSpacing: '0.04em',
+            textTransform: 'uppercase', borderRadius: radius.pill, padding: '2px 9px',
+            flexShrink: 0, color: badge.color, background: badge.bg,
+          }}>
+            {badge.label}
           </span>
-          <span style={{ fontSize: 12, color: colors.text, wordBreak: 'break-word', userSelect: 'text' }}>
-            {v}
-          </span>
+        )}
+        <button
+          onClick={onClose}
+          title="Close"
+          style={{
+            background: 'none', border: 'none', color: colors.textMuted,
+            cursor: 'pointer', padding: 4, display: 'flex',
+          }}
+        >
+          <FiX size={16} />
+        </button>
+      </div>
+      <div style={{ overflow: 'auto', padding: '16px', flex: 1 }}>
+        {children}
+      </div>
+      {footer && (
+        <div style={{
+          padding: '12px 16px', borderTop: `1px solid ${colors.border}`,
+          display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+          flexShrink: 0,
+        }}>
+          {footer}
         </div>
-      ))}
+      )}
+    </div>
+  );
+
+  if (variant === 'inline') {
+    return (
+      <div style={{
+        width: 400, flexShrink: 0, height: '100%', minHeight: 0,
+        transition: reduceMotion ? 'none' : `width 240ms ${ease.out}`,
+      }}>
+        {panel}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{
+      position: 'fixed', top: 28, right: 0, bottom: 0, width: 400, zIndex: 80,
+    }}>
+      {panel}
     </div>
   );
 }
@@ -601,15 +889,17 @@ function dangerBtn(colors: ReturnType<typeof useTheme>['colors']): React.CSSProp
   };
 }
 
-/** Mounted once at the app root — renders the modal for the active target. */
+/** Mounted once at the app root — overlay dock for a person opened from a
+ *  project. The People tab renders the same panel inline so the graph stays up. */
 export function PersonDetailModalHost() {
   const personDetail = useCommandCenter(s => s.personDetail);
   const closePersonDetail = useCommandCenter(s => s.closePersonDetail);
-  if (!personDetail) return null;
+  if (!personDetail || personDetail.projectId == null) return null;
   return (
     <PersonDetailModal
       // Remount on target change so local edit/view state resets cleanly.
       key={personDetail.person.entity_uuid}
+      variant="overlay"
       projectId={personDetail.projectId}
       person={personDetail.person}
       association={personDetail.association}

@@ -84,7 +84,11 @@ async fn overlaid_person(brain: &SafeBrain, name: &str) -> Person {
         how_met: None,
         linkedin: None,
         x_handle: None,
+        facebook: None,
+        instagram: None,
         personal_site: None,
+        photo_url: None,
+        find_online_hints: None,
         graph_entity_id: Some(hex.clone()),
         created_at: "t".into(),
         updated_at: "t".into(),
@@ -119,6 +123,10 @@ async fn manual_write_persists_and_round_trips_including_new_vocab() {
         ("birthday", "1990-04-01"),
         ("relationship_strength", "close"),
         ("how_met", "conference 2019"),
+        (
+            "find_online_hints",
+            "coworking company in Halifax, director of sales",
+        ),
     ];
     for (field, value) in writes {
         let applied = brain
@@ -131,7 +139,7 @@ async fn manual_write_persists_and_round_trips_including_new_vocab() {
     // Round-trip through the exact route read hop, with provenance intact.
     let map = brain.entity_fields_for(vec![id]).await.expect("read");
     let fields = map.get(&id.to_string()).expect("fields for person");
-    assert_eq!(fields.len(), 4, "all four manual fields persisted");
+    assert_eq!(fields.len(), 5, "all five manual fields persisted");
     for f in fields {
         assert_eq!(f.source, FieldSource::Manual, "{} is Manual", f.field_name);
     }
@@ -142,6 +150,10 @@ async fn manual_write_persists_and_round_trips_including_new_vocab() {
     assert_eq!(p.birthday.as_deref(), Some("1990-04-01"));
     assert_eq!(p.relationship_strength.as_deref(), Some("close"));
     assert_eq!(p.how_met.as_deref(), Some("conference 2019"));
+    assert_eq!(
+        p.find_online_hints.as_deref(),
+        Some("coworking company in Halifax, director of sales")
+    );
 }
 
 #[tokio::test]

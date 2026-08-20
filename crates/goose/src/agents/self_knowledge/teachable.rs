@@ -48,6 +48,7 @@ pub const NAV_CATALOG_TABS: &[&str] = &[
     "World",
     "Settings",
     "Projects",
+    "People",
     "Dashboard",
     "Grow",
     "Inbox",
@@ -67,6 +68,13 @@ pub static TEACHABLE: &[TeachableFeature] = &[
         id: "projects",
         surface: SurfaceRef {
             tab: "Projects",
+            section: None,
+        },
+    },
+    TeachableFeature {
+        id: "people",
+        surface: SurfaceRef {
+            tab: "People",
             section: None,
         },
     },

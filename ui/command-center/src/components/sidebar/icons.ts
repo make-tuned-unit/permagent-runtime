@@ -31,6 +31,9 @@ export const ICON_PATHS: Record<string, string> = {
   /** Automate — a lightning bolt, the convention shared by every automation
    *  tool the user has met (Shortcuts, Zapier, IFTTT). */
   bolt: 'M13 2L4 14h6l-1 8 9-12h-6z',
+  /** People — two figures. The one glyph that reads as a directory of people
+   *  at 18px without collapsing into the same rectangle-family as the rest. */
+  users: 'M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8zM23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75',
 
   // ── Legacy keys ──────────────────────────────────────────────────────────
   // Still present in existing databases (the workspaces.icon column persists
@@ -57,6 +60,7 @@ export const ICON_PATHS: Record<string, string> = {
 const CANONICAL_ICON_BY_NAME: Record<string, string> = {
   Home: 'home',
   Projects: 'folder',
+  People: 'users',
   Build: 'brackets',
   Grow: 'trending-up',
   Automate: 'bolt',

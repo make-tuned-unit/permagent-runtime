@@ -78,10 +78,24 @@ export interface ProjectPerson {
    * Also graph-only. The Enricher had been writing these since slice 4 while
    * the backend overlay had no mapping for them, so they never reached the
    * wire; they are readable now and `linkedin` is manually editable too.
+   * `facebook` / `instagram` joined the same URL-shaped set on 2026-08-20.
    */
   linkedin: string | null;
   x_handle: string | null;
+  facebook: string | null;
+  instagram: string | null;
   personal_site: string | null;
+  /**
+   * Public headshot URL for the People graph face. Direct http(s) image,
+   * graph-only, enrichable from a public page.
+   */
+  photo_url: string | null;
+  /**
+   * Manual-only hint written when an enrichment proposal is rejected.
+   * Helps the next enrich pass find this person online (company, LinkedIn,
+   * city). Graph-`entity_fields`-only, same overlay as the other CRM extras.
+   */
+  find_online_hints: string | null;
   created_at: string;
   updated_at: string;
   /** Role within *this* project (project_people.role), distinct from CRM role. */
@@ -120,7 +134,10 @@ export interface ProjectRef {
  * belong to. `projects` is empty for the cohort the directory exists to reach:
  * people with no association at all, invisible to every project-scoped surface.
  */
-export type DirectoryPerson = Person & { projects: ProjectRef[] };
+export type DirectoryPerson = Person & {
+  projects: ProjectRef[];
+  next_follow_up_at?: string | null;
+};
 
 export interface PersonRelationship {
   from_entity_uuid: string;
@@ -131,10 +148,42 @@ export interface PersonRelationship {
 
 export interface PersonActivity {
   id: string;
-  kind: 'memory' | 'note' | 'task';
+  kind: 'memory' | 'note' | 'task' | 'meeting';
   title: string;
   detail: string;
   timestamp: string;
+}
+
+export interface PersonMeeting {
+  id: string;
+  entity_uuid: string;
+  title: string;
+  starts_at: string;
+  ends_at: string | null;
+  notes: string;
+  calendar_synced: boolean;
+  project_id: string | null;
+  follow_up_at: string | null;
+  follow_up_note: string;
+  follow_up_done: boolean;
+  calendar_uid: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NamedPersonMeeting {
+  id: string;
+  entity_uuid: string;
+  display_name: string;
+  title: string;
+  starts_at: string;
+  ends_at: string | null;
+  notes: string;
+  calendar_synced: boolean;
+  project_id: string | null;
+  follow_up_at: string | null;
+  follow_up_note: string;
+  follow_up_done: boolean;
 }
 
 /**

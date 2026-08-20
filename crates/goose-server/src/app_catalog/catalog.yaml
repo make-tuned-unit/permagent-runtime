@@ -102,6 +102,29 @@ tabs:
       - User wants to open or switch to a specific project
     customizable_layout: false
 
+  - name: People
+    tool_type: people
+    panel_type: workspace
+    reads: people
+    description: >-
+      The People tab is the CRM directory — everyone the agent knows, clustered
+      by project, with enrichment that files findings to the Decision Inbox.
+      Meetings logged here sync through Apple Calendar onto the Home tab.
+      Follow-ups and quiet contacts (no recent meeting) surface on the list
+      and in observe_app. Calendar.app events whose title names someone land
+      on that profile. A meeting can also be tied to a project.
+    affords:
+      - Browse people as a 3D graph clustered by project, or as a list
+      - Open a person and run enrichment
+      - Log meetings with a person; they appear on the profile and Home calendar
+      - Set a follow-up so the meeting is not a dead log
+      - See who has gone quiet and who has no project yet
+    suggest_when:
+      - User asks about a person, contact, or who they know
+      - User wants to enrich or look someone up
+      - User had a meeting with someone and wants it on their profile
+    customizable_layout: false
+
   - name: Dashboard
     tool_type: dashboard
     panel_type: workspace
