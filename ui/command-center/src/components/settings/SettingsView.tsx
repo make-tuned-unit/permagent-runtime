@@ -17,6 +17,7 @@ import { usePersona } from './useSettings';
 import { resolveSettingsSection } from './sections';
 import { trustEnvOverrideNotice } from './autonomy';
 import { VoicePicker } from '../voice/VoicePicker';
+import { PronunciationSection } from '../voice/PronunciationSection';
 import { H1, Section, Row, TextInput, Chip, Toggle, Slider, Kbd, SaveButton } from './atoms';
 import { makeQrMatrix } from '../../lib/qrMatrix';
 import { SessionsList } from '../sessions/SessionsList';
@@ -145,6 +146,7 @@ function PersonaPanel() {
         <Row label="Voice" hint="The spoken voice used for voice replies and the greeting. Tap ▶ to audition.">
           <VoicePicker value={voiceId} onChange={changeVoice} />
         </Row>
+        <PronunciationSection />
       </Section>
       <Section title="Tone">
         <Row label="Tone" hint="How they describe their own speaking style (text, not audio)."><TextInput multi value={tone} onChange={changeTone} /></Row>

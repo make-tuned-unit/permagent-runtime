@@ -3,6 +3,7 @@ options:
   bundleIdPrefix: ai.permagent
   deploymentTarget:
     iOS: "17.0"
+    watchOS: "10.0"
   createIntermediateGroups: true
 targets:
   Permagent:
@@ -17,6 +18,13 @@ targets:
       # actool would never see a .icon at all.
       - path: PermagentMobile/Permagent.icon
         type: file
+      - path: Shared
+    dependencies:
+      # Embedded companion — installing the iOS app offers (and by default
+      # installs) the Watch app. Bundle id MUST be a prefix of the watch id.
+      - target: PermagentWatch
+        embed: true
+        codeSign: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ai.permagent.mobile
@@ -133,6 +141,60 @@ targets:
           - Manrope-ExtraBold.ttf
           - JetBrainsMono-Regular.ttf
           - JetBrainsMono-Medium.ttf
+  # Apple Watch companion. Two buttons (orb chat + note dictate). Talks to the
+  # iPhone over WatchConnectivity; the phone is the hop to the hub because
+  # watchOS cannot run Tailscale. Embedded in the iOS app so installing
+  # Permagent on iPhone installs the Watch app (Watch automatic-install is
+  # on by default).
+  PermagentWatch:
+    type: application
+    platform: watchOS
+    sources:
+      - path: PermagentWatch
+      - path: Shared
+      - path: PermagentMobile/MobiusView.swift
+      - path: PermagentMobile/Theme.swift
+      - path: PermagentMobile/MobiusFrames
+      - path: PermagentMobile/Fonts
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.permagent.mobile.watchkitapp
+        SWIFT_VERSION: "6.0"
+        DEVELOPMENT_TEAM: GANM22MFCH
+        MARKETING_VERSION: "1.31.0"
+        CURRENT_PROJECT_VERSION: 928
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "4"
+        GENERATE_INFOPLIST_FILE: "NO"
+        INFOPLIST_FILE: PermagentWatch/Info.plist
+        ENABLE_ON_DEMAND_RESOURCES: "NO"
+      configs:
+        Debug:
+          CODE_SIGNING_ALLOWED: "NO"
+        Release:
+          CODE_SIGN_STYLE: Automatic
+    info:
+      path: PermagentWatch/Info.plist
+      properties:
+        CFBundleDisplayName: Permagent
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        WKApplication: true
+        WKWatchOnly: false
+        WKRunsIndependentlyOfCompanionApp: true
+        WKCompanionAppBundleIdentifier: ai.permagent.mobile
+        NSMicrophoneUsageDescription: Permagent uses the microphone so you can chat with your agent and dictate notes. Audio is transcribed on your Mac.
+        ITSAppUsesNonExemptEncryption: false
+        UIAppFonts:
+          - Inter-Regular.otf
+          - Inter-Medium.otf
+          - Inter-SemiBold.otf
+          - Inter-Bold.otf
+          - Manrope-SemiBold.ttf
+          - Manrope-Bold.ttf
+          - Manrope-ExtraBold.ttf
+          - JetBrainsMono-Regular.ttf
+          - JetBrainsMono-Medium.ttf
   # Hosted-app-free logic tests (currently the VoiceVAD turn machine). The
   # target compiles the files under test directly instead of depending on the
   # app target, so `xcodebuild test` needs no signing and no app install —
@@ -149,6 +211,7 @@ targets:
       # the state machine that decides when audio may be deleted is tested
       # here — without a microphone, a hub, or the app target.
       - path: PermagentMobile/MeetingQueue.swift
+      - path: Shared/WatchBridge.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ai.permagent.mobile.tests

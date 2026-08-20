@@ -1,7 +1,8 @@
 // Permagent for iOS — the pocket client of the hub (MULTI_DEVICE.md).
-// v1 = the supervision surfaces: chat with Henry, Decision Inbox, active
+// v1 = the supervision surfaces: chat with the agent, Decision Inbox, active
 // goals, live notifications. One Brain lives on the hub; this device carries
-// only its pairing token (Keychain).
+// only its pairing token (Keychain). The embedded Watch app talks through
+// this process (HubWatchRelay).
 
 import SwiftUI
 
@@ -64,6 +65,8 @@ final class HubSession: ObservableObject {
         // at a half-finished recording and decide it was rubbish.
         RecordingStore.shared.recoverAfterLaunch()
 
+        HubWatchRelay.shared.start()
+
         await APIClient.shared.loadSavedPairing()
         isPaired = await APIClient.shared.isPaired
         if isPaired {
@@ -75,7 +78,10 @@ final class HubSession: ObservableObject {
             // any surface already has the real name rather than the generic
             // fallback flashing to it.
             await AgentIdentity.shared.refresh()
+            HubWatchRelay.shared.pushStatus()
             await listen()
+        } else {
+            HubWatchRelay.shared.pushStatus()
         }
     }
 
@@ -120,6 +126,8 @@ final class HubSession: ObservableObject {
         }
         await APIClient.shared.pair(HubConfig(baseURL: base, token: token))
         isPaired = true
+        await AgentIdentity.shared.refresh()
+        HubWatchRelay.shared.pushStatus()
         await listen()
         return .success(())
     }

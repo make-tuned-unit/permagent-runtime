@@ -25,7 +25,7 @@
 
 use crate::routes::errors::ErrorResponse;
 use crate::state::{build_kokoro_tts, AppState, SharedTts};
-use crate::voice::provider::{SttConfig, TtsConfig};
+use crate::voice::provider::{AudioOutput, SttConfig, TtsConfig};
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -473,12 +473,16 @@ async fn synthesize_voice(
     })?;
 
     let voice_id = req.voice_id.clone();
+    let plan = crate::voice::prosody::plan(&text);
+    let speech = crate::voice::speakable::speakable(&plan.speech)
+        .ok_or_else(|| ErrorResponse::bad_request("text has nothing speakable"))?;
+    let speed = plan.speed;
     let audio = tokio::task::spawn_blocking(move || {
         tts.synthesize(
-            &text,
+            &speech,
             &TtsConfig {
                 voice_id,
-                speed: 1.0,
+                speed,
                 lexicon: crate::voice::user_lexicon::current(),
             },
         )
@@ -1211,7 +1215,14 @@ async fn stream_reply_with_tts(
             "The user is speaking to you by voice. Reply in natural conversational speech: \
              short sentences, contractions, concise and direct. No markdown, no bullet points, \
              no numbered lists, no code blocks. Keep replies brief — 1-3 sentences for simple \
-             questions. Speak as you would in a real conversation. \
+             questions. Speak as you would in a real conversation — with feeling, not a flat \
+             reading: let a reaction through, ask a question when it fits, use an em dash or \
+             ellipsis when you are thinking. \
+             You may prefix a sentence with ONE delivery tag: [warm] [excited] [calm] \
+             [gentle] [serious]. Insert [pause] for a beat. Never say the tag names or the \
+             brackets aloud; most sentences need no tag. \
+             NEVER spell a word letter by letter. If you are unsure how a name will sound, \
+             ask, or call save_pronunciation with a real-English-word respelling, then say it. \
              Verbalize outcomes, not interface mechanics: don't read out UI labels, button names, \
              menu paths, file paths, URLs, or settings keys, and don't narrate the individual \
              steps you take to do something. Say what happened or what the user should do in plain \
@@ -1231,13 +1242,15 @@ async fn stream_reply_with_tts(
 
     let setup_ms = t_setup.elapsed().as_millis();
 
-    // Ambient context (probe-only) and query-driven recall are independent and
-    // both hit the Brain — run them CONCURRENTLY so the pre-stream budget is the
-    // slower of the two, not their sum. They inject under different system-prompt
-    // keys ("ambient_context" vs "memory_recall") so there's no write conflict.
+    // Ambient, recall, and a G2P scan of the user's words are independent —
+    // run them together so pronunciation coaching does not add a serial wait.
     let t_ctx = std::time::Instant::now();
+    let tts_for_scan = tts.clone();
+    let transcript_for_scan = transcript.to_string();
+    let oov_fut =
+        tokio::task::spawn_blocking(move || tts_for_scan.unresolved_words(&transcript_for_scan));
     let ambient_fut = crate::brain_ops::inject_ambient_context(state, &agent);
-    let recall_trace = if let Some(ref brain) = state.brain {
+    let (recall_trace, transcript_oov) = if let Some(ref brain) = state.brain {
         let recognition_ctx = state.build_recognition_context(Some(&sid));
         let recognition_pool = state.session_manager().pool_clone().await.ok();
         let recall_fut = crate::brain_ops::inject_recall(
@@ -1247,14 +1260,23 @@ async fn stream_reply_with_tts(
             recognition_ctx,
             recognition_pool,
         );
-        let (_, trace) = tokio::join!(ambient_fut, recall_fut);
-        trace
+        let (_, trace, oov) = tokio::join!(ambient_fut, recall_fut, oov_fut);
+        (trace, oov.unwrap_or_default())
     } else {
-        ambient_fut.await;
-        crate::brain_ops::RecallInjection::default()
+        let (_, oov) = tokio::join!(ambient_fut, oov_fut);
+        (
+            crate::brain_ops::RecallInjection::default(),
+            oov.unwrap_or_default(),
+        )
     };
     let ctx_recall_ms = t_ctx.elapsed().as_millis();
     tracing::info!(target: "permagentd::voice", "  ctx+recall: {}ms ({} recall hits)", ctx_recall_ms, recall_trace.count);
+
+    if let Some(coaching) = pronunciation_coaching(&transcript_oov) {
+        agent
+            .extend_system_prompt("voice_pronunciation".to_string(), coaching)
+            .await;
+    }
 
     let session_config = SessionConfig {
         id: sid.clone(),
@@ -1273,14 +1295,12 @@ async fn stream_reply_with_tts(
         pipeline_start.elapsed().as_millis()
     );
 
-    // Accumulate text, detect phrase/sentence boundaries, synthesize + send each chunk
+    // Accumulate text, detect phrase/sentence boundaries. TTS of sentence N
+    // runs while the LLM is still emitting sentence N+1 — awaiting synthesis
+    // inside the token loop was holding first-audio on every subsequent chunk.
     let mut text_buf = String::new();
     let mut full_reply = String::new();
     let mut sentence_num = 0u32;
-    // Spoken-length budget for this turn. The system prompt already asks for
-    // "1-3 sentences"; on 2026-08-11 a turn came back with 27, about 145
-    // seconds of speech, and the user interrupted to say it was too much. An
-    // instruction the model can ignore is not a budget — this is.
     let max_spoken = max_spoken_sentences();
     let mut budget_notice_spoken = false;
     let mut total_tts_ms: u128 = 0;
@@ -1288,201 +1308,156 @@ async fn stream_reply_with_tts(
     let mut first_token_logged = false;
     let mut spoken_stop = false;
     let stream_start = std::time::Instant::now();
+    let mut queue: std::collections::VecDeque<(String, f32)> = std::collections::VecDeque::new();
+    let mut inflight: Option<(
+        tokio::task::JoinHandle<anyhow::Result<AudioOutput>>,
+        std::time::Instant,
+        String,
+    )> = None;
+    let mut stream_ended = false;
 
-    'stream: while let Some(event) = stream.next().await {
-        // A spoken "stop" may be sitting in the socket queue as monitor audio
-        // — check between events so it ends the turn mid-generation.
+    loop {
         match drain_client_messages(socket, ctx) {
             DrainOutcome::Continue => {}
             DrainOutcome::SpokenStop => {
                 spoken_stop = true;
-                break 'stream;
+                break;
             }
             DrainOutcome::Disconnected => return Ok(()),
         }
-        if let Ok(AgentEvent::Message(msg)) = event {
-            if msg.role != rmcp::model::Role::Assistant {
-                continue;
+        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(());
+        }
+
+        if inflight.is_none() {
+            if let Some((speech, speed)) = queue.pop_front() {
+                let preview = speech.clone();
+                inflight = Some((
+                    spawn_synth(
+                        tts.clone(),
+                        speech,
+                        voice_id.clone(),
+                        speed,
+                        cancelled.clone(),
+                    ),
+                    std::time::Instant::now(),
+                    preview,
+                ));
+            } else if stream_ended {
+                break;
             }
-            for content in &msg.content {
-                if let MessageContent::Text(text_content) = content {
-                    if !first_token_logged {
+        }
+
+        let first_chunk = !first_audio_sent && queue.is_empty() && inflight.is_none();
+
+        tokio::select! {
+            biased;
+
+            result = std::future::poll_fn(|cx| {
+                use std::future::Future;
+                let handle = &mut inflight.as_mut().expect("guarded by if").0;
+                std::pin::Pin::new(handle).poll(cx)
+            }), if inflight.is_some() => {
+                let (_, started, preview) = inflight.take().expect("guarded");
+                let chunk_tts_ms = started.elapsed().as_millis();
+                total_tts_ms += chunk_tts_ms;
+                match drain_client_messages(socket, ctx) {
+                    DrainOutcome::Continue => {}
+                    DrainOutcome::SpokenStop => {
+                        spoken_stop = true;
+                        break;
+                    }
+                    DrainOutcome::Disconnected => return Ok(()),
+                }
+                if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Ok(());
+                }
+                match result {
+                    Ok(Ok(audio)) => {
+                        let dur = audio.samples.len() as f32 / audio.sample_rate as f32;
+                        let rtf = chunk_tts_ms as f32 / 1000.0 / dur.max(0.01);
                         tracing::info!(
                             target: "permagentd::voice",
-                            "  TTFT: {}ms after stream start",
-                            stream_start.elapsed().as_millis()
+                            "STREAM sentence {}: {}chars TTS={}ms audio={:.1}s RTF={:.2}x | \"{}\"",
+                            sentence_num, preview.len(), chunk_tts_ms, dur, rtf,
+                            truncate_str(&preview, 60)
                         );
-                        first_token_logged = true;
-                    }
-                    text_buf.push_str(&text_content.text);
-                    full_reply.push_str(&text_content.text);
-
-                    // Check for speakable boundary (clause or sentence)
-                    // find_speakable_boundary returns (byte_end_inclusive, byte_start_of_next)
-                    while let Some((end_inclusive, next_start)) = find_speakable_boundary(&text_buf)
-                    {
-                        let sentence = text_buf
-                            .get(..=end_inclusive)
-                            .unwrap_or("")
-                            .trim()
-                            .to_string();
-                        text_buf = text_buf.get(next_start..).unwrap_or("").to_string();
-
-                        if sentence.is_empty() {
-                            continue;
-                        }
-
-                        // A screen can show an identifier harmlessly; a speaker
-                        // cannot. Escalation payloads have reached TTS verbatim
-                        // and been read out as UUIDs and JSON keys — 37s of
-                        // audio in one turn. Speak prose, skip the rest.
-                        let Some(speech) = crate::voice::speakable::speakable(&sentence) else {
-                            tracing::debug!(
+                        if !first_audio_sent {
+                            tracing::info!(
                                 target: "permagentd::voice",
-                                "skipping unspeakable fragment: \"{}\"",
-                                truncate_str(&sentence, 60)
+                                "TIMING first audio: {}ms after speech-end",
+                                pipeline_start.elapsed().as_millis()
                             );
-                            continue;
-                        };
-
-                        // Spoken-length budget. Keep draining the stream so
-                        // `full_reply` stays complete for ReplyText — the user
-                        // still gets every word on screen; they just stop being
-                        // read the whole essay aloud.
-                        if sentence_num >= max_spoken {
-                            if !budget_notice_spoken {
-                                budget_notice_spoken = true;
-                                tracing::info!(
-                                    target: "permagentd::voice",
-                                    "spoken budget reached ({} sentences) — remaining reply is text-only",
-                                    max_spoken
-                                );
-                                let tts_ref = tts.clone();
-                                let voice_id = voice_id.clone();
-                                if let Ok(Ok(audio)) = tokio::task::spawn_blocking(move || {
-                                    tts_ref.synthesize(
-                                        BUDGET_NOTICE,
-                                        &TtsConfig {
-                                            voice_id,
-                                            lexicon: crate::voice::user_lexicon::current(),
-                                            ..TtsConfig::default()
-                                        },
-                                    )
-                                })
-                                .await
-                                {
-                                    let bytes: Vec<u8> = audio
-                                        .samples
-                                        .iter()
-                                        .flat_map(|s| s.to_le_bytes())
-                                        .collect();
-                                    let _ = socket.send(Message::Binary(bytes.into())).await;
-                                }
-                            }
-                            continue;
+                            first_audio_sent = true;
                         }
-
-                        sentence_num += 1;
-
-                        // Guard: skip TTS if the socket closed (prevents
-                        // stale handlers from holding the TTS mutex while
-                        // a new handler starts on a reconnected socket).
-                        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-                            tracing::info!(target: "permagentd::voice", "TTS cancelled — skipping sentence {}", sentence_num);
+                        let bytes: Vec<u8> =
+                            audio.samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+                        if socket.send(Message::Binary(bytes.into())).await.is_err() {
+                            tracing::warn!(target: "permagentd::voice", "Client disconnected during streaming");
                             return Ok(());
                         }
-
-                        let tts_ref = tts.clone();
-                        let sent = speech.clone();
-                        let cancel_flag = cancelled.clone();
-                        let voice_id = voice_id.clone();
-                        let tts_start = std::time::Instant::now();
-                        let audio = tokio::task::spawn_blocking(move || {
-                            // Check cancellation before acquiring the mutex
-                            if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
-                                return Err(anyhow::anyhow!("cancelled"));
-                            }
-                            tts_ref.synthesize(
-                                &sent,
-                                &TtsConfig {
-                                    voice_id,
-                                    lexicon: crate::voice::user_lexicon::current(),
-                                    ..TtsConfig::default()
-                                },
-                            )
-                        })
-                        .await;
-                        let chunk_tts_ms = tts_start.elapsed().as_millis();
-                        total_tts_ms += chunk_tts_ms;
-
-                        // Check cancellation after TTS (socket may have closed during synthesis)
-                        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-                            tracing::info!(target: "permagentd::voice", "TTS cancelled after sentence {}", sentence_num);
-                            return Ok(());
-                        }
-
-                        // A stop phrase spoken during this sentence's synthesis
-                        // is queued by now — honor it before sending the audio,
-                        // so "stop" doesn't get another sentence talked over it.
-                        match drain_client_messages(socket, ctx) {
-                            DrainOutcome::Continue => {}
-                            DrainOutcome::SpokenStop => {
-                                spoken_stop = true;
-                                break 'stream;
-                            }
-                            DrainOutcome::Disconnected => return Ok(()),
-                        }
-
-                        match audio {
-                            Ok(Ok(audio)) => {
-                                let dur = audio.samples.len() as f32 / audio.sample_rate as f32;
-                                let rtf = chunk_tts_ms as f32 / 1000.0 / dur.max(0.01);
-                                tracing::info!(
-                                    target: "permagentd::voice",
-                                    "STREAM sentence {}: {}chars TTS={}ms audio={:.1}s RTF={:.2}x | \"{}\"",
-                                    sentence_num, sentence.len(), chunk_tts_ms, dur, rtf,
-                                    truncate_str(&sentence, 60)
-                                );
-
-                                if !first_audio_sent {
-                                    let first_audio_ms = pipeline_start.elapsed().as_millis();
-                                    tracing::info!(
-                                        target: "permagentd::voice",
-                                        "TIMING first audio: {}ms after speech-end",
-                                        first_audio_ms
-                                    );
-                                    first_audio_sent = true;
-                                }
-
-                                let bytes: Vec<u8> =
-                                    audio.samples.iter().flat_map(|s| s.to_le_bytes()).collect();
-                                if socket.send(Message::Binary(bytes.into())).await.is_err() {
-                                    tracing::warn!(target: "permagentd::voice", "Client disconnected during streaming");
-                                    // Deliberately leave the trace unfinished: a disconnected turn has no complete reply to measure.
-                                    return Ok(());
-                                }
-                            }
-                            Ok(Err(e)) => {
-                                let msg = e.to_string();
-                                if msg == "cancelled" {
-                                    tracing::info!(target: "permagentd::voice", "TTS cancelled (pre-mutex)");
-                                    return Ok(());
-                                }
-                                tracing::warn!(target: "permagentd::voice", "TTS chunk failed: {}", e);
-                            }
-                            Err(e) => {
-                                tracing::warn!(target: "permagentd::voice", "TTS task panicked: {}", e);
-                            }
-                        }
+                    }
+                    Ok(Err(e)) if e.to_string() == "cancelled" => {
+                        tracing::info!(target: "permagentd::voice", "TTS cancelled (pre-mutex)");
+                        return Ok(());
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!(target: "permagentd::voice", "TTS chunk failed: {}", e);
+                    }
+                    Err(e) => {
+                        tracing::warn!(target: "permagentd::voice", "TTS task panicked: {}", e);
                     }
                 }
             }
+
+            event = stream.next(), if !stream_ended => {
+                match event {
+                    None => {
+                        stream_ended = true;
+                        enqueue_remainder(
+                            &mut text_buf,
+                            &mut queue,
+                            &mut sentence_num,
+                            max_spoken,
+                            &mut budget_notice_spoken,
+                        );
+                    }
+                    Some(Ok(AgentEvent::Message(msg)))
+                        if msg.role == rmcp::model::Role::Assistant =>
+                    {
+                        for content in &msg.content {
+                            if let MessageContent::Text(text_content) = content {
+                                if !first_token_logged {
+                                    tracing::info!(
+                                        target: "permagentd::voice",
+                                        "  TTFT: {}ms after stream start",
+                                        stream_start.elapsed().as_millis()
+                                    );
+                                    first_token_logged = true;
+                                }
+                                text_buf.push_str(&text_content.text);
+                                full_reply.push_str(&text_content.text);
+                                enqueue_ready_sentences(
+                                    &mut text_buf,
+                                    &mut queue,
+                                    &mut sentence_num,
+                                    max_spoken,
+                                    &mut budget_notice_spoken,
+                                    first_chunk,
+                                );
+                            }
+                        }
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+
+        if spoken_stop {
+            break;
         }
     }
 
-    // A spoken stop ends the turn: skip the tail synthesis, tell the client no
-    // more audio is coming (it clears its playback queue), and fall through to
-    // the normal turn teardown so state/nav/persistence stay consistent.
     if spoken_stop {
         tracing::info!(
             target: "permagentd::voice",
@@ -1490,54 +1465,6 @@ async fn stream_reply_with_tts(
             sentence_num
         );
         let _ = socket.send(send_json(&ServerMessage::Stopped)).await;
-    }
-
-    // Synthesize any remaining text after the stream ends.
-    //
-    // This tail runs the SAME two guards as the streaming loop above: the
-    // speakability filter (it previously synthesized raw, so an identifier
-    // landing in the final fragment would still have been read aloud) and the
-    // spoken-length budget.
-    let remainder = crate::voice::speakable::speakable(text_buf.trim()).unwrap_or_default();
-    if !remainder.is_empty()
-        && sentence_num < max_spoken
-        && !spoken_stop
-        && !cancelled.load(std::sync::atomic::Ordering::Relaxed)
-    {
-        sentence_num += 1;
-        let tts_ref = tts.clone();
-        let cancel_flag = cancelled.clone();
-        let voice_id = voice_id.clone();
-        let tts_start = std::time::Instant::now();
-        let audio = tokio::task::spawn_blocking(move || {
-            if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
-                return Err(anyhow::anyhow!("cancelled"));
-            }
-            tts_ref.synthesize(
-                &remainder,
-                &TtsConfig {
-                    voice_id,
-                    lexicon: crate::voice::user_lexicon::current(),
-                    ..TtsConfig::default()
-                },
-            )
-        })
-        .await;
-        let chunk_tts_ms = tts_start.elapsed().as_millis();
-        total_tts_ms += chunk_tts_ms;
-
-        if let Ok(Ok(audio)) = audio {
-            if !first_audio_sent {
-                let first_audio_ms = pipeline_start.elapsed().as_millis();
-                tracing::info!(
-                    target: "permagentd::voice",
-                    "TIMING first audio: {}ms after speech-end",
-                    first_audio_ms
-                );
-            }
-            let bytes: Vec<u8> = audio.samples.iter().flat_map(|s| s.to_le_bytes()).collect();
-            let _ = socket.send(Message::Binary(bytes.into())).await;
-        }
     }
 
     // Send reply text and end marker
@@ -1610,6 +1537,123 @@ async fn stream_reply_with_tts(
     Ok(())
 }
 
+/// Strip delivery tags, drop unspeakable junk, pick Kokoro speed.
+fn prepare_spoken(sentence: &str) -> Option<(String, f32)> {
+    let plan = crate::voice::prosody::plan(sentence);
+    crate::voice::speakable::speakable(&plan.speech).map(|speech| (speech, plan.speed))
+}
+
+fn pronunciation_coaching(transcript_oov: &[String]) -> Option<String> {
+    if !transcript_oov.is_empty() {
+        crate::voice::oov_log::record(transcript_oov);
+    }
+    crate::voice::oov_log::coaching_prompt()
+}
+
+fn spawn_synth(
+    tts: Arc<dyn crate::voice::TextToSpeech>,
+    text: String,
+    voice_id: Option<String>,
+    speed: f32,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> tokio::task::JoinHandle<anyhow::Result<AudioOutput>> {
+    tokio::task::spawn_blocking(move || {
+        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(anyhow::anyhow!("cancelled"));
+        }
+        tts.synthesize(
+            &text,
+            &TtsConfig {
+                voice_id,
+                speed,
+                lexicon: crate::voice::user_lexicon::current(),
+            },
+        )
+    })
+}
+
+fn push_spoken(
+    sentence: &str,
+    queue: &mut std::collections::VecDeque<(String, f32)>,
+    sentence_num: &mut u32,
+    max_spoken: u32,
+    budget_notice_spoken: &mut bool,
+) {
+    let Some((speech, speed)) = prepare_spoken(sentence) else {
+        tracing::debug!(
+            target: "permagentd::voice",
+            "skipping unspeakable fragment: \"{}\"",
+            truncate_str(sentence, 60)
+        );
+        return;
+    };
+    if *sentence_num >= max_spoken {
+        if !*budget_notice_spoken {
+            *budget_notice_spoken = true;
+            tracing::info!(
+                target: "permagentd::voice",
+                "spoken budget reached ({} sentences) — remaining reply is text-only",
+                max_spoken
+            );
+            queue.push_back((BUDGET_NOTICE.to_string(), 1.0));
+        }
+        return;
+    }
+    *sentence_num += 1;
+    queue.push_back((speech, speed));
+}
+
+fn enqueue_ready_sentences(
+    text_buf: &mut String,
+    queue: &mut std::collections::VecDeque<(String, f32)>,
+    sentence_num: &mut u32,
+    max_spoken: u32,
+    budget_notice_spoken: &mut bool,
+    first_chunk: bool,
+) {
+    let mut aggressive = first_chunk;
+    while let Some((end_inclusive, next_start)) = find_speakable_boundary(text_buf, aggressive) {
+        let sentence = text_buf
+            .get(..=end_inclusive)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        *text_buf = text_buf.get(next_start..).unwrap_or("").to_string();
+        if sentence.is_empty() {
+            continue;
+        }
+        push_spoken(
+            &sentence,
+            queue,
+            sentence_num,
+            max_spoken,
+            budget_notice_spoken,
+        );
+        aggressive = false;
+    }
+}
+
+fn enqueue_remainder(
+    text_buf: &mut String,
+    queue: &mut std::collections::VecDeque<(String, f32)>,
+    sentence_num: &mut u32,
+    max_spoken: u32,
+    budget_notice_spoken: &mut bool,
+) {
+    let remainder = text_buf.trim().to_string();
+    text_buf.clear();
+    if remainder.is_empty() {
+        return;
+    }
+    push_spoken(
+        &remainder,
+        queue,
+        sentence_num,
+        max_spoken,
+        budget_notice_spoken,
+    );
+}
+
 /// Find the earliest speakable boundary in the buffer.
 ///
 /// Returns `(end_inclusive, next_start)` — both valid byte indices.
@@ -1619,14 +1663,16 @@ async fn stream_reply_with_tts(
 /// Priority: sentence boundaries (.!?) first, then clause boundaries (, ; — :)
 /// once enough text has accumulated.
 ///
-/// Minimum lengths prevent choppy fragments:
-/// - Sentence boundary (.!?): 6+ chars
-/// - Clause boundary (, ; — :): 25+ chars
-fn find_speakable_boundary(text: &str) -> Option<(usize, usize)> {
+/// `first_chunk` lowers the floors so the first audio can leave before a
+/// full 25-character clause has landed.
+fn find_speakable_boundary(text: &str, first_chunk: bool) -> Option<(usize, usize)> {
+    let sentence_min = if first_chunk { 3 } else { 5 };
+    let clause_min = if first_chunk { 12 } else { 25 };
+
     // First pass: sentence boundary (strongest break, lowest minimum)
     let mut iter = text.char_indices().peekable();
     while let Some((i, ch)) = iter.next() {
-        if (ch == '.' || ch == '!' || ch == '?') && i > 5 {
+        if (ch == '.' || ch == '!' || ch == '?') && i >= sentence_min {
             let after = iter.peek().map(|(_, c)| *c);
             if after.is_none() || after == Some(' ') || after == Some('\n') {
                 return Some((i, i + ch.len_utf8()));
@@ -1637,7 +1683,7 @@ fn find_speakable_boundary(text: &str) -> Option<(usize, usize)> {
     // Second pass: clause boundary (weaker break, higher minimum)
     let mut iter = text.char_indices().peekable();
     while let Some((i, ch)) = iter.next() {
-        if i < 25 {
+        if i < clause_min {
             continue;
         }
         let next_byte = i + ch.len_utf8();
@@ -1686,6 +1732,33 @@ mod tests {
         let weird = VoiceInfo::from_id("xx_zephyr".to_string());
         assert_eq!(weird.label, "Zephyr");
         assert_eq!(weird.language, "");
+    }
+
+    #[test]
+    fn first_chunk_speaks_a_short_yes_immediately() {
+        let hit = find_speakable_boundary("Yes.", true);
+        assert!(
+            hit.is_some(),
+            "first audio should fire on a 4-char sentence"
+        );
+        let (end, _) = hit.unwrap();
+        assert_eq!(&"Yes."[..=end], "Yes.");
+    }
+
+    #[test]
+    fn later_chunks_still_wait_for_a_real_clause() {
+        assert!(
+            find_speakable_boundary("Hello there, ", false).is_none(),
+            "a 13-char clause must not chop later sentences"
+        );
+        assert!(find_speakable_boundary("Hello there, friend of mine, ", false).is_some());
+    }
+
+    #[test]
+    fn prepare_spoken_strips_delivery_tags() {
+        let (speech, speed) = prepare_spoken("[excited] We shipped it!").unwrap();
+        assert_eq!(speech, "We shipped it!");
+        assert_eq!(speed, 1.12);
     }
 
     /// The pinned Kokoro asset URLs must satisfy the DownloadManager's strict

@@ -75,13 +75,26 @@ satellite** (never a second writable Brain) or the Mesh track (#306).
 The phone deserves better than a webview: **`ios/PermagentMobile`** is the
 native SwiftUI client — on-brand (deep-void dark, cyan `#00D5FF` → violet
 `#8D44AE`, glass materials), speaking the same daemon API with the same
-pairing model. v1 surfaces are the *supervision* set: chat with Henry,
-Decision Inbox (approve/decline), active goals, and live notifications from
-`/events`. World View and Build stay desktop-class surfaces.
+pairing model. v1 surfaces are the *supervision* set: chat with the agent,
+Decision Inbox (approve/decline), active goals, Control (agents, features,
+pronunciation, model), and live notifications from `/events`. World View
+and Build stay desktop-class surfaces.
 
 Build/verify note: Swift compiles only where Xcode lives (the mini); the
 scaffold is authored to be opened as an Xcode project there. CI does not gate
 `ios/` yet.
+
+## The Apple Watch companion
+
+`ios/PermagentMobile/PermagentWatch` is an embedded watchOS 10 app. Installing
+the iOS app on a paired iPhone installs the Watch app (Watch → App Store →
+automatic install is on by default). Scope is two buttons: **orb chat**
+(the Möbius mark stays on screen while you talk; turns join the phone's
+hub session) and **note dictate** (record on the watch, Whisper on the
+Mac, project chosen by voice). Transport is WatchConnectivity through the
+iPhone, not the tailnet — watchOS cannot run Tailscale, and the phone
+already holds the pairing token. A recording made while the phone is
+unreachable is queued and sent on reconnect.
 
 ## Explicit non-goals (for now)
 

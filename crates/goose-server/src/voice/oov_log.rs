@@ -112,3 +112,45 @@ mod tests {
         assert_eq!(snapshot().first().unwrap().1, 2);
     }
 }
+
+/// Coaching injected into a voice turn so the model can teach a word *before*
+/// speaking it, instead of spelling it and hoping the user notices.
+pub fn coaching_prompt() -> Option<String> {
+    let items = snapshot();
+    if items.is_empty() {
+        return None;
+    }
+    let words: Vec<&str> = items.iter().take(8).map(|(w, _)| w.as_str()).collect();
+    Some(format!(
+        "The speech engine recently had to guess these words: {}. \
+         NEVER spell them letter by letter. If you are about to say one and you \
+         know a real-English-word respelling, you MUST call save_pronunciation \
+         in this turn before you speak. If you do not, ask how it is said — \
+         do not guess out loud.",
+        words.join(", ")
+    ))
+}
+
+#[cfg(test)]
+mod coaching_tests {
+    use super::*;
+    use serial_test::serial;
+
+    #[test]
+    #[serial]
+    fn coaching_is_none_when_the_queue_is_empty() {
+        *SEEN.write().unwrap_or_else(PoisonError::into_inner) = None;
+        assert!(coaching_prompt().is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn coaching_names_the_guessed_word() {
+        *SEEN.write().unwrap_or_else(PoisonError::into_inner) = None;
+        record(&["kuzu".into()]);
+        let prompt = coaching_prompt().expect("non-empty queue must coach");
+        assert!(prompt.contains("kuzu"));
+        assert!(prompt.to_lowercase().contains("save_pronunciation"));
+        *SEEN.write().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+}

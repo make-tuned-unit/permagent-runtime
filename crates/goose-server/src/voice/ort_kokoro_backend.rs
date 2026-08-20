@@ -725,6 +725,15 @@ impl TextToSpeech for OrtKokoroTts {
         }
         Ok(phonemes)
     }
+
+    fn unresolved_words(&self, text: &str) -> Vec<String> {
+        let Ok(g2p) = self.g2p.lock() else {
+            return Vec::new();
+        };
+        phonemize(&g2p, text, &self.lexicon)
+            .map(|(_, unresolved)| unresolved)
+            .unwrap_or_default()
+    }
 }
 
 /// Model paths for the standalone Kokoro TTS backend.

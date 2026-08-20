@@ -100,6 +100,141 @@ pub fn split_compound(dict: &impl WordDict, word: &str) -> Option<(String, Strin
     best.map(|(_, parts)| parts)
 }
 
+/// Split an interior camelCase / PascalCase token so "OpenAI" is spoken as
+/// two words rather than spelled. All-lowercase / ALL-CAPS tokens are left
+/// alone — those belong to the dictionary and the compound splitter.
+pub fn split_camel(token: &str) -> Option<String> {
+    let chars: Vec<char> = token.chars().collect();
+    if chars.len() < 3 {
+        return None;
+    }
+    let has_lower = chars.iter().any(|c| c.is_lowercase());
+    let has_upper = chars.iter().any(|c| c.is_uppercase());
+    if !has_lower || !has_upper {
+        return None;
+    }
+
+    let mut out = String::with_capacity(token.len() + 4);
+    for (i, &ch) in chars.iter().enumerate() {
+        if i > 0 && ch.is_uppercase() {
+            let prev_lower = chars[i - 1].is_lowercase();
+            let next_lower = chars.get(i + 1).is_some_and(|c| c.is_lowercase());
+            if prev_lower || next_lower {
+                out.push(' ');
+            }
+        }
+        out.push(ch);
+    }
+    if out.contains(' ') {
+        Some(out)
+    } else {
+        None
+    }
+}
+
+fn lead_punct(token: &str) -> String {
+    token
+        .chars()
+        .take_while(|c| c.is_ascii_punctuation())
+        .collect()
+}
+
+fn trail_punct(token: &str) -> String {
+    token
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_punctuation())
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
+}
+
+/// Rewrite one core token (punctuation already stripped) into speakable parts.
+/// Returns the replacement text and any still-unresolved pieces.
+fn rewrite_core(dict: &impl WordDict, core: &str) -> (String, Vec<String>) {
+    if core.is_empty() || dict.known(&core.to_lowercase()) {
+        return (core.to_string(), Vec::new());
+    }
+
+    // Hyphen / underscore compounds: "gpt-oss", "co_working".
+    if core.contains('-') || core.contains('_') {
+        let mut pieces: Vec<String> = Vec::new();
+        let mut unresolved: Vec<String> = Vec::new();
+        for part in core.split(|c| c == '-' || c == '_') {
+            if part.is_empty() {
+                continue;
+            }
+            let (rewritten, mut oov) = rewrite_core(dict, part);
+            pieces.push(rewritten);
+            unresolved.append(&mut oov);
+        }
+        return (pieces.join(" "), unresolved);
+    }
+
+    // "gpt4" / "web2" — split letters from a trailing/leading digit run.
+    if let Some(split) = split_alpha_digits(core) {
+        let mut unresolved: Vec<String> = Vec::new();
+        let mut pieces: Vec<String> = Vec::new();
+        for part in split.split_whitespace() {
+            let (rewritten, mut oov) = rewrite_core(dict, part);
+            pieces.push(rewritten);
+            unresolved.append(&mut oov);
+        }
+        return (pieces.join(" "), unresolved);
+    }
+
+    if let Some(camel) = split_camel(core) {
+        let mut unresolved: Vec<String> = Vec::new();
+        let mut pieces: Vec<String> = Vec::new();
+        for part in camel.split_whitespace() {
+            let (rewritten, mut oov) = rewrite_core(dict, part);
+            pieces.push(rewritten);
+            unresolved.append(&mut oov);
+        }
+        return (pieces.join(" "), unresolved);
+    }
+
+    if !core.chars().all(|c| c.is_alphabetic()) {
+        // Mixed junk (paths, versions) is not ours to invent a reading of.
+        return (core.to_string(), Vec::new());
+    }
+
+    match split_compound(dict, core) {
+        Some((a, b)) => (format!("{a} {b}"), Vec::new()),
+        None => (core.to_string(), vec![core.to_lowercase()]),
+    }
+}
+
+/// "gpt4" → "gpt 4", "3js" → "3 js". No split when there are no digits or no
+/// letters — those tokens pass through untouched.
+fn split_alpha_digits(core: &str) -> Option<String> {
+    let has_digit = core.chars().any(|c| c.is_ascii_digit());
+    let has_alpha = core.chars().any(|c| c.is_ascii_alphabetic());
+    if !has_digit || !has_alpha {
+        return None;
+    }
+    let mut out = String::with_capacity(core.len() + 2);
+    let mut prev_alpha: Option<bool> = None;
+    for ch in core.chars() {
+        let alpha = ch.is_ascii_alphabetic();
+        if let Some(was_alpha) = prev_alpha {
+            if was_alpha != alpha && (alpha || ch.is_ascii_digit()) {
+                out.push(' ');
+            }
+        }
+        out.push(ch);
+        if ch.is_ascii_alphabetic() || ch.is_ascii_digit() {
+            prev_alpha = Some(alpha);
+        }
+    }
+    if out.contains(' ') {
+        Some(out)
+    } else {
+        None
+    }
+}
+
 /// Rewrite every OOV compound in `text` as its spaced parts, leaving all other
 /// tokens byte-identical. Trailing punctuation is preserved so sentence-final
 /// pauses survive. Returns the rewritten text plus every token that was left
@@ -110,38 +245,21 @@ pub fn expand_compounds(dict: &impl WordDict, text: &str) -> (String, Vec<String
 
     for token in text.split_whitespace() {
         let core = token.trim_matches(|c: char| c.is_ascii_punctuation());
-        // A known word, or one with nothing to judge, passes through untouched.
-        if core.is_empty() || dict.known(&core.to_lowercase()) {
+        if core.is_empty() {
             out.push(token.to_string());
             continue;
         }
-        // Only alphabetic tokens are candidates; anything else (numbers, code,
-        // identifiers) is left for the tokenizer.
-        if !core.chars().all(|c| c.is_alphabetic()) {
+        let (rewritten, mut oov) = rewrite_core(dict, core);
+        unresolved.append(&mut oov);
+        if rewritten == core {
             out.push(token.to_string());
-            continue;
-        }
-        match split_compound(dict, core) {
-            Some((a, b)) => {
-                // Rebuild with the original surrounding punctuation.
-                let lead: String = token
-                    .chars()
-                    .take_while(|c| c.is_ascii_punctuation())
-                    .collect();
-                let trail: String = token
-                    .chars()
-                    .rev()
-                    .take_while(|c| c.is_ascii_punctuation())
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect();
-                out.push(format!("{lead}{a} {b}{trail}"));
-            }
-            None => {
-                unresolved.push(core.to_lowercase());
-                out.push(token.to_string());
-            }
+        } else {
+            out.push(format!(
+                "{}{}{}",
+                lead_punct(token),
+                rewritten,
+                trail_punct(token)
+            ));
         }
     }
 
@@ -319,5 +437,38 @@ mod tests {
         let (text, unresolved) = expand_compounds(&dict(), input);
         assert_eq!(text, input);
         assert!(unresolved.is_empty());
+    }
+
+    #[test]
+    fn splits_camel_case_product_names() {
+        assert_eq!(split_camel("OpenAI").as_deref(), Some("Open AI"));
+        assert_eq!(split_camel("ChatGPT").as_deref(), Some("Chat GPT"));
+        assert_eq!(split_camel("GraphQL").as_deref(), Some("Graph QL"));
+        assert_eq!(
+            split_camel("openai"),
+            None,
+            "all-lower is the compound splitter's"
+        );
+        assert_eq!(
+            split_camel("NASA"),
+            None,
+            "all-caps is an acronym, not camelCase"
+        );
+    }
+
+    #[test]
+    fn expands_hyphenated_and_digit_tokens() {
+        let (text, unresolved) = expand_compounds(&dict(), "Ship gpt-oss and web2.");
+        assert!(text.contains("gpt oss"), "{text}");
+        assert!(text.contains("web 2"), "{text}");
+        assert!(unresolved.contains(&"gpt".to_string()), "{unresolved:?}");
+        assert!(unresolved.contains(&"oss".to_string()), "{unresolved:?}");
+    }
+
+    #[test]
+    fn expands_camel_case_in_a_sentence() {
+        let (text, _) = expand_compounds(&dict(), "Ask OpenAI.");
+        assert!(text.contains("Open AI"), "{text}");
+        assert!(text.ends_with('.'), "{text}");
     }
 }

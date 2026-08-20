@@ -561,6 +561,16 @@ export interface VoiceDownloadProgress {
   error: string | null;
 }
 
+export interface PronunciationEntry {
+  ipa: string;
+  sounds_like: string;
+}
+
+export interface UnresolvedPronunciation {
+  word: string;
+  spelled_out_times: number;
+}
+
 /**
  * Synthesize `text` in `voiceId` and return playable WAV audio.
  * Returns the Blob (not JSON) — used for per-voice preview, the picker
@@ -1030,6 +1040,23 @@ export const api = {
 
   getVoiceDownloadProgress: () =>
     apiFetch<VoiceDownloadProgress>('/voice/models/download'),
+
+  getPronunciations: () =>
+    apiFetch<Record<string, PronunciationEntry>>('/voice/pronunciations'),
+
+  getUnresolvedPronunciations: () =>
+    apiFetch<{ unresolved: UnresolvedPronunciation[] }>('/voice/pronunciations/unresolved'),
+
+  savePronunciation: (word: string, soundsLike: string) =>
+    apiFetch<{ saved: boolean; total: number; ipa: string }>('/voice/pronunciations', {
+      method: 'PUT',
+      body: JSON.stringify({ word, sounds_like: soundsLike }),
+    }),
+
+  deletePronunciation: (word: string) =>
+    apiFetch<{ removed: boolean }>(`/voice/pronunciations/${encodeURIComponent(word)}`, {
+      method: 'DELETE',
+    }),
 
   // Config
   getConfig: () => apiFetch<PermagentConfig>('/config'),

@@ -106,5 +106,8 @@ ui/command-center/coverage/
 # Xcode per-user state (schemes, breakpoints, window layout) — never shared
 **/xcuserdata/
 
+# xcodebuild -derivedDataPath leftovers next to project.yml
+ios/PermagentMobile/build/
+
 # insta pending snapshots — artifacts of a failed snapshot test, never committed
 *.snap.new

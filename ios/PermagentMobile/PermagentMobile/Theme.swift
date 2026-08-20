@@ -153,7 +153,7 @@ extension Color {
     /// removes the bridge, the allocation, and the thread affinity together.
     static func brand(dark: UInt32, darkAlpha: Double = 1,
                       light: UInt32, lightAlpha: Double = 1) -> Color {
-        #if canImport(UIKit)
+        #if os(iOS)
         return Color(UIColor { traits in
             traits.userInterfaceStyle == .dark
                 ? UIColor(rgbHex: dark, alpha: darkAlpha)
@@ -377,6 +377,7 @@ struct GlassCard<Content: View>: View {
     private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: 16, style: .continuous) }
     var body: some View {
         Group {
+            #if os(iOS)
             if #available(iOS 26.0, *) {
                 content()
                     .padding(16)
@@ -388,6 +389,13 @@ struct GlassCard<Content: View>: View {
                     .background(Brand.surface)
                     .clipShape(shape)
             }
+            #else
+            content()
+                .padding(16)
+                .background(.ultraThinMaterial.opacity(0.6))
+                .background(Brand.surface)
+                .clipShape(shape)
+            #endif
         }
         .overlay(shape.strokeBorder(Brand.borderHi, lineWidth: 1))
         .shadow(color: Brand.cardShadow, radius: 24, y: 12)
@@ -400,11 +408,15 @@ extension View {
     /// responds to touch with the native morph — ultraThinMaterial before.
     @ViewBuilder
     func glassChrome<S: Shape>(in shape: S, interactive: Bool = false) -> some View {
+        #if os(iOS)
         if #available(iOS 26.0, *) {
             self.glassEffect(interactive ? Glass.regular.interactive() : .regular, in: shape)
         } else {
             self.background(.ultraThinMaterial, in: shape)
         }
+        #else
+        self.background(.ultraThinMaterial, in: shape)
+        #endif
     }
 }
 
@@ -512,7 +524,15 @@ struct ThinkingDots: View {
             }
         }
         .onAppear { phase = true }
-        .accessibilityLabel("\(AgentIdentity.shared.nameCapitalized) is thinking")
+        .accessibilityLabel(thinkingLabel)
+    }
+
+    private var thinkingLabel: String {
+        #if os(iOS)
+        "\(AgentIdentity.shared.nameCapitalized) is thinking"
+        #else
+        "Thinking"
+        #endif
     }
 }
 
@@ -526,10 +546,14 @@ extension View {
     /// host scrollable content (ScrollView/List) for the scroll to drive it.
     @ViewBuilder
     func liquidGlassTabMinimize() -> some View {
+        #if os(iOS)
         if #available(iOS 26.0, *) {
             self.tabBarMinimizeBehavior(.onScrollDown)
         } else {
             self
         }
+        #else
+        self
+        #endif
     }
 }
