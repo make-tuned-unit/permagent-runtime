@@ -1,4 +1,6 @@
 name: PermagentMobile
+attributes:
+  ORGANIZATIONNAME: Atlas Atlantic
 options:
   bundleIdPrefix: ai.permagent
   deploymentTarget:
@@ -40,7 +42,11 @@ targets:
         # them. Deliberately NOT mirroring the IPHONEOS_DEPLOYMENT_TARGET 18.6
         # that Xcode also wrote — the 17.0 floor above is intentional (liquid
         # glass on 26 with a 17–25 fallback), and 18.6 would silently drop it.
-        DEVELOPMENT_TEAM: GANM22MFCH
+        #
+        # Atlas Atlantic (Z58XSBM78S) — same team as GetLadle and Family Life.
+        # Debug stays signing-free so CI `xcodebuild` needs no certificate;
+        # Release uses automatic signing against this team.
+        DEVELOPMENT_TEAM: Z58XSBM78S
         # ── Versioning ──────────────────────────────────────────────────────
         # EDIT THESE HERE, NOT IN XCODE. The .xcodeproj AND Info.plist are both
         # generated from this file, so anything Xcode's General tab writes is
@@ -160,7 +166,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ai.permagent.mobile.watchkitapp
         SWIFT_VERSION: "6.0"
-        DEVELOPMENT_TEAM: GANM22MFCH
+        DEVELOPMENT_TEAM: Z58XSBM78S
         MARKETING_VERSION: "1.31.0"
         CURRENT_PROJECT_VERSION: 928
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -223,7 +229,7 @@ targets:
         # Same team as the app target: without it, any non-Debug build (or a
         # device destination) fails signing — Debug-only CODE_SIGNING_ALLOWED
         # NO covered the simulator but left Xcode's other paths teamless.
-        DEVELOPMENT_TEAM: GANM22MFCH
+        DEVELOPMENT_TEAM: Z58XSBM78S
         CODE_SIGN_STYLE: Automatic
       configs:
         Debug:

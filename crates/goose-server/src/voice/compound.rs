@@ -161,7 +161,7 @@ fn rewrite_core(dict: &impl WordDict, core: &str) -> (String, Vec<String>) {
     if core.contains('-') || core.contains('_') {
         let mut pieces: Vec<String> = Vec::new();
         let mut unresolved: Vec<String> = Vec::new();
-        for part in core.split(|c| c == '-' || c == '_') {
+        for part in core.split(['-', '_']) {
             if part.is_empty() {
                 continue;
             }
