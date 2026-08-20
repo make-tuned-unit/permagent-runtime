@@ -61,13 +61,44 @@ function __permagentResolveHref(rawHref, baseHref) {
   }
 }
 
-// A `target` that asks for a NEW browsing context. '' / _self / _top / _parent
-// all stay in the current one. Anything else (`_blank`, or a named window the
-// page has not opened) is a new-tab request.
-function __permagentTargetWantsNewContext(target) {
+// A `target` that asks for a NEW browsing context.
+//
+// '' / _self / _top / _parent all stay in the current one, and `_blank` always
+// wants a new one. A NAMED target is the case that needs care: it means "put
+// the result in the context called this", and that is only a new-tab request
+// when no such context EXISTS. If the page carries `<iframe name="preview">`
+// then `<a target="preview">` is an ordinary in-page navigation, and a real
+// browser loads it into that frame.
+//
+// Getting this wrong is not cosmetic. Claiming such a click cancels the real
+// navigation (`handle` calls `preventDefault`) and re-expresses it as
+// `window.open`, which browser.rs DENIES and re-routes to a brand new tab —
+// so the page's own frame never loads and the navigation is torn out of the
+// browsing context that started it. Sign-in and payment flows that drive a
+// named frame are exactly the kind that cannot survive that, because the
+// state they left behind (`window.name`, the frame's document, an opener
+// relationship) is in the context the navigation just left.
+//
+// `frameNames` is the list of frame names present in the document, supplied by
+// `context()`; absent or empty it means "none", which is the pre-existing
+// behaviour for every page that has no named frames.
+function __permagentTargetWantsNewContext(target, frameNames) {
   var t = String(target == null ? '' : target).trim().toLowerCase();
   if (!t) return false;
-  return t !== '_self' && t !== '_top' && t !== '_parent';
+  if (t === '_self' || t === '_top' || t === '_parent') return false;
+  if (t === '_blank') return true;
+  return !__permagentTargetNamesAFrameInPage(t, frameNames);
+}
+
+// True when `target` names a frame that already exists in this document.
+function __permagentTargetNamesAFrameInPage(target, frameNames) {
+  var t = String(target == null ? '' : target).trim().toLowerCase();
+  if (!t) return false;
+  var names = frameNames || [];
+  for (var i = 0; i < names.length; i++) {
+    if (String(names[i] == null ? '' : names[i]).trim().toLowerCase() === t) return true;
+  }
+  return false;
 }
 
 // ── The decision, as a pure function ────────────────────────────────────────
@@ -77,7 +108,7 @@ function __permagentTargetWantsNewContext(target) {
 // `link` is the resolved anchor under the pointer, or null
 //   { href, target, download }
 // `ctx` is the frame's situation
-//   { isTopFrame }
+//   { isTopFrame, frameNames }
 //
 // Returns { action: 'ignore' | 'newtab' | 'menu', url, reason }. `reason` is
 // always populated, including for 'ignore' — a dropped gesture must leave a
@@ -131,8 +162,13 @@ function __permagentLinkDecision(gesture, link, ctx) {
     // gesture takes the SAME path as every other one and can only produce one
     // tab. Claiming it is also what makes the behaviour independent of
     // WebKit's willingness to consult the delegate for this particular action.
-    if (__permagentTargetWantsNewContext(link.target)) {
+    if (__permagentTargetWantsNewContext(link.target, c.frameNames)) {
       return { action: 'newtab', url: link.href, reason: 'target-new-context' };
+    }
+    // Named a frame this document owns: the page navigates it itself. Reported
+    // as its own reason so a dropped gesture is never a silent one.
+    if (__permagentTargetNamesAFrameInPage(link.target, c.frameNames)) {
+      return { action: 'ignore', url: null, reason: 'targets-a-frame-in-the-page' };
     }
     // Everything else is ordinary browsing: same-tab navigation, SPA routing,
     // a page's own click handler. Never claimed.
@@ -368,7 +404,35 @@ function __permagentInstallLinks() {
     }
   }
 
-  function context() {
+  // Names of the frames THIS document owns. Read fresh on every gesture rather
+  // than cached: single-page apps mount and unmount frames as you navigate, and
+  // a stale list would send a click to a tab or a frame that no longer matches
+  // the page. Same-document only — reading into a cross-origin child would
+  // throw, and its names are not ours to target anyway.
+  function frameNamesInDocument() {
+    var out = [];
+    try {
+      var nodes = document.querySelectorAll('iframe[name], frame[name], object[name]');
+      for (var i = 0; i < nodes.length; i++) {
+        var n = nodes[i].getAttribute ? nodes[i].getAttribute('name') : '';
+        if (n) out.push(n);
+      }
+    } catch (e) {
+      /* a page may have replaced querySelectorAll */
+    }
+    return out;
+  }
+
+  // Only a link with a NAMED target can be answered by a frame, and only then
+  // is the DOM query worth making. `handle` runs on every mouseup anywhere in
+  // somebody else's page; it must stay cheap.
+  function needsFrameNames(link) {
+    if (!link || !link.target) return false;
+    var t = String(link.target).trim().toLowerCase();
+    return !!t && t !== '_blank' && t !== '_self' && t !== '_top' && t !== '_parent';
+  }
+
+  function context(link) {
     var isTop = true;
     try {
       isTop = window.top === window;
@@ -376,7 +440,10 @@ function __permagentInstallLinks() {
       // Cross-origin parent: we are definitionally not the top frame.
       isTop = false;
     }
-    return { isTopFrame: isTop };
+    return {
+      isTopFrame: isTop,
+      frameNames: needsFrameNames(link) ? frameNamesInDocument() : [],
+    };
   }
 
   function handle(ev) {
@@ -391,7 +458,7 @@ function __permagentInstallLinks() {
         defaultPrevented: !!ev.defaultPrevented,
       },
       link,
-      context(),
+      context(link),
     );
 
     if (decision.action === 'ignore') return;

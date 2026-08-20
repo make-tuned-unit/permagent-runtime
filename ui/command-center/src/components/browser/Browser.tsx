@@ -28,6 +28,7 @@ import {
 import { CHAT_LAUNCHER_MARGIN } from '../chat/ChatLauncher';
 import { nextPaneTabId, usePaneTabCycling } from '../build/paneTabCycling';
 import { createBoundsPump } from './boundsPump';
+import { reserveFromLeft } from './reservedRect';
 
 // ── Tauri API loader (cached, no module-level mutation) ──
 
@@ -106,6 +107,7 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
   const { colors } = useTheme();
   const overlayBlocking = useCommandCenter(s => s.overlayBlockingBrowser);
   const chatLauncherSize = useCommandCenter(s => s.chatLauncherSize);
+  const sidebarTooltipRect = useCommandCenter(s => s.sidebarTooltipRect);
   const chatDockOpen = useCommandCenter(s => s.chatDockOpen);
   const pendingBrowserUrl = useCommandCenter(s => s.pendingBrowserUrl);
   const clearPendingBrowserUrl = useCommandCenter(s => s.clearPendingBrowserUrl);
@@ -407,16 +409,31 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
       }
     }
 
+    // Sidebar hover label: same class of problem as the launcher corner, and
+    // the same remedy. The tooltip is drawn to the RIGHT of the rail, into
+    // this pane; a native child surface composites above the shell's DOM, so
+    // the only way it stays visible is for the browser's rect not to reach it.
+    // Reported 2026-08-19 as "browser full view + terminal toggled off",
+    // which is precisely when this pane spans the full width — with the
+    // terminal showing, BuildView's horizontal split puts the browser on the
+    // right half and the tooltip lands over the terminal's DOM instead.
+    // `reserveFromLeft` returns the input untouched when there is no overlap,
+    // so every other layout keeps the bounds it has today.
+    const reserved = reserveFromLeft(
+      { x: rect.x, y: rect.y, width, height },
+      useCommandCenter.getState().sidebarTooltipRect,
+    );
+
     currentTabs.forEach((t) => {
       if (!t.webviewId) return;
       if (t.id === currentActiveId) {
-        lastAppliedBoundsRef.current = { x: rect.x, y: rect.y, width, height };
+        lastAppliedBoundsRef.current = { ...reserved };
         inv.invoke('update_browser_bounds', {
           webviewId: t.webviewId,
-          x: rect.x,
-          y: rect.y,
-          width,
-          height,
+          x: reserved.x,
+          y: reserved.y,
+          width: reserved.width,
+          height: reserved.height,
         }).catch(() => {});
       } else {
         inv.invoke('hide_browser', { webviewId: t.webviewId }).catch(() => {});
@@ -559,7 +576,7 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
   // Event-driven, not polled — composes with the nap-safe pump suspension.
   useEffect(() => {
     syncBounds();
-  }, [chatLauncherSize, chatDockOpen, syncBounds]);
+  }, [chatLauncherSize, chatDockOpen, sidebarTooltipRect, syncBounds]);
 
   // ── Hide all webviews when a transient overlay is open ──
   useEffect(() => {
