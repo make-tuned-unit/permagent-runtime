@@ -47,25 +47,23 @@ pub fn plan(text: &str) -> ProsodyPlan {
     let mut rest = text;
 
     while let Some(open) = rest.find('[') {
-        out.push_str(&rest[..open]);
-        let after = &rest[open + 1..];
+        // `get` rather than byte-indexing: these offsets come from `find` so
+        // they are char boundaries, but clippy::string_slice is denied in CI.
+        out.push_str(rest.get(..open).unwrap_or(""));
+        let after = rest.get(open + 1..).unwrap_or("");
         match after.find(']') {
             None => {
                 // Unclosed bracket — drop it so Kokoro never reads "[".
                 rest = after;
             }
             Some(close) => {
-                let inner = after[..close].trim();
+                let inner = after.get(..close).unwrap_or("").trim();
                 let key = inner.to_ascii_lowercase();
-                rest = &after[close + 1..];
-                if key == "pause" {
-                    if !out.ends_with('.') && !out.ends_with('…') {
-                        out.push_str("... ");
-                    }
-                } else if let Some(s) = speed_for_tag(&key) {
-                    if speed.is_none() {
-                        speed = Some(s);
-                    }
+                rest = after.get(close + 1..).unwrap_or("");
+                if key == "pause" && !out.ends_with('.') && !out.ends_with('…') {
+                    out.push_str("... ");
+                } else {
+                    speed = speed.or_else(|| speed_for_tag(&key));
                 }
                 // Unknown tags (and recognised ones) are dropped, not spoken.
             }

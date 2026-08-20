@@ -1742,7 +1742,7 @@ mod tests {
             "first audio should fire on a 4-char sentence"
         );
         let (end, _) = hit.unwrap();
-        assert_eq!(&"Yes."[..=end], "Yes.");
+        assert_eq!("Yes.".get(..=end), Some("Yes."));
     }
 
     #[test]
