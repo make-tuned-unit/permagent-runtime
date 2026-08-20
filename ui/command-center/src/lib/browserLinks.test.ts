@@ -56,10 +56,14 @@ function loadPure() {
       ' isDuplicate: __permagentIsDuplicateOpen' +
       ' };',
   )() as {
-    decide: (g: Gesture, l: Link | null, c: { isTopFrame: boolean }) => Decision;
+    decide: (
+      g: Gesture,
+      l: Link | null,
+      c: { isTopFrame: boolean; frameNames?: string[] },
+    ) => Decision;
     isWebLink: (url: string) => boolean;
     resolveHref: (raw: string, base?: string) => string;
-    wantsNewContext: (target: string | null | undefined) => boolean;
+    wantsNewContext: (target: string | null | undefined, frameNames?: string[]) => boolean;
     isDuplicate: (
       state: { url: string; at: number } | null,
       url: string,
@@ -187,6 +191,67 @@ describe('link gesture decision (pure)', () => {
   });
 });
 
+// ── A named target is not automatically a new tab ───────────────────────────
+//
+// `target="something"` means "load this into the context called something".
+// When the page HAS such a context — an `<iframe name="something">` it just
+// mounted — the navigation belongs there, and a real browser puts it there.
+//
+// Claiming it instead cancels the real navigation and re-expresses it as
+// `window.open`, which browser.rs denies and re-routes to a brand-new tab. The
+// frame never loads, and the navigation is torn out of the browsing context
+// that began it. That is fatal to any flow whose state lives in the starting
+// context, sign-in flows most of all: a redirect chain that has to come back
+// to where it started cannot come back to a context that was abandoned.
+describe('a target that names a frame the page already owns', () => {
+  const { decide } = loadPure();
+  const link = (href: string, extra: Partial<Link> = {}): Link => ({ href, ...extra });
+  const inPage = { isTopFrame: true, frameNames: ['authFrame', 'preview'] };
+
+  it('is left to the page, not turned into a tab', () => {
+    const d = decide(
+      { type: 'click', button: 0 },
+      link('https://idp.test/authorize?code_challenge=abc', { target: 'authFrame' }),
+      inPage,
+    );
+    expect(d.action).toBe('ignore');
+    expect(d.reason).toBe('targets-a-frame-in-the-page');
+    expect(d.url).toBeNull();
+  });
+
+  it('matches the frame name case-insensitively, as targets resolve', () => {
+    const d = decide({ type: 'click', button: 0 }, link('https://x.test/', { target: 'PREVIEW' }), inPage);
+    expect(d.action).toBe('ignore');
+  });
+
+  it('still opens a tab for a name NO frame in the page carries', () => {
+    const d = decide({ type: 'click', button: 0 }, link('https://x.test/', { target: 'nowhere' }), inPage);
+    expect(d.action).toBe('newtab');
+    expect(d.reason).toBe('target-new-context');
+  });
+
+  it('still opens a tab for _blank even when frames exist', () => {
+    const d = decide({ type: 'click', button: 0 }, link('https://x.test/', { target: '_blank' }), inPage);
+    expect(d.action).toBe('newtab');
+    expect(d.reason).toBe('target-new-context');
+  });
+
+  it('does not change a page with no named frames at all', () => {
+    const d = decide({ type: 'click', button: 0 }, link('https://x.test/', { target: 'authFrame' }), TOP);
+    expect(d.action).toBe('newtab');
+  });
+
+  it('leaves the deliberate gestures alone — Cmd-click still means a new tab', () => {
+    const d = decide(
+      { type: 'click', button: 0, metaKey: true },
+      link('https://x.test/', { target: 'authFrame' }),
+      inPage,
+    );
+    expect(d.action).toBe('newtab');
+    expect(d.reason).toBe('modifier-click');
+  });
+});
+
 describe('href resolution', () => {
   const { resolveHref } = loadPure();
 
@@ -262,6 +327,27 @@ describe('installed interceptor, per gesture', () => {
     el.dispatchEvent(ev);
     return ev;
   }
+
+  // The decision function is pure, so it can only be trusted about frames if
+  // `context()` actually hands it the page's frame names. This drives the real
+  // listeners against a real document to prove the wiring, not the literal.
+  it('leaves a link targeting a frame the document owns to the page', () => {
+    document.body.innerHTML =
+      '<iframe name="authFrame"></iframe>' +
+      '<a href="https://idp.test/authorize" target="authFrame">sign in</a>';
+    const a = document.querySelector('a') as HTMLAnchorElement;
+    const ev = fire(a, 'click', { button: 0 });
+    expect(opened).toEqual([]);
+    // And the real navigation is left intact — cancelling it is what emptied
+    // the frame and tore the flow out of its starting context.
+    expect(ev.defaultPrevented).toBe(false);
+  });
+
+  it('still opens a tab when the named target matches no frame in the document', () => {
+    const a = anchor('<a href="https://x.test/n" target="authFrame">go</a>');
+    fire(a, 'click', { button: 0 });
+    expect(opened).toEqual(['https://x.test/n']);
+  });
 
   it('plain left-click on target=_blank opens exactly one tab', () => {
     const a = anchor('<a href="https://example.com/blank" target="_blank">go</a>');

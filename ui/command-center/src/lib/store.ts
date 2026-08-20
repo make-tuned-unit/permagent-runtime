@@ -458,6 +458,17 @@ interface CommandCenterStore {
   chatLauncherSize: { width: number; height: number } | null;
   setChatLauncherSize: (size: { width: number; height: number } | null) => void;
 
+  // --- Sidebar hover-label reservation (reported 2026-08-19) ---
+  // Viewport rect of the sidebar tooltip while one is showing, else null. Same
+  // reason as the launcher corner: the tooltip is DOM inside the shell's own
+  // webview and the browser is a NATIVE child surface composited above it, so
+  // no z-index can lift it. The Browser subtracts this rect from the native
+  // bounds instead (WEBVIEW_LIFECYCLE.md ruling D2, bounds-subtract).
+  sidebarTooltipRect: { x: number; y: number; width: number; height: number } | null;
+  setSidebarTooltipRect: (
+    rect: { x: number; y: number; width: number; height: number } | null,
+  ) => void;
+
   // --- Chat dock (2026-07-11): chat opens as a right sidebar first, detaches
   // to a window on demand (validated UX pattern). Mutually exclusive with the
   // detached window; the Browser reserves its strip like the launcher pill. ---
@@ -1714,6 +1725,19 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   overlayBlockingBrowser: 0,
   pushBrowserOverlay: () => set(s => ({ overlayBlockingBrowser: s.overlayBlockingBrowser + 1 })),
   popBrowserOverlay: () => set(s => ({ overlayBlockingBrowser: Math.max(0, s.overlayBlockingBrowser - 1) })),
+
+  // Sidebar hover-label reservation (reported 2026-08-19)
+  sidebarTooltipRect: null,
+  setSidebarTooltipRect: (rect) => set(s => {
+    // Identity matters: this is written on every hover and read by the
+    // Browser's bounds effect. Re-setting an equal rect would push a native
+    // `update_browser_bounds` call for no change.
+    const prev = s.sidebarTooltipRect;
+    if (prev === rect) return {};
+    if (prev && rect && prev.x === rect.x && prev.y === rect.y
+        && prev.width === rect.width && prev.height === rect.height) return {};
+    return { sidebarTooltipRect: rect };
+  }),
 
   // Collapsed chat launcher corner reservation (#553)
   chatLauncherSize: null,

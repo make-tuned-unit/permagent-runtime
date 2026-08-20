@@ -553,6 +553,79 @@ struct BrowserTitleChangedPayload {
     title: String,
 }
 
+/// WHAT THIS DOES *NOT* BREAK: OAuth (investigated 2026-08-19).
+///
+/// A sign-in through the in-app browser failed with
+/// `?provider=github&msg=pkce_cookie_missing`, and the standing suspicion was
+/// this very mechanism — that denying the popup and re-opening the URL as a
+/// fresh tab loses the PKCE verifier cookie, either because the opener
+/// relationship is severed or because each tab gets its own cookie jar. Both
+/// halves were measured against the pinned dependency and the real site, and
+/// both are FALSE. Written down so the next person does not spend the day
+/// re-deriving it:
+///
+///   * ONE COOKIE JAR, NOT ONE PER TAB. `WebviewBuilder` sets neither
+///     `incognito` nor a data-store identifier, and wry only departs from the
+///     process-wide store when one of those is asked for
+///     (`wry-0.55.0/src/wkwebview/mod.rs:235-243`: incognito ->
+///     `nonPersistentDataStore`, an identifier -> `dataStoreForIdentifier`,
+///     otherwise `defaultDataStore`). Confirmed at runtime with two
+///     independently configured WKWebViews in one process: the data store and
+///     the cookie store are the SAME object, a `Secure; HttpOnly; SameSite=Lax`
+///     cookie set by a navigation in one is visible to the other, and the
+///     other's cross-site return hop carries it. `data_store_sharing_is_not_
+///     opted_out_of` below is what keeps that true.
+///
+///   * THE FLOW THAT FAILED NEVER OPENS A POPUP. Driven end to end against the
+///     real provider, "Continue with GitHub" is a plain same-tab redirect
+///     chain; `createWebViewWithConfiguration:` — the message this handler
+///     exists to answer — is never sent. So this handler cannot be on the
+///     path.
+///
+/// The cause of that one sign-in therefore remains unidentified; the verifier
+/// cookie carries a 15-minute expiry, which a slow trip through the provider
+/// can outlive. What IS fixed alongside this note is a real defect in
+/// `browser_links.js` that breaks flows of this shape: a link targeting a
+/// frame the page already owns used to be torn out into a new tab.
+///
+/// ── WHAT THIS *DOES* BREAK: POPUP SIGN-IN. MEASURED, NOT SUSPECTED. ────────
+///
+/// Separately reported 2026-08-19: opening a person's profile from the CRM
+/// loaded the site's signed-out wall and "just sat there". The wall's way
+/// through is "Continue with Google", and that is a POPUP flow — Google's own
+/// button asks for it with `ux_mode=popup`. Driven against the real page in a
+/// WKWebView configured like a tab here, the sequence is:
+///
+///   1. the page calls `window.open` -> WebKit sends
+///      `createWebViewWithConfiguration:` -> this handler answers Deny;
+///   2. the tab strip re-opens the URL with `create_browser_webview`, which
+///      builds a webview WebKit has never heard of;
+///   3. in that tab `window.opener` is `null`.
+///
+/// A popup sign-in reports its result by `window.opener.postMessage`. With no
+/// opener there is nobody to report to, so the user can sign in perfectly and
+/// the page that asked will wait forever. "It just sits there" is the correct
+/// description of the bug, and it is not a hang — nothing is running.
+///
+/// The control arm rules out every other explanation: answering the SAME
+/// `createWebViewWithConfiguration:` with a webview built from the
+/// configuration WebKit passed in leaves `window.opener` present and the
+/// opener receives the message. The only variable is this handler's answer.
+///
+/// NOT FIXED HERE, deliberately. The remedy is `NewWindowResponse::Create`
+/// with `NewWindowFeatures::webview_configuration` (tauri 2.11 supports it,
+/// `webview/mod.rs:249`), which produces a WINDOW rather than a tab-strip tab.
+/// That is a design decision about what a popup should be in this app, not a
+/// patch, and #240 / #709 / #973 are three separate demonstrations that
+/// changing this path casually breaks link-opening for everyone. It wants
+/// deciding, not guessing — but the diagnosis above is settled, so whoever
+/// takes it does not have to start over.
+///
+/// AND NOT THE SAME BUG AS THE PKCE ONE ABOVE. One is a popup whose opener is
+/// gone; the other is a same-tab redirect chain that never opens a popup at
+/// all. A single fix does not cover both, and treating them as one is how the
+/// cookie theory survived as long as it did.
+///
 /// `target=_blank` / `window.open` from a page: the popup is DENIED at the
 /// WKWebView layer and re-routed to the tab strip via this event. The UI
 /// listener predates this emitter's return — the original emitter (#240,
@@ -1439,6 +1512,36 @@ mod tests {
              Tab identity and the address bar are fed from it; it is the only \
              navigation callback WebKit restricts to the main frame."
         );
+    }
+
+    // ── Every tab must share one cookie jar ─────────────────────────────
+    //
+    // A source guard for the same reason as the two above: proving it needs a
+    // WKWebView, and CI has none. It was proved by hand instead (see the note
+    // on `BrowserNewWindowPayload`) — two separately configured WKWebViews in
+    // one process resolve to the same `WKWebsiteDataStore`, so a cookie set in
+    // one tab is sent by the other.
+    //
+    // That holds only while nothing opts out. wry leaves the process-wide
+    // store alone unless it is asked not to
+    // (`wry-0.55.0/src/wkwebview/mod.rs:235-243`), and tauri forwards exactly
+    // two ways of asking: `incognito` and `data_store_identifier`. Either one
+    // on this builder gives every browser tab a private jar, and the first
+    // thing to break would be sign-in: a redirect flow that sets a cookie in
+    // one tab and returns in another stops finding it, which is the shape of
+    // the `pkce_cookie_missing` failure investigated on 2026-08-19.
+    #[test]
+    fn tabs_are_not_opted_out_of_the_shared_cookie_jar() {
+        let src = include_str!("browser.rs");
+        for opt_out in [
+            concat!(".inco", "gnito("),
+            concat!(".data_store_", "identifier("),
+        ] {
+            assert!(
+                !src.contains(opt_out),
+                "`{opt_out}` gives each browser tab its OWN WKWebsiteDataStore,                  so a cookie set in one tab is invisible to the next. Sign-in                  flows that redirect out and come back — every OAuth flow —                  break, and they break silently, as a provider-side error page.                  If a private tab is genuinely wanted, it needs to be a choice                  the tab strip makes per tab, not the default for all of them;                  change this test deliberately rather than deleting it."
+            );
+        }
     }
 
     #[test]
