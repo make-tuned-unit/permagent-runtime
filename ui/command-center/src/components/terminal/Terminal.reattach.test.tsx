@@ -84,6 +84,16 @@ beforeEach(() => {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
+  // jsdom reports 0×0; a 0-box must NOT reach resize_pty (see the test
+  // below). The happy-path tests stub a laid-out pane so fit/advertise run.
+  Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
+    configurable: true,
+    get() { return 800; },
+  });
+  Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+    configurable: true,
+    get() { return 600; },
+  });
 });
 
 afterEach(() => {
@@ -123,6 +133,28 @@ describe('Terminal reattach grid sync', () => {
 
     // A reattach must never spawn a second shell over the live one.
     expect(invocations.some(i => i.cmd === 'spawn_pty_session')).toBe(false);
+  });
+
+  it('does not advertise a collapsed 0-box to a live PTY', async () => {
+    Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
+      configurable: true,
+      get() { return 0; },
+    });
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      get() { return 0; },
+    });
+    act(() => {
+      root.render(
+        <Terminal sessionId="pty-live" isVisible />,
+      );
+    });
+    await flushAsyncSetup();
+
+    // The old unguarded fit() sent 2×1 (or this fake's stale 217×48) to a
+    // live Claude Code session. A TUI then painted its status line on the
+    // prompt. Hold the last good PTY size until the pane has a real box.
+    expect(invocations.some(i => i.cmd === 'resize_pty')).toBe(false);
   });
 
   it('a fresh terminal spawns with this xterm grid (no stale defaults)', async () => {
