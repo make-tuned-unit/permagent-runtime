@@ -1039,6 +1039,14 @@ impl SessionStorage {
                     if version < 42 {
                         spectral_schema::migrate_v41_to_v42(&self.pool).await?;
                     }
+                    // v43: the daemon control-plane auth audit — one row per
+                    // admitted consequential request and per refused request,
+                    // so same-user misuse of the daemon token is at least
+                    // detectable after the fact. New table + indexes +
+                    // append-only triggers, additive and base-independent.
+                    if version < 43 {
+                        spectral_schema::migrate_v42_to_v43(&self.pool).await?;
+                    }
                     // Version-independent safety net for recognition columns.
                     // The always-on v23 above can stamp schema_version past the
                     // cfg-gated `version < 22` migration, leaving a feature-off DB
