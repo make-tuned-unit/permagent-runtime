@@ -18,6 +18,7 @@
 		0CD59DA1B934C4B413721DE0 /* WatchHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 204239DAF319855936001BD3 /* WatchHomeView.swift */; };
 		0D26764FC37DAB074436E259 /* mobius_40.webp in Resources */ = {isa = PBXBuildFile; fileRef = 97D9644DF105F1726FC52DEA /* mobius_40.webp */; };
 		0D8A364D8FC9A0D197FD6F88 /* VoiceOrbView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FEED3E5A9B281991FABC481 /* VoiceOrbView.swift */; };
+		B73C63B88616B56F42522D85 /* VoiceOrbView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FEED3E5A9B281991FABC481 /* VoiceOrbView.swift */; };
 		0DC331DC4C098CF8959D7545 /* JetBrainsMono-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = D10A4D843A64C8C92883D729 /* JetBrainsMono-Regular.ttf */; };
 		0F77D5464AEDEBB583942494 /* JetBrainsMono-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = D10A4D843A64C8C92883D729 /* JetBrainsMono-Regular.ttf */; };
 		11FCF69481F74733BC03E04D /* AgentIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF0D5D72E70CE12B1E837D71 /* AgentIdentity.swift */; };
@@ -898,6 +899,7 @@
 				80B15C16D322544301287066 /* MobiusView.swift in Sources */,
 				C443E4C76B83445AB7AA24AA /* PermagentWatchApp.swift in Sources */,
 				3CC859A492AA97052054CD19 /* Theme.swift in Sources */,
+				B73C63B88616B56F42522D85 /* VoiceOrbView.swift in Sources */,
 				CDFB23A9541D83A8A0056AD7 /* WatchBridge.swift in Sources */,
 				0CD59DA1B934C4B413721DE0 /* WatchHomeView.swift in Sources */,
 				EA0F7D166D8AFDA7F33836F9 /* WatchRecorder.swift in Sources */,

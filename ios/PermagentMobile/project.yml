@@ -159,6 +159,7 @@ targets:
       - path: PermagentWatch
       - path: Shared
       - path: PermagentMobile/MobiusView.swift
+      - path: PermagentMobile/VoiceOrbView.swift
       - path: PermagentMobile/Theme.swift
       - path: PermagentMobile/MobiusFrames
       - path: PermagentMobile/Fonts

@@ -74,7 +74,12 @@ struct WatchChatView: View {
         ZStack {
             ChatSurface.bg.ignoresSafeArea()
             VStack(spacing: 8) {
-                MobiusView(size: 88, glow: relay.chatBusy ? 1 : 0.6)
+                VoiceOrbView(
+                    level: relay.chatThinking ? 0 : (relay.chatBusy ? 0.35 : 0.08),
+                    speaking: relay.chatBusy && !relay.chatThinking,
+                    thinking: relay.chatThinking,
+                    diameter: 88
+                )
                 if relay.chatThinking {
                     ThinkingDots()
                 }

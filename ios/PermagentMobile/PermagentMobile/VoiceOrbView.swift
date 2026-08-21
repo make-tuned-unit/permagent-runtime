@@ -96,6 +96,8 @@ struct VoiceOrbView: View {
     var speaking: Bool
     /// Thinking has no audio, so the orb swells on its own rather than flatlining.
     var thinking: Bool
+    /// Render size. iOS conversation uses 300; Watch chat is ~88.
+    var diameter: CGFloat = ORB_SIZE
 
     // Motion integrator state lives in a reference type, NOT @State. Writing
     // @State from inside a Canvas draw invalidates the view on every frame —
@@ -122,7 +124,7 @@ struct VoiceOrbView: View {
             Canvas { ctx, size in
                 draw(ctx: &ctx, size: size, t: t)
             }
-            .frame(width: ORB_SIZE, height: ORB_SIZE)
+            .frame(width: diameter, height: diameter)
             .allowsHitTesting(false)
         }
         .contentShape(Circle())

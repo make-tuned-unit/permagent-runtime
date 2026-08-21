@@ -81,17 +81,19 @@ final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
     nonisolated func session(_ session: WCSession,
                              activationDidCompleteWith activationState: WCSessionActivationState,
                              error: Error?) {
+        let reachable = session.isReachable
         Task { @MainActor in
-            phoneReachable = session.isReachable
+            phoneReachable = reachable
             ping()
             flushQueue()
         }
     }
 
     nonisolated func sessionReachabilityDidChange(_ session: WCSession) {
+        let reachable = session.isReachable
         Task { @MainActor in
-            phoneReachable = session.isReachable
-            if session.isReachable { flushQueue() }
+            phoneReachable = reachable
+            if reachable { flushQueue() }
         }
     }
 
@@ -103,10 +105,10 @@ final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
     nonisolated func session(_ session: WCSession,
                              didReceiveMessageData messageData: Data,
                              replyHandler: @escaping (Data) -> Void) {
-        Task { @MainActor in
-            apply(messageData)
-            replyHandler(Data())
-        }
+        // Reply on this queue — do not hop the handler onto MainActor (Swift 6
+        // treats that as sending a non-Sendable closure across isolation).
+        replyHandler(Data())
+        Task { @MainActor in apply(messageData) }
     }
 
     nonisolated func session(_ session: WCSession,
