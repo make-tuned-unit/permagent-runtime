@@ -104,6 +104,21 @@ fn clipboard_body(raw: &str) -> std::result::Result<String, String> {
     Ok(text)
 }
 
+/// Phone/watch voice turns cannot drive Command Center. Honest tool result
+/// so the model does not claim a tab opened.
+fn desktop_ui_blocked(session_id: &str, target: &str) -> Option<String> {
+    let origin = crate::events::voice_origin::current(session_id)?;
+    if origin.client.can_drive_desktop_ui() {
+        return None;
+    }
+    let place = origin.spoken_place();
+    Some(format!(
+        "The user is on their {place} — Command Center on the Mac does not change from this call. \
+         Do not say you opened {target} or put anything on a screen. Speak the answer. \
+         They can open {target} on this {place} themselves if they want."
+    ))
+}
+
 /// The catalog of surface → actions the agent may drive. This is the single
 /// source of truth the tool validates against (mirrors the tab catalog for
 /// `navigate_app`), so an unknown pair is rejected with a helpful list rather
@@ -254,6 +269,10 @@ impl AppConductorClient {
             )
         })?;
 
+        if let Some(msg) = desktop_ui_blocked(session_id, &entry.name) {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
+        }
+
         // The agent's explicit section wins; otherwise fall back to the
         // entry's own fixed section (Console-consolidation entries like
         // Sessions/Trace/Inbox are Settings sections and carry it in the
@@ -292,6 +311,7 @@ impl AppConductorClient {
 
     async fn handle_action(
         &self,
+        session_id: &str,
         arguments: Option<JsonObject>,
     ) -> std::result::Result<CallToolResult, String> {
         let args: AppActionParams = arguments
@@ -307,6 +327,10 @@ impl AppConductorClient {
                 args.surface,
                 catalog_lists()
             ));
+        }
+
+        if let Some(msg) = desktop_ui_blocked(session_id, &args.surface) {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
         }
 
         // Emit to the global bus; the frontend dispatcher calls the matching
@@ -328,6 +352,7 @@ impl AppConductorClient {
 
     async fn handle_open_item(
         &self,
+        session_id: &str,
         arguments: Option<JsonObject>,
     ) -> std::result::Result<CallToolResult, String> {
         let args: OpenItemParams = arguments
@@ -353,6 +378,10 @@ impl AppConductorClient {
                  board_summary / card_list) alongside the project_id."
                     .to_string(),
             );
+        }
+
+        if let Some(msg) = desktop_ui_blocked(session_id, &args.kind) {
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
         }
 
         // Emit to the global bus; the frontend dispatcher calls the matching
@@ -399,8 +428,8 @@ impl AppConductorClient {
         }
 
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Sent the text to the user's clipboard ({} characters). Confirm briefly \
-             — do not read the body back. {}",
+            "Sent the text to the clipboard on the device they are speaking from \
+             ({} characters). Confirm briefly — do not read the body back. {}",
             text.chars().count(),
             args.reason
         ))]))
@@ -505,8 +534,8 @@ impl McpClientTrait for AppConductorClient {
     ) -> std::result::Result<CallToolResult, Error> {
         let result = match name {
             "navigate_app" => self.handle_navigate(&ctx.session_id, arguments).await,
-            "app_action" => self.handle_action(arguments).await,
-            "open_item" => self.handle_open_item(arguments).await,
+            "app_action" => self.handle_action(&ctx.session_id, arguments).await,
+            "open_item" => self.handle_open_item(&ctx.session_id, arguments).await,
             "copy_to_clipboard" => self.handle_copy(&ctx.session_id, arguments).await,
             _ => Err(format!("Unknown tool: {}", name)),
         };
@@ -630,5 +659,27 @@ mod tests {
             clipboard_body(&ok).unwrap().chars().count(),
             MAX_CLIPBOARD_CHARS
         );
+    }
+
+    #[test]
+    fn desktop_ui_blocked_on_iphone_voice() {
+        let sid = "nav-block-ios";
+        crate::events::voice_origin::end(sid);
+        assert!(desktop_ui_blocked(sid, "Brain").is_none());
+        crate::events::voice_origin::begin(
+            sid,
+            crate::events::voice_origin::VoiceOrigin::resolve(Some("ios_voice"), Some("iPhone")),
+        );
+        let msg = desktop_ui_blocked(sid, "Brain").expect("phone must block");
+        assert!(msg.contains("iPhone"));
+        assert!(msg.contains("Brain"));
+        assert!(msg.contains("does not change"));
+        crate::events::voice_origin::end(sid);
+        crate::events::voice_origin::begin(
+            sid,
+            crate::events::voice_origin::VoiceOrigin::resolve(Some("desktop_voice"), None),
+        );
+        assert!(desktop_ui_blocked(sid, "Brain").is_none());
+        crate::events::voice_origin::end(sid);
     }
 }

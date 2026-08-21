@@ -1,8 +1,8 @@
 // VoiceView — live voice conversation with Henry over the hub's /voice WebSocket.
 //
 // Wire protocol (crates/goose-server/src/routes/voice.rs):
-//   connect  ws(s)://<hub>/voice?session_id=<id>&token=<bearer>   (query-param auth —
-//            the WS upgrade can't carry the Bearer header; validate_stream_token)
+//   connect  ws(s)://<hub>/voice?session_id=<id>&token=<bearer>&client=ios_voice
+//            (query-param auth — the WS upgrade can't carry the Bearer header)
 //   server → {"type":"ready"} once STT+TTS providers are loaded
 //   client → {"type":"start","sample_rate":16000}
 //            binary frames: raw Float32 LE mono PCM @ 16 kHz
@@ -10,9 +10,12 @@
 //   server → {"type":"transcript","text":…}
 //            {"type":"reply_start"}
 //            binary frames: Float32 LE mono PCM @ 24 kHz (queued, played in order)
+//            {"type":"clipboard","text":…}  copy on this device as soon as the
+//            tool runs (often mid-turn, before confirmation audio). Write the
+//            pasteboard immediately — the user may already be switching to
+//            Notes, and iOS drops background writes.
 //            {"type":"reply_text","text":…}
 //            {"type":"navigate",…}       (desktop speak-then-act; ignored here)
-//            {"type":"clipboard","text":…}  copy on this device for paste into Notes
 //            {"type":"reply_end","sample_rate":24000}
 //            {"type":"error","message":…}
 //
@@ -136,6 +139,9 @@ final class VoiceEngine: ObservableObject {
     @Published private(set) var state: ConvState = .idle
     @Published private(set) var transcript = ""
     @Published private(set) var reply = ""
+    /// Last paste-ready body from a `clipboard` frame — retappable if the
+    /// automatic pasteboard write raced a switch to Notes.
+    @Published private(set) var lastClipboard: String?
     /// Transient server-side notice ("No speech detected…") — clears on recovery.
     @Published private(set) var notice: String?
     /// Live audio level 0…1 (mic while listening, TTS pulse while speaking).
@@ -260,8 +266,11 @@ final class VoiceEngine: ObservableObject {
 
     private func startAudio() throws {
         let session = AVAudioSession.sharedInstance()
-        // voiceChat mode = echo cancellation, so hands-free VAD doesn't trip on
-        // Henry's own TTS (same reason the web hook requests echoCancellation).
+        // playAndRecord + speaker, but NOT .voiceChat. That mode applies a
+        // telephone EQ and ducks playback so a "call" stays intelligible —
+        // which is why Henry sounded quiet even at max volume. Echo cancel
+        // still happens below via AVAudioEngine voice processing, which is
+        // what keeps hands-free VAD from tripping on his own TTS.
         let bluetoothOption: AVAudioSession.CategoryOptions
         if #available(iOS 26.0, *) {
             bluetoothOption = .allowBluetoothHFP
@@ -269,16 +278,17 @@ final class VoiceEngine: ObservableObject {
             bluetoothOption = .allowBluetooth
         }
         try session.setCategory(
-            .playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, bluetoothOption]
+            .playAndRecord, mode: .default, options: [.defaultToSpeaker, bluetoothOption]
         )
         try session.setActive(true)
+        try? session.overrideOutputAudioPort(.speaker)
         // Full input gain where the hardware allows it — every dB helps the
         // arm's-length built-in mic clear the VAD floor.
         if session.isInputGainSettable {
             try? session.setInputGain(1.0)
         }
         // Thresholds are calibrated per input route: the bare iPhone's mic
-        // under voiceChat AGC runs far quieter than a headset mic at the
+        // under voice-processing AGC runs far quieter than a headset mic at the
         // mouth — with one fixed onset, "Listening" heard AirPods but not the
         // phone itself. Apply now and on every route change (headphones in,
         // AirPods out, CarPlay…).
@@ -307,6 +317,13 @@ final class VoiceEngine: ObservableObject {
         // each case into a thrown Swift error means the failure lands on the
         // orb screen with a reason instead of killing the app.
         let input = engine.inputNode
+        // Voice processing MUST be enabled before we read the input format —
+        // turning it on reconfigures the node's format. Ducking is pinned to
+        // `.min` so the system does not quiet the TTS to make a "call"
+        // intelligible (WWDC 2023: min = other audio as loud as possible).
+        try? input.setVoiceProcessingEnabled(true)
+        input.voiceProcessingOtherAudioDuckingConfiguration =
+            .init(enableAdvancedDucking: false, duckingLevel: .min)
         let inFormat = input.inputFormat(forBus: 0)
         guard inFormat.sampleRate > 0, inFormat.channelCount > 0 else {
             throw AudioSetupError.unusableInputFormat(inFormat.sampleRate,
@@ -326,6 +343,10 @@ final class VoiceEngine: ObservableObject {
         let player = AVAudioPlayerNode()
         engine.attach(player)
         engine.connect(player, to: engine.mainMixerNode, format: playbackFormat)
+        // 1.0 is unity; anything above is a phone-speaker push on top of the
+        // hub's -1 dBFS master. 1.15 ≈ +1.2 dB — audible on a handset, short
+        // of clipping the mastered peaks.
+        engine.mainMixerNode.outputVolume = 1.15
         // ~85 ms per callback at 48 kHz — close to the web hook's ~128 ms VAD
         // window, so the copied thresholds behave comparably.
         // `@Sendable` is LOAD-BEARING, not decoration.
@@ -377,9 +398,9 @@ final class VoiceEngine: ObservableObject {
             }
             let rms = (sum / Float(max(1, count))).squareRoot()
             guard rms.isFinite else { return }
-            // Same 6× gain the per-chunk pulse used, so the orb's dynamics are
-            // unchanged — only its clock is.
-            let lvl = min(1, rms * 6)
+            // Hub peak-normalizes TTS to -1 dBFS, so a 2× visual gain maps
+            // typical speech RMS onto the orb without slamming the ceiling.
+            let lvl = min(1, rms * 2)
             Task { @MainActor in self.handlePlaybackLevel(lvl) }
         }
         engine.prepare()
@@ -411,7 +432,17 @@ final class VoiceEngine: ObservableObject {
     /// immediately unless a turn is open — then it parks until the turn ends,
     /// so the endpoint clocks are never reset mid-utterance.
     private func applyVADConfigForCurrentRoute() {
-        let ports = AVAudioSession.sharedInstance().currentRoute.inputs.map(\.portType.rawValue)
+        let session = AVAudioSession.sharedInstance()
+        let outputs = session.currentRoute.outputs.map(\.portType)
+        let usingExternal = outputs.contains {
+            $0 == .headphones || $0 == .bluetoothA2DP || $0 == .bluetoothHFP || $0 == .carAudio
+        }
+        // voiceChat used to win the receiver even with defaultToSpeaker; keep
+        // forcing the loudspeaker whenever nothing is plugged in.
+        if !usingExternal {
+            try? session.overrideOutputAudioPort(.speaker)
+        }
+        let ports = session.currentRoute.inputs.map(\.portType.rawValue)
         let cfg = VoiceVAD.configForRoute(inputPortTypes: ports)
         if state == .listening {
             pendingVADConfig = cfg
@@ -464,6 +495,15 @@ final class VoiceEngine: ObservableObject {
     }
 
     // ── Turns ────────────────────────────────────────────────────────────────
+
+    func recopyClipboard() {
+        guard let body = lastClipboard, !body.isEmpty else { return }
+        if VoiceClipboard.write(body) {
+            notice = "Copied — paste into Notes"
+        } else {
+            notice = "Couldn't copy — stay in Permagent and try again"
+        }
+    }
 
     /// Begin a turn from OUTSIDE the VAD (the push-to-talk button). Stamps the
     /// VAD's turn clocks so the max-turn cap measures from now — a turn begun
@@ -566,6 +606,7 @@ final class VoiceEngine: ObservableObject {
         comps.queryItems = [
             URLQueryItem(name: "session_id", value: sessionId),
             URLQueryItem(name: "token", value: config.token),
+            URLQueryItem(name: "client", value: "ios_voice"),
         ]
         guard let url = comps.url else {
             state = .failed("Bad hub URL — re-pair with your hub.")
@@ -636,8 +677,12 @@ final class VoiceEngine: ObservableObject {
                 reply = msg.text ?? ""
             case "clipboard":
                 if let body = msg.text, !body.isEmpty {
-                    UIPasteboard.general.string = body
-                    notice = "Copied — paste into Notes"
+                    lastClipboard = body
+                    if VoiceClipboard.write(body) {
+                        notice = "Copied — paste into Notes"
+                    } else {
+                        notice = "Couldn't copy — stay in Permagent and try again"
+                    }
                 }
             case "reply_end":
                 replyEnded = true
@@ -871,17 +916,27 @@ struct VoiceView: View {
                     .lineLimit(3)
             }
             if !engine.reply.isEmpty {
-                Text(engine.reply)
-                    .font(.brandBody)
-                    .foregroundStyle(Brand.text)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(6)
+                ScrollView {
+                    Text(engine.reply)
+                        .font(.brandBody)
+                        .foregroundStyle(Brand.text)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
+                }
+                .frame(maxHeight: 220)
             }
             if let notice = engine.notice {
                 Text(notice)
                     .font(.brandCaption)
                     .foregroundStyle(Brand.warning)
                     .multilineTextAlignment(.center)
+            }
+            if engine.lastClipboard != nil {
+                Button("Copy again") {
+                    engine.recopyClipboard()
+                }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(Brand.cyanInk)
             }
             if case .failed(let why) = engine.state {
                 Text(why)

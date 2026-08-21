@@ -252,6 +252,13 @@ impl DeviceRegistry {
         views
     }
 
+    /// Look up a device by id. Used by the voice socket to name the caller
+    /// ("iPhone") after auth returns only the id.
+    pub fn get(&self, id: &str) -> Option<DeviceView> {
+        let devices = self.devices.lock().unwrap();
+        devices.iter().find(|d| d.id == id).map(DeviceView::from)
+    }
+
     /// Rename a device. Returns the updated view, or None if unknown.
     pub fn rename(&self, id: &str, new_name: &str) -> Option<DeviceView> {
         let mut devices = self.devices.lock().unwrap();
@@ -354,6 +361,17 @@ mod tests {
 
         reg.revoke(&view.id).expect("device exists");
         assert_eq!(reg.verify(&token), None, "revoked token must not verify");
+    }
+
+    #[test]
+    fn get_returns_the_paired_name() {
+        let (_dir, reg) = temp_registry();
+        let (_token, view) = reg.pair("iPhone");
+        assert_eq!(
+            reg.get(&view.id).map(|v| v.name),
+            Some("iPhone".to_string())
+        );
+        assert!(reg.get("no-such-device").is_none());
     }
 
     #[test]

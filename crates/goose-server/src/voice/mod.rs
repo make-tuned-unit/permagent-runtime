@@ -8,6 +8,7 @@
 pub mod bpe;
 pub mod compound;
 pub mod kws;
+pub mod loudness;
 pub mod oov_log;
 pub mod ort_kokoro_backend;
 pub mod proper_noun_corrector;

@@ -11,6 +11,11 @@
 //!     Text: {"type":"transcript","text":"..."}
 //!     Text: {"type":"reply_start"}
 //!     Binary: [tts pcm_f32le audio]
+//!     Text: {"type":"clipboard","text":"..."}  (as soon as copy_to_clipboard
+//!            runs — not after TTS — so the phone can write the pasteboard
+//!            before the user switches to Notes)
+//!     Text: {"type":"reply_text","text":"..."}
+//!     Text: {"type":"navigate",...}            (after narration; desktop only)
 //!     Text: {"type":"reply_end","sample_rate":24000}
 //!     Text: {"type":"error","message":"..."}
 //!     Text: {"type":"wake_status","active":true,"phrase":"Hey Henry"}
@@ -477,15 +482,17 @@ async fn synthesize_voice(
     let speech = crate::voice::speakable::speakable(&plan.speech)
         .ok_or_else(|| ErrorResponse::bad_request("text has nothing speakable"))?;
     let speed = plan.speed;
-    let audio = tokio::task::spawn_blocking(move || {
-        tts.synthesize(
+    let audio = tokio::task::spawn_blocking(move || -> anyhow::Result<AudioOutput> {
+        let mut audio = tts.synthesize(
             &speech,
             &TtsConfig {
                 voice_id,
                 speed,
                 lexicon: crate::voice::user_lexicon::current(),
             },
-        )
+        )?;
+        crate::voice::loudness::master(&mut audio.samples, audio.sample_rate, &speech);
+        Ok(audio)
     })
     .await
     .map_err(|e| ErrorResponse::internal(format!("synthesis task panicked: {e}")))?
@@ -614,6 +621,27 @@ fn encode_wav_pcm16(audio: &crate::voice::provider::AudioOutput) -> anyhow::Resu
 struct VoiceQuery {
     session_id: Option<String>,
     token: Option<String>,
+    /// `ios_voice` | `watch_voice` | `desktop_voice`. Optional — a paired
+    /// device named iPhone still resolves as iOS when this is omitted.
+    client: Option<String>,
+}
+
+fn voice_origin_from_query(
+    state: &AppState,
+    query: &VoiceQuery,
+    principal: &crate::middleware::auth::StreamPrincipal,
+) -> permagent::events::voice_origin::VoiceOrigin {
+    use crate::middleware::auth::{AuthPrincipal, StreamPrincipal};
+    let device_name = match principal {
+        StreamPrincipal::Long(AuthPrincipal::Device(id)) => {
+            state.device_registry.get(id).map(|v| v.name)
+        }
+        _ => None,
+    };
+    permagent::events::voice_origin::VoiceOrigin::resolve(
+        query.client.as_deref(),
+        device_name.as_deref(),
+    )
 }
 
 async fn voice_ws_handler(
@@ -624,12 +652,14 @@ async fn voice_ws_handler(
     // Manual token validation — WebSocket upgrade can't use Bearer middleware.
     // Shared fail-closed, constant-time core (middleware::auth): a tokenless
     // daemon refuses (503) instead of serving the voice socket anonymously.
-    crate::middleware::auth::validate_stream_token(
+    let principal = crate::middleware::auth::authenticate_stream_token(
         &state,
         query.token.as_deref(),
         query.token.as_deref(),
     )?;
-    Ok(ws.on_upgrade(move |socket| handle_voice_socket(socket, state, query.session_id)))
+    let origin = voice_origin_from_query(&state, &query, &principal);
+    let session_id = query.session_id;
+    Ok(ws.on_upgrade(move |socket| handle_voice_socket(socket, state, session_id, origin)))
 }
 
 #[derive(Deserialize)]
@@ -670,10 +700,10 @@ enum ServerMessage {
         state: Option<serde_json::Value>,
         reason: String,
     },
-    /// Deferred clipboard write. Sent after narration so the client copies on
-    /// the device that is listening (iPhone pasteboard, Mac Command Center),
-    /// not on the daemon host. Copy happens immediately on receipt — unlike
-    /// navigate, it does not wait for audio to drain.
+    /// Paste-ready body for the listening device. Sent as soon as
+    /// `copy_to_clipboard` returns — not after TTS — because the user often
+    /// switches to Notes the moment they hear a copy is happening, and iOS
+    /// drops pasteboard writes from a backgrounded app.
     #[serde(rename = "clipboard")]
     Clipboard { text: String },
     #[serde(rename = "error")]
@@ -719,22 +749,68 @@ impl Drop for ClipboardInterceptGuard {
     }
 }
 
+/// Drop the per-turn voice origin so a later text turn on the same session
+/// is not stuck thinking the user is still on the phone.
+struct VoiceOriginGuard(String);
+
+impl Drop for VoiceOriginGuard {
+    fn drop(&mut self) {
+        permagent::events::voice_origin::end(&self.0);
+    }
+}
+
 fn send_json(msg: &ServerMessage) -> Message {
     Message::Text(serde_json::to_string(msg).unwrap().into())
+}
+
+/// Push any captured clipboard bodies down this socket NOW. Returns the
+/// intents so the caller can still show them on `reply_text` at turn end.
+async fn flush_voice_clipboard(
+    socket: &mut WebSocket,
+    session_id: &str,
+    sent: &mut Vec<permagent::events::clipboard_intercept::ClipboardIntent>,
+) {
+    let clips = permagent::events::clipboard_intercept::drain(session_id);
+    for clip in clips {
+        let chars = clip.text.chars().count();
+        if socket
+            .send(send_json(&ServerMessage::Clipboard {
+                text: clip.text.clone(),
+            }))
+            .await
+            .is_ok()
+        {
+            tracing::info!(
+                target: "permagentd::voice",
+                "clipboard sent ({} characters) — copy on the listening device now",
+                chars
+            );
+        } else {
+            tracing::warn!(
+                target: "permagentd::voice",
+                "clipboard frame failed to send ({} characters)",
+                chars
+            );
+        }
+        sent.push(clip);
+    }
 }
 
 async fn handle_voice_socket(
     mut socket: WebSocket,
     state: Arc<AppState>,
     session_id: Option<String>,
+    origin: permagent::events::voice_origin::VoiceOrigin,
 ) {
     // Snapshot the hot-swappable TTS slot once for this session.
     let tts_opt = state.voice_tts.read().await.clone();
 
     tracing::info!(
         target: "permagentd::voice",
-        "Voice WebSocket connected (session_id={:?}, stt={}, tts={})",
+        "Voice WebSocket connected (session_id={:?}, client={}, device={:?}, stt={}, tts={})",
         session_id,
+        origin.client.wire_name(),
+        origin.device_name,
         state.voice_stt.is_some(),
         tts_opt.is_some()
     );
@@ -934,6 +1010,7 @@ async fn handle_voice_socket(
                             cancelled: cancelled.clone(),
                             wake: wake.as_ref(),
                             sample_rate: client_sample_rate,
+                            origin: &origin,
                         };
                         let stream_result = stream_reply_with_tts(&reply_ctx, &mut socket).await;
 
@@ -1086,10 +1163,11 @@ fn truncate_str(s: &str, max_chars: usize) -> &str {
 
 /// Default cap on how many sentences are SPOKEN in one turn.
 ///
-/// The full reply always reaches the client as `ReplyText` and is rendered on
-/// screen, so this caps talking, never information. Eight sentences is roughly
-/// 40 seconds of Kokoro speech — long for a spoken answer, and well past the
-/// "1-3 sentences" the system prompt asks for.
+/// The full reply always reaches the client as `ReplyText`. Eight sentences
+/// is roughly 40 seconds of Kokoro speech — long for a spoken answer, and
+/// well past the "1-3 sentences" the system prompt asks for. The cue when
+/// this cap hits is origin-aware ([`permagent::events::voice_origin::budget_notice`])
+/// so a phone listener is not told the rest is on a Mac screen.
 const DEFAULT_MAX_SPOKEN_SENTENCES: u32 = 8;
 
 /// Config key (`~/.permagent/config.yaml`) overriding the spoken-length budget.
@@ -1102,10 +1180,6 @@ fn max_spoken_sentences() -> u32 {
         .unwrap_or(DEFAULT_MAX_SPOKEN_SENTENCES)
         .clamp(1, 100)
 }
-
-/// Spoken once when the budget runs out, so the turn ends deliberately rather
-/// than just stopping mid-thought.
-const BUDGET_NOTICE: &str = "There's more — I've put the rest on screen.";
 
 /// Context for a voice reply exchange (reduces arg count for stream_reply_with_tts).
 struct VoiceReplyCtx<'a> {
@@ -1124,6 +1198,7 @@ struct VoiceReplyCtx<'a> {
         crate::voice::kws::WakeSession,
     )>,
     sample_rate: u32,
+    origin: &'a permagent::events::voice_origin::VoiceOrigin,
 }
 
 /// Outcome of a non-blocking drain of queued client messages mid-reply.
@@ -1219,6 +1294,8 @@ async fn stream_reply_with_tts(
     let _nav_guard = NavInterceptGuard(sid.clone());
     permagent::events::clipboard_intercept::begin(&sid);
     let _clip_guard = ClipboardInterceptGuard(sid.clone());
+    permagent::events::voice_origin::begin(&sid, ctx.origin.clone());
+    let _origin_guard = VoiceOriginGuard(sid.clone());
 
     let user_msg = ChatMessage::user().with_text(transcript);
     let agent = state
@@ -1233,8 +1310,12 @@ async fn stream_reply_with_tts(
              short sentences, contractions, concise and direct. No markdown, no bullet points, \
              no numbered lists, no code blocks. Keep replies brief — 1-3 sentences for simple \
              questions. Speak as you would in a real conversation — with feeling, not a flat \
-             reading: let a reaction through, ask a question when it fits, use an em dash or \
-             ellipsis when you are thinking. \
+             reading: let a reaction through, ask a question when it fits. \
+             The voice takes its rhythm from punctuation, not from stage directions. \
+             Write the way people talk: a comma for a breath, an em dash for a turn, \
+             an ellipsis (...) when you are thinking, a question mark when you actually \
+             want an answer, an exclamation only when you mean the energy. Prefer two \
+             short sentences over one long one — long lines flatten. \
              You may prefix a sentence with ONE delivery tag: [warm] [excited] [calm] \
              [gentle] [serious]. Insert [pause] for a beat. Never say the tag names or the \
              brackets aloud; most sentences need no tag. \
@@ -1246,13 +1327,6 @@ async fn stream_reply_with_tts(
              spoken terms — e.g. 'I turned on web search' rather than 'I clicked the Search and \
              tools toggle in Settings'. If a literal name, path, or value is essential, give just \
              that one item, not the surrounding navigation. \
-             When you take the user somewhere, reply with exactly ONE short sentence and \
-             then stop — a single confirmation, never two. Do not announce the action and \
-             then also confirm arrival; pick one short line, e.g. 'Brain tab open' or \
-             'Here's Settings'. Never narrate the navigation as it happens or reassure them \
-             about it: no 'taking you there now', no 'navigating you over', no 'you should be \
-             there now'. The view switches on its own — you don't announce progress or confirm \
-             arrival in a separate sentence. \
              When they ask for copyable text — a post, caption, speech, blurb, 'give me the \
              text', 'copy that', 'so I can paste into Notes' — call copy_to_clipboard with \
              the exact paste-ready body and speak one short confirmation such as 'It's on \
@@ -1260,6 +1334,9 @@ async fn stream_reply_with_tts(
              the words is not the same as putting them on the clipboard."
                 .to_string(),
         )
+        .await;
+    agent
+        .extend_system_prompt("voice_origin".to_string(), ctx.origin.prompt_block())
         .await;
 
     let setup_ms = t_setup.elapsed().as_millis();
@@ -1324,6 +1401,7 @@ async fn stream_reply_with_tts(
     let mut full_reply = String::new();
     let mut sentence_num = 0u32;
     let max_spoken = max_spoken_sentences();
+    let spoken_cue = permagent::events::voice_origin::budget_notice(ctx.origin.client);
     let mut budget_notice_spoken = false;
     let mut total_tts_ms: u128 = 0;
     let mut first_audio_sent = false;
@@ -1337,8 +1415,17 @@ async fn stream_reply_with_tts(
         String,
     )> = None;
     let mut stream_ended = false;
+    let mut sent_clips: Vec<permagent::events::clipboard_intercept::ClipboardIntent> = Vec::new();
+    let mut clip_tick = tokio::time::interval(std::time::Duration::from_millis(50));
+    clip_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Interval fires immediately on first poll — consume that so the select
+    // arm cannot spin the loop before the 50ms cadence starts.
+    clip_tick.tick().await;
 
     loop {
+        // Copy as soon as the tool captures — do not wait for TTS. The user
+        // often leaves for Notes during "let me write you something."
+        flush_voice_clipboard(socket, &sid, &mut sent_clips).await;
         match drain_client_messages(socket, ctx) {
             DrainOutcome::Continue => {}
             DrainOutcome::SpokenStop => {
@@ -1442,6 +1529,7 @@ async fn stream_reply_with_tts(
                             &mut sentence_num,
                             max_spoken,
                             &mut budget_notice_spoken,
+                            spoken_cue,
                         );
                     }
                     Some(Ok(AgentEvent::Message(msg)))
@@ -1465,14 +1553,20 @@ async fn stream_reply_with_tts(
                                     &mut sentence_num,
                                     max_spoken,
                                     &mut budget_notice_spoken,
+                                    spoken_cue,
                                     first_chunk,
                                 );
                             }
                         }
                     }
-                    Some(_) => {}
+                    Some(_) => {
+                        // Tool results land here. Drain on the next loop turn
+                        // (and via clip_tick) so we don't wait for confirmation TTS.
+                    }
                 }
             }
+
+            _ = clip_tick.tick() => {}
         }
 
         if spoken_stop {
@@ -1489,11 +1583,21 @@ async fn stream_reply_with_tts(
         let _ = socket.send(send_json(&ServerMessage::Stopped)).await;
     }
 
-    // Send reply text and end marker. If they asked for the text, show the
-    // paste-ready body on screen even when the spoken reply was only a
-    // confirmation — iOS VoiceView (and desktop lastReply) render this field.
-    let clips = permagent::events::clipboard_intercept::take(&sid);
-    let shown = if let Some(clip) = clips.last() {
+    // Any capture that raced the last loop turn. Then unregister so the
+    // guard's Drop is a no-op rather than swallowing a late write.
+    flush_voice_clipboard(socket, &sid, &mut sent_clips).await;
+    for clip in permagent::events::clipboard_intercept::take(&sid) {
+        let _ = socket
+            .send(send_json(&ServerMessage::Clipboard {
+                text: clip.text.clone(),
+            }))
+            .await;
+        sent_clips.push(clip);
+    }
+
+    // Show the paste-ready body on screen even when the spoken reply was
+    // only a confirmation — iOS VoiceView (and desktop lastReply) render this.
+    let shown = if let Some(clip) = sent_clips.last() {
         if full_reply.contains(&clip.text) {
             full_reply.clone()
         } else {
@@ -1506,12 +1610,6 @@ async fn stream_reply_with_tts(
         .send(send_json(&ServerMessage::ReplyText { text: shown }))
         .await;
 
-    for clip in clips {
-        let _ = socket
-            .send(send_json(&ServerMessage::Clipboard { text: clip.text }))
-            .await;
-    }
-
     // Forward any navigations captured during this turn AFTER all narration
     // audio — they ride this ordered socket, so by the time the client sees them
     // every audio chunk is already queued. The client fires them only once the
@@ -1519,7 +1617,10 @@ async fn stream_reply_with_tts(
     // A spoken stop drops them: the user ended the turn, so yanking the view
     // somewhere afterwards is exactly what they asked not to happen. (The
     // guard's Drop clears the interceptor registry either way.)
-    let navs = if spoken_stop {
+    let navs = if spoken_stop || !ctx.origin.client.can_drive_desktop_ui() {
+        // Phone/watch: drop captured navs so Command Center on the Mac does
+        // not switch behind the user's back. The tool also no-ops (N4).
+        let _ = permagent::events::nav_intercept::take(&sid);
         Vec::new()
     } else {
         permagent::events::nav_intercept::take(&sid)
@@ -1599,14 +1700,16 @@ fn spawn_synth(
         if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(anyhow::anyhow!("cancelled"));
         }
-        tts.synthesize(
+        let mut audio = tts.synthesize(
             &text,
             &TtsConfig {
                 voice_id,
                 speed,
                 lexicon: crate::voice::user_lexicon::current(),
             },
-        )
+        )?;
+        crate::voice::loudness::master(&mut audio.samples, audio.sample_rate, &text);
+        Ok(audio)
     })
 }
 
@@ -1616,6 +1719,7 @@ fn push_spoken(
     sentence_num: &mut u32,
     max_spoken: u32,
     budget_notice_spoken: &mut bool,
+    spoken_cue: &'static str,
 ) {
     let Some((speech, speed)) = prepare_spoken(sentence) else {
         tracing::debug!(
@@ -1633,7 +1737,7 @@ fn push_spoken(
                 "spoken budget reached ({} sentences) — remaining reply is text-only",
                 max_spoken
             );
-            queue.push_back((BUDGET_NOTICE.to_string(), 1.0));
+            queue.push_back((spoken_cue.to_string(), 1.0));
         }
         return;
     }
@@ -1647,6 +1751,7 @@ fn enqueue_ready_sentences(
     sentence_num: &mut u32,
     max_spoken: u32,
     budget_notice_spoken: &mut bool,
+    spoken_cue: &'static str,
     first_chunk: bool,
 ) {
     let mut aggressive = first_chunk;
@@ -1666,6 +1771,7 @@ fn enqueue_ready_sentences(
             sentence_num,
             max_spoken,
             budget_notice_spoken,
+            spoken_cue,
         );
         aggressive = false;
     }
@@ -1677,6 +1783,7 @@ fn enqueue_remainder(
     sentence_num: &mut u32,
     max_spoken: u32,
     budget_notice_spoken: &mut bool,
+    spoken_cue: &'static str,
 ) {
     let remainder = text_buf.trim().to_string();
     text_buf.clear();
@@ -1689,6 +1796,7 @@ fn enqueue_remainder(
         sentence_num,
         max_spoken,
         budget_notice_spoken,
+        spoken_cue,
     );
 }
 
@@ -1797,6 +1905,12 @@ mod tests {
         let (speech, speed) = prepare_spoken("[excited] We shipped it!").unwrap();
         assert_eq!(speech, "We shipped it!");
         assert_eq!(speed, 1.12);
+    }
+
+    #[test]
+    fn prepare_spoken_questions_run_slower_not_faster() {
+        let (_, speed) = prepare_spoken("Ready?").unwrap();
+        assert_eq!(speed, 0.95);
     }
 
     /// The pinned Kokoro asset URLs must satisfy the DownloadManager's strict

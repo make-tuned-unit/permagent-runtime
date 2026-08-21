@@ -10,14 +10,19 @@
 //! otherwise turn `[whisper]` into `whisper` by stripping the brackets).
 
 /// Speed for a sentence with no delivery tag, driven by its closing punctuation.
+///
+/// Questions run *slower* than statements so the rising contour has room —
+/// Kokoro's own `?` intonation is weak, and rushing it flattens the question
+/// further (kokoro-tts-kotlin uses 0.92× for the same reason). Exclamations
+/// stay a touch brisk; the loudness pass supplies the attack energy.
 pub fn speed_from_punctuation(text: &str) -> f32 {
     let trimmed = text.trim();
     if trimmed.ends_with('!') {
         1.08
     } else if trimmed.ends_with('?') {
-        1.04
+        0.95
     } else {
-        1.0
+        0.98
     }
 }
 
@@ -108,7 +113,7 @@ mod tests {
     fn pause_becomes_an_ellipsis_kokoro_already_honours() {
         let p = plan("Wait[pause]there it is.");
         assert_eq!(p.speech, "Wait... there it is.");
-        assert_eq!(p.speed, 1.0);
+        assert_eq!(p.speed, 0.98);
     }
 
     #[test]
@@ -127,8 +132,8 @@ mod tests {
     #[test]
     fn punctuation_drives_speed_when_no_tag() {
         assert_eq!(plan("Yes!").speed, 1.08);
-        assert_eq!(plan("Really?").speed, 1.04);
-        assert_eq!(plan("Okay.").speed, 1.0);
+        assert_eq!(plan("Really?").speed, 0.95);
+        assert_eq!(plan("Okay.").speed, 0.98);
     }
 
     #[test]

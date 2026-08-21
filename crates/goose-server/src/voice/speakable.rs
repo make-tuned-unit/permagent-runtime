@@ -76,6 +76,22 @@ static ORPHAN_SEPARATORS: LazyLock<Regex> =
 static WHITESPACE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\s{2,}").expect("WHITESPACE regex is valid"));
 
+/// `**bold**` / `__bold__` markers. Kokoro will otherwise say "asterisk".
+static MD_EMPHASIS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\*\*|__").expect("MD_EMPHASIS regex is valid"));
+
+/// `*italic*` leftover singles after `**` is gone.
+static MD_ITALIC: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\*([^*]+)\*").expect("MD_ITALIC regex is valid"));
+
+/// ATX headings at the start of a line.
+static MD_HEADING: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^#{1,6}\s+").expect("MD_HEADING regex is valid"));
+
+/// Markdown bullets at the start of a line.
+static MD_BULLET: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^[-*]\s+").expect("MD_BULLET regex is valid"));
+
 /// Minimum run of letters for a fragment to be worth speaking. Two letters
 /// keeps "OK" and "no"; anything shorter is punctuation noise.
 const MIN_ALPHA_RUN: usize = 2;
@@ -85,7 +101,11 @@ const MIN_ALPHA_RUN: usize = 2;
 /// Returns `None` when nothing speakable remains — the caller skips synthesis
 /// entirely rather than voicing leftover punctuation.
 pub fn speakable(text: &str) -> Option<String> {
-    let stripped = ID_LIKE.replace_all(text, " ");
+    let stripped = MD_EMPHASIS.replace_all(text, "");
+    let stripped = MD_ITALIC.replace_all(&stripped, "$1");
+    let stripped = MD_HEADING.replace_all(&stripped, "");
+    let stripped = MD_BULLET.replace_all(&stripped, "");
+    let stripped = ID_LIKE.replace_all(&stripped, " ");
     let stripped = LONG_HEX.replace_all(&stripped, " ");
     let stripped = HEXISH.replace_all(&stripped, |caps: &regex::Captures| {
         if is_hex_identifier(&caps[0]) {
@@ -203,6 +223,20 @@ mod tests {
         let out = speakable("Card 019fee68 is stuck.").unwrap();
         assert!(!out.contains("019fee68"), "id survived: {out}");
         assert!(out.contains("is stuck"));
+    }
+
+    #[test]
+    fn strips_markdown_emphasis_that_was_spoken_aloud() {
+        // 2026-08-21 iPhone voice session: Kokoro read "**Angle one:" and "**One:".
+        let out =
+            speakable("**Angle one: a marketplace for projects.** People discovering").unwrap();
+        assert!(!out.contains('*'), "asterisks survived: {out}");
+        assert!(out.starts_with("Angle one:"));
+        assert!(out.contains("People discovering"));
+
+        let out = speakable("So here are some directions I'd explore: **One:").unwrap();
+        assert!(!out.contains('*'), "asterisks survived: {out}");
+        assert!(out.contains("One:"));
     }
 
     #[test]
