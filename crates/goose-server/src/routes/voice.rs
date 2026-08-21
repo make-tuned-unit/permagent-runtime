@@ -159,10 +159,8 @@ pub fn routes(state: Arc<AppState>) -> Router {
 
 /// Canonical kokoro-onnx model release (Apache-2.0). Filenames match the paths
 /// `OrtKokoroModelPaths::default_paths()` expects under the voice models dir.
-const KOKORO_MODEL_URL: &str =
-    "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx";
-const KOKORO_VOICES_URL: &str =
-    "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin";
+const KOKORO_MODEL_URL: &str = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx";
+const KOKORO_VOICES_URL: &str = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin";
 /// Pinned SHA-256 digests for the Kokoro release assets. These files are fed
 /// straight into onnxruntime's native parser, so their integrity is a hard
 /// requirement — the DownloadManager refuses to install bytes that don't

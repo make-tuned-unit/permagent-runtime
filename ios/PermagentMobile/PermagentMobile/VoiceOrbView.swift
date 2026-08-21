@@ -18,9 +18,15 @@
 
 import SwiftUI
 
+#if os(watchOS)
+private let N_SPHERE = 160
+private let N_HALO = 50
+private let ORB_SIZE: CGFloat = 96
+#else
 private let N_SPHERE = 500   // web uses 700; mobile budget, see note below
 private let N_HALO = 170     // web uses 240
 private let ORB_SIZE: CGFloat = 300
+#endif
 
 // Point counts are ~70% of the web's. SwiftUI's Canvas re-issues every draw
 // command per frame with no retained scene, so the full 940 particles cost

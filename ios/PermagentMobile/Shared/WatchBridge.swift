@@ -95,3 +95,27 @@ enum ProjectMatcher {
         return tokens.joined(separator: " ")
     }
 }
+
+/// Hands-free endpoint for watch dictation. Pure so WatchBridgeTests can drive
+/// it without a microphone. Chat uses the tight window; notes use the patient
+/// one so a mid-thought pause does not cut the recording.
+struct WatchEndpoint: Equatable, Sendable {
+    /// Trailing silence that completes the turn, once some speech was heard.
+    var silence: TimeInterval
+    /// Ignore trailing silence until this much voiced time has landed, so a
+    /// breath before the first word does not send an empty clip.
+    var minSpeech: TimeInterval
+    /// Hard cap. Chat is short; notes may run to two minutes.
+    var maxDuration: TimeInterval
+
+    static let chat = WatchEndpoint(silence: 1.1, minSpeech: 0.35, maxDuration: 45)
+    static let note = WatchEndpoint(silence: 1.8, minSpeech: 0.45, maxDuration: 120)
+
+    func shouldStop(heardSpeech: Bool, spokenFor: TimeInterval, silentFor: TimeInterval,
+                    elapsed: TimeInterval) -> Bool {
+        if elapsed >= maxDuration { return true }
+        guard heardSpeech, spokenFor >= minSpeech else { return false }
+        return silentFor >= silence
+    }
+}
+

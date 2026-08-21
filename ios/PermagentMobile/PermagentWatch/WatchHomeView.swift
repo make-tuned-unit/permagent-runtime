@@ -76,85 +76,141 @@ struct WatchHomeView: View {
     }
 }
 
+// MARK: - Chat: tap the bubble, orb is already listening.
+
 struct WatchChatView: View {
     @EnvironmentObject private var relay: WatchRelay
-    @State private var draft = ""
-    @FocusState private var speaking: Bool
+    @StateObject private var recorder = WatchRecorder()
+    @State private var denied = false
+    @State private var listenError: String?
+    @State private var active = false
 
     var body: some View {
         ZStack {
             ChatSurface.bg.ignoresSafeArea()
-            VStack(spacing: 8) {
-                VoiceOrbView(
-                    level: relay.chatThinking ? 0 : (relay.chatBusy ? 0.35 : 0.08),
-                    speaking: relay.chatBusy && !relay.chatThinking,
-                    thinking: relay.chatThinking,
-                    diameter: 88
-                )
-                if relay.chatThinking {
-                    ThinkingDots()
-                }
+            VStack(spacing: 6) {
+                WatchOrbButton(
+                    level: orbLevel,
+                    speaking: false,
+                    thinking: relay.chatThinking || (relay.chatBusy && !recorder.isRecording),
+                    enabled: recorder.isRecording
+                ) { if recorder.isRecording { recorder.stop() } }
+
+                Text(statusLine)
+                    .font(.brandCaption)
+                    .foregroundStyle(ChatSurface.muted)
+                    .multilineTextAlignment(.center)
+
                 if !relay.chatText.isEmpty {
                     Text(relay.chatText)
                         .font(.brandCaption)
                         .foregroundStyle(ChatSurface.text)
                         .multilineTextAlignment(.center)
                         .lineLimit(6)
+                } else if denied {
+                    Text("Microphone access is off in Settings.")
+                        .font(.brandCaption)
+                        .foregroundStyle(Brand.danger)
+                        .multilineTextAlignment(.center)
+                } else if let listenError {
+                    Text(listenError)
+                        .font(.brandCaption)
+                        .foregroundStyle(Brand.warning)
+                        .multilineTextAlignment(.center)
                 } else if let notice = relay.notice {
                     Text(notice)
                         .font(.brandCaption)
                         .foregroundStyle(Brand.warning)
                         .multilineTextAlignment(.center)
-                } else {
-                    Text("Speak, then send. The orb stays with you.")
-                        .font(.brandCaption)
-                        .foregroundStyle(ChatSurface.muted)
-                        .multilineTextAlignment(.center)
                 }
-                TextField("Speak", text: $draft)
-                    .focused($speaking)
-                    .font(.brandCaption)
-                    .onSubmit(send)
-                Button(relay.chatBusy ? "Listening…" : "Send") { send() }
-                    .disabled(relay.chatBusy || draft.trimmingCharacters(in: .whitespaces).isEmpty)
-                    .tint(ChatSurface.spark)
             }
             .padding(.horizontal, 6)
         }
         .navigationTitle(relay.agentName)
-        .onAppear { speaking = true }
+        .onAppear {
+            active = true
+            armRecorder()
+            beginListening()
+        }
+        .onDisappear {
+            active = false
+            recorder.cancel()
+        }
+        .onChange(of: relay.chatBusy) { _, busy in
+            if !busy && active { beginListening() }
+        }
     }
 
-    private func send() {
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        draft = ""
-        speaking = false
-        relay.chat(text)
+    private var orbLevel: Double {
+        if recorder.isRecording { return Double(recorder.level) }
+        if relay.chatThinking { return 0.2 }
+        return 0
+    }
+
+    private var statusLine: String {
+        if recorder.isRecording { return "Listening…" }
+        if relay.chatThinking || relay.chatBusy { return "Thinking…" }
+        return "Tap the orb to send"
+    }
+
+    private func armRecorder() {
+        recorder.endpoint = .chat
+        recorder.onFinish = { [weak recorder] url in
+            guard let recorder, recorder.heardSpeech, let url else {
+                if active { beginListening() }
+                return
+            }
+            relay.sendRecording(url, kind: "chat")
+        }
+    }
+
+    private func beginListening() {
+        guard !recorder.isRecording, !relay.chatBusy else { return }
+        Task {
+            guard await recorder.requestPermission() else { denied = true; return }
+            guard !recorder.isRecording, !relay.chatBusy else { return }
+            denied = false
+            listenError = nil
+            do {
+                try recorder.start()
+            } catch {
+                listenError = "Couldn't start the microphone."
+            }
+        }
     }
 }
+
+// MARK: - Note: listening first, project after, tap a name to save.
 
 struct WatchNoteView: View {
     @EnvironmentObject private var relay: WatchRelay
     @StateObject private var recorder = WatchRecorder()
-    @State private var projectSpoken = ""
     @State private var denied = false
+    @State private var listenError: String?
+    @State private var active = false
 
     var body: some View {
         ZStack {
             ChatSurface.bg.ignoresSafeArea()
             ScrollView {
                 VStack(spacing: 8) {
+                    WatchOrbButton(
+                        level: recorder.isRecording ? Double(recorder.level) : (relay.noteBusy ? 0.2 : 0),
+                        speaking: false,
+                        thinking: relay.noteBusy,
+                        enabled: recorder.isRecording
+                    ) { if recorder.isRecording { recorder.stop() } }
+
                     if recorder.isRecording {
                         Text(timeLabel)
                             .font(.brandHeadline)
                             .foregroundStyle(ChatSurface.spark)
                             .monospacedDigit()
-                        Button("Stop") { recorder.stop() }
-                            .tint(Brand.danger)
+                        Text("Listening…")
+                            .font(.brandCaption)
+                            .foregroundStyle(ChatSurface.muted)
                     } else if relay.noteBusy {
-                        ProgressView().tint(ChatSurface.spark)
-                        Text("Transcribing on your Mac…")
+                        Text(relay.noteTranscript.isEmpty ? "Transcribing…" : "Saving…")
                             .font(.brandCaption)
                             .foregroundStyle(ChatSurface.muted)
                     } else if let saved = relay.noteSaved {
@@ -168,43 +224,33 @@ struct WatchNoteView: View {
                             .foregroundStyle(ChatSurface.text)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         if let project = relay.resolvedProject {
-                            Text("Project: \(project.name)")
+                            Text("Saving to \(project.name)…")
                                 .font(.brandCaption)
                                 .foregroundStyle(ChatSurface.spark)
-                            Button(relay.noteBusy ? "Saving…" : "Save") { relay.saveNote() }
-                                .disabled(relay.noteBusy)
-                                .tint(ChatSurface.spark)
                         } else {
-                            Text("Say the project name")
+                            Text("Choose a project")
                                 .font(.brandCaption)
                                 .foregroundStyle(ChatSurface.muted)
-                            TextField("Project", text: $projectSpoken)
-                                .font(.brandCaption)
-                                .onSubmit {
-                                    relay.resolveProject(projectSpoken)
-                                    projectSpoken = ""
-                                }
-                            if !relay.ambiguousProjects.isEmpty {
-                                ForEach(relay.ambiguousProjects, id: \.id) { p in
-                                    Button(p.name) { relay.resolvedProject = p }
-                                        .font(.brandCaption)
-                                }
+                            ForEach(relay.projects, id: \.id) { p in
+                                Button(p.name) { relay.saveNote(to: p) }
+                                    .font(.brandCaption)
+                                    .tint(ChatSurface.spark)
+                            }
+                            if relay.projects.isEmpty, let notice = relay.notice {
+                                Text(notice)
+                                    .font(.brandCaption)
+                                    .foregroundStyle(Brand.warning)
                             }
                         }
-                    } else {
-                        Text("Dictate a note. Whisper on your Mac transcribes it; then say the project.")
+                    } else if denied {
+                        Text("Microphone access is off in Settings.")
                             .font(.brandCaption)
-                            .foregroundStyle(ChatSurface.muted)
-                            .multilineTextAlignment(.center)
-                        if denied {
-                            Text("Microphone access is off in Settings.")
-                                .font(.brandCaption)
-                                .foregroundStyle(Brand.danger)
-                        }
-                        Button("Record") { start() }
-                            .tint(ChatSurface.spark)
-                    }
-                    if let notice = relay.notice, relay.noteSaved == nil {
+                            .foregroundStyle(Brand.danger)
+                    } else if let listenError {
+                        Text(listenError)
+                            .font(.brandCaption)
+                            .foregroundStyle(Brand.warning)
+                    } else if let notice = relay.notice {
                         Text(notice)
                             .font(.brandCaption)
                             .foregroundStyle(Brand.warning)
@@ -216,8 +262,22 @@ struct WatchNoteView: View {
         }
         .navigationTitle("Note")
         .onAppear {
-            recorder.onFinish = { url in
-                if let url { relay.sendRecording(url) }
+            active = true
+            armRecorder()
+            beginListening()
+        }
+        .onDisappear {
+            active = false
+            recorder.cancel()
+        }
+        .onChange(of: relay.noteSaved) { _, saved in
+            if saved != nil, active {
+                Task {
+                    try? await Task.sleep(for: .seconds(1.4))
+                    guard active else { return }
+                    relay.prepareNextNote()
+                    beginListening()
+                }
             }
         }
     }
@@ -227,11 +287,48 @@ struct WatchNoteView: View {
         return String(format: "%d:%02d", s / 60, s % 60)
     }
 
-    private func start() {
+    private func armRecorder() {
+        recorder.endpoint = .note
+        recorder.onFinish = { [weak recorder] url in
+            guard let recorder, recorder.heardSpeech, let url else {
+                if active { beginListening() }
+                return
+            }
+            relay.sendRecording(url, kind: "note")
+        }
+    }
+
+    private func beginListening() {
+        guard !recorder.isRecording, !relay.noteBusy else { return }
         Task {
             guard await recorder.requestPermission() else { denied = true; return }
+            guard !recorder.isRecording, !relay.noteBusy else { return }
             denied = false
-            try? recorder.start()
+            listenError = nil
+            do {
+                try recorder.start()
+            } catch {
+                listenError = "Couldn't start the microphone."
+            }
         }
+    }
+}
+
+/// The conversation orb as the only control: tap to stop a live turn.
+private struct WatchOrbButton: View {
+    var level: Double
+    var speaking: Bool
+    var thinking: Bool
+    var enabled: Bool
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VoiceOrbView(level: level, speaking: speaking, thinking: thinking)
+                .frame(width: 96, height: 96)
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .accessibilityLabel(enabled ? "Stop listening" : "Orb")
     }
 }
