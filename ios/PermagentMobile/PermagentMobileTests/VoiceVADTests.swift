@@ -4,6 +4,7 @@
 // ended a turn 5-10 seconds in, while the user was still speaking, because
 // the keepalive floor read iOS's quiet voiceChat-processed speech as silence.
 
+import AVFoundation
 import XCTest
 
 final class VoiceVADTests: XCTestCase {
@@ -187,18 +188,66 @@ final class VoiceVADTests: XCTestCase {
                        "the bare iPhone mic must hear ordinary speech")
     }
 
+    func testBuiltInMicPortMatchesSDK() {
+        XCTAssertEqual(
+            VoiceVAD.builtInMicPort,
+            AVAudioSession.Port.builtInMic.rawValue,
+            "route chooser would miss the phone mic and use headset thresholds"
+        )
+    }
+
     /// The chooser keys on the built-in port type; any headset/BT route keeps
-    /// the calibrated defaults.
+    /// the calibrated defaults. Speakerphone is a separate preset (higher barge).
     func testRouteChooserPicksPresetByPortType() {
-        let builtIn = VoiceVAD.configForRoute(inputPortTypes: ["MicrophoneBuiltIn"])
+        let builtIn = VoiceVAD.configForRoute(
+            inputPortTypes: [AVAudioSession.Port.builtInMic.rawValue]
+        )
         XCTAssertEqual(builtIn.onset, VoiceVAD.builtInMicConfig.onset)
-        let bt = VoiceVAD.configForRoute(inputPortTypes: ["BluetoothHFP"])
+        let bt = VoiceVAD.configForRoute(
+            inputPortTypes: [AVAudioSession.Port.bluetoothHFP.rawValue]
+        )
         XCTAssertEqual(bt.onset, VoiceVAD.headsetConfig.onset)
-        let wired = VoiceVAD.configForRoute(inputPortTypes: ["MicrophoneWired"])
+        let wired = VoiceVAD.configForRoute(
+            inputPortTypes: [AVAudioSession.Port.headsetMic.rawValue]
+        )
         XCTAssertEqual(wired.onset, VoiceVAD.headsetConfig.onset)
-        // No inputs at all (route settling) keeps the defaults too.
         XCTAssertEqual(VoiceVAD.configForRoute(inputPortTypes: []).onset,
                        VoiceVAD.headsetConfig.onset)
+        let speaker = VoiceVAD.configForRoute(
+            inputPortTypes: [AVAudioSession.Port.builtInMic.rawValue], speakerphone: true
+        )
+        XCTAssertEqual(speaker.onset, VoiceVAD.builtInMicConfig.onset)
+        XCTAssertEqual(speaker.barge, VoiceVAD.speakerphoneConfig.barge)
+        XCTAssertGreaterThan(speaker.barge, VoiceVAD.builtInMicConfig.barge)
+        let btOnSpeakerFlagIgnored = VoiceVAD.configForRoute(
+            inputPortTypes: [AVAudioSession.Port.bluetoothHFP.rawValue], speakerphone: false
+        )
+        XCTAssertEqual(btOnSpeakerFlagIgnored.barge, VoiceVAD.headsetConfig.barge)
+    }
+
+    /// Headphones must not inherit the speakerphone barge floor — AEC is on
+    /// and the mic is at the mouth, so interrupting should stay easy.
+    func testHeadphonesKeepHeadsetBargeNotSpeakerphone() {
+        let hp = VoiceVAD.configForRoute(
+            inputPortTypes: [AVAudioSession.Port.bluetoothHFP.rawValue], speakerphone: false
+        )
+        XCTAssertEqual(hp.barge, VoiceVAD.headsetConfig.barge)
+        XCTAssertLessThan(hp.barge, VoiceVAD.speakerphoneConfig.barge)
+    }
+
+    /// Speakerphone (AEC off) must still hear arm's-length speech, but TTS
+    /// bleed from the same speaker (~0.035 RMS) must not barge-in. Headset
+    /// barge at that level is correct; speakerphone barge is raised.
+    func testSpeakerphoneHearsQuietSpeechButNotTtsBleed() {
+        var onset = VoiceVAD(config: VoiceVAD.speakerphoneConfig)
+        XCTAssertEqual(onset.step(rms: 0.010, phase: .ready, now: 1), .beginTurn,
+                       "speakerphone must hear the same quiet speech as the built-in preset")
+        var bleed = VoiceVAD(config: VoiceVAD.speakerphoneConfig)
+        XCTAssertEqual(bleed.step(rms: 0.035, phase: .speaking, now: 1), .none)
+        XCTAssertEqual(bleed.step(rms: 0.035, phase: .speaking, now: 1.085), .none,
+                       "speaker TTS bleed barged in — interrupting himself")
+        XCTAssertEqual(bleed.step(rms: 0.09, phase: .speaking, now: 2), .none)
+        XCTAssertEqual(bleed.step(rms: 0.09, phase: .speaking, now: 2.085), .interrupt)
     }
 
     /// The built-in preset preserves the calibrated ratios: keepalive at

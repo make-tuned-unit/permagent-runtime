@@ -228,6 +228,7 @@ targets:
     sources:
       - path: PermagentMobileTests
       - path: PermagentMobile/VoiceVAD.swift
+      - path: PermagentMobile/VoiceAudioRoute.swift
       - path: PermagentMobile/VoiceClipboard.swift
       - path: PermagentMobile/ChatStream.swift
       # The meeting recorder's durable queue. Foundation-only on purpose, so
