@@ -8043,45 +8043,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn trigger_roadmap_dispatch_skips_when_paused() {
-        let pool = test_pool().await;
-        use crate::projects::PERSONAL_PROJECT_ID;
-
-        setup_goal_in_state(&pool, "ready", 0).await;
-        crate::projects::add_tag(&pool, PERSONAL_PROJECT_ID, "roadmap_paused")
-            .await
-            .unwrap();
-
-        let dispatched = trigger_roadmap_dispatch(&pool, PERSONAL_PROJECT_ID)
-            .await
-            .unwrap();
-        assert_eq!(dispatched, 0, "paused roadmaps must not dispatch");
-
-        crate::projects::remove_tag(&pool, PERSONAL_PROJECT_ID, "roadmap_paused")
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn trigger_roadmap_dispatch_respects_concurrency_cap() {
-        let pool = test_pool().await;
-        use crate::projects::PERSONAL_PROJECT_ID;
-
-        setup_goal_in_state(&pool, "in_progress", 1).await;
-        setup_goal_in_state(&pool, "in_progress", 1).await;
-        setup_goal_in_state(&pool, "ready", 0).await;
-
-        let dispatched = trigger_roadmap_dispatch(&pool, PERSONAL_PROJECT_ID)
-            .await
-            .unwrap();
-        assert_eq!(
-            dispatched, 0,
-            "with two in-progress goals, the cap leaves no slots for Ready dispatch"
-        );
-    }
-
-    #[tokio::test]
-    async fn trigger_roadmap_dispatch_promotes_eligible_dependents() {
+    async fn promote_eligible_dependents_moves_triage_when_deps_complete() {
         let pool = test_pool().await;
         use crate::projects::PERSONAL_PROJECT_ID;
 
@@ -8111,7 +8073,7 @@ mod tests {
         .await
         .unwrap();
 
-        let _ = trigger_roadmap_dispatch(&pool, PERSONAL_PROJECT_ID)
+        crate::goal_transition::promote_eligible_dependents(&pool, PERSONAL_PROJECT_ID)
             .await
             .unwrap();
 
@@ -8126,7 +8088,7 @@ mod tests {
         assert_eq!(
             col.state_binding.as_deref(),
             Some("ready"),
-            "trigger_roadmap_dispatch must promote Triage dependents whose deps are Complete"
+            "promote_eligible_dependents must move Triage dependents whose deps are Complete"
         );
     }
 

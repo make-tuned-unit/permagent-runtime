@@ -381,12 +381,13 @@ pub async fn run_for_goal_with_cfg(
                 propose_debug_dispatch(pool, goal_id, &card.title, &card.project_id, &record).await;
             }
             Ok(permagent::goal_refinement::Applied::Requeued { spent, budget }) => {
-                permagent::agents::platform_extensions::orchestrator::request_roadmap_dispatch(
-                    &card.project_id,
-                );
+                // `goal_refinement::apply` already returned the card to Ready.
+                // The next `dispatch_eligible_goals` (resume_roadmap, or the
+                // tracker after another goal completes) picks it up.
                 tracing::info!(
                     target: "permagentd::verification",
                     goal_id = %goal_id,
+                    project_id = %card.project_id,
                     spent,
                     budget,
                     "Completion checks failed within refinement budget — requeued to Ready"
