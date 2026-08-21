@@ -2365,13 +2365,11 @@ mod tests {
         assert_eq!(outcome, format!("superseded: {}", note));
 
         // It left the open inbox.
-        assert!(
-            list_open_decisions(&pool)
-                .await
-                .unwrap()
-                .iter()
-                .all(|i| i.decision.id != d.id)
-        );
+        assert!(list_open_decisions(&pool)
+            .await
+            .unwrap()
+            .iter()
+            .all(|i| i.decision.id != d.id));
 
         // And it can no longer be answered — the zombie card is dead for real.
         let err = answer_decision(
@@ -2399,11 +2397,9 @@ mod tests {
         let pool = test_pool().await;
 
         // Unknown id.
-        assert!(
-            !supersede_decision(&pool, "no-such-id", "note")
-                .await
-                .unwrap()
-        );
+        assert!(!supersede_decision(&pool, "no-such-id", "note")
+            .await
+            .unwrap());
 
         // Already answered via the inbox (inbox-first, legacy-second).
         let d = create_decision(&pool, valid_tool_approval()).await.unwrap();
@@ -2471,23 +2467,19 @@ mod tests {
         assert_eq!(found.id, d1.id);
 
         // Unknown request_id → none.
-        assert!(
-            find_open_tool_approval_by_request_id(&pool, "req-Z")
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(find_open_tool_approval_by_request_id(&pool, "req-Z")
+            .await
+            .unwrap()
+            .is_none());
 
         // Once superseded it is no longer a candidate; req-B is untouched.
         supersede_decision(&pool, &d1.id, "answered via the legacy per-tool prompt")
             .await
             .unwrap();
-        assert!(
-            find_open_tool_approval_by_request_id(&pool, "req-A")
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(find_open_tool_approval_by_request_id(&pool, "req-A")
+            .await
+            .unwrap()
+            .is_none());
         assert_eq!(
             find_open_tool_approval_by_request_id(&pool, "req-B")
                 .await
@@ -3534,25 +3526,19 @@ mod tests {
             .unwrap()
             .expect("open gate for sup-b must be found");
         assert_eq!(found_b.id, b.id);
-        assert!(
-            find_open_session_gate(&pool, "sup-c", "perm_1")
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(find_open_session_gate(&pool, "sup-c", "perm_1")
+            .await
+            .unwrap()
+            .is_none());
 
         // Superseding closes it for the finder (open-only contract).
-        assert!(
-            supersede_decision(&pool, &a.id, "answered in the terminal")
-                .await
-                .unwrap()
-        );
-        assert!(
-            find_open_session_gate(&pool, "sup-a", "perm_1")
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(supersede_decision(&pool, &a.id, "answered in the terminal")
+            .await
+            .unwrap());
+        assert!(find_open_session_gate(&pool, "sup-a", "perm_1")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     /// The relay line must match the wire shape the in-repo protocol
@@ -3578,12 +3564,10 @@ mod tests {
             serde_json::from_str(&session_gate_relay_line(&payload, false)).unwrap();
         assert_eq!(deny["response"]["request_id"], "perm_1");
         assert_eq!(deny["response"]["response"]["behavior"], "deny");
-        assert!(
-            deny["response"]["response"]["message"]
-                .as_str()
-                .unwrap()
-                .contains("Denied")
-        );
+        assert!(deny["response"]["response"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Denied"));
 
         // A non-object input must degrade to an empty updatedInput object,
         // never a type error on the session's stdin.

@@ -410,15 +410,11 @@ mod tests {
 
     #[test]
     fn verifier_one_line_variants() {
-        assert!(
-            verifier_one_line("Aria", VerdictStatus::Pass, None)
-                .contains("confirmed the work matches")
-        );
+        assert!(verifier_one_line("Aria", VerdictStatus::Pass, None)
+            .contains("confirmed the work matches"));
         assert!(verifier_one_line("Aria", VerdictStatus::Fail, None).contains("does not match"));
-        assert!(
-            verifier_one_line("Aria", VerdictStatus::Uncertain, None)
-                .contains("human decision is needed")
-        );
+        assert!(verifier_one_line("Aria", VerdictStatus::Uncertain, None)
+            .contains("human decision is needed"));
         let degraded =
             verifier_one_line("Aria", VerdictStatus::Uncertain, Some("Ollama unreachable"));
         assert!(degraded.contains("could not complete"));
@@ -479,12 +475,11 @@ mod tests {
     fn costs_null_with_note_when_no_ledger_and_no_rate() {
         let c = build_costs(None, Some(120_000), None, None, 1);
         assert_eq!(c.cost_usd, None);
-        assert!(
-            c.note
-                .as_deref()
-                .unwrap()
-                .contains("no ledger cost or token rate")
-        );
+        assert!(c
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("no ledger cost or token rate"));
         let c2 = build_costs(None, None, Some(0.01), None, 1);
         assert_eq!(c2.cost_usd, None);
         assert!(c2.note.as_deref().unwrap().contains("unavailable"));

@@ -7,7 +7,7 @@
 
 use chrono::Utc;
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use sqlx::{Pool, Sqlite};
 
 use crate::cards;

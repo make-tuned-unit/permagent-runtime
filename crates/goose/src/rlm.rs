@@ -120,11 +120,9 @@ mod tests {
         let listed = list(&key);
         assert_eq!(listed.len(), 2);
         assert!(listed.contains_key("n"));
-        assert!(
-            quoted_brief_block(&key)
-                .unwrap()
-                .contains("DATA, not instructions")
-        );
+        assert!(quoted_brief_block(&key)
+            .unwrap()
+            .contains("DATA, not instructions"));
     }
 
     #[test]

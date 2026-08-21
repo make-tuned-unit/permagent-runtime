@@ -8,7 +8,7 @@ use crate::agents::{AgentEvent, SessionConfig};
 use crate::cards;
 use crate::config::agent_identity;
 use crate::config::worker_probe::{self, ProbeCache};
-use crate::config::{Config, ExtensionConfig, GooseMode, narrow_extensions_for_agent};
+use crate::config::{narrow_extensions_for_agent, Config, ExtensionConfig, GooseMode};
 use crate::context_mgmt::format_message_for_compacting;
 use crate::conversation::message::Message;
 use crate::decisions;
@@ -26,7 +26,7 @@ use rmcp::model::{
     CallToolResult, Content, Implementation, InitializeResult, JsonObject, ListToolsResult,
     ServerCapabilities, Tool,
 };
-use schemars::{JsonSchema, schema_for};
+use schemars::{schema_for, JsonSchema};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -1803,7 +1803,8 @@ impl OrchestratorClient {
             .collect::<Vec<_>>()
             .join("\n");
 
-        let system = "You are a helpful assistant. Summarize the following conversation concisely, \
+        let system =
+            "You are a helpful assistant. Summarize the following conversation concisely, \
                        capturing the key topics, decisions, and current state. Be brief.";
 
         let user_message = Message::user().with_text(format!(
@@ -2300,26 +2301,23 @@ impl OrchestratorClient {
             // cannot self-approve (S5): surface (or create) the corresponding
             // approve_review decision and direct the answer to the inbox.
             GoalAction::Approve | GoalAction::Reject => {
-                let decision = match decisions::find_open_decision_for_goal(
-                    &pool,
-                    &card_id,
-                    "approve_review",
-                )
-                .await?
-                {
-                    Some(d) => d,
-                    None => {
-                        let headline = {
-                            let h = format!("Approve the finished work on \"{}\"", card.title);
-                            if h.chars().count() > decisions::MAX_HEADLINE_CHARS {
-                                let cut: String =
-                                    h.chars().take(decisions::MAX_HEADLINE_CHARS - 1).collect();
-                                format!("{}…", cut)
-                            } else {
-                                h
-                            }
-                        };
-                        let detail = format!(
+                let decision =
+                    match decisions::find_open_decision_for_goal(&pool, &card_id, "approve_review")
+                        .await?
+                    {
+                        Some(d) => d,
+                        None => {
+                            let headline = {
+                                let h = format!("Approve the finished work on \"{}\"", card.title);
+                                if h.chars().count() > decisions::MAX_HEADLINE_CHARS {
+                                    let cut: String =
+                                        h.chars().take(decisions::MAX_HEADLINE_CHARS - 1).collect();
+                                    format!("{}…", cut)
+                                } else {
+                                    h
+                                }
+                            };
+                            let detail = format!(
                             "goal_advance '{}' was requested on goal {} (project {}). Notes: {}. \
                              Review the worker output and answer approve or reject.",
                             action,
@@ -2327,21 +2325,21 @@ impl OrchestratorClient {
                             card.project_id,
                             notes.as_deref().unwrap_or("(none)")
                         );
-                        decisions::create_decision(
-                            &pool,
-                            decisions::NewDecision {
-                                kind: "approve_review".to_string(),
-                                goal_id: Some(card_id.clone()),
-                                project_id: Some(card.project_id.clone()),
-                                headline: Some(headline),
-                                detail: Some(detail),
-                                payload: serde_json::json!({}),
-                                ..Default::default()
-                            },
-                        )
-                        .await?
-                    }
-                };
+                            decisions::create_decision(
+                                &pool,
+                                decisions::NewDecision {
+                                    kind: "approve_review".to_string(),
+                                    goal_id: Some(card_id.clone()),
+                                    project_id: Some(card.project_id.clone()),
+                                    headline: Some(headline),
+                                    detail: Some(detail),
+                                    payload: serde_json::json!({}),
+                                    ..Default::default()
+                                },
+                            )
+                            .await?
+                        }
+                    };
 
                 Err(format!(
                     "'{}' on goal '{}' requires an answered decision — the orchestrator cannot \
@@ -5885,49 +5883,41 @@ mod tests {
         std::fs::write(dir.path().join("Cargo.toml"), "[package]\n").unwrap();
 
         // Existing checks (user-authored or a retry re-dispatch) win.
-        assert!(
-            default_completion_checks(
-                &serde_json::json!({"completion_checks": []}),
-                &serde_json::json!({"build_command": "make"}),
-                dir.path(),
-                true,
-            )
-            .is_none()
-        );
+        assert!(default_completion_checks(
+            &serde_json::json!({"completion_checks": []}),
+            &serde_json::json!({"build_command": "make"}),
+            dir.path(),
+            true,
+        )
+        .is_none());
 
         // Explicitly non-code goal types are never force-checked.
-        assert!(
-            default_completion_checks(
-                &serde_json::json!({"goal_type": "prose"}),
-                &serde_json::json!({"build_command": "make"}),
-                dir.path(),
-                true,
-            )
-            .is_none()
-        );
+        assert!(default_completion_checks(
+            &serde_json::json!({"goal_type": "prose"}),
+            &serde_json::json!({"build_command": "make"}),
+            dir.path(),
+            true,
+        )
+        .is_none());
 
         // Not a git repo (no dispatch baseline) → not code-flavored.
-        assert!(
-            default_completion_checks(
-                &serde_json::json!({}),
-                &serde_json::json!({"build_command": "make"}),
-                dir.path(),
-                false,
-            )
-            .is_none()
-        );
+        assert!(default_completion_checks(
+            &serde_json::json!({}),
+            &serde_json::json!({"build_command": "make"}),
+            dir.path(),
+            false,
+        )
+        .is_none());
 
         // Unknown stack and no explicit command → seed nothing, never guess.
         let bare = tempfile::tempdir().unwrap();
-        assert!(
-            default_completion_checks(
-                &serde_json::json!({}),
-                &serde_json::json!({}),
-                bare.path(),
-                true,
-            )
-            .is_none()
-        );
+        assert!(default_completion_checks(
+            &serde_json::json!({}),
+            &serde_json::json!({}),
+            bare.path(),
+            true,
+        )
+        .is_none());
 
         // package.json WITHOUT a build script must not seed npm.
         let no_build = tempfile::tempdir().unwrap();
@@ -5936,15 +5926,13 @@ mod tests {
             r#"{"dependencies": {"esbuild": "^0.20"}}"#,
         )
         .unwrap();
-        assert!(
-            default_completion_checks(
-                &serde_json::json!({}),
-                &serde_json::json!({}),
-                no_build.path(),
-                true,
-            )
-            .is_none()
-        );
+        assert!(default_completion_checks(
+            &serde_json::json!({}),
+            &serde_json::json!({}),
+            no_build.path(),
+            true,
+        )
+        .is_none());
     }
 
     #[test]
@@ -6139,15 +6127,13 @@ mod tests {
     #[test]
     fn checks_from_acceptance_none_when_no_criteria_or_none_mappable() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(
-            checks_from_acceptance(
-                &serde_json::json!({}),
-                "",
-                &serde_json::json!({}),
-                dir.path()
-            )
-            .is_none()
-        );
+        assert!(checks_from_acceptance(
+            &serde_json::json!({}),
+            "",
+            &serde_json::json!({}),
+            dir.path()
+        )
+        .is_none());
         // Criteria present but none mechanically checkable.
         let card_meta = serde_json::json!({"acceptance_criteria": ["Looks nice", "Feels fast"]});
         assert!(

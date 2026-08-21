@@ -674,7 +674,7 @@ pub async fn run_verifier(base_url: &str, model: &str, user_prompt: &str) -> Ver
 mod tests {
     use super::*;
     use crate::verification::checks::CheckEvidence;
-    use crate::verification::test_support::{MockMode, spawn_mock_ollama};
+    use crate::verification::test_support::{spawn_mock_ollama, MockMode};
 
     fn grades(q1: Grade, q2: Grade, q3: Grade, q4: Grade) -> RubricGrades {
         RubricGrades {
@@ -961,12 +961,11 @@ mod tests {
         let (base_url, _handle) = spawn_mock_ollama(MockMode::NoDone(GOOD_PASS.to_string())).await;
         let run = run_verifier(&base_url, "test-model", "prompt").await;
         assert!(run.grades.is_none());
-        assert!(
-            run.degraded_reason
-                .as_deref()
-                .unwrap()
-                .contains("no done signal")
-        );
+        assert!(run
+            .degraded_reason
+            .as_deref()
+            .unwrap()
+            .contains("no done signal"));
     }
 
     #[tokio::test]
@@ -974,12 +973,11 @@ mod tests {
         let (base_url, _handle) = spawn_mock_ollama(MockMode::MalformedNdjson).await;
         let run = run_verifier(&base_url, "test-model", "prompt").await;
         assert!(run.grades.is_none());
-        assert!(
-            run.degraded_reason
-                .as_deref()
-                .unwrap()
-                .contains("Malformed NDJSON")
-        );
+        assert!(run
+            .degraded_reason
+            .as_deref()
+            .unwrap()
+            .contains("Malformed NDJSON"));
     }
 
     #[tokio::test]
@@ -987,12 +985,11 @@ mod tests {
         let (base_url, _handle) = spawn_mock_ollama(MockMode::StreamError).await;
         let run = run_verifier(&base_url, "test-model", "prompt").await;
         assert!(run.grades.is_none());
-        assert!(
-            run.degraded_reason
-                .as_deref()
-                .unwrap()
-                .contains("stream error")
-        );
+        assert!(run
+            .degraded_reason
+            .as_deref()
+            .unwrap()
+            .contains("stream error"));
     }
 
     #[tokio::test]
@@ -1001,12 +998,11 @@ mod tests {
             spawn_mock_ollama(MockMode::Respond("gibberish, no labels".to_string())).await;
         let run = run_verifier(&base_url, "test-model", "prompt").await;
         assert!(run.grades.is_none());
-        assert!(
-            run.degraded_reason
-                .as_deref()
-                .unwrap()
-                .contains("unparseable after retry")
-        );
+        assert!(run
+            .degraded_reason
+            .as_deref()
+            .unwrap()
+            .contains("unparseable after retry"));
     }
 
     #[tokio::test]

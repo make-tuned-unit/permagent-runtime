@@ -130,8 +130,8 @@ mod tests {
     use super::*;
     use crate::agents::subagent_handler::spawn_subagent_work;
     use serde_json::json;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     #[test]
     fn default_is_off() {

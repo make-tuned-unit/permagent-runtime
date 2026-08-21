@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
-use tokio::time::{Duration, timeout};
+use tokio::time::{timeout, Duration};
 
 /// Default skills root relative to the process cwd (repo `skills/`).
 pub const DEFAULT_SKILLS_REL: &str = "skills";

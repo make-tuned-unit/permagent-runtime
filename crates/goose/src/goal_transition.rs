@@ -20,7 +20,7 @@
 use sqlx::{Pool, Row, Sqlite};
 
 use crate::decisions::{self, DecisionProof};
-use crate::goal_state::{GoalAction, GoalState, validate_transition};
+use crate::goal_state::{validate_transition, GoalAction, GoalState};
 
 /// Default attempt cap when a goal carries no explicit budget
 /// (replaces the former hardcoded MAX_GOAL_ATTEMPTS comparisons).
@@ -1734,7 +1734,7 @@ pub async fn set_goal_auto_approve(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decisions::{DecisionAnswer, NewDecision, answer_decision, create_decision};
+    use crate::decisions::{answer_decision, create_decision, DecisionAnswer, NewDecision};
     use crate::projects::PERSONAL_PROJECT_ID;
 
     async fn test_pool() -> Pool<Sqlite> {
@@ -2375,12 +2375,10 @@ mod tests {
         .unwrap();
         let deleted = delete_goal_checked(&pool, &goal.id, proof).await.unwrap();
         assert!(deleted);
-        assert!(
-            crate::cards::get_card(&pool, &goal.id)
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     // ── Requeue / promote ──

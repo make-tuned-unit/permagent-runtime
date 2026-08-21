@@ -657,14 +657,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let results = run_checks(std::slice::from_ref(&check), dir.path()).await;
         assert_eq!(results[0].status, CheckStatus::Error);
-        assert!(
-            results[0]
-                .evidence
-                .message
-                .as_deref()
-                .unwrap()
-                .contains("not loopback")
-        );
+        assert!(results[0]
+            .evidence
+            .message
+            .as_deref()
+            .unwrap()
+            .contains("not loopback"));
     }
 
     #[tokio::test]
@@ -699,22 +697,18 @@ mod tests {
         let results = run_checks(&checks, dir.path()).await;
         assert_eq!(results[0].status, CheckStatus::Pass);
         assert_eq!(results[0].evidence.exit_code, Some(0));
-        assert!(
-            results[0]
-                .evidence
-                .stdout_tail
-                .as_deref()
-                .unwrap()
-                .contains("hello-stdout")
-        );
-        assert!(
-            results[0]
-                .evidence
-                .stderr_tail
-                .as_deref()
-                .unwrap()
-                .contains("hello-stderr")
-        );
+        assert!(results[0]
+            .evidence
+            .stdout_tail
+            .as_deref()
+            .unwrap()
+            .contains("hello-stdout"));
+        assert!(results[0]
+            .evidence
+            .stderr_tail
+            .as_deref()
+            .unwrap()
+            .contains("hello-stderr"));
         // No short-circuit: second check still ran and failed.
         assert_eq!(results[1].status, CheckStatus::Fail);
         assert_eq!(results[1].evidence.exit_code, Some(3));
@@ -811,14 +805,12 @@ mod tests {
         }];
         let results = run_checks(&checks, dir.path()).await;
         assert_eq!(results[0].status, CheckStatus::Error);
-        assert!(
-            results[0]
-                .evidence
-                .message
-                .as_deref()
-                .unwrap()
-                .contains("timed out")
-        );
+        assert!(results[0]
+            .evidence
+            .message
+            .as_deref()
+            .unwrap()
+            .contains("timed out"));
     }
 
     #[tokio::test]
@@ -838,23 +830,19 @@ mod tests {
         ];
         let results = run_checks(&checks, dir.path()).await;
         assert_eq!(results[0].status, CheckStatus::Error);
-        assert!(
-            results[0]
-                .evidence
-                .message
-                .as_deref()
-                .unwrap()
-                .contains("escapes working_dir")
-        );
+        assert!(results[0]
+            .evidence
+            .message
+            .as_deref()
+            .unwrap()
+            .contains("escapes working_dir"));
         assert_eq!(results[1].status, CheckStatus::Error);
-        assert!(
-            results[1]
-                .evidence
-                .message
-                .as_deref()
-                .unwrap()
-                .contains("absolute path")
-        );
+        assert!(results[1]
+            .evidence
+            .message
+            .as_deref()
+            .unwrap()
+            .contains("absolute path"));
     }
 
     #[tokio::test]
@@ -872,14 +860,12 @@ mod tests {
             }];
             let results = run_checks(&checks, dir.path()).await;
             assert_eq!(results[0].status, CheckStatus::Error);
-            assert!(
-                results[0]
-                    .evidence
-                    .message
-                    .as_deref()
-                    .unwrap()
-                    .contains("outside working_dir")
-            );
+            assert!(results[0]
+                .evidence
+                .message
+                .as_deref()
+                .unwrap()
+                .contains("outside working_dir"));
         }
     }
 

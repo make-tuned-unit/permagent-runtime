@@ -1,15 +1,15 @@
 use crate::{
     agents::{
-        Agent, AgentEvent, AgentRunnerConfig, SessionConfig, subagent_task_config::TaskConfig,
+        subagent_task_config::TaskConfig, Agent, AgentEvent, AgentRunnerConfig, SessionConfig,
     },
     conversation::{
-        Conversation,
         message::{Message, MessageContent},
+        Conversation,
     },
     prompt_template::render_template,
     recipe::Recipe,
 };
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use futures::StreamExt;
 use rmcp::model::{
     ErrorCode, ErrorData, LoggingLevel, LoggingMessageNotificationParam, Notification,
@@ -325,7 +325,7 @@ pub fn create_tool_notification(
 
 #[cfg(test)]
 mod tests {
-    use super::{SUBAGENT_TOOL_REQUEST_TYPE, create_tool_notification};
+    use super::{create_tool_notification, SUBAGENT_TOOL_REQUEST_TYPE};
     use crate::conversation::message::MessageContent;
     use rmcp::model::{CallToolRequestParams, ServerNotification};
     use serde_json::json;
@@ -373,8 +373,8 @@ mod tests {
     #[tokio::test]
     async fn two_spawns_can_be_outstanding_before_either_join() {
         use crate::agents::subagent_handler::spawn_subagent_work;
-        use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
 
         let started = Arc::new(AtomicUsize::new(0));
         let (tx, rx) = tokio::sync::watch::channel(false);

@@ -6,7 +6,7 @@
 //! returns to Ready with check stdout in `last_error` / `last_check_output`.
 //! At exhaustion it parks with an `unblock` decision.
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::decisions;
 use crate::goal_transition::{self, BudgetExhaustion};
