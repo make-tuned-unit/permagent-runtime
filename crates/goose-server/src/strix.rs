@@ -1483,7 +1483,7 @@ mod tests {
             remote_scan_abs(std::path::Path::new("/Users/j/app")),
             "/Users/jessesharratt/permagent-strix-scans/Users_j_app"
         );
-        let long = "/".to_string() + &"a".repeat(200);
+        let long = format!("/{}", "a".repeat(200));
         let rel = remote_scan_rel(std::path::Path::new(&long));
         assert!(rel.starts_with("permagent-strix-scans/"));
         assert!(rel.len() <= "permagent-strix-scans/".len() + 80);
