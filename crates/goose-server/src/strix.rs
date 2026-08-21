@@ -10,6 +10,14 @@
 //!   * no findings → silence, never filler;
 //!   * the scanner absent (no Docker, no `strix` binary) is a stated fact in
 //!     the log, not a degraded pretend-scan;
+//!   * a missed preflight is SCAN BLOCKED, never ON WATCH pretending a hunt
+//!     happened;
+//!   * `strix_last_scan` is stamped only on a finished scan — a failed attempt
+//!     advances rotation via `strix_last_attempt` so Overview cannot say
+//!     "scanned clean" for a skip;
+//!   * when `strix_docker_ssh` is set, the scan runs on that host after rsync
+//!     (a forwarded Docker socket is not enough: Strix bind-mounts the local
+//!     path, which does not exist on the remote daemon);
 //!   * every target passes `strix::check_scope` before the scanner is invoked,
 //!     so a path outside the user's own project roots cannot be reached even
 //!     if a project row is malformed.
@@ -26,9 +34,12 @@ use std::time::Duration;
 /// Findings ride `projects.metadata_json.strix_findings` — same
 /// no-migration storage the Watcher's insights use.
 const METADATA_KEY: &str = "strix_findings";
-/// When this project was last scanned (ISO-8601), for the one-per-sweep
-/// rotation: the least-recently-scanned active project goes next.
+/// When this project last finished a scan (ISO-8601). Overview honesty: only
+/// a completed scan writes this. Failed attempts do not.
 const LAST_SCAN_KEY: &str = "strix_last_scan";
+/// Last sweep *attempt* (ISO-8601), including failures. Rotation uses this
+/// so one broken project cannot starve the rest, without lying that it scanned.
+const LAST_ATTEMPT_KEY: &str = "strix_last_attempt";
 /// Keep the most recent findings per project; older ones age out.
 const MAX_KEPT: usize = 40;
 /// How often the loop wakes to check the flag and whether a sweep is due.
@@ -106,7 +117,7 @@ pub fn spawn(state: Arc<AppState>) {
         if first_sweep_now {
             last_sweep = Some(tokio::time::Instant::now());
             if let Err(e) = sweep_once(&state).await {
-                tracing::debug!(target: "permagentd::strix", "first sweep skipped: {e}");
+                tracing::warn!(target: "permagentd::strix", "first sweep skipped: {e}");
             }
         } else {
             tokio::time::sleep(STARTUP_DELAY).await;
@@ -116,7 +127,7 @@ pub fn spawn(state: Arc<AppState>) {
             if strix::is_enabled() && due {
                 last_sweep = Some(tokio::time::Instant::now());
                 if let Err(e) = sweep_once(&state).await {
-                    tracing::debug!(target: "permagentd::strix", "sweep skipped: {e}");
+                    tracing::warn!(target: "permagentd::strix", "sweep skipped: {e}");
                 }
             }
             tokio::time::sleep(CHECK_EVERY).await;
@@ -168,6 +179,7 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
             if report_preflight_failure(&pool, prev.as_deref(), &failure).await {
                 let _ = config.set_param(PREFLIGHT_BRIEFED_KEY, failure.clone());
             }
+            announce("error");
             return Err(format!("preflight failed: {failure}"));
         }
     }
@@ -191,7 +203,7 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
         .iter()
         .filter(|p| p.id != PERSONAL_PROJECT_ID && p.root_path.is_some())
         .collect();
-    candidates.sort_by_key(|p| last_scan_stamp(p));
+    candidates.sort_by_key(|p| rotation_stamp(p));
     let Some(project) = candidates.first().copied() else {
         return Ok(());
     };
@@ -208,8 +220,9 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
                 root = %root,
                 "refused out-of-scope scan target: {refusal:?}"
             );
-            // Stamp anyway so an unresolvable root cannot pin the rotation.
-            let _ = stamp_last_scan(&pool, project).await;
+            // Stamp the attempt so an unresolvable root cannot pin the rotation,
+            // but do not stamp last_scan — Overview must not say this was clean.
+            let _ = stamp_last_attempt(&pool, project).await;
             return Ok(());
         }
     };
@@ -237,23 +250,26 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
             project = %project.name,
             "scan refused: {reason}"
         );
-        // Stamp anyway, for the same reason an unresolvable root does: a
-        // refused project must not pin the rotation.
-        if let Err(e) = stamp_last_scan(&pool, project).await {
-            tracing::warn!(target: "permagentd::strix", "last-scan stamp failed: {e}");
+        // Stamp the attempt so a refused project cannot pin the rotation.
+        // Do not stamp last_scan: a sovereignty skip is not a clean hunt.
+        if let Err(e) = stamp_last_attempt(&pool, project).await {
+            tracing::warn!(target: "permagentd::strix", "last-attempt stamp failed: {e}");
         }
         return Ok(());
     }
 
     announce("working");
     let outcome = scan_project(&target).await;
-    // The rotation advances on every attempt — success, clean, or error —
-    // so one broken project can never starve the rest of the cycle.
-    if let Err(e) = stamp_last_scan(&pool, project).await {
-        tracing::warn!(target: "permagentd::strix", "last-scan stamp failed: {e}");
+    // Rotation advances on every attempt so one broken project cannot starve
+    // the rest. last_scan is success-only — Overview honesty.
+    if let Err(e) = stamp_last_attempt(&pool, project).await {
+        tracing::warn!(target: "permagentd::strix", "last-attempt stamp failed: {e}");
     }
     match outcome {
         Ok(findings) if findings.is_empty() => {
+            if let Err(e) = stamp_last_scan(&pool, project).await {
+                tracing::warn!(target: "permagentd::strix", "last-scan stamp failed: {e}");
+            }
             tracing::info!(
                 target: "permagentd::strix",
                 project = %project.name,
@@ -262,6 +278,9 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
             announce("available");
         }
         Ok(findings) => {
+            if let Err(e) = stamp_last_scan(&pool, project).await {
+                tracing::warn!(target: "permagentd::strix", "last-scan stamp failed: {e}");
+            }
             match record_findings(&pool, project, findings).await {
                 Ok(fresh) => {
                     // The deliverable: a security report note on the project,
@@ -328,25 +347,38 @@ async fn never_scanned(state: &Arc<AppState>) -> bool {
     };
     match projects::list_projects(&pool, Some("active")).await {
         Ok(projects) => {
-            !projects.is_empty() && projects.iter().all(|p| last_scan_stamp(p).is_empty())
+            !projects.is_empty() && projects.iter().all(|p| rotation_stamp(p).is_empty())
         }
         Err(_) => false,
     }
 }
 
-/// The project's last-scan stamp, empty if never scanned (sorts first).
-fn last_scan_stamp(project: &Project) -> String {
-    project
-        .metadata_json
-        .as_object()
-        .and_then(|m| m.get(LAST_SCAN_KEY))
+/// Least-recently-attempted stamp for rotation. Prefer `strix_last_attempt`
+/// so failed sweeps still rotate; fall back to last_scan for metadata written
+/// before that key existed. Empty sorts first (never tried).
+fn rotation_stamp(project: &Project) -> String {
+    rotation_stamp_from_meta(&project.metadata_json)
+}
+
+fn rotation_stamp_from_meta(meta: &serde_json::Value) -> String {
+    let obj = meta.as_object();
+    obj.and_then(|m| m.get(LAST_ATTEMPT_KEY))
+        .or_else(|| obj.and_then(|m| m.get(LAST_SCAN_KEY)))
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string()
 }
 
-/// Advance the rotation: write the last-scan stamp without touching findings.
 async fn stamp_last_scan(pool: &Pool<Sqlite>, project: &Project) -> Result<(), String> {
+    stamp_meta_key(pool, project, LAST_SCAN_KEY).await
+}
+
+async fn stamp_last_attempt(pool: &Pool<Sqlite>, project: &Project) -> Result<(), String> {
+    stamp_meta_key(pool, project, LAST_ATTEMPT_KEY).await
+}
+
+/// Write one ISO-8601 stamp into project metadata without touching findings.
+async fn stamp_meta_key(pool: &Pool<Sqlite>, project: &Project, key: &str) -> Result<(), String> {
     // Re-read for the same reason `record_findings` does: `project` was
     // snapshotted before a scan that can run for twenty minutes, and
     // `update_project` replaces `metadata_json` wholesale. Writing the stale
@@ -365,7 +397,7 @@ async fn stamp_last_scan(pool: &Pool<Sqlite>, project: &Project) -> Result<(), S
         .cloned()
         .unwrap_or_default();
     meta.insert(
-        LAST_SCAN_KEY.to_string(),
+        key.to_string(),
         serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
     );
     projects::update_project(
@@ -541,29 +573,280 @@ fn strix_bin_present() -> bool {
         .unwrap_or(false)
 }
 
+const SCAN_INSTRUCTION: &str =
+    "Static code analysis only. Do not run the application, do not send network \
+     traffic to any host, and do not modify, create, or delete any files in the \
+     target. Report findings; never remediate.";
+
+const REMOTE_SCAN_DIR: &str = "permagent-strix-scans";
+const SSH_CONNECT_SECS: u64 = 8;
+const RSYNC_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+/// SSH target from config: `user@host` or a Host alias (`m1`). Rejects shell
+/// metacharacters so it cannot become `host; rm -rf`.
+fn validate_ssh_target(s: &str) -> Result<(), String> {
+    let ok = !s.is_empty()
+        && s.matches('@').count() <= 1
+        && !s.starts_with('@')
+        && !s.ends_with('@')
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '@' | '.' | '_' | '-'));
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("strix_docker_ssh is not a usable SSH target: {s}"))
+    }
+}
+
+fn posix_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+fn ssh_base_args() -> Vec<String> {
+    let mut args = vec![
+        "-o".into(),
+        "BatchMode=yes".into(),
+        "-o".into(),
+        format!("ConnectTimeout={SSH_CONNECT_SECS}"),
+    ];
+    if let Some(identity) = strix::docker_ssh_identity() {
+        args.push("-i".into());
+        args.push(identity);
+    }
+    args
+}
+
+fn ssh_command(ssh_target: &str) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new("ssh");
+    for a in ssh_base_args() {
+        cmd.arg(a);
+    }
+    cmd.arg(ssh_target);
+    cmd
+}
+
+fn rsync_ssh_transport() -> String {
+    let mut e = format!("ssh -o BatchMode=yes -o ConnectTimeout={SSH_CONNECT_SECS}");
+    if let Some(identity) = strix::docker_ssh_identity() {
+        e.push_str(" -i ");
+        e.push_str(&posix_single_quote(&identity));
+    }
+    e
+}
+
+/// Path-safe remote relative dir: `permagent-strix-scans/<slug>`, one slash,
+/// slug bounded so a long local path cannot blow the remote filesystem.
+fn remote_scan_rel(target: &std::path::Path) -> String {
+    let mut slug: String = target
+        .to_string_lossy()
+        .trim_start_matches('/')
+        .chars()
+        .map(|c| {
+            if c == '/' || c.is_whitespace() {
+                '_'
+            } else {
+                c
+            }
+        })
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+        .collect();
+    if slug.is_empty() {
+        slug = "scan".into();
+    }
+    const MAX_SLUG: usize = 80;
+    if slug.len() > MAX_SLUG {
+        slug.truncate(MAX_SLUG);
+    }
+    format!("{REMOTE_SCAN_DIR}/{slug}")
+}
+
+#[cfg(test)]
+fn remote_home() -> String {
+    match strix::docker_ssh_target() {
+        Some(t) if t.contains('@') => {
+            let user = t.split('@').next().unwrap_or("jessesharratt");
+            format!("/Users/{user}")
+        }
+        _ => "/Users/jessesharratt".into(),
+    }
+}
+
+#[cfg(test)]
+fn remote_scan_abs(target: &std::path::Path) -> String {
+    format!("{}/{}", remote_home(), remote_scan_rel(target))
+}
+
+async fn ssh_run(ssh_target: &str, remote: &str) -> Result<std::process::Output, String> {
+    let mut cmd = ssh_command(ssh_target);
+    cmd.arg(remote)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(Duration::from_secs(20), cmd.output())
+        .await
+        .map_err(|_| format!("ssh {ssh_target} timed out"))?
+        .map_err(|e| format!("ssh {ssh_target}: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "ssh {ssh_target} exited {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .last()
+                .unwrap_or_default()
+        ));
+    }
+    Ok(output)
+}
+
+async fn rsync_to_remote(target: &std::path::Path, ssh_target: &str) -> Result<(), String> {
+    let rel = remote_scan_rel(target);
+    ssh_run(ssh_target, &format!("mkdir -p \"$HOME/{rel}\"")).await?;
+    let mut cmd = tokio::process::Command::new("rsync");
+    cmd.args([
+        "-a",
+        "--delete",
+        "--exclude=.git",
+        "--exclude=target",
+        "--exclude=node_modules",
+        "--exclude=dist",
+        "--exclude=build",
+        "--exclude=.next",
+        "--exclude=__pycache__",
+        "-e",
+        &rsync_ssh_transport(),
+    ])
+    .arg(format!("{}/", target.display()))
+    .arg(format!("{ssh_target}:{rel}/"))
+    .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .kill_on_drop(true);
+    let output = tokio::time::timeout(RSYNC_TIMEOUT, cmd.output())
+        .await
+        .map_err(|_| "rsync to the scanner host timed out".to_string())?
+        .map_err(|e| format!("rsync to the scanner host: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "rsync to the scanner host exited {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .last()
+                .unwrap_or_default()
+        ));
+    }
+    Ok(())
+}
+
+async fn rsync_strix_back(target: &std::path::Path, ssh_target: &str) -> Result<(), String> {
+    let rel = remote_scan_rel(target);
+    let local = target.join(".strix");
+    std::fs::create_dir_all(&local).map_err(|e| format!("create .strix: {e}"))?;
+    let mut cmd = tokio::process::Command::new("rsync");
+    cmd.args(["-a", "-e", &rsync_ssh_transport()])
+        .arg(format!("{ssh_target}:{rel}/.strix/"))
+        .arg(format!("{}/", local.display()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(RSYNC_TIMEOUT, cmd.output())
+        .await
+        .map_err(|_| "rsync of .strix back timed out".to_string())?
+        .map_err(|e| format!("rsync of .strix back: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "rsync of .strix back exited {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .last()
+                .unwrap_or_default()
+        ));
+    }
+    Ok(())
+}
+
+fn preflight_briefing_detail(remote: Option<&str>) -> String {
+    match remote {
+        Some(host) => format!(
+            "Sweeps are skipped until this is fixed. Docker and strix run on {host} \
+             (Colima), not this Mac — a forwarded socket cannot bind-mount this \
+             machine's paths. After a reboot there: ssh {host} \
+             'PATH=/opt/homebrew/bin:$PATH colima start'. The loop retries on its \
+             own; nothing to restart here."
+        ),
+        None => "Sweeps are skipped until this is fixed. `pipx install strix-agent` \
+             installs the scanner; Docker Desktop must be installed and running. \
+             The sweep loop retries automatically — nothing to restart."
+            .to_string(),
+    }
+}
+
 /// Dependency preflight (audit 2026-08-11): the Guard needs the `strix` CLI
-/// AND a running Docker daemon. The failure is a stated fact the sweep refuses
-/// on — never a degraded pretend-scan — and `sweep_once` files ONE briefing
-/// per distinct failure (see [`report_preflight_failure`]).
+/// AND a running Docker daemon. When `strix_docker_ssh` is set, those live on
+/// the remote host — local `docker info` is the wrong question and was why
+/// overnight sweeps silently skipped on a Mac that has no Docker by design.
 async fn preflight() -> Result<(), String> {
+    if let Some(ssh) = strix::docker_ssh_target() {
+        return preflight_remote(&ssh).await;
+    }
+    preflight_local().await
+}
+
+async fn preflight_local() -> Result<(), String> {
     let mut missing = Vec::new();
     if !strix_bin_present() {
-        missing.push("the `strix` scanner is not installed (fix: `pipx install strix-agent`)");
+        missing.push(
+            "the `strix` scanner is not installed (fix: `pipx install strix-agent`)".to_string(),
+        );
     }
-    let docker_ok = {
-        let mut cmd = tokio::process::Command::new(resolve_docker_bin());
-        cmd.arg("info")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        cmd.kill_on_drop(true);
-        matches!(
-            tokio::time::timeout(Duration::from_secs(15), cmd.status()).await,
-            Ok(Ok(status)) if status.success()
-        )
-    };
+    let mut cmd = tokio::process::Command::new(resolve_docker_bin());
+    cmd.arg("info")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    let docker_ok = matches!(
+        tokio::time::timeout(Duration::from_secs(15), cmd.status()).await,
+        Ok(Ok(status)) if status.success()
+    );
     if !docker_ok {
-        missing.push("Docker is not running (`docker info` failed)");
+        missing.push("Docker is not running (`docker info` failed)".to_string());
+    }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(missing.join("; "))
+    }
+}
+
+async fn preflight_remote(ssh_target: &str) -> Result<(), String> {
+    validate_ssh_target(ssh_target)?;
+    let mut missing = Vec::new();
+    if let Err(e) = ssh_run(ssh_target, "true").await {
+        return Err(format!(
+            "cannot SSH to {ssh_target} ({e}); Guard scans on that host, not this Mac"
+        ));
+    }
+    let docker_check = "export PATH=/opt/homebrew/bin:$PATH; \
+         export DOCKER_HOST=unix://$HOME/.colima/default/docker.sock; \
+         docker info >/dev/null";
+    if ssh_run(ssh_target, docker_check).await.is_err() {
+        missing.push(format!(
+            "Docker is not running on {ssh_target} (Colima). After a reboot: \
+             ssh {ssh_target} 'PATH=/opt/homebrew/bin:$PATH colima start'"
+        ));
+    }
+    let strix_check = "export PATH=/opt/homebrew/bin:$HOME/.local/bin:$PATH; \
+         test -x \"$HOME/.local/bin/strix\" || command -v strix >/dev/null";
+    if ssh_run(ssh_target, strix_check).await.is_err() {
+        missing.push(format!(
+            "the `strix` scanner is not installed on {ssh_target} \
+             (fix: ssh {ssh_target} 'pipx install strix-agent')"
+        ));
     }
     if missing.is_empty() {
         Ok(())
@@ -601,12 +884,9 @@ async fn report_preflight_failure(
             kind: "preflight_failed".to_string(),
             severity: permagent::briefings::Severity::ActionRequired,
             summary: format!("The Guard is enabled but cannot run: {failure}"),
-            detail: Some(
-                "Sweeps are skipped until this is fixed. `pipx install strix-agent` installs \
-                 the scanner; Docker Desktop must be installed and running. The sweep loop \
-                 retries automatically — nothing to restart."
-                    .to_string(),
-            ),
+            detail: Some(preflight_briefing_detail(
+                strix::docker_ssh_target().as_deref(),
+            )),
             ref_kind: None,
             ref_id: None,
         },
@@ -677,6 +957,81 @@ async fn wait_supervised(
 }
 
 async fn scan_project(target: &std::path::Path) -> Result<Vec<Finding>, String> {
+    if let Some(ssh) = strix::docker_ssh_target() {
+        tracing::info!(
+            target: "permagentd::strix",
+            host = %ssh,
+            "scanning on the remote Docker host (rsync + strix there, .strix back)"
+        );
+        return scan_project_remote(target, &ssh).await;
+    }
+    scan_project_local(target).await
+}
+
+async fn scan_project_remote(
+    target: &std::path::Path,
+    ssh_target: &str,
+) -> Result<Vec<Finding>, String> {
+    validate_ssh_target(ssh_target)?;
+    rsync_to_remote(target, ssh_target).await?;
+    let rel = remote_scan_rel(target);
+    let mut exports = String::from(
+        "export PATH=/opt/homebrew/bin:$HOME/.local/bin:/usr/bin:/bin; \
+         export DOCKER_HOST=unix://$HOME/.colima/default/docker.sock; ",
+    );
+    for (k, v) in scanner_env() {
+        if k == "DOCKER_HOST" {
+            continue;
+        }
+        exports.push_str(&format!("export {k}={}; ", posix_single_quote(&v)));
+    }
+    let remote = format!(
+        "{exports}exec strix --target \"$HOME/{rel}\" --non-interactive \
+         --scan-mode standard --scope-mode full --instruction {instr}",
+        instr = posix_single_quote(SCAN_INSTRUCTION),
+    );
+    let mut cmd = ssh_command(ssh_target);
+    cmd.arg(remote)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    permagent::subprocess::configure_subprocess(&mut cmd);
+
+    let child = cmd
+        .spawn()
+        .map_err(|e| format!("ssh to {ssh_target} is not runnable ({e})"))?;
+    let output = wait_supervised(
+        child,
+        permagent::sovereignty::global_sovereign_mode,
+        SOVEREIGN_POLL,
+    )
+    .await;
+    if output.is_err() {
+        let _ = ssh_run(
+            ssh_target,
+            &format!("pkill -f {} || true", posix_single_quote(&rel)),
+        )
+        .await;
+    }
+    let output = output?;
+    if !output.status.success() {
+        return Err(format!(
+            "scanner exited {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .last()
+                .unwrap_or_default()
+        ));
+    }
+    rsync_strix_back(target, ssh_target).await?;
+    let sarif = find_sarif(target).ok_or_else(|| "scan produced no findings.sarif".to_string())?;
+    let raw = std::fs::read_to_string(&sarif).map_err(|e| e.to_string())?;
+    parse_sarif(&raw)
+}
+
+async fn scan_project_local(target: &std::path::Path) -> Result<Vec<Finding>, String> {
     let mut cmd = tokio::process::Command::new(resolve_strix_bin());
     for (k, v) in scanner_env() {
         cmd.env(k, v);
@@ -694,11 +1049,7 @@ async fn scan_project(target: &std::path::Path) -> Result<Vec<Finding>, String> 
         .arg("--scope-mode")
         .arg("full")
         .arg("--instruction")
-        .arg(
-            "Static code analysis only. Do not run the application, do not send network \
-             traffic to any host, and do not modify, create, or delete any files in the \
-             target. Report findings; never remediate.",
-        )
+        .arg(SCAN_INSTRUCTION)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1116,6 +1467,73 @@ mod tests {
         assert!(
             result.unwrap_err().contains("sovereign mode"),
             "the scan must end naming the sovereignty flip, not the timeout"
+        );
+    }
+
+    #[test]
+    fn remote_scan_slug_is_path_safe_and_bounded() {
+        let rel = remote_scan_rel(std::path::Path::new(
+            "/Users/j/Documents/dev/permagent-runtime",
+        ));
+        assert_eq!(
+            rel,
+            "permagent-strix-scans/Users_j_Documents_dev_permagent-runtime"
+        );
+        assert_eq!(
+            remote_scan_abs(std::path::Path::new("/Users/j/app")),
+            "/Users/jessesharratt/permagent-strix-scans/Users_j_app"
+        );
+        let long = "/".to_string() + &"a".repeat(200);
+        let rel = remote_scan_rel(std::path::Path::new(&long));
+        assert!(rel.starts_with("permagent-strix-scans/"));
+        assert!(rel.len() <= "permagent-strix-scans/".len() + 80);
+        assert_eq!(rel.matches('/').count(), 1);
+    }
+
+    #[test]
+    fn ssh_target_rejects_shell_metacharacters() {
+        assert!(validate_ssh_target("jessesharratt@m1").is_ok());
+        assert!(validate_ssh_target("m1").is_ok());
+        assert!(validate_ssh_target("user@host.example").is_ok());
+        assert!(validate_ssh_target("jessesharratt@m1; rm -rf /").is_err());
+        assert!(validate_ssh_target("host$(reboot)").is_err());
+        assert!(validate_ssh_target("").is_err());
+        assert!(validate_ssh_target("@m1").is_err());
+    }
+
+    #[test]
+    fn preflight_briefing_names_the_remote_host_when_configured() {
+        let remote = preflight_briefing_detail(Some("jessesharratt@m1"));
+        assert!(remote.contains("jessesharratt@m1"));
+        assert!(remote.contains("Colima"));
+        assert!(!remote.contains("Docker Desktop"));
+        let local = preflight_briefing_detail(None);
+        assert!(local.contains("Docker Desktop"));
+    }
+
+    #[test]
+    fn rotation_prefers_last_attempt_over_last_scan() {
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            LAST_SCAN_KEY.to_string(),
+            serde_json::Value::String("2026-08-11T00:00:00Z".into()),
+        );
+        meta.insert(
+            LAST_ATTEMPT_KEY.to_string(),
+            serde_json::Value::String("2026-08-21T01:19:00Z".into()),
+        );
+        assert_eq!(
+            rotation_stamp_from_meta(&serde_json::Value::Object(meta)),
+            "2026-08-21T01:19:00Z"
+        );
+        let mut only_scan = serde_json::Map::new();
+        only_scan.insert(
+            LAST_SCAN_KEY.to_string(),
+            serde_json::Value::String("2026-08-11T00:00:00Z".into()),
+        );
+        assert_eq!(
+            rotation_stamp_from_meta(&serde_json::Value::Object(only_scan)),
+            "2026-08-11T00:00:00Z"
         );
     }
 }

@@ -621,6 +621,7 @@ export function ModelsPanel({ goto }: PanelProps) {
   // every active project on the user's API credits, so the cadence is theirs
   // to set. Daemon default is daily; changes apply within ~15 minutes.
   const [strixHours, setStrixHours] = useState<number>(24);
+  const [strixDockerSsh, setStrixDockerSsh] = useState<string | null>(null);
   useEffect(() => {
     let active = true;
     api.readConfig('strix_sweep_hours')
@@ -629,6 +630,11 @@ export function ModelsPanel({ goto }: PanelProps) {
         if (active && Number.isFinite(v) && v > 0) setStrixHours(v);
       })
       .catch(() => { /* unset — daemon default (24h) applies */ });
+    api.readConfig('strix_docker_ssh')
+      .then(r => {
+        if (active && typeof r === 'string' && r.trim()) setStrixDockerSsh(r.trim());
+      })
+      .catch(() => { /* unset — scans locally */ });
     return () => { active = false; };
   }, []);
   const saveStrixHours = (v: number) => {
@@ -859,7 +865,7 @@ export function ModelsPanel({ goto }: PanelProps) {
       {/* ── The Guard security sweeps ────────────────────────────── */}
       <Section
         title="Security sweeps (The Guard)"
-        sub="The Guard — born of the Strix pentest engine — probes your own projects for security flaws. Each sweep scans ONE active project (rotating through them, least-recently-scanned first) and files a security report with a fix plan as a note on that project, plus a findings checklist on its Overview. Requires the external `strix` scanner and Docker installed. The cadence below is a cost dial that applies once the Guard is on: every sweep runs on your API credits. Changes apply within ~15 minutes — no restart needed."
+        sub="The Guard — born of the Strix pentest engine — probes your own projects for security flaws. Each sweep scans ONE active project (rotating through them, least-recently-scanned first) and files a security report with a fix plan as a note on that project, plus a findings checklist on its Overview. Requires the external `strix` scanner and Docker: locally, or on the host in `strix_docker_ssh` (rsync there, scan against that machine's Docker, pull `.strix` back). A forwarded Docker socket is not enough. The cadence below is a cost dial that applies once the Guard is on: every sweep runs on your API credits. Changes apply within ~15 minutes — no restart needed."
       >
         {strixError && (
           <div style={{ fontSize: 12, color: colors.danger, padding: '4px 0 8px' }}>{strixError}</div>
@@ -918,6 +924,16 @@ export function ModelsPanel({ goto }: PanelProps) {
             <option value={72}>3 days</option>
             <option value={168}>Weekly</option>
           </select>
+        </Row>
+        <Row
+          label="Scanner host"
+          hint={strixDockerSsh
+            ? 'Docker and strix run on this machine. This Mac rsyncs the project there and pulls .strix back — a forwarded Docker socket is not enough.'
+            : 'Unset: scans on this Mac, which needs local Docker and strix. Set strix_docker_ssh in ~/.permagent/config.yaml to scan on another host.'}
+        >
+          <span style={{ fontSize: 12, color: colors.text, fontFamily: font.mono }}>
+            {strixDockerSsh ?? 'this Mac'}
+          </span>
         </Row>
       </Section>
 

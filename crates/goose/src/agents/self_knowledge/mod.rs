@@ -306,7 +306,7 @@ pub fn worker_live_state_for(
             "off (initiative_enabled=false)".to_string()
         }),
         "strix" => Some(if flags.strix_enabled {
-            "on — the Guard is sweeping your projects for security flaws".to_string()
+            "on — security sweeps every 24h; a missed Docker/strix preflight is a skip, not a clean scan".to_string()
         } else {
             "off (strix_enabled=false)".to_string()
         }),
@@ -1518,7 +1518,7 @@ mod tests {
         assert!(off.contains("off (initiative_enabled=false)"));
 
         assert!(guard_on.contains("**The Guard**"));
-        assert!(guard_on.contains("on — the Guard is sweeping your projects"));
+        assert!(guard_on.contains("on — security sweeps every 24h"));
 
         // Enabling the flag must not disturb anything else in the brief. Since
         // the prefix/suffix split, the Guard costs exactly TWO lines, one in
@@ -2397,6 +2397,9 @@ mod tests {
     ///   They are recipe schema keys, not callable tools.
     // `strix_llm` is a config.yaml key (the Guard's scanner model), named in
     // the Guard's cost teaching step — a setting, not a tool.
+    // `strix_docker_ssh` is the Guard's remote scanner host (`user@host`) in
+    // ~/.permagent/config.yaml, named in the Guard's setup teaching steps so
+    // the agent checks Docker on that machine instead of this Mac.
     // `steward_scan_enabled` is the git-health sweep's config flag
     // (~/.permagent/config.yaml), named in the git_steward descriptor so the
     // agent can tell the user how to turn the sweep on — a setting, not a tool.
@@ -2418,6 +2421,7 @@ mod tests {
         "sub_recipes",
         "worker_persona",
         "strix_llm",
+        "strix_docker_ssh",
         "steward_scan_enabled",
         "recipe_author",
         "decision_inbox",
