@@ -3,8 +3,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-use tauri::webview::PageLoadEvent;
-use tauri::{AppHandle, Emitter, Manager, WebviewBuilder, WebviewUrl};
+use tauri::webview::{NewWindowFeatures, PageLoadEvent};
+use tauri::{
+    AppHandle, Emitter, Manager, WebviewBuilder, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+};
 
 // ── File-intake inbox (epic #392 / #393) ────────────────────────────────────
 //
@@ -615,14 +617,15 @@ struct BrowserTitleChangedPayload {
 /// configuration WebKit passed in leaves `window.opener` present and the
 /// opener receives the message. The only variable is this handler's answer.
 ///
-/// NOT FIXED HERE, deliberately. The remedy is `NewWindowResponse::Create`
-/// with `NewWindowFeatures::webview_configuration` (tauri 2.11 supports it,
-/// `webview/mod.rs:249`), which produces a WINDOW rather than a tab-strip tab.
-/// That is a design decision about what a popup should be in this app, not a
-/// patch, and #240 / #709 / #973 are three separate demonstrations that
-/// changing this path casually breaks link-opening for everyone. It wants
-/// deciding, not guessing — but the diagnosis above is settled, so whoever
-/// takes it does not have to start over.
+/// FIXED by splitting the two kinds of new-window request, rather than by
+/// changing what a tab is. A JS popup that asked for a size, or that is
+/// aimed at an identity provider, is answered with `NewWindowResponse::Create`
+/// and `WebviewWindowBuilder::window_features` — that is what keeps
+/// `window.opener` and what lets Google Identity Services (`gsi/transform`)
+/// `postMessage` back to Vercel. Everything else is still Deny-and-reroute
+/// onto the tab strip. That split is load-bearing: #240 / #709 / #973 are
+/// three separate demonstrations that routing *every* `window.open` into a
+/// native window breaks ordinary "open in new tab" for everyone.
 ///
 /// AND NOT THE SAME BUG AS THE PKCE ONE ABOVE. One is a popup whose opener is
 /// gone; the other is a same-tab redirect chain that never opens a popup at
@@ -663,6 +666,94 @@ const LINKS_JS: &str = include_str!("browser_links.js");
 /// load the very same file); this wraps it in an IIFE that installs them.
 fn links_init_script() -> String {
     format!("(function(){{\n{LINKS_JS}\n__permagentInstallLinks();\n}})()")
+}
+
+/// Default inner size for an identity-provider popup that did not pass
+/// `window.open` features. Matches the Google Identity Services dialog.
+const POPUP_SIGN_IN_SIZE: (f64, f64) = (500.0, 700.0);
+
+/// Whether this `window.open` must keep `window.opener` instead of becoming
+/// a tab. Two independent signals, either one is enough:
+///
+///   * a size in the window features — Chrome's own popup vs tab heuristic,
+///     and the one Google GSI uses (`ux_mode=popup` always passes width/height);
+///   * an identity-provider URL, in case WebKit drops the size (it does, for
+///     some `WKWindowFeatures` fields) but the destination is still a sign-in.
+///
+/// `about:blank` with a size is the GSI handshake (open blank, then navigate).
+/// `about:blank` without a size is the placeholder the tab strip already
+/// refuses, and must stay a Deny so we do not litter the desktop with empty
+/// windows. Ordinary `target=_blank` / Cmd-click arrive with no size and a
+/// content URL, so they stay on the tab strip.
+pub(crate) fn is_opener_preserving_popup(url: &url::Url, has_window_size: bool) -> bool {
+    has_window_size || is_identity_provider_url(url)
+}
+
+pub(crate) fn is_identity_provider_url(url: &url::Url) -> bool {
+    let host = url.host_str().unwrap_or("").trim_start_matches("www.");
+    let path = url.path();
+    match host {
+        "accounts.google.com"
+        | "accounts.youtube.com"
+        | "appleid.apple.com"
+        | "login.microsoftonline.com"
+        | "login.live.com"
+        | "login.windows.net" => true,
+        "github.com" => path.starts_with("/login") || path.starts_with("/sessions"),
+        _ => host.ends_with(".okta.com") || host.ends_with(".auth0.com"),
+    }
+}
+
+/// A real window, built from the WKWebViewConfiguration WebKit handed us, so
+/// `window.opener` stays set. The initial URL is `about:blank` on purpose:
+/// WebKit loads the pending navigation into the webview we return; navigating
+/// it ourselves would be a second load with no opener.
+fn create_opener_preserving_popup(
+    app: &AppHandle,
+    opener_webview_id: &str,
+    features: NewWindowFeatures,
+) -> Result<WebviewWindow, String> {
+    let had_size = features.size().is_some();
+    let had_position = features.position().is_some();
+    let id = WEBVIEW_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let label = format!("browser-popup-{id}");
+    let blank: url::Url = "about:blank".parse().expect("about:blank is a valid URL");
+
+    let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(blank))
+        .window_features(features)
+        .user_agent(BROWSER_USER_AGENT)
+        .title("Sign in")
+        .focused(true)
+        .visible(true)
+        .resizable(true)
+        .on_document_title_changed(|window, title| {
+            if !title.trim().is_empty() {
+                let _ = window.set_title(&title);
+            }
+        });
+
+    if !had_size {
+        builder = builder.inner_size(POPUP_SIGN_IN_SIZE.0, POPUP_SIGN_IN_SIZE.1);
+    }
+    if !had_position {
+        builder = builder.center();
+    }
+
+    let owner = app
+        .state::<BrowserSessions>()
+        .0
+        .lock()
+        .ok()
+        .and_then(|m| m.get(opener_webview_id).map(|s| s.owner.clone()));
+    if let Some(owner) = owner.and_then(|l| app.get_webview_window(&l)) {
+        builder = builder
+            .parent(&owner)
+            .map_err(|e| format!("parent popup: {e}"))?;
+    }
+
+    builder
+        .build()
+        .map_err(|e| format!("create opener-preserving popup: {e}"))
 }
 
 #[tauri::command]
@@ -775,21 +866,51 @@ pub async fn create_browser_webview(
                 },
             );
         })
-        // Popups become tabs: deny the native window, hand the URL to the tab
-        // strip. Global `emit` (same channel as page_load/title) — `emit_to`
-        // was tried to scope by window, but Browser.tsx listens with the
-        // default `event.listen` target (`Any`), and the ownership filter on
-        // `source_webview_id` is what actually prevents Build + detached
-        // panes from each opening a tab. Matching page_load's emit path keeps
-        // popup delivery on the channel that is known to reach the shell.
-        .on_new_window(move |url, _features| {
+        // New-window split: identity-provider / sized `window.open` is
+        // Create (keeps window.opener for Google GSI). Everything else is
+        // Deny, then emit to the tab strip. Global `emit` (same channel as
+        // page_load/title) — `emit_to` was tried to scope by window, but
+        // Browser.tsx listens with the default `event.listen` target (`Any`),
+        // and the ownership filter on `source_webview_id` is what actually
+        // prevents Build + detached panes from each opening a tab. Matching
+        // page_load's emit path keeps popup delivery on the channel that is
+        // known to reach the shell.
+        .on_new_window(move |url, features| {
             // Say so, every time. The three prior regressions (#240, #709,
             // #973) all survived because a dropped popup left NO trace: the
             // click just did nothing and the logs were silent. This line and
             // Browser.tsx's matching one make the next one a five-second
             // diagnosis instead of a month.
             let target = url.to_string();
-            println!("[permagent-app] browser: new-window request from {popup_id} -> {target}");
+            let has_size = features.size().is_some();
+            println!(
+                "[permagent-app] browser: new-window request from {popup_id} -> {target} (sized={has_size})"
+            );
+
+            // Google / GitHub / Apple sign-in (and any `window.open` that
+            // asked for a size) must keep `window.opener`. Re-opening as a
+            // tab severs it: the user signs in, `gsi/transform` sits blank,
+            // and Vercel never hears back.
+            if is_opener_preserving_popup(&url, has_size) {
+                match create_opener_preserving_popup(&popup_app, &popup_id, features) {
+                    Ok(window) => {
+                        println!(
+                            "[permagent-app] browser: opener-preserving popup {} for {target}",
+                            window.label()
+                        );
+                        return tauri::webview::NewWindowResponse::Create { window };
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[permagent-app] browser: opener-preserving popup FAILED for {target}: {e}"
+                        );
+                        // Fall through to deny-and-tab so the click is not
+                        // silent. Sign-in will still hang (no opener), but
+                        // the page is at least visible.
+                    }
+                }
+            }
+
             if let Err(e) = popup_app.emit(
                 "browser_new_window_request",
                 BrowserNewWindowPayload {
@@ -801,10 +922,11 @@ pub async fn create_browser_webview(
                     "[permagent-app] browser: emit of new-window request for {target} FAILED: {e}"
                 );
             }
-            // Returning Deny is load-bearing: without a Create/Allow response
-            // WKWebView cancels the navigation, so the emit above is the ONLY
-            // way the URL survives. A missing listener looks like "click did
-            // nothing" — the historical #240 / #709 / #973 failure mode.
+            // Returning Deny is load-bearing for the tab-strip path: without
+            // a Create/Allow response WKWebView cancels the navigation, so
+            // the emit above is the ONLY way the URL survives. A missing
+            // listener looks like "click did nothing" — the historical
+            // #240 / #709 / #973 failure mode.
             tauri::webview::NewWindowResponse::Deny
         });
 
@@ -1486,6 +1608,7 @@ mod tests {
         assert!(is_child_browser_label("browser-0"));
         assert!(is_child_browser_label("browser-12"));
         assert!(!is_child_browser_label("browser-3f2a-11ee-8c90"));
+        assert!(!is_child_browser_label("browser-popup-0"));
         assert!(!is_child_browser_label("terminal-9b1c"));
         assert!(!is_child_browser_label("main"));
         assert!(!is_child_browser_label("browser-"));
@@ -1715,7 +1838,8 @@ mod tests {
         );
         assert!(
             src.contains("NewWindowResponse::Deny"),
-            "The native popup window must be denied; the tab strip owns the URL."
+            "Ordinary target=_blank / Cmd-click must still be denied so the \
+             tab strip owns the URL. Do not Create those as native windows."
         );
         // Pin global emit (same path as page_load). emit_to was a regressing
         // alternative: the shell listens with event.listen's default Any
@@ -1731,6 +1855,97 @@ mod tests {
              the frontend listener to a labeled target (getCurrentWindow).\
              listen) and updating this guard deliberately."
         );
+    }
+
+    /// Google Identity Services (`ux_mode=popup`) reports the signed-in
+    /// credential with `window.opener.postMessage`. Denying that popup and
+    /// re-opening the URL as a tab leaves `window.opener` null, so the user
+    /// can pick an account and then sit on a blank `gsi/transform` forever.
+    /// The remedy is Create with WebKit's own configuration — that is what
+    /// `window_features` forwards — and it must not be folded back into the
+    /// tab-strip path.
+    #[test]
+    fn popup_sign_in_creates_an_opener_preserving_window() {
+        let src = include_str!("browser.rs");
+        assert!(
+            src.contains("is_opener_preserving_popup"),
+            "The new-window hook must distinguish OAuth popups from tab-strip \
+             links. A single Deny for both is the blank gsi/transform bug."
+        );
+        assert!(
+            src.contains("NewWindowResponse::Create"),
+            "An identity-provider popup must be answered with Create, not Deny."
+        );
+        assert!(
+            src.contains(".window_features("),
+            "Create without window_features builds a webview WebKit has never \
+             heard of, so window.opener is still null — the same bug in a \
+             different window."
+        );
+        assert!(
+            src.contains("WebviewWindowBuilder::new"),
+            "The OAuth popup is a WINDOW, not a child tab. Tabs cannot keep \
+             the opener relationship WebKit already set up."
+        );
+    }
+
+    fn parse_url(s: &str) -> url::Url {
+        s.parse().expect("test URL must parse")
+    }
+
+    #[test]
+    fn a_sized_window_open_is_a_popup() {
+        assert!(is_opener_preserving_popup(
+            &parse_url("https://example.com/checkout"),
+            true
+        ));
+    }
+
+    #[test]
+    fn an_unsized_content_link_stays_a_tab() {
+        assert!(!is_opener_preserving_popup(
+            &parse_url("https://mail.google.com/mail"),
+            false
+        ));
+        assert!(!is_opener_preserving_popup(
+            &parse_url("https://github.com/tauri-apps/tauri"),
+            false
+        ));
+    }
+
+    #[test]
+    fn google_gsi_is_a_popup_even_without_size() {
+        assert!(is_opener_preserving_popup(
+            &parse_url("https://accounts.google.com/gsi/select"),
+            false
+        ));
+        assert!(is_opener_preserving_popup(
+            &parse_url("https://accounts.google.com/gsi/transform"),
+            false
+        ));
+    }
+
+    #[test]
+    fn github_oauth_is_a_popup_but_a_repo_link_is_not() {
+        assert!(is_opener_preserving_popup(
+            &parse_url("https://github.com/login/oauth/authorize?client_id=x"),
+            false
+        ));
+        assert!(!is_opener_preserving_popup(
+            &parse_url("https://github.com/tauri-apps/tauri"),
+            false
+        ));
+    }
+
+    #[test]
+    fn about_blank_is_a_popup_only_when_sized() {
+        // GSI handshake: window.open('', name, 'width=500,height=600')
+        assert!(is_opener_preserving_popup(&parse_url("about:blank"), true));
+        // Placeholder the tab strip already drops. Must not become a window.
+        assert!(!is_opener_preserving_popup(
+            &parse_url("about:blank"),
+            false
+        ));
     }
 
     /// The mouse gestures WebKit will NOT route to the UI delegate.
