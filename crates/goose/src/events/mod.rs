@@ -760,8 +760,10 @@ pub fn app_action(
 /// paste-ready text (a post, a speech, a blurb they asked to copy). The
 /// daemon never writes the pasteboard itself — that would copy on the hub
 /// Mac, not an iPhone talking over `/voice`. Voice turns intercept this
-/// (see [`clipboard_intercept`]); text chat emits here so the Command Center
-/// copies in the focused window.
+/// (see [`clipboard_intercept`]) and flush the body down `/voice` as soon
+/// as the tool returns, so the listening device can copy while it is still
+/// in the foreground. Text chat emits here so the Command Center copies in
+/// the focused window.
 pub fn app_clipboard(text: &str, reason: &str) -> PermagentEvent {
     PermagentEvent::new(
         PermagentEventType::AppClipboard,
