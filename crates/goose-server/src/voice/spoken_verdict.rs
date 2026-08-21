@@ -3,7 +3,7 @@
 //! The voice socket is the user's own authenticated channel — the same as
 //! tapping Approve in chat — so a short "yes"/"no" can settle a pending
 //! decision without sending the transcript to the model (which would be
-//! Henry's word, not Jesse's hand).
+//! Henry's word, not the user's hand).
 
 /// Map a short spoken utterance to approve/reject. Longer sentences fall
 /// through to the agent so "yes, and also log a meeting" is never swallowed.

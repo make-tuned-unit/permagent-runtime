@@ -39,7 +39,7 @@ impl VoiceClient {
         }
     }
 
-    /// Infer from a pairing-registry display name ("iPhone", "Jesse's Watch").
+    /// Infer from a pairing-registry display name ("iPhone", "Kitchen Watch").
     pub fn from_device_name(name: &str) -> Option<Self> {
         let n = name.to_ascii_lowercase();
         if n.contains("iphone") || n.contains("ipad") || n == "ios" {
@@ -189,7 +189,7 @@ mod tests {
 
     #[test]
     fn explicit_ios_wins_over_laptop_device_name() {
-        let origin = VoiceOrigin::resolve(Some("ios_voice"), Some("Jesse's Mac"));
+        let origin = VoiceOrigin::resolve(Some("ios_voice"), Some("Studio Mac"));
         assert_eq!(origin.client, VoiceClient::Ios);
     }
 

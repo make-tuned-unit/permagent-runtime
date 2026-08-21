@@ -992,7 +992,7 @@ async fn handle_voice_socket(
                         }
 
                         // Spoken yes/no while a decision is waiting: settle it
-                        // as Jesse (this socket is the user's hand) instead of
+                        // as the user (this socket is their own hand) instead of
                         // sending the transcript to Henry, who cannot answer
                         // Tier-2 / live-channel kinds.
                         if let Some(verdict) =

@@ -159,7 +159,7 @@ async fn answer_decision_handler(
     Ok(Json(outcome))
 }
 
-/// Answer an open decision as Jesse and run its gated effect.
+/// Answer an open decision as the user and run its gated effect.
 ///
 /// Shared by the HTTP inbox path and the voice spoken-yes path: both are the
 /// user's own channel (authenticated UI / authenticated voice socket), not a
