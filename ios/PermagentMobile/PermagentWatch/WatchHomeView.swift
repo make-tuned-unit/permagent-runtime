@@ -2,6 +2,7 @@ import SwiftUI
 
 struct WatchHomeView: View {
     @EnvironmentObject private var relay: WatchRelay
+    @ObservedObject private var route = AppRoute.shared
     @State private var dest: Dest?
 
     enum Dest: Hashable { case chat, note }
@@ -45,7 +46,17 @@ struct WatchHomeView: View {
                 case .note: WatchNoteView()
                 }
             }
+            .onAppear { openChatIfAsked() }
+            .onChange(of: route.showWatchChat) { _, on in
+                if on { openChatIfAsked() }
+            }
         }
+    }
+
+    private func openChatIfAsked() {
+        guard route.showWatchChat else { return }
+        dest = .chat
+        route.showWatchChat = false
     }
 
     private func watchButton(title: String, systemImage: String, action: @escaping () -> Void) -> some View {

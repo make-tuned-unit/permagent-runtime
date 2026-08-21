@@ -44,5 +44,14 @@
 	<true/>
 	<key>WKWatchOnly</key>
 	<false/>
+	<key>INAlternativeAppNames</key>
+	<array>
+		<dict>
+			<key>INAlternativeAppName</key>
+			<string>Henry</string>
+			<key>INAlternativeAppNamePronunciationHint</key>
+			<string>henry</string>
+		</dict>
+	</array>
 </dict>
 </plist>

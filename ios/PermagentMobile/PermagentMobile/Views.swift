@@ -554,7 +554,6 @@ struct ChatView: View {
     // Resolved from the hub on appear — NOT minted locally. See MobileSession.
     @State private var sessionId: String?
     @State private var sessionError: String?
-    @State private var showVoice = false
     @State private var showHistory = false
     /// True when the turn may still be running ON THE HUB while this device
     /// stopped watching (locked, backgrounded, or the stream dropped). The hub
@@ -690,15 +689,6 @@ struct ChatView: View {
             // (No keyboard "Done" accessory: tap-out and drag-down both
             // dismiss now, and the floating button read as clutter — removed
             // on Jesse's report 2026-08-06.)
-            // Voice shares the chat's hub session so spoken turns land in the
-            // same conversation. `sessionId` is passed if this chat already
-            // resolved one and left nil otherwise — VoiceView resolves and
-            // reports its own failures. The previous `if let sessionId` guard
-            // is what produced the black screen: when resolution had failed,
-            // the cover presented an EMPTY body.
-            .fullScreenCover(isPresented: $showVoice) {
-                VoiceView(sessionId: sessionId)
-            }
             .sheet(isPresented: $showHistory) {
                 ChatHistorySheet(currentSessionId: sessionId) { id in
                     Task { await openSession(id) }
@@ -884,7 +874,7 @@ struct ChatView: View {
                     .transition(.scale.combined(with: .opacity))
                 } else {
                     dictateButton
-                    Button { showVoice = true } label: {
+                    Button { AppRoute.shared.talk() } label: {
                         Image(systemName: "waveform")
                             .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(ChatSurface.onSpark)
