@@ -184,6 +184,7 @@ const InputBar = React.memo(function InputBar({
   autonomous,
   queuedKind,
   onFollowUp,
+  elapsedSecs,
 }: {
   width: number;
   input: string;
@@ -201,6 +202,7 @@ const InputBar = React.memo(function InputBar({
   autonomous: boolean;
   queuedKind: "steer" | "followup" | null;
   onFollowUp: (v: string) => void;
+  elapsedSecs: number;
 }) {
   const prevLenRef = useRef(input.length);
 
@@ -278,13 +280,28 @@ const InputBar = React.memo(function InputBar({
   });
   const borderColor = busy || queued ? GOLD : TEAL;
   const promptColor = busy ? GOLD : CRANBERRY;
-  const idlePlaceholder = placeholder ?? "Message the agent";
+  const idlePlaceholder = placeholder ?? "Ask Permagent to do anything";
+  const statusText = busy
+    ? `• Working (${elapsedSecs}s • esc to interrupt)`
+    : queuedKind === "steer"
+      ? "• Steer queued — cuts in when this turn stops"
+      : queuedKind === "followup"
+        ? "• Follow-up queued"
+        : "• Ready";
+  const statusColor = busy || queued ? GOLD : TEAL;
 
   return (
+    <Box flexDirection="column" width={constrainedWidth} flexShrink={0}>
+      <Box>
+        <Text color={statusColor} wrap="truncate-end">
+          {statusText}
+        </Text>
+      </Box>
     <Box
       flexDirection="column"
       borderStyle="round"
       borderColor={borderColor}
+      backgroundColor={busy || queued ? "#2A2418" : "#1C2432"}
       paddingX={1}
       width={constrainedWidth}
       flexShrink={0}
@@ -363,6 +380,7 @@ const InputBar = React.memo(function InputBar({
           {hint.text}
         </Text>
       </Box>
+    </Box>
     </Box>
   );
 });
@@ -716,6 +734,7 @@ function App({
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(true);
+  const [elapsedSecs, setElapsedSecs] = useState(0);
   const [status, setStatus] = useState("connecting…");
   const [spinIdx, setSpinIdx] = useState(0);
   const [mobiusFrame, setMobiusFrame] = useState(0);
@@ -804,6 +823,19 @@ function App({
     }, 300);
     return () => clearInterval(t);
   }, [loading]);
+
+  useEffect(() => {
+    if (!(loading && turns.length > 0)) {
+      setElapsedSecs(0);
+      return;
+    }
+    const t0 = Date.now();
+    setElapsedSecs(0);
+    const t = setInterval(() => {
+      setElapsedSecs(Math.floor((Date.now() - t0) / 1000));
+    }, 1000);
+    return () => clearInterval(t);
+  }, [loading, turns.length]);
 
   useEffect(() => {
     if (turns.length > 0) setBannerVisible(false);
@@ -1875,7 +1907,7 @@ function App({
   const atH =
     showInputBar && atOpen ? pickListHeight(atMatches.length) : 0;
   const inputBarH = showInputBar
-    ? 2 + inputContentRows + inputExtraLines + slashH + atH
+    ? 3 + inputContentRows + inputExtraLines + slashH + atH
     : 0;
   const historyBarH = isViewingHistory ? 2 : 0;
   const footerH = showInputBar ? 1 : 0;
@@ -2084,6 +2116,7 @@ function App({
           queued={queuedMessages.length > 0}
           queuedKind={queuedMessages[0]?.kind ?? null}
           busy={loading && turns.length > 0}
+          elapsedSecs={elapsedSecs}
           autonomous={autonomous.enabled}
           scrollHint={!bannerVisible && turns.length > 1}
           placeholder={bannerVisible ? INITIAL_GREETING : undefined}

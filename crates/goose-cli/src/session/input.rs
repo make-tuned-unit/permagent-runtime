@@ -163,26 +163,28 @@ pub fn get_input(
         editor.add_history_entry(input.as_str())?;
     }
 
-    // Handle non-slash commands first
+    Ok(interpret_line(&input))
+}
+
+/// Parse a submitted composer/readline line into a session action.
+pub fn interpret_line(input: &str) -> InputResult {
     if !input.starts_with('/') {
         let trimmed = input.trim();
         if trimmed.is_empty()
             || trimmed.eq_ignore_ascii_case("exit")
             || trimmed.eq_ignore_ascii_case("quit")
         {
-            return Ok(if trimmed.is_empty() {
+            return if trimmed.is_empty() {
                 InputResult::Retry
             } else {
                 InputResult::Exit
-            });
+            };
         }
-        return Ok(InputResult::Message(trimmed.to_string()));
+        return InputResult::Message(trimmed.to_string());
     }
-
-    // Handle slash commands
-    match handle_slash_command(&input) {
-        Some(result) => Ok(result),
-        None => Ok(InputResult::Message(input.trim().to_string())),
+    match handle_slash_command(input) {
+        Some(result) => result,
+        None => InputResult::Message(input.trim().to_string()),
     }
 }
 
@@ -504,8 +506,13 @@ mod tests {
             panic!("Expected AddBuiltin");
         }
 
-        // Test unknown commands
-        assert!(handle_slash_command("/unknown").is_none());
+        assert!(matches!(
+            interpret_line("fix the tests"),
+            InputResult::Message(s) if s == "fix the tests"
+        ));
+        assert!(matches!(interpret_line(""), InputResult::Retry));
+        assert!(matches!(interpret_line("exit"), InputResult::Exit));
+        assert!(matches!(interpret_line("/quit"), InputResult::Exit));
     }
 
     #[test]
