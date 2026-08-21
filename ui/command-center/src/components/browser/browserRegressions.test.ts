@@ -470,6 +470,9 @@ describe('every new-tab gesture opens exactly one tab', () => {
   const owned = ['browser-3'];
   const gestures = [
     ['plain left-click on target=_blank', 'https://mail.example.com/thread/1'],
+    // Unsized window.open (no features string) is a new tab. Sized window.open
+    // — Google GSI, Stripe, PayPal — is answered natively in browser.rs so
+    // window.opener survives, and never reaches this listener.
     ['window.open from a page script', 'https://calendar.example.com/event/2'],
     ['middle-click on an ordinary link', 'https://news.example.com/story/3'],
     ['Cmd-click on an ordinary link', 'https://docs.example.com/page/4'],

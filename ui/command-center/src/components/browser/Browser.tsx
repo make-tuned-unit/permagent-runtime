@@ -656,6 +656,10 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
     // WKWebView returns nil from createWebViewWithConfiguration and the click
     // just does nothing (#240 / #709 / #973).
     //
+    // OAuth / GSI popups never arrive here. browser.rs answers those with
+    // NewWindowResponse::Create so window.opener stays set; emitting them as
+    // tabs is how Vercel Google sign-in died on a blank gsi/transform page.
+    //
     // A DECLINE IS LOGGED WITH ITS REASON. That is the whole point: those three
     // regressions each survived weeks because a dropped popup left no trace.
     let unlistenNewWindow: (() => void) | null = null;
