@@ -214,7 +214,7 @@ impl McpClientTrait for DeveloperClient {
     ) -> Result<CallToolResult, Error> {
         let working_dir = ctx.working_dir.as_deref();
         match name {
-            "shell" => match Self::parse_args::<ShellParams>(arguments) {
+            "shell" | "bash" => match Self::parse_args::<ShellParams>(arguments) {
                 Ok(params) => Ok(self.shell_tool.shell_with_cwd(params, working_dir).await),
                 Err(error) => Ok(ShellTool::error_result(&format!("Error: {error}"), None)),
             },
@@ -368,6 +368,30 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.is_error, Some(false));
+        let observed = std::fs::canonicalize(first_text(&result)).unwrap();
+        let expected = std::fs::canonicalize(&cwd).unwrap();
+        assert_eq!(observed, expected);
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn developer_client_aliases_bash_to_shell() {
+        let temp = tempfile::tempdir().unwrap();
+        let client = DeveloperClient::new(test_context(temp.path().join("sessions"))).unwrap();
+        let cwd = temp.path().join("workspace");
+        fs::create_dir_all(&cwd).unwrap();
+
+        let ctx = ToolCallContext::new("session".to_owned(), Some(cwd.clone()), None);
+        let result = client
+            .call_tool(
+                &ctx,
+                "bash",
+                Some(object!({ "command": "pwd" })),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(false), "{}", first_text(&result));
         let observed = std::fs::canonicalize(first_text(&result)).unwrap();
         let expected = std::fs::canonicalize(&cwd).unwrap();
         assert_eq!(observed, expected);

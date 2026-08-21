@@ -164,13 +164,15 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 why_it_matters:
                     "When the user says 'go to BBC and read me the homepage', open_website shows \
                      it to them and read_webpage gives you the text to read aloud — no pasting, \
-                     no guessing. read_browser_content covers whatever tab they already have \
-                     open. And when they need something DONE on a page — fill a form, click a \
-                     button, pick an option — get_page_snapshot lists the interactive elements \
-                     and act_on_page clicks, types, or selects, so you drive the page instead of \
-                     only reading it. open_website also opens a LOCAL dev server \
-                     (http://localhost:PORT) in the browser, so after you build or scaffold an \
-                     app you can show the user the running result — the coding last mile.",
+                     no guessing. For research (summarize a site, look up a fact, update a \
+                     project description) prefer Brave/Tavily web_search or read_webpage; only \
+                     open_website when they asked to see the page. read_browser_content covers \
+                     whatever tab they already have open. And when they need something DONE on \
+                     a page — fill a form, click a button, pick an option — get_page_snapshot \
+                     lists the interactive elements and act_on_page clicks, types, or selects. \
+                     open_website also opens a LOCAL dev server (http://localhost:PORT) in the \
+                     browser, so after you build or scaffold an app you can show the user the \
+                     running result — the coding last mile.",
                 required_secrets: &[],
                 teaching: &[
                     crate::agents::self_knowledge::TeachingStep {

@@ -549,8 +549,8 @@ async fn create_session(
     Json(payload): Json<Option<CreateSessionRequest>>,
 ) -> Result<Json<Session>, StatusCode> {
     let working_dir = payload
-        .and_then(|p| p.working_dir)
-        .unwrap_or_else(|| "/tmp".to_string());
+        .and_then(|p| p.working_dir.filter(|s| !s.trim().is_empty()))
+        .unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()));
 
     let config = permagent::config::Config::global();
     let mode = config.get_goose_mode().unwrap_or_default();

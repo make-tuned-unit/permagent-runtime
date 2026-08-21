@@ -290,6 +290,10 @@ export function useAppNavigate() {
     const { tool_type, panel_type, section, state, reason } = payload ?? {};
     if (!tool_type) return;
 
+    if (tool_type !== 'build') {
+      useCommandCenter.getState().dismissInAppBrowser();
+    }
+
     if (panel_type === 'overlay') {
       // Console-consolidation compatibility (2026-08): the old standalone
       // overlays are Settings sections now. A current daemon's catalog already

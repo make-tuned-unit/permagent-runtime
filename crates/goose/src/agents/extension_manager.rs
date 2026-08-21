@@ -2344,6 +2344,30 @@ impl ExtensionManager {
             .map(|ext| ext.get_client())
     }
 
+    fn machine_identity_lines() -> String {
+        let mut out = String::new();
+        if let Ok(home) = std::env::var("HOME") {
+            out.push_str(&format!("Home: {home}\n"));
+        }
+        if let Ok(user) = std::env::var("USER") {
+            out.push_str(&format!("User: {user}\n"));
+        }
+        #[cfg(unix)]
+        {
+            let mut buf = [0u8; 256];
+            let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
+            if rc == 0 {
+                let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+                if let Ok(host) = std::str::from_utf8(&buf[..len]) {
+                    if !host.is_empty() {
+                        out.push_str(&format!("Host: {host}\n"));
+                    }
+                }
+            }
+        }
+        out
+    }
+
     pub async fn collect_moim(
         &self,
         session_id: &str,
@@ -2362,9 +2386,10 @@ impl ExtensionManager {
         // Use minute-level granularity to prevent conversation changes every second
         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:00").to_string();
         let mut content = format!(
-            "<info-msg>\nIt is currently {}\nWorking directory: {}\n",
+            "<info-msg>\nIt is currently {}\nWorking directory: {}\n{}",
             timestamp,
-            working_dir.display()
+            working_dir.display(),
+            Self::machine_identity_lines(),
         );
 
         if let Ok(session) = self
