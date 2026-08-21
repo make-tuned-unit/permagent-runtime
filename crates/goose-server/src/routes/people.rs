@@ -5,6 +5,9 @@
 //!   PATCH /api/people/{id}/fields  — set a person's typed fields (manual edit)
 //!   GET/POST/DELETE /api/people/{id}/relationships — typed Brain graph edges
 //!   GET   /api/people/{id}/activity — memories/notes/cards referencing a person
+//!   GET/POST /api/people/{id}/meetings — first-class meetings on the profile
+//!   PATCH    /api/people/{id}/meetings/{mid} — mark a follow-up done
+//!   POST     /api/people/calendar/import — pull Calendar.app events onto profiles
 //!
 //! Identity comes from the typed `people` table in permagent.db; person
 //! *attributes* (role/company/email/…) are read through the people↔graph bridge
@@ -21,7 +24,7 @@ use crate::state::AppState;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    routing::{delete, get, patch},
+    routing::{delete, get, patch, post},
     Json, Router,
 };
 use permagent::brain_handle::SafeBrain;
@@ -116,6 +119,15 @@ pub(crate) async fn overlay_graph_attributes(brain: Option<&SafeBrain>, people: 
     }
 }
 
+pub(crate) async fn overlay_meeting_contact(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    people: &mut [Person],
+) {
+    if let Ok(latest) = permagent::person_meetings::latest_starts_by_person(pool).await {
+        permagent::person_meetings::merge_last_contact(people, &latest);
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct PeopleQuery {
     /// Exact company match.
@@ -150,6 +162,7 @@ async fn list_people_handler(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     overlay_graph_attributes(state.brain.as_ref(), people.iter_mut().collect()).await;
+    overlay_meeting_contact(&pool, &mut people).await;
 
     Ok(Json(people))
 }
@@ -166,7 +179,13 @@ pub struct SetFieldsRequest {
 const MAX_PERSON_FIELD_VALUE_LEN: usize = 2_000;
 
 /// Person fields whose value is a URL the UI turns into a navigation target.
-const PERSON_LINK_FIELDS: [&str; 2] = ["linkedin", "personal_site"];
+const PERSON_LINK_FIELDS: [&str; 5] = [
+    "linkedin",
+    "facebook",
+    "instagram",
+    "personal_site",
+    "photo_url",
+];
 
 fn validate_person_field(name: &str, value: &str) -> Result<(), String> {
     if !people::PERSON_FIELD_NAMES.contains(&name) {
@@ -285,6 +304,7 @@ async fn set_person_fields_handler(
     // Reflect authoritative graph state back (Decision A): clear columns, overlay
     // the freshly-written `entity_fields`. The response is the graph's truth.
     overlay_graph_attributes(state.brain.as_ref(), vec![&mut person]).await;
+    overlay_meeting_contact(&pool, std::slice::from_mut(&mut person)).await;
     Ok(Json(person))
 }
 
@@ -512,14 +532,22 @@ async fn person_activity_handler(
                 .is_some_and(|title| contains_whole_word_ci(&title, &person.display_name))
                 || contains_whole_word_ci(&r.get::<String, _>("body"), &person.display_name)
         })
-        .map(|r| PersonActivity {
-            id: format!("note-{}", r.get::<String, _>("id")),
-            kind: "note".into(),
-            title: r
+        .map(|r| {
+            let title = r
                 .get::<Option<String>, _>("title")
-                .unwrap_or_else(|| "Note added".into()),
-            detail: r.get("body"),
-            timestamp: r.get("created_at"),
+                .unwrap_or_else(|| "Note added".into());
+            let kind = if title.to_lowercase().starts_with("meeting") {
+                "meeting"
+            } else {
+                "note"
+            };
+            PersonActivity {
+                id: format!("note-{}", r.get::<String, _>("id")),
+                kind: kind.into(),
+                title,
+                detail: r.get("body"),
+                timestamp: r.get("created_at"),
+            }
         })
         .chain(
             card_rows
@@ -557,6 +585,15 @@ async fn person_activity_handler(
     }).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
       .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     items.extend(memories);
+    if let Ok(meetings) = permagent::person_meetings::list_for_person(&pool, &uuid).await {
+        items.extend(meetings.into_iter().map(|m| PersonActivity {
+            id: format!("meeting-{}", m.id),
+            kind: "meeting".into(),
+            title: m.title,
+            detail: m.notes,
+            timestamp: m.starts_at,
+        }));
+    }
     items.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     items.truncate(20);
     Ok(Json(items))
@@ -572,6 +609,7 @@ pub struct DirectoryPerson {
     #[serde(flatten)]
     person: Person,
     projects: Vec<permagent::project_association::ProjectRef>,
+    next_follow_up_at: Option<String>,
 }
 
 /// The whole directory in two queries — `list_people` plus one grouped pass over
@@ -600,17 +638,26 @@ async fn people_directory_handler(
     // Decision A: attributes come from the graph, never the columns. Without
     // this the directory renders stale/blank column values as if they were truth.
     overlay_graph_attributes(state.brain.as_ref(), people.iter_mut().collect()).await;
+    overlay_meeting_contact(&pool, &mut people).await;
 
     let mut refs = permagent::project_association::project_refs_by_person(&pool)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let follow_ups = permagent::person_meetings::next_follow_up_by_person(&pool)
+        .await
+        .unwrap_or_default();
 
     Ok(Json(
         people
             .into_iter()
             .map(|person| {
+                let next_follow_up_at = follow_ups.get(&person.entity_uuid).cloned();
                 let projects = refs.remove(&person.entity_uuid).unwrap_or_default();
-                DirectoryPerson { person, projects }
+                DirectoryPerson {
+                    person,
+                    projects,
+                    next_follow_up_at,
+                }
             })
             .collect(),
     ))
@@ -782,6 +829,146 @@ async fn create_person_handler(
     Ok((status, Json(CreatePersonResponse { person, created })))
 }
 
+#[derive(Debug, Deserialize)]
+struct CreateMeetingRequest {
+    title: Option<String>,
+    starts_at: String,
+    ends_at: Option<String>,
+    notes: Option<String>,
+    project_id: Option<String>,
+    follow_up_at: Option<String>,
+    follow_up_note: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PatchMeetingRequest {
+    follow_up_done: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+struct CalendarImportResponse {
+    imported: usize,
+}
+
+async fn list_meetings_handler(
+    State(state): State<Arc<AppState>>,
+    Path(uuid): Path<String>,
+) -> Result<Json<Vec<permagent::person_meetings::PersonMeeting>>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    people::get_by_uuid(&pool, &uuid)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Person not found".into()))?;
+    let rows = permagent::person_meetings::list_for_person(&pool, &uuid)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(rows))
+}
+
+async fn create_meeting_handler(
+    State(state): State<Arc<AppState>>,
+    Path(uuid): Path<String>,
+    Json(req): Json<CreateMeetingRequest>,
+) -> Result<(StatusCode, Json<permagent::person_meetings::PersonMeeting>), (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let person = people::get_by_uuid(&pool, &uuid)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Person not found".into()))?;
+    let title = req
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("Meeting with {}", person.display_name));
+    let meeting = permagent::person_meetings::create_meeting(
+        &pool,
+        permagent::person_meetings::NewMeeting {
+            entity_uuid: person.entity_uuid.clone(),
+            title,
+            starts_at: req.starts_at,
+            ends_at: req.ends_at,
+            notes: req.notes.unwrap_or_default(),
+            project_id: req.project_id,
+            follow_up_at: req.follow_up_at,
+            follow_up_note: req.follow_up_note,
+            calendar_uid: None,
+            sync_calendar: true,
+        },
+    )
+    .await
+    .map_err(|e| {
+        let status = if e.contains("Person not found") {
+            StatusCode::NOT_FOUND
+        } else if e.contains("must") {
+            StatusCode::BAD_REQUEST
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR
+        };
+        (status, e)
+    })?;
+    permagent::events::emit(permagent::events::person_changed(
+        "",
+        &person.entity_uuid,
+        "meeting",
+    ));
+    Ok((StatusCode::CREATED, Json(meeting)))
+}
+
+async fn patch_meeting_handler(
+    State(state): State<Arc<AppState>>,
+    Path((uuid, meeting_id)): Path<(String, String)>,
+    Json(req): Json<PatchMeetingRequest>,
+) -> Result<Json<permagent::person_meetings::PersonMeeting>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let Some(done) = req.follow_up_done else {
+        return Err((StatusCode::BAD_REQUEST, "follow_up_done is required".into()));
+    };
+    let meeting = permagent::person_meetings::set_follow_up_done(&pool, &meeting_id, &uuid, done)
+        .await
+        .map_err(|e| {
+            let status = if e.contains("not found") {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (status, e)
+        })?;
+    permagent::events::emit(permagent::events::person_changed("", &uuid, "meeting"));
+    Ok(Json(meeting))
+}
+
+async fn import_calendar_handler(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<CalendarImportResponse>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let (start, end) = permagent::person_meetings::local_import_window();
+    let imported = permagent::person_meetings::import_matching_events(&pool, start, end)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    if imported > 0 {
+        permagent::events::emit(permagent::events::person_changed("", "", "meeting"));
+    }
+    Ok(Json(CalendarImportResponse { imported }))
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route(
@@ -789,6 +976,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
             get(list_people_handler).post(create_person_handler),
         )
         .route("/api/people/directory", get(people_directory_handler))
+        .route("/api/people/calendar/import", post(import_calendar_handler))
         .route("/api/people/{id}/projects", get(person_projects_handler))
         .route("/api/people/{id}/fields", patch(set_person_fields_handler))
         .route(
@@ -800,6 +988,14 @@ pub fn routes(state: Arc<AppState>) -> Router {
             delete(delete_relationship_handler),
         )
         .route("/api/people/{id}/activity", get(person_activity_handler))
+        .route(
+            "/api/people/{id}/meetings",
+            get(list_meetings_handler).post(create_meeting_handler),
+        )
+        .route(
+            "/api/people/{id}/meetings/{meeting_id}",
+            patch(patch_meeting_handler),
+        )
         .with_state(state)
 }
 
@@ -916,6 +1112,10 @@ mod tests {
         );
         assert_eq!(
             get_status(&format!("/api/people/{missing}/activity")).await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            get_status(&format!("/api/people/{missing}/meetings")).await,
             StatusCode::NOT_FOUND
         );
     }

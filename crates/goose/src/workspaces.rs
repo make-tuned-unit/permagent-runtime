@@ -51,6 +51,14 @@ fn grow_layout() -> serde_json::Value {
     })
 }
 
+fn people_layout() -> serde_json::Value {
+    serde_json::json!({
+        "type": "panel",
+        "tool": "people",
+        "config": {}
+    })
+}
+
 fn projects_layout() -> serde_json::Value {
     serde_json::json!({
         "type": "panel",
@@ -97,8 +105,8 @@ pub async fn seed_presets_if_empty(pool: &Pool<Sqlite>) -> Result<bool, String> 
         return Ok(false);
     }
 
-    // Sidebar order is a product decision (ruling 2026-07-10):
-    // Home, Projects, Build, Automate, World — Brain follows.
+    // Sidebar order is a product decision (ruling 2026-07-10, People added
+    // 2026-08-20): Home, Projects, People, Build, Grow, Automate, World, Brain.
     // Keep in lockstep with CANONICAL_WORKSPACE_ORDER below.
     let presets = [
         ("Home", "home", 0, home_layout(), true),
@@ -108,11 +116,12 @@ pub async fn seed_presets_if_empty(pool: &Pool<Sqlite>) -> Result<bool, String> 
         // were three interchangeable abstract shapes. See ICON_PATHS in
         // Sidebar.tsx, which still aliases the old keys for existing rows.
         ("Projects", "folder", 1, projects_layout(), false),
-        ("Build", "brackets", 2, build_layout(), false),
-        ("Grow", "trending-up", 3, grow_layout(), false),
-        ("Automate", "bolt", 4, automate_layout(), false),
-        ("World", "globe", 5, world_layout(), false),
-        ("Brain", "brain", 6, brain_layout(), false),
+        ("People", "users", 2, people_layout(), false),
+        ("Build", "brackets", 3, build_layout(), false),
+        ("Grow", "trending-up", 4, grow_layout(), false),
+        ("Automate", "bolt", 5, automate_layout(), false),
+        ("World", "globe", 6, world_layout(), false),
+        ("Brain", "brain", 7, brain_layout(), false),
     ];
 
     let mut first_id = String::new();
@@ -156,11 +165,12 @@ pub async fn seed_presets_if_empty(pool: &Pool<Sqlite>) -> Result<bool, String> 
 pub const CANONICAL_WORKSPACE_ORDER: &[(&str, i32)] = &[
     ("Home", 0),
     ("Projects", 1),
-    ("Build", 2),
-    ("Grow", 3),
-    ("Automate", 4),
-    ("World", 5),
-    ("Brain", 6),
+    ("People", 2),
+    ("Build", 3),
+    ("Grow", 4),
+    ("Automate", 5),
+    ("World", 6),
+    ("Brain", 7),
 ];
 
 /// Normalize the preset workspaces' sort_order to [`CANONICAL_WORKSPACE_ORDER`].
@@ -255,6 +265,43 @@ pub async fn ensure_grow_workspace(pool: &Pool<Sqlite>) -> Result<bool, String> 
     sqlx::query(
         "INSERT INTO workspaces (id, user_id, name, icon, sort_order, layout_json, is_default)
          VALUES (?, 'default', 'Grow', 'trending-up', 3, ?, 0)",
+    )
+    .bind(&id)
+    .bind(&layout_str)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// Ensure the "People" workspace exists for existing users seeded before it
+/// was a first-class tab (it used to be a pill toggle on Projects). Inserted
+/// at sort_order 2; [`ensure_canonical_workspace_order`] finalizes positions.
+/// Idempotent.
+pub async fn ensure_people_workspace(pool: &Pool<Sqlite>) -> Result<bool, String> {
+    let has_people: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM workspaces WHERE user_id = 'default' AND name = 'People')",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    if has_people {
+        return Ok(false);
+    }
+
+    sqlx::query(
+        "UPDATE workspaces SET sort_order = sort_order + 1
+         WHERE user_id = 'default' AND sort_order >= 2",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let id = Uuid::now_v7().to_string();
+    let layout_str = serde_json::to_string(&people_layout()).map_err(|e| e.to_string())?;
+    sqlx::query(
+        "INSERT INTO workspaces (id, user_id, name, icon, sort_order, layout_json, is_default)
+         VALUES (?, 'default', 'People', 'users', 2, ?, 0)",
     )
     .bind(&id)
     .bind(&layout_str)
@@ -416,7 +463,7 @@ mod tests {
         seed_presets_if_empty(&pool).await.unwrap();
         assert_eq!(
             order_of(&pool).await,
-            ["Home", "Projects", "Build", "Grow", "Automate", "World", "Brain"]
+            ["Home", "Projects", "People", "Build", "Grow", "Automate", "World", "Brain"]
         );
 
         // Simulate a legacy install: scramble to the pre-2026-07-10 order and
@@ -441,10 +488,39 @@ mod tests {
         assert!(changed, "legacy order must be rewritten");
         assert_eq!(
             order_of(&pool).await,
-            ["Home", "Projects", "Build", "Grow", "Automate", "World", "Brain", "My Lab"]
+            [
+                "Home", "Projects", "People", "Build", "Grow", "Automate", "World", "Brain",
+                "My Lab"
+            ]
         );
 
         // Idempotent: a second run changes nothing.
         assert!(!ensure_canonical_workspace_order(&pool).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn ensure_people_workspace_inserts_for_legacy_seeds() {
+        let pool = test_pool().await;
+        seed_presets_if_empty(&pool).await.unwrap();
+        sqlx::query("DELETE FROM workspaces WHERE name = 'People'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(!order_of(&pool).await.iter().any(|n| n == "People"));
+
+        assert!(ensure_people_workspace(&pool).await.unwrap());
+        assert!(!ensure_people_workspace(&pool).await.unwrap());
+        ensure_canonical_workspace_order(&pool).await.unwrap();
+        assert_eq!(
+            order_of(&pool).await,
+            ["Home", "Projects", "People", "Build", "Grow", "Automate", "World", "Brain"]
+        );
+        let tool: String = sqlx::query_scalar(
+            "SELECT json_extract(layout_json, '$.tool') FROM workspaces WHERE name = 'People'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(tool, "people");
     }
 }

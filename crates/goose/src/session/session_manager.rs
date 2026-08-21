@@ -1047,6 +1047,16 @@ impl SessionStorage {
                     if version < 43 {
                         spectral_schema::migrate_v42_to_v43(&self.pool).await?;
                     }
+                    // v44: person-keyed meetings (People profile + Home calendar).
+                    // New table + indexes only, additive and base-independent.
+                    if version < 44 {
+                        spectral_schema::migrate_v43_to_v44(&self.pool).await?;
+                    }
+                    // v45: follow-up date, optional project, Calendar.app uid
+                    // on person_meetings. ALTER + indexes, additive.
+                    if version < 45 {
+                        spectral_schema::migrate_v44_to_v45(&self.pool).await?;
+                    }
                     // Version-independent safety net for recognition columns.
                     // The always-on v23 above can stamp schema_version past the
                     // cfg-gated `version < 22` migration, leaving a feature-off DB

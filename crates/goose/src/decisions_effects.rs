@@ -105,6 +105,60 @@ fn already_applied(message: impl Into<String>) -> Result<EffectResult, GuardErro
     Ok((Some(message.into()), None))
 }
 
+/// On enrichment reject, persist a user-typed "how to find this person online"
+/// hint onto the graph as a manual field so the next `enrich_person` briefing
+/// can use it. An empty note is a plain decline — nothing is written.
+async fn persist_find_online_hints_on_reject(
+    decision: &Decision,
+) -> Result<EffectResult, GuardError> {
+    let hint = decision
+        .answer_note
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let Some(hint) = hint else {
+        return already_applied("enrichment proposal declined; nothing was written");
+    };
+
+    let payload: decisions::EnrichmentProposalPayload =
+        serde_json::from_value(decision.payload.clone()).map_err(|e| {
+            GuardError::Invalid(format!("stored enrichment payload unreadable: {e}"))
+        })?;
+
+    let Some(brain) = crate::agents::platform_extensions::get_global_brain() else {
+        return already_applied(format!(
+            "enrichment proposal declined; find-online hint kept on the decision \
+             (Brain unavailable — not written to \"{}\")",
+            payload.person_name
+        ));
+    };
+    let entity_id: spectral::core::entity_id::EntityId = payload
+        .graph_entity_id
+        .parse()
+        .map_err(|e| GuardError::Invalid(format!("invalid graph_entity_id in payload: {e:?}")))?;
+    let wrote = brain
+        .set_entity_field(
+            entity_id,
+            "find_online_hints",
+            hint,
+            spectral::ingest::FieldSource::Manual,
+            None,
+        )
+        .await
+        .map_err(|e| GuardError::Db(format!("set_entity_field(find_online_hints): {e}")))?;
+    if wrote {
+        already_applied(format!(
+            "enrichment proposal declined; find-online hint saved for \"{}\"",
+            payload.person_name
+        ))
+    } else {
+        already_applied(format!(
+            "enrichment proposal declined; find-online hint was not written for \"{}\"",
+            payload.person_name
+        ))
+    }
+}
+
 /// Apply an outbox-eligible decision effect without daemon `AppState`.
 ///
 /// `tool_approval` and `session_gate` deliberately are not handled here.
@@ -435,7 +489,7 @@ pub async fn apply_decision_effect(
             already_applied(message)
         }
         ("enrichment_proposal", Some("reject")) => {
-            already_applied("enrichment proposal declined; nothing was written")
+            persist_find_online_hints_on_reject(decision).await
         }
         ("project_intel_proposal", Some("approve")) => apply_project_intel(pool, decision).await,
         ("project_intel_proposal", Some("reject")) => {

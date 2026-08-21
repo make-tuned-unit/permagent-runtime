@@ -19,7 +19,7 @@ import { useCommandCenter } from '../../lib/store';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Panel } from './Panel';
-import type { Person, Project, ProjectPerson } from './types';
+import type { NamedPersonMeeting, Person, Project, ProjectPerson } from './types';
 
 export function PeoplePanel({ project }: { project: Project }) {
   const { colors, theme } = useTheme();
@@ -29,6 +29,7 @@ export function PeoplePanel({ project }: { project: Project }) {
   const bumpPeople = useCommandCenter(s => s.bumpPeople);
   const peopleRev = useCommandCenter(s => s.peopleRev);
   const [people, setPeople] = useState<ProjectPerson[]>([]);
+  const [meetings, setMeetings] = useState<NamedPersonMeeting[]>([]);
   const [picking, setPicking] = useState(false);
   // Distinguish first-load, load-failure, and genuinely-empty so a failed fetch
   // never reads the same as "no people associated yet" (and never hangs on a
@@ -43,10 +44,14 @@ export function PeoplePanel({ project }: { project: Project }) {
   const load = useCallback(async () => {
     const generation = ++loadGeneration.current;
     try {
-      const rows = await apiFetch<ProjectPerson[]>(`/api/projects/${encodeURIComponent(project.id)}/people`);
+      const [rows, meetingRows] = await Promise.all([
+        apiFetch<ProjectPerson[]>(`/api/projects/${encodeURIComponent(project.id)}/people`),
+        apiFetch<NamedPersonMeeting[]>(`/api/projects/${encodeURIComponent(project.id)}/meetings`).catch(() => []),
+      ]);
       if (generation !== loadGeneration.current) return;
       if (!Array.isArray(rows)) throw new Error('Invalid people response');
       setPeople(rows);
+      setMeetings(Array.isArray(meetingRows) ? meetingRows : []);
       setStatus('ready');
     } catch {
       if (generation !== loadGeneration.current) return;
@@ -153,6 +158,19 @@ export function PeoplePanel({ project }: { project: Project }) {
                 {p.project_role || p.role || ''}
               </span>
             </button>
+          ))}
+        </div>
+      )}
+      {meetings.length > 0 && (
+        <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono, textTransform: 'uppercase', letterSpacing: '.04em' }}>
+            Meetings
+          </div>
+          {meetings.slice(0, 8).map(m => (
+            <div key={m.id} style={{ fontSize: 11, color: colors.text, padding: '4px 0', borderBottom: `1px solid ${colors.border}` }}>
+              <span style={{ fontWeight: 600 }}>{m.display_name}</span>
+              <span style={{ color: colors.textDim }}> · {m.title}</span>
+            </div>
           ))}
         </div>
       )}

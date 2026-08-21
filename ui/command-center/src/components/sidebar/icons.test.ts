@@ -26,6 +26,7 @@ describe('resolveIconPath', () => {
     expect(resolveIconPath('World', 'globe')).toBe(ICON_PATHS.globe);
     expect(resolveIconPath('Brain', 'brain')).toBe(ICON_PATHS.brain);
     expect(resolveIconPath('Grow', 'trending-up')).toBe(ICON_PATHS['trending-up']);
+    expect(resolveIconPath('People', 'users')).toBe(ICON_PATHS.users);
   });
 
   it('honours a custom workspace\'s own icon key', () => {

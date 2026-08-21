@@ -48,6 +48,7 @@ pub const NAV_CATALOG_TABS: &[&str] = &[
     "World",
     "Settings",
     "Projects",
+    "People",
     "Dashboard",
     "Grow",
     "Inbox",
@@ -67,6 +68,13 @@ pub static TEACHABLE: &[TeachableFeature] = &[
         id: "projects",
         surface: SurfaceRef {
             tab: "Projects",
+            section: None,
+        },
+    },
+    TeachableFeature {
+        id: "people",
+        surface: SurfaceRef {
+            tab: "People",
             section: None,
         },
     },
@@ -323,8 +331,12 @@ mod tests {
         let next = learn_next_given(|id| engaged.contains(id));
         assert_eq!(next.len(), TEACHABLE.len() - 2);
         assert!(!next.iter().any(|t| t.id == "brain" || t.id == "projects"));
-        // "build" was third → now the top recommendation.
-        assert_eq!(next[0].id, "build");
+        // Remaining entries keep authoring order: whatever is third is now first.
+        assert_eq!(next[0].id, TEACHABLE[2].id);
+        assert_eq!(
+            next.iter().map(|t| t.id).collect::<Vec<_>>(),
+            TEACHABLE.iter().skip(2).map(|t| t.id).collect::<Vec<_>>()
+        );
 
         // Everything engaged → empty learn-next.
         assert!(learn_next_given(|_| true).is_empty());

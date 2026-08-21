@@ -422,7 +422,11 @@ impl AppConductorClient {
                  what the user sees — describing navigation in text does nothing.\n\n\
                  To open a specific project's detail/kanban view, navigate to the \
                  \"Projects\" tab with state: { \"project_id\": \"<uuid>\" }. Resolve \
-                 the project name first with project_resolve to get the ID."
+                 the project name first with project_resolve to get the ID.\n\n\
+                 To open the People directory, navigate to the \"People\" tab. To open \
+                 a specific person's detail panel, pass state: { \"person\": \"<display name>\" } \
+                 (the name as observe_app surface people returned it). Do not pass emails \
+                 or UUIDs — observe_app redacts those."
                     .to_string(),
                 schema::<NavigateAppParams>(),
             ),

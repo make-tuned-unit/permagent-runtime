@@ -61,6 +61,7 @@ pub mod people_bridge;
 pub mod people_create;
 pub mod people_provenance;
 pub mod permission;
+pub mod person_meetings;
 pub mod picker;
 pub mod playbook;
 #[cfg(feature = "telemetry")]

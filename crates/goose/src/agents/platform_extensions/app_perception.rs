@@ -9,7 +9,10 @@ use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
 use crate::agents::tool_execution::ToolCallContext;
 use crate::app_views::{self, AnalyticsWindow};
-use crate::{activity_journal, briefings, cards, decisions, projects, scheduler, skills};
+use crate::{
+    activity_journal, briefings, cards, decisions, people, person_meetings, projects, scheduler,
+    skills,
+};
 use anyhow::Result as AnyResult;
 use async_trait::async_trait;
 use rmcp::model::{
@@ -41,6 +44,7 @@ pub static EXTENSION_NAME: &str = "app_perception";
 pub const OBSERVABLE_SURFACES: &[&str] = &[
     "analytics",
     "projects",
+    "people",
     "goals",
     "cards",
     "spend",
@@ -106,6 +110,11 @@ pub const TAB_SURFACES: &[TabSurface] = &[
         reads: "projects",
     },
     TabSurface {
+        tab: "People",
+        surface: "people",
+        reads: "people",
+    },
+    TabSurface {
         tab: "Dashboard",
         surface: "overview",
         reads: "overview_aggregate",
@@ -148,7 +157,7 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
         what_it_does:
             "You can directly perceive the aggregate data your Permagent home renders by \
-             calling observe_app for analytics, projects, goals, cards, spend, sessions, \
+             calling observe_app for analytics, projects, people, goals, cards, spend, sessions, \
              briefings, grow, inbox, decision_inbox, skills, automate, trace, brain, build, \
              world, settings, or an overview. This is structured local state, not screenshot \
              vision and not the website in the Build browser. \
@@ -156,7 +165,9 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
              `decision_inbox` is what is waiting on the user's approval. \
              `grow` returns the growth actions YOU recommended for a project, what you predicted \
              each would move, and how the 7/14/28-day sweep judged it — you have no memory of \
-             those recommendations, so read them rather than saying you do not know. `brain` is \
+             those recommendations, so read them rather than saying you do not know. `people` is \
+             the CRM directory: names, roles, companies, last contact, quiet contacts, follow-ups, and recent meetings — \
+             never emails or phone numbers. `brain` is \
              memory counts, recall health, and librarian schedule/phase — never memory contents. \
              `build` is coding-session summaries and the in-app browser bookmarks/tab sets. \
              `world` is the worker roster and availability. `settings` is which providers and \
@@ -172,7 +183,7 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ObserveAppParams {
-    /// Room of the app to observe: analytics, projects, goals, cards, spend,
+    /// Room of the app to observe: analytics, projects, people, goals, cards, spend,
     /// sessions, briefings, grow, inbox (Downloads intake), decision_inbox
     /// (approvals queue), skills, automate, trace, brain, build, world,
     /// settings, or overview.
@@ -747,6 +758,89 @@ impl AppPerceptionClient {
             })
             .collect();
         available("projects", json!({"projects": ranked(items, total)}))
+    }
+
+    async fn observe_people(&self, pool: &Pool<Sqlite>) -> Value {
+        let rows = match people::list_people(pool, &people::PeopleFilter::default()).await {
+            Ok(rows) => rows,
+            Err(e) => return unavailable("people", format!("people query failed: {e}")),
+        };
+        if rows.is_empty() {
+            return empty(
+                "people",
+                "query succeeded; no people in the directory yet",
+                json!({"people": ranked(Vec::new(), 0)}),
+            );
+        }
+        let total = rows.len();
+        let latest_map = person_meetings::latest_starts_by_person(pool)
+            .await
+            .unwrap_or_default();
+        let mut people = rows;
+        person_meetings::merge_last_contact(&mut people, &latest_map);
+        let now = chrono::Utc::now();
+        let mut quiet_items = Vec::new();
+        let mut quiet_total = 0usize;
+        let mut items = Vec::new();
+        for person in people.into_iter() {
+            let meetings = person_meetings::list_for_person(pool, &person.entity_uuid)
+                .await
+                .unwrap_or_default();
+            let last_meeting = meetings.first().map(|m| {
+                json!({
+                    "title": safe_text(&m.title, 120),
+                    "starts_at": safe_text(&m.starts_at, 40)
+                })
+            });
+            let quiet = person_meetings::is_quiet(person.last_contact_at.as_deref(), now);
+            if quiet {
+                quiet_total += 1;
+                if quiet_items.len() < LIST_LIMIT {
+                    quiet_items.push(json!({
+                        "name": safe_text(&person.display_name, 120),
+                        "last_contact": person.last_contact_at.as_deref().map(|s| safe_text(s, 40)),
+                    }));
+                }
+            }
+            if items.len() < LIST_LIMIT {
+                items.push(json!({
+                    "name": safe_text(&person.display_name, 120),
+                    "role": person.role.as_deref().map(|s| safe_text(s, 80)),
+                    "company": person.company.as_deref().map(|s| safe_text(s, 80)),
+                    "last_contact": person.last_contact_at.as_deref().map(|s| safe_text(s, 40)),
+                    "quiet": quiet,
+                    "meeting_count": meetings.len(),
+                    "latest_meeting": last_meeting
+                }));
+            }
+        }
+        let follow_rows = person_meetings::list_follow_ups_in_range(
+            pool,
+            now - chrono::Duration::days(14),
+            now + chrono::Duration::days(14),
+        )
+        .await
+        .unwrap_or_default();
+        let follow_total = follow_rows.len();
+        let follow_ups: Vec<Value> = follow_rows
+            .into_iter()
+            .take(LIST_LIMIT)
+            .map(|m| {
+                json!({
+                    "name": safe_text(&m.display_name, 120),
+                    "title": safe_text(&m.title, 120),
+                    "follow_up_at": m.follow_up_at.as_deref().map(|s| safe_text(s, 40)),
+                })
+            })
+            .collect();
+        available(
+            "people",
+            json!({
+                "people": ranked(items, total),
+                "quiet": ranked(quiet_items, quiet_total),
+                "follow_ups": ranked(follow_ups, follow_total)
+            }),
+        )
     }
 
     async fn observe_board(
@@ -1842,6 +1936,7 @@ impl AppPerceptionClient {
                     .await
             }
             "projects" => self.observe_projects(&pool).await,
+            "people" => self.observe_people(&pool).await,
             "goals" => self.observe_board(&pool, args.scope.as_deref(), true).await,
             "cards" => {
                 self.observe_board(&pool, args.scope.as_deref(), false)
@@ -1881,7 +1976,7 @@ impl AppPerceptionClient {
         vec![Tool::new(
             "observe_app".to_string(),
             "Read aggregate state from the data behind the Permagent app. Call this directly \
-             when asked about analytics, projects, goals/cards, spend, sessions, growth \
+             when asked about analytics, projects, people, goals/cards, spend, sessions, growth \
              actions you recommended, agent briefings, the Downloads inbox, the Decision \
              Inbox, skills, scheduled automations, execution trace, brain memory health, \
              build coding sessions or browser bookmarks, world workers, settings \
@@ -1895,10 +1990,13 @@ impl AppPerceptionClient {
              Plausible, Fathom or any other third-party tool, and before saying analytics \
              are unavailable. If a project returns no events, say the collector is not \
              installed for it rather than that the data does not exist.\n\n\
-             surface: analytics | projects | goals | cards | spend | sessions | briefings | \
+             surface: analytics | projects | people | goals | cards | spend | sessions | briefings | \
              grow | inbox | decision_inbox | skills | automate | trace | brain | build | \
              world | settings | overview. `inbox` is the Downloads intake folder (files from \
              the in-app browser); `decision_inbox` is what is waiting on the user's approval. \
+             `people` is the CRM directory (names, roles, companies, last contact, recent \
+             meetings — never emails or phone numbers). To open a person in the app, \
+             navigate_app to the People tab with state: { \"person\": \"<display name>\" }. \
              analytics and cards require \
              scope = project name, slug, or id; goals accepts an optional project scope; grow \
              requires a project scope. window supports 7d, 30d, 90d, 365d, or all. \
@@ -2199,6 +2297,45 @@ mod tests {
         let value = client.observe_skills(&pool).await;
         assert_eq!(value["data"]["saved"]["returned"], LIST_LIMIT);
         assert_eq!(value["data"]["saved"]["truncated"], true);
+    }
+
+    #[tokio::test]
+    async fn people_surface_is_bounded_and_omits_contact_details() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = test_client(dir.path().to_path_buf());
+        let pool = memory_pool().await;
+        crate::session::spectral_schema::init_spectral_db(&pool)
+            .await
+            .unwrap();
+        assert_eq!(client.observe_people(&pool).await["status"], "empty");
+
+        for i in 0..(LIST_LIMIT + 1) {
+            crate::people::upsert_person(
+                &pool,
+                &format!("person:ada-{i}"),
+                &format!("Ada {i}"),
+                &crate::people::PersonAttrs {
+                    email: Some("ada@example.com".into()),
+                    company: Some("Analytical Engines".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let value = client.observe_people(&pool).await;
+        assert_eq!(value["status"], "available");
+        assert_eq!(value["data"]["people"]["returned"], LIST_LIMIT);
+        assert_eq!(value["data"]["people"]["truncated"], true);
+        let encoded = value.to_string();
+        assert!(
+            !encoded.contains("ada@example.com"),
+            "observe_app people must not leak emails: {encoded}"
+        );
+        assert!(
+            !encoded.contains("entity_uuid"),
+            "observe_app people must not return join ids the redactor would blank: {encoded}"
+        );
     }
 
     #[tokio::test]

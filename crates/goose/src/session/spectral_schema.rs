@@ -701,6 +701,10 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // CRM people table (schema v12). Idempotent; shared with migrate_v11_to_v12.
     apply_people_schema(pool).await?;
 
+    // Person-keyed meetings (schema v44). Idempotent; shared with
+    // migrate_v43_to_v44 so a fresh install can log a meeting on first boot.
+    apply_person_meetings_schema(pool).await?;
+
     // File-intake inbox table (schema v13). Idempotent; shared with
     // migrate_v12_to_v13.
     apply_inbox_schema(pool).await?;
@@ -1099,6 +1103,147 @@ pub async fn apply_people_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await?;
 
     tx.commit().await?;
+    Ok(())
+}
+
+/// Person-keyed meetings (schema v44). One row per logged meeting with a
+/// directory person — the profile timeline and the Home Calendar card both
+/// read this table. Calendar.app is a best-effort write on create, not the
+/// source of truth. Fully idempotent (`CREATE TABLE / INDEX IF NOT EXISTS`).
+pub async fn apply_person_meetings_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut tx = pool.begin().await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS person_meetings (
+            id               TEXT PRIMARY KEY,
+            entity_uuid      TEXT NOT NULL REFERENCES people(entity_uuid) ON DELETE CASCADE,
+            title            TEXT NOT NULL,
+            starts_at        TEXT NOT NULL,
+            ends_at          TEXT,
+            notes            TEXT NOT NULL DEFAULT '',
+            calendar_synced  INTEGER NOT NULL DEFAULT 0,
+            project_id       TEXT,
+            follow_up_at     TEXT,
+            follow_up_note   TEXT NOT NULL DEFAULT '',
+            follow_up_done   INTEGER NOT NULL DEFAULT 0,
+            calendar_uid     TEXT,
+            created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_person_meetings_person \
+         ON person_meetings(entity_uuid, starts_at DESC)",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_person_meetings_starts ON person_meetings(starts_at)",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS trg_person_meetings_updated_at
+            AFTER UPDATE ON person_meetings
+            FOR EACH ROW
+            BEGIN
+                UPDATE person_meetings SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                WHERE id = NEW.id;
+            END",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    apply_person_meetings_v45_columns(pool).await?;
+    Ok(())
+}
+
+/// v45 columns on an existing v44 `person_meetings` table. Fresh installs get
+/// these from CREATE TABLE; existing DBs get a PRAGMA-guarded ADD COLUMN.
+pub async fn apply_person_meetings_v45_columns(pool: &Pool<Sqlite>) -> Result<()> {
+    for (column, ddl) in [
+        (
+            "project_id",
+            "ALTER TABLE person_meetings ADD COLUMN project_id TEXT",
+        ),
+        (
+            "follow_up_at",
+            "ALTER TABLE person_meetings ADD COLUMN follow_up_at TEXT",
+        ),
+        (
+            "follow_up_note",
+            "ALTER TABLE person_meetings ADD COLUMN follow_up_note TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "follow_up_done",
+            "ALTER TABLE person_meetings ADD COLUMN follow_up_done INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "calendar_uid",
+            "ALTER TABLE person_meetings ADD COLUMN calendar_uid TEXT",
+        ),
+    ] {
+        let has_column: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('person_meetings') WHERE name = ?",
+        )
+        .bind(column)
+        .fetch_one(pool)
+        .await?;
+        if has_column == 0 {
+            sqlx::query(ddl).execute(pool).await?;
+        }
+    }
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_person_meetings_project \
+         ON person_meetings(project_id, starts_at DESC)",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_person_meetings_follow_up \
+         ON person_meetings(follow_up_at) WHERE follow_up_done = 0",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_person_meetings_calendar_uid \
+         ON person_meetings(calendar_uid) WHERE calendar_uid IS NOT NULL",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// v44: person-keyed meetings. New table + indexes + updated_at trigger;
+/// additive and base-independent. Fresh installs get the same table from
+/// `init_spectral_db`, which never reaches the migration ladder.
+pub async fn migrate_v43_to_v44(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v43 -> v44 (person meetings)");
+    apply_people_schema(pool).await?;
+    apply_person_meetings_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (44)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v44 (person meetings)");
+    Ok(())
+}
+
+/// v45: follow-up, optional project, and Calendar.app uid on person_meetings.
+/// Additive ALTER + indexes; base-independent. Fresh installs get the same
+/// columns from `apply_person_meetings_schema`.
+pub async fn migrate_v44_to_v45(pool: &Pool<Sqlite>) -> Result<()> {
+    info!(
+        "Migrating Spectral schema v44 -> v45 (person meeting follow-up / project / calendar uid)"
+    );
+    apply_people_schema(pool).await?;
+    apply_person_meetings_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (45)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v45 (person meeting follow-up / project / calendar uid)");
     Ok(())
 }
 
@@ -3878,6 +4023,14 @@ mod people_schema_tests {
         init_spectral_db(&pool).await.unwrap();
 
         assert!(people_table_exists(&pool).await);
+        assert!(
+            sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS (SELECT name FROM sqlite_master WHERE type='table' AND name='person_meetings')",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        );
         assert_eq!(current_version(&pool).await, SPECTRAL_SCHEMA_VERSION);
     }
 
@@ -4953,6 +5106,90 @@ mod inbox_schema_tests {
             // Idempotent: a second run is a no-op, not an error.
             migrate_v42_to_v43(&pool).await.unwrap();
             assert_eq!(current_version(&pool).await, 43, "base v{base}: rerun");
+        }
+    }
+
+    /// migrate_v43_to_v44 is base-independent: it must add person_meetings and
+    /// stamp v44 over any earlier recorded base, and be a no-op on a re-run.
+    #[tokio::test]
+    async fn migrate_v43_to_v44_is_base_independent() {
+        for base in [38, 41, 43] {
+            let pool = mem_pool().await;
+            sqlx::query(
+                "CREATE TABLE schema_version (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO schema_version (version) VALUES (?)")
+                .bind(base)
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            assert!(
+                !object_exists(&pool, "person_meetings").await,
+                "base v{base}: pre"
+            );
+
+            migrate_v43_to_v44(&pool).await.unwrap();
+
+            assert!(
+                object_exists(&pool, "person_meetings").await,
+                "base v{base}: person_meetings"
+            );
+            assert_eq!(current_version(&pool).await, 44, "base v{base}: version");
+
+            migrate_v43_to_v44(&pool).await.unwrap();
+            assert_eq!(current_version(&pool).await, 44, "base v{base}: rerun");
+        }
+    }
+
+    /// migrate_v44_to_v45 is base-independent: it must add follow-up / project /
+    /// calendar_uid columns over a v44 table and be a no-op on a re-run.
+    #[tokio::test]
+    async fn migrate_v44_to_v45_is_base_independent() {
+        for base in [38, 43, 44] {
+            let pool = mem_pool().await;
+            sqlx::query(
+                "CREATE TABLE schema_version (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO schema_version (version) VALUES (?)")
+                .bind(base)
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            migrate_v43_to_v44(&pool).await.unwrap();
+            migrate_v44_to_v45(&pool).await.unwrap();
+
+            let has_follow_up: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM pragma_table_info('person_meetings') WHERE name = 'follow_up_at'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(has_follow_up, 1, "base v{base}: follow_up_at");
+            let has_project: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM pragma_table_info('person_meetings') WHERE name = 'project_id'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(has_project, 1, "base v{base}: project_id");
+            assert_eq!(current_version(&pool).await, 45, "base v{base}: version");
+
+            migrate_v44_to_v45(&pool).await.unwrap();
+            assert_eq!(current_version(&pool).await, 45, "base v{base}: rerun");
         }
     }
 

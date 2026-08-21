@@ -13,7 +13,7 @@ import type { ProjectPerson } from './types';
 const person = { entity_uuid: 'alice', display_name: 'Alice', canonical_id: 'person:alice',
   role: null, company: null, email: null, phone: null, notes: null, last_contact_at: null,
   birthday: null, relationship_strength: null, how_met: null,
-  linkedin: null, x_handle: null, personal_site: null, created_at: '', updated_at: '',
+  linkedin: null, x_handle: null, facebook: null, instagram: null, personal_site: null, photo_url: null, find_online_hints: null, created_at: '', updated_at: '',
   project_role: null, associated_at: '' } satisfies ProjectPerson;
 let container: HTMLDivElement; let root: Root;
 
@@ -22,6 +22,7 @@ beforeEach(() => {
     if (url === '/api/people') return Promise.resolve([{ ...person, entity_uuid: 'bob', display_name: 'Bob' }]);
     if (url.endsWith('/relationships')) return Promise.resolve([{ from_entity_uuid: 'alice', to_entity_uuid: 'bob', predicate: 'manages', other_person: { ...person, entity_uuid: 'bob', display_name: 'Bob' } }]);
     if (url.endsWith('/activity')) return Promise.resolve([{ id: 'memory-1', kind: 'memory', title: 'Met Bob', detail: 'Alice met Bob', timestamp: '2026-07-22T10:00:00Z' }]);
+    if (url.endsWith('/meetings')) return Promise.resolve([]);
     return Promise.resolve(undefined);
   });
   container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);

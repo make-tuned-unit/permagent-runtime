@@ -24,7 +24,7 @@ type NavigatePayload = {
   tool_type?: string;
   panel_type?: string;
   section?: string;
-  state?: { project_id?: string };
+  state?: { project_id?: string; person?: string; entity_uuid?: string };
   reason?: string;
 };
 
@@ -127,7 +127,7 @@ function dispatchClipboard(payload: { text?: string; reason?: string }) {
 // (setActivePanel) instead. Listing 'trace' here made navigate_app("Trace")
 // fall into the tool-host search, which no-ops because nothing hosts it.
 const VALID_TOOL_TYPES = new Set<string>([
-  'chat', 'skills', 'world', 'terminal', 'browser', 'memory', 'dashboard', 'build', 'automate', 'projects', 'grow',
+  'chat', 'skills', 'world', 'terminal', 'browser', 'memory', 'dashboard', 'build', 'automate', 'projects', 'people', 'grow',
 ]);
 
 /** Legacy Console overlay tool_types → the Settings section that replaced
@@ -261,6 +261,7 @@ export function useAppNavigate() {
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
   const workspaces = useCommandCenter(s => s.workspaces);
   const setPendingProjectNavigation = useCommandCenter(s => s.setPendingProjectNavigation);
+  const setPendingPersonNavigation = useCommandCenter(s => s.setPendingPersonNavigation);
   const setPendingSettingsSection = useCommandCenter(s => s.setPendingSettingsSection);
   const setPendingTerminalLaunch = useCommandCenter(s => s.setPendingTerminalLaunch);
   const { theme } = useTheme();
@@ -276,6 +277,8 @@ export function useAppNavigate() {
   setActivePanelRef.current = setActivePanel;
   const setPendingProjectNavigationRef = useRef(setPendingProjectNavigation);
   setPendingProjectNavigationRef.current = setPendingProjectNavigation;
+  const setPendingPersonNavigationRef = useRef(setPendingPersonNavigation);
+  setPendingPersonNavigationRef.current = setPendingPersonNavigation;
   const setPendingSettingsSectionRef = useRef(setPendingSettingsSection);
   setPendingSettingsSectionRef.current = setPendingSettingsSection;
   const setPendingTerminalLaunchRef = useRef(setPendingTerminalLaunch);
@@ -316,6 +319,12 @@ export function useAppNavigate() {
         // If navigating to projects with a specific project_id, queue drill-in
         if (tool_type === 'projects' && state?.project_id) {
           setPendingProjectNavigationRef.current(state.project_id);
+        }
+        if (tool_type === 'people' && (state?.entity_uuid || state?.person)) {
+          setPendingPersonNavigationRef.current({
+            entity_uuid: state.entity_uuid,
+            person: state.person,
+          });
         }
       }
     }

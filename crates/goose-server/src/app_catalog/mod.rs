@@ -53,6 +53,11 @@ mod tests {
             .expect("Grow must be in the navigate_app catalog");
         assert_eq!(grow.tool_type, "grow");
 
+        let people = catalog
+            .find_by_name("People")
+            .expect("People must be in the navigate_app catalog");
+        assert_eq!(people.tool_type, "people");
+
         // The Inbox page lives inside Settings (2026-08 Console
         // consolidation): the stable name still resolves, and the entry's
         // fixed `section` deep-links to the right Settings pane.

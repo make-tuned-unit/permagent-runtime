@@ -25,10 +25,13 @@
 
 use crate::state::AppState;
 use axum::{
+    extract::State,
     routing::{get, put},
     Json, Router,
 };
+use chrono::{DateTime, Local, Timelike};
 use permagent::config::paths::Paths;
+use permagent::person_meetings;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
@@ -154,7 +157,8 @@ pub fn builtin_card_manifests() -> Vec<CardManifest> {
         CardManifest {
             card_type: "calendar".to_string(),
             name: "Calendar".to_string(),
-            description: "Today's events from your Mac's Calendar".to_string(),
+            description: "Today's events from Apple Calendar and meetings logged on People"
+                .to_string(),
             default_size: CardSize { w: 5, h: 4 },
             layout: "list".to_string(),
             data_endpoint: "/api/dashboard/calendar".to_string(),
@@ -536,6 +540,12 @@ fn fmt_clock(hour24: u32, minute: u32) -> String {
     format!("{}:{:02} {}", h12, minute, ampm)
 }
 
+fn clock_from_rfc3339(s: &str) -> Option<String> {
+    let dt = DateTime::parse_from_rfc3339(s).ok()?;
+    let local = dt.with_timezone(&Local);
+    Some(fmt_clock(local.hour(), local.minute()))
+}
+
 /// Parse the AppleScript output into event cells, chronological by clock time.
 fn parse_calendar_output(out: &str) -> Vec<CardCell> {
     let mut cells: Vec<CardCell> = out.lines().filter_map(parse_calendar_line).collect();
@@ -543,9 +553,9 @@ fn parse_calendar_output(out: &str) -> Vec<CardCell> {
     cells
 }
 
-async fn get_calendar() -> Json<CardData> {
+async fn apple_calendar_cells() -> Result<Vec<CardCell>, &'static str> {
     if !cfg!(target_os = "macos") {
-        return Json(CardData::note("Calendar is available on macOS"));
+        return Ok(Vec::new());
     }
     let fut = tokio::process::Command::new("osascript")
         .arg("-e")
@@ -553,17 +563,71 @@ async fn get_calendar() -> Json<CardData> {
         .output();
     let output = match tokio::time::timeout(Duration::from_secs(8), fut).await {
         Ok(Ok(o)) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
-        // Non-zero exit is almost always "Calendar access not granted".
-        Ok(Ok(_)) => return Json(CardData::note("Grant Calendar access to see events")),
-        Ok(Err(_)) | Err(_) => return Json(CardData::note("Calendar is unavailable right now")),
+        Ok(Ok(_)) => return Err("Grant Calendar access to see events"),
+        Ok(Err(_)) | Err(_) => return Err("Calendar is unavailable right now"),
     };
-    let cells = parse_calendar_output(&output);
+    Ok(parse_calendar_output(&output))
+}
+
+async fn get_calendar(State(state): State<Arc<AppState>>) -> Json<CardData> {
+    if let Ok(pool) = state.session_manager().pool_clone().await {
+        let (start, end) = person_meetings::local_today_utc_range();
+        let _ = person_meetings::import_matching_events(&pool, start, end).await;
+    }
+
+    let (mut cells, apple_note) = match apple_calendar_cells().await {
+        Ok(c) => (c, None),
+        Err(note) => (Vec::new(), Some(note.to_string())),
+    };
+
+    if let Ok(pool) = state.session_manager().pool_clone().await {
+        let (start, end) = person_meetings::local_today_utc_range();
+        if let Ok(meetings) = person_meetings::list_in_range(&pool, start, end).await {
+            for m in meetings {
+                let label = m.title.clone();
+                if cells.iter().any(|c| c.label.eq_ignore_ascii_case(&label)) {
+                    continue;
+                }
+                cells.push(CardCell {
+                    label,
+                    value: m.display_name,
+                    sub: clock_from_rfc3339(&m.starts_at),
+                    ..Default::default()
+                });
+            }
+        }
+        if let Ok(follow_ups) = person_meetings::list_follow_ups_in_range(&pool, start, end).await {
+            for m in follow_ups {
+                let label = format!("Follow up with {}", m.display_name);
+                if cells.iter().any(|c| c.label.eq_ignore_ascii_case(&label)) {
+                    continue;
+                }
+                cells.push(CardCell {
+                    label,
+                    value: if m.follow_up_note.is_empty() {
+                        m.title
+                    } else {
+                        m.follow_up_note
+                    },
+                    sub: m
+                        .follow_up_at
+                        .as_deref()
+                        .and_then(clock_from_rfc3339)
+                        .or_else(|| clock_from_rfc3339(&m.starts_at)),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+
     if cells.is_empty() {
-        return Json(CardData::note("No events today"));
+        return Json(CardData::note(
+            apple_note.unwrap_or_else(|| "No events today".into()),
+        ));
     }
     Json(CardData {
         cells,
-        note: None,
+        note: apple_note,
         configured: None,
     })
 }

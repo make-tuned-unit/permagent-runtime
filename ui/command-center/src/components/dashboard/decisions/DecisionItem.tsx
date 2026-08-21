@@ -15,7 +15,8 @@
  *    (decisions.rs:625-643); payload.default marks Henry's recommendation.
  *  - risk_gate: approve authorizes the gated action class; reject records.
  *  - enrichment_proposal: approve writes the proposed person fields with
- *    Enriched provenance (manual entries protected); reject records only.
+ *    Enriched provenance (manual entries protected); reject records, and a
+ *    find-online hint in the note is written to the person as a manual field.
  *  - file_to_project: approve files the content as a project note (Brain-
  *    indexed) and adds named people address-less; reject persists nothing.
  *  - malformed: acknowledgement only — recorded, no state change.
@@ -98,7 +99,7 @@ function effectTextFor(
   if (kind === 'enrichment_proposal') {
     return answer === 'approve'
       ? `Confirm approve — ${agentName} will save these details to the person's profile (your manual entries stay protected).`
-      : 'Confirm reject — nothing is written to the profile.';
+      : 'Confirm reject — nothing is written to the profile. If this was the wrong person, add a hint below so the next pass can find them.';
   }
   if (kind === 'project_intel_proposal') {
     return answer === 'approve'
@@ -431,6 +432,20 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
               {pushedRejectWarning(d.kind, pushTarget)}
             </span>
           )}
+          {pending.body.answer === 'reject' && d.kind === 'enrichment_proposal' && (
+            <textarea
+              value={note}
+              onChange={e => setNote(e.target.value)}
+              placeholder="How can the agent find this person online? Company, LinkedIn, city…"
+              rows={3}
+              style={{
+                flexBasis: '100%', width: '100%', boxSizing: 'border-box', resize: 'vertical',
+                borderRadius: radius.md, border: `1px solid ${colors.border}`,
+                background: colors.inputBg, color: colors.text,
+                fontFamily: font.body, fontSize: 12, padding: '8px 10px', outline: 'none',
+              }}
+            />
+          )}
           <Btn variant="primary" disabled={submitting} onClick={() => submit(pending)}>
             {submitting ? 'Sending…' : pending.confirmLabel}
           </Btn>
@@ -630,7 +645,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
       )}
 
       {/* Note rides along with whatever answer is confirmed */}
-      {noteOpen && !conflict && (
+      {noteOpen && !conflict && !(pending?.body.answer === 'reject' && d.kind === 'enrichment_proposal') && (
         <textarea
           value={note}
           onChange={e => setNote(e.target.value)}

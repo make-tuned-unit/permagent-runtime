@@ -116,7 +116,7 @@ export type ActivePanel = 'chat' | 'skills' | 'settings' | 'terminal' | 'browser
 
 // ── Workspace types ──
 
-export type ToolType = 'chat' | 'skills' | 'trace' | 'world' | 'terminal' | 'browser' | 'memory' | 'dashboard' | 'build' | 'grow' | 'automate' | 'projects';
+export type ToolType = 'chat' | 'skills' | 'trace' | 'world' | 'terminal' | 'browser' | 'memory' | 'dashboard' | 'build' | 'grow' | 'automate' | 'projects' | 'people';
 
 /** Queued Build-tab PTY launch (project chip, agent event, or a Grow action). */
 export interface PendingTerminalLaunch {
@@ -384,6 +384,9 @@ interface CommandCenterStore {
   // --- Project navigation (from agent/voice) ---
   pendingProjectNavigation: string | null;
   setPendingProjectNavigation: (id: string | null) => void;
+
+  pendingPersonNavigation: { entity_uuid?: string; person?: string } | null;
+  setPendingPersonNavigation: (pending: { entity_uuid?: string; person?: string } | null) => void;
 
   // --- Note deep-link: "note saved" notification → the note on Details ---
   // Mirrors openCardOnBoard: pendingProjectNavigation does the (self-healing)
@@ -1642,6 +1645,9 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   // Project navigation (from agent/voice)
   pendingProjectNavigation: null,
   setPendingProjectNavigation: (id) => set({ pendingProjectNavigation: id }),
+
+  pendingPersonNavigation: null,
+  setPendingPersonNavigation: (pending) => set({ pendingPersonNavigation: pending }),
 
   // Brain-loop "View in Brain" deep-link. Stash the target, then switch to the
   // Brain workspace; BrainView consumes pendingBrainMemory on mount/refresh, so

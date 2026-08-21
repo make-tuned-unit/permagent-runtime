@@ -32,7 +32,11 @@ const base = {
   how_met: null,
   linkedin: null,
   x_handle: null,
+  facebook: null,
+  instagram: null,
   personal_site: null,
+  photo_url: null,
+  find_online_hints: null,
   created_at: '',
   updated_at: '',
 };
@@ -77,6 +81,18 @@ describe('PeopleDirectory', () => {
     expect(container.textContent).toContain('no project');
     // The count is the readable proof this surface exists for.
     expect(container.textContent).toContain('1 in no project');
+  });
+
+  it('shows last-contact decay and a due follow-up', async () => {
+    apiFetch.mockResolvedValue([
+      person('a', 'Ada Lovelace', {
+        last_contact_at: '2026-01-01T00:00:00Z',
+        next_follow_up_at: '2020-01-01T00:00:00Z',
+      }),
+    ]);
+    await act(async () => root.render(<PeopleDirectory />));
+    expect(container.textContent).toContain('follow up');
+    expect(container.textContent).toMatch(/mo ago|never/);
   });
 
   it('flags a name that is a strict prefix of another, and nothing else', async () => {

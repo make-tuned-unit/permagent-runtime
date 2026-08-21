@@ -62,7 +62,7 @@ struct EnrichPersonParams {
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ProposedFieldParam {
-    /// One of: linkedin, job_title, company, x_handle, personal_site.
+    /// One of: linkedin, job_title, company, x_handle, facebook, instagram, personal_site, photo_url.
     field_name: String,
     /// The found value.
     value: String,
@@ -76,6 +76,27 @@ struct ProposeEnrichmentParams {
     person: String,
     /// The proposed field values, each with the source URL it was verified on.
     fields: Vec<ProposedFieldParam>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct LogPersonMeetingParams {
+    /// The person the meeting was with: display name or directory entity_uuid.
+    person: String,
+    /// Short title, e.g. "Coffee" or "Q3 planning". Defaults to "Meeting with <name>".
+    title: Option<String>,
+    /// When the meeting started, RFC-3339 (e.g. "2026-08-20T15:00:00-03:00").
+    starts_at: String,
+    /// When it ended, RFC-3339. Defaults to one hour after starts_at.
+    ends_at: Option<String>,
+    /// Optional notes or a short write-up.
+    notes: Option<String>,
+    /// Optional project id or slug to show the 1:1 on that project's People panel.
+    project: Option<String>,
+    /// Optional follow-up due date, RFC-3339 or YYYY-MM-DD. Use this when they
+    /// should check in, send a recap, or otherwise not let the meeting go cold.
+    follow_up_at: Option<String>,
+    /// What the follow-up is, e.g. "Send recap" or "Check in on the graph".
+    follow_up_note: Option<String>,
 }
 
 /// Result of resolving a name to a directory person.
@@ -115,6 +136,14 @@ impl PeopleClient {
                 you research with your own web tools, then file findings with
                 `propose_enrichment`. Findings wait in the Decision Inbox — nothing
                 is written to a profile until the user approves.
+
+                Use `log_person_meeting` when the user had a meeting with someone
+                in the directory — it lands on that person's profile and best-effort
+                writes the event into Apple Calendar so the Home tab Calendar card
+                shows it. Pass starts_at as RFC-3339. When they should follow up,
+                pass follow_up_at (RFC-3339 or YYYY-MM-DD) and an optional
+                follow_up_note ("send recap", "check in in 7 days"). Pass project
+                to also show the 1:1 on that project's People panel.
 
                 Names are resolved against the directory. If a name is ambiguous the
                 tool returns the candidates instead of guessing — ask the user which
@@ -377,14 +406,45 @@ impl PeopleClient {
             current = "\n  (none on the graph yet)".to_string();
         }
 
+        let projects = crate::project_association::list_person_projects(&pool, &person.entity_uuid)
+            .await
+            .unwrap_or_default();
+        let project_line = if projects.is_empty() {
+            "Projects: (none associated)\n".to_string()
+        } else {
+            format!(
+                "Projects: {}.\n",
+                projects
+                    .iter()
+                    .map(|p| p.project_name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        let hints = person
+            .find_online_hints
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                format!(
+                    "Find-online hints (from a previous reject — use these to disambiguate): {s}\n"
+                )
+            })
+            .unwrap_or_default();
+
         Ok(vec![Content::text(format!(
             "Enrichment briefing for \"{}\" (entity_uuid: {}).\n\
              \n\
+             {project_line}\
+             {hints}\
              Current graph fields (with provenance):{}\n\
              \n\
              Research ONLY these structured fields: {}.\n\
              Manual-only fields are OFF LIMITS — do not research or propose email, phone, \
-             birthday, or notes.\n\
+             birthday, notes, or find_online_hints.\n\
+             For photo_url, propose a direct http(s) image URL from a public page \
+             (company team page, personal site, press). Do not use login-walled pages.\n\
              \n\
              How to work:\n\
              1. Use your own web tools (read_webpage, web search) to find this person's \
@@ -396,15 +456,86 @@ impl PeopleClient {
              plausible matches), STOP and report the ambiguity to the user instead of \
              proposing — never guess an identity.\n\
              \n\
-             When done, call propose_enrichment with person \"{}\" and your findings as \
-             fields: [{{field_name, value, source_url}}]. Nothing is written to the profile \
-             until the user approves the proposal in the Decision Inbox.",
+                When done, call propose_enrichment with person \"{}\" (the entity_uuid above) \
+             and your findings as fields: [{{field_name, value, source_url}}]. Nothing is \
+             written to the profile until the user approves the proposal in the Decision Inbox.",
             person.display_name,
             person.entity_uuid,
             current,
             crate::people::ENRICHABLE_FIELD_NAMES.join(", "),
             person.display_name,
-            person.display_name,
+            person.entity_uuid,
+        ))])
+    }
+
+    async fn handle_log_meeting(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let params: LogPersonMeetingParams =
+            serde_json::from_value(serde_json::Value::Object(args))
+                .map_err(|e| format!("Invalid arguments: {e}"))?;
+        let pool = self.pool().await?;
+        let person = Self::resolve_person_strict(&pool, &params.person).await?;
+        let title = params
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("Meeting with {}", person.display_name));
+        let project_id = if let Some(q) = params
+            .project
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(Self::resolve_project(&pool, q).await?.id)
+        } else {
+            None
+        };
+        let meeting = crate::person_meetings::create_meeting(
+            &pool,
+            crate::person_meetings::NewMeeting {
+                entity_uuid: person.entity_uuid.clone(),
+                title,
+                starts_at: params.starts_at,
+                ends_at: params.ends_at,
+                notes: params.notes.unwrap_or_default(),
+                project_id,
+                follow_up_at: params.follow_up_at,
+                follow_up_note: params.follow_up_note,
+                calendar_uid: None,
+                sync_calendar: true,
+            },
+        )
+        .await?;
+        crate::events::emit(crate::events::person_changed(
+            "",
+            &person.entity_uuid,
+            "meeting",
+        ));
+        let calendar_line = if meeting.calendar_synced {
+            " Wrote it to Apple Calendar — it will show on the Home tab Calendar card."
+        } else {
+            " Saved on their profile. Apple Calendar did not accept the write (grant Calendar access, or add the Home Calendar card to see Permagent-logged meetings)."
+        };
+        let follow_line = match meeting.follow_up_at.as_deref() {
+            Some(at) => format!(
+                " Follow-up {}{}.",
+                at,
+                if meeting.follow_up_note.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — {}", meeting.follow_up_note)
+                }
+            ),
+            None => String::new(),
+        };
+        Ok(vec![Content::text(format!(
+            "Logged \"{}\" with {} at {}.{}{}",
+            meeting.title, person.display_name, meeting.starts_at, calendar_line, follow_line
         ))])
     }
 
@@ -565,7 +696,8 @@ impl PeopleClient {
                 Start an enrichment pass on a CRM person (the Enricher, #495).
                 Returns a research briefing: the person's current graph fields
                 with provenance and the bounded set of enrichable fields
-                (linkedin, job_title, company, x_handle, personal_site). You do
+                (linkedin, job_title, company, x_handle, facebook, instagram,
+                personal_site, photo_url). You do
                 the research yourself with your web tools, then file findings
                 via propose_enrichment. Manual-only fields (email, phone,
                 birthday, notes) are off limits. Use when the user asks to
@@ -592,7 +724,7 @@ impl PeopleClient {
                 Decision Inbox. Each field needs {field_name, value, source_url}
                 where source_url is the page the value was verified on. Only the
                 enrichable fields (linkedin, job_title, company, x_handle,
-                personal_site) are accepted. NOTHING is written to the person's
+                facebook, instagram, personal_site, photo_url) are accepted. NOTHING is written to the person's
                 profile until the user approves the proposal; approved fields
                 are stored with Enriched provenance and never overwrite
                 manually entered values.
@@ -608,6 +740,32 @@ impl PeopleClient {
                 Some("Propose Enrichment".to_string()),
                 Some(false),
                 Some(false),
+                Some(false),
+                Some(false),
+            )),
+            Tool::new(
+                "log_person_meeting".to_string(),
+                indoc! {r#"
+                Log a meeting against a CRM person's profile. It shows on their
+                People-tab detail timeline and best-effort writes an event into
+                Apple Calendar so the Home tab Calendar card can show it. Use
+                when the user says they met with someone, had a call, or wants
+                a meeting recorded. starts_at must be RFC-3339. Optional
+                follow_up_at (RFC-3339 or YYYY-MM-DD) plus follow_up_note puts a
+                dated check-in on their profile and the Home calendar. Optional
+                project shows the 1:1 on that project's People panel.
+            "#}
+                .to_string(),
+                serde_json::to_value(schema_for!(LogPersonMeetingParams))
+                    .unwrap()
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Log Person Meeting".to_string()),
+                Some(false),
+                Some(true),
                 Some(false),
                 Some(false),
             )),
@@ -650,6 +808,7 @@ impl McpClientTrait for PeopleClient {
             "associate_person_with_project" => self.handle_associate(arguments).await,
             "enrich_person" => self.handle_enrich_person(arguments).await,
             "propose_enrichment" => self.handle_propose_enrichment(arguments).await,
+            "log_person_meeting" => self.handle_log_meeting(arguments).await,
             _ => Err(format!("Unknown tool: {name}")),
         };
         match content {

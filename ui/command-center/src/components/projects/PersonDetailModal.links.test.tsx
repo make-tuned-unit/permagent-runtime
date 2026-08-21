@@ -51,7 +51,11 @@ const person: ProjectPerson = {
   how_met: null,
   linkedin: PROFILE_URL,
   x_handle: null,
+  facebook: null,
+  instagram: null,
   personal_site: null,
+  photo_url: null,
+  find_online_hints: null,
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
   project_role: null,
@@ -101,9 +105,21 @@ describe('PersonDetailModal profile links', () => {
     expect(useCommandCenter.getState().pendingBrowserUrl).toBe(PROFILE_URL);
   });
 
-  it('shows the enriched job title in the Role row', async () => {
+  it('shows the enriched job title in the Role field', async () => {
     await render(person);
-    expect(container.textContent).toContain('Director of Field Operations');
+    const lbl = [...container.querySelectorAll('label')].find(l => l.textContent?.startsWith('Role'));
+    expect((lbl?.querySelector('input') as HTMLInputElement | null)?.value).toBe('Director of Field Operations');
+  });
+
+  it('opens an enriched Facebook URL from the Facebook field', async () => {
+    const url = 'https://www.facebook.com/example.person';
+    await render({ ...person, facebook: url });
+    const btn = [...container.querySelectorAll('label')]
+      .find(l => l.textContent?.startsWith('Facebook'))
+      ?.querySelector('button');
+    expect(btn?.textContent).toContain('Open profile');
+    await act(async () => btn!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(useCommandCenter.getState().pendingBrowserUrl).toBe(url);
   });
 
   it('does not make a non-http(s) value clickable', async () => {
