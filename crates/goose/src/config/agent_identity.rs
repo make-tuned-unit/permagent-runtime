@@ -705,9 +705,9 @@ pub fn default_roster() -> HashMap<String, WorkerPersona> {
         "financier".to_string(),
         WorkerPersona {
             first_name: "Financier".to_string(),
-            role: "Market research and the Finance tab — live quotes, a watchlist, \
-                   research notes, and recorded positions. Reports numbers; never \
-                   sizes a position and cannot place an order"
+            role: "Market research and the Finance money board — live quotes, holdings, \
+                   validated picks, a watchlist, research notes, and recorded positions. \
+                   Reports numbers; never sizes a position and cannot place an order"
                 .to_string(),
             tool_kinds: vec!["finance".to_string()],
             availability_check: String::new(),

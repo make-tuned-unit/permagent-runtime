@@ -35,6 +35,7 @@ pub mod events;
 pub mod executable_skills;
 pub mod execution;
 pub mod finance_ledger;
+pub mod finance_statements;
 pub mod gateway;
 pub mod goal_landing;
 pub mod goal_refinement;
@@ -65,8 +66,10 @@ pub mod people_create;
 pub mod people_provenance;
 pub mod permission;
 pub mod person_meetings;
+pub mod pick_loop;
 pub mod picker;
 pub mod playbook;
+pub mod polybot;
 #[cfg(feature = "telemetry")]
 pub mod posthog;
 pub mod privacy;

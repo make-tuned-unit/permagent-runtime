@@ -786,6 +786,9 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // the Finance tab. Idempotent; shared with migrate_v45_to_v46. Fresh
     // installs never run the version ladder, so this must live here.
     apply_finance_ledger_schema(pool).await?;
+    // Household spend + RSI-alert dedup (schema v47). Same reason: fresh
+    // installs never run the version ladder.
+    apply_finance_spend_schema(pool).await?;
 
     // Failure-learning incident capture. Version-independent, additive, and
     // idempotent so the pinned fresh-init base stamp remains unchanged.
@@ -1321,6 +1324,54 @@ pub async fn migrate_v45_to_v46(pool: &Pool<Sqlite>) -> Result<()> {
         .execute(pool)
         .await?;
     info!("Spectral schema migrated to v46 (financier ledger)");
+    Ok(())
+}
+
+/// Household spend ledger + RSI-alert dedup (v47). Quotes still never stored.
+pub async fn apply_finance_spend_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS finance_transactions (
+            id           TEXT PRIMARY KEY,
+            date         TEXT NOT NULL,
+            amount       REAL NOT NULL,
+            payee        TEXT NOT NULL,
+            category     TEXT NOT NULL,
+            account      TEXT,
+            source_file  TEXT,
+            created_at   TEXT NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_finance_txn_date
+         ON finance_transactions (date DESC)",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS finance_rsi_alerts (
+            symbol      TEXT NOT NULL,
+            day         TEXT NOT NULL,
+            rsi         REAL NOT NULL,
+            threshold   REAL NOT NULL,
+            created_at  TEXT NOT NULL,
+            PRIMARY KEY (symbol, day)
+        )",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// v47: spend ledger + RSI alert dedup. Additive and base-independent.
+pub async fn migrate_v46_to_v47(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v46 -> v47 (finance spend + RSI alerts)");
+    apply_finance_spend_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (47)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v47 (finance spend + RSI alerts)");
     Ok(())
 }
 
@@ -5296,6 +5347,31 @@ mod inbox_schema_tests {
         assert_eq!(current_version(&pool).await, 46);
         migrate_v45_to_v46(&pool).await.unwrap();
         assert_eq!(current_version(&pool).await, 46);
+    }
+
+    #[tokio::test]
+    async fn migrate_v46_to_v47_is_base_independent() {
+        let pool = mem_pool().await;
+        sqlx::query(
+            "CREATE TABLE schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO schema_version (version) VALUES (46)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        migrate_v46_to_v47(&pool).await.unwrap();
+        for table in ["finance_transactions", "finance_rsi_alerts"] {
+            assert!(object_exists(&pool, table).await, "{table}");
+        }
+        assert_eq!(current_version(&pool).await, 47);
+        migrate_v46_to_v47(&pool).await.unwrap();
+        assert_eq!(current_version(&pool).await, 47);
     }
 
     /// Count schema objects (table/view/trigger) by exact name.

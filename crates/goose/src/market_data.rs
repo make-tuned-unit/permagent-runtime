@@ -314,16 +314,14 @@ pub struct Quote {
     pub market_closed: bool,
 }
 
-/// Fetch one symbol. `Err` means we could not get an answer — the caller must
-/// say so rather than substituting anything it remembers.
-pub async fn quote(symbol: &str) -> Result<Quote, String> {
+async fn chart(symbol: &str, range: &str) -> Result<serde_json::Value, String> {
     let symbol = normalize_symbol(symbol)?;
     let client = reqwest::Client::builder()
         .timeout(TIMEOUT)
         .user_agent(USER_AGENT)
         .build()
         .map_err(|e| e.to_string())?;
-    let url = format!("{QUOTE_BASE}/{symbol}?interval=1d&range=5d");
+    let url = format!("{QUOTE_BASE}/{symbol}?interval=1d&range={range}");
     let resp = client
         .get(&url)
         .send()
@@ -342,7 +340,37 @@ pub async fn quote(symbol: &str) -> Result<Quote, String> {
             .unwrap_or("no detail given");
         return Err(format!("market data source answered {status}: {detail}"));
     }
+    Ok(body)
+}
+
+/// Fetch one symbol. `Err` means we could not get an answer — the caller must
+/// say so rather than substituting anything it remembers.
+pub async fn quote(symbol: &str) -> Result<Quote, String> {
+    let symbol = normalize_symbol(symbol)?;
+    let body = chart(&symbol, "5d").await?;
     parse_quote(&body, &symbol)
+}
+
+/// Daily closes, oldest → newest, for the loop-engineering gate and RSI.
+/// `range` is a Yahoo chart range (`1y`, `6mo`). Missing bars are dropped,
+/// never filled with zero.
+pub async fn daily_closes(symbol: &str, range: &str) -> Result<Vec<f64>, String> {
+    let symbol = normalize_symbol(symbol)?;
+    let body = chart(&symbol, range).await?;
+    parse_closes(&body)
+}
+
+/// Pull a close series out of a chart response. Testable without the network.
+pub fn parse_closes(body: &serde_json::Value) -> Result<Vec<f64>, String> {
+    let closes = body
+        .pointer("/chart/result/0/indicators/quote/0/close")
+        .and_then(|v| v.as_array())
+        .ok_or("the market data source returned no daily closes")?;
+    let out: Vec<f64> = closes.iter().filter_map(|v| v.as_f64()).collect();
+    if out.len() < 16 {
+        return Err("not enough daily closes came back to compute a series".into());
+    }
+    Ok(out)
 }
 
 /// Pull a [`Quote`] out of a chart response. Separated from the request so the
@@ -717,5 +745,20 @@ mod tests {
             statements: Vec::new(),
         });
         assert!(empty.contains("NOT evidence"), "{empty}");
+    }
+
+    #[test]
+    fn parse_closes_drops_null_bars_and_refuses_a_thin_series() {
+        let body = serde_json::json!({
+            "chart": { "result": [{ "indicators": { "quote": [{
+                "close": [10.0, null, 11.0, 12.0]
+            }]}}]}
+        });
+        assert!(parse_closes(&body).is_err(), "four readable? no — only 3");
+        let closes: Vec<f64> = (0..20).map(|i| 10.0 + i as f64).collect();
+        let fat = serde_json::json!({
+            "chart": { "result": [{ "indicators": { "quote": [{ "close": closes }]}}]}
+        });
+        assert_eq!(parse_closes(&fat).unwrap().len(), 20);
     }
 }

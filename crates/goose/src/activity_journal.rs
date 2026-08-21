@@ -326,10 +326,18 @@ pub fn entry_from_event(event: &PermagentEvent) -> Option<NewEntry> {
             let title = match nudge_kind {
                 "dormant_thread" => format!("Resurfaced '{}'", truncate(subject, 80)),
                 "project_news" => format!("News: {}", truncate(subject, 80)),
+                "rsi_heat" => format!("RSI heat: {}", truncate(subject, 80)),
                 _ => format!("Nudge: {}", truncate(subject, 80)),
+            };
+            let actor = if nudge_kind == "rsi_heat" {
+                Actor::resolve("financier")
+            } else {
+                Actor::resolve("watcher")
             };
             let (ref_kind, ref_id) = if nudge_kind == "dormant_thread" {
                 (Some("memory"), Some(subject.to_string()))
+            } else if nudge_kind == "rsi_heat" {
+                (Some("symbol"), Some(subject.to_string()))
             } else if let Some(url) = payload_str(event, "url").filter(|url| !url.is_empty()) {
                 (Some("url"), Some(url.to_string()))
             } else if let Some(project_id) =
@@ -341,7 +349,7 @@ pub fn entry_from_event(event: &PermagentEvent) -> Option<NewEntry> {
             };
             (
                 "proactive_nudge",
-                Actor::resolve("watcher"),
+                actor,
                 title,
                 message.map(str::to_string),
                 ref_kind,
@@ -860,6 +868,22 @@ mod tests {
         .unwrap();
         assert_eq!(project_news.ref_kind.as_deref(), Some("project"));
         assert_eq!(project_news.ref_id.as_deref(), Some("proj-brain"));
+
+        let rsi = entry_from_event(&events::proactive_nudge(
+            "rsi_heat",
+            "SHOP",
+            "RSI 78 on SHOP — above your 74 threshold",
+            1,
+            "2026-08-21T10:00:00.000Z",
+            None,
+            None,
+        ))
+        .unwrap();
+        assert_eq!(rsi.title, "RSI heat: SHOP");
+        assert_eq!(rsi.actor.as_str(), "financier");
+        assert_eq!(rsi.ref_kind.as_deref(), Some("symbol"));
+        assert_eq!(rsi.ref_id.as_deref(), Some("SHOP"));
+        assert!(rsi.detail.as_deref().unwrap().contains("above your 74"));
     }
 
     #[tokio::test]

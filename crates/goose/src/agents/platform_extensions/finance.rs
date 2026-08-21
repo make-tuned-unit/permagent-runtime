@@ -200,11 +200,18 @@ impl FinanceClient {
                  company_fundamentals retrieves financial statements from \
                  financialdatasets.ai and needs the optional FINANCIAL_DATASETS_API_KEY. \
                  Its absence is not an error and does not affect any other tool.\n\n\
-                 The Finance tab is YOURS: finance_board reads it; \
+                 The Finance tab is the money board: Polybot status, holdings with live \
+                 marks, Picker picks gated by Yahoo plus a loop-engineering check \
+                 (ICIR / half-life / out-of-sample — each pick is one hypothesis, never \
+                 a new strategy farmed on the same data), household spend, and the \
+                 research ledger. finance_board reads it; \
                  finance_watchlist_add / finance_watchlist_remove, finance_note_add / \
                  finance_note_update / finance_note_delete, and finance_position_add / \
-                 finance_position_close / finance_position_delete write it. Call \
-                 finance_board before changing anything so you are editing the live ledger.\n\n\
+                 finance_position_close / finance_position_delete write the ledger. Call \
+                 finance_board before changing anything so you are editing the live board.\n\n\
+                 Holdings and bank balances NEVER go into the Picker ranker. RSI heat \
+                 names the threshold ('RSI 78 on SHOP — above your 74 threshold') and \
+                 never says to sell.\n\n\
                  The picker_* tools drive the user's OWN stock scanner and only exist if \
                  they run one: call picker_status first, since it is often not running and \
                  picker_start brings it up. picker_scan takes many minutes. record_trade \
@@ -389,34 +396,11 @@ impl FinanceClient {
             exit_price: p.exit_price,
             notes: p.notes.clone(),
         };
-        let local = match self.pool().await {
-            Ok(pool) => crate::finance_ledger::add_position(
-                &pool,
-                crate::finance_ledger::NewPosition {
-                    symbol: trade.ticker.clone(),
-                    company_name: trade.company_name.clone(),
-                    entry_date: trade.entry_date.clone(),
-                    entry_price: trade.entry_price,
-                    shares: trade.shares,
-                    exit_date: trade.exit_date.clone(),
-                    exit_price: trade.exit_price,
-                    notes: trade.notes.clone(),
-                },
-            )
-            .await
-            .ok(),
-            Err(_) => None,
-        };
         let picker = crate::picker::record_trade(&trade).await;
         let mut out = format!(
             "Recorded: {} {} shares of {} at {} on {}.",
             trade.ticker, trade.shares, trade.company_name, trade.entry_price, trade.entry_date
         );
-        if let Some(pos) = local {
-            out.push_str(&format!(" On the Finance tab as position {}.", pos.id));
-        } else {
-            out.push_str(" Could not write the Finance tab ledger.");
-        }
         match picker {
             Ok(saved) => {
                 let id = saved
@@ -427,9 +411,34 @@ impl FinanceClient {
                 out.push_str(&format!(" Scanner history trade #{id}."));
             }
             Err(e) => {
-                out.push_str(&format!(
-                    " Scanner history was not updated ({e}) — the Finance tab is the record."
-                ));
+                let local = match self.pool().await {
+                    Ok(pool) => crate::finance_ledger::add_position(
+                        &pool,
+                        crate::finance_ledger::NewPosition {
+                            symbol: trade.ticker.clone(),
+                            company_name: trade.company_name.clone(),
+                            entry_date: trade.entry_date.clone(),
+                            entry_price: trade.entry_price,
+                            shares: trade.shares,
+                            exit_date: trade.exit_date.clone(),
+                            exit_price: trade.exit_price,
+                            notes: trade.notes.clone(),
+                        },
+                    )
+                    .await
+                    .ok(),
+                    Err(_) => None,
+                };
+                if let Some(pos) = local {
+                    out.push_str(&format!(
+                        " Scanner history was not updated ({e}) — recorded on the Finance tab as position {}.",
+                        pos.id
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        " Could not write scanner history ({e}) or the Finance tab ledger."
+                    ));
+                }
             }
         }
         out.push_str("\nConfirm the numbers back to the user.");
@@ -819,20 +828,22 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
         id: "financier",
         display_name: "The Financier",
         category: crate::agents::self_knowledge::FeatureCategory::Worker,
-        what_it_does: "The agent that owns market research and the Finance tab. It reads live \
+        what_it_does:
+            "The agent that owns market research and the Finance money board. It reads live \
              quotes (research_ticker, no key) and optional company fundamentals, and it \
-             writes the Finance tab ledger: a watchlist, research notes, and recorded \
+             writes the Finance tab: a watchlist, research notes, and recorded \
              positions (finance_board, finance_watchlist_add / finance_watchlist_remove, \
              finance_note_add / finance_note_update / finance_note_delete, \
              finance_position_add / finance_position_close / finance_position_delete). If \
              the user runs their own stock scanner, picker_status / picker_start / \
              picker_scan / picker_top_picks drive it and record_trade / list_trades keep \
-             that history. Reports timestamped numbers; never sizes a position and cannot \
-             place an order",
+             that history. Picker picks are gated on the tab by Yahoo plus a loop-engineering \
+             check; holdings never feed the ranker. Reports timestamped numbers; never sizes \
+             a position and cannot place an order",
         why_it_matters:
             "A price stated from memory is months stale. The Financier grounds every number \
-             in a fetch, and the Finance tab is the durable place those numbers and the \
-             user's own trades live",
+             in a fetch, and the Finance tab is the durable place those numbers, Polybot \
+             status, validated picks, and the user's own trades live",
         state_source: crate::agents::self_knowledge::StateSource::Queryable,
         teaching: &[],
     };
@@ -843,18 +854,21 @@ pub const FINANCE_TAB_FEATURE: crate::agents::self_knowledge::FeatureDescriptor 
         id: "finance_tab",
         display_name: "Finance tab",
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
-        what_it_does: "The Financier's workspace: a watchlist with live quotes, research \
-             notes, and recorded positions. The Financier adds, updates, and removes rows \
-             through its tools; you can edit the same ledger by hand. Quotes are fetched \
-             at read time and never stored. This is a research ledger, not a brokerage — \
-             nothing here places an order or sizes a position",
-        why_it_matters: "It is where market numbers and the user's own trades live so they can be \
-             inspected without asking chat to recite them",
+        what_it_does: "The Financier's money board: Polybot status, holdings with live P&L, \
+             Picker picks gated by Yahoo plus a loop-engineering check, RSI-14 heat on \
+             open holdings, household spend from dropped statements, a watchlist with live \
+             quotes, research notes, and a trade journal. Start the scanner, run a scan, \
+             and record, edit, or close trades on this tab — you do not have to open Picker \
+             to enter trade data. The Financier writes the same rows through its tools. \
+             Quotes are fetched at read time and never stored. This is a research ledger, \
+             not a brokerage — nothing here places an order or sizes a position",
+        why_it_matters: "It is where Polybot, holdings, validated picks, and household spend \
+             live so they can be inspected without asking chat to recite them",
         state_source: crate::agents::self_knowledge::StateSource::Static,
         teaching: &[crate::agents::self_knowledge::TeachingStep {
             title: "Open Finance",
-            body: "Show the user the Finance tab — watchlist, notes, and positions the \
-                   Financier keeps.",
+            body: "Show the user the Finance tab — Polybot, the Picker trade journal, \
+                   validated picks, household spend, and the ledger the Financier keeps.",
             open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
                 tab: "Finance",
                 section: None,
