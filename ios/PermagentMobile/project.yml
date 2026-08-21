@@ -68,7 +68,7 @@ targets:
         # Build number must be unique and INCREASING for every TestFlight
         # upload. `scripts/ios_build_number.sh` sets it from the git commit
         # count, which is monotonic and needs no bookkeeping.
-        CURRENT_PROJECT_VERSION: 934
+        CURRENT_PROJECT_VERSION: 935
       configs:
         # Simulator/dev builds stay signing-free so a plain `xcodebuild build`
         # needs no certificate. This MUST NOT reach Release: an archive built
@@ -176,7 +176,7 @@ targets:
         SWIFT_VERSION: "6.0"
         DEVELOPMENT_TEAM: Z58XSBM78S
         MARKETING_VERSION: "1.31.0"
-        CURRENT_PROJECT_VERSION: 934
+        CURRENT_PROJECT_VERSION: 935
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "4"
         GENERATE_INFOPLIST_FILE: "NO"

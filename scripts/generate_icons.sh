@@ -154,4 +154,14 @@ if [ -d "$IOS_DIR" ]; then
   echo "  iOS Permagent.icon (same source; Xcode renders it per OS version)"
 fi
 
-echo "Done. One Icon Composer source -> macOS .icns + PNGs + .ico, iOS .icon."
+# ── 5. Watch marketing icon ─────────────────────────────────────────────────
+# App Store Connect rejects a Watch 1024 icon with an alpha channel (90396 /
+# 90717). Mobius.png is the transparent glyph for Icon Composer; it must not
+# be the Watch catalog. The master is already opaque RGB on the brand field.
+WATCH_ICON="$ROOT/ios/PermagentMobile/PermagentWatch/Assets.xcassets/AppIcon.appiconset/AppIcon.png"
+if [ -d "$(dirname "$WATCH_ICON")" ]; then
+  cp "$MASTER" "$WATCH_ICON"
+  echo "  watch AppIcon.png (opaque RGB master; App Store forbids alpha)"
+fi
+
+echo "Done. One Icon Composer source -> macOS .icns + PNGs + .ico, iOS .icon, Watch PNG."
