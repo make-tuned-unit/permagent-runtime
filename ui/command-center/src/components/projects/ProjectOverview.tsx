@@ -325,10 +325,19 @@ function StrixFindingsPanel({ project }: { project: Project }) {
 
   const rawLastScan = (project.metadataJson as Record<string, unknown>)?.strix_last_scan;
   const lastScan = typeof rawLastScan === 'string' && rawLastScan ? rawLastScan : null;
+  const rawLastAttempt = (project.metadataJson as Record<string, unknown>)?.strix_last_attempt;
+  const lastAttempt = typeof rawLastAttempt === 'string' && rawLastAttempt ? rawLastAttempt : null;
 
   if (findings.length === 0) {
     // Honest empty state: say why there is nothing, instead of nothing.
-    const text = lastScan
+    // A newer last_attempt than last_scan means the latest sweep did not
+    // finish — do not call that "scanned, no findings".
+    const attemptFailed = Boolean(
+      lastAttempt && (!lastScan || lastAttempt > lastScan),
+    );
+    const text = attemptFailed
+      ? `Last sweep did not finish (${formatDate(lastAttempt!)})${lastScan ? ` — previous clean scan ${formatDate(lastScan)}` : ' — not a clean scan.'}`
+      : lastScan
       ? `Scanned ${formatDate(lastScan)} — no open findings.${enabled === false ? ' The Guard is currently off.' : ''}`
       : enabled === false
         ? 'The Guard is off — enable security sweeps in Settings → Models to scan this project.'

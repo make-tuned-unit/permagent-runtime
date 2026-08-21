@@ -1,4 +1,4 @@
-version: "2.0.2"
+version: "2.0.3"
 title: "Weekly Storage Report"
 description: "Scans your Mac for cleanup opportunities — dev caches, app caches, stale downloads, and large files — and reports them for your review. Deletes nothing."
 
@@ -8,6 +8,12 @@ prompt: |
   1. Call the scan_storage_health tool to scan the filesystem. This is the ONLY
      way to produce storage findings — do NOT run find, du, ls, or any shell
      commands to scan storage.
+
+     The tool covers more than a repo's own target/ directory. It must surface
+     cargo target farms that live elsewhere: per-lane .shared-target/<lane>
+     trees next to worktrees, and Cursor sandbox cargo-target dirs under the
+     system temp directory (cursor-sandbox-cache). Those layouts have held
+     hundreds of gigabytes while a target/-only scan reported a clean disk.
 
   2. After the tool returns, write a brief summary for the user:
      - Start with: **Your disk has X GB of cleanup opportunities across N items.**

@@ -28,6 +28,16 @@ use crate::config::Config;
 /// Config key in `~/.permagent/config.yaml`. Off by default: a scanner that
 /// runs live exploit tooling is switched on deliberately, never by upgrade.
 pub const STRIX_ENABLED_KEY: &str = "strix_enabled";
+/// Optional `user@host`. When set, sweeps rsync the project there, run `strix`
+/// against that machine's Docker (Colima), and pull `.strix` back. A forwarded
+/// Docker socket is not enough: the engine bind-mounts the local path, which
+/// does not exist on the remote daemon. Empty / unset = scan on this Mac.
+pub const STRIX_DOCKER_SSH_KEY: &str = "strix_docker_ssh";
+/// Optional identity file for the remote host (`ssh -i`). Also read from the
+/// `STRIX_DOCKER_SSH_IDENTITY` env var so launchd does not need a key path in
+/// config.yaml. Default SSH config (`Host m1`, agent, etc.) is enough when
+/// this is unset.
+pub const STRIX_DOCKER_SSH_IDENTITY_KEY: &str = "strix_docker_ssh_identity";
 /// Self-knowledge id (also the World roster id and the agent.yaml worker key).
 pub const STRIX_FEATURE_ID: &str = "strix";
 /// The character's name. The engine underneath stays Strix; the character the
@@ -38,6 +48,31 @@ pub fn is_enabled() -> bool {
     Config::global()
         .get_param::<bool>(STRIX_ENABLED_KEY)
         .unwrap_or(false)
+}
+
+/// The remote scanner host, if configured. Whitespace-only is treated as unset
+/// so a leftover blank key cannot send rsync to an empty `user@`.
+pub fn docker_ssh_target() -> Option<String> {
+    Config::global()
+        .get_param::<String>(STRIX_DOCKER_SSH_KEY)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Optional `ssh -i` path for the remote host.
+pub fn docker_ssh_identity() -> Option<String> {
+    if let Ok(env) = std::env::var("STRIX_DOCKER_SSH_IDENTITY") {
+        let trimmed = env.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    Config::global()
+        .get_param::<String>(STRIX_DOCKER_SSH_IDENTITY_KEY)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// What a proposed operation is allowed to do without asking.
@@ -130,19 +165,25 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
         teaching: &[
             crate::agents::self_knowledge::TeachingStep {
                 title: "Check the ground",
-                body: "Run `docker info` and `python3 --version` in the shell. Docker must be \
-                       installed AND running (if absent, send them to docker.com/products/\
-                       docker-desktop — the one download this needs); Python must be 3.12+. \
-                       Report what you found in one plain sentence before going further.",
+                body: "If `strix_docker_ssh` is set in ~/.permagent/config.yaml, Docker and the \
+                       scanner live on THAT host (Colima), not this Mac — a forwarded Docker \
+                       socket is not enough because Strix bind-mounts the local path. Check with \
+                       `ssh <host> 'PATH=/opt/homebrew/bin:$PATH docker info'` and \
+                       `ssh <host> ~/.local/bin/strix --version`. After a reboot of that host, \
+                       `ssh <host> 'PATH=/opt/homebrew/bin:$PATH colima start'`. If the key is \
+                       unset, Docker and Python 3.12+ must be installed and running here. Report \
+                       what you found in one plain sentence before going further.",
                 open_surface: None,
                 confirm: None,
             },
             crate::agents::self_knowledge::TeachingStep {
                 title: "Install the scanner for them",
-                body: "Run `pipx install strix-agent` (if pipx is missing, `brew install pipx && \
-                       pipx ensurepath` first). Verify with `~/.local/bin/strix --help`. The \
-                       daemon already looks in pipx's and Homebrew's directories — no PATH \
-                       editing.",
+                body: "Install `strix-agent` on the machine that runs Docker. With \
+                       `strix_docker_ssh` set: `ssh <host> 'pipx install strix-agent'` (if pipx \
+                       is missing there, brew-install pipx on that host first). Verify with \
+                       `ssh <host> ~/.local/bin/strix --help`. This Mac does not need a local \
+                       strix or a local Docker VM when that key is set. Without the key: \
+                       `pipx install strix-agent` here and verify `~/.local/bin/strix --help`.",
                 open_surface: None,
                 confirm: None,
             },
