@@ -1,0 +1,27 @@
+---
+description: The Guard's Docker runs on the M1 mini, not this Mac. Use when Guard sweeps fail, Docker is missing locally, or strix/Colima comes up.
+alwaysApply: true
+---
+
+# Guard Docker on the M1
+
+Docker does **not** run on this M4 hub. Colima here was deleted on purpose. The daemon is Colima on the M1 mini.
+
+## Live facts (2026-08-20)
+
+- Config (`~/.permagent/config.yaml`): `strix_enabled: true`, `strix_docker_ssh: jessesharratt@m1`
+- SSH `Host m1` → `169.254.41.104` (ethernet). Tailscale fallback: `jesses-mac-mini-2` @ `100.74.232.95` (this M4 is `jesses-mac-mini-1`; names are inverted vs local hostnames)
+- M1 user `jessesharratt`. Colima socket: `unix:///Users/jessesharratt/.colima/default/docker.sock`
+- After an M1 reboot: `ssh m1 'PATH=/opt/homebrew/bin:$PATH colima start'` (Homebrew is not on non-interactive PATH; do not edit M1 shell rc without asking)
+- M1 `strix` is 1.4.1 (sandbox `ghcr.io/usestrix/strix-sandbox:1.1.0`). `1.3.0` is also pulled. Both images live in the 40 GB Colima disk along with leftover supabase/rust images
+- Running Guard is `/Applications/Permagent.app/Contents/MacOS/permagentd`. Source edits do nothing until that app is rebuilt and restarted
+
+## Why a remote Docker socket is not enough
+
+Strix bind-mounts the **local** project path. The daemon looks up that path on the M1. `/Users/j/...` does not exist there. A `DOCKER_HOST=ssh://` / forwarded socket from this Mac yields empty mounts.
+
+Correct path: rsync the project to `/Users/jessesharratt/permagent-strix-scans/<slug>`, run `strix` **on the M1**, rsync `.strix` back.
+
+## Code status
+
+Remote path is in `crates/goose-server/src/strix.rs` (`scan_project_remote`, rsync to `~/permagent-strix-scans/<slug>`) and `crates/goose/src/strix.rs` (`STRIX_DOCKER_SSH_KEY` = `strix_docker_ssh`). Preflight uses the M1 host when that key is set — not local `docker info`. Running Guard is still `/Applications/Permagent.app/Contents/MacOS/permagentd`; source edits do nothing until that app is rebuilt and restarted. Do not start Colima on this M4.

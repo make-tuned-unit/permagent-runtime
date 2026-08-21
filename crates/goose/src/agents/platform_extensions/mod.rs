@@ -731,8 +731,8 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: finance::EXTENSION_NAME,
                 display_name: "The Financier",
                 description:
-                    "Market research and the user's own finance tooling. research_ticker reads live prices, day and 52-week ranges and volume for any symbol with no key. company_fundamentals retrieves financial statements from financialdatasets.ai with an optional key; everything else works without it. If the user runs their own stock scanner, picker_status/picker_start/picker_scan/picker_top_picks drive it and record_trade/list_trades keep their trade history. Reports numbers; never sizes a position and cannot place an order",
-                default_enabled: false,
+                    "Market research and the Finance tab ledger. research_ticker reads live prices, day and 52-week ranges and volume for any symbol with no key. company_fundamentals retrieves financial statements from financialdatasets.ai with an optional key; everything else works without it. finance_board reads the Finance tab; finance_watchlist_add / finance_watchlist_remove, finance_note_add / finance_note_update / finance_note_delete, and finance_position_add / finance_position_close / finance_position_delete write it. If the user runs their own stock scanner, picker_status/picker_start/picker_scan/picker_top_picks drive it and record_trade/list_trades keep their trade history. Reports numbers; never sizes a position and cannot place an order",
+                default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
                 why_it_matters:

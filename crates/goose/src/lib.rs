@@ -34,6 +34,7 @@ pub mod echo;
 pub mod events;
 pub mod executable_skills;
 pub mod execution;
+pub mod finance_ledger;
 pub mod gateway;
 pub mod goal_landing;
 pub mod goal_refinement;

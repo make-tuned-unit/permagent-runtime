@@ -1,0 +1,119 @@
+import { useEffect, useState } from 'react';
+import { COLORS } from './constants';
+import { AGENT_TRIM } from './shared/palette';
+import { useAgentRuntimeStates } from './shared/agentStatus';
+import { HudShell, Section } from './HudShell';
+import { navigateToTool } from '../../lib/store';
+
+// The Financier — market research and the Finance tab ledger. Reports numbers;
+// never sizes a position and cannot place an order. Live state comes from the
+// finance tools announcing working/available on the `financier` id.
+
+const FINANCIER_TRIM = AGENT_TRIM.financier;
+
+interface FinancierHUDProps {
+  visible: boolean;
+  onClose: () => void;
+}
+
+export function FinancierHUD({ visible, onClose }: FinancierHUDProps) {
+  const runtime = useAgentRuntimeStates();
+  const [tabHint, setTabHint] = useState(false);
+
+  useEffect(() => {
+    if (!visible) setTabHint(false);
+  }, [visible]);
+
+  if (!visible) return null;
+
+  const live = runtime.find(a => a.id === 'financier');
+  const isDaemon = live?.source === 'daemon';
+  const label = !isDaemon
+    ? 'STANDING BY'
+    : live?.hudState === 'working'
+      ? 'RESEARCHING'
+      : live?.hudState === 'error'
+        ? 'QUOTE FAILED'
+        : 'ON THE LEDGER';
+  const pillColor = isDaemon && live?.hudState === 'error' ? '#FF5D5D' : FINANCIER_TRIM;
+
+  const statusPill = (
+    <div style={{
+      display: 'inline-block',
+      padding: '2px 8px',
+      borderRadius: 3,
+      fontSize: 10,
+      fontWeight: 700,
+      letterSpacing: '0.08em',
+      background: 'rgba(196, 163, 90, 0.12)',
+      color: pillColor,
+      border: `1px solid ${pillColor}44`,
+    }}>
+      {label}
+    </div>
+  );
+
+  return (
+    <HudShell visible={visible} onClose={onClose} title="THE FINANCIER" statusPill={statusPill}>
+      <div style={{ padding: '4px 14px 8px' }}>
+        <span style={{ fontSize: 11, color: '#9CA3AF', lineHeight: 1.5 }}>
+          Market research for the numbers you already care about — live quotes,
+          a watchlist, notes, and positions you already took. It reports; it
+          never sizes a trade and cannot place an order.
+        </span>
+      </div>
+
+      <Section title="KEEPS" trimColor={FINANCIER_TRIM}>
+        <Bullet>Live quotes on the watchlist (fetched at read time, never stored)</Bullet>
+        <Bullet>Research notes, optionally tied to a ticker</Bullet>
+        <Bullet>A record of positions you say you already took</Bullet>
+        <Bullet>Optional: your own stock scanner, if it is running</Bullet>
+      </Section>
+
+      <Section title="THE LEASH" trimColor={COLORS.neonAmber}>
+        <div style={{ fontSize: 11, color: '#D1D5DB', lineHeight: 1.5 }}>
+          No buy, no sell, no size. The Finance tab is a ledger of observations
+          and of trades already made — not a brokerage.
+        </div>
+      </Section>
+
+      <div style={{ padding: '8px 14px 12px' }}>
+        <button
+          type="button"
+          onClick={() => {
+            const ok = navigateToTool('finance');
+            setTabHint(!ok);
+            if (ok) onClose();
+          }}
+          style={{
+            fontSize: 11,
+            fontWeight: 600,
+            letterSpacing: '0.04em',
+            background: 'transparent',
+            color: FINANCIER_TRIM,
+            border: `1px solid ${FINANCIER_TRIM}66`,
+            borderRadius: 3,
+            padding: '6px 10px',
+            cursor: 'pointer',
+          }}
+        >
+          OPEN THE FINANCE TAB
+        </button>
+        {tabHint && (
+          <div style={{ fontSize: 11, color: '#9CA3AF', marginTop: 8 }}>
+            The Finance tab is not in this workspace yet — it is added on the next daemon start.
+          </div>
+        )}
+      </div>
+    </HudShell>
+  );
+}
+
+function Bullet({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{ fontSize: 11, color: '#D1D5DB', lineHeight: 1.7, display: 'flex', gap: 8 }}>
+      <span style={{ color: FINANCIER_TRIM }}>·</span>
+      <span>{children}</span>
+    </div>
+  );
+}

@@ -504,9 +504,9 @@ export interface ReaderDigest {
 
 /**
  * Route a dropped file to the local Reader for OCR/extraction + Brain ingest.
- * Returns a compact digest instead of the raw bytes. When `is_visual` is true
- * the Reader found too little text to ingest — the caller should fall back to
- * sending the image to the agent so visual Q&A still works.
+ * Image digests carry the full OCR in `summary`. When `is_visual` is true the
+ * Reader found too little text to ingest as the sole source — the caller should
+ * still send the image so visual Q&A works, and fold any OCR that did land.
  */
 export async function readerIngest(file: File): Promise<ReaderDigest> {
   if (!_daemonToken) await loadDaemonToken();

@@ -20,7 +20,7 @@
 //!   FileOpened, ProjectOpened, TerminalCommandStarted,
 //!   TerminalSessionStarted, TerminalSessionEnded, AgentContextProbed,
 //!   AutomationJobStarted, TerminalProcessExited, DictationCompleted,
-//!   PairingLinkCopied, WorldViewOpened, InboxOpened, GrowOpened, BrainOpened
+//!   PairingLinkCopied, WorldViewOpened, InboxOpened, GrowOpened, FinanceOpened, BrainOpened
 //!
 //! The onboarding-engagement events (persona/decision/device-pairing +
 //! pairing-link-copy/web-search/dictation + the four `*Opened` navigations)
@@ -109,6 +109,8 @@ pub enum ActivityEventType {
     InboxOpened,
     /// The user opened the Grow tab. Evidences the `grow` surface.
     GrowOpened,
+    /// The user opened the Finance tab. Evidences the `finance_tab` surface.
+    FinanceOpened,
     /// The user opened the Brain view. Evidences the `brain` surface.
     BrainOpened,
 }
@@ -133,6 +135,7 @@ pub enum SourceSurface {
     World,
     Inbox,
     Grow,
+    Finance,
     Brain,
     Voice,
 }
@@ -237,6 +240,7 @@ fn default_tier(event_type: &ActivityEventType) -> EventTier {
         | ActivityEventType::WorldViewOpened
         | ActivityEventType::InboxOpened
         | ActivityEventType::GrowOpened
+        | ActivityEventType::FinanceOpened
         | ActivityEventType::BrainOpened => EventTier::Ephemeral,
     }
 }
@@ -540,6 +544,7 @@ mod tests {
             WorldViewOpened,
             InboxOpened,
             GrowOpened,
+            FinanceOpened,
             BrainOpened,
         ] {
             assert_eq!(
@@ -580,6 +585,7 @@ mod tests {
             (ActivityEventType::WorldViewOpened, "world_view_opened"),
             (ActivityEventType::InboxOpened, "inbox_opened"),
             (ActivityEventType::GrowOpened, "grow_opened"),
+            (ActivityEventType::FinanceOpened, "finance_opened"),
             (ActivityEventType::BrainOpened, "brain_opened"),
         ] {
             let json = serde_json::to_string(&ev).unwrap();
@@ -593,6 +599,7 @@ mod tests {
             (SourceSurface::World, "world"),
             (SourceSurface::Inbox, "inbox"),
             (SourceSurface::Grow, "grow"),
+            (SourceSurface::Finance, "finance"),
             (SourceSurface::Brain, "brain"),
             (SourceSurface::Voice, "voice"),
         ] {

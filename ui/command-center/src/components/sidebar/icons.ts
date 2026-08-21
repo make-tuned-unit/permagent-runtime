@@ -19,6 +19,8 @@ export const ICON_PATHS: Record<string, string> = {
   home: 'M3 11l9-8 9 8v9a2 2 0 01-2 2h-4v-7h-6v7H5a2 2 0 01-2-2v-9z',
   globe: 'M12 2a10 10 0 100 20 10 10 0 000-20zM2 12h20M12 2a15 15 0 014 10 15 15 0 01-4 10M12 2a15 15 0 00-4 10 15 15 0 004 10',
   'trending-up': 'M3 17l6-6 4 4 8-8M17 7h4v4',
+  /** Finance — a coin. Distinct from Grow's trend line at 18px. */
+  coin: 'M12 2a10 10 0 100 20 10 10 0 000-20zM12 6a6 6 0 100 12 6 6 0 000-12z',
   brain: 'M9 4a4 4 0 00-4 4 3 3 0 00-1 5.5A3 3 0 005 18a4 4 0 004 3M15 4a4 4 0 014 4 3 3 0 011 5.5A3 3 0 0119 18a4 4 0 01-4 3M9 4a3 3 0 013 3v14M15 4a3 3 0 00-3 3',
 
   /** Projects — a folder. Chosen over a kanban-board glyph after rendering
@@ -63,6 +65,7 @@ const CANONICAL_ICON_BY_NAME: Record<string, string> = {
   People: 'users',
   Build: 'brackets',
   Grow: 'trending-up',
+  Finance: 'coin',
   Automate: 'bolt',
   World: 'globe',
   Brain: 'brain',

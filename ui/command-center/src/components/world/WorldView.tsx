@@ -18,6 +18,7 @@ import { ReaderHUD } from './ReaderHUD';
 import { WatcherHUD } from './WatcherHUD';
 import { StewardHUD } from './StewardHUD';
 import { StrixHUD } from './StrixHUD';
+import { FinancierHUD } from './FinancierHUD';
 import { AgentPicker } from './AgentPicker';
 import { PerfSampler } from './shared/perf';
 import { useWorldVisibility } from './atmosphere/useWorldVisibility';
@@ -205,7 +206,7 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
   const [hoveredStation, setHoveredStation] = useState<string | null>(null);
   const [showFps, setShowFps] = useState(false);
   const [activeHud, setActiveHud] = useState<
-    'henry' | 'librarian' | 'reader' | 'watcher' | 'steward' | 'strix' | null
+    'henry' | 'librarian' | 'reader' | 'watcher' | 'steward' | 'strix' | 'financier' | null
   >(null);
   const containerRef = useRef<HTMLDivElement>(null);
   // Perf (bible §8 item 2): pause the render loop whenever this view has no
@@ -227,6 +228,8 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
       setActiveHud('steward');
     } else if (id === 'strix') {
       setActiveHud('strix');
+    } else if (id === 'financier') {
+      setActiveHud('financier');
     } else {
       setActiveHud(null);
     }
@@ -479,6 +482,10 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
       />
       <StrixHUD
         visible={activeHud === 'strix'}
+        onClose={() => setActiveHud(null)}
+      />
+      <FinancierHUD
+        visible={activeHud === 'financier'}
         onClose={() => setActiveHud(null)}
       />
       <AgentPicker

@@ -1,10 +1,10 @@
 // Agent roster — identity config for the real inhabitants: Henry the
 // orchestrator, the Librarian, the Reader (local OCR/ingest), the Watcher
-// (proactive nudges), and the Steward (git hygiene). WORLD_VIEW_BIBLE.md
-// §2, §4. Identity (trim color, crown) is fixed here; state NEVER repaints identity
-// trim. The decorative sim agents (Aria/Felix/Nova) were removed — only agents that
-// map to a real backend worker live here, so the AgentPicker, camera-follow, and HUDs
-// all key off the same set.
+// (proactive nudges), the Steward (git hygiene), the Guard, and the Financier.
+// WORLD_VIEW_BIBLE.md §2, §4. Identity (trim color, crown) is fixed here; state
+// NEVER repaints identity trim. The decorative sim agents (Aria/Felix/Nova)
+// were removed — only agents that map to a real backend worker live here, so
+// the AgentPicker, camera-follow, and HUDs all key off the same set.
 
 import { AGENT_TRIM } from '../shared/palette';
 
@@ -114,6 +114,20 @@ export const ROSTER: AgentIdentity[] = [
     mezzanineLocked: false,
     home: { x: 8.6, y: 0, z: 5.4 },
     weathering: 0.3,
+  },
+  {
+    // The Financier — market research and the Finance tab ledger. Reports
+    // numbers; never sizes a position and cannot place an order. Tools announce
+    // on the `financier` id, so working pose is a real wire, not sim-ambient.
+    // Home sits opposite the Guard, on the far -x/+z quadrant.
+    id: 'financier',
+    name: 'The Financier',
+    role: 'agent',
+    trimColor: AGENT_TRIM.financier,
+    isHenry: false,
+    mezzanineLocked: false,
+    home: { x: -8.2, y: 0, z: 5.0 },
+    weathering: 0.2,
   },
 ];
 

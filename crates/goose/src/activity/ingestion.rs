@@ -605,6 +605,7 @@ fn event_type_str(t: &ActivityEventType) -> &'static str {
         ActivityEventType::WorldViewOpened => "world_view_opened",
         ActivityEventType::InboxOpened => "inbox_opened",
         ActivityEventType::GrowOpened => "grow_opened",
+        ActivityEventType::FinanceOpened => "finance_opened",
         ActivityEventType::BrainOpened => "brain_opened",
     }
 }

@@ -31,6 +31,7 @@ import { noteNudge } from './watcherNudge';
 import { noteTaskEvent } from './taskArtifacts';
 import type { AgentHudState } from '../shared/palette';
 import { ROSTER } from './roster';
+import { worldAgentIdForAgent } from '../../../lib/worldAgentIds';
 
 const HENRY_POLL_MS = 2000;
 const SIM_TOGGLE_MIN_MS = 20000;
@@ -89,6 +90,8 @@ export function AgentStateSources() {
   // Watcher's nudge. Replay semantics per consumer (worldEvents marks them).
   useEffect(() => {
     setAgentSource('librarian', 'The Librarian', 'idle', 'daemon');
+    setAgentSource('steward', 'The Steward', 'idle', 'daemon');
+    setAgentSource('financier', 'The Financier', 'idle', 'daemon');
 
     return subscribeWorldEvents((evt) => {
       const { type, payload, replayed } = evt;
@@ -101,7 +104,8 @@ export function AgentStateSources() {
         const agentState = payload.state as AgentHudState | undefined;
         if (agentId && agentState) {
           const name = typeof payload.name === 'string' ? payload.name : agentId;
-          setAgentSource(agentId, name, agentState, 'daemon');
+          const worldId = worldAgentIdForAgent(agentId) ?? agentId;
+          setAgentSource(worldId, name, agentState, 'daemon');
         }
         return;
       }
@@ -156,8 +160,17 @@ export function AgentStateSources() {
     // Strix is excluded alongside Henry and the Librarian because it too has a
     // real wire: its sweep loop emits agent_state_changed. Leaving it in the
     // ambient toggler would have sim state fighting daemon truth.
+    // Strix, Steward, and Financier are excluded alongside Henry and the
+    // Librarian because they have a real wire: agent_state_changed. Leaving
+    // them in the ambient toggler would have sim state fighting daemon truth.
+    // Steward events arrive as `git_steward` and are mapped to the world id.
     const simAgents = ROSTER.filter(
-      (a) => a.id !== 'henry' && a.id !== 'librarian' && a.id !== 'strix',
+      (a) =>
+        a.id !== 'henry' &&
+        a.id !== 'librarian' &&
+        a.id !== 'strix' &&
+        a.id !== 'steward' &&
+        a.id !== 'financier',
     );
     const names = new Map(simAgents.map((a) => [a.id, a.name]));
 

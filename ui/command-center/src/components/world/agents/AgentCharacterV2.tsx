@@ -89,7 +89,7 @@ export function AgentCharacterV2({
         crown: identity.isHenry,
         // Every roster id maps to a signature-gear variant (rig.gearChunks);
         // 'librarian'/'henry' additionally keep their tablet/presence extras.
-        variant: (['henry', 'librarian', 'reader', 'watcher', 'steward', 'strix'].includes(identity.id)
+        variant: (['henry', 'librarian', 'reader', 'watcher', 'steward', 'strix', 'financier'].includes(identity.id)
           ? identity.id
           : null) as import('./rig').RigVariant,
       }),

@@ -584,6 +584,7 @@ fn render_event_summary(event: &ActivityEvent) -> String {
         ActivityEventType::WorldViewOpened => "Opened the World view".to_string(),
         ActivityEventType::InboxOpened => "Opened the Inbox".to_string(),
         ActivityEventType::GrowOpened => "Opened the Grow tab".to_string(),
+        ActivityEventType::FinanceOpened => "Opened the Finance tab".to_string(),
         ActivityEventType::BrainOpened => "Opened the Brain view".to_string(),
     }
 }
@@ -636,6 +637,7 @@ mod tests {
             WorldViewOpened,
             InboxOpened,
             GrowOpened,
+            FinanceOpened,
             BrainOpened,
         ]
     }

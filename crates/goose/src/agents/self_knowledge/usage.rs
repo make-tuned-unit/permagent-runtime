@@ -232,6 +232,7 @@ pub fn capability_for_activity(
         WorldViewOpened => Some("world_view"),
         InboxOpened => Some("downloads_inbox"),
         GrowOpened => Some("grow"),
+        FinanceOpened => Some("finance_tab"),
         BrainOpened => Some("brain"),
 
         // Not a user surface-engagement signal: chat is the baseline, and the
@@ -488,6 +489,7 @@ mod tests {
             WorldViewOpened,
             InboxOpened,
             GrowOpened,
+            FinanceOpened,
             BrainOpened,
         ];
         for ev in cases {
@@ -570,6 +572,10 @@ mod tests {
             Some("grow")
         );
         assert_eq!(
+            capability_for_activity(&FinanceOpened, &SourceSurface::Finance),
+            Some("finance_tab")
+        );
+        assert_eq!(
             capability_for_activity(&BrainOpened, &SourceSurface::Brain),
             Some("brain")
         );
@@ -596,6 +602,7 @@ mod tests {
             (WorldViewOpened, "world_view"),
             (InboxOpened, "downloads_inbox"),
             (GrowOpened, "grow"),
+            (FinanceOpened, "finance_tab"),
             (BrainOpened, "brain"),
         ];
         let now = at(2026, 7, 17, 9);

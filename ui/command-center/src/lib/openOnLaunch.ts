@@ -11,7 +11,7 @@ import type { ToolType } from './store';
 const KEY = 'permagent-open-on-launch';
 
 export type OpenOnLaunch = 'default' | Extract<ToolType,
-  'dashboard' | 'build' | 'memory' | 'projects' | 'people' | 'world' | 'automate' | 'grow'>;
+  'dashboard' | 'build' | 'memory' | 'projects' | 'people' | 'world' | 'automate' | 'grow' | 'finance'>;
 
 export const OPEN_ON_LAUNCH_OPTIONS: Array<{ value: OpenOnLaunch; label: string }> = [
   { value: 'default', label: 'Home (default)' },
@@ -23,6 +23,7 @@ export const OPEN_ON_LAUNCH_OPTIONS: Array<{ value: OpenOnLaunch; label: string 
   { value: 'world', label: 'World' },
   { value: 'automate', label: 'Automate' },
   { value: 'grow', label: 'Grow' },
+  { value: 'finance', label: 'Finance' },
 ];
 
 export function getOpenOnLaunch(): OpenOnLaunch {

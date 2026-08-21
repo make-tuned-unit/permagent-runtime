@@ -51,6 +51,7 @@ pub const NAV_CATALOG_TABS: &[&str] = &[
     "People",
     "Dashboard",
     "Grow",
+    "Finance",
     "Inbox",
 ];
 
@@ -117,6 +118,13 @@ pub static TEACHABLE: &[TeachableFeature] = &[
         id: "grow",
         surface: SurfaceRef {
             tab: "Grow",
+            section: None,
+        },
+    },
+    TeachableFeature {
+        id: "finance_tab",
+        surface: SurfaceRef {
+            tab: "Finance",
             section: None,
         },
     },

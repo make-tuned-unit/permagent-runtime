@@ -24,7 +24,7 @@ import { ROSTER } from '../../world/agents/roster';
  *
  * Mirrors the reachable half of the list at world/agents/AgentCharacterV2.tsx.
  */
-const GEAR_VARIANTS = ['librarian', 'watcher', 'steward', 'strix'] as const;
+const GEAR_VARIANTS = ['librarian', 'watcher', 'steward', 'strix', 'financier'] as const;
 
 export type PortraitVariant = (typeof GEAR_VARIANTS)[number] | 'unknown';
 

@@ -68,6 +68,11 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
             Ok(false) => {}
             Err(e) => tracing::warn!("Failed to add People workspace: {}", e),
         }
+        match permagent::workspaces::ensure_finance_workspace(&pool).await {
+            Ok(true) => info!("Added Finance workspace for existing user"),
+            Ok(false) => {}
+            Err(e) => tracing::warn!("Failed to add Finance workspace: {}", e),
+        }
         // Normalize preset sidebar order to the code-owned canon (runs every
         // start; user-created workspaces untouched).
         match permagent::workspaces::ensure_canonical_workspace_order(&pool).await {

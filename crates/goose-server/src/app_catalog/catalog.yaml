@@ -157,6 +157,23 @@ tabs:
       - User asks about audience, growth, or content for a project
     customizable_layout: false
 
+  - name: Finance
+    tool_type: finance
+    panel_type: workspace
+    reads: finance_ledger
+    description: >-
+      The Finance tab is The Financier's ledger — a watchlist with live quotes,
+      research notes, and recorded positions. The Financier adds and updates
+      rows; you can edit the same board by hand. Research, not a brokerage.
+    affords:
+      - Track symbols and read timestamped quotes
+      - Keep research notes tied to a ticker
+      - Record positions the user already took
+    suggest_when:
+      - User asks about a stock, a quote, a watchlist, or a trade they made
+      - User wants to see the Finance tab or talk to The Financier
+    customizable_layout: false
+
   - name: Inbox
     tool_type: settings
     panel_type: overlay
