@@ -385,13 +385,8 @@ fn strip_date_and_amount(line: &str, date: &str) -> String {
 
 fn tag(block: &str, name: &str) -> Option<String> {
     let open = format!("<{name}>");
-    let i = block.find(&open)?;
-    let rest = &block[i + open.len()..];
-    let end = rest
-        .find('<')
-        .or_else(|| rest.find('\n'))
-        .unwrap_or(rest.len());
-    let v = rest[..end].trim();
+    let rest = block.split_once(&open)?.1;
+    let v = rest.split(['<', '\n']).next().unwrap_or(rest).trim();
     if v.is_empty() {
         None
     } else {
@@ -420,7 +415,7 @@ fn find_iso(s: &str) -> Option<String> {
             && b[i + 4] == b'-'
             && b[i + 7] == b'-'
         {
-            return Some(s[i..i + 10].to_string());
+            return s.get(i..i + 10).map(str::to_string);
         }
     }
     None
@@ -434,7 +429,7 @@ fn find_slash(s: &str, _a: usize, _y: usize) -> Option<String> {
             && b[i + 2] == b'/'
             && b[i + 5] == b'/'
         {
-            return Some(s[i..i + 10].to_string());
+            return s.get(i..i + 10).map(str::to_string);
         }
     }
     None
@@ -444,7 +439,7 @@ fn find_ymd_slash(s: &str) -> Option<String> {
     let b = s.as_bytes();
     for i in 0..b.len().saturating_sub(9) {
         if b[i].is_ascii_digit() && b[i + 4] == b'/' && b[i + 7] == b'/' {
-            return Some(s[i..i + 10].to_string());
+            return s.get(i..i + 10).map(str::to_string);
         }
     }
     None

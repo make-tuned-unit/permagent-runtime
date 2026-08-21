@@ -1335,6 +1335,7 @@ workers:
                 "claude_code",
                 "codex",
                 "cursor",
+                "financier",
                 "librarian",
                 "permagent",
                 "reviewer",
@@ -1390,6 +1391,11 @@ workers:
         // proposes, it does not take handed-off work.
         assert_eq!(roster["steward"].engine, WorkerEngineKind::Pending);
         assert_eq!(roster["steward"].availability_check, "bin_exists:git");
+
+        // Financier: registered so scheduled/HUD identity is its own, engine
+        // pending so it is never dispatched a goal — it reports numbers.
+        assert_eq!(roster["financier"].engine, WorkerEngineKind::Pending);
+        assert_eq!(roster["financier"].first_name, "Financier");
     }
 
     #[test]

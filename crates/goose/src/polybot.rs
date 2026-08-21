@@ -36,7 +36,7 @@ pub fn polybot_root() -> Option<PathBuf> {
 
 /// What the Finance tab shows for Polybot. `found: false` is honest empty,
 /// never a zeroed balance.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PolybotStatus {
     pub found: bool,
@@ -50,23 +50,6 @@ pub struct PolybotStatus {
     pub stale: bool,
     /// Why it is missing or unreadable, when it is.
     pub detail: Option<String>,
-}
-
-impl Default for PolybotStatus {
-    fn default() -> Self {
-        Self {
-            found: false,
-            root: None,
-            paused: false,
-            current_balance: None,
-            realized_pnl: None,
-            open_exposure: None,
-            trade_count: None,
-            last_updated: None,
-            stale: false,
-            detail: None,
-        }
-    }
 }
 
 /// Read Polybot's on-disk bankroll. Never calls Polymarket.
