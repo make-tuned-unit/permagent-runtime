@@ -400,8 +400,11 @@ export function useVoice(options: UseVoiceOptions = {}) {
           case 'clipboard':
             // Copy immediately — unlike navigate, the pasteboard should be
             // ready before they switch to Notes, even while confirmation audio
-            // is still playing.
-            void copyText(msg.text ?? '');
+            // is still playing. The hub now sends this as soon as the tool
+            // runs; still report failure instead of pretending.
+            void copyText(msg.text ?? '').then((ok) => {
+              if (!ok) console.warn('[useVoice] clipboard write failed');
+            });
             break;
           case 'error':
             serverErrorRef.current = msg.message ?? null;

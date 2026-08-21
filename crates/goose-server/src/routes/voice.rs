@@ -11,6 +11,11 @@
 //!     Text: {"type":"transcript","text":"..."}
 //!     Text: {"type":"reply_start"}
 //!     Binary: [tts pcm_f32le audio]
+//!     Text: {"type":"clipboard","text":"..."}  (as soon as copy_to_clipboard
+//!            runs — not after TTS — so the phone can write the pasteboard
+//!            before the user switches to Notes)
+//!     Text: {"type":"reply_text","text":"..."}
+//!     Text: {"type":"navigate",...}            (after narration; desktop only)
 //!     Text: {"type":"reply_end","sample_rate":24000}
 //!     Text: {"type":"error","message":"..."}
 //!     Text: {"type":"wake_status","active":true,"phrase":"Hey Henry"}
@@ -670,10 +675,10 @@ enum ServerMessage {
         state: Option<serde_json::Value>,
         reason: String,
     },
-    /// Deferred clipboard write. Sent after narration so the client copies on
-    /// the device that is listening (iPhone pasteboard, Mac Command Center),
-    /// not on the daemon host. Copy happens immediately on receipt — unlike
-    /// navigate, it does not wait for audio to drain.
+    /// Paste-ready body for the listening device. Sent as soon as
+    /// `copy_to_clipboard` returns — not after TTS — because the user often
+    /// switches to Notes the moment they hear a copy is happening, and iOS
+    /// drops pasteboard writes from a backgrounded app.
     #[serde(rename = "clipboard")]
     Clipboard { text: String },
     #[serde(rename = "error")]
@@ -721,6 +726,39 @@ impl Drop for ClipboardInterceptGuard {
 
 fn send_json(msg: &ServerMessage) -> Message {
     Message::Text(serde_json::to_string(msg).unwrap().into())
+}
+
+/// Push any captured clipboard bodies down this socket NOW. The caller
+/// still shows them on `reply_text` at turn end.
+async fn flush_voice_clipboard(
+    socket: &mut WebSocket,
+    session_id: &str,
+    sent: &mut Vec<permagent::events::clipboard_intercept::ClipboardIntent>,
+) {
+    let clips = permagent::events::clipboard_intercept::drain(session_id);
+    for clip in clips {
+        let chars = clip.text.chars().count();
+        if socket
+            .send(send_json(&ServerMessage::Clipboard {
+                text: clip.text.clone(),
+            }))
+            .await
+            .is_ok()
+        {
+            tracing::info!(
+                target: "permagentd::voice",
+                "clipboard sent ({} characters) — copy on the listening device now",
+                chars
+            );
+        } else {
+            tracing::warn!(
+                target: "permagentd::voice",
+                "clipboard frame failed to send ({} characters)",
+                chars
+            );
+        }
+        sent.push(clip);
+    }
 }
 
 async fn handle_voice_socket(
@@ -1337,8 +1375,17 @@ async fn stream_reply_with_tts(
         String,
     )> = None;
     let mut stream_ended = false;
+    let mut sent_clips: Vec<permagent::events::clipboard_intercept::ClipboardIntent> = Vec::new();
+    let mut clip_tick = tokio::time::interval(std::time::Duration::from_millis(50));
+    clip_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Interval fires immediately on first poll — consume that so the select
+    // arm cannot spin the loop before the 50ms cadence starts.
+    clip_tick.tick().await;
 
     loop {
+        // Copy as soon as the tool captures — do not wait for TTS. The user
+        // often leaves for Notes during "let me write you something."
+        flush_voice_clipboard(socket, &sid, &mut sent_clips).await;
         match drain_client_messages(socket, ctx) {
             DrainOutcome::Continue => {}
             DrainOutcome::SpokenStop => {
@@ -1470,9 +1517,14 @@ async fn stream_reply_with_tts(
                             }
                         }
                     }
-                    Some(_) => {}
+                    Some(_) => {
+                        // Tool results land here. Drain on the next loop turn
+                        // (and via clip_tick) so we don't wait for confirmation TTS.
+                    }
                 }
             }
+
+            _ = clip_tick.tick() => {}
         }
 
         if spoken_stop {
@@ -1489,11 +1541,21 @@ async fn stream_reply_with_tts(
         let _ = socket.send(send_json(&ServerMessage::Stopped)).await;
     }
 
-    // Send reply text and end marker. If they asked for the text, show the
-    // paste-ready body on screen even when the spoken reply was only a
-    // confirmation — iOS VoiceView (and desktop lastReply) render this field.
-    let clips = permagent::events::clipboard_intercept::take(&sid);
-    let shown = if let Some(clip) = clips.last() {
+    // Any capture that raced the last loop turn. Then unregister so the
+    // guard's Drop is a no-op rather than swallowing a late write.
+    flush_voice_clipboard(socket, &sid, &mut sent_clips).await;
+    for clip in permagent::events::clipboard_intercept::take(&sid) {
+        let _ = socket
+            .send(send_json(&ServerMessage::Clipboard {
+                text: clip.text.clone(),
+            }))
+            .await;
+        sent_clips.push(clip);
+    }
+
+    // Show the paste-ready body on screen even when the spoken reply was
+    // only a confirmation — iOS VoiceView (and desktop lastReply) render this.
+    let shown = if let Some(clip) = sent_clips.last() {
         if full_reply.contains(&clip.text) {
             full_reply.clone()
         } else {
@@ -1505,12 +1567,6 @@ async fn stream_reply_with_tts(
     let _ = socket
         .send(send_json(&ServerMessage::ReplyText { text: shown }))
         .await;
-
-    for clip in clips {
-        let _ = socket
-            .send(send_json(&ServerMessage::Clipboard { text: clip.text }))
-            .await;
-    }
 
     // Forward any navigations captured during this turn AFTER all narration
     // audio — they ride this ordered socket, so by the time the client sees them

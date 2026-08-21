@@ -10,9 +10,12 @@
 //   server → {"type":"transcript","text":…}
 //            {"type":"reply_start"}
 //            binary frames: Float32 LE mono PCM @ 24 kHz (queued, played in order)
+//            {"type":"clipboard","text":…}  copy on this device as soon as the
+//            tool runs (often mid-turn, before confirmation audio). Write the
+//            pasteboard immediately — the user may already be switching to
+//            Notes, and iOS drops background writes.
 //            {"type":"reply_text","text":…}
 //            {"type":"navigate",…}       (desktop speak-then-act; ignored here)
-//            {"type":"clipboard","text":…}  copy on this device for paste into Notes
 //            {"type":"reply_end","sample_rate":24000}
 //            {"type":"error","message":…}
 //
@@ -136,6 +139,9 @@ final class VoiceEngine: ObservableObject {
     @Published private(set) var state: ConvState = .idle
     @Published private(set) var transcript = ""
     @Published private(set) var reply = ""
+    /// Last paste-ready body from a `clipboard` frame — retappable if the
+    /// automatic pasteboard write raced a switch to Notes.
+    @Published private(set) var lastClipboard: String?
     /// Transient server-side notice ("No speech detected…") — clears on recovery.
     @Published private(set) var notice: String?
     /// Live audio level 0…1 (mic while listening, TTS pulse while speaking).
@@ -465,6 +471,15 @@ final class VoiceEngine: ObservableObject {
 
     // ── Turns ────────────────────────────────────────────────────────────────
 
+    func recopyClipboard() {
+        guard let body = lastClipboard, !body.isEmpty else { return }
+        if VoiceClipboard.write(body) {
+            notice = "Copied — paste into Notes"
+        } else {
+            notice = "Couldn't copy — stay in Permagent and try again"
+        }
+    }
+
     /// Begin a turn from OUTSIDE the VAD (the push-to-talk button). Stamps the
     /// VAD's turn clocks so the max-turn cap measures from now — a turn begun
     /// here used to inherit the previous hands-free turn's epoch, and the cap
@@ -636,8 +651,12 @@ final class VoiceEngine: ObservableObject {
                 reply = msg.text ?? ""
             case "clipboard":
                 if let body = msg.text, !body.isEmpty {
-                    UIPasteboard.general.string = body
-                    notice = "Copied — paste into Notes"
+                    lastClipboard = body
+                    if VoiceClipboard.write(body) {
+                        notice = "Copied — paste into Notes"
+                    } else {
+                        notice = "Couldn't copy — stay in Permagent and try again"
+                    }
                 }
             case "reply_end":
                 replyEnded = true
@@ -882,6 +901,13 @@ struct VoiceView: View {
                     .font(.brandCaption)
                     .foregroundStyle(Brand.warning)
                     .multilineTextAlignment(.center)
+            }
+            if engine.lastClipboard != nil {
+                Button("Copy again") {
+                    engine.recopyClipboard()
+                }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(Brand.cyanInk)
             }
             if case .failed(let why) = engine.state {
                 Text(why)
