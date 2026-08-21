@@ -663,7 +663,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 description:
                     "Read privacy-bounded aggregate state from the data behind the Permagent app \
                      without navigating or taking screenshots (observe_app): analytics, projects, \
-                     goals/cards, spend, sessions, growth actions, agent briefings, the decision \
+                     goals/cards, spend, sessions, growth actions, the Finance tab, agent briefings, the decision \
                      inbox, skills, scheduled automations, execution trace, brain, build, world, \
                      settings, and an overall home summary",
                 default_enabled: true,
