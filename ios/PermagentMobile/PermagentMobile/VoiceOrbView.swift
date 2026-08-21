@@ -44,7 +44,9 @@ private func makeSphere() -> [Pt] {
         let rad = max(0, 1 - y * y).squareRoot()
         let th = golden * Double(i)
         out.append(Pt(x: cos(th) * rad, y: y, z: sin(th) * rad,
-                      seed: Double((i &* 2_654_435_761) % 1000) / 1000))
+                      // Knuth multiplicative hash as UInt32 — Int is 32-bit on
+                      // watchOS, and this constant does not fit in Int32.
+                      seed: Double((UInt32(i) &* 2_654_435_761) % 1000) / 1000))
     }
     return out
 }
