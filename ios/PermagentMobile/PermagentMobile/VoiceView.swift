@@ -160,6 +160,15 @@ final class VoiceEngine: ObservableObject {
     /// next non-listening frame so an open turn's clocks are never clobbered.
     private var pendingVADConfig: VoiceVAD.Config?
     private var routeObserver: NSObjectProtocol?
+    private var routeApplyTask: Task<Void, Never>?
+    /// True while taps are installed — `removeTap` throws if they are not.
+    private var graphBuilt = false
+    /// Voice processing is ON for headphones (AEC works) and OFF for the
+    /// loudspeaker (AEC cancels the near-end mic — "Listening" heard nothing).
+    private var captureUsesVoiceProcessing = false
+    /// Playback RMS while the agent is speaking — gates barge-in on speaker
+    /// so his own voice from the same speaker is not treated as an interrupt.
+    private var playbackRms: Float = 0
 
     private var sessionId = ""
     private var active = false
@@ -250,13 +259,11 @@ final class VoiceEngine: ObservableObject {
         }
         wsTask?.cancel(with: .goingAway, reason: nil)
         wsTask = nil
-        playerNode?.stop()
-        engine?.inputNode.removeTap(onBus: 0)
-        playerNode?.removeTap(onBus: 0)
-        engine?.stop()
-        engine = nil
-        playerNode = nil
+        routeApplyTask?.cancel()
+        routeApplyTask = nil
+        teardownGraph()
         pendingBuffers = 0
+        playbackRms = 0
         level = 0
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         state = .idle
@@ -266,11 +273,10 @@ final class VoiceEngine: ObservableObject {
 
     private func startAudio() throws {
         let session = AVAudioSession.sharedInstance()
-        // playAndRecord + speaker, but NOT .voiceChat. That mode applies a
-        // telephone EQ and ducks playback so a "call" stays intelligible —
-        // which is why Henry sounded quiet even at max volume. Echo cancel
-        // still happens below via AVAudioEngine voice processing, which is
-        // what keeps hands-free VAD from tripping on his own TTS.
+        // `.videoChat` is speakerphone+mic. `.voiceChat` ducks TTS like a call;
+        // `.default` plus a forced speaker override and voice-processing AEC
+        // cancelled the built-in mic (LISTENING, heard nothing) AND stole
+        // playback from headphones that were already connected.
         let bluetoothOption: AVAudioSession.CategoryOptions
         if #available(iOS 26.0, *) {
             bluetoothOption = .allowBluetoothHFP
@@ -278,25 +284,20 @@ final class VoiceEngine: ObservableObject {
             bluetoothOption = .allowBluetooth
         }
         try session.setCategory(
-            .playAndRecord, mode: .default, options: [.defaultToSpeaker, bluetoothOption]
+            .playAndRecord, mode: VoiceAudioRoute.sessionMode, options: [.defaultToSpeaker, bluetoothOption]
         )
         try session.setActive(true)
-        try? session.overrideOutputAudioPort(.speaker)
-        // Full input gain where the hardware allows it — every dB helps the
-        // arm's-length built-in mic clear the VAD floor.
+        applySpeakerOverride()
         if session.isInputGainSettable {
             try? session.setInputGain(1.0)
         }
-        // Thresholds are calibrated per input route: the bare iPhone's mic
-        // under voice-processing AGC runs far quieter than a headset mic at the
-        // mouth — with one fixed onset, "Listening" heard AirPods but not the
-        // phone itself. Apply now and on every route change (headphones in,
-        // AirPods out, CarPlay…).
         applyVADConfigForCurrentRoute()
-        routeObserver = NotificationCenter.default.addObserver(
-            forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in self?.applyVADConfigForCurrentRoute() }
+        if routeObserver == nil {
+            routeObserver = NotificationCenter.default.addObserver(
+                forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.scheduleRouteApply() }
+            }
         }
 
         let engine = AVAudioEngine()
@@ -317,18 +318,25 @@ final class VoiceEngine: ObservableObject {
         // each case into a thrown Swift error means the failure lands on the
         // orb screen with a reason instead of killing the app.
         let input = engine.inputNode
-        // Voice processing MUST be enabled before we read the input format —
-        // turning it on reconfigures the node's format. Ducking is pinned to
-        // `.min` so the system does not quiet the TTS to make a "call"
-        // intelligible (WWDC 2023: min = other audio as loud as possible).
-        try? input.setVoiceProcessingEnabled(true)
-        input.voiceProcessingOtherAudioDuckingConfiguration =
-            .init(enableAdvancedDucking: false, duckingLevel: .min)
+        // Headphones: voice processing AEC is safe (playback is in the ears).
+        // Speakerphone: the same AEC treats the user's voice as echo and the
+        // mic goes silent. Rebuild on route change so this tracks plug/unplug.
+        let wantVP = VoiceAudioRoute.policy(
+            outputPortTypes: AVAudioSession.sharedInstance().currentRoute.outputs.map(\.portType.rawValue)
+        ).voiceProcessing
+        try? input.setVoiceProcessingEnabled(wantVP)
+        captureUsesVoiceProcessing = wantVP
+        if wantVP {
+            input.voiceProcessingOtherAudioDuckingConfiguration =
+                .init(enableAdvancedDucking: false, duckingLevel: .min)
+        }
         let inFormat = input.inputFormat(forBus: 0)
         guard inFormat.sampleRate > 0, inFormat.channelCount > 0 else {
             throw AudioSetupError.unusableInputFormat(inFormat.sampleRate,
                                                       inFormat.channelCount)
         }
+        captureSampleRate = inFormat.sampleRate
+        captureChannels = inFormat.channelCount
         guard let pipe = MicPipe(from: inFormat) else {
             throw AudioSetupError.converterUnavailable(inFormat.sampleRate)
         }
@@ -407,12 +415,91 @@ final class VoiceEngine: ObservableObject {
         try engine.start()
         self.engine = engine
         self.playerNode = player
+        graphBuilt = true
+    }
+
+    private func teardownGraph() {
+        guard graphBuilt else { return }
+        graphBuilt = false
+        playerNode?.stop()
+        engine?.inputNode.removeTap(onBus: 0)
+        playerNode?.removeTap(onBus: 0)
+        engine?.stop()
+        engine = nil
+        playerNode = nil
+        captureUsesVoiceProcessing = false
+    }
+
+    /// Headphones / BT / CarPlay currently own the output.
+    static func usingExternalOutput() -> Bool {
+        VoiceAudioRoute.isExternalOutput(
+            AVAudioSession.sharedInstance().currentRoute.outputs.map(\.portType.rawValue)
+        )
+    }
+
+    /// Speaker only when nothing is plugged in. Forcing `.speaker` while
+    /// AirPods are connected steals playback and can drop the headset mic.
+    private func applySpeakerOverride() {
+        let session = AVAudioSession.sharedInstance()
+        switch VoiceAudioRoute.policy(
+            outputPortTypes: session.currentRoute.outputs.map(\.portType.rawValue)
+        ).outputOverride {
+        case .speaker:
+            try? session.overrideOutputAudioPort(.speaker)
+        case .none:
+            try? session.overrideOutputAudioPort(.none)
+        }
+    }
+
+    private func scheduleRouteApply() {
+        routeApplyTask?.cancel()
+        routeApplyTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled, active else { return }
+            applyCurrentRoute()
+        }
+    }
+
+    /// Plug/unplug: retarget speaker vs headset, swap VAD, rebuild the graph
+    /// when the input format or AEC setting has to change (MicPipe dies
+    /// otherwise — it drops mismatched buffers and the orb never hears you).
+    private func applyCurrentRoute() {
+        applySpeakerOverride()
+        applyVADConfigForCurrentRoute()
+        guard graphBuilt, let engine, !rebuildingGraph else { return }
+        let wantVP = VoiceAudioRoute.policy(
+            outputPortTypes: AVAudioSession.sharedInstance().currentRoute.outputs.map(\.portType.rawValue)
+        ).voiceProcessing
+        let fmt = engine.inputNode.inputFormat(forBus: 0)
+        if VoiceAudioRoute.mustRebuildGraph(
+            voiceProcessing: captureUsesVoiceProcessing,
+            wantVoiceProcessing: wantVP,
+            captureSampleRate: captureSampleRate,
+            captureChannels: captureChannels,
+            liveSampleRate: fmt.sampleRate,
+            liveChannels: fmt.channelCount
+        ) {
+            try? rebuildGraphPreservingPlayback()
+        }
+    }
+
+    private var rebuildingGraph = false
+    private var captureSampleRate: Double = 0
+    private var captureChannels: AVAudioChannelCount = 0
+
+    private func rebuildGraphPreservingPlayback() throws {
+        guard !rebuildingGraph else { return }
+        rebuildingGraph = true
+        defer { rebuildingGraph = false }
+        teardownGraph()
+        try startAudio()
     }
 
     /// Publish a playback level for the orb. Ignored unless the agent is
     /// actually speaking, so a trailing tap callback can't light the orb after
     /// a barge-in.
     private func handlePlaybackLevel(_ lvl: Float) {
+        playbackRms = lvl
         guard state == .speaking else { return }
         level = lvl
     }
@@ -432,18 +519,12 @@ final class VoiceEngine: ObservableObject {
     /// immediately unless a turn is open — then it parks until the turn ends,
     /// so the endpoint clocks are never reset mid-utterance.
     private func applyVADConfigForCurrentRoute() {
-        let session = AVAudioSession.sharedInstance()
-        let outputs = session.currentRoute.outputs.map(\.portType)
-        let usingExternal = outputs.contains {
-            $0 == .headphones || $0 == .bluetoothA2DP || $0 == .bluetoothHFP || $0 == .carAudio
-        }
-        // voiceChat used to win the receiver even with defaultToSpeaker; keep
-        // forcing the loudspeaker whenever nothing is plugged in.
-        if !usingExternal {
-            try? session.overrideOutputAudioPort(.speaker)
-        }
-        let ports = session.currentRoute.inputs.map(\.portType.rawValue)
-        let cfg = VoiceVAD.configForRoute(inputPortTypes: ports)
+        applySpeakerOverride()
+        let ports = AVAudioSession.sharedInstance().currentRoute.inputs.map(\.portType.rawValue)
+        let cfg = VoiceVAD.configForRoute(
+            inputPortTypes: ports,
+            speakerphone: !Self.usingExternalOutput()
+        )
         if state == .listening {
             pendingVADConfig = cfg
         } else {
@@ -457,19 +538,16 @@ final class VoiceEngine: ObservableObject {
             vad = VoiceVAD(config: cfg)
             pendingVADConfig = nil
         }
+        if state == .listening || state == .ready {
+            level = min(1, rms * 12)
+        }
         if state == .listening {
-            level = min(1, rms * 8)
             wsTask?.send(.data(data)) { _ in }
         } else if state == .ready {
-            // Only while idle-and-armed: keep the tail of what was just heard.
             preRoll.append(data)
             if preRoll.count > Self.preRollFrames { preRoll.removeFirst() }
         }
-        if state != .listening && state != .speaking {
-            // NOT while speaking: level is pulsed per delivered TTS chunk, and
-            // delivery finishes ~10-15s into a long answer (TTS runs ahead of
-            // playback). Letting the mic tap decay it afterwards flattened the
-            // orb mid-speech — it read as frozen while audio kept playing.
+        if state != .listening && state != .speaking && state != .ready {
             if level > 0.001 { level = max(0, level * 0.9) }
         }
         if handsFree { vadStep(rms: rms) }
@@ -489,7 +567,14 @@ final class VoiceEngine: ObservableObject {
         switch vad.step(rms: rms, phase: phase, now: Date().timeIntervalSince1970) {
         case .beginTurn: enterListening()  // NOT beginTurn(): the VAD stamped its own clocks
         case .endTurn: endTurn()
-        case .interrupt: interrupt()
+        case .interrupt:
+            // Speakerphone without AEC: his TTS comes out the same speaker the
+            // mic hears. Ignore barge while playback is actually coming out.
+            if VoiceAudioRoute.ignoreBargeIn(
+                speakerphone: !Self.usingExternalOutput(),
+                playbackRms: playbackRms
+            ) { break }
+            interrupt()
         case .none: break
         }
     }
@@ -668,6 +753,7 @@ final class VoiceEngine: ObservableObject {
             switch msg.type {
             case "ready":
                 state = .ready
+                if handsFree { beginTurn() }
             case "transcript":
                 notice = nil
                 transcript = msg.text ?? ""
@@ -688,6 +774,7 @@ final class VoiceEngine: ObservableObject {
                 replyEnded = true
                 if pendingBuffers == 0, state == .speaking || state == .thinking {
                     state = .ready
+                    if handsFree { beginTurn() }
                 }
             case "error":
                 notice = msg.message ?? "Voice error"
@@ -755,7 +842,11 @@ final class VoiceEngine: ObservableObject {
         pendingBuffers = max(0, pendingBuffers - 1)
         if pendingBuffers == 0 {
             level = 0
-            if replyEnded && state == .speaking { state = .ready }
+            playbackRms = 0
+            if replyEnded && state == .speaking {
+                state = .ready
+                if handsFree { beginTurn() }
+            }
         }
     }
 }
@@ -1024,7 +1115,7 @@ struct VoiceView: View {
         switch engine.state {
         case .idle: return "STARTING…"
         case .connecting: return "CONNECTING…"
-        case .ready: return engine.handsFree ? "LISTENING FOR YOU" : "HOLD TO TALK"
+        case .ready: return engine.handsFree ? "LISTENING…" : "HOLD TO TALK"
         case .listening: return "LISTENING…"
         case .thinking: return "THINKING… TAP THE ORB TO CANCEL"
         case .speaking: return "SPEAKING — TAP THE ORB TO INTERRUPT"

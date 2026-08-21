@@ -128,9 +128,26 @@ struct VoiceVAD {
 
     /// Pick the preset for the session's current input route, by port type
     /// raw values (AVAudioSession.Port.builtInMic == "MicrophoneBuiltIn").
+    /// `speakerphone` is the loudspeaker path (no headphones/BT/CarPlay): the
+    /// built-in mic is quieter AND, with AEC off so the mic actually works,
+    /// barge-in must be higher so TTS from the same speaker is not an interrupt.
     /// Pure so the chooser is unit-testable without an audio session.
-    static func configForRoute(inputPortTypes: [String]) -> Config {
-        inputPortTypes.contains("MicrophoneBuiltIn") ? builtInMicConfig : headsetConfig
+    static func configForRoute(inputPortTypes: [String], speakerphone: Bool = false) -> Config {
+        if speakerphone { return speakerphoneConfig }
+        return inputPortTypes.contains(Self.builtInMicPort) ? builtInMicConfig : headsetConfig
+    }
+
+    /// `AVAudioSession.Port.builtInMic.rawValue`. Kept as a string so this
+    /// file stays Foundation-only; VoiceVADTests pins it against the SDK.
+    static let builtInMicPort = "MicrophoneBuiltIn"
+
+    /// Loudspeaker + built-in mic. Same onset as the built-in preset so
+    /// arm's-length speech still opens a turn; barge raised so playback
+    /// bleed does not cut the agent off.
+    static var speakerphoneConfig: Config {
+        var c = builtInMicConfig
+        c.barge = 0.08
+        return c
     }
 
     /// Feed one mic frame's RMS. Returns the transition the engine should
