@@ -68,16 +68,19 @@ final class HubSession: ObservableObject {
         HubWatchRelay.shared.start()
 
         await APIClient.shared.loadSavedPairing()
-        isPaired = await APIClient.shared.isPaired
-        if isPaired {
+        let paired = await APIClient.shared.isPaired
+        if paired {
             // Drain on launch, so a meeting recorded with the Mac asleep
             // sends itself the next time the app is opened in range.
             MeetingUploader.shared.requestDrain()
-            // The agent's name comes from the hub, never a literal — see
-            // AgentIdentity. Fetched before `listen()` so the first render of
-            // any surface already has the real name rather than the generic
-            // fallback flashing to it.
+            // Resolve the name BEFORE flipping isPaired. MainTabs' first paint
+            // is what the iOS 26 tab bar snapshots; if we show the tabs on the
+            // generic fallback and refresh afterwards, the chat tab stays
+            // "your agent" even though the chat header updates.
             await AgentIdentity.shared.refresh()
+        }
+        isPaired = paired
+        if paired {
             HubWatchRelay.shared.pushStatus()
             await listen()
         } else {
@@ -125,8 +128,8 @@ final class HubSession: ObservableObject {
             return .failure(.malformedURL)
         }
         await APIClient.shared.pair(HubConfig(baseURL: base, token: token))
-        isPaired = true
         await AgentIdentity.shared.refresh()
+        isPaired = true
         HubWatchRelay.shared.pushStatus()
         await listen()
         return .success(())
@@ -196,6 +199,9 @@ final class HubSession: ObservableObject {
         Task {
             for await event in stream {
                 if event.type == "decision_created" { unread += 1 }
+                if event.type == "identity_changed" {
+                    await AgentIdentity.shared.refresh()
+                }
             }
         }
     }
@@ -210,11 +216,11 @@ enum AppTab: Hashable {
 
 struct MainTabs: View {
     @EnvironmentObject var session: HubSession
-    // MUST observe, not just read. `AgentIdentity.shared.displayName` read
-    // without an observer renders once — at the generic fallback — and never
-    // updates when the hub answers, so the tab said "your agent" while the
-    // chat header (which does observe) correctly said the real name
-    // (reported 2026-08-04).
+    // Observe so a later identity_changed (Settings rename) rebuilds the tab
+    // bar. Observing alone is not enough on iOS 26: the liquid-glass tab bar
+    // snapshots `.tabItem` on first insert, which is why the chat tab used to
+    // stay on "your agent" after pairing. We also delay showing MainTabs until
+    // refresh() has finished (see HubSession.bootstrap / pair).
     @ObservedObject private var identity = AgentIdentity.shared
     @State private var tab: AppTab = .home
     var body: some View {
@@ -236,6 +242,7 @@ struct MainTabs: View {
             ControlHubView().tabItem { Label("Control", systemImage: "slider.horizontal.3") }
                 .tag(AppTab.control)
         }
+        .id(identity.displayName)
         .liquidGlassTabMinimize()
     }
 }
