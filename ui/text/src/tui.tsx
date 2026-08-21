@@ -4,6 +4,7 @@ import { Box, Text, render, useApp, useInput, useStdout } from "ink";
 import { MultilineInput } from "ink-multiline-input";
 import meow from "meow";
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { Readable, Writable } from "node:stream";
 import type {
   SessionNotification,
@@ -20,7 +21,7 @@ import { resolveGooseBinary } from "@aaif/goose-sdk/node";
 import Onboarding from "./onboarding.js";
 import ConfigureScreen, { ConfigureIntent } from "./configure.js";
 import ExtensionsManager from "./extensions.js";
-import type { PendingPermission, ResponseItem, Turn } from "./types.js";
+import type { PendingPermission, Turn, QueuedMessage } from "./types.js";
 import {
   emptyLine,
   renderUserPrompt,
@@ -31,8 +32,24 @@ import {
   renderQueuedMessages,
 } from "./components/ContentRenderers.js";
 import { Header } from "./components/Header.js";
+import { Footer } from "./components/Footer.js";
 import { Rule } from "./components/Rule.js";
+import { SlashMenu, slashMenuHeight } from "./components/SlashMenu.js";
+import { FileMenu, pickListHeight } from "./components/FileMenu.js";
+import { InfoOverlay } from "./components/InfoOverlay.js";
 import { isErrorStatus, formatError } from "./utils.js";
+import { formatHomePath, projectFolderName } from "./projectPath.js";
+import {
+  filterSlashCommands,
+  formatHelpText,
+  gitDiffSummary,
+  isSlashMenuOpen,
+  parseSlashInput,
+  resolveSlashCommand,
+  resolveUserPath,
+  slashStem,
+  type SlashCommandDef,
+} from "./slashCommands.js";
 import {
   CRANBERRY,
   TEAL,
@@ -42,16 +59,113 @@ import {
   TEXT_DIM,
   RULE_COLOR,
 } from "./colors.js";
+import {
+  applyAtMention,
+  atQuery,
+  copyToClipboard,
+  defaultExportPath,
+  formatShellPrompt,
+  formatTranscript,
+  fuzzyFiles,
+  harnessFacts,
+  lastAssistantText,
+  listProjectFiles,
+  parseBang,
+  runShellCommand,
+  stripAtQuery,
+  writeTranscript,
+} from "./editorExtras.js";
+import {
+  CONTINUE_PROMPT,
+  enableAutonomous,
+  formatAutonomousStatus,
+  idleAutonomous,
+  parseAutonomousArgs,
+  runGateCommand,
+  shouldAutoContinue,
+  type AutonomousState,
+} from "./autonomous.js";
+import {
+  estimateTokensFromChars,
+  formatModeHelp,
+  formatTokenCount,
+  MODE_LABEL,
+  nextSessionMode,
+  parseSessionMode,
+  resolveAcpModeId,
+  type SessionMode,
+} from "./sessionMode.js";
+import {
+  MOBIUS_H,
+  MOBIUS_INTRO_FRAMES,
+  MOBIUS_INTERVAL_MS,
+  getMobiusIntroFrame,
+} from "./mobius.js";
 import { Spinner, SPINNER_FRAMES } from "./components/Spinner.js";
 import {
   PASTE_THRESHOLD,
   INPUT_MAX_ROWS,
   SENT_PREVIEW_LEN,
-  GOOSE_FRAMES,
   INITIAL_GREETING,
   PERMISSION_LABELS,
   PERMISSION_KEYS,
 } from "./constants.js";
+
+function composerHint({
+  busy,
+  queuedKind,
+  isPasteMode,
+  slashOpen,
+  atOpen,
+  autonomous,
+}: {
+  busy: boolean;
+  queuedKind: "steer" | "followup" | null;
+  isPasteMode: boolean;
+  slashOpen: boolean;
+  atOpen: boolean;
+  autonomous: boolean;
+}): { text: string; color: string } {
+  if (isPasteMode) {
+    return { text: "enter to send · esc to clear", color: TEXT_DIM };
+  }
+  if (slashOpen) {
+    return {
+      text: "enter to run · tab to complete · ↑↓ · esc to dismiss",
+      color: GOLD,
+    };
+  }
+  if (atOpen) {
+    return {
+      text: "enter insert file · tab complete · ↑↓ · esc to dismiss",
+      color: GOLD,
+    };
+  }
+  if (queuedKind === "steer") {
+    return {
+      text: "steer queued — cuts in when this turn stops",
+      color: GOLD,
+    };
+  }
+  if (queuedKind === "followup") {
+    return {
+      text: "follow-up queued · enter steers now · esc drops queue",
+      color: GOLD,
+    };
+  }
+  if (busy) {
+    return {
+      text: autonomous
+        ? "esc hard-stop · enter steer · alt+enter queue · auto on"
+        : "esc hard-stop · enter steer · alt+enter queue",
+      color: TEXT_DIM,
+    };
+  }
+  return {
+    text: "enter send · shift+tab mode · @ files · ! shell · /help",
+    color: TEXT_DIM,
+  };
+}
 
 const InputBar = React.memo(function InputBar({
   width,
@@ -59,22 +173,34 @@ const InputBar = React.memo(function InputBar({
   onChange,
   onSubmit,
   queued,
+  busy,
   scrollHint,
   placeholder,
   focused,
   pastedFull,
   onPastedFullChange,
+  slashOpen,
+  atOpen,
+  autonomous,
+  queuedKind,
+  onFollowUp,
 }: {
   width: number;
   input: string;
   onChange: (v: string) => void;
   onSubmit: (v: string) => void;
   queued: boolean;
+  busy: boolean;
   scrollHint: boolean;
   placeholder?: string;
   focused: boolean;
   pastedFull: string | null;
   onPastedFullChange: (v: string | null) => void;
+  slashOpen: boolean;
+  atOpen: boolean;
+  autonomous: boolean;
+  queuedKind: "steer" | "followup" | null;
+  onFollowUp: (v: string) => void;
 }) {
   const prevLenRef = useRef(input.length);
 
@@ -102,10 +228,20 @@ const InputBar = React.memo(function InputBar({
     [onSubmit, onPastedFullChange],
   );
 
+  const handleFollowUp = useCallback(
+    (value: string) => {
+      prevLenRef.current = 0;
+      onPastedFullChange(null);
+      onFollowUp(value);
+    },
+    [onFollowUp, onPastedFullChange],
+  );
+
   useInput(
     (ch, key) => {
       if (key.return) {
-        handleSubmit(input);
+        if (key.alt) handleFollowUp(input);
+        else handleSubmit(input);
         return;
       }
       if (key.backspace || key.delete) {
@@ -132,18 +268,29 @@ const InputBar = React.memo(function InputBar({
   const isPasteMode = pastedFull !== null;
   const constrainedWidth = Math.max(width, 20);
   const contentWidth = Math.max(constrainedWidth - 6, 10);
+  const hint = composerHint({
+    busy,
+    queuedKind,
+    isPasteMode,
+    slashOpen,
+    atOpen,
+    autonomous,
+  });
+  const borderColor = busy || queued ? GOLD : TEAL;
+  const promptColor = busy ? GOLD : CRANBERRY;
+  const idlePlaceholder = placeholder ?? "Message the agent";
 
   return (
     <Box
       flexDirection="column"
       borderStyle="round"
-      borderColor={RULE_COLOR}
+      borderColor={borderColor}
       paddingX={1}
       width={constrainedWidth}
       flexShrink={0}
     >
       <Box>
-        <Text color={CRANBERRY} bold>
+        <Text color={promptColor} bold>
           {"❯ "}
         </Text>
         {isPasteMode ? (
@@ -177,16 +324,30 @@ const InputBar = React.memo(function InputBar({
               onSubmit={handleSubmit}
               rows={1}
               maxRows={INPUT_MAX_ROWS}
-              placeholder={placeholder}
+              placeholder={busy ? "Steer or queue a follow-up…" : idlePlaceholder}
               focus={focused}
               keyBindings={{
-                submit: (key) => key.return && !key.ctrl,
-                newline: (key) => key.return && key.ctrl,
+                submit: (key) =>
+                  key.return && !key.ctrl && !key.alt && !key.shift,
+                newline: (key) =>
+                  (key.return && key.ctrl) || (key.return && key.shift),
               }}
               useCustomInput={(handler, isActive) => {
                 useInput(
                   (ch, key) => {
                     if (key.shift && (key.upArrow || key.downArrow)) return;
+                    if (key.alt && (key.upArrow || key.downArrow)) return;
+                    if (key.tab && (key.shift || key.meta || key.ctrl)) return;
+                    if (key.return && key.alt && !key.ctrl) {
+                      handleFollowUp(input);
+                      return;
+                    }
+                    if (
+                      (slashOpen || atOpen) &&
+                      (key.upArrow || key.downArrow || key.tab || key.return)
+                    ) {
+                      return;
+                    }
                     handler(ch, key);
                   },
                   { isActive },
@@ -197,20 +358,11 @@ const InputBar = React.memo(function InputBar({
           </Box>
         )}
       </Box>
-      {isPasteMode && (
-        <Box>
-          <Text color={TEXT_DIM} italic>
-            enter to send · esc to clear
-          </Text>
-        </Box>
-      )}
-      {queued && (
-        <Box>
-          <Text color={GOLD} dimColor italic>
-            message queued — will send when goose finishes
-          </Text>
-        </Box>
-      )}
+      <Box>
+        <Text color={hint.color} italic wrap="truncate-end">
+          {hint.text}
+        </Text>
+      </Box>
     </Box>
   );
 });
@@ -236,7 +388,7 @@ function buildContentLines({
   pendingPermission: PendingPermission | null;
   permissionIdx: number;
   toolCallsExpanded: boolean;
-  queuedMessages: string[];
+  queuedMessages: QueuedMessage[];
 }): React.ReactElement[] {
   const lines: React.ReactElement[] = [];
   if (!turn) return lines;
@@ -475,29 +627,32 @@ const Viewport = React.memo(function Viewport({
 });
 
 const SplashScreen = React.memo(function SplashScreen({
-  animFrame,
   width,
   height,
   status,
   loading,
   spinIdx,
+  projectName,
+  projectPath,
+  contextLine,
+  mobiusFrame,
 }: {
-  animFrame: number;
   width: number;
   height: number;
   status: string;
   loading: boolean;
   spinIdx: number;
+  projectName: string;
+  projectPath: string;
+  contextLine: string;
+  mobiusFrame: number;
 }) {
-  const frame = GOOSE_FRAMES[animFrame % GOOSE_FRAMES.length]!;
   const statusColor =
     status === "ready" ? TEAL : isErrorStatus(status) ? CRANBERRY : TEXT_DIM;
+  const ribbon = getMobiusIntroFrame(mobiusFrame);
 
-  const contentHeight = frame.length + 1 + 1 + 1 + 2 + 1;
-
+  const contentHeight = MOBIUS_H + 1 + 1 + 1 + 1 + 2 + 1;
   const topPad = Math.max(0, Math.floor((height - contentHeight) / 2));
-
-  // Use original dimensions for outer container to maintain centering
   const safeWidth = Math.max(width, 20);
   const safeHeight = Math.max(height, 10);
 
@@ -511,19 +666,32 @@ const SplashScreen = React.memo(function SplashScreen({
     >
       {topPad > 0 && <Box height={topPad} />}
       <Box flexDirection="column" alignItems="center">
-        {frame.map((line, i) => (
-          <Text key={i} color={TEXT_PRIMARY}>
-            {line}
+        {ribbon.map((runs, i) => (
+          <Text key={i}>
+            {runs.map((run, j) => (
+              <Text key={j} color={run.color}>
+                {run.text}
+              </Text>
+            ))}
           </Text>
         ))}
       </Box>
       <Box marginTop={1}>
         <Text color={TEXT_PRIMARY} bold>
-          goose
+          permagent
+        </Text>
+        <Text color={RULE_COLOR}> · </Text>
+        <Text color={TEXT_PRIMARY}>{projectName}</Text>
+      </Box>
+      <Box alignItems="center">
+        <Text color={TEXT_DIM} wrap="truncate-start">
+          {projectPath}
         </Text>
       </Box>
       <Box alignItems="center">
-        <Text color={TEXT_DIM}>your on-machine AI agent</Text>
+        <Text color={TEXT_DIM} wrap="truncate-end">
+          {contextLine}
+        </Text>
       </Box>
       <Box marginTop={2} gap={1} alignItems="center">
         {loading && <Spinner idx={spinIdx} />}
@@ -550,12 +718,16 @@ function App({
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState("connecting…");
   const [spinIdx, setSpinIdx] = useState(0);
-  const [gooseFrame, setGooseFrame] = useState(0);
+  const [mobiusFrame, setMobiusFrame] = useState(0);
+  const [splashGen, setSplashGen] = useState(0);
   const [bannerVisible, setBannerVisible] = useState(true);
   const [pendingPermission, setPendingPermission] =
     useState<PendingPermission | null>(null);
   const [permissionIdx, setPermissionIdx] = useState(0);
-  const [queuedMessages, setQueuedMessages] = useState<string[]>([]);
+  const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
+  const [sessionMode, setSessionMode] = useState<SessionMode>("auto");
+  const [modelName, setModelName] = useState("");
+  const [autonomous, setAutonomous] = useState<AutonomousState>(idleAutonomous);
 
   const [viewTurnIdx, setViewTurnIdx] = useState(-1);
   const [toolCallsExpanded, setToolCallsExpanded] = useState(false);
@@ -564,28 +736,74 @@ function App({
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
   type Overlay =
     | { screen: "configure"; intent: ConfigureIntent }
-    | { screen: "extensions" };
+    | { screen: "extensions" }
+    | { screen: "info"; title: string; body: string };
   const [overlay, setOverlay] = useState<Overlay | null>(null);
+  const [slashIdx, setSlashIdx] = useState(0);
+  const [atIdx, setAtIdx] = useState(0);
+  const [projectCwd, setProjectCwd] = useState(() => process.cwd());
+  const [projectFiles, setProjectFiles] = useState<string[]>([]);
 
   const clientRef = useRef<GooseClient | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const streamBuf = useRef("");
   const sentInitialPrompt = useRef(false);
-  const queueRef = useRef<string[]>([]);
+  const queueRef = useRef<QueuedMessage[]>([]);
   const isProcessingRef = useRef(false);
+  const loadingRef = useRef(loading);
+  loadingRef.current = loading;
+  const cancelRequestedRef = useRef(false);
+  const hardStopRef = useRef(false);
+  const autonomousRef = useRef(autonomous);
+  autonomousRef.current = autonomous;
+  const sessionModeRef = useRef(sessionMode);
+  sessionModeRef.current = sessionMode;
+  const availableModesRef = useRef<Array<{ id: string }>>([]);
+  const projectCwdRef = useRef(projectCwd);
+  projectCwdRef.current = projectCwd;
 
-  // Only run the animation tick when something is actually animating:
-  // the splash goose while the banner is up, or the spinner while loading.
-  // Otherwise we were re-rendering the entire viewport every 300ms forever,
-  // which rebuilds every turn's markdown and can OOM long-running sessions.
+  const projectName = projectFolderName(projectCwd);
+  const projectPath = formatHomePath(projectCwd);
+  const contextLine = useMemo(() => {
+    const facts = harnessFacts(projectCwd);
+    return facts.length
+      ? facts.join(" · ")
+      : "shift+tab mode · @ files · ! shell · /help";
+  }, [projectCwd]);
+
   useEffect(() => {
-    if (!bannerVisible && !loading) return;
+    let cancelled = false;
+    void listProjectFiles(projectCwd).then((files) => {
+      if (!cancelled) setProjectFiles(files);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectCwd]);
+
+  // Möbius intro: same comet sweep the CLI harness plays on launch (~1.2s),
+  // then the ribbon holds until the first message hides the splash.
+  useEffect(() => {
+    if (!bannerVisible) return;
+    setMobiusFrame(0);
+    const last = MOBIUS_INTRO_FRAMES - 1;
+    let f = 0;
     const t = setInterval(() => {
-      if (loading) setSpinIdx((i) => (i + 1) % SPINNER_FRAMES.length);
-      if (bannerVisible) setGooseFrame((f) => (f + 1) % GOOSE_FRAMES.length);
+      f += 1;
+      setMobiusFrame(Math.min(f, last));
+      if (f >= last) clearInterval(t);
+    }, MOBIUS_INTERVAL_MS);
+    return () => clearInterval(t);
+  }, [bannerVisible, splashGen]);
+
+  // Only tick the spinner while a turn is in flight.
+  useEffect(() => {
+    if (!loading) return;
+    const t = setInterval(() => {
+      setSpinIdx((i) => (i + 1) % SPINNER_FRAMES.length);
     }, 300);
     return () => clearInterval(t);
-  }, [bannerVisible, loading]);
+  }, [loading]);
 
   useEffect(() => {
     if (turns.length > 0) setBannerVisible(false);
@@ -710,10 +928,10 @@ function App({
   );
 
   const executePrompt = useCallback(
-    async (text: string) => {
+    async (text: string): Promise<{ reason: string; cancelled: boolean }> => {
       const client = clientRef.current;
       const sid = sessionIdRef.current;
-      if (!client || !sid) return;
+      if (!client || !sid) return { reason: "error", cancelled: false };
 
       addUserTurn(text);
       setLoading(true);
@@ -726,39 +944,137 @@ function App({
           prompt: [{ type: "text", text }],
         });
         if (streamBuf.current) appendAgent("");
-        setStatus(
-          result.stopReason === "end_turn"
-            ? "ready"
-            : `stopped: ${result.stopReason}`,
-        );
+        if (result.stopReason === "end_turn") {
+          setStatus("ready");
+          return { reason: "end_turn", cancelled: false };
+        }
+        if (result.stopReason === "cancelled") {
+          setStatus("stopped");
+          return { reason: "cancelled", cancelled: true };
+        }
+        setStatus(`stopped: ${result.stopReason}`);
+        return { reason: result.stopReason, cancelled: false };
       } catch (e: unknown) {
+        if (cancelRequestedRef.current) {
+          setStatus("stopped");
+          return { reason: "cancelled", cancelled: true };
+        }
         const errorMsg = formatError(e);
         setStatus(`error`);
-        appendError(errorMsg);
+        appendError(brandCopy(errorMsg));
+        return { reason: "error", cancelled: false };
       } finally {
+        cancelRequestedRef.current = false;
         setLoading(false);
       }
     },
     [appendAgent, appendError, addUserTurn],
   );
 
-  const processQueue = useCallback(async () => {
-    if (isProcessingRef.current) return;
-    isProcessingRef.current = true;
-    while (queueRef.current.length > 0) {
-      const next = queueRef.current.shift()!;
-      setQueuedMessages([...queueRef.current]);
-      await executePrompt(next);
-    }
-    isProcessingRef.current = false;
-  }, [executePrompt]);
+  const takeNextQueued = useCallback((): QueuedMessage | undefined => {
+    const list = queueRef.current;
+    if (list.length === 0) return undefined;
+    const steerIdx = list.findIndex((q) => q.kind === "steer");
+    const idx = steerIdx >= 0 ? steerIdx : 0;
+    const [item] = list.splice(idx, 1);
+    setQueuedMessages([...list]);
+    return item;
+  }, []);
+
+  const pump = useCallback(
+    async (last: { reason: string; cancelled: boolean }) => {
+      if (isProcessingRef.current) return;
+      isProcessingRef.current = true;
+      try {
+        let current = last;
+        while (true) {
+          if (hardStopRef.current) {
+            hardStopRef.current = false;
+            break;
+          }
+          const next = takeNextQueued();
+          if (next) {
+            current = await executePrompt(next.text);
+            continue;
+          }
+          const auto = autonomousRef.current;
+          const decision = shouldAutoContinue(auto, {
+            stopReason: current.reason,
+            queueEmpty: true,
+            cancelled: current.cancelled,
+          });
+          if (!decision.continue) {
+            if (decision.reason && auto.enabled) {
+              setAutonomous((s) => ({ ...s, enabled: false }));
+              setStatus(decision.reason);
+            }
+            break;
+          }
+          if (auto.gate) {
+            setStatus("gate…");
+            const gate = await runGateCommand(auto.gate, projectCwdRef.current);
+            if (!gate.ok) {
+              setAutonomous((s) => ({ ...s, turnsUsed: s.turnsUsed + 1 }));
+              current = await executePrompt(
+                `Quality gate failed:\n${gate.output}\nFix this and continue.`,
+              );
+              continue;
+            }
+          }
+          setAutonomous((s) => ({ ...s, turnsUsed: s.turnsUsed + 1 }));
+          current = await executePrompt(CONTINUE_PROMPT);
+        }
+      } finally {
+        isProcessingRef.current = false;
+      }
+    },
+    [executePrompt, takeNextQueued],
+  );
 
   const sendPrompt = useCallback(
     async (text: string) => {
-      await executePrompt(text);
-      if (queueRef.current.length > 0) processQueue();
+      const result = await executePrompt(text);
+      await pump(result);
     },
-    [executePrompt, processQueue],
+    [executePrompt, pump],
+  );
+
+  const enqueue = useCallback((item: QueuedMessage) => {
+    queueRef.current.push(item);
+    setQueuedMessages([...queueRef.current]);
+  }, []);
+
+  const drainQueue = useCallback(() => {
+    queueRef.current = [];
+    setQueuedMessages([]);
+  }, []);
+
+  const interruptTurn = useCallback(
+    async (opts?: { drain?: boolean }) => {
+      const client = clientRef.current;
+      const sid = sessionIdRef.current;
+      if (opts?.drain) {
+        hardStopRef.current = true;
+        drainQueue();
+        setAutonomous((s) =>
+          s.enabled ? { ...s, enabled: false, turnsUsed: 0 } : s,
+        );
+      }
+      if (!client || !sid) return;
+      if (!loadingRef.current && !isProcessingRef.current) {
+        if (opts?.drain) setStatus("stopped");
+        return;
+      }
+      if (cancelRequestedRef.current) return;
+      cancelRequestedRef.current = true;
+      setStatus(opts?.drain ? "stopped" : "steering…");
+      try {
+        await client.cancel({ sessionId: sid });
+      } catch {
+        // prompt() will settle with cancelled / error
+      }
+    },
+    [drainQueue],
   );
 
   const createSession = useCallback(
@@ -767,10 +1083,37 @@ function App({
       setLoading(true);
       try {
         const session = await client.newSession({
-          cwd: process.cwd(),
+          cwd: projectCwd,
           mcpServers: [],
         });
         sessionIdRef.current = session.sessionId;
+        const sess = session as typeof session & {
+          modes?: {
+            currentModeId?: string;
+            availableModes?: Array<{ id: string }>;
+          };
+        };
+        if (sess.modes?.availableModes) {
+          availableModesRef.current = sess.modes.availableModes;
+        }
+        try {
+          const modeRaw = await client.goose.GooseConfigRead({
+            key: "GOOSE_MODE",
+          });
+          setSessionMode(
+            parseSessionMode(String(modeRaw.value ?? "auto")) ?? "auto",
+          );
+        } catch {
+          setSessionMode("auto");
+        }
+        try {
+          const modelRaw = await client.goose.GooseConfigRead({
+            key: "GOOSE_MODEL",
+          });
+          if (typeof modelRaw.value === "string") setModelName(modelRaw.value);
+        } catch {
+          // footer still works without a model name
+        }
         setLoading(false);
         setStatus("ready");
 
@@ -785,7 +1128,7 @@ function App({
         setLoading(false);
       }
     },
-    [initialPrompt, sendPrompt, exit],
+    [initialPrompt, sendPrompt, exit, projectCwd],
   );
 
   const handleOnboardingComplete = useCallback(() => {
@@ -842,7 +1185,7 @@ function App({
         setStatus("handshaking…");
         await client.initialize({
           protocolVersion: 0,
-          clientInfo: { name: "goose-text", version: "0.1.0" },
+          clientInfo: { name: "permagent-tui", version: "0.1.0" },
           clientCapabilities: {},
         });
         if (cancelled) return;
@@ -889,38 +1232,517 @@ function App({
     exit,
   ]);
 
-  const handleSubmit = useCallback(
-    (value: string) => {
+  const slashOpen = isSlashMenuOpen(input);
+  const slashMatches = useMemo(
+    () => (slashOpen ? filterSlashCommands(slashStem(input)) : []),
+    [slashOpen, input],
+  );
+  const at = useMemo(() => atQuery(input), [input]);
+  const atOpen = at !== null;
+  const atMatches = useMemo(
+    () => (at ? fuzzyFiles(projectFiles, at.query) : []),
+    [at, projectFiles],
+  );
+
+  useEffect(() => {
+    setSlashIdx(0);
+    setAtIdx(0);
+  }, [input]);
+
+  const showInfo = useCallback((title: string, body: string) => {
+    setOverlay({ screen: "info", title, body });
+  }, []);
+
+  const applyModelName = useCallback(
+    async (model: string) => {
+      const client = clientRef.current;
+      const sid = sessionIdRef.current;
+      if (!client || !sid) return;
+      const providerRaw = await client.goose.GooseConfigRead({
+        key: "GOOSE_PROVIDER",
+      });
+      const provider =
+        typeof providerRaw.value === "string" ? providerRaw.value : "";
+      await client.goose.GooseConfigUpsert({ key: "GOOSE_MODEL", value: model });
+      const ext = client.goose as GooseClient["goose"] & {
+        GooseSessionProviderUpdate?: (p: {
+          sessionId: string;
+          provider: string;
+          model: string;
+        }) => Promise<void>;
+      };
+      if (provider && typeof ext.GooseSessionProviderUpdate === "function") {
+        await ext.GooseSessionProviderUpdate({
+          sessionId: sid,
+          provider,
+          model,
+        });
+      }
+      try {
+        await client.unstable_setSessionModel({ sessionId: sid, modelId: model });
+      } catch {
+        // session model ACP method is optional
+      }
+      setStatus(`model → ${model}`);
+      setModelName(model);
+    },
+    [],
+  );
+
+  const applySessionMode = useCallback(async (mode: SessionMode) => {
+    setSessionMode(mode);
+    const client = clientRef.current;
+    const sid = sessionIdRef.current;
+    if (!client) return;
+    await client.goose.GooseConfigUpsert({ key: "GOOSE_MODE", value: mode });
+    if (sid) {
+      try {
+        await client.setSessionMode({
+          sessionId: sid,
+          modeId: resolveAcpModeId(mode, availableModesRef.current),
+        });
+      } catch {
+        // ACP session modes are optional; config still applies to new turns
+      }
+    }
+    setStatus(`mode → ${MODE_LABEL[mode]}`);
+  }, []);
+
+  const cycleSessionMode = useCallback(() => {
+    void applySessionMode(nextSessionMode(sessionModeRef.current));
+  }, [applySessionMode]);
+
+  const runSlash = useCallback(
+    async (cmd: SlashCommandDef, args: string) => {
+      setInput("");
+      setPastedFull(null);
+      switch (cmd.name) {
+        case "model":
+          if (args) {
+            try {
+              await applyModelName(args);
+            } catch (e: unknown) {
+              setStatus(`failed: ${formatError(e)}`);
+            }
+            return;
+          }
+          setOverlay({ screen: "configure", intent: "model" });
+          return;
+        case "mode": {
+          if (!args) {
+            showInfo("mode", formatModeHelp(sessionModeRef.current));
+            return;
+          }
+          const parsed = parseSessionMode(args);
+          if (!parsed) {
+            setStatus(`unknown mode: ${args}  —  auto | ask | chat`);
+            return;
+          }
+          try {
+            await applySessionMode(parsed);
+          } catch (e: unknown) {
+            setStatus(`failed: ${formatError(e)}`);
+          }
+          return;
+        }
+        case "autonomous": {
+          const parsed = parseAutonomousArgs(args);
+          if (parsed.action === "error") {
+            showInfo("autonomous", parsed.message);
+            return;
+          }
+          if (parsed.action === "status") {
+            showInfo("autonomous", formatAutonomousStatus(autonomousRef.current));
+            return;
+          }
+          if (parsed.action === "off") {
+            setAutonomous((s) => ({ ...s, enabled: false }));
+            setStatus("autonomous off");
+            return;
+          }
+          if (parsed.action === "gate") {
+            setAutonomous((s) => ({ ...s, gate: parsed.command }));
+            setStatus(`gate → ${parsed.command}`);
+            return;
+          }
+          {
+            const next = enableAutonomous(
+              autonomousRef.current,
+              parsed.maxTurns,
+              parsed.gate,
+            );
+            setAutonomous(next);
+            setStatus(
+              `autonomous on · ${next.maxTurns} turns${
+                next.gate ? ` · gate ${next.gate}` : ""
+              }`,
+            );
+          }
+          return;
+        }
+        case "provider":
+        case "config":
+          setOverlay({ screen: "configure", intent: "provider" });
+          return;
+        case "extensions":
+          setOverlay({ screen: "extensions" });
+          return;
+        case "help":
+          showInfo("commands & keys", formatHelpText());
+          return;
+        case "usage": {
+          let chars = 0;
+          for (const t of turns) {
+            chars += t.userText.length;
+            for (const item of t.responseItems) {
+              if (
+                item.itemType === "content_chunk" &&
+                item.content.type === "text"
+              ) {
+                chars += item.content.text.length;
+              }
+            }
+          }
+          const auto = autonomousRef.current;
+          showInfo(
+            "usage",
+            [
+              `mode     ${MODE_LABEL[sessionModeRef.current]}`,
+              `model    ${modelName || "(unset)"}`,
+              `turns    ${turns.length}`,
+              `tokens   ${chars ? formatTokenCount(estimateTokensFromChars(chars)) : "~0"} (estimate)`,
+              `auto     ${
+                auto.enabled
+                  ? `on ${auto.turnsUsed}/${auto.maxTurns}`
+                  : "off"
+              }`,
+              auto.gate ? `gate     ${auto.gate}` : "",
+            ]
+              .filter(Boolean)
+              .join("\n"),
+          );
+          return;
+        }
+        case "copy": {
+          const text = lastAssistantText(turns);
+          if (!text) {
+            setStatus("nothing to copy");
+            return;
+          }
+          try {
+            await copyToClipboard(text);
+            setStatus("copied last reply");
+          } catch (e: unknown) {
+            setStatus(`copy failed: ${formatError(e)}`);
+          }
+          return;
+        }
+        case "export": {
+          const dest = args
+            ? resolveUserPath(args, projectCwd)
+            : defaultExportPath(projectCwd);
+          try {
+            writeTranscript(dest, formatTranscript(turns));
+            setStatus(`exported ${formatHomePath(dest)}`);
+          } catch (e: unknown) {
+            setStatus(`export failed: ${formatError(e)}`);
+          }
+          return;
+        }
+        case "status": {
+          const client = clientRef.current;
+          let provider = "";
+          let model = "";
+          if (client) {
+            try {
+              const p = await client.goose.GooseConfigRead({
+                key: "GOOSE_PROVIDER",
+              });
+              const m = await client.goose.GooseConfigRead({
+                key: "GOOSE_MODEL",
+              });
+              provider = typeof p.value === "string" ? p.value : "";
+              model = typeof m.value === "string" ? m.value : "";
+            } catch {
+              // still show cwd
+            }
+          }
+          const sid = sessionIdRef.current ?? "(none)";
+          showInfo(
+            "status",
+            [
+              `project   ${projectFolderName(projectCwd)}`,
+              `path      ${formatHomePath(projectCwd)}`,
+              `provider  ${provider || "(unset)"}`,
+              `model     ${model || "(unset)"}`,
+              `mode      ${MODE_LABEL[sessionModeRef.current]}`,
+              `auto      ${
+                autonomousRef.current.enabled
+                  ? `on ${autonomousRef.current.turnsUsed}/${autonomousRef.current.maxTurns}`
+                  : "off"
+              }`,
+              `session   ${sid}`,
+              `status    ${status}`,
+            ].join("\n"),
+          );
+          return;
+        }
+        case "clear":
+          if (loadingRef.current || isProcessingRef.current) {
+            await interruptTurn({ drain: true });
+          }
+          drainQueue();
+          setAutonomous(idleAutonomous());
+          setTurns([]);
+          setViewTurnIdx(-1);
+          setBannerVisible(true);
+          setSplashGen((g) => g + 1);
+          setMobiusFrame(0);
+          if (clientRef.current) await createSession(clientRef.current);
+          return;
+        case "compact":
+          if (loadingRef.current || isProcessingRef.current) {
+            setStatus("stop the turn first (esc)");
+            return;
+          }
+          setStatus("compacting…");
+          await sendPrompt("/compact");
+          return;
+        case "diff":
+          showInfo("diff", await gitDiffSummary(projectCwd));
+          return;
+        case "cd": {
+          if (!args) {
+            showInfo("cd", "Usage: /cd <path>");
+            return;
+          }
+          const next = resolveUserPath(args, projectCwd);
+          if (!existsSync(next)) {
+            setStatus(`cd failed: ${next} does not exist`);
+            return;
+          }
+          const client = clientRef.current;
+          const sid = sessionIdRef.current;
+          if (client && sid) {
+            try {
+              await client.goose.GooseWorkingDirUpdate({
+                sessionId: sid,
+                workingDir: next,
+              });
+            } catch (e: unknown) {
+              setStatus(`cd failed: ${formatError(e)}`);
+              return;
+            }
+          }
+          setProjectCwd(next);
+          setStatus(`cwd → ${formatHomePath(next)}`);
+          return;
+        }
+        case "quit":
+          exit();
+          return;
+        default:
+          setStatus(`unknown: /${cmd.name}`);
+      }
+    },
+    [
+      applyModelName,
+      applySessionMode,
+      createSession,
+      drainQueue,
+      exit,
+      interruptTurn,
+      modelName,
+      projectCwd,
+      sendPrompt,
+      showInfo,
+      status,
+      turns,
+    ],
+  );
+
+  const dispatchPrompt = useCallback(
+    (value: string, kind: "steer" | "followup") => {
       const trimmed = value.trim();
       if (!trimmed) return;
+
+      if (isSlashMenuOpen(trimmed) && slashMatches.length > 0) {
+        const cmd = slashMatches[slashIdx] ?? slashMatches[0]!;
+        void runSlash(cmd, "");
+        return;
+      }
+
+      const parsed = parseSlashInput(trimmed);
+      if (parsed) {
+        const cmd = resolveSlashCommand(parsed.name);
+        if (cmd) {
+          void runSlash(cmd, parsed.args);
+          return;
+        }
+        setInput("");
+        setStatus(`unknown command: /${parsed.name}  —  /help`);
+        return;
+      }
+
+      const bang = parseBang(trimmed);
+      if (bang) {
+        setInput("");
+        setPastedFull(null);
+        void (async () => {
+          setStatus("shell…");
+          const result = await runShellCommand(
+            bang.command,
+            projectCwdRef.current,
+          );
+          const text = formatShellPrompt(
+            bang.command,
+            result.output,
+            result.ok,
+          );
+          if (!bang.sendToModel) {
+            showInfo(`$ ${bang.command}`, result.output || "(no output)");
+            setStatus(result.ok ? "ready" : "shell failed");
+            return;
+          }
+          const busyNow = loadingRef.current || isProcessingRef.current;
+          if (busyNow) {
+            enqueue({ text, kind });
+            if (kind === "steer") void interruptTurn();
+            return;
+          }
+          void sendPrompt(text);
+        })();
+        return;
+      }
+
       setInput("");
       setPastedFull(null);
       setViewTurnIdx(-1);
       setToolCallsExpanded(false);
       setScrollOffset(0);
 
-      if (loading || isProcessingRef.current) {
-        queueRef.current.push(trimmed);
-        setQueuedMessages([...queueRef.current]);
-      } else {
-        sendPrompt(trimmed);
+      const busy = loadingRef.current || isProcessingRef.current;
+      if (busy) {
+        enqueue({ text: trimmed, kind });
+        if (kind === "steer") void interruptTurn();
+        return;
       }
+      void sendPrompt(trimmed);
     },
-    [loading, sendPrompt],
+    [enqueue, interruptTurn, runSlash, sendPrompt, showInfo, slashIdx, slashMatches],
+  );
+
+  const handleSubmit = useCallback(
+    (value: string) => dispatchPrompt(value, "steer"),
+    [dispatchPrompt],
+  );
+
+  const handleFollowUp = useCallback(
+    (value: string) => dispatchPrompt(value, "followup"),
+    [dispatchPrompt],
   );
 
   useInput(
     (ch, key) => {
-      if (key.escape || (ch === "c" && key.ctrl)) {
+      if (key.escape) {
         if (pendingPermission) {
           resolvePermission("cancelled");
           return;
         }
-        if (key.escape && pastedFull !== null) return;
-        exit();
+        if (pastedFull !== null) return;
+        if (slashOpen) {
+          setInput("");
+          return;
+        }
+        if (atOpen) {
+          setInput(stripAtQuery(input));
+          return;
+        }
+        if (
+          loadingRef.current ||
+          isProcessingRef.current ||
+          queueRef.current.length > 0 ||
+          autonomousRef.current.enabled
+        ) {
+          void interruptTurn({ drain: true });
+        }
+        return;
       }
 
-      if (!loading && !pendingPermission && sessionIdRef.current) {
+      if ((ch === "c" || ch === "d") && key.ctrl) {
+        if (pendingPermission) {
+          resolvePermission("cancelled");
+          return;
+        }
+        const running = loadingRef.current || isProcessingRef.current;
+        if (running && !cancelRequestedRef.current) {
+          void interruptTurn({ drain: true });
+          return;
+        }
+        exit();
+        return;
+      }
+
+      if (ch === "l" && key.ctrl) {
+        setScrollOffset(0);
+        setViewTurnIdx(-1);
+        return;
+      }
+
+      if ((ch === "o" || ch === "O") && key.ctrl) {
+        setToolCallsExpanded((prev) => !prev);
+        return;
+      }
+
+      if (key.alt && key.upArrow) {
+        const last = queueRef.current.pop();
+        if (last) {
+          setQueuedMessages([...queueRef.current]);
+          if (input.trim()) {
+            enqueue({ text: input, kind: "followup" });
+          }
+          setInput(last.text);
+        }
+        return;
+      }
+
+      if (slashOpen && slashMatches.length > 0) {
+        if (key.upArrow && !key.shift) {
+          setSlashIdx((i) => Math.max(i - 1, 0));
+          return;
+        }
+        if (key.downArrow && !key.shift) {
+          setSlashIdx((i) => Math.min(i + 1, slashMatches.length - 1));
+          return;
+        }
+        if (key.tab && !key.shift && !key.meta && !key.ctrl) {
+          const cmd = slashMatches[slashIdx] ?? slashMatches[0];
+          if (cmd) setInput(`/${cmd.name} `);
+          return;
+        }
+      }
+
+      if (atOpen) {
+        if (key.upArrow && !key.shift) {
+          setAtIdx((i) => Math.max(i - 1, 0));
+          return;
+        }
+        if (key.downArrow && !key.shift) {
+          setAtIdx((i) => Math.min(i + 1, Math.max(atMatches.length - 1, 0)));
+          return;
+        }
+        if (
+          (key.tab && !key.shift && !key.meta && !key.ctrl) ||
+          (key.return && !key.alt && !key.ctrl)
+        ) {
+          const file =
+            atMatches[Math.min(atIdx, Math.max(atMatches.length - 1, 0))];
+          if (file && at) setInput(applyAtMention(input, at.start, file));
+          return;
+        }
+      }
+
+      if (!pendingPermission && sessionIdRef.current) {
         if (key.ctrl && (ch === "p" || ch === "P")) {
           setOverlay({ screen: "configure", intent: "provider" });
           return;
@@ -975,6 +1797,11 @@ function App({
         !initialPrompt &&
         !viewingHistory &&
         pastedFull === null;
+
+      if (key.tab && (key.shift || key.meta || key.ctrl)) {
+        if (!pendingPermission && !slashOpen && !atOpen) cycleSessionMode();
+        return;
+      }
 
       if (key.tab) {
         const idx = viewTurnIdx === -1 ? turns.length - 1 : viewTurnIdx;
@@ -1035,21 +1862,43 @@ function App({
   const showInputBar =
     !pendingPermission && !initialPrompt && !isViewingHistory;
 
-  const headerH = 2;
+  const headerH = 3;
   const isPasteMode = pastedFull !== null;
   const inputContentRows = showInputBar
     ? isPasteMode
       ? 1
       : Math.min(Math.max(input.split("\n").length, 1), INPUT_MAX_ROWS)
     : 0;
-  const inputExtraLines =
-    (isPasteMode ? 1 : 0) + (queuedMessages.length > 0 ? 1 : 0);
-  const inputBarH = showInputBar ? 2 + inputContentRows + inputExtraLines : 0;
+  const inputExtraLines = showInputBar ? 1 : 0;
+  const slashH =
+    showInputBar && slashOpen ? slashMenuHeight(slashMatches.length) : 0;
+  const atH =
+    showInputBar && atOpen ? pickListHeight(atMatches.length) : 0;
+  const inputBarH = showInputBar
+    ? 2 + inputContentRows + inputExtraLines + slashH + atH
+    : 0;
   const historyBarH = isViewingHistory ? 2 : 0;
+  const footerH = showInputBar ? 1 : 0;
   const viewportHeight = Math.max(
-    safeTermHeight - PAD_Y * 2 - headerH - inputBarH - historyBarH,
+    safeTermHeight - PAD_Y * 2 - headerH - inputBarH - historyBarH - footerH,
     3,
   );
+
+  const tokensLabel = useMemo(() => {
+    let chars = 0;
+    for (const t of turns) {
+      chars += t.userText.length;
+      for (const item of t.responseItems) {
+        if (
+          item.itemType === "content_chunk" &&
+          item.content.type === "text"
+        ) {
+          chars += item.content.text.length;
+        }
+      }
+    }
+    return chars > 0 ? formatTokenCount(estimateTokensFromChars(chars)) : "";
+  }, [turns]);
 
   const contentLines = useMemo(
     () =>
@@ -1093,7 +1942,25 @@ function App({
     );
   }
 
-  if (overlay && clientRef.current && sessionIdRef.current) {
+  if (overlay) {
+    if (overlay.screen === "info") {
+      return (
+        <Box
+          flexDirection="column"
+          width={safeTermWidth}
+          height={safeTermHeight}
+        >
+          <InfoOverlay
+            title={overlay.title}
+            body={overlay.body}
+            width={safeTermWidth}
+            height={safeTermHeight}
+            onClose={() => setOverlay(null)}
+          />
+        </Box>
+      );
+    }
+    if (clientRef.current && sessionIdRef.current) {
     if (overlay.screen === "configure") {
       const intent = overlay.intent;
       return (
@@ -1132,6 +1999,7 @@ function App({
         </Box>
       );
     }
+    }
   }
 
   return (
@@ -1144,12 +2012,15 @@ function App({
     >
       {bannerVisible ? (
         <SplashScreen
-          animFrame={gooseFrame}
           width={contentWidth}
-          height={Math.max(safeTermHeight - PAD_Y * 2 - inputBarH, 0)}
+          height={Math.max(safeTermHeight - PAD_Y * 2 - inputBarH - footerH, 0)}
           status={status}
           loading={loading}
           spinIdx={spinIdx}
+          projectName={projectName}
+          projectPath={projectPath}
+          contextLine={contextLine}
+          mobiusFrame={mobiusFrame}
         />
       ) : (
         <>
@@ -1159,6 +2030,8 @@ function App({
             loading={loading}
             spinIdx={spinIdx}
             hasPendingPermission={!!pendingPermission}
+            projectName={projectName}
+            projectPath={projectPath}
             turnInfo={
               turns.length > 1
                 ? { current: effectiveTurnIdx + 1, total: turns.length }
@@ -1187,18 +2060,51 @@ function App({
         </>
       )}
       {showInputBar && (
-        <InputBar
+        <>
+          {slashOpen && (
+            <SlashMenu
+              width={contentWidth}
+              matches={slashMatches}
+              selectedIndex={slashIdx}
+            />
+          )}
+          {atOpen && (
+            <FileMenu
+              width={contentWidth}
+              files={atMatches}
+              selectedIndex={atIdx}
+            />
+          )}
+          <InputBar
           width={contentWidth}
           input={input}
           onChange={setInput}
           onSubmit={handleSubmit}
+          onFollowUp={handleFollowUp}
           queued={queuedMessages.length > 0}
+          queuedKind={queuedMessages[0]?.kind ?? null}
+          busy={loading && turns.length > 0}
+          autonomous={autonomous.enabled}
           scrollHint={!bannerVisible && turns.length > 1}
           placeholder={bannerVisible ? INITIAL_GREETING : undefined}
           focused={showInputBar}
           pastedFull={pastedFull}
           onPastedFullChange={setPastedFull}
+          slashOpen={slashOpen}
+          atOpen={atOpen}
         />
+          <Footer
+            width={contentWidth}
+            mode={sessionMode}
+            model={modelName}
+            tokensLabel={tokensLabel}
+            autonomousLabel={
+              autonomous.enabled
+                ? `${autonomous.turnsUsed}/${autonomous.maxTurns}`
+                : null
+            }
+          />
+        </>
       )}
     </Box>
   );
@@ -1207,7 +2113,7 @@ function App({
 const cli = meow(
   `
   Usage
-    $ goose
+    $ permagent
 
   Options
     --server, -s  Server URL (default: auto-launch bundled server)
@@ -1256,7 +2162,7 @@ async function runTextMode(serverConnection: Stream | string, prompt: string) {
 
     await client.initialize({
       protocolVersion: 0,
-      clientInfo: { name: "goose-text", version: "0.1.0" },
+      clientInfo: { name: "permagent-tui", version: "0.1.0" },
       clientCapabilities: {},
     });
 
@@ -1291,7 +2197,7 @@ async function main() {
     });
 
     serverProcess.on("error", (err) => {
-      console.error(`Failed to start goose acp: ${err.message}`);
+      console.error(`Failed to start permagent ACP: ${err.message}`);
       process.exit(1);
     });
 

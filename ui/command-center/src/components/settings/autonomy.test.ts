@@ -9,7 +9,7 @@ describe('trustEnvOverrideNotice', () => {
   it('warns when the env-resolved mode diverges from the YAML selection', () => {
     const notice = trustEnvOverrideNotice('approve', 'auto');
     expect(notice).toBe(
-      "The daemon's environment overrides this to 'approve' — clear GOOSE_MODE in the environment to control it here.",
+      "The daemon's environment overrides this to 'approve' — clear the autonomy-mode override in the environment to control it here.",
     );
   });
 

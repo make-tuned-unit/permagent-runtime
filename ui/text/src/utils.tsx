@@ -1,20 +1,23 @@
+import { brandCopy } from "./brand.js";
+
 export function isErrorStatus(status: string): boolean {
   return status.startsWith("error") || status.startsWith("failed");
 }
 
 export function formatError(e: unknown): string {
+  let raw: string;
   if (e instanceof Error) {
-    return e.message || e.toString();
-  }
-  if (typeof e === "string") {
-    return e;
-  }
-  if (e && typeof e === "object") {
+    raw = e.message || e.toString();
+  } else if (typeof e === "string") {
+    raw = e;
+  } else if (e && typeof e === "object") {
     try {
-      return JSON.stringify(e, null, 2);
+      raw = JSON.stringify(e, null, 2);
     } catch {
-      return String(e);
+      raw = String(e);
     }
+  } else {
+    raw = String(e);
   }
-  return String(e);
+  return brandCopy(raw);
 }

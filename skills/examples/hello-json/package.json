@@ -1,0 +1,5 @@
+{
+  "name": "hello-json",
+  "description": "Prints a fixed JSON result for the executable-skill runner.",
+  "entrypoint": "run.sh"
+}

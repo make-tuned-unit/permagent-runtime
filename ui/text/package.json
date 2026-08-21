@@ -24,7 +24,8 @@
   "scripts": {
     "build": "tsc",
     "start": "node scripts/dev-start.mjs",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "tsx --test src/projectPath.test.ts src/slashCommands.test.ts src/brand.test.ts src/mobius.test.ts src/sessionMode.test.ts src/autonomous.test.ts src/editorExtras.test.ts"
   },
   "dependencies": {
     "@aaif/goose-sdk": "workspace:*",

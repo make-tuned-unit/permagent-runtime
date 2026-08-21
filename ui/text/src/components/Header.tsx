@@ -11,6 +11,8 @@ interface HeaderProps {
   loading: boolean;
   spinIdx: number;
   hasPendingPermission: boolean;
+  projectName: string;
+  projectPath: string;
   turnInfo?: { current: number; total: number };
 }
 
@@ -20,36 +22,50 @@ export const Header = React.memo(function Header({
   loading,
   spinIdx,
   hasPendingPermission,
+  projectName,
+  projectPath,
   turnInfo,
 }: HeaderProps) {
   const statusColor =
     status === "ready" ? TEAL : isErrorStatus(status) ? CRANBERRY : TEXT_DIM;
 
   const constrainedWidth = Math.max(width, 20);
-  const leftSideWidth = Math.min(Math.floor(constrainedWidth * 0.7), constrainedWidth - 15);
-  const rightSideWidth = constrainedWidth - leftSideWidth;
+  const rightReserve = 22;
+  const leftWidth = Math.max(constrainedWidth - rightReserve, 10);
 
   return (
     <Box flexDirection="column" width={constrainedWidth} flexShrink={0}>
       <Box justifyContent="space-between" width={constrainedWidth}>
-        <Box width={leftSideWidth}>
-          <Text color={TEXT_PRIMARY} bold>goose</Text>
+        <Box width={leftWidth}>
+          <Text color={TEXT_PRIMARY} bold>
+            permagent
+          </Text>
           <Text color={RULE_COLOR}> · </Text>
           <Box flexShrink={1}>
-            <Text color={statusColor} wrap="truncate-end">{status}</Text>
+            <Text color={TEXT_PRIMARY} wrap="truncate-end">
+              {projectName}
+            </Text>
           </Box>
-          {loading && !hasPendingPermission && (
-            <Text> <Spinner idx={spinIdx} /></Text>
-          )}
         </Box>
-        <Box width={rightSideWidth} justifyContent="flex-end">
+        <Box width={Math.min(rightReserve, constrainedWidth - leftWidth)} justifyContent="flex-end">
           {turnInfo && turnInfo.total > 1 && (
             <Text color={TEXT_DIM}>
               {turnInfo.current}/{turnInfo.total}{"  "}
             </Text>
           )}
-          <Text color={TEXT_DIM}>^E exts · ^M models · ^P providers</Text>
+          <Text color={statusColor}>{status}</Text>
+          {loading && !hasPendingPermission && (
+            <Text>
+              {" "}
+              <Spinner idx={spinIdx} />
+            </Text>
+          )}
         </Box>
+      </Box>
+      <Box width={constrainedWidth}>
+        <Text color={TEXT_DIM} wrap="truncate-start">
+          {projectPath}
+        </Text>
       </Box>
       <Rule width={constrainedWidth} />
     </Box>

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Box, Text, useInput, useStdout } from "ink";
 import type { GooseClient, ProviderDetailEntry } from "@aaif/goose-sdk";
+import { brandCopy } from "./brand.js";
 import {
   CRANBERRY,
   TEAL,
@@ -190,7 +191,7 @@ const ModelSelector = React.memo(function ModelSelector({
           <Text color={TEXT_PRIMARY} bold>◆ Select model ◆</Text>
         </Box>
         <Box justifyContent="center" marginBottom={2}>
-          <Text color={TEXT_DIM}>Loading models for {provider.displayName}…</Text>
+          <Text color={TEXT_DIM}>Loading models for {brandCopy(provider.displayName)}…</Text>
         </Box>
         <Box justifyContent="center" flexGrow={1} alignItems="center">
           <Spinner idx={0} />
@@ -235,7 +236,7 @@ const ModelSelector = React.memo(function ModelSelector({
           <Text color={TEXT_PRIMARY} bold>◆ Enter model name ◆</Text>
         </Box>
         <Box justifyContent="center" marginBottom={2}>
-          <Text color={TEXT_DIM}>Type a model identifier for {provider.displayName}</Text>
+          <Text color={TEXT_DIM}>Type a model identifier for {brandCopy(provider.displayName)}</Text>
         </Box>
 
         <Box justifyContent="center">
@@ -270,7 +271,7 @@ const ModelSelector = React.memo(function ModelSelector({
         <Text color={TEXT_PRIMARY} bold>◆ Select model ◆</Text>
       </Box>
       <Box justifyContent="center" marginBottom={2}>
-        <Text color={TEXT_DIM}>Choose a model for {provider.displayName}</Text>
+        <Text color={TEXT_DIM}>Choose a model for {brandCopy(provider.displayName)}</Text>
       </Box>
 
       {/* Search Bar */}

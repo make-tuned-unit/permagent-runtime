@@ -1,15 +1,15 @@
 use crate::{
     agents::{
-        subagent_task_config::TaskConfig, Agent, AgentEvent, AgentRunnerConfig, SessionConfig,
+        Agent, AgentEvent, AgentRunnerConfig, SessionConfig, subagent_task_config::TaskConfig,
     },
     conversation::{
-        message::{Message, MessageContent},
         Conversation,
+        message::{Message, MessageContent},
     },
     prompt_template::render_template,
     recipe::Recipe,
 };
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use futures::StreamExt;
 use rmcp::model::{
     ErrorCode, ErrorData, LoggingLevel, LoggingMessageNotificationParam, Notification,
@@ -19,6 +19,7 @@ use serde::Serialize;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
@@ -65,6 +66,22 @@ pub async fn run_subagent_task(params: SubagentRunParams) -> Result<String, anyh
     }
 
     Ok(extract_response_text(&messages, return_last_only))
+}
+
+/// Spawn [`run_subagent_task`] without awaiting. The caller joins later so
+/// parallel review/audit workers can be outstanding at once.
+pub fn spawn_subagent_task(params: SubagentRunParams) -> JoinHandle<Result<String, anyhow::Error>> {
+    tokio::spawn(run_subagent_task(params))
+}
+
+/// Spawn any Send future as subagent work. Used by parallel review fan-out
+/// and by unit tests that must not construct a full agent.
+pub fn spawn_subagent_work<F>(work: F) -> JoinHandle<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    tokio::spawn(work)
 }
 
 fn extract_response_text(messages: &Conversation, return_last_only: bool) -> String {
@@ -308,7 +325,7 @@ pub fn create_tool_notification(
 
 #[cfg(test)]
 mod tests {
-    use super::{create_tool_notification, SUBAGENT_TOOL_REQUEST_TYPE};
+    use super::{SUBAGENT_TOOL_REQUEST_TYPE, create_tool_notification};
     use crate::conversation::message::MessageContent;
     use rmcp::model::{CallToolRequestParams, ServerNotification};
     use serde_json::json;
@@ -351,5 +368,46 @@ mod tests {
     fn create_tool_notification_ignores_non_tool_request() {
         let content = MessageContent::text("hello");
         assert!(create_tool_notification(&content, "session_1").is_none());
+    }
+
+    #[tokio::test]
+    async fn two_spawns_can_be_outstanding_before_either_join() {
+        use crate::agents::subagent_handler::spawn_subagent_work;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let started = Arc::new(AtomicUsize::new(0));
+        let (tx, rx) = tokio::sync::watch::channel(false);
+
+        let s1 = started.clone();
+        let mut r1 = rx.clone();
+        let h1 = spawn_subagent_work(async move {
+            s1.fetch_add(1, Ordering::SeqCst);
+            let _ = r1.changed().await;
+            "one"
+        });
+        let s2 = started.clone();
+        let mut r2 = rx;
+        let h2 = spawn_subagent_work(async move {
+            s2.fetch_add(1, Ordering::SeqCst);
+            let _ = r2.changed().await;
+            "two"
+        });
+
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
+        while started.load(Ordering::SeqCst) < 2 {
+            if tokio::time::Instant::now() > deadline {
+                panic!("both spawns should start before either join");
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !h1.is_finished() && !h2.is_finished(),
+            "joins must still be outstanding"
+        );
+        tx.send(true).unwrap();
+        let (a, b) = tokio::join!(h1, h2);
+        assert_eq!(a.unwrap(), "one");
+        assert_eq!(b.unwrap(), "two");
     }
 }

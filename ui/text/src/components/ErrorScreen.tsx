@@ -1,6 +1,7 @@
 import React from "react";
 import { Box, Text, useInput, useStdout } from "ink";
 import { CRANBERRY, TEXT_PRIMARY, TEXT_DIM } from "../colors.js";
+import { brandCopy } from "../brand.js";
 
 interface ErrorScreenProps {
   errorMsg: string;
@@ -24,7 +25,7 @@ export const ErrorScreen = React.memo(function ErrorScreen({ errorMsg, onRetry }
       <Text color={CRANBERRY} bold>✗ Setup error</Text>
       {errorMsg && (
         <Box width={maxWidth - 4}>
-          <Text color={TEXT_PRIMARY} wrap="wrap">{errorMsg}</Text>
+          <Text color={TEXT_PRIMARY} wrap="wrap">{brandCopy(errorMsg)}</Text>
         </Box>
       )}
       <Box marginTop={1}>

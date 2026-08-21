@@ -301,6 +301,8 @@ pub async fn run_for_goal_with_cfg(
         (single, Vec::new())
     };
 
+    let check_fail_output = format_failing_checks(&check_results);
+
     // ── 4. Deterministic aggregation + machine-check clamps ──
     let mut record = aggregate_record(
         goal_id,
@@ -360,7 +362,59 @@ pub async fn run_for_goal_with_cfg(
     // regardless — this block is failure-tolerant but logs loudly, because it
     // runs on a spawned task where a swallowed error simply vanishes.
     if record.status == VerdictStatus::Fail {
-        propose_debug_dispatch(pool, goal_id, &card.title, &card.project_id, &record).await;
+        let meta_value = serde_json::Value::Object(meta.clone());
+        let refinement = if check_fail_output.is_empty() {
+            Ok(permagent::goal_refinement::Applied::Skipped)
+        } else {
+            permagent::goal_refinement::apply(
+                pool,
+                goal_id,
+                &card.project_id,
+                &card.title,
+                &meta_value,
+                &check_fail_output,
+            )
+            .await
+        };
+        match refinement {
+            Ok(permagent::goal_refinement::Applied::Skipped) => {
+                propose_debug_dispatch(pool, goal_id, &card.title, &card.project_id, &record).await;
+            }
+            Ok(permagent::goal_refinement::Applied::Requeued { spent, budget }) => {
+                permagent::agents::platform_extensions::orchestrator::request_roadmap_dispatch(
+                    &card.project_id,
+                );
+                tracing::info!(
+                    target: "permagentd::verification",
+                    goal_id = %goal_id,
+                    spent,
+                    budget,
+                    "Completion checks failed within refinement budget — requeued to Ready"
+                );
+            }
+            Ok(permagent::goal_refinement::Applied::Parked {
+                spent,
+                budget,
+                decision_id,
+            }) => {
+                tracing::warn!(
+                    target: "permagentd::verification",
+                    goal_id = %goal_id,
+                    spent,
+                    budget,
+                    decision_id = %decision_id,
+                    "Refinement budget exhausted — parked with unblock"
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    target: "permagentd::verification",
+                    goal_id = %goal_id,
+                    "Refinement apply failed (falling through to debugger proposal): {e}"
+                );
+                propose_debug_dispatch(pool, goal_id, &card.title, &card.project_id, &record).await;
+            }
+        }
     }
 
     Ok(record)
@@ -480,6 +534,27 @@ fn error_result(index: usize, check_type: &str, message: &str) -> CheckResult {
         },
         truncated: false,
     }
+}
+
+fn format_failing_checks(results: &[CheckResult]) -> String {
+    results
+        .iter()
+        .filter(|r| r.status != CheckStatus::Pass)
+        .map(|r| {
+            let mut s = format!("[{}] {} {:?}", r.check_index, r.check_type, r.status);
+            if let Some(m) = r.evidence.message.as_deref() {
+                s.push_str(&format!("\n{m}"));
+            }
+            if let Some(o) = r.evidence.stdout_tail.as_deref() {
+                s.push_str(&format!("\nstdout:\n{o}"));
+            }
+            if let Some(e) = r.evidence.stderr_tail.as_deref() {
+                s.push_str(&format!("\nstderr:\n{e}"));
+            }
+            s
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 // ── Aggregation ─────────────────────────────────────────────────────────────
@@ -1079,7 +1154,7 @@ pub async fn analyze_diff(
                 builder.add(glob);
             }
             Err(e) => {
-                return uncertain_analysis(&format!("invalid declared_paths glob '{}': {}", g, e))
+                return uncertain_analysis(&format!("invalid declared_paths glob '{}': {}", g, e));
             }
         }
     }
@@ -1170,8 +1245,8 @@ async fn write_verification(
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Debug, Clone)]
     pub enum MockMode {
@@ -1238,7 +1313,7 @@ pub(crate) mod test_support {
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                     "mock failure",
                 )
-                    .into_response()
+                    .into_response();
             }
             MockMode::NoDone(text) => {
                 format!("{}\n", serde_json::json!({"response": text, "done": false}))
@@ -1279,7 +1354,7 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::{spawn_mock_ollama, MockMode};
+    use super::test_support::{MockMode, spawn_mock_ollama};
     use super::*;
 
     const GOOD_PASS: &str = "Q1_INTENT: PASS\nQ2_EVIDENCE: PASS\nQ3_CHECKS: PASS\nQ4_PATHS: PASS\nRATIONALE: Everything checks out.";
@@ -1400,10 +1475,12 @@ mod tests {
         assert_eq!(record.status, VerdictStatus::Pass);
         assert_eq!(record.version, 1);
         assert_eq!(record.check_results.len(), 3);
-        assert!(record
-            .check_results
-            .iter()
-            .all(|r| r.status == CheckStatus::Pass));
+        assert!(
+            record
+                .check_results
+                .iter()
+                .all(|r| r.status == CheckStatus::Pass)
+        );
         assert_eq!(record.rubric.path_discipline, Grade::Pass);
         assert!(record.out_of_path_files.is_empty());
         assert_eq!(record.rationale, "Everything checks out.");
@@ -1424,15 +1501,19 @@ mod tests {
         let parsed: VerificationRecord = serde_json::from_value(v.clone()).unwrap();
         assert_eq!(parsed.status, VerdictStatus::Pass);
         // Digest summary layer present.
-        assert!(parsed
-            .evidence_digest
-            .checks_summary
-            .one_line
-            .contains("All 3 automated checks passed"));
-        assert!(parsed
-            .evidence_digest
-            .verifier_summary
-            .contains("confirmed"));
+        assert!(
+            parsed
+                .evidence_digest
+                .checks_summary
+                .one_line
+                .contains("All 3 automated checks passed")
+        );
+        assert!(
+            parsed
+                .evidence_digest
+                .verifier_summary
+                .contains("confirmed")
+        );
         // No rate configured → cost_usd null + note.
         assert_eq!(parsed.evidence_digest.costs.cost_usd, None);
     }
@@ -1492,10 +1573,12 @@ mod tests {
         assert_eq!(record.status, VerdictStatus::Pass);
         assert_eq!(record.model, "model-a+model-b");
         assert_eq!(record.panel.len(), 2);
-        assert!(record
-            .panel
-            .iter()
-            .all(|p| p.status == VerdictStatus::Pass && p.degraded_reason.is_none()));
+        assert!(
+            record
+                .panel
+                .iter()
+                .all(|p| p.status == VerdictStatus::Pass && p.degraded_reason.is_none())
+        );
         // The panel round-trips through the persisted verdict JSON.
         let after = permagent::cards::get_card(&pool, &card.id)
             .await
@@ -2574,10 +2657,12 @@ mod tests {
             .unwrap();
         assert_eq!(record.status, VerdictStatus::Uncertain);
         assert!(record.degraded_reason.is_some());
-        assert!(record
-            .evidence_digest
-            .verifier_summary
-            .contains("could not complete"));
+        assert!(
+            record
+                .evidence_digest
+                .verifier_summary
+                .contains("could not complete")
+        );
     }
 
     #[tokio::test]
@@ -2603,11 +2688,13 @@ mod tests {
 
         assert_eq!(record.rubric.path_discipline, Grade::Uncertain);
         assert_eq!(record.status, VerdictStatus::Uncertain);
-        assert!(record
-            .degraded_reason
-            .as_deref()
-            .unwrap()
-            .contains("baseline"));
+        assert!(
+            record
+                .degraded_reason
+                .as_deref()
+                .unwrap()
+                .contains("baseline")
+        );
     }
 
     #[tokio::test]
@@ -2663,11 +2750,13 @@ mod tests {
         let baseline = init_repo(repo.path());
         let analysis = analyze_diff(Some(repo.path()), Some(&baseline), None, None, &[]).await;
         assert_eq!(analysis.path_discipline, Grade::Uncertain);
-        assert!(analysis
-            .degraded_note
-            .as_deref()
-            .unwrap()
-            .contains("no declared_paths"));
+        assert!(
+            analysis
+                .degraded_note
+                .as_deref()
+                .unwrap()
+                .contains("no declared_paths")
+        );
     }
 
     #[tokio::test]
@@ -2782,10 +2871,12 @@ mod tests {
             serde_json::to_string_pretty(&record).unwrap()
         );
 
-        assert!(record
-            .check_results
-            .iter()
-            .all(|r| r.status == CheckStatus::Pass));
+        assert!(
+            record
+                .check_results
+                .iter()
+                .all(|r| r.status == CheckStatus::Pass)
+        );
         assert!(
             record.degraded_reason.is_none(),
             "verifier degraded: {:?}",

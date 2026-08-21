@@ -13,6 +13,7 @@ import {
 } from "./colors.js";
 import { Spinner, SPINNER_FRAMES } from "./components/Spinner.js";
 import { ErrorScreen } from "./components/ErrorScreen.js";
+import { brandCopy } from "./brand.js";
 
 type Phase =
   | "loading"
@@ -178,7 +179,7 @@ export const ProviderSelector = React.memo(function ProviderSelector({ providers
         <Box justifyContent="space-between" alignItems="center">
           <Box width={titleWidth} flexShrink={1}>
             <Text color={textColor} bold={isSelected} wrap="truncate">
-              {provider.displayName}
+              {brandCopy(provider.displayName)}
             </Text>
           </Box>
           <Box flexShrink={0}>
@@ -194,15 +195,15 @@ export const ProviderSelector = React.memo(function ProviderSelector({ providers
         <Box marginTop={1} flexDirection="column" flexGrow={1}>
           <Box width={contentWidth}>
             <Text color={TEXT_DIM} wrap="truncate">
-              {provider.name}
+              {brandCopy(provider.name)}
             </Text>
           </Box>
           {provider.description && (
             <Box marginTop={1} width={contentWidth}>
               <Text color={TEXT_DIM} wrap="truncate" dimColor>
                 {provider.description.length > descriptionMaxChars
-                  ? provider.description.slice(0, descriptionMaxChars - 1) + "…"
-                  : provider.description}
+                  ? brandCopy(provider.description).slice(0, descriptionMaxChars - 1) + "…"
+                  : brandCopy(provider.description)}
               </Text>
             </Box>
           )}
@@ -238,7 +239,7 @@ export const ProviderSelector = React.memo(function ProviderSelector({ providers
       <Box marginTop={1} />
       <Box justifyContent="center" marginBottom={1}>
         <Text color={TEXT_PRIMARY} bold>
-          {title ?? "◆ Welcome to goose ◆"}
+          {title ?? "◆ Welcome to Permagent ◆"}
         </Text>
       </Box>
       <Box justifyContent="center" marginBottom={2}>
@@ -383,13 +384,13 @@ export const ProviderConfigurator = React.memo(function ProviderConfigurator({ p
         {/* Header */}
         <Box justifyContent="center" marginBottom={1}>
           <Text color={TEXT_PRIMARY} bold>
-            ◆ Configure {provider.displayName} ◆
+            ◆ Configure {brandCopy(provider.displayName)} ◆
           </Text>
         </Box>
         {provider.description && (
           <Box justifyContent="center" marginBottom={1}>
             <Box width={maxWidth - 4}>
-              <Text color={TEXT_DIM} wrap="wrap">{provider.description}</Text>
+              <Text color={TEXT_DIM} wrap="wrap">{brandCopy(provider.description)}</Text>
             </Box>
           </Box>
         )}
@@ -461,7 +462,7 @@ export const ProviderConfigurator = React.memo(function ProviderConfigurator({ p
               {provider.setupSteps.map((step, i) => (
                 <Box key={i} width={maxWidth - 4} marginTop={1}>
                   <Text color={TEXT_DIM} wrap="wrap">
-                    {i + 1}. {step}
+                    {i + 1}. {brandCopy(step)}
                   </Text>
                 </Box>
               ))}
@@ -501,7 +502,7 @@ const SuccessScreen = React.memo(function SuccessScreen({ provider, height }: Su
         {provider && (
           <Box marginTop={1}>
             <Text color={TEXT_SECONDARY}>
-              Connected to {provider.displayName}
+              Connected to {brandCopy(provider.displayName)}
             </Text>
           </Box>
         )}

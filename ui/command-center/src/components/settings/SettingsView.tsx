@@ -373,7 +373,7 @@ export function AutonomyPanel({ goto }: { goto?: (key: string) => void }) {
   return (
     <div>
       <H1 sub="How much your agent can do without checking in. Higher autonomy = faster, but more rope.">Autonomy &amp; guardrails</H1>
-      <Section title="Default autonomy" sub="Live — this writes the daemon's tool-approval mode (GOOSE_MODE) and applies to new turns.">
+      <Section title="Default autonomy" sub="Live — this writes the daemon's tool-approval mode and applies to new turns.">
         {trustError && (
           <div style={{ fontSize: 12, color: colors.danger, padding: '4px 0 8px' }}>{trustError}</div>
         )}
