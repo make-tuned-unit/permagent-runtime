@@ -32,7 +32,7 @@ pub use execute_commands::COMPACT_TRIGGERS;
 pub use extension::{ExtensionConfig, ExtensionError};
 pub use extension_manager::ExtensionManager;
 pub use prompt_manager::PromptManager;
-pub use subagent_handler::SUBAGENT_TOOL_REQUEST_TYPE;
+pub use subagent_handler::{spawn_subagent_task, spawn_subagent_work, SUBAGENT_TOOL_REQUEST_TYPE};
 pub use subagent_task_config::TaskConfig;
 pub use tool_execution::{ToolCallContext, ToolCallResult};
 pub use types::{FrontendTool, RetryConfig, SessionConfig, SuccessCheck};

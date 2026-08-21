@@ -3,6 +3,7 @@ import {Box, Text, useInput, useStdout} from "ink";
 import {TextInput} from "@inkjs/ui";
 import type {GooseClient} from "@aaif/goose-sdk";
 import {CRANBERRY, GOLD, RULE_COLOR, TEAL, TEXT_DIM, TEXT_PRIMARY} from "./colors.js";
+import {brandCopy} from "./brand.js";
 import {Spinner, SPINNER_FRAMES} from "./components/Spinner.js";
 import {ErrorScreen} from "./components/ErrorScreen.js";
 
@@ -370,9 +371,9 @@ export default function ExtensionsManager({
                   return (
                     <Box key={`${ext.type}:${ext.name}`} width={layoutW}>
                       <Text color={active ? GOLD : TEXT_DIM}>{active ? "▸ " : "  "}</Text>
-                      <Box width={nameW}><Text color={active ? TEXT_PRIMARY : TEXT_DIM} bold={active} wrap="truncate">{ext.name}</Text></Box>
+                      <Box width={nameW}><Text color={active ? TEXT_PRIMARY : TEXT_DIM} bold={active} wrap="truncate">{brandCopy(ext.name)}</Text></Box>
                       <Box width={GUTTER}><Text>{" ".repeat(GUTTER)}</Text></Box>
-                      <Box width={descW}><Text color={TEXT_DIM} wrap="truncate">{ext.description || ""}</Text></Box>
+                      <Box width={descW}><Text color={TEXT_DIM} wrap="truncate">{brandCopy(ext.description || "")}</Text></Box>
                       <Box width={GUTTER}><Text>{" ".repeat(GUTTER)}</Text></Box>
                       <Box width={STATUS_W}><Text color={ext.enabled ? TEAL : TEXT_DIM} wrap="truncate">{ext.enabled ? "enabled" : "disabled"}</Text></Box>
                     </Box>
@@ -394,7 +395,7 @@ export default function ExtensionsManager({
           <Box width={layoutW} flexDirection="column">
             <Text color={GOLD}>Warnings</Text>
             {warnings.map((w, i) => (
-              <Box key={i} width={layoutW}><Text color={TEXT_DIM} wrap="truncate">• {w}</Text></Box>
+              <Box key={i} width={layoutW}><Text color={TEXT_DIM} wrap="truncate">• {brandCopy(w)}</Text></Box>
             ))}
           </Box>
         </Box>

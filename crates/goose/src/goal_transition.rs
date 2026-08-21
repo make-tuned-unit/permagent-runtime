@@ -629,6 +629,95 @@ pub async fn requeue_goal(
     Ok(())
 }
 
+/// Return a goal to Ready from InProgress **or** Review without consuming the
+/// ordinary attempt cap (unless `new_attempt_count` is `Some`). Used by
+/// bounded refinement after a completion-check failure.
+pub async fn return_to_ready(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    actor: &str,
+    reason: &str,
+    new_attempt_count: Option<u64>,
+    extra_patch: serde_json::Map<String, serde_json::Value>,
+) -> Result<(), GuardError> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(db_err)?;
+
+    let goal = read_goal_tx(&mut tx, card_id).await?;
+    if goal.card_type != "goal" {
+        return Err(GuardError::Invalid(format!(
+            "Card '{}' is not a goal",
+            card_id
+        )));
+    }
+
+    let binding = state_binding_of_column_tx(&mut tx, &goal.column_id).await?;
+    if binding.as_deref() == Some("ready") {
+        tx.rollback().await.map_err(db_err)?;
+        return Ok(());
+    }
+    if binding.as_deref() != Some("in_progress") && binding.as_deref() != Some("review") {
+        return Err(GuardError::Invalid(format!(
+            "Only in_progress or review goals can return to Ready (card '{}' is in '{}')",
+            card_id,
+            binding.as_deref().unwrap_or("?")
+        )));
+    }
+
+    let from_binding = binding.clone().unwrap_or_else(|| "unknown".to_string());
+    let journal_actor = journal_actor(actor, &goal.metadata);
+    let mut meta = goal.metadata;
+    meta.insert(
+        "goal_state".to_string(),
+        serde_json::Value::String("ready".to_string()),
+    );
+    if let Some(count) = new_attempt_count {
+        meta.insert("attempt_count".to_string(), serde_json::json!(count));
+    }
+    meta.insert(
+        "last_error".to_string(),
+        serde_json::Value::String(reason.to_string()),
+    );
+    apply_patch(&mut meta, &extra_patch);
+    let meta_str = serde_json::to_string(&serde_json::Value::Object(meta))
+        .map_err(|e| GuardError::Db(e.to_string()))?;
+
+    let ready_col = goal_column_id_tx(&mut tx, &goal.project_id, "ready").await?;
+    let position = next_position_tx(&mut tx, &ready_col).await?;
+
+    sqlx::query("UPDATE cards SET metadata_json = ?, column_id = ?, position = ? WHERE id = ?")
+        .bind(&meta_str)
+        .bind(&ready_col)
+        .bind(position)
+        .bind(card_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+
+    decisions::append_audit_tx(
+        &mut tx,
+        "none",
+        Some(card_id),
+        actor,
+        0,
+        "return_to_ready",
+        None,
+    )
+    .await
+    .map_err(GuardError::Db)?;
+
+    tx.commit().await.map_err(db_err)?;
+
+    crate::events::emit(crate::events::goal_state_changed(
+        card_id,
+        Some(&goal.project_id),
+        Some(from_binding.as_str()),
+        "ready",
+        &journal_actor,
+    ));
+
+    Ok(())
+}
+
 /// Merge post-spawn metadata into an InProgress goal, but only while the
 /// caller's dispatch claim still owns it.
 pub async fn finalize_dispatch_claim(
@@ -888,6 +977,7 @@ pub enum BudgetExhaustion {
     AttemptCap { spent: u64, cap: u64 },
     TokenBudget { spent: u64, cap: u64 },
     Wallclock { spent_secs: u64, cap_secs: u64 },
+    RefinementBudget { spent: u64, cap: u64 },
 }
 
 impl BudgetExhaustion {
@@ -896,6 +986,7 @@ impl BudgetExhaustion {
             Self::AttemptCap { .. } => decisions::UnblockReason::AttemptCap,
             Self::TokenBudget { .. } => decisions::UnblockReason::TokenBudget,
             Self::Wallclock { .. } => decisions::UnblockReason::WallclockCap,
+            Self::RefinementBudget { .. } => decisions::UnblockReason::RefinementBudget,
         }
     }
 
@@ -907,6 +998,7 @@ impl BudgetExhaustion {
                 spent_secs,
                 cap_secs,
             } => (spent_secs, cap_secs),
+            Self::RefinementBudget { spent, cap } => (spent, cap),
         }
     }
 
@@ -925,6 +1017,9 @@ impl BudgetExhaustion {
                 "wallclock cap exhausted ({}s elapsed of {}s)",
                 spent_secs, cap_secs
             ),
+            Self::RefinementBudget { spent, cap } => {
+                format!("refinement budget exhausted ({spent}/{cap} check-failure reworks)")
+            }
         }
     }
 }
@@ -1262,19 +1357,19 @@ async fn validate_dep_ids(
                 return Err(GuardError::NotFound(format!(
                     "Dependency '{}' not found",
                     dep_id
-                )))
+                )));
             }
             Some((card_type, _)) if card_type != "goal" => {
                 return Err(GuardError::Invalid(format!(
                     "Dependency '{}' is not a goal card",
                     dep_id
-                )))
+                )));
             }
             Some((_, dep_project)) if dep_project != project_id => {
                 return Err(GuardError::Invalid(format!(
                     "Dependency '{}' belongs to a different project",
                     dep_id
-                )))
+                )));
             }
             Some(_) => {}
         }

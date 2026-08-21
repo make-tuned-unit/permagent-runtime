@@ -16,3 +16,10 @@ export interface Turn {
   responseItems: ResponseItem[];
   toolCallsById: Map<string, number>;
 }
+
+export type QueueKind = "steer" | "followup";
+
+export interface QueuedMessage {
+  text: string;
+  kind: QueueKind;
+}

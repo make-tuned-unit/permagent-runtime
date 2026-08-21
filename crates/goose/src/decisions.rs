@@ -168,6 +168,7 @@ pub enum UnblockReason {
     AttemptCap,
     WallclockCap,
     Stuck,
+    RefinementBudget,
 }
 
 /// Payload for `kind='unblock'` — a goal exhausted its budget and is parked.

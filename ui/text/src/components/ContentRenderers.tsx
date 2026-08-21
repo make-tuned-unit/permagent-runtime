@@ -3,7 +3,7 @@ import { Box, Text } from "ink";
 import { renderMarkdown } from "../markdown.js";
 import { renderToolCallLines } from "../toolcall.js";
 import type { ToolCallInfo } from "../toolcall.js";
-import type { ResponseItem } from "../types.js";
+import type { ResponseItem, QueuedMessage } from "../types.js";
 import { CRANBERRY, TEXT_DIM, GOLD } from "../colors.js";
 import { Spinner } from "./Spinner.js";
 
@@ -121,17 +121,19 @@ export function renderLoadingIndicator(
 }
 
 export function renderQueuedMessages(
-  queuedMessages: string[],
+  queuedMessages: QueuedMessage[],
   width: number
 ): React.ReactElement[] {
-  const messageWidth = Math.max(width - 20, 10);
+  const messageWidth = Math.max(width - 22, 10);
   return queuedMessages.map((message, i) => (
     <Box key={`q-${i}`} width={width} height={1}>
-      <Text color={TEXT_DIM}>{"❯ "}</Text>
+      <Text color={message.kind === "steer" ? GOLD : TEXT_DIM}>{"❯ "}</Text>
       <Box width={messageWidth}>
-        <Text wrap="truncate-end" color={TEXT_DIM}>{message}</Text>
+        <Text wrap="truncate-end" color={TEXT_DIM}>{message.text}</Text>
       </Box>
-      <Text color={GOLD} dimColor> (queued)</Text>
+      <Text color={GOLD} dimColor>
+        {message.kind === "steer" ? " (steer)" : " (follow-up)"}
+      </Text>
     </Box>
   ));
 }

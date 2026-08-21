@@ -301,6 +301,8 @@ pub async fn run_for_goal_with_cfg(
         (single, Vec::new())
     };
 
+    let check_fail_output = format_failing_checks(&check_results);
+
     // ── 4. Deterministic aggregation + machine-check clamps ──
     let mut record = aggregate_record(
         goal_id,
@@ -360,7 +362,60 @@ pub async fn run_for_goal_with_cfg(
     // regardless — this block is failure-tolerant but logs loudly, because it
     // runs on a spawned task where a swallowed error simply vanishes.
     if record.status == VerdictStatus::Fail {
-        propose_debug_dispatch(pool, goal_id, &card.title, &card.project_id, &record).await;
+        let meta_value = serde_json::Value::Object(meta.clone());
+        let refinement = if check_fail_output.is_empty() {
+            Ok(permagent::goal_refinement::Applied::Skipped)
+        } else {
+            permagent::goal_refinement::apply(
+                pool,
+                goal_id,
+                &card.project_id,
+                &card.title,
+                &meta_value,
+                &check_fail_output,
+            )
+            .await
+        };
+        match refinement {
+            Ok(permagent::goal_refinement::Applied::Skipped) => {
+                propose_debug_dispatch(pool, goal_id, &card.title, &card.project_id, &record).await;
+            }
+            Ok(permagent::goal_refinement::Applied::Requeued { spent, budget }) => {
+                // `goal_refinement::apply` already returned the card to Ready.
+                // The next `dispatch_eligible_goals` (resume_roadmap, or the
+                // tracker after another goal completes) picks it up.
+                tracing::info!(
+                    target: "permagentd::verification",
+                    goal_id = %goal_id,
+                    project_id = %card.project_id,
+                    spent,
+                    budget,
+                    "Completion checks failed within refinement budget — requeued to Ready"
+                );
+            }
+            Ok(permagent::goal_refinement::Applied::Parked {
+                spent,
+                budget,
+                decision_id,
+            }) => {
+                tracing::warn!(
+                    target: "permagentd::verification",
+                    goal_id = %goal_id,
+                    spent,
+                    budget,
+                    decision_id = %decision_id,
+                    "Refinement budget exhausted — parked with unblock"
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    target: "permagentd::verification",
+                    goal_id = %goal_id,
+                    "Refinement apply failed (falling through to debugger proposal): {e}"
+                );
+                propose_debug_dispatch(pool, goal_id, &card.title, &card.project_id, &record).await;
+            }
+        }
     }
 
     Ok(record)
@@ -480,6 +535,27 @@ fn error_result(index: usize, check_type: &str, message: &str) -> CheckResult {
         },
         truncated: false,
     }
+}
+
+fn format_failing_checks(results: &[CheckResult]) -> String {
+    results
+        .iter()
+        .filter(|r| r.status != CheckStatus::Pass)
+        .map(|r| {
+            let mut s = format!("[{}] {} {:?}", r.check_index, r.check_type, r.status);
+            if let Some(m) = r.evidence.message.as_deref() {
+                s.push_str(&format!("\n{m}"));
+            }
+            if let Some(o) = r.evidence.stdout_tail.as_deref() {
+                s.push_str(&format!("\nstdout:\n{o}"));
+            }
+            if let Some(e) = r.evidence.stderr_tail.as_deref() {
+                s.push_str(&format!("\nstderr:\n{e}"));
+            }
+            s
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 // ── Aggregation ─────────────────────────────────────────────────────────────
@@ -1079,7 +1155,7 @@ pub async fn analyze_diff(
                 builder.add(glob);
             }
             Err(e) => {
-                return uncertain_analysis(&format!("invalid declared_paths glob '{}': {}", g, e))
+                return uncertain_analysis(&format!("invalid declared_paths glob '{}': {}", g, e));
             }
         }
     }
@@ -1238,7 +1314,7 @@ pub(crate) mod test_support {
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                     "mock failure",
                 )
-                    .into_response()
+                    .into_response();
             }
             MockMode::NoDone(text) => {
                 format!("{}\n", serde_json::json!({"response": text, "done": false}))

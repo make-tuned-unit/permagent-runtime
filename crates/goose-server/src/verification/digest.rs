@@ -160,7 +160,9 @@ pub fn verifier_one_line(
             format!("{persona_name}'s reviewer found the work does not match what was approved")
         }
         (VerdictStatus::Uncertain, None) => {
-            format!("{persona_name}'s reviewer could not confirm the work matches what was approved — a human decision is needed")
+            format!(
+                "{persona_name}'s reviewer could not confirm the work matches what was approved — a human decision is needed"
+            )
         }
     }
 }

@@ -27,5 +27,5 @@ export function trustEnvOverrideNotice(
 ): string | null {
   if (!effectiveMode || selectedMode === null) return null;
   if (effectiveMode === selectedMode) return null;
-  return `The daemon's environment overrides this to '${effectiveMode}' — clear GOOSE_MODE in the environment to control it here.`;
+  return `The daemon's environment overrides this to '${effectiveMode}' — clear the autonomy-mode override in the environment to control it here.`;
 }

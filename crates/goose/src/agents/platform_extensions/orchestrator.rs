@@ -210,6 +210,22 @@ struct SteerGoalParams {
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct RunExecutableSkillParams {
+    /// Skill name or relative path under the skills root (e.g. `examples/hello-json`).
+    name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct MessageGoalParams {
+    /// Goal card ID sending the message.
+    from_goal: String,
+    /// Goal card ID that must be InProgress.
+    to_goal: String,
+    /// Structured body delivered to the target worker / next brief.
+    body: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct DecomposeRoadmapParams {
     /// The user's high-level objective to decompose into goals.
     objective: String,
@@ -1065,6 +1081,8 @@ pub(crate) async fn dispatch_goal_fn(
     {
         instructions = format!("{instructions}\n\n{block}");
     }
+
+    instructions = super::dispatch_brief::with_retry_context(instructions, &card, &project);
 
     // Working dir + baseline commit at dispatch time (recorded beside
     // dispatched_at so a commit-producing worker's changes can be diffed
@@ -2367,11 +2385,57 @@ impl OrchestratorClient {
                 card_id
             ));
         };
-        handle.steer(&message).await?;
+        let key = crate::rlm::session_key_for_goal(&card_id);
+        let steered = match crate::rlm::quoted_brief_block(&key) {
+            Some(block) => format!("{block}\n\n{message}"),
+            None => message,
+        };
+        handle.steer(&steered).await?;
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Steered goal {}: the message will reach the worker as its next turn. It buys \
              exactly one more turn — the worker still finishes through checks and review.",
             card_id
+        ))]))
+    }
+
+    async fn handle_run_executable_skill(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<CallToolResult, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let name = extract_string(&args, "name")?;
+        match crate::executable_skills::run_named(&name).await {
+            Ok(result) => {
+                let text = serde_json::to_string_pretty(&result).unwrap_or_else(|_| {
+                    format!(
+                        "exit={} stdout={} stderr={}",
+                        result.exit_code, result.stdout, result.stderr
+                    )
+                });
+                Ok(CallToolResult::success(vec![Content::text(text)]))
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    async fn handle_message_goal(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<CallToolResult, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let from_goal = extract_string(&args, "from_goal")?;
+        let to_goal = extract_string(&args, "to_goal")?;
+        let body = extract_string(&args, "body")?;
+        let pool = self
+            .context
+            .session_manager
+            .pool_clone()
+            .await
+            .map_err(|e| e.to_string())?;
+        let delivery = super::goal_a2a::send_goal_a2a(&pool, &from_goal, &to_goal, &body).await?;
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "A2A delivered from {} to {} (steered={}). Payload: from_goal/to_goal/body.",
+            delivery.message.from_goal, delivery.message.to_goal, delivery.steered
         ))]))
     }
 
@@ -3036,6 +3100,23 @@ impl OrchestratorClient {
                 schema::<SteerGoalParams>(),
             ),
             Tool::new(
+                "run_executable_skill".to_string(),
+                "Run a packaged executable skill by name or relative path under the skills \
+                 root (manifest.toml or package.json + entrypoint). Returns structured \
+                 stdout/stderr and exit code. Paths outside the skills directory are refused."
+                    .to_string(),
+                schema::<RunExecutableSkillParams>(),
+            ),
+            Tool::new(
+                "message_goal".to_string(),
+                "Send a structured agent-to-agent message from one goal worker to another \
+                 InProgress goal (payload: from_goal, to_goal, body). Refused for \
+                 Complete/Cancelled/non-InProgress targets. Lands in the target's RLM \
+                 state and next dispatch/steer brief; steers a live CLI worker when one exists."
+                    .to_string(),
+                schema::<MessageGoalParams>(),
+            ),
+            Tool::new(
                 "decompose_roadmap".to_string(),
                 "Decompose a high-level objective into a proposed roadmap of goal cards. \
                  Returns a PROPOSED plan for user review — does NOT create cards. \
@@ -3124,6 +3205,8 @@ impl McpClientTrait for OrchestratorClient {
             "goal_advance" => self.handle_goal_advance(arguments).await,
             "goal_status" => self.handle_goal_status(arguments).await,
             "steer_goal" => self.handle_steer_goal(arguments).await,
+            "run_executable_skill" => self.handle_run_executable_skill(arguments).await,
+            "message_goal" => self.handle_message_goal(arguments).await,
             "decompose_roadmap" => {
                 self.handle_decompose_roadmap(&ctx.session_id, arguments)
                     .await
@@ -4487,24 +4570,33 @@ pub async fn handle_goal_completion(
                 // only the schema's `completion_check` line (ApproveReviewPayload
                 // is deny_unknown_fields). Absent evidence (in-process subagent,
                 // pre-existing goals) falls back to the original wording / `{}`.
+                let project = crate::projects::get_project(pool, project_id)
+                    .await
+                    .ok()
+                    .flatten();
                 let evidence = card.metadata_json.get("dispatch_evidence");
-                let detail = build_review_detail(card_id, evidence);
+                let mut detail = build_review_detail(card_id, evidence);
                 // Publish sequence (#457): when the project declares ordered
                 // post-push steps, the review decision must say push ≠ live —
                 // the daemon has not run the sequence, so approving does not
                 // make the change user-visible. Best-effort: a project-load
                 // failure only drops the note, never the decision.
-                let detail = match crate::projects::get_project(pool, project_id)
-                    .await
-                    .ok()
-                    .flatten()
+                if let Some(note) = project
+                    .as_ref()
                     .map(|p| publish_sequence::parse_publish_sequence(&p.metadata_json))
                     .as_deref()
                     .and_then(publish_sequence::review_pending_note)
                 {
-                    Some(note) => format!("{detail}\n\n{note}"),
-                    None => detail,
-                };
+                    detail = format!("{detail}\n\n{note}");
+                }
+                let project_meta = project
+                    .as_ref()
+                    .map(|p| p.metadata_json.clone())
+                    .unwrap_or_else(|| serde_json::json!({}));
+                if super::review_fanout::is_enabled(&card.metadata_json, &project_meta) {
+                    let folded = super::review_fanout::run_parallel_reviews(&card).await;
+                    detail = super::review_fanout::append_to_detail(&detail, &folded);
+                }
                 let payload = match evidence.and_then(format_dispatch_evidence_brief) {
                     Some(proof) => serde_json::json!({ "completion_check": proof }),
                     None => serde_json::json!({}),
@@ -5459,18 +5551,45 @@ async fn resume_single_goal(
                 };
 
                 if !still_busy {
-                    // Session finished — treat as success (we can't recover the
-                    // actual result from a prior daemon lifecycle, so assume success
-                    // and let the user review)
-                    if let Err(e) =
-                        handle_goal_completion(&pool_clone, &card_id, &project_id, Ok(())).await
-                    {
-                        tracing::warn!(
-                            target: "permagentd::brain",
-                            "Failed to handle resumed goal completion for {}: {}",
-                            card_id,
-                            e
-                        );
+                    // W5: a re-attached session going idle is not evidence of
+                    // success. Recover Review only from worktree commits;
+                    // otherwise requeue to Ready with last_error preserved.
+                    let recovered = match cards::get_card(&pool_clone, &card_id).await {
+                        Ok(Some(card)) => {
+                            try_complete_dead_worker_from_worktree(
+                                &pool_clone,
+                                &card,
+                                &project_id,
+                                Some(&sid),
+                            )
+                            .await
+                        }
+                        _ => false,
+                    };
+                    if !recovered {
+                        if let Ok(Some(card)) = cards::get_card(&pool_clone, &card_id).await {
+                            let attempt = card
+                                .metadata_json
+                                .get("attempt_count")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+                            if let Err(e) = goal_transition::requeue_goal(
+                                &pool_clone,
+                                &card_id,
+                                decisions::ACTOR_SYSTEM,
+                                attempt.saturating_add(1),
+                                "Worker session ended after resume without recoverable evidence",
+                            )
+                            .await
+                            {
+                                tracing::warn!(
+                                    target: "permagentd::brain",
+                                    "Failed to requeue resumed goal {} without evidence: {}",
+                                    card_id,
+                                    e
+                                );
+                            }
+                        }
                     }
                     break;
                 }
@@ -6883,6 +7002,34 @@ mod tests {
         assert!(!d.detail.is_empty());
     }
 
+    #[tokio::test]
+    async fn completion_success_review_fanout_folds_two_briefs() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        let mut meta = card.metadata_json.as_object().cloned().unwrap();
+        meta.insert("review_fanout".into(), serde_json::json!(true));
+        sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+            .bind(serde_json::to_string(&serde_json::Value::Object(meta)).unwrap())
+            .bind(&card.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
+            .await
+            .unwrap();
+
+        let d = decisions::find_open_decision_for_goal(&pool, &card.id, "approve_review")
+            .await
+            .unwrap()
+            .expect("fan-out still creates approve_review");
+        assert!(
+            d.detail.contains("[security]") && d.detail.contains("[debugger]"),
+            "fan-out must fold both review workers into the decision detail: {}",
+            d.detail
+        );
+    }
+
     /// (a) Tier-gated advance WITHOUT a decision is rejected at the daemon
     /// layer even via the orchestrator's own tool path.
     #[tokio::test]
@@ -7893,6 +8040,70 @@ mod tests {
             .await
             .unwrap();
         assert!(!tags.contains(&"roadmap_paused".to_string()));
+    }
+
+    #[tokio::test]
+    async fn promote_eligible_dependents_moves_triage_when_deps_complete() {
+        let pool = test_pool().await;
+        use crate::projects::PERSONAL_PROJECT_ID;
+
+        let complete = setup_goal_in_state(&pool, "complete", 1).await;
+        cards::seed_goal_columns(&pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        let triage_col = cards::get_goal_column(&pool, PERSONAL_PROJECT_ID, "triage")
+            .await
+            .unwrap()
+            .unwrap();
+        let dependent = cards::create_card(
+            &pool,
+            cards::CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: "Dependent after parent complete".to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(triage_col.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "depends_on": [complete.id],
+                    "attempt_count": 0,
+                })),
+            },
+        )
+        .await
+        .unwrap();
+
+        crate::goal_transition::promote_eligible_dependents(&pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &dependent.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("ready"),
+            "promote_eligible_dependents must move Triage dependents whose deps are Complete"
+        );
+    }
+
+    #[test]
+    fn orchestrator_tools_include_prime_seams() {
+        let names: Vec<String> = OrchestratorClient::get_tools()
+            .into_iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        for required in ["run_executable_skill", "message_goal", "steer_goal"] {
+            assert!(
+                names.iter().any(|n| n == required),
+                "{required} must be in the orchestrator tool list, got {names:?}"
+            );
+        }
     }
 
     #[tokio::test]
