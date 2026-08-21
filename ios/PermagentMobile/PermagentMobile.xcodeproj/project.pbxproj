@@ -130,6 +130,7 @@
 		903B030DA4435430E2D44FA5 /* mobius_35.webp in Resources */ = {isa = PBXBuildFile; fileRef = 952108923C1510E5569EDF9A /* mobius_35.webp */; };
 		93334C044001476062C81950 /* mobius_09.webp in Resources */ = {isa = PBXBuildFile; fileRef = 9BD4017C1B5025C7532A43B7 /* mobius_09.webp */; };
 		935D68C6F3150B93748E1239 /* ModelPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E08AFB4AE75FC1E977EF1630 /* ModelPickerView.swift */; };
+		93C7D9F017AF04E12EEA0804 /* VoiceClipboardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5407AD47762AA65113F31F1 /* VoiceClipboardTests.swift */; };
 		947EE86BC169A18B6A1B6B00 /* mobius_75.webp in Resources */ = {isa = PBXBuildFile; fileRef = F43F18C6E4951035C0EB1426 /* mobius_75.webp */; };
 		9535CCB0091E9B276307213D /* SchedulesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F04A0A4A5E3D5490ADCF447 /* SchedulesView.swift */; };
 		969E272CC336191295B24887 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F08F07F303B94889E794863 /* HomeView.swift */; };
@@ -168,6 +169,7 @@
 		B579F2361368D7C62FF7B48F /* VoiceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4BD3E1B6A179219E2AC1FDD /* VoiceView.swift */; };
 		B5C6E18DF7EBBB4E22DA6345 /* mobius_31.webp in Resources */ = {isa = PBXBuildFile; fileRef = A50E726E7A7F3E738039E437 /* mobius_31.webp */; };
 		B6DD907A727FE746A2750E11 /* mobius_71.webp in Resources */ = {isa = PBXBuildFile; fileRef = 9DB85BFD1C09686A08BB5040 /* mobius_71.webp */; };
+		B73C63B88616B56F42522D85 /* VoiceOrbView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FEED3E5A9B281991FABC481 /* VoiceOrbView.swift */; };
 		B83B0931CB251E62924D6795 /* VoiceVADTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03ECD1FBD23E34DDAA6C60F4 /* VoiceVADTests.swift */; };
 		B8EC4A35AE5B70E9694AE808 /* mobius_56.webp in Resources */ = {isa = PBXBuildFile; fileRef = 0789D585C4E32C8367B4D9DF /* mobius_56.webp */; };
 		B8FF2692C9DE58BA03B0D6D0 /* mobius_07.webp in Resources */ = {isa = PBXBuildFile; fileRef = B727F49FD18B9C50E728D994 /* mobius_07.webp */; };
@@ -180,6 +182,7 @@
 		BF48D1D7A9F82199F4A3677B /* Inter-SemiBold.otf in Resources */ = {isa = PBXBuildFile; fileRef = 37120DC59C45803562C55A0A /* Inter-SemiBold.otf */; };
 		C073981413382CCC2EF3B625 /* mobius_14.webp in Resources */ = {isa = PBXBuildFile; fileRef = 04BE8368A38BE1F127F616DA /* mobius_14.webp */; };
 		C12C257253232156BB5ABC0C /* mobius_03.webp in Resources */ = {isa = PBXBuildFile; fileRef = 53ACA964D3B37A85E1C2AA14 /* mobius_03.webp */; };
+		C16E1291A3A014C6363EA243 /* VoiceClipboard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19DCB4DF670238B7E8AA2B61 /* VoiceClipboard.swift */; };
 		C1BABEE832FF296D82C88C45 /* mobius_18.webp in Resources */ = {isa = PBXBuildFile; fileRef = 5A4C5B0C5522D3A318BD30E3 /* mobius_18.webp */; };
 		C2368CCD1EFFF6542A477C7B /* mobius_23.webp in Resources */ = {isa = PBXBuildFile; fileRef = 032DBBA07506A4CB030698CA /* mobius_23.webp */; };
 		C338F7F7A94CC26220AFFC51 /* VoiceVAD.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EEE1C8D68C52C00634826E5 /* VoiceVAD.swift */; };
@@ -218,6 +221,7 @@
 		EA173634E3C334B75AAC0142 /* mobius_27.webp in Resources */ = {isa = PBXBuildFile; fileRef = E9E7E684F0381A55C80FDCF7 /* mobius_27.webp */; };
 		ECF5EC83531D45AF4CD8ED41 /* mobius_68.webp in Resources */ = {isa = PBXBuildFile; fileRef = 75732F55A6BED9FB899F2904 /* mobius_68.webp */; };
 		ED6CA95E1CE3940CDEAA4AEE /* mobius_67.webp in Resources */ = {isa = PBXBuildFile; fileRef = 820E69821F1CA3B0E87C82F3 /* mobius_67.webp */; };
+		ED7266FCD98B69F29431DA6B /* VoiceClipboard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19DCB4DF670238B7E8AA2B61 /* VoiceClipboard.swift */; };
 		EDD58962CBEF7739EEE508DB /* mobius_09.webp in Resources */ = {isa = PBXBuildFile; fileRef = 9BD4017C1B5025C7532A43B7 /* mobius_09.webp */; };
 		EDEC276A65B5B05EC2C2E4D2 /* mobius_55.webp in Resources */ = {isa = PBXBuildFile; fileRef = A1562D9A5A48D2C6D7E5DE38 /* mobius_55.webp */; };
 		EFA9D07C186F566994683B7E /* mobius_36.webp in Resources */ = {isa = PBXBuildFile; fileRef = DF52D5387FB44B148544B0D6 /* mobius_36.webp */; };
@@ -272,6 +276,7 @@
 		141797575D3BC8ECCADD6937 /* mobius_04.webp */ = {isa = PBXFileReference; path = mobius_04.webp; sourceTree = "<group>"; };
 		17D3D97237141205A82BEB96 /* PermagentWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PermagentWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		17E73AFCDABF4A8BEEE0B1D6 /* mobius_59.webp */ = {isa = PBXFileReference; path = mobius_59.webp; sourceTree = "<group>"; };
+		19DCB4DF670238B7E8AA2B61 /* VoiceClipboard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceClipboard.swift; sourceTree = "<group>"; };
 		1BD65746168153E4927EA4BF /* mobius_24.webp */ = {isa = PBXFileReference; path = mobius_24.webp; sourceTree = "<group>"; };
 		1EEE1C8D68C52C00634826E5 /* VoiceVAD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceVAD.swift; sourceTree = "<group>"; };
 		1F6D4BD4322DC4ED7E202147 /* PermagentWatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermagentWatchApp.swift; sourceTree = "<group>"; };
@@ -333,6 +338,7 @@
 		AA0EDD200AC9AB1D53EB3754 /* AgentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentsView.swift; sourceTree = "<group>"; };
 		AB802A52CAC11A9A4198B405 /* HubWatchRelay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubWatchRelay.swift; sourceTree = "<group>"; };
 		ACF042D26EBA2B8AA3FC72E1 /* mobius_26.webp */ = {isa = PBXFileReference; path = mobius_26.webp; sourceTree = "<group>"; };
+		B5407AD47762AA65113F31F1 /* VoiceClipboardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceClipboardTests.swift; sourceTree = "<group>"; };
 		B6F0018258AE31DA3C2066AA /* mobius_69.webp */ = {isa = PBXFileReference; path = mobius_69.webp; sourceTree = "<group>"; };
 		B727F49FD18B9C50E728D994 /* mobius_07.webp */ = {isa = PBXFileReference; path = mobius_07.webp; sourceTree = "<group>"; };
 		BF0D5D72E70CE12B1E837D71 /* AgentIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentIdentity.swift; sourceTree = "<group>"; };
@@ -490,6 +496,7 @@
 			children = (
 				CEAB4D45CE7CAF7281A46AE0 /* ChatStreamTests.swift */,
 				C32B302BDEB6B73D2B6E807F /* MeetingQueueTests.swift */,
+				B5407AD47762AA65113F31F1 /* VoiceClipboardTests.swift */,
 				03ECD1FBD23E34DDAA6C60F4 /* VoiceVADTests.swift */,
 				D46B905B07E656000B2C7C2D /* WatchBridgeTests.swift */,
 			);
@@ -526,6 +533,7 @@
 				04E26A800CF1D4790CE5DA10 /* Theme.swift */,
 				C7B80C27B4E2ECC150070E7B /* TodosView.swift */,
 				FC49B12939BF081C69BFE0E1 /* Views.swift */,
+				19DCB4DF670238B7E8AA2B61 /* VoiceClipboard.swift */,
 				6FEED3E5A9B281991FABC481 /* VoiceOrbView.swift */,
 				1EEE1C8D68C52C00634826E5 /* VoiceVAD.swift */,
 				C4BD3E1B6A179219E2AC1FDD /* VoiceView.swift */,
@@ -891,6 +899,7 @@
 				80B15C16D322544301287066 /* MobiusView.swift in Sources */,
 				C443E4C76B83445AB7AA24AA /* PermagentWatchApp.swift in Sources */,
 				3CC859A492AA97052054CD19 /* Theme.swift in Sources */,
+				B73C63B88616B56F42522D85 /* VoiceOrbView.swift in Sources */,
 				CDFB23A9541D83A8A0056AD7 /* WatchBridge.swift in Sources */,
 				0CD59DA1B934C4B413721DE0 /* WatchHomeView.swift in Sources */,
 				EA0F7D166D8AFDA7F33836F9 /* WatchRecorder.swift in Sources */,
@@ -926,6 +935,7 @@
 				389CCEEEE3C95E4B8E3A0D3F /* Theme.swift in Sources */,
 				7CF0821B363A714765825661 /* TodosView.swift in Sources */,
 				EFB9D44B159846261786C6DF /* Views.swift in Sources */,
+				C16E1291A3A014C6363EA243 /* VoiceClipboard.swift in Sources */,
 				0D8A364D8FC9A0D197FD6F88 /* VoiceOrbView.swift in Sources */,
 				E2F92C125DDE2D99E40123D8 /* VoiceVAD.swift in Sources */,
 				B579F2361368D7C62FF7B48F /* VoiceView.swift in Sources */,
@@ -941,6 +951,8 @@
 				04ACE51338886772B88EDA45 /* ChatStreamTests.swift in Sources */,
 				88F99B5A0BE069F15BECBB00 /* MeetingQueue.swift in Sources */,
 				541565E03C8E5DC34D3D2663 /* MeetingQueueTests.swift in Sources */,
+				ED7266FCD98B69F29431DA6B /* VoiceClipboard.swift in Sources */,
+				93C7D9F017AF04E12EEA0804 /* VoiceClipboardTests.swift in Sources */,
 				C338F7F7A94CC26220AFFC51 /* VoiceVAD.swift in Sources */,
 				B83B0931CB251E62924D6795 /* VoiceVADTests.swift in Sources */,
 				7B0242C0AD14EC68FFF3F517 /* WatchBridge.swift in Sources */,

@@ -24,19 +24,19 @@
 //! server-side and is announced with `stopped`.
 
 use crate::routes::errors::ErrorResponse;
-use crate::state::{build_kokoro_tts, AppState, SharedTts};
+use crate::state::{AppState, SharedTts, build_kokoro_tts};
 use crate::voice::provider::{AudioOutput, SttConfig, TtsConfig};
 use axum::{
+    Json, Router,
     extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
         Query, State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
-use permagent::download_manager::{get_download_manager, DownloadProgress, DownloadStatus};
+use permagent::download_manager::{DownloadProgress, DownloadStatus, get_download_manager};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -55,8 +55,8 @@ struct SavePronunciationRequest {
 }
 
 /// GET /voice/pronunciations — every saved pronunciation.
-async fn list_pronunciations(
-) -> Json<std::collections::HashMap<String, crate::voice::user_lexicon::PronunciationEntry>> {
+async fn list_pronunciations()
+-> Json<std::collections::HashMap<String, crate::voice::user_lexicon::PronunciationEntry>> {
     Json(crate::voice::user_lexicon::all())
 }
 
@@ -154,10 +154,8 @@ pub fn routes(state: Arc<AppState>) -> Router {
 
 /// Canonical kokoro-onnx model release (Apache-2.0). Filenames match the paths
 /// `OrtKokoroModelPaths::default_paths()` expects under the voice models dir.
-const KOKORO_MODEL_URL: &str =
-    "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx";
-const KOKORO_VOICES_URL: &str =
-    "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin";
+const KOKORO_MODEL_URL: &str = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx";
+const KOKORO_VOICES_URL: &str = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin";
 /// Pinned SHA-256 digests for the Kokoro release assets. These files are fed
 /// straight into onnxruntime's native parser, so their integrity is a hard
 /// requirement — the DownloadManager refuses to install bytes that don't
@@ -477,15 +475,17 @@ async fn synthesize_voice(
     let speech = crate::voice::speakable::speakable(&plan.speech)
         .ok_or_else(|| ErrorResponse::bad_request("text has nothing speakable"))?;
     let speed = plan.speed;
-    let audio = tokio::task::spawn_blocking(move || {
-        tts.synthesize(
+    let audio = tokio::task::spawn_blocking(move || -> anyhow::Result<AudioOutput> {
+        let mut audio = tts.synthesize(
             &speech,
             &TtsConfig {
                 voice_id,
                 speed,
                 lexicon: crate::voice::user_lexicon::current(),
             },
-        )
+        )?;
+        crate::voice::loudness::master(&mut audio.samples, audio.sample_rate, &speech);
+        Ok(audio)
     })
     .await
     .map_err(|e| ErrorResponse::internal(format!("synthesis task panicked: {e}")))?
@@ -1233,8 +1233,12 @@ async fn stream_reply_with_tts(
              short sentences, contractions, concise and direct. No markdown, no bullet points, \
              no numbered lists, no code blocks. Keep replies brief — 1-3 sentences for simple \
              questions. Speak as you would in a real conversation — with feeling, not a flat \
-             reading: let a reaction through, ask a question when it fits, use an em dash or \
-             ellipsis when you are thinking. \
+             reading: let a reaction through, ask a question when it fits. \
+             The voice takes its rhythm from punctuation, not from stage directions. \
+             Write the way people talk: a comma for a breath, an em dash for a turn, \
+             an ellipsis (...) when you are thinking, a question mark when you actually \
+             want an answer, an exclamation only when you mean the energy. Prefer two \
+             short sentences over one long one — long lines flatten. \
              You may prefix a sentence with ONE delivery tag: [warm] [excited] [calm] \
              [gentle] [serious]. Insert [pause] for a beat. Never say the tag names or the \
              brackets aloud; most sentences need no tag. \
@@ -1599,14 +1603,16 @@ fn spawn_synth(
         if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(anyhow::anyhow!("cancelled"));
         }
-        tts.synthesize(
+        let mut audio = tts.synthesize(
             &text,
             &TtsConfig {
                 voice_id,
                 speed,
                 lexicon: crate::voice::user_lexicon::current(),
             },
-        )
+        )?;
+        crate::voice::loudness::master(&mut audio.samples, audio.sample_rate, &text);
+        Ok(audio)
     })
 }
 

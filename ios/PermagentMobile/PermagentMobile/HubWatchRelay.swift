@@ -62,9 +62,9 @@ final class HubWatchRelay: NSObject, WCSessionDelegate {
     nonisolated func session(_ session: WCSession,
                              didReceiveMessageData messageData: Data,
                              replyHandler: @escaping (Data) -> Void) {
+        let reply = UncheckedReply(replyHandler)
         Task { @MainActor in
-            let reply = await handle(messageData)
-            replyHandler(Self.encode(reply))
+            reply(Self.encode(await handle(messageData)))
         }
     }
 
@@ -78,11 +78,12 @@ final class HubWatchRelay: NSObject, WCSessionDelegate {
         // The incoming file is deleted when this method returns — copy it
         // first, then hop to the actor to transcribe.
         let requestId = (file.metadata?["id"] as? String) ?? UUID().uuidString
+        let kind = (file.metadata?["kind"] as? String) ?? "note"
         let dest = FileManager.default.temporaryDirectory.appendingPathComponent("watch-\(requestId).wav")
         try? FileManager.default.removeItem(at: dest)
         try? FileManager.default.copyItem(at: file.fileURL, to: dest)
         Task { @MainActor in
-            await transcribeFile(at: dest, requestId: requestId)
+            await transcribeFile(at: dest, requestId: requestId, kind: kind)
         }
     }
 
@@ -205,22 +206,33 @@ final class HubWatchRelay: NSObject, WCSessionDelegate {
         }
     }
 
-    private func transcribeFile(at url: URL, requestId: String) async {
+    private func transcribeFile(at url: URL, requestId: String, kind: String) async {
         guard let data = try? Data(contentsOf: url) else {
-            send(WatchResponse.fail(requestId, op: "transcript", "The recording never arrived."))
+            send(WatchResponse.fail(requestId, op: kind == "chat" ? "chatDelta" : "transcript",
+                                    "The recording never arrived."))
             return
         }
         do {
             let text = try await APIClient.shared.transcribe(wav: data)
+            if kind == "chat" {
+                let clipped = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !clipped.isEmpty else {
+                    send(WatchResponse.fail(requestId, op: "chatDelta", "I didn't catch that."))
+                    return
+                }
+                await streamChat(id: requestId, text: clipped)
+                return
+            }
             var payload = WatchResponse.ack(requestId, op: "transcript")
             payload.text = text
             payload.done = true
             send(payload)
         } catch APIError.dictationUnavailable {
-            send(WatchResponse.fail(requestId, op: "transcript",
+            send(WatchResponse.fail(requestId, op: kind == "chat" ? "chatDelta" : "transcript",
                                     "No local dictation model on the hub."))
         } catch {
-            send(WatchResponse.fail(requestId, op: "transcript", "Transcription failed."))
+            send(WatchResponse.fail(requestId, op: kind == "chat" ? "chatDelta" : "transcript",
+                                    "Transcription failed."))
         }
     }
 
@@ -230,7 +242,7 @@ final class HubWatchRelay: NSObject, WCSessionDelegate {
         guard session.activationState == .activated else { return }
         if session.isReachable {
             session.sendMessageData(data, replyHandler: nil) { _ in
-                session.transferUserInfo(["payload": data])
+                WCSession.default.transferUserInfo(["payload": data])
             }
         } else {
             session.transferUserInfo(["payload": data])
@@ -240,4 +252,12 @@ final class HubWatchRelay: NSObject, WCSessionDelegate {
     private static func encode(_ payload: WatchResponse) -> Data {
         (try? JSONEncoder().encode(payload)) ?? Data()
     }
+}
+
+/// WatchConnectivity reply handlers are not Sendable. The session already
+/// invokes them across queues; this only makes the hop the compiler can see.
+private struct UncheckedReply: @unchecked Sendable {
+    let handler: (Data) -> Void
+    init(_ handler: @escaping (Data) -> Void) { self.handler = handler }
+    func callAsFunction(_ data: Data) { handler(data) }
 }

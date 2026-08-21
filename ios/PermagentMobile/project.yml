@@ -160,6 +160,7 @@ targets:
       - path: Shared
       - path: PermagentMobile/MobiusView.swift
       - path: PermagentMobile/Theme.swift
+      - path: PermagentMobile/VoiceOrbView.swift
       - path: PermagentMobile/MobiusFrames
       - path: PermagentMobile/Fonts
     settings:
@@ -212,6 +213,7 @@ targets:
     sources:
       - path: PermagentMobileTests
       - path: PermagentMobile/VoiceVAD.swift
+      - path: PermagentMobile/VoiceClipboard.swift
       - path: PermagentMobile/ChatStream.swift
       # The meeting recorder's durable queue. Foundation-only on purpose, so
       # the state machine that decides when audio may be deleted is tested
