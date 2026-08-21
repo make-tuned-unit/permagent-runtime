@@ -461,6 +461,9 @@ interface CommandCenterStore {
   overlayBlockingBrowser: number;
   pushBrowserOverlay: () => void;
   popBrowserOverlay: () => void;
+  /** Hide the in-app browser and drop overlay counts. Used when navigate_app
+   *  leaves Build so a leftover site cannot cover Grow / survive a reload. */
+  dismissInAppBrowser: () => void;
 
   // --- Collapsed chat launcher corner reservation (#553) ---
   // Measured size of the collapsed ChatLauncher pill (null when absent, i.e.
@@ -1741,6 +1744,13 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   overlayBlockingBrowser: 0,
   pushBrowserOverlay: () => set(s => ({ overlayBlockingBrowser: s.overlayBlockingBrowser + 1 })),
   popBrowserOverlay: () => set(s => ({ overlayBlockingBrowser: Math.max(0, s.overlayBlockingBrowser - 1) })),
+  dismissInAppBrowser: () =>
+    set(s => ({
+      overlayBlockingBrowser: 0,
+      pendingBrowserUrl: null,
+      buildBrowserHidden: true,
+      buildTerminalHidden: s.buildTerminalHidden && !s.buildBrowserHidden ? false : s.buildTerminalHidden,
+    })),
 
   // Sidebar hover-label reservation (reported 2026-08-19)
   sidebarTooltipRect: null,

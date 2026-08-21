@@ -264,6 +264,16 @@ pub async fn spawn_pty_session(
     });
 
     // Resolve the working directory: use provided cwd, or fall back to HOME.
+    // A project-supplied cwd that is missing must fail closed — falling back to
+    // HOME here is how a wrong Atlas Atlantic root silently opened the wrong tree.
+    if let Some(dir) = cwd.as_ref() {
+        let path = std::path::Path::new(dir);
+        if !path.is_dir() {
+            return Err(format!(
+                "Working directory does not exist on this machine: {dir}"
+            ));
+        }
+    }
     let resolved_cwd = cwd
         .clone()
         .unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/".to_string()));
@@ -293,6 +303,8 @@ pub async fn spawn_pty_session(
     }
     if let Some(dir) = cwd {
         cmd.cwd(dir);
+    } else {
+        cmd.cwd(&resolved_cwd);
     }
 
     let child = pair

@@ -20,7 +20,8 @@ pub static EXTENSION_NAME: &str = "projectmanager";
 struct ProjectCreateParams {
     /// The project name (required)
     name: String,
-    /// Filesystem path to the project root (optional)
+    /// Filesystem path to the project root (optional). If set, it must exist as a
+    /// directory on this machine after `~` expansion. Do not guess a username.
     root_path: Option<String>,
     /// Production site URL (optional)
     site_url: Option<String>,
@@ -44,7 +45,8 @@ struct ProjectUpdateParams {
     description: Option<String>,
     /// New status: active, paused, or archived (optional)
     status: Option<String>,
-    /// New root path, or null to clear (optional)
+    /// New root path, or null to clear (optional). If set, the directory must exist
+    /// on this machine.
     root_path: Option<Option<String>>,
     /// New site URL, or null to clear (optional)
     site_url: Option<Option<String>>,
@@ -735,6 +737,33 @@ impl ProjectManagerClient {
         Ok(Self { info, context })
     }
 
+    fn project_snapshot(project: &projects::Project) -> serde_json::Value {
+        let exists = project
+            .root_path
+            .as_deref()
+            .is_some_and(|p| std::path::Path::new(p).is_dir());
+        let note = if exists {
+            "root_path exists on this machine. Do not tell the user the Build harness can launch unless this stays true."
+        } else if project.root_path.is_some() {
+            "root_path is set but is not a directory on this machine. Fix it with project_update before launching."
+        } else {
+            "No local folder. Set root_path with project_update (a directory that exists here) before launching the harness."
+        };
+        serde_json::json!({
+            "id": project.id,
+            "slug": project.slug,
+            "name": project.name,
+            "description": project.description,
+            "status": project.status,
+            "root_path": project.root_path,
+            "root_path_exists": exists,
+            "site_url": project.site_url,
+            "repo_url": project.repo_url,
+            "tags": project.tags,
+            "note": note,
+        })
+    }
+
     async fn handle_create(&self, arguments: Option<JsonObject>) -> Result<Vec<Content>, String> {
         let args = arguments.ok_or("Missing arguments")?;
         let name = args
@@ -775,12 +804,7 @@ impl ProjectManagerClient {
             }),
         };
         let project = projects::create_project(&pool, input).await?;
-        let json = serde_json::json!({
-            "id": project.id, "slug": project.slug, "name": project.name,
-            "description": project.description, "status": project.status,
-            "root_path": project.root_path, "site_url": project.site_url,
-            "repo_url": project.repo_url, "tags": project.tags,
-        });
+        let json = Self::project_snapshot(&project);
         Ok(vec![Content::text(format!(
             "Created project \"{}\" (slug: {}, id: {})\n\n{}",
             project.name,
@@ -825,11 +849,7 @@ impl ProjectManagerClient {
         let updated = projects::update_project(&pool, &project.id, input)
             .await?
             .ok_or("Project not found after update")?;
-        let json = serde_json::json!({
-            "id": updated.id, "slug": updated.slug, "name": updated.name,
-            "status": updated.status, "root_path": updated.root_path,
-            "site_url": updated.site_url, "repo_url": updated.repo_url,
-        });
+        let json = Self::project_snapshot(&updated);
         Ok(vec![Content::text(format!(
             "Updated project \"{}\" (slug: {})\n\n{}",
             updated.name,
@@ -1384,6 +1404,7 @@ impl ProjectManagerClient {
                     project.name
                 )
             })?;
+        let root_path = projects::resolve_root_path(&root_path)?;
 
         // S1 (#427): free-standing SUPERVISED session — the same visible-tab
         // launch path, but running Claude Code in gate-enabled stream-json

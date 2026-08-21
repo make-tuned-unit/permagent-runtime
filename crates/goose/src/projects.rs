@@ -95,6 +95,65 @@ pub fn slugify(name: &str) -> String {
     result.trim_matches('-').to_string()
 }
 
+/// Expand `~`, require a real directory on this machine, and return the
+/// canonical path to store. `None`/empty stays optional — projects like
+/// Personal have no local folder. Invented homes (`/Users/jessesharratt/...`
+/// on a Mac whose HOME is `/Users/j`) must fail here, not at harness launch.
+pub fn resolve_root_path(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(
+            "root_path is empty. Omit it for a project with no local folder, or pass a \
+             directory that exists on this machine."
+                .to_string(),
+        );
+    }
+    let expanded = crate::config::dev_roots::expand(trimmed);
+    if !expanded.is_dir() {
+        let home = dirs::home_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "$HOME".to_string());
+        return Err(format!(
+            "root_path does not exist as a directory on this machine: {trimmed} \
+             (expanded: {}). This Mac's HOME is {home}. List that home \
+             (`ls ~/Documents/dev`) and pass the absolute path you see — do not guess \
+             a username. Do not tell the user the project is ready until this succeeds.",
+            expanded.display()
+        ));
+    }
+    let canonical = expanded.canonicalize().unwrap_or_else(|_| expanded.clone());
+    Ok(canonical.to_string_lossy().into_owned())
+}
+
+/// Reject cookbook placeholders the model pastes when it has not looked up the
+/// real remote (`github.com/your-org/...`, example.com).
+pub fn reject_placeholder_repo_url(url: &str) -> Result<(), String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    let placeholder = lower.contains("github.com/your-org")
+        || lower.contains("gitlab.com/your-org")
+        || lower.contains("://example.com")
+        || lower.contains("://example.org")
+        || lower.contains("://www.example.com");
+    if placeholder {
+        return Err(format!(
+            "repo_url looks like a placeholder, not a real remote: {trimmed}. \
+             Read `git remote get-url origin` at the project root, or omit repo_url."
+        ));
+    }
+    Ok(())
+}
+
+fn normalize_optional_root(raw: Option<&str>) -> Result<Option<String>, String> {
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(path) => Ok(Some(resolve_root_path(path)?)),
+        None => Ok(None),
+    }
+}
+
 /// Generate a unique slug for the given user, appending -2, -3, etc. on collision.
 async fn unique_slug(pool: &Pool<Sqlite>, user_id: &str, base: &str) -> Result<String, String> {
     let check = |slug: String| async move {
@@ -148,6 +207,10 @@ pub async fn create_project(pool: &Pool<Sqlite>, input: CreateProject) -> Result
     }
 
     let slug = unique_slug(pool, user_id, &base_slug).await?;
+    let root_path = normalize_optional_root(input.root_path.as_deref())?;
+    if let Some(url) = input.repo_url.as_deref() {
+        reject_placeholder_repo_url(url)?;
+    }
 
     sqlx::query(
         "INSERT INTO projects (id, user_id, slug, name, description, root_path, site_url, repo_url, notes)
@@ -158,7 +221,7 @@ pub async fn create_project(pool: &Pool<Sqlite>, input: CreateProject) -> Result
     .bind(&slug)
     .bind(&input.name)
     .bind(input.description.as_deref().unwrap_or(""))
-    .bind(input.root_path.as_deref())
+    .bind(root_path.as_deref())
     .bind(input.site_url.as_deref())
     .bind(input.repo_url.as_deref())
     .bind(input.notes.as_deref().unwrap_or(""))
@@ -387,8 +450,9 @@ pub async fn update_project(
             .map_err(|e| e.to_string())?;
     }
     if let Some(ref root_path) = input.root_path {
+        let bound = normalize_optional_root(root_path.as_deref())?;
         sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
-            .bind(root_path.as_deref())
+            .bind(bound.as_deref())
             .bind(id)
             .execute(pool)
             .await
@@ -403,6 +467,9 @@ pub async fn update_project(
             .map_err(|e| e.to_string())?;
     }
     if let Some(ref repo_url) = input.repo_url {
+        if let Some(url) = repo_url.as_deref() {
+            reject_placeholder_repo_url(url)?;
+        }
         sqlx::query("UPDATE projects SET repo_url = ? WHERE id = ?")
             .bind(repo_url.as_deref())
             .bind(id)
@@ -863,6 +930,7 @@ mod tests {
     #[tokio::test]
     async fn update_fields() {
         let pool = test_pool().await;
+        let tmp = tempfile::tempdir().unwrap();
         let p = create_project(
             &pool,
             CreateProject {
@@ -877,7 +945,7 @@ mod tests {
             &p.id,
             UpdateProject {
                 name: Some("New Name".to_string()),
-                root_path: Some(Some("/dev/myproject".to_string())),
+                root_path: Some(Some(tmp.path().to_string_lossy().into_owned())),
                 ..Default::default()
             },
         )
@@ -885,7 +953,10 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(updated.name, "New Name");
-        assert_eq!(updated.root_path.as_deref(), Some("/dev/myproject"));
+        assert_eq!(
+            updated.root_path.as_deref(),
+            Some(tmp.path().canonicalize().unwrap().to_str().unwrap())
+        );
     }
 
     #[tokio::test]
@@ -1126,6 +1197,60 @@ mod tests {
             .filter(|p| p.id == PERSONAL_PROJECT_ID)
             .count();
         assert_eq!(personal_count, 1);
+    }
+
+    #[test]
+    fn resolve_root_path_rejects_missing_dir() {
+        let err = resolve_root_path("/no/such/permagent-path-hardening-xyz").unwrap_err();
+        assert!(err.contains("does not exist"), "{err}");
+        assert!(err.contains("HOME"), "{err}");
+    }
+
+    #[test]
+    fn resolve_root_path_canonicalizes_existing_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stored = resolve_root_path(tmp.path().to_str().unwrap()).unwrap();
+        assert_eq!(stored, tmp.path().canonicalize().unwrap().to_string_lossy());
+    }
+
+    #[test]
+    fn reject_placeholder_repo_url_catches_your_org() {
+        let err = reject_placeholder_repo_url("https://github.com/your-org/signal-consultancy")
+            .unwrap_err();
+        assert!(err.contains("placeholder"), "{err}");
+        assert!(reject_placeholder_repo_url("https://github.com/getladle/web").is_ok());
+    }
+
+    #[tokio::test]
+    async fn create_project_rejects_fictional_root() {
+        let pool = test_pool().await;
+        let err = create_project(
+            &pool,
+            CreateProject {
+                name: "Ghost".to_string(),
+                root_path: Some("/Users/jessesharratt/dev/Signal Consultancy".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("does not exist"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn create_project_rejects_placeholder_repo() {
+        let pool = test_pool().await;
+        let err = create_project(
+            &pool,
+            CreateProject {
+                name: "Ghost Repo".to_string(),
+                repo_url: Some("https://github.com/your-org/harborview-ra".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("placeholder"), "{err}");
     }
 
     #[test]

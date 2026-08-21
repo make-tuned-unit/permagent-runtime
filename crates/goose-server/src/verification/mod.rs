@@ -1636,7 +1636,8 @@ mod tests {
     #[tokio::test]
     async fn contract_l1_guard_rejects_protected_key_write_from_module_path() {
         let pool = test_pool().await;
-        let card = make_goal(&pool, "/nonexistent", serde_json::json!({})).await;
+        let tmp = tempfile::tempdir().unwrap();
+        let card = make_goal(&pool, tmp.path().to_str().unwrap(), serde_json::json!({})).await;
 
         // Allowed: general update carrying only a `verification` change.
         let mut meta = card.metadata_json.as_object().cloned().unwrap();

@@ -70,9 +70,10 @@ struct CreateRecipeParams {
     /// `max_retries` times until every success check passes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     retry: Option<RetryInput>,
-    /// Extensions (tools) to enable for this recipe's session. Supports builtin
-    /// extensions (by name), stdio command extensions, and streamable_http
-    /// extensions.
+    /// Extensions (tools) to enable for this recipe's session. Each entry may be
+    /// a builtin name string (`"bravesearch"`) or an object
+    /// `{ "type": "builtin", "name": "bravesearch" }`. Also supports stdio and
+    /// streamable_http objects.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     extensions: Option<Vec<ExtensionInput>>,
     /// Model/provider settings for the recipe's session (provider, model,
@@ -148,7 +149,8 @@ struct RetryInput {
 
 /// Authoring shape for an extension to enable. Covers the common cases: builtin
 /// extensions (by name), stdio command extensions, and streamable_http.
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+/// A JSON string is accepted as a builtin name (`"bravesearch"`).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 struct ExtensionInput {
     /// Transport type: "builtin" (default), "stdio", or "streamable_http".
     #[serde(default = "default_extension_type")]
@@ -170,6 +172,65 @@ struct ExtensionInput {
     /// Optional timeout in seconds for the extension.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     timeout: Option<u64>,
+}
+
+impl<'de> Deserialize<'de> for ExtensionInput {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Name(String),
+            Full {
+                #[serde(default = "default_extension_type", rename = "type")]
+                r#type: String,
+                name: String,
+                #[serde(default)]
+                description: Option<String>,
+                #[serde(default)]
+                cmd: Option<String>,
+                #[serde(default)]
+                args: Option<Vec<String>>,
+                #[serde(default)]
+                uri: Option<String>,
+                #[serde(default)]
+                timeout: Option<u64>,
+            },
+        }
+        match Wire::deserialize(deserializer)? {
+            Wire::Name(name) => {
+                let name = name.trim();
+                if name.is_empty() {
+                    return Err(serde::de::Error::custom("extension name is empty"));
+                }
+                Ok(ExtensionInput {
+                    r#type: default_extension_type(),
+                    name: name.to_string(),
+                    description: None,
+                    cmd: None,
+                    args: None,
+                    uri: None,
+                    timeout: None,
+                })
+            }
+            Wire::Full {
+                r#type,
+                name,
+                description,
+                cmd,
+                args,
+                uri,
+                timeout,
+            } => Ok(ExtensionInput {
+                r#type,
+                name,
+                description,
+                cmd,
+                args,
+                uri,
+                timeout,
+            }),
+        }
+    }
 }
 
 fn default_extension_type() -> String {
@@ -241,7 +302,9 @@ impl RecipeAuthorClient {
                  Use create_recipe when the user wants to set up a new scheduled task — it \
                  supports richer authoring beyond title/prompt/cron: input parameters, \
                  sub_recipes, retry with success checks, extensions, model settings, and a \
-                 worker_persona. \
+                 worker_persona. For extensions, a builtin name string is enough \
+                 (`\"bravesearch\"`); the object form `{ \"type\": \"builtin\", \"name\": \"bravesearch\" }` \
+                 also works. \
                  Use list_recipes to show what automations exist. \
                  Use save_skill when the user asks to save a repeated behavior.",
             );
@@ -1097,6 +1160,22 @@ mod tests {
         let recipe = build_recipe(&args).unwrap();
         let exts = recipe.extensions.expect("summon injected");
         assert!(exts.iter().any(|e| e.name() == "summon"));
+    }
+
+    #[test]
+    fn test_extension_name_string_coerces_to_builtin() {
+        let args = params_from(json!({
+            "title": "Brave Monitor",
+            "prompt": "Search.",
+            "cron": "0 10 * * 1,4",
+            "extensions": ["bravesearch"]
+        }));
+        let recipe = build_recipe(&args).unwrap();
+        let exts = recipe.extensions.expect("extensions preserved");
+        assert!(
+            exts.iter().any(|e| e.name() == "bravesearch"),
+            "got: {exts:?}"
+        );
     }
 
     #[test]
