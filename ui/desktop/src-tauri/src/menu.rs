@@ -102,15 +102,25 @@ pub fn attach_menu(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri:
                         let _ = w.eval("window.__PERMAGENT_MENU?.('toggle_sidebar')");
                     }
                 }
-                "reload" => {
-                    if let Some(w) = app.get_webview_window("main") {
-                        let _ = w.eval("window.location.reload()");
-                    }
-                }
-                "force_reload" => {
-                    if let Some(w) = app.get_webview_window("main") {
-                        let _ = w.eval("window.location.reload()");
-                    }
+                "reload" | "force_reload" => {
+                    // Park-and-close native browser children BEFORE the shell
+                    // forgets their ids. `window.location.reload()` does not
+                    // destroy child WKWebViews — they keep compositing over
+                    // the new page, which is the stuck-overlay state
+                    // (reported 2026-08-21). Await the sweep so the overlay
+                    // is gone before the next paint, then reload.
+                    let handle = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = crate::browser::reap_orphan_browsers(
+                            handle.clone(),
+                            Vec::new(),
+                            Some("main".into()),
+                        )
+                        .await;
+                        if let Some(w) = handle.get_webview_window("main") {
+                            let _ = w.eval("window.location.reload()");
+                        }
+                    });
                 }
                 "docs" => {
                     // Deprecated in tauri-plugin-shell in favor of

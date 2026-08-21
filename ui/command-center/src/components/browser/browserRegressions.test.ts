@@ -367,6 +367,21 @@ describe('browser event-source contract', () => {
     expect(BROWSER_TSX).not.toMatch(/setInterval\([^)]*\b(resync|reconcile)/i);
   });
 
+  it('does not reap until the Tauri API is loaded', () => {
+    // Cmd+R leaves native children alive. The first reap effect ran on
+    // mount, saw apiRef.current === null, set reapedRef, and never tried
+    // again — that is the stuck overlay (2026-08-21). The effect must
+    // depend on `api` and refuse to fire while it is missing.
+    const reap = BROWSER_TSX.slice(
+      BROWSER_TSX.indexOf('reapedRef'),
+      BROWSER_TSX.indexOf('Replay buffered events'),
+    );
+    expect(reap).toContain('!api');
+    expect(reap).toMatch(/\[api/);
+    expect(reap).toContain('reap_orphan_browsers');
+    expect(reap).toContain('ownerWindow');
+  });
+
   it('routes popup links through the deny-and-reroute event', () => {
     // Without this listener, WKWebView's nil createWebView response makes
     // every target=_blank / window.open click a silent no-op (#240 / #709).

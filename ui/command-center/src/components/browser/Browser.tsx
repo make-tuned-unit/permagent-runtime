@@ -184,18 +184,21 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
   // the DOM — native webviews always render over HTML — while nothing left
   // running can address them. That is the "force-quit required" state.
   //
-  // Mount-once, with whatever ids we still believe in. Right after a reload
-  // that is the empty list, so everything native is orphaned and gets closed.
+  // Must wait for the Tauri API. The first version of this effect ran on
+  // mount, read `apiRef.current` (still null — `getTauriApi` is async), set
+  // `reapedRef`, and returned. A Cmd+R then left the old page painted over
+  // the new shell with no close button that could reach it (2026-08-21).
+  // Waiting on `api` retries until invoke is real; `reapedRef` still
+  // guarantees one sweep. Right after a reload `keep` is empty, so every
+  // native child of THIS window is orphaned and gets closed.
   const reapedRef = useRef(false);
   useEffect(() => {
-    if (reapedRef.current) return;
+    if (reapedRef.current || !api) return;
     reapedRef.current = true;
-    const inv = apiRef.current;
-    if (!inv) return;
     const keep = tabsRef.current.map(t => t.webviewId).filter((id): id is string => !!id);
-    inv.invoke('reap_orphan_browsers', { keep })
+    api.invoke('reap_orphan_browsers', { keep, ownerWindow: ownerWindowLabel })
       .catch(() => { /* older shell without the command — nothing to reap */ });
-  }, []);
+  }, [api, ownerWindowLabel]);
 
   // Replay buffered events onto tabs that have since registered their
   // webviewId. Runs after every tabs change, so whichever of the two orderings

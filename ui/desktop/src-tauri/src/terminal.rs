@@ -272,6 +272,13 @@ pub async fn spawn_pty_session(
     cmd.arg("-l"); // login shell
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
+    // TUI CLIs (Claude Code, Cursor Agent, the Permagent harness) honor
+    // NO_COLOR and skip their orange/brand palettes. The app process can
+    // inherit NO_COLOR from a parent IDE; strip it and force truecolor so
+    // those animations render in this PTY the way they do in iTerm.
+    cmd.env_remove("NO_COLOR");
+    cmd.env("FORCE_COLOR", "3");
+    cmd.env("CLICOLOR_FORCE", "1");
     // Remove env vars that prevent tools from running inside Permagent's terminal.
     // CLAUDECODE is set by Claude Code sessions and blocks nested `claude` invocations.
     cmd.env_remove("CLAUDECODE");
@@ -643,6 +650,19 @@ mod tests {
     fn empty_inputs_degrade_to_the_other_side() {
         assert_eq!(path_with_bundled_bin_last("", "/a"), "/a");
         assert_eq!(path_with_bundled_bin_last("/a", ""), "/a");
+    }
+
+    #[test]
+    fn pty_strips_no_color_and_forces_truecolor() {
+        let src = include_str!("terminal.rs");
+        assert!(
+            src.contains("env_remove(\"NO_COLOR\")"),
+            "inherited NO_COLOR is what turned Claude's orange ✻ and Cursor's \
+             palette into the default fg"
+        );
+        assert!(src.contains("FORCE_COLOR"));
+        assert!(src.contains("COLORTERM"));
+        assert!(src.contains("truecolor"));
     }
 
     // ── Build-tab launcher guard ────────────────────────────────────────────

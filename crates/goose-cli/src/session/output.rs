@@ -1316,7 +1316,7 @@ pub fn display_session_info(
     // Infinity banner: a comet sweeps the lemniscate twice, leaves the band
     // glowing in the brand gradient, and the session info settles beneath it.
     println!();
-    play_infinity_intro();
+    play_infinity_intro(provider);
     println!(
         "  {} {} {} {} {}",
         style("●").green(),
@@ -1339,18 +1339,66 @@ pub fn display_session_info(
 
 // ── Permagent infinity banner ───────────────────────────────────────────────
 // The brand mark drawn for real: a lemniscate of Bernoulli plotted at braille
-// resolution (2×4 dots per cell), colored along its arc with the app's
-// cyan→violet ribbon, with a comet (bright head, fading tail) sweeping the
-// curve on startup. 256-color ANSI — no extra crates, degrades to nothing
-// when stdout is not a TTY.
+// resolution (2×4 dots per cell), colored along its arc with a truecolor
+// ribbon (the GUI tokens, not a 256-color approximation — xterm's DOM
+// renderer paints 38;2 inline, while 38;5;N can fall back to default fg),
+// with a comet sweeping the curve on startup. Provider-themed: Permagent
+// cyan→purple, Claude orange, Cursor cool-blue. Degrades to nothing when
+// stdout is not a TTY.
 
 /// Terminal cells: WIDTH×HEIGHT chars → (2·WIDTH)×(4·HEIGHT) braille dots.
 const INF_W: usize = 26;
 const INF_H: usize = 5;
 /// Samples along the curve — enough that neighboring dots touch.
 const INF_SAMPLES: usize = 360;
-/// The cyan→violet ribbon as xterm-256 colors, indexed by arc position.
-const INF_RIBBON: [u8; 12] = [51, 50, 44, 45, 39, 33, 63, 99, 135, 141, 171, 177];
+
+type Rgb = (u8, u8, u8);
+
+/// Permagent brand: cyan #00D5FF → purple #A855CC (tokens.ts).
+const BRAND_RIBBON: [Rgb; 8] = [
+    (0x00, 0xD5, 0xFF),
+    (0x00, 0xB8, 0xF5),
+    (0x3D, 0x8A, 0xE8),
+    (0x5B, 0x6E, 0xD4),
+    (0x7A, 0x55, 0xC4),
+    (0x8D, 0x44, 0xAE),
+    (0xA8, 0x55, 0xCC),
+    (0xC8, 0x93, 0xE0),
+];
+/// Anthropic / Claude orange (the ✻).
+const CLAUDE_RIBBON: [Rgb; 8] = [
+    (0xFF, 0xD0, 0xA8),
+    (0xF5, 0xB0, 0x7A),
+    (0xE8, 0x8A, 0x54),
+    (0xDA, 0x77, 0x56),
+    (0xD4, 0x65, 0x3F),
+    (0xC4, 0x55, 0x30),
+    (0xE8, 0x7A, 0x45),
+    (0xFF, 0x9A, 0x5C),
+];
+/// Cursor-adjacent: cool ink through Cursor's blue.
+const CURSOR_RIBBON: [Rgb; 8] = [
+    (0xE8, 0xEE, 0xF4),
+    (0xA8, 0xC0, 0xD8),
+    (0x6B, 0x9A, 0xC4),
+    (0x3B, 0x82, 0xF6),
+    (0x25, 0x63, 0xEB),
+    (0x1E, 0x40, 0xAF),
+    (0x81, 0x89, 0xCF),
+    (0xC4, 0xB5, 0xFD),
+];
+const WAIT_RGB: Rgb = (0x44, 0x44, 0x44);
+
+pub(crate) fn banner_palette(provider: &str) -> &'static [Rgb] {
+    let p = provider.to_ascii_lowercase();
+    if p.contains("anthropic") || p.contains("claude") {
+        &CLAUDE_RIBBON
+    } else if p.contains("cursor") {
+        &CURSOR_RIBBON
+    } else {
+        &BRAND_RIBBON
+    }
+}
 
 struct InfinityBand {
     /// Per-cell braille bitmask + mean arc position of its dots.
@@ -1387,14 +1435,32 @@ fn infinity_band() -> InfinityBand {
     InfinityBand { cells, samples }
 }
 
-fn ribbon_color(t: f32) -> u8 {
+fn ribbon_rgb(palette: &[Rgb], t: f32) -> Rgb {
     // Mirror the palette across the loop so the seam at t=0/1 is invisible.
     let m = 1.0 - (2.0 * t - 1.0).abs();
-    INF_RIBBON[((m * (INF_RIBBON.len() - 1) as f32).round() as usize).min(INF_RIBBON.len() - 1)]
+    palette[((m * (palette.len() - 1) as f32).round() as usize).min(palette.len() - 1)]
+}
+
+fn lighten(rgb: Rgb, amount: f32) -> Rgb {
+    let a = amount.clamp(0.0, 1.0);
+    (
+        (rgb.0 as f32 + (255.0 - rgb.0 as f32) * a).round() as u8,
+        (rgb.1 as f32 + (255.0 - rgb.1 as f32) * a).round() as u8,
+        (rgb.2 as f32 + (255.0 - rgb.2 as f32) * a).round() as u8,
+    )
+}
+
+fn sgr(rgb: Rgb, bold: bool) -> String {
+    let (r, g, b) = rgb;
+    if bold {
+        format!("\x1b[1;38;2;{r};{g};{b}m")
+    } else {
+        format!("\x1b[38;2;{r};{g};{b}m")
+    }
 }
 
 /// Render one frame. `comet` = the head's sample index (None = settled band).
-fn infinity_frame(band: &InfinityBand, comet: Option<usize>) -> Vec<String> {
+fn infinity_frame(band: &InfinityBand, comet: Option<usize>, palette: &[Rgb]) -> Vec<String> {
     const TAIL: usize = 34;
     // Comet overlay: sample index → brightness 0..1 back along the tail.
     let mut hot: std::collections::HashMap<(usize, usize), f32> = std::collections::HashMap::new();
@@ -1419,17 +1485,17 @@ fn infinity_frame(band: &InfinityBand, comet: Option<usize>) -> Vec<String> {
                         let ch = char::from_u32(0x2800 + mask as u32).unwrap_or('⣿');
                         let t = tsum / n as f32;
                         let heat = hot.get(&(r, c)).copied().unwrap_or(0.0);
+                        let rgb = ribbon_rgb(palette, t);
                         if heat > 0.85 {
-                            // White-hot head.
-                            line.push_str(&format!("\x1b[1;38;5;231m{ch}\x1b[0m"));
+                            // Hot head, still tinted with the ribbon so it
+                            // never collapses to the default foreground.
+                            line.push_str(&format!("{}{ch}\x1b[0m", sgr(lighten(rgb, 0.7), true)));
                         } else if heat > 0.0 {
-                            line.push_str(&format!("\x1b[1;38;5;{}m{ch}\x1b[0m", ribbon_color(t)));
+                            line.push_str(&format!("{}{ch}\x1b[0m", sgr(rgb, true)));
                         } else if comet.is_some() {
-                            // Unswept band waits in the dark.
-                            line.push_str(&format!("\x1b[38;5;238m{ch}\x1b[0m"));
+                            line.push_str(&format!("{}{ch}\x1b[0m", sgr(WAIT_RGB, false)));
                         } else {
-                            // Settled: the full ribbon.
-                            line.push_str(&format!("\x1b[38;5;{}m{ch}\x1b[0m", ribbon_color(t)));
+                            line.push_str(&format!("{}{ch}\x1b[0m", sgr(rgb, false)));
                         }
                     }
                 }
@@ -1442,23 +1508,24 @@ fn infinity_frame(band: &InfinityBand, comet: Option<usize>) -> Vec<String> {
 /// The startup sweep: two eased laps of the comet over a dark band, then the
 /// band settles lit in the ribbon gradient (the frame the banner sits under).
 /// TTY-only; plain cursor-up redraws, ~1.2s total.
-fn play_infinity_intro() {
+fn play_infinity_intro(provider: &str) {
     use std::io::{IsTerminal, Write};
     if !std::io::stdout().is_terminal() {
         return;
     }
     let band = infinity_band();
+    let palette = banner_palette(provider);
     print!("\x1b[?25l");
     const FRAMES: usize = 44;
     for f in 0..=FRAMES {
         let lines = if f == FRAMES {
-            infinity_frame(&band, None) // settle: full ribbon, no comet
+            infinity_frame(&band, None, palette) // settle: full ribbon, no comet
         } else {
             // Ease-in-out over two laps — slow ignition, fast middle, glide.
             let u = f as f32 / FRAMES as f32;
             let eased = u * u * (3.0 - 2.0 * u);
             let head = ((eased * 2.0 * INF_SAMPLES as f32) as usize) % INF_SAMPLES;
-            infinity_frame(&band, Some(head))
+            infinity_frame(&band, Some(head), palette)
         };
         for line in &lines {
             println!("{line}\x1b[K");
@@ -1651,6 +1718,32 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::env;
+
+    #[test]
+    fn banner_palette_follows_the_provider() {
+        assert_eq!(banner_palette("openai")[0], BRAND_RIBBON[0]);
+        assert_eq!(banner_palette("anthropic")[0], CLAUDE_RIBBON[0]);
+        assert_eq!(banner_palette("claude-code")[0], CLAUDE_RIBBON[0]);
+        assert_eq!(banner_palette("cursor-agent")[0], CURSOR_RIBBON[0]);
+    }
+
+    #[test]
+    fn settled_banner_uses_truecolor_not_256_or_default_fg() {
+        let band = infinity_band();
+        let lines = infinity_frame(&band, None, banner_palette("permagent"));
+        let joined = lines.join("");
+        assert!(
+            joined.contains("\x1b[38;2;0;213;255m") || joined.contains("\x1b[38;2;"),
+            "settled ribbon must be 38;2 truecolor so xterm paints it: {joined:.80}"
+        );
+        assert!(
+            !joined.contains("\x1b[38;5;"),
+            "256-color SGR is what collapsed to default fg in the in-app terminal"
+        );
+        assert!(joined
+            .chars()
+            .any(|c| ('\u{2800}'..='\u{28FF}').contains(&c)));
+    }
 
     // ── F4.4: the CLI cost line reports the session-cumulative total ──
 

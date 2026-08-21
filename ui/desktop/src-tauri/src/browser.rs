@@ -515,6 +515,9 @@ pub async fn save_tab_to_inbox(
 
 struct BrowserWebview {
     _label: String,
+    /// The shell window this child is parented to (`main` or a detached pane
+    /// label). Reload of one window must not reap another window's tabs.
+    owner: String,
 }
 
 pub struct BrowserSessions(Mutex<HashMap<String, BrowserWebview>>);
@@ -831,6 +834,7 @@ pub async fn create_browser_webview(
         label.clone(),
         BrowserWebview {
             _label: label.clone(),
+            owner: owner.clone(),
         },
     );
 
@@ -876,6 +880,15 @@ pub async fn reparent_browser(
             -10000.0, -10000.0,
         )))
         .map_err(|e| format!("Re-park after reparent failed: {e}"))?;
+    if let Some(session) = app
+        .state::<BrowserSessions>()
+        .0
+        .lock()
+        .unwrap()
+        .get_mut(&webview_id)
+    {
+        session.owner = window_label;
+    }
     Ok(())
 }
 
@@ -941,6 +954,51 @@ pub async fn close_browser(app: AppHandle, webview_id: String) -> Result<(), Str
     Ok(())
 }
 
+/// Child browser webviews are `browser-0`, `browser-1`, … from
+/// `WEBVIEW_COUNTER`. Detached pane WINDOWS are `browser-<uuid>` — a prefix
+/// sweep that did not distinguish those would destroy a popped-out pane.
+pub(crate) fn is_child_browser_label(label: &str) -> bool {
+    label
+        .strip_prefix("browser-")
+        .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// Labels that should be closed: session entries this owner no longer knows,
+/// plus any live `browser-<digits>` child that is not in `keep` and is not
+/// owned by a different window.
+pub(crate) fn orphan_browser_labels(
+    sessions: &[(String, String)],
+    live_labels: impl IntoIterator<Item = String>,
+    keep: &[String],
+    owner_window: Option<&str>,
+) -> Vec<String> {
+    use std::collections::BTreeSet;
+    let mut out = BTreeSet::new();
+    for (label, owner) in sessions {
+        if keep.iter().any(|k| k == label) {
+            continue;
+        }
+        if owner_window.is_some_and(|want| owner != want) {
+            continue;
+        }
+        out.insert(label.clone());
+    }
+    for label in live_labels {
+        if !is_child_browser_label(&label) || keep.iter().any(|k| k == &label) {
+            continue;
+        }
+        let owned_elsewhere = owner_window.is_some()
+            && sessions
+                .iter()
+                .any(|(l, o)| l == &label && Some(o.as_str()) != owner_window);
+        if owned_elsewhere {
+            continue;
+        }
+        out.insert(label);
+    }
+    out.into_iter().collect()
+}
+
 /// Close every browser webview the UI no longer knows about.
 ///
 /// Why this exists: `BrowserSessions` and the native child webviews live for
@@ -952,34 +1010,43 @@ pub async fn close_browser(app: AppHandle, webview_id: String) -> Result<(), Str
 /// webviews nothing can close, and the only way out is force-quitting the app.
 ///
 /// The shell calls this once on mount with the ids it still believes in
-/// (normally none, right after a reload). Anything labelled `browser-*` that
-/// is not in `keep` is orphaned by definition and gets closed.
+/// (normally none, right after a reload). Anything labelled `browser-<digits>`
+/// that is not in `keep` (and, when `owner_window` is set, belongs to that
+/// window) is orphaned by definition and gets closed. Children are parked
+/// offscreen BEFORE close so they stop painting even if WebKit is slow to
+/// tear down.
 ///
-/// Safe as a prefix sweep because these labels come from a single
-/// process-static counter (`WEBVIEW_COUNTER`) and no other webview in the app
-/// uses the `browser-` prefix. Returns the number reaped so a caller — or a
-/// human reading the log — can tell the difference between "nothing was
-/// orphaned" and "the sweep never ran".
+/// Returns the number reaped so a caller — or a human reading the log — can
+/// tell the difference between "nothing was orphaned" and "the sweep never
+/// ran".
 #[tauri::command]
-pub async fn reap_orphan_browsers(app: AppHandle, keep: Vec<String>) -> Result<usize, String> {
+pub async fn reap_orphan_browsers(
+    app: AppHandle,
+    keep: Vec<String>,
+    owner_window: Option<String>,
+) -> Result<usize, String> {
     // Take the full label set first, then close outside the lock: closing a
     // webview can re-enter, and holding the mutex across that is how the pane
     // teardown deadlocked before.
-    let orphans: Vec<String> = {
-        let sessions = app.state::<BrowserSessions>();
-        let map = sessions.0.lock().unwrap();
-        map.keys()
-            .filter(|label| !keep.contains(*label))
-            .cloned()
+    let sessions: Vec<(String, String)> = {
+        let state = app.state::<BrowserSessions>();
+        let map = state.0.lock().unwrap();
+        map.iter()
+            .map(|(label, session)| (label.clone(), session.owner.clone()))
             .collect()
     };
+    let live_labels: Vec<String> = app.webviews().into_keys().collect();
+    let orphans = orphan_browser_labels(&sessions, live_labels, &keep, owner_window.as_deref());
 
     let mut reaped = 0usize;
     for label in &orphans {
         if let Some(webview) = app.get_webview(label) {
-            // Best-effort: a webview that is already gone is exactly the
-            // outcome we want, so a close error must not abort the sweep and
-            // strand the remaining orphans.
+            // Hide first: close can take a frame, and a stuck overlay is what
+            // this command exists to end. Best-effort — a webview that is
+            // already gone is exactly the outcome we want.
+            let _ = webview.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
+                -10000.0, -10000.0,
+            )));
             if let Err(e) = webview.close() {
                 eprintln!("[permagent-app] reap: close {label} failed: {e}");
                 continue;
@@ -1413,6 +1480,52 @@ pub async fn act_on_ref(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn child_browser_labels_are_numeric_not_pane_uuids() {
+        assert!(is_child_browser_label("browser-0"));
+        assert!(is_child_browser_label("browser-12"));
+        assert!(!is_child_browser_label("browser-3f2a-11ee-8c90"));
+        assert!(!is_child_browser_label("terminal-9b1c"));
+        assert!(!is_child_browser_label("main"));
+        assert!(!is_child_browser_label("browser-"));
+    }
+
+    #[test]
+    fn reap_after_reload_closes_forgotten_children_and_spares_other_windows() {
+        let sessions = vec![
+            ("browser-0".into(), "main".into()),
+            ("browser-1".into(), "browser-3f2a-11ee-8c90".into()),
+        ];
+        // Main reloaded: keep is empty, owner is main. The pane's tab survives.
+        let orphans = orphan_browser_labels(&sessions, Vec::<String>::new(), &[], Some("main"));
+        assert_eq!(orphans, vec!["browser-0".to_string()]);
+    }
+
+    #[test]
+    fn reap_closes_a_live_child_even_when_sessions_forgot_it() {
+        // The stuck-overlay bug: React's memory died, the native child did not.
+        let orphans = orphan_browser_labels(
+            &[],
+            vec![
+                "browser-7".into(),
+                "main".into(),
+                "browser-3f2a-11ee-8c90".into(),
+            ],
+            &[],
+            Some("main"),
+        );
+        assert_eq!(orphans, vec!["browser-7".to_string()]);
+    }
+
+    #[test]
+    fn reap_keep_list_protects_tabs_this_shell_still_owns() {
+        let sessions = vec![("browser-0".into(), "main".into())];
+        let keep = vec!["browser-0".to_string()];
+        let orphans =
+            orphan_browser_labels(&sessions, vec!["browser-0".into()], &keep, Some("main"));
+        assert!(orphans.is_empty());
+    }
 
     #[test]
     fn act_script_rejects_a_changed_page_before_acting() {
