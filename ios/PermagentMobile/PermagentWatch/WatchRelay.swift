@@ -19,9 +19,10 @@ final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
     @Published var noteSaved: String?
     @Published var ambiguousProjects: [WatchProject] = []
     @Published var resolvedProject: WatchProject?
+    @Published var projects: [WatchProject] = []
 
     private var pendingNoteId: String?
-    private var queuedRecordings: [(url: URL, id: String)] = []
+    private var queuedRecordings: [(url: URL, id: String, kind: String)] = []
 
     func start() {
         guard WCSession.isSupported() else {
@@ -47,21 +48,46 @@ final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
         send(WatchRequest(op: .chat, id: UUID().uuidString, text: trimmed, projectId: nil))
     }
 
-    func sendRecording(_ url: URL) {
+    func sendRecording(_ url: URL, kind: String) {
         let id = UUID().uuidString
         pendingNoteId = id
-        noteBusy = true
+        notice = nil
+        if kind == "chat" {
+            chatBusy = true
+            chatThinking = true
+            chatText = ""
+        } else {
+            noteBusy = true
+            noteTranscript = ""
+            noteSaved = nil
+        }
+        let session = WCSession.default
+        if session.activationState == .activated {
+            session.transferFile(url, metadata: ["id": id, "kind": kind])
+        } else {
+            queuedRecordings.append((url, id, kind))
+            notice = "iPhone unreachable — queued until it is back."
+            chatBusy = false
+            chatThinking = false
+            noteBusy = false
+        }
+    }
+
+    func saveNote(to project: WatchProject) {
+        resolvedProject = project
+        saveNote()
+    }
+
+    /// After a save, keep the project and clear the clip so the next listen
+    /// starts immediately. The user already chose once this visit.
+    func prepareNextNote() {
         noteTranscript = ""
         noteSaved = nil
         notice = nil
-        let session = WCSession.default
-        if session.activationState == .activated {
-            session.transferFile(url, metadata: ["id": id, "kind": "note"])
-        } else {
-            queuedRecordings.append((url, id))
-            notice = "iPhone unreachable — the note will send when it is back."
-            noteBusy = false
-        }
+    }
+
+    func listProjects() {
+        send(WatchRequest(op: .listProjects, id: UUID().uuidString, text: nil, projectId: nil))
     }
 
     func resolveProject(_ spoken: String) {
@@ -81,17 +107,21 @@ final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
     nonisolated func session(_ session: WCSession,
                              activationDidCompleteWith activationState: WCSessionActivationState,
                              error: Error?) {
+        // Copy Sendable bits here. WCSession is not Sendable; hopping the
+        // object itself to MainActor is a Swift 6 data-race error.
+        let reachable = session.isReachable
         Task { @MainActor in
-            phoneReachable = session.isReachable
+            phoneReachable = reachable
             ping()
             flushQueue()
         }
     }
 
     nonisolated func sessionReachabilityDidChange(_ session: WCSession) {
+        let reachable = session.isReachable
         Task { @MainActor in
-            phoneReachable = session.isReachable
-            if session.isReachable { flushQueue() }
+            phoneReachable = reachable
+            if reachable { flushQueue() }
         }
     }
 
@@ -103,10 +133,10 @@ final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
     nonisolated func session(_ session: WCSession,
                              didReceiveMessageData messageData: Data,
                              replyHandler: @escaping (Data) -> Void) {
-        Task { @MainActor in
-            apply(messageData)
-            replyHandler(Data())
-        }
+        // Reply from this isolation: the handler is not Sendable, so it
+        // cannot ride the MainActor hop. The ack payload is empty.
+        replyHandler(Data())
+        Task { @MainActor in apply(messageData) }
     }
 
     nonisolated func session(_ session: WCSession,
@@ -172,6 +202,18 @@ final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
                 notice = err
             } else if let text = reply.text {
                 noteTranscript = text
+                if let project = resolvedProject {
+                    saveNote()
+                } else if projects.isEmpty {
+                    listProjects()
+                }
+            }
+        case WatchOp.listProjects.rawValue:
+            if let list = reply.projects {
+                projects = list
+                notice = list.isEmpty ? "No projects on the hub." : nil
+            } else if let err = reply.error {
+                notice = err
             }
         case WatchOp.resolveProject.rawValue:
             if let projects = reply.projects, projects.count == 1 {
@@ -203,7 +245,7 @@ final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
         let session = WCSession.default
         guard session.activationState == .activated else { return }
         for item in queuedRecordings {
-            session.transferFile(item.url, metadata: ["id": item.id, "kind": "note"])
+            session.transferFile(item.url, metadata: ["id": item.id, "kind": item.kind])
         }
         queuedRecordings.removeAll()
     }

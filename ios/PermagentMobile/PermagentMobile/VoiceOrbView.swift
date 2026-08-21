@@ -18,9 +18,15 @@
 
 import SwiftUI
 
+#if os(watchOS)
+private let N_SPHERE = 160
+private let N_HALO = 50
+private let ORB_SIZE: CGFloat = 96
+#else
 private let N_SPHERE = 500   // web uses 700; mobile budget, see note below
 private let N_HALO = 170     // web uses 240
 private let ORB_SIZE: CGFloat = 300
+#endif
 
 // Point counts are ~70% of the web's. SwiftUI's Canvas re-issues every draw
 // command per frame with no retained scene, so the full 940 particles cost
@@ -44,7 +50,7 @@ private func makeSphere() -> [Pt] {
         let rad = max(0, 1 - y * y).squareRoot()
         let th = golden * Double(i)
         out.append(Pt(x: cos(th) * rad, y: y, z: sin(th) * rad,
-                      seed: Double((i &* 2_654_435_761) % 1000) / 1000))
+                      seed: Double((UInt64(i) &* 2_654_435_761) % 1000) / 1000))
     }
     return out
 }
@@ -96,6 +102,8 @@ struct VoiceOrbView: View {
     var speaking: Bool
     /// Thinking has no audio, so the orb swells on its own rather than flatlining.
     var thinking: Bool
+    /// Drawn diameter. Watch uses the file-level default (96); iOS keeps 300.
+    var diameter: CGFloat = ORB_SIZE
 
     // Motion integrator state lives in a reference type, NOT @State. Writing
     // @State from inside a Canvas draw invalidates the view on every frame —
@@ -122,7 +130,7 @@ struct VoiceOrbView: View {
             Canvas { ctx, size in
                 draw(ctx: &ctx, size: size, t: t)
             }
-            .frame(width: ORB_SIZE, height: ORB_SIZE)
+            .frame(width: diameter, height: diameter)
             .allowsHitTesting(false)
         }
         .contentShape(Circle())

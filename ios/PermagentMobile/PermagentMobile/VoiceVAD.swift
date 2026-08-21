@@ -8,7 +8,7 @@
 //
 // Threshold provenance — these started as a copy of useVoice.ts, but the two
 // capture paths do not hear the same numbers. iOS records through
-// AVAudioSession .voiceChat mode, whose AGC + noise suppression squash levels
+// AVAudioEngine voice processing, whose AGC + noise suppression squash levels
 // well below what a browser's getUserMedia delivers; the onset threshold was
 // lowered accordingly (0.015 vs the web's 0.025) when the port was made.
 // The keepalive floor, however, was copied verbatim at 0.010 — HIGHER,

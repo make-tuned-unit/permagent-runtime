@@ -35,6 +35,21 @@ final class WatchBridgeTests: XCTestCase {
         XCTAssertEqual(ProjectMatcher.match(spoken: "   ", among: projects), .none)
     }
 
+    func testChatEndpointStopsOnTightSilence() {
+        let e = WatchEndpoint.chat
+        XCTAssertFalse(e.shouldStop(heardSpeech: false, spokenFor: 0, silentFor: 5, elapsed: 5))
+        XCTAssertFalse(e.shouldStop(heardSpeech: true, spokenFor: 0.1, silentFor: 2, elapsed: 2.1))
+        XCTAssertTrue(e.shouldStop(heardSpeech: true, spokenFor: 0.5, silentFor: 1.1, elapsed: 1.6))
+        XCTAssertTrue(e.shouldStop(heardSpeech: true, spokenFor: 0.5, silentFor: 0, elapsed: e.maxDuration))
+    }
+
+    func testNoteEndpointKeepsAThinkingPause() {
+        let e = WatchEndpoint.note
+        XCTAssertFalse(e.shouldStop(heardSpeech: true, spokenFor: 2, silentFor: 1.1, elapsed: 3.1),
+                       "a note must not cut on the chat window")
+        XCTAssertTrue(e.shouldStop(heardSpeech: true, spokenFor: 2, silentFor: 1.8, elapsed: 3.8))
+    }
+
     func testRoundTripEnvelope() throws {
         let req = WatchRequest(op: .saveNote, id: "abc", text: "hello", projectId: "1")
         let data = try JSONEncoder().encode(req)
