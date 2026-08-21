@@ -1063,6 +1063,11 @@ function ProjectChannels({ projectId, colors }: { projectId: string; colors: The
         { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ channel }) },
       );
       setLoginUrl(start.url);
+      if (start.url) {
+        // permagentd is a background process; webbrowser::open from it is a
+        // no-op on macOS. The webview must open the login itself.
+        window.open(start.url, '_blank', 'noopener,noreferrer');
+      }
       load();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -1111,7 +1116,20 @@ function ProjectChannels({ projectId, colors }: { projectId: string; colors: The
                   Disconnect
                 </button>
               ) : (
-                <button type="button" disabled={!configured || busy === n.id} onClick={() => void connect(n.id)} style={{ fontSize: 11, fontFamily: font.body, color: colors.cyan, background: 'transparent', border: 'none', textDecoration: 'underline', cursor: 'pointer', padding: 0 }}>
+                <button
+                  type="button"
+                  disabled={busy === n.id}
+                  onClick={() => void connect(n.id)}
+                  title={configured ? `Connect ${n.label}` : 'Save a Postiz API key above first'}
+                  style={{
+                    fontSize: 11, fontFamily: font.body,
+                    color: configured ? colors.cyan : colors.textDim,
+                    background: 'transparent', border: 'none',
+                    textDecoration: 'underline',
+                    cursor: busy === n.id ? 'wait' : 'pointer',
+                    padding: 0,
+                  }}
+                >
                   {waiting ? 'Open login again' : `Connect ${n.label}`}
                 </button>
               )}
