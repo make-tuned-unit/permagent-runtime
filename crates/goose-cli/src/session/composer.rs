@@ -54,7 +54,7 @@ pub enum ComposerAction {
     Redraw,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ComposerState {
     pub buffer: String,
     pub cursor: usize,
@@ -70,27 +70,6 @@ pub struct ComposerState {
     pub tokens: String,
     pub maybe_exit: bool,
     pub light: bool,
-}
-
-impl Default for ComposerState {
-    fn default() -> Self {
-        Self {
-            buffer: String::new(),
-            cursor: 0,
-            busy: false,
-            busy_since: None,
-            queued: Vec::new(),
-            history: Vec::new(),
-            history_idx: None,
-            stash: None,
-            model: String::new(),
-            cwd: String::new(),
-            cost: String::new(),
-            tokens: String::new(),
-            maybe_exit: false,
-            light: false,
-        }
-    }
 }
 
 impl ComposerState {
@@ -255,7 +234,7 @@ impl ComposerState {
         if self.cursor == 0 {
             return;
         }
-        let prev = self.buffer[..self.cursor]
+        let prev = before_cursor(&self.buffer, self.cursor)
             .chars()
             .next_back()
             .map(|c| c.len_utf8())
@@ -269,7 +248,7 @@ impl ComposerState {
         if self.cursor >= self.buffer.len() {
             return;
         }
-        let next = self.buffer[self.cursor..]
+        let next = after_cursor(&self.buffer, self.cursor)
             .chars()
             .next()
             .map(|c| c.len_utf8())
@@ -282,7 +261,7 @@ impl ComposerState {
         if self.cursor == 0 {
             return;
         }
-        let prev = self.buffer[..self.cursor]
+        let prev = before_cursor(&self.buffer, self.cursor)
             .chars()
             .next_back()
             .map(|c| c.len_utf8())
@@ -294,7 +273,7 @@ impl ComposerState {
         if self.cursor >= self.buffer.len() {
             return;
         }
-        let next = self.buffer[self.cursor..]
+        let next = after_cursor(&self.buffer, self.cursor)
             .chars()
             .next()
             .map(|c| c.len_utf8())
@@ -419,6 +398,7 @@ fn pad_to(s: &str, width: usize) -> String {
 
 /// Plain (no ANSI) lines — used by tests to pin the layout contract:
 /// a boxed field is always present, busy or idle.
+#[cfg(test)]
 pub fn render_plain(state: &ComposerState, width: usize) -> Vec<String> {
     let width = width.max(24);
     let inner = width.saturating_sub(2);
@@ -685,11 +665,22 @@ fn utf8_width(b: u8) -> usize {
 
 pub fn abbreviate_home(path: &str) -> String {
     if let Ok(home) = std::env::var("HOME") {
-        if !home.is_empty() && path.starts_with(&home) {
-            return format!("~{}", &path[home.len()..]);
+        if !home.is_empty() {
+            if let Some(rest) = path.strip_prefix(&home) {
+                return format!("~{rest}");
+            }
         }
     }
     path.to_string()
+}
+
+/// `cursor` is always a UTF-8 boundary: insert/delete/move step by `len_utf8`.
+fn before_cursor(s: &str, cursor: usize) -> &str {
+    s.get(..cursor).unwrap_or("")
+}
+
+fn after_cursor(s: &str, cursor: usize) -> &str {
+    s.get(cursor..).unwrap_or("")
 }
 
 pub fn format_tokens(n: usize) -> String {
@@ -902,15 +893,15 @@ mod tty {
             }
             // Park the cursor inside the field so typing never lands in the stream.
             let prompt_w = measure_text_width(prompt_glyph());
-            let cursor_line = self.state.buffer[..self.state.cursor]
-                .bytes()
-                .filter(|&b| b == b'\n')
-                .count();
-            let line_start = self.state.buffer[..self.state.cursor]
-                .rfind('\n')
-                .map(|i| i + 1)
-                .unwrap_or(0);
-            let col_text = measure_text_width(&self.state.buffer[line_start..self.state.cursor]);
+            let prefix = before_cursor(&self.state.buffer, self.state.cursor);
+            let cursor_line = prefix.bytes().filter(|&b| b == b'\n').count();
+            let line_start = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
+            let col_text = measure_text_width(
+                self.state
+                    .buffer
+                    .get(line_start..self.state.cursor)
+                    .unwrap_or(""),
+            );
             let row =
                 start + 1 /* status */ + 1 /* top border */ + cursor_line.min(MAX_INPUT_ROWS - 1);
             let col = 3 + prompt_w + col_text;
