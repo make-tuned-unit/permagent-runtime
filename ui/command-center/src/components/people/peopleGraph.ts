@@ -1,10 +1,12 @@
 /**
  * Layout for the People 3D graph — an ego network.
  *
- * You sit at the origin. Project centroids sit on a circle around you. Each
- * person is placed at the average of the projects they belong to, with a
- * stable hash jitter so two people in the same project do not occupy one
- * point. A person in two projects sits BETWEEN those centroids.
+ * You sit at the origin. Project centroids sit around you. People in one
+ * project gather at that centroid; a person in several sits BETWEEN those
+ * centroids. Shared membership also pulls the projects themselves together:
+ * those clusters sit side by side on the ring, so the person stays organized
+ * in the graph instead of jumping to whichever project was associated last
+ * (or collapsing onto you when two projects land opposite each other).
  *
  * Edges:
  *   - ego: every person connects to you. That is the network as it exists
@@ -62,6 +64,8 @@ export interface PeopleGraphLayout {
 
 const CLUSTER_RADIUS = 6;
 const JITTER = 1.35;
+/** Neighbors on the ring stay beside each other, never 180° apart. */
+const MAX_NEIGHBOR_ANGLE = Math.PI / 3;
 const YOU: GraphNode = {
   id: EGO_NODE_ID,
   name: 'You',
@@ -89,17 +93,257 @@ function jitter(id: string, axis: 'x' | 'y' | 'z'): number {
   return (hash01(id, axis) - 0.5) * 2 * JITTER;
 }
 
+function uniquePreserve(ids: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const id of ids) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
+function pairKey(a: string, b: string): string {
+  return a < b ? `${a}\0${b}` : `${b}\0${a}`;
+}
+
+function circularDistance(i: number, j: number, n: number): number {
+  const d = Math.abs(i - j);
+  return Math.min(d, n - d);
+}
+
+/** Shared-person counts between every pair of projects. */
+export function projectAffinity(people: DirectoryPerson[]): Map<string, number> {
+  const affinity = new Map<string, number>();
+  for (const person of people) {
+    const ids = uniquePreserve(person.projects.map(p => p.project_id));
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) {
+        const key = pairKey(ids[i], ids[j]);
+        affinity.set(key, (affinity.get(key) ?? 0) + 1);
+      }
+    }
+  }
+  return affinity;
+}
+
+function arrangementCost(order: string[], affinity: Map<string, number>): number {
+  const n = order.length;
+  if (n < 2) return 0;
+  const index = new Map(order.map((id, i) => [id, i]));
+  let cost = 0;
+  for (const [key, weight] of affinity) {
+    if (weight <= 0) continue;
+    const sep = key.indexOf('\0');
+    const a = key.slice(0, sep);
+    const b = key.slice(sep + 1);
+    const i = index.get(a);
+    const j = index.get(b);
+    if (i === undefined || j === undefined) continue;
+    cost += weight * circularDistance(i, j, n);
+  }
+  return cost;
+}
+
+function reverseArc(order: string[], from: number, to: number): string[] {
+  const next = order.slice();
+  let i = from;
+  let j = to;
+  while (i < j) {
+    const tmp = next[i];
+    next[i] = next[j];
+    next[j] = tmp;
+    i += 1;
+    j -= 1;
+  }
+  return next;
+}
+
+function improveCircular(order: string[], affinity: Map<string, number>): string[] {
+  const n = order.length;
+  if (n < 4) return order;
+  let current = order;
+  let currentCost = arrangementCost(current, affinity);
+  let improved = true;
+  let guard = 0;
+  while (improved && guard < 40) {
+    improved = false;
+    guard += 1;
+    for (let i = 0; i < n - 1; i++) {
+      for (let j = i + 2; j < n; j++) {
+        if (i === 0 && j === n - 1) continue;
+        const next = reverseArc(current, i, j);
+        const cost = arrangementCost(next, affinity);
+        if (cost < currentCost) {
+          current = next;
+          currentCost = cost;
+          improved = true;
+        }
+      }
+    }
+  }
+  return current;
+}
+
+function sortKey(id: string, names: Map<string, string>): string {
+  return `${names.get(id) ?? id}\0${id}`;
+}
+
+function compareProjects(a: string, b: string, names: Map<string, string>): number {
+  const ka = sortKey(a, names);
+  const kb = sortKey(b, names);
+  if (ka < kb) return -1;
+  if (ka > kb) return 1;
+  return 0;
+}
+
+function componentOf(
+  start: string,
+  remaining: Set<string>,
+  affinity: Map<string, number>,
+): string[] {
+  const comp: string[] = [];
+  const queue = [start];
+  remaining.delete(start);
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    comp.push(id);
+    for (const other of [...remaining]) {
+      if ((affinity.get(pairKey(id, other)) ?? 0) > 0) {
+        remaining.delete(other);
+        queue.push(other);
+      }
+    }
+  }
+  return comp;
+}
+
+function strongestNeighbor(id: string, placed: string[], affinity: Map<string, number>): string {
+  let best = placed[0];
+  let bestWeight = -1;
+  for (const other of placed) {
+    const w = affinity.get(pairKey(id, other)) ?? 0;
+    if (w > bestWeight || (w === bestWeight && other < best)) {
+      bestWeight = w;
+      best = other;
+    }
+  }
+  return best;
+}
+
+function pathCostAt(order: string[], index: number, node: string, affinity: Map<string, number>): number {
+  const trial = order.slice();
+  trial.splice(index, 0, node);
+  const pos = new Map(trial.map((id, i) => [id, i]));
+  const i = pos.get(node)!;
+  let cost = 0;
+  for (const other of order) {
+    const w = affinity.get(pairKey(node, other)) ?? 0;
+    if (w <= 0) continue;
+    cost += w * Math.abs(i - pos.get(other)!);
+  }
+  return cost;
+}
+
+function arrangeComponent(ids: string[], affinity: Map<string, number>, names: Map<string, string>): string[] {
+  const sorted = [...ids].sort((a, b) => compareProjects(a, b, names));
+  if (sorted.length <= 2) return sorted;
+
+  let bestEdge = { a: sorted[0], b: sorted[1], w: -1 };
+  for (let i = 0; i < sorted.length; i++) {
+    for (let j = i + 1; j < sorted.length; j++) {
+      const w = affinity.get(pairKey(sorted[i], sorted[j])) ?? 0;
+      if (
+        w > bestEdge.w
+        || (w === bestEdge.w && pairKey(sorted[i], sorted[j]) < pairKey(bestEdge.a, bestEdge.b))
+      ) {
+        bestEdge = { a: sorted[i], b: sorted[j], w };
+      }
+    }
+  }
+
+  const order = compareProjects(bestEdge.a, bestEdge.b, names) <= 0
+    ? [bestEdge.a, bestEdge.b]
+    : [bestEdge.b, bestEdge.a];
+  const unused = sorted.filter(id => id !== order[0] && id !== order[1]);
+
+  while (unused.length > 0) {
+    let pick = 0;
+    let pickScore = -1;
+    for (let i = 0; i < unused.length; i++) {
+      let score = 0;
+      for (const placed of order) {
+        score = Math.max(score, affinity.get(pairKey(unused[i], placed)) ?? 0);
+      }
+      if (
+        score > pickScore
+        || (score === pickScore && compareProjects(unused[i], unused[pick], names) < 0)
+      ) {
+        pick = i;
+        pickScore = score;
+      }
+    }
+    const node = unused.splice(pick, 1)[0];
+    const neighbor = strongestNeighbor(node, order, affinity);
+    const at = order.indexOf(neighbor);
+    const left = pathCostAt(order, at, node, affinity);
+    const right = pathCostAt(order, at + 1, node, affinity);
+    if (left < right || (left === right && compareProjects(node, neighbor, names) < 0)) {
+      order.splice(at, 0, node);
+    } else {
+      order.splice(at + 1, 0, node);
+    }
+  }
+  return order;
+}
+
 /**
- * Place project centroids evenly on a circle in the XZ plane around you.
+ * Circular order so projects that share people sit next to each other.
+ * Isolated projects follow in name order. Deterministic.
+ */
+export function orderProjectsByAffinity(
+  projectIds: string[],
+  people: DirectoryPerson[],
+  names: Map<string, string> = new Map(),
+): string[] {
+  const unique = uniquePreserve(projectIds);
+  if (unique.length <= 1) return unique;
+  const affinity = projectAffinity(people);
+  const remaining = new Set(unique);
+  const seeds = [...unique].sort((a, b) => compareProjects(a, b, names));
+  const components: string[][] = [];
+  for (const seed of seeds) {
+    if (!remaining.has(seed)) continue;
+    components.push(arrangeComponent(componentOf(seed, remaining, affinity), affinity, names));
+  }
+  return improveCircular(components.flat(), affinity);
+}
+
+export function clusterAngleStep(projectCount: number): number {
+  if (projectCount <= 1) return 0;
+  return Math.min((Math.PI * 2) / projectCount, MAX_NEIGHBOR_ANGLE);
+}
+
+/**
+ * Place project centroids around you, in the given order.
+ *
+ * Related projects are ordered first (`orderProjectsByAffinity`) so neighbors
+ * on this ring are the ones that share people. Adjacent centroids never sit
+ * more than 60° apart — two projects sharing a person are side by side, not
+ * opposite — and the arc is centered toward the camera (+Z).
+ *
  * Unassigned sits directly below you so it never collides with the hub or
- * the one-project ring.
+ * the project ring.
  */
 export function clusterPositions(projectIds: string[]): Map<string, GraphCluster> {
-  const unique = [...new Set(projectIds)];
+  const unique = uniquePreserve(projectIds);
   const map = new Map<string, GraphCluster>();
   const n = unique.length;
+  const step = clusterAngleStep(n);
+  const start = Math.PI / 2 - ((n - 1) * step) / 2;
   unique.forEach((id, i) => {
-    const angle = n === 0 ? 0 : (i / n) * Math.PI * 2;
+    const angle = start + i * step;
     map.set(id, {
       id,
       name: id,
@@ -125,7 +369,8 @@ export function layoutPeopleGraph(people: DirectoryPerson[]): PeopleGraphLayout 
       namedProjects.set(project.project_id, project.project_name);
     }
   }
-  const centroids = clusterPositions([...namedProjects.keys()]);
+  const ordered = orderProjectsByAffinity([...namedProjects.keys()], people, namedProjects);
+  const centroids = clusterPositions(ordered);
   for (const [id, name] of namedProjects) {
     const cluster = centroids.get(id);
     if (cluster) cluster.name = name;

@@ -318,6 +318,8 @@ interface CommandCenterStore {
     person: Person,
     association?: PersonAssociation | null,
   ) => void;
+  /** Merge a freshly-fetched person into the open detail, if it's the same row. */
+  patchPersonDetail: (person: Person) => void;
   closePersonDetail: () => void;
   /**
    * Monotonic revision the People panel and the directory re-fetch on. Bumped
@@ -939,6 +941,13 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   personDetail: null,
   openPersonDetail: (projectId, person, association = null) =>
     set({ personDetail: { projectId, person, association } }),
+  patchPersonDetail: (person) =>
+    set(s => {
+      if (!s.personDetail || s.personDetail.person.entity_uuid !== person.entity_uuid) {
+        return s;
+      }
+      return { personDetail: { ...s.personDetail, person } };
+    }),
   closePersonDetail: () => set({ personDetail: null }),
   peopleRev: 0,
   bumpPeople: () => set(s => ({ peopleRev: s.peopleRev + 1 })),

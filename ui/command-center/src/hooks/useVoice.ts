@@ -477,6 +477,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     const base = getApiBaseUrl().replace(/^http/, 'ws');
     const params = new URLSearchParams();
     if (sessionId) params.set('session_id', sessionId);
+    params.set('client', 'desktop_voice');
     if (token) params.set('token', token);
     const url = `${base}/voice?${params}`;
 

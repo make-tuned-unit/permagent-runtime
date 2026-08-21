@@ -50,7 +50,9 @@ private func makeSphere() -> [Pt] {
         let rad = max(0, 1 - y * y).squareRoot()
         let th = golden * Double(i)
         out.append(Pt(x: cos(th) * rad, y: y, z: sin(th) * rad,
-                      seed: Double((UInt64(i) &* 2_654_435_761) % 1000) / 1000))
+                      // Knuth multiplicative hash as UInt32 — Int is 32-bit on
+                      // watchOS, and this constant does not fit in Int32.
+                      seed: Double((UInt32(i) &* 2_654_435_761) % 1000) / 1000))
     }
     return out
 }
@@ -102,7 +104,7 @@ struct VoiceOrbView: View {
     var speaking: Bool
     /// Thinking has no audio, so the orb swells on its own rather than flatlining.
     var thinking: Bool
-    /// Drawn diameter. Watch uses the file-level default (96); iOS keeps 300.
+    /// Render size. iOS conversation uses 300; Watch chat is ~88.
     var diameter: CGFloat = ORB_SIZE
 
     // Motion integrator state lives in a reference type, NOT @State. Writing

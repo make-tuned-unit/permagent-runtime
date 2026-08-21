@@ -41,6 +41,7 @@ vi.mock('./MessageList', () => ({ MessageList: () => null }));
 vi.mock('./ChatInput', () => ({ ChatInput: () => null }));
 vi.mock('./SkillPromptBanner', () => ({ SkillPromptBanner: () => null }));
 vi.mock('./ModelPicker', () => ({ ModelPicker: () => null }));
+vi.mock('./ChatPendingDecisions', () => ({ ChatPendingDecisions: () => null }));
 
 import { ChatView } from './ChatView';
 

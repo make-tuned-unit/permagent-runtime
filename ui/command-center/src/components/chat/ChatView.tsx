@@ -8,6 +8,7 @@ import { SkillPromptBanner } from './SkillPromptBanner';
 import { ModelPicker } from './ModelPicker';
 import { SessionPicker } from './SessionPicker';
 import { VoiceOrb } from '../voice/VoiceOrb';
+import { ChatPendingDecisions } from './ChatPendingDecisions';
 import { useTheme } from '../../styles/useTheme';
 
 export function ChatView() {
@@ -57,6 +58,7 @@ export function ChatView() {
   // With chat detached, THAT window's mirror orb is the conversation surface.
   // Without this guard the dock rendered a second orb simultaneously.
   const chatWindowOpen = useCommandCenter(s => s.chatWindowOpen);
+  const voiceOverlay = Boolean(voiceConversation && !chatWindowOpen);
 
   return (
     <div className="relative flex h-full flex-col" style={{ backgroundColor: colors.bg }}>
@@ -75,9 +77,10 @@ export function ChatView() {
           here while the dock is open (state stays in the Sidebar mount).
           Zero-height when empty; content-sized, capped, scrollable when not. */}
       <div id="meeting-dock-slot" style={{ flexShrink: 0, maxHeight: '45%', overflowY: 'auto' }} />
+      {!voiceOverlay && <ChatPendingDecisions />}
       <ChatInput ref={chatInputRef} />
 
-      {voiceConversation && !chatWindowOpen && (
+      {voiceConversation && voiceOverlay && (
         <VoiceOrb
           state={voiceConversation.state}
           getPlaybackAnalyser={voiceConversation.getPlaybackAnalyser}
@@ -85,6 +88,19 @@ export function ChatView() {
           onExit={voiceConversation.exit}
           wakeHint={voiceConversation.wakeHint}
         />
+      )}
+      {voiceOverlay && (
+        <div
+          style={{
+            position: 'absolute',
+            left: 12,
+            right: 12,
+            bottom: 24,
+            zIndex: 70,
+          }}
+        >
+          <ChatPendingDecisions overlay />
+        </div>
       )}
     </div>
   );

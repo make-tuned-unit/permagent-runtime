@@ -68,15 +68,15 @@ pub struct AnswerRequest {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct AnswerResponse {
-    decision: decisions::Decision,
+pub(crate) struct AnswerResponse {
+    pub(crate) decision: decisions::Decision,
     /// What the gated effect did (e.g. "goal advanced to complete"), if any.
-    effect: Option<String>,
+    pub(crate) effect: Option<String>,
     /// Present when the decision was answered but the effect failed — or when
     /// the effect committed and a follow-on step (dependent promotion) failed
     /// (`effect` is then ALSO set). Either way the failure is recorded in the
     /// audit log.
-    effect_error: Option<String>,
+    pub(crate) effect_error: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -141,8 +141,6 @@ async fn answer_decision_handler(
     Path(decision_id): Path<String>,
     Json(req): Json<AnswerRequest>,
 ) -> Result<Json<AnswerResponse>, (StatusCode, String)> {
-    let pool = pool_of(&state).await?;
-
     let answer = DecisionAnswer {
         answer: req.answer,
         note: req.note,
@@ -157,9 +155,25 @@ async fn answer_decision_handler(
         AuthPrincipal::Master => "master",
         AuthPrincipal::Device(id) => id,
     };
+    let outcome = apply_jesse_answer(&state, &decision_id, answer, audit_principal).await?;
+    Ok(Json(outcome))
+}
+
+/// Answer an open decision as the user and run its gated effect.
+///
+/// Shared by the HTTP inbox path and the voice spoken-yes path: both are the
+/// user's own channel (authenticated UI / authenticated voice socket), not a
+/// model tool call.
+pub(crate) async fn apply_jesse_answer(
+    state: &Arc<AppState>,
+    decision_id: &str,
+    answer: DecisionAnswer,
+    audit_principal: &str,
+) -> Result<AnswerResponse, (StatusCode, String)> {
+    let pool = pool_of(state).await?;
     let (decision, proof) = decisions::answer_decision_with_principal(
         &pool,
-        &decision_id,
+        decision_id,
         &answer,
         decisions::ACTOR_JESSE,
         audit_principal,
@@ -229,7 +243,7 @@ async fn answer_decision_handler(
     // effect — reported honestly and audit-recorded via the same path
     // goal-effects use, never papered over with a fabricated "running" claim.
     let (effect, effect_error) = if decision.kind == "tool_approval" {
-        match deliver_tool_confirmation(&state, &decision).await {
+        match deliver_tool_confirmation(state, &decision).await {
             Ok(msg) => (Some(msg), effect_error),
             Err(e) => {
                 record_effect_failure(&pool, &decision, &e).await;
@@ -274,11 +288,11 @@ async fn answer_decision_handler(
         }
     }
 
-    Ok(Json(AnswerResponse {
+    Ok(AnswerResponse {
         decision,
         effect,
         effect_error,
-    }))
+    })
 }
 
 async fn history_handler(

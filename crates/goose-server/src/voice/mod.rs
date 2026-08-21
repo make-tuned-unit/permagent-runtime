@@ -16,6 +16,7 @@ pub mod prosody;
 pub mod provider;
 pub mod sherpa_backend;
 pub mod speakable;
+pub mod spoken_verdict;
 pub mod user_lexicon;
 
 pub use provider::{SpeechToText, TextToSpeech};

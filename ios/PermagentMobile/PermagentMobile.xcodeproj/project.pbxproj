@@ -18,6 +18,11 @@
 		0CD59DA1B934C4B413721DE0 /* WatchHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 204239DAF319855936001BD3 /* WatchHomeView.swift */; };
 		0D26764FC37DAB074436E259 /* mobius_40.webp in Resources */ = {isa = PBXBuildFile; fileRef = 97D9644DF105F1726FC52DEA /* mobius_40.webp */; };
 		0D8A364D8FC9A0D197FD6F88 /* VoiceOrbView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FEED3E5A9B281991FABC481 /* VoiceOrbView.swift */; };
+		A011C0DE00000000B01D0001 /* AppRoute.swift in Sources */ = {isa = PBXBuildFile; fileRef = A011C0DE00000000A00E0001 /* AppRoute.swift */; };
+		A011C0DE00000000B01D0002 /* TalkToAgentIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A011C0DE00000000A00E0002 /* TalkToAgentIntent.swift */; };
+		A011C0DE00000000C02C0001 /* AppRoute.swift in Sources */ = {isa = PBXBuildFile; fileRef = A011C0DE00000000A00E0001 /* AppRoute.swift */; };
+		A011C0DE00000000C02C0002 /* TalkToAgentIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A011C0DE00000000A00E0002 /* TalkToAgentIntent.swift */; };
+		B73C63B88616B56F42522D85 /* VoiceOrbView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FEED3E5A9B281991FABC481 /* VoiceOrbView.swift */; };
 		0DC331DC4C098CF8959D7545 /* JetBrainsMono-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = D10A4D843A64C8C92883D729 /* JetBrainsMono-Regular.ttf */; };
 		0F77D5464AEDEBB583942494 /* JetBrainsMono-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = D10A4D843A64C8C92883D729 /* JetBrainsMono-Regular.ttf */; };
 		11FCF69481F74733BC03E04D /* AgentIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF0D5D72E70CE12B1E837D71 /* AgentIdentity.swift */; };
@@ -394,6 +399,8 @@
 		FBB0FEA26280A6E401A0396B /* mobius_06.webp */ = {isa = PBXFileReference; path = mobius_06.webp; sourceTree = "<group>"; };
 		FC49B12939BF081C69BFE0E1 /* Views.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views.swift; sourceTree = "<group>"; };
 		FCB035E6A98D76903318959E /* WatchBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchBridge.swift; sourceTree = "<group>"; };
+		A011C0DE00000000A00E0001 /* AppRoute.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRoute.swift; sourceTree = "<group>"; };
+		A011C0DE00000000A00E0002 /* TalkToAgentIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TalkToAgentIntent.swift; sourceTree = "<group>"; };
 		FD217B47A0E95ABD4739B494 /* mobius_01.webp */ = {isa = PBXFileReference; path = mobius_01.webp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -578,6 +585,8 @@
 		C03FCC2D55E9F0F400D6C90E /* Shared */ = {
 			isa = PBXGroup;
 			children = (
+				A011C0DE00000000A00E0001 /* AppRoute.swift */,
+				A011C0DE00000000A00E0002 /* TalkToAgentIntent.swift */,
 				FCB035E6A98D76903318959E /* WatchBridge.swift */,
 			);
 			path = Shared;
@@ -901,6 +910,8 @@
 				3CC859A492AA97052054CD19 /* Theme.swift in Sources */,
 				B73C63B88616B56F42522D85 /* VoiceOrbView.swift in Sources */,
 				CDFB23A9541D83A8A0056AD7 /* WatchBridge.swift in Sources */,
+				A011C0DE00000000C02C0001 /* AppRoute.swift in Sources */,
+				A011C0DE00000000C02C0002 /* TalkToAgentIntent.swift in Sources */,
 				0CD59DA1B934C4B413721DE0 /* WatchHomeView.swift in Sources */,
 				EA0F7D166D8AFDA7F33836F9 /* WatchRecorder.swift in Sources */,
 				48309068ADD469D36F4A11F6 /* WatchRelay.swift in Sources */,
@@ -940,6 +951,8 @@
 				E2F92C125DDE2D99E40123D8 /* VoiceVAD.swift in Sources */,
 				B579F2361368D7C62FF7B48F /* VoiceView.swift in Sources */,
 				21DB5E476BEF8CF743019643 /* WatchBridge.swift in Sources */,
+				A011C0DE00000000B01D0001 /* AppRoute.swift in Sources */,
+				A011C0DE00000000B01D0002 /* TalkToAgentIntent.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1033,7 +1046,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = Permagent;
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 928;
+				CURRENT_PROJECT_VERSION = 936;
 				DEVELOPMENT_TEAM = Z58XSBM78S;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				INFOPLIST_FILE = PermagentMobile/Info.plist;
@@ -1042,7 +1055,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.31.0;
-				PRODUCT_BUNDLE_IDENTIFIER = ai.permagent.mobile;
+				PRODUCT_BUNDLE_IDENTIFIER = ai.permagent.ios;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -1124,7 +1137,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = ai.permagent.mobile.tests;
+				PRODUCT_BUNDLE_IDENTIFIER = ai.permagent.ios.tests;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -1144,7 +1157,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = ai.permagent.mobile.tests;
+				PRODUCT_BUNDLE_IDENTIFIER = ai.permagent.ios.tests;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -1157,7 +1170,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = Permagent;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 928;
+				CURRENT_PROJECT_VERSION = 936;
 				DEVELOPMENT_TEAM = Z58XSBM78S;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				INFOPLIST_FILE = PermagentMobile/Info.plist;
@@ -1166,7 +1179,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.31.0;
-				PRODUCT_BUNDLE_IDENTIFIER = ai.permagent.mobile;
+				PRODUCT_BUNDLE_IDENTIFIER = ai.permagent.ios;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -1178,13 +1191,13 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 928;
+				CURRENT_PROJECT_VERSION = 936;
 				DEVELOPMENT_TEAM = Z58XSBM78S;
 				ENABLE_ON_DEMAND_RESOURCES = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = PermagentWatch/Info.plist;
 				MARKETING_VERSION = 1.31.0;
-				PRODUCT_BUNDLE_IDENTIFIER = ai.permagent.mobile.watchkitapp;
+				PRODUCT_BUNDLE_IDENTIFIER = ai.permagent.ios.watchkitapp;
 				SDKROOT = watchos;
 				SKIP_INSTALL = YES;
 				SWIFT_VERSION = 6.0;
@@ -1197,13 +1210,13 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = NO;
-				CURRENT_PROJECT_VERSION = 928;
+				CURRENT_PROJECT_VERSION = 936;
 				DEVELOPMENT_TEAM = Z58XSBM78S;
 				ENABLE_ON_DEMAND_RESOURCES = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = PermagentWatch/Info.plist;
 				MARKETING_VERSION = 1.31.0;
-				PRODUCT_BUNDLE_IDENTIFIER = ai.permagent.mobile.watchkitapp;
+				PRODUCT_BUNDLE_IDENTIFIER = ai.permagent.ios.watchkitapp;
 				SDKROOT = watchos;
 				SKIP_INSTALL = YES;
 				SWIFT_VERSION = 6.0;

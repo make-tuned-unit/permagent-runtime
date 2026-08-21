@@ -640,10 +640,10 @@ impl PeopleClient {
         }
 
         Ok(vec![Content::text(format!(
-            "Proposed {} field(s) for \"{}\" — decision {} is waiting in the Decision Inbox. \
-             Nothing is written to the profile until the user approves it there; approved \
-             fields are stored with Enriched provenance and can never overwrite a manually \
-             entered value.",
+            "Proposed {} field(s) for \"{}\" — decision {} is waiting. Ask them to approve \
+             it here in chat (or tap Approve on the card). Nothing is written to the profile \
+             until they approve; approved fields are stored with Enriched provenance and can \
+             never overwrite a manually entered value.",
             params.fields.len(),
             person.display_name,
             decision.id

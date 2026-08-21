@@ -619,6 +619,27 @@ fn encode_wav_pcm16(audio: &crate::voice::provider::AudioOutput) -> anyhow::Resu
 struct VoiceQuery {
     session_id: Option<String>,
     token: Option<String>,
+    /// `ios_voice` | `watch_voice` | `desktop_voice`. Optional — a paired
+    /// device named iPhone still resolves as iOS when this is omitted.
+    client: Option<String>,
+}
+
+fn voice_origin_from_query(
+    state: &AppState,
+    query: &VoiceQuery,
+    principal: &crate::middleware::auth::StreamPrincipal,
+) -> permagent::events::voice_origin::VoiceOrigin {
+    use crate::middleware::auth::{AuthPrincipal, StreamPrincipal};
+    let device_name = match principal {
+        StreamPrincipal::Long(AuthPrincipal::Device(id)) => {
+            state.device_registry.get(id).map(|v| v.name)
+        }
+        _ => None,
+    };
+    permagent::events::voice_origin::VoiceOrigin::resolve(
+        query.client.as_deref(),
+        device_name.as_deref(),
+    )
 }
 
 async fn voice_ws_handler(
@@ -629,12 +650,14 @@ async fn voice_ws_handler(
     // Manual token validation — WebSocket upgrade can't use Bearer middleware.
     // Shared fail-closed, constant-time core (middleware::auth): a tokenless
     // daemon refuses (503) instead of serving the voice socket anonymously.
-    crate::middleware::auth::validate_stream_token(
+    let principal = crate::middleware::auth::authenticate_stream_token(
         &state,
         query.token.as_deref(),
         query.token.as_deref(),
     )?;
-    Ok(ws.on_upgrade(move |socket| handle_voice_socket(socket, state, query.session_id)))
+    let origin = voice_origin_from_query(&state, &query, &principal);
+    let session_id = query.session_id;
+    Ok(ws.on_upgrade(move |socket| handle_voice_socket(socket, state, session_id, origin)))
 }
 
 #[derive(Deserialize)]
@@ -724,6 +747,16 @@ impl Drop for ClipboardInterceptGuard {
     }
 }
 
+/// Drop the per-turn voice origin so a later text turn on the same session
+/// is not stuck thinking the user is still on the phone.
+struct VoiceOriginGuard(String);
+
+impl Drop for VoiceOriginGuard {
+    fn drop(&mut self) {
+        permagent::events::voice_origin::end(&self.0);
+    }
+}
+
 fn send_json(msg: &ServerMessage) -> Message {
     Message::Text(serde_json::to_string(msg).unwrap().into())
 }
@@ -765,14 +798,17 @@ async fn handle_voice_socket(
     mut socket: WebSocket,
     state: Arc<AppState>,
     session_id: Option<String>,
+    origin: permagent::events::voice_origin::VoiceOrigin,
 ) {
     // Snapshot the hot-swappable TTS slot once for this session.
     let tts_opt = state.voice_tts.read().await.clone();
 
     tracing::info!(
         target: "permagentd::voice",
-        "Voice WebSocket connected (session_id={:?}, stt={}, tts={})",
+        "Voice WebSocket connected (session_id={:?}, client={}, device={:?}, stt={}, tts={})",
         session_id,
+        origin.client.wire_name(),
+        origin.device_name,
         state.voice_stt.is_some(),
         tts_opt.is_some()
     );
@@ -953,6 +989,56 @@ async fn handle_voice_socket(
                             return;
                         }
 
+                        // Spoken yes/no while a decision is waiting: settle it
+                        // as the user (this socket is their own hand) instead of
+                        // sending the transcript to Henry, who cannot answer
+                        // Tier-2 / live-channel kinds.
+                        if let Some(verdict) =
+                            crate::voice::spoken_verdict::spoken_decision_verdict(&transcript)
+                        {
+                            if let Some(decision_id) =
+                                pick_spoken_decision(&state, session_id.as_deref()).await
+                            {
+                                match crate::routes::decisions::apply_jesse_answer(
+                                    &state,
+                                    &decision_id,
+                                    permagent::decisions::DecisionAnswer {
+                                        answer: verdict.to_string(),
+                                        note: None,
+                                        choice_id: None,
+                                        input_text: None,
+                                    },
+                                    "voice",
+                                )
+                                .await
+                                {
+                                    Ok(outcome) => {
+                                        let spoken = if verdict == "approve" {
+                                            format!("Approved: {}.", outcome.decision.headline)
+                                        } else {
+                                            format!("Rejected: {}.", outcome.decision.headline)
+                                        };
+                                        let _ = speak_canned_reply(
+                                            &state,
+                                            tts.clone(),
+                                            &mut socket,
+                                            &spoken,
+                                            cancelled.clone(),
+                                        )
+                                        .await;
+                                        continue;
+                                    }
+                                    Err((status, msg)) => {
+                                        tracing::warn!(
+                                            target: "permagentd::voice",
+                                            status = %status,
+                                            "spoken decision answer failed: {msg}"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
                         // --- Streaming reply + TTS: synthesize and send each sentence as it completes ---
                         if socket
                             .send(send_json(&ServerMessage::ReplyStart))
@@ -972,6 +1058,7 @@ async fn handle_voice_socket(
                             cancelled: cancelled.clone(),
                             wake: wake.as_ref(),
                             sample_rate: client_sample_rate,
+                            origin: &origin,
                         };
                         let stream_result = stream_reply_with_tts(&reply_ctx, &mut socket).await;
 
@@ -1124,10 +1211,11 @@ fn truncate_str(s: &str, max_chars: usize) -> &str {
 
 /// Default cap on how many sentences are SPOKEN in one turn.
 ///
-/// The full reply always reaches the client as `ReplyText` and is rendered on
-/// screen, so this caps talking, never information. Eight sentences is roughly
-/// 40 seconds of Kokoro speech — long for a spoken answer, and well past the
-/// "1-3 sentences" the system prompt asks for.
+/// The full reply always reaches the client as `ReplyText`. Eight sentences
+/// is roughly 40 seconds of Kokoro speech — long for a spoken answer, and
+/// well past the "1-3 sentences" the system prompt asks for. The cue when
+/// this cap hits is origin-aware ([`permagent::events::voice_origin::budget_notice`])
+/// so a phone listener is not told the rest is on a Mac screen.
 const DEFAULT_MAX_SPOKEN_SENTENCES: u32 = 8;
 
 /// Config key (`~/.permagent/config.yaml`) overriding the spoken-length budget.
@@ -1140,10 +1228,6 @@ fn max_spoken_sentences() -> u32 {
         .unwrap_or(DEFAULT_MAX_SPOKEN_SENTENCES)
         .clamp(1, 100)
 }
-
-/// Spoken once when the budget runs out, so the turn ends deliberately rather
-/// than just stopping mid-thought.
-const BUDGET_NOTICE: &str = "There's more — I've put the rest on screen.";
 
 /// Context for a voice reply exchange (reduces arg count for stream_reply_with_tts).
 struct VoiceReplyCtx<'a> {
@@ -1162,6 +1246,7 @@ struct VoiceReplyCtx<'a> {
         crate::voice::kws::WakeSession,
     )>,
     sample_rate: u32,
+    origin: &'a permagent::events::voice_origin::VoiceOrigin,
 }
 
 /// Outcome of a non-blocking drain of queued client messages mid-reply.
@@ -1257,6 +1342,8 @@ async fn stream_reply_with_tts(
     let _nav_guard = NavInterceptGuard(sid.clone());
     permagent::events::clipboard_intercept::begin(&sid);
     let _clip_guard = ClipboardInterceptGuard(sid.clone());
+    permagent::events::voice_origin::begin(&sid, ctx.origin.clone());
+    let _origin_guard = VoiceOriginGuard(sid.clone());
 
     let user_msg = ChatMessage::user().with_text(transcript);
     let agent = state
@@ -1288,13 +1375,6 @@ async fn stream_reply_with_tts(
              spoken terms — e.g. 'I turned on web search' rather than 'I clicked the Search and \
              tools toggle in Settings'. If a literal name, path, or value is essential, give just \
              that one item, not the surrounding navigation. \
-             When you take the user somewhere, reply with exactly ONE short sentence and \
-             then stop — a single confirmation, never two. Do not announce the action and \
-             then also confirm arrival; pick one short line, e.g. 'Brain tab open' or \
-             'Here's Settings'. Never narrate the navigation as it happens or reassure them \
-             about it: no 'taking you there now', no 'navigating you over', no 'you should be \
-             there now'. The view switches on its own — you don't announce progress or confirm \
-             arrival in a separate sentence. \
              When they ask for copyable text — a post, caption, speech, blurb, 'give me the \
              text', 'copy that', 'so I can paste into Notes' — call copy_to_clipboard with \
              the exact paste-ready body and speak one short confirmation such as 'It's on \
@@ -1302,6 +1382,9 @@ async fn stream_reply_with_tts(
              the words is not the same as putting them on the clipboard."
                 .to_string(),
         )
+        .await;
+    agent
+        .extend_system_prompt("voice_origin".to_string(), ctx.origin.prompt_block())
         .await;
 
     let setup_ms = t_setup.elapsed().as_millis();
@@ -1366,6 +1449,7 @@ async fn stream_reply_with_tts(
     let mut full_reply = String::new();
     let mut sentence_num = 0u32;
     let max_spoken = max_spoken_sentences();
+    let spoken_cue = permagent::events::voice_origin::budget_notice(ctx.origin.client);
     let mut budget_notice_spoken = false;
     let mut total_tts_ms: u128 = 0;
     let mut first_audio_sent = false;
@@ -1493,6 +1577,7 @@ async fn stream_reply_with_tts(
                             &mut sentence_num,
                             max_spoken,
                             &mut budget_notice_spoken,
+                            spoken_cue,
                         );
                     }
                     Some(Ok(AgentEvent::Message(msg)))
@@ -1516,6 +1601,7 @@ async fn stream_reply_with_tts(
                                     &mut sentence_num,
                                     max_spoken,
                                     &mut budget_notice_spoken,
+                                    spoken_cue,
                                     first_chunk,
                                 );
                             }
@@ -1579,7 +1665,10 @@ async fn stream_reply_with_tts(
     // A spoken stop drops them: the user ended the turn, so yanking the view
     // somewhere afterwards is exactly what they asked not to happen. (The
     // guard's Drop clears the interceptor registry either way.)
-    let navs = if spoken_stop {
+    let navs = if spoken_stop || !ctx.origin.client.can_drive_desktop_ui() {
+        // Phone/watch: drop captured navs so Command Center on the Mac does
+        // not switch behind the user's back. The tool also no-ops (N4).
+        let _ = permagent::events::nav_intercept::take(&sid);
         Vec::new()
     } else {
         permagent::events::nav_intercept::take(&sid)
@@ -1648,6 +1737,71 @@ fn pronunciation_coaching(transcript_oov: &[String]) -> Option<String> {
     crate::voice::oov_log::coaching_prompt()
 }
 
+async fn pick_spoken_decision(state: &Arc<AppState>, session_id: Option<&str>) -> Option<String> {
+    let pool = state.session_manager().pool_clone().await.ok()?;
+    let items = permagent::decisions::list_open_decisions(&pool)
+        .await
+        .ok()?;
+    let binary: Vec<_> = items
+        .into_iter()
+        .filter(|i| crate::voice::spoken_verdict::is_binary_kind(&i.decision.kind))
+        .collect();
+    if let Some(sid) = session_id {
+        if let Some(hit) = binary.iter().find(|i| {
+            i.decision.kind == "tool_approval"
+                && i.decision
+                    .payload
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    == Some(sid)
+        }) {
+            return Some(hit.decision.id.clone());
+        }
+    }
+    if binary.len() == 1 {
+        return Some(binary[0].decision.id.clone());
+    }
+    None
+}
+
+async fn speak_canned_reply(
+    state: &Arc<AppState>,
+    tts: Arc<dyn crate::voice::TextToSpeech>,
+    socket: &mut WebSocket,
+    text: &str,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    if socket
+        .send(send_json(&ServerMessage::ReplyStart))
+        .await
+        .is_err()
+    {
+        return;
+    }
+    let voice_id = state.persona.read().await.voice_id.clone();
+    let plan = crate::voice::prosody::plan(text);
+    let speech =
+        crate::voice::speakable::speakable(&plan.speech).unwrap_or_else(|| text.to_string());
+    match spawn_synth(tts.clone(), speech, voice_id, plan.speed, cancelled).await {
+        Ok(Ok(audio)) => {
+            let bytes: Vec<u8> = audio.samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+            let _ = socket.send(Message::Binary(bytes.into())).await;
+        }
+        Ok(Err(e)) => tracing::warn!(target: "permagentd::voice", "canned TTS failed: {e}"),
+        Err(e) => tracing::warn!(target: "permagentd::voice", "canned TTS panicked: {e}"),
+    }
+    let _ = socket
+        .send(send_json(&ServerMessage::ReplyText {
+            text: text.to_string(),
+        }))
+        .await;
+    let _ = socket
+        .send(send_json(&ServerMessage::ReplyEnd {
+            sample_rate: tts.sample_rate(),
+        }))
+        .await;
+}
+
 fn spawn_synth(
     tts: Arc<dyn crate::voice::TextToSpeech>,
     text: String,
@@ -1678,6 +1832,7 @@ fn push_spoken(
     sentence_num: &mut u32,
     max_spoken: u32,
     budget_notice_spoken: &mut bool,
+    spoken_cue: &'static str,
 ) {
     let Some((speech, speed)) = prepare_spoken(sentence) else {
         tracing::debug!(
@@ -1695,7 +1850,7 @@ fn push_spoken(
                 "spoken budget reached ({} sentences) — remaining reply is text-only",
                 max_spoken
             );
-            queue.push_back((BUDGET_NOTICE.to_string(), 1.0));
+            queue.push_back((spoken_cue.to_string(), 1.0));
         }
         return;
     }
@@ -1709,6 +1864,7 @@ fn enqueue_ready_sentences(
     sentence_num: &mut u32,
     max_spoken: u32,
     budget_notice_spoken: &mut bool,
+    spoken_cue: &'static str,
     first_chunk: bool,
 ) {
     let mut aggressive = first_chunk;
@@ -1728,6 +1884,7 @@ fn enqueue_ready_sentences(
             sentence_num,
             max_spoken,
             budget_notice_spoken,
+            spoken_cue,
         );
         aggressive = false;
     }
@@ -1739,6 +1896,7 @@ fn enqueue_remainder(
     sentence_num: &mut u32,
     max_spoken: u32,
     budget_notice_spoken: &mut bool,
+    spoken_cue: &'static str,
 ) {
     let remainder = text_buf.trim().to_string();
     text_buf.clear();
@@ -1751,6 +1909,7 @@ fn enqueue_remainder(
         sentence_num,
         max_spoken,
         budget_notice_spoken,
+        spoken_cue,
     );
 }
 
@@ -1859,6 +2018,12 @@ mod tests {
         let (speech, speed) = prepare_spoken("[excited] We shipped it!").unwrap();
         assert_eq!(speech, "We shipped it!");
         assert_eq!(speed, 1.12);
+    }
+
+    #[test]
+    fn prepare_spoken_questions_run_slower_not_faster() {
+        let (_, speed) = prepare_spoken("Ready?").unwrap();
+        assert_eq!(speed, 0.95);
     }
 
     /// The pinned Kokoro asset URLs must satisfy the DownloadManager's strict

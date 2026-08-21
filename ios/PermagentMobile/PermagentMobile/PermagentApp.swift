@@ -9,6 +9,7 @@ import SwiftUI
 @main
 struct PermagentApp: App {
     @StateObject private var session = HubSession()
+    @ObservedObject private var route = AppRoute.shared
     @State private var splashDone = false
 
     var body: some Scene {
@@ -36,6 +37,9 @@ struct PermagentApp: App {
             // stock control) tints to the spark accent.
             .tint(ChatSurface.spark)
             .task { await session.bootstrap() }
+            .fullScreenCover(isPresented: $route.showVoice) {
+                VoiceView()
+            }
         }
     }
 }

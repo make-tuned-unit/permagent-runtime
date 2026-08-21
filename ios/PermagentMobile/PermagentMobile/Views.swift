@@ -421,6 +421,95 @@ struct InboxView: View {
     }
 }
 
+/// Compact approve/reject while chatting or talking — same API as the Decisions tab.
+struct ChatDecisionStrip: View {
+    var tick: Int = 0
+    @State private var items: [OpenDecision] = []
+    @State private var busy: Set<String> = []
+
+    var body: some View {
+        Group {
+            if !items.isEmpty {
+                VStack(spacing: 8) {
+                    ForEach(Array(items.prefix(3))) { d in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(d.headline ?? "Decision")
+                            .font(.brandCaption)
+                            .foregroundStyle(ChatSurface.text)
+                        if d.isBinary {
+                            HStack(spacing: 8) {
+                                Button {
+                                    answer(d.id, "reject")
+                                } label: {
+                                    Text(busy.contains(d.id) ? "…" : "Reject")
+                                        .font(.caption.weight(.semibold))
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 8)
+                                        .background(ChatSurface.control)
+                                        .foregroundStyle(ChatSurface.text)
+                                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                }
+                                .disabled(busy.contains(d.id))
+                                Button {
+                                    answer(d.id, "approve")
+                                } label: {
+                                    Text(busy.contains(d.id) ? "…" : "Approve")
+                                        .font(.caption.weight(.semibold))
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 8)
+                                        .background(ChatSurface.spark)
+                                        .foregroundStyle(ChatSurface.onSpark)
+                                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                }
+                                .disabled(busy.contains(d.id))
+                            }
+                        }
+                    }
+                    .padding(12)
+                    .background(ChatSurface.raised)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .strokeBorder(ChatSurface.border, lineWidth: 1)
+                    )
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 4)
+            }
+        }
+        .task {
+            await load()
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                await load()
+            }
+        }
+        .onChange(of: tick) { _, _ in
+            Task { await load() }
+        }
+    }
+
+    private func answer(_ id: String, _ verb: String) {
+        guard !busy.contains(id) else { return }
+        busy.insert(id)
+        Task {
+            struct Body: Encodable { let answer: String }
+            struct Resp: Decodable { let effect: String? }
+            _ = try? await APIClient.shared.post("/api/decisions/\(id)/answer", body: Body(answer: verb), as: Resp.self)
+            await load()
+            busy.remove(id)
+        }
+    }
+
+    private func load() async {
+        struct Resp: Decodable { let items: [OpenDecision] }
+        if let resp = try? await APIClient.shared.get("/api/decisions", as: Resp.self) {
+            items = resp.items.filter { $0.isBinary }
+        }
+    }
+}
+
 // ── Goals ────────────────────────────────────────────────────────────────────
 
 struct ActiveGoal: Decodable, Identifiable {
@@ -554,7 +643,6 @@ struct ChatView: View {
     // Resolved from the hub on appear — NOT minted locally. See MobileSession.
     @State private var sessionId: String?
     @State private var sessionError: String?
-    @State private var showVoice = false
     @State private var showHistory = false
     /// True when the turn may still be running ON THE HUB while this device
     /// stopped watching (locked, backgrounded, or the stream dropped). The hub
@@ -570,6 +658,7 @@ struct ChatView: View {
     /// covered the tab bar, so the user could neither leave chat nor reach the
     /// send button's row — reported 2026-08-05.
     @FocusState private var composerFocused: Bool
+    @State private var decisionTick = 0
 
     /// Start fresh. The old thread is NOT deleted — it stays on the hub and
     /// is one tap away in Conversations, which is why this needs no
@@ -683,6 +772,7 @@ struct ChatView: View {
                             }
                         }
                     }
+                    ChatDecisionStrip(tick: decisionTick)
                     composer
                 }
             }
@@ -690,15 +780,6 @@ struct ChatView: View {
             // (No keyboard "Done" accessory: tap-out and drag-down both
             // dismiss now, and the floating button read as clutter — removed
             // on Jesse's report 2026-08-06.)
-            // Voice shares the chat's hub session so spoken turns land in the
-            // same conversation. `sessionId` is passed if this chat already
-            // resolved one and left nil otherwise — VoiceView resolves and
-            // reports its own failures. The previous `if let sessionId` guard
-            // is what produced the black screen: when resolution had failed,
-            // the cover presented an EMPTY body.
-            .fullScreenCover(isPresented: $showVoice) {
-                VoiceView(sessionId: sessionId)
-            }
             .sheet(isPresented: $showHistory) {
                 ChatHistorySheet(currentSessionId: sessionId) { id in
                     Task { await openSession(id) }
@@ -884,7 +965,7 @@ struct ChatView: View {
                     .transition(.scale.combined(with: .opacity))
                 } else {
                     dictateButton
-                    Button { showVoice = true } label: {
+                    Button { AppRoute.shared.talk() } label: {
                         Image(systemName: "waveform")
                             .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(ChatSurface.onSpark)
@@ -1004,10 +1085,11 @@ struct ChatView: View {
                         messages[idx].text = acc.text
                         messages[idx].thinking = acc.thinking
                         if let approval = delta.awaitingApproval {
-                            messages[idx].text = "Waiting for your approval in Decisions — I asked to use \(approval.toolName)."
+                            messages[idx].text = "I asked to use \(approval.toolName) — approve below, or say yes."
                             sending = false
                             releasedForApproval = true
                             showingApprovalNotice = true
+                            decisionTick += 1
                         }
                     }
                 }

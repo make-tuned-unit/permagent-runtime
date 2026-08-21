@@ -43,6 +43,15 @@
 	<string>Permagent connects to your Permagent hub on your local network or tailnet.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Permagent uses the microphone to dictate notes, record meetings you choose to record, and talk with your agent.</string>
+	<key>INAlternativeAppNames</key>
+	<array>
+		<dict>
+			<key>INAlternativeAppName</key>
+			<string>Henry</string>
+			<key>INAlternativeAppNamePronunciationHint</key>
+			<string>henry</string>
+		</dict>
+	</array>
 	<key>UIAppFonts</key>
 	<array>
 		<string>Inter-Regular.otf</string>
