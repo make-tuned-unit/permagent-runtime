@@ -12,6 +12,7 @@ import { eventsWsUrl } from '../../../lib/api';
 import { wireEventType } from '../../../lib/wireEvent';
 import { decisionsClient } from './client';
 import { emitActivity } from '../../../lib/emitActivity';
+import { useCommandCenter } from '../../../lib/store';
 import type { AnswerBody, Decision, DecisionsResponse, HistoryItem } from './types';
 import { DecisionConflictError } from './types';
 
@@ -128,6 +129,9 @@ export function useDecisions() {
           resolution: body.answer,
           headline: outcome.decision.headline,
         });
+        if (outcome.decision.kind === 'enrichment_proposal') {
+          useCommandCenter.getState().bumpPeople();
+        }
         await fetchDecisions();
         // effect_error rides through (2026-07 wiring audit): the daemon
         // reports "answer committed but the gated effect failed" — dropping

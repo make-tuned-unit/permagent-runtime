@@ -266,32 +266,6 @@ impl ScopeForgetReport {
     }
 }
 
-fn write_manual_entity_fields(
-    db_path: &std::path::Path,
-    entity_id: &str,
-    fields: Vec<(String, String)>,
-) -> anyhow::Result<()> {
-    let mut conn = rusqlite::Connection::open(db_path)
-        .map_err(|e| anyhow::anyhow!("manual field batch: open {}: {e}", db_path.display()))?;
-    let tx = conn
-        .transaction()
-        .map_err(|e| anyhow::anyhow!("manual field batch: begin: {e}"))?;
-    for (name, value) in fields {
-        tx.execute(
-            "INSERT INTO entity_fields \
-                 (entity_id, field_name, value, source, source_url, updated_at) \
-             VALUES (?1, ?2, ?3, 'manual', NULL, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')) \
-             ON CONFLICT(entity_id, field_name) DO UPDATE SET \
-                 value = excluded.value, source = excluded.source, \
-                 source_url = excluded.source_url, updated_at = excluded.updated_at",
-            rusqlite::params![entity_id, name, value],
-        )
-        .map_err(|e| anyhow::anyhow!("manual field batch ({name}): {e}"))?;
-    }
-    tx.commit()
-        .map_err(|e| anyhow::anyhow!("manual field batch: commit: {e}"))
-}
-
 /// A thread-safe handle to `spectral::Brain` that enforces all operations
 /// run off the async executor via `spawn_blocking`.
 ///
@@ -1308,21 +1282,29 @@ impl SafeBrain {
         .map_err(Into::into)
     }
 
-    /// Atomically write a batch of manual entity fields in deterministic name
-    /// order. The direct transaction is necessary because Spectral currently
-    /// exposes only a single-field API; independent calls can partially commit.
+    /// Write a batch of manual entity fields in deterministic name order.
+    ///
+    /// Goes through the live Brain (`set_entity_field`) so the next
+    /// `entity_fields_for` overlay sees the write immediately. A second
+    /// rusqlite handle against `memory.db` used to commit on disk while the
+    /// in-process Brain kept serving stale attributes until reload.
     pub async fn set_manual_entity_fields(
         &self,
         entity_id: spectral::core::entity_id::EntityId,
         mut fields: Vec<(String, String)>,
     ) -> anyhow::Result<()> {
         fields.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-        let db_path = crate::config::paths::Paths::brain_dir().join("memory.db");
-        tokio::task::spawn_blocking(move || {
-            write_manual_entity_fields(&db_path, &entity_id.to_string(), fields)
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("brain task panicked: set_manual_entity_fields: {e}"))?
+        for (name, value) in fields {
+            self.set_entity_field(
+                entity_id,
+                &name,
+                &value,
+                spectral::ingest::FieldSource::Manual,
+                None,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     /// Read all typed fields for a graph entity (provenance included).
@@ -1705,39 +1687,6 @@ fn resolve_acr_spread(raw: Option<&str>) -> spectral::graph::spreading::AssocSpr
 mod tests {
     use super::*;
     use spectral::graph::spreading::SpreadMode;
-
-    #[test]
-    fn manual_entity_field_batch_rolls_back_on_later_failure() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let db = temp.path().join("memory.db");
-        let conn = rusqlite::Connection::open(&db).expect("open");
-        conn.execute_batch(
-            "CREATE TABLE entity_fields (
-                entity_id TEXT NOT NULL, field_name TEXT NOT NULL,
-                value TEXT NOT NULL, source TEXT NOT NULL, source_url TEXT,
-                updated_at TEXT NOT NULL, PRIMARY KEY (entity_id, field_name)
-             );
-             CREATE TRIGGER reject_role BEFORE INSERT ON entity_fields
-             WHEN NEW.field_name = 'role' BEGIN SELECT RAISE(FAIL, 'injected'); END;",
-        )
-        .expect("schema");
-        drop(conn);
-
-        let result = write_manual_entity_fields(
-            &db,
-            "entity",
-            vec![
-                ("company".into(), "Acme".into()),
-                ("role".into(), "Engineer".into()),
-            ],
-        );
-        assert!(result.is_err(), "the injected second write must fail");
-        let conn = rusqlite::Connection::open(&db).expect("reopen");
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM entity_fields", [], |row| row.get(0))
-            .expect("count");
-        assert_eq!(count, 0, "the earlier field must roll back with the batch");
-    }
 
     /// Verify that Clone shares the same underlying Arc (cheap clone).
     #[test]

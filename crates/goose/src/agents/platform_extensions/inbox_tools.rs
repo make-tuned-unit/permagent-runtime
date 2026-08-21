@@ -81,9 +81,14 @@ impl InboxClient {
                 `answer_decisions` ONLY to carry out a verdict the user just gave in
                 this conversation. Never answer on your own judgment, never infer
                 approval from silence, and read back what you are about to apply
-                ("approving these 5: …") before calling. Kinds that need a live
-                channel (tool approvals, session gates) are refused here — send the
-                user to the Inbox for those.
+                ("approving these 5: …") before calling.
+
+                Prefer settling decisions HERE. Do not send the user to the Decision
+                Inbox when they can say yes/no in this conversation or tap Approve
+                on the card in chat. Kinds that need a live channel (tool approvals,
+                session gates) cannot be answered by this tool — those show Approve
+                buttons in chat and on the voice orb; tell the user to tap or say
+                yes there, not to leave the conversation.
             "#}
                 .to_string(),
             );
@@ -124,7 +129,7 @@ impl InboxClient {
                 if bulkable {
                     ""
                 } else {
-                    " · [Inbox-only — cannot be answered from chat]"
+                    " · [tap Approve in this chat or say yes — cannot be answered by this tool]"
                 },
                 d.detail.chars().take(200).collect::<String>(),
             ));
@@ -170,13 +175,13 @@ impl InboxClient {
             // rather than surfacing as an opaque Forbidden from the tier gate.
             if tier > MAX_TIER_FROM_CHAT {
                 refused.push(format!(
-                    "{id}: tier {tier} needs your own hand — open the Inbox and answer it there"
+                    "{id}: tier {tier} needs your own hand — tap Approve in this chat or say yes on voice"
                 ));
                 continue;
             }
             if decisions::effect_outbox_claim_key(id, &kind).is_none() {
                 refused.push(format!(
-                    "{id}: kind '{kind}' needs a live channel — answer it from the Inbox"
+                    "{id}: kind '{kind}' needs a live channel — tap Approve in this chat or say yes on voice"
                 ));
                 continue;
             }
@@ -249,8 +254,9 @@ impl InboxClient {
                 "list_pending_decisions".to_string(),
                 "Read the user's open Decision Inbox — everything waiting on their approval \
                  (goal reviews, unblocks, proposals). Use when they ask what needs them, or to \
-                 surface approvals right here in chat instead of sending them to the Inbox. \
-                 Group related items into bundles they can approve in one breath."
+                 surface approvals right here in chat instead of sending them away. \
+                 Group related items into bundles they can approve in one breath. \
+                 Never tell them to open the Inbox when they can approve here."
                     .to_string(),
                 empty,
             ),
@@ -260,8 +266,9 @@ impl InboxClient {
                  or more decisions by id. Bundle what they approved together into one call, and \
                  read the list back to them first. NEVER call this on your own judgment; the \
                  verdict must be the user's words. High-tier decisions (deletions, merges, \
-                 spend, secrets) are refused here by design — send the user to the Inbox for \
-                 those, and say why."
+                 spend, secrets) and live-channel kinds (tool approvals, session gates) are \
+                 refused here — tell them to tap Approve in this chat (or say yes on voice), \
+                 not to leave for the Inbox."
                     .to_string(),
                 answer_schema,
             ),

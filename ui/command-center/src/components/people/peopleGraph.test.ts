@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { DirectoryPerson } from '../projects/types';
 import {
+  clusterAngleStep,
   EGO_NODE_ID,
   isBridge,
   isYou,
   layoutPeopleGraph,
+  orderProjectsByAffinity,
   UNASSIGNED_CLUSTER_ID,
 } from './peopleGraph';
 
@@ -114,6 +116,66 @@ describe('layoutPeopleGraph', () => {
     expect(dxA).toBeGreaterThan(0.4);
     expect(dxB).toBeGreaterThan(0.4);
     expect(dxA + dxB).toBeLessThan(dxAB + 2.5);
+    // Two shared projects sit beside each other, not opposite — otherwise the
+    // average ("between") collapses onto you and the person looks like they
+    // jumped to whichever cluster was associated last.
+    const alpha = layout.clusters.find(c => c.id === 'p1')!;
+    const beta = layout.clusters.find(c => c.id === 'p2')!;
+    const clusterSep = Math.hypot(alpha.x - beta.x, alpha.z - beta.z);
+    const opposite = 2 * 6;
+    expect(clusterSep).toBeLessThan(opposite * 0.55);
+    expect(Math.hypot(bridge.x, bridge.z)).toBeGreaterThan(3.5);
+    expect(dxA).toBeLessThan(dxAB);
+    expect(dxB).toBeLessThan(dxAB);
+  });
+
+  it('reorients the ring so two projects sharing a person sit side by side', () => {
+    const people = [
+      person('a', 'Ada', [{ project_id: 'p1', project_name: 'Alpha' }]),
+      person('b', 'Bea', [{ project_id: 'p2', project_name: 'Beta' }]),
+      person('c', 'Cara', [{ project_id: 'p3', project_name: 'Gamma' }]),
+      person('bridge', 'Casey', [
+        { project_id: 'p1', project_name: 'Alpha' },
+        { project_id: 'p3', project_name: 'Gamma' },
+      ]),
+    ];
+    expect(orderProjectsByAffinity(['p1', 'p2', 'p3'], people, new Map([
+      ['p1', 'Alpha'],
+      ['p2', 'Beta'],
+      ['p3', 'Gamma'],
+    ]))).toEqual(['p1', 'p3', 'p2']);
+    const layout = layoutPeopleGraph(people);
+    const ids = layout.clusters.filter(c => c.id !== UNASSIGNED_CLUSTER_ID).map(c => c.id);
+    const i1 = ids.indexOf('p1');
+    const i3 = ids.indexOf('p3');
+    const n = ids.length;
+    const ringGap = Math.min(Math.abs(i1 - i3), n - Math.abs(i1 - i3));
+    expect(ringGap).toBe(1);
+  });
+
+  it('keeps three projects that share one person as a contiguous arc', () => {
+    const people = [
+      person('bridge', 'Casey', [
+        { project_id: 'p1', project_name: 'Alpha' },
+        { project_id: 'p2', project_name: 'Beta' },
+        { project_id: 'p3', project_name: 'Gamma' },
+      ]),
+      person('d', 'Dee', [{ project_id: 'p4', project_name: 'Delta' }]),
+    ];
+    const order = orderProjectsByAffinity(['p1', 'p2', 'p3', 'p4'], people, new Map([
+      ['p1', 'Alpha'],
+      ['p2', 'Beta'],
+      ['p3', 'Gamma'],
+      ['p4', 'Delta'],
+    ]));
+    const triple = ['p1', 'p2', 'p3'].map(id => order.indexOf(id)).sort((a, b) => a - b);
+    expect(triple[1] - triple[0]).toBe(1);
+    expect(triple[2] - triple[1]).toBe(1);
+  });
+
+  it('caps neighbor spacing so two projects are never opposite on the ring', () => {
+    expect(clusterAngleStep(2)).toBeLessThan(Math.PI / 2);
+    expect(clusterAngleStep(6)).toBeCloseTo(Math.PI / 3, 5);
   });
 
   it('keeps layout stable across calls (hash jitter, not random)', () => {

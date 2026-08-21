@@ -156,7 +156,7 @@ export function buildEnrichmentMessage(person: Person): string {
   const hints = person.find_online_hints?.trim();
   if (hints) bits.push(`How to find them online: ${hints}.`);
   bits.push(
-    'Research the enrichable fields with your web tools, then call propose_enrichment so I can review the findings in the Decision Inbox. Do not wait for a prompt from me — run it now.',
+    'Research the enrichable fields with your web tools, then call propose_enrichment so I can review the findings here in chat. Do not wait for a prompt from me — run it now.',
   );
   return bits.join(' ');
 }
@@ -179,6 +179,7 @@ export function PersonDetailModal({
 }) {
   const { colors } = useTheme();
   const bumpPeople = useCommandCenter(s => s.bumpPeople);
+  const patchPersonDetail = useCommandCenter(s => s.patchPersonDetail);
   const sendMessage = useCommandCenter(s => s.sendMessage);
   const openChatDock = useCommandCenter(s => s.openChatDock);
   const [confirming, setConfirming] = useState(false);
@@ -355,6 +356,19 @@ export function PersonDetailModal({
 
   const dirty = EDITABLE_FIELDS.some(({ key }) => draft[key] !== ((view[key] ?? '') as string));
 
+  // Directory/graph refetch (peopleRev) updates the store person; merge it in
+  // unless the user is mid-edit so a live enrichment doesn't clobber a draft.
+  useEffect(() => {
+    if (person.entity_uuid !== view.entity_uuid) {
+      setView(person);
+      setDraft(draftFrom(person));
+      return;
+    }
+    if (dirty) return;
+    setView(person);
+    setDraft(draftFrom(person));
+  }, [person]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const saveEdit = async (): Promise<boolean> => {
     // Only send fields that actually changed; a null value and an empty draft
     // are equal (no-op), so clearing a blank field never writes an empty string.
@@ -405,6 +419,7 @@ export function PersonDetailModal({
       };
       setView(next);
       setDraft(draftFrom(next));
+      patchPersonDetail(next);
       // Decoupled panel has no people event stream yet — nudge it to refetch.
       bumpPeople();
       return true;

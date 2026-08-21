@@ -287,10 +287,11 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 why_it_matters:
                     "Approvals the user must chase across the app do not get answered. When they \
                      ask what needs them — or when pending decisions are the obvious blocker — \
-                     bring the Inbox to them, grouped into bundles they can settle in one \
-                     breath. The verdict is ALWAYS the user's words from this conversation; \
-                     never answer a decision on your own judgment, and read the bundle back \
-                     before applying it",
+                     settle them in this conversation, grouped into bundles they can approve \
+                     in one breath. The verdict is ALWAYS the user's words from this \
+                     conversation; never answer a decision on your own judgment, and read the \
+                     bundle back before applying it. Do not send them to the Inbox when they \
+                     can say yes here or tap Approve in chat",
                 required_secrets: &[],
                 teaching: &[crate::agents::self_knowledge::TeachingStep {
                     title: "Settle what is waiting",

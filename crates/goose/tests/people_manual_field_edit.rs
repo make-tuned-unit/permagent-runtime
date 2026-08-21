@@ -144,6 +144,24 @@ async fn manual_write_persists_and_round_trips_including_new_vocab() {
         assert_eq!(f.source, FieldSource::Manual, "{} is Manual", f.field_name);
     }
 
+    // Batch write (the PATCH route's set_manual_entity_fields path) must
+    // also round-trip through the live Brain overlay — not a second sqlite
+    // handle the overlay cannot see until reload.
+    brain
+        .set_manual_entity_fields(
+            id,
+            vec![
+                ("role".into(), "CTO".into()),
+                ("company".into(), "Acme".into()),
+            ],
+        )
+        .await
+        .expect("batch manual write");
+    let p = overlaid_person(&brain, name).await;
+    assert_eq!(p.role.as_deref(), Some("CTO"));
+    assert_eq!(p.company.as_deref(), Some("Acme"));
+    assert_eq!(p.email.as_deref(), Some("jane@example.com"));
+
     // And they surface on `Person` through the same overlay the route applies.
     let p = overlaid_person(&brain, name).await;
     assert_eq!(p.email.as_deref(), Some("jane@example.com"));

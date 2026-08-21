@@ -991,6 +991,56 @@ async fn handle_voice_socket(
                             return;
                         }
 
+                        // Spoken yes/no while a decision is waiting: settle it
+                        // as Jesse (this socket is the user's hand) instead of
+                        // sending the transcript to Henry, who cannot answer
+                        // Tier-2 / live-channel kinds.
+                        if let Some(verdict) =
+                            crate::voice::spoken_verdict::spoken_decision_verdict(&transcript)
+                        {
+                            if let Some(decision_id) =
+                                pick_spoken_decision(&state, session_id.as_deref()).await
+                            {
+                                match crate::routes::decisions::apply_jesse_answer(
+                                    &state,
+                                    &decision_id,
+                                    permagent::decisions::DecisionAnswer {
+                                        answer: verdict.to_string(),
+                                        note: None,
+                                        choice_id: None,
+                                        input_text: None,
+                                    },
+                                    "voice",
+                                )
+                                .await
+                                {
+                                    Ok(outcome) => {
+                                        let spoken = if verdict == "approve" {
+                                            format!("Approved: {}.", outcome.decision.headline)
+                                        } else {
+                                            format!("Rejected: {}.", outcome.decision.headline)
+                                        };
+                                        let _ = speak_canned_reply(
+                                            &state,
+                                            tts.clone(),
+                                            &mut socket,
+                                            &spoken,
+                                            cancelled.clone(),
+                                        )
+                                        .await;
+                                        continue;
+                                    }
+                                    Err((status, msg)) => {
+                                        tracing::warn!(
+                                            target: "permagentd::voice",
+                                            status = %status,
+                                            "spoken decision answer failed: {msg}"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+
                         // --- Streaming reply + TTS: synthesize and send each sentence as it completes ---
                         if socket
                             .send(send_json(&ServerMessage::ReplyStart))
@@ -1687,6 +1737,71 @@ fn pronunciation_coaching(transcript_oov: &[String]) -> Option<String> {
         crate::voice::oov_log::record(transcript_oov);
     }
     crate::voice::oov_log::coaching_prompt()
+}
+
+async fn pick_spoken_decision(state: &Arc<AppState>, session_id: Option<&str>) -> Option<String> {
+    let pool = state.session_manager().pool_clone().await.ok()?;
+    let items = permagent::decisions::list_open_decisions(&pool)
+        .await
+        .ok()?;
+    let binary: Vec<_> = items
+        .into_iter()
+        .filter(|i| crate::voice::spoken_verdict::is_binary_kind(&i.decision.kind))
+        .collect();
+    if let Some(sid) = session_id {
+        if let Some(hit) = binary.iter().find(|i| {
+            i.decision.kind == "tool_approval"
+                && i.decision
+                    .payload
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    == Some(sid)
+        }) {
+            return Some(hit.decision.id.clone());
+        }
+    }
+    if binary.len() == 1 {
+        return Some(binary[0].decision.id.clone());
+    }
+    None
+}
+
+async fn speak_canned_reply(
+    state: &Arc<AppState>,
+    tts: Arc<dyn crate::voice::TextToSpeech>,
+    socket: &mut WebSocket,
+    text: &str,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    if socket
+        .send(send_json(&ServerMessage::ReplyStart))
+        .await
+        .is_err()
+    {
+        return;
+    }
+    let voice_id = state.persona.read().await.voice_id.clone();
+    let plan = crate::voice::prosody::plan(text);
+    let speech =
+        crate::voice::speakable::speakable(&plan.speech).unwrap_or_else(|| text.to_string());
+    match spawn_synth(tts.clone(), speech, voice_id, plan.speed, cancelled).await {
+        Ok(Ok(audio)) => {
+            let bytes: Vec<u8> = audio.samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+            let _ = socket.send(Message::Binary(bytes.into())).await;
+        }
+        Ok(Err(e)) => tracing::warn!(target: "permagentd::voice", "canned TTS failed: {e}"),
+        Err(e) => tracing::warn!(target: "permagentd::voice", "canned TTS panicked: {e}"),
+    }
+    let _ = socket
+        .send(send_json(&ServerMessage::ReplyText {
+            text: text.to_string(),
+        }))
+        .await;
+    let _ = socket
+        .send(send_json(&ServerMessage::ReplyEnd {
+            sample_rate: tts.sample_rate(),
+        }))
+        .await;
 }
 
 fn spawn_synth(

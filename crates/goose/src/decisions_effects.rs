@@ -147,6 +147,7 @@ async fn persist_find_online_hints_on_reject(
         .await
         .map_err(|e| GuardError::Db(format!("set_entity_field(find_online_hints): {e}")))?;
     if wrote {
+        emit_person_updated(&payload);
         already_applied(format!(
             "enrichment proposal declined; find-online hint saved for \"{}\"",
             payload.person_name
@@ -156,6 +157,12 @@ async fn persist_find_online_hints_on_reject(
             "enrichment proposal declined; find-online hint was not written for \"{}\"",
             payload.person_name
         ))
+    }
+}
+
+fn emit_person_updated(payload: &decisions::EnrichmentProposalPayload) {
+    if let Some(uuid) = payload.entity_uuid.as_deref().filter(|s| !s.is_empty()) {
+        crate::events::emit(crate::events::person_changed("", uuid, "updated"));
     }
 }
 
@@ -486,6 +493,7 @@ pub async fn apply_decision_effect(
             if skipped > 0 {
                 message.push_str(&format!(", {skipped} skipped (not enrichable)"));
             }
+            emit_person_updated(&payload);
             already_applied(message)
         }
         ("enrichment_proposal", Some("reject")) => {

@@ -39,7 +39,9 @@ export function PeopleView() {
   const personDetail = useCommandCenter(s => s.personDetail);
   const closePersonDetail = useCommandCenter(s => s.closePersonDetail);
   const openPersonDetail = useCommandCenter(s => s.openPersonDetail);
+  const patchPersonDetail = useCommandCenter(s => s.patchPersonDetail);
   const bumpPeople = useCommandCenter(s => s.bumpPeople);
+  const peopleRev = useCommandCenter(s => s.peopleRev);
   const pendingPersonNavigation = useCommandCenter(s => s.pendingPersonNavigation);
   const setPendingPersonNavigation = useCommandCenter(s => s.setPendingPersonNavigation);
   const selected = personDetail && personDetail.projectId == null ? personDetail : null;
@@ -54,6 +56,20 @@ export function PeopleView() {
     })();
     return () => { cancelled = true; };
   }, [bumpPeople]);
+
+  useEffect(() => {
+    if (!selected) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const people = await apiFetch<Person[]>('/api/people');
+        if (cancelled || !Array.isArray(people)) return;
+        const fresh = people.find(p => p.entity_uuid === selected.person.entity_uuid);
+        if (fresh) patchPersonDetail(fresh);
+      } catch { /* drop — a failed refresh must not loop */ }
+    })();
+    return () => { cancelled = true; };
+  }, [peopleRev]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!pendingPersonNavigation) return;

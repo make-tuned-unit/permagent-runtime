@@ -980,7 +980,7 @@ pub fn project_changed(project_id: &str, change: &str) -> PermagentEvent {
     )
 }
 
-/// A person's project association changed. `change` ∈ `associated|disassociated`.
+/// A person changed. `change` ∈ `associated|disassociated|created|updated|meeting`.
 pub fn person_changed(project_id: &str, entity_uuid: &str, change: &str) -> PermagentEvent {
     PermagentEvent::new(
         PermagentEventType::PersonChanged,

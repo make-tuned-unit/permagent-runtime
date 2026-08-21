@@ -305,6 +305,13 @@ async fn set_person_fields_handler(
     // the freshly-written `entity_fields`. The response is the graph's truth.
     overlay_graph_attributes(state.brain.as_ref(), vec![&mut person]).await;
     overlay_meeting_contact(&pool, std::slice::from_mut(&mut person)).await;
+    // Same-tab `bumpPeople()` covers the writer; this event refreshes every
+    // other open client (and the phone) without a full reload.
+    permagent::events::emit(permagent::events::person_changed(
+        "",
+        &entity_uuid,
+        "updated",
+    ));
     Ok(Json(person))
 }
 

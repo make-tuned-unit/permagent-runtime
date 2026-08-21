@@ -565,7 +565,7 @@ final class VoiceEngine: ObservableObject {
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 30_000_000_000)
             guard let self, self.thinkingEpoch == epoch, self.state == .thinking else { return }
-            self.notice = "Still working on it — check Decisions if I asked for approval."
+            self.notice = "Still working — if I asked for approval, tap Approve below or say yes."
             self.state = .ready
         }
     }
@@ -872,6 +872,9 @@ struct VoiceView: View {
 
                 conversationText
                     .padding(.top, 14)
+
+                ChatDecisionStrip()
+                    .padding(.top, 12)
 
                 Spacer()
                 controls
