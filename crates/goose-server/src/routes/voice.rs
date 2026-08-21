@@ -763,8 +763,8 @@ fn send_json(msg: &ServerMessage) -> Message {
     Message::Text(serde_json::to_string(msg).unwrap().into())
 }
 
-/// Push any captured clipboard bodies down this socket NOW. Returns the
-/// intents so the caller can still show them on `reply_text` at turn end.
+/// Push any captured clipboard bodies down this socket NOW. The caller
+/// still shows them on `reply_text` at turn end.
 async fn flush_voice_clipboard(
     socket: &mut WebSocket,
     session_id: &str,
