@@ -1,5 +1,6 @@
 mod builder;
 mod completion;
+mod composer;
 mod editor;
 mod elicitation;
 mod export;
@@ -172,6 +173,7 @@ pub struct CliSession {
     edit_mode: Option<EditMode>,
     retry_config: Option<RetryConfig>,
     output_format: String,
+    composer: Option<composer::Composer>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -301,6 +303,7 @@ impl CliSession {
             edit_mode,
             retry_config,
             output_format,
+            composer: None,
         }
     }
 
@@ -508,6 +511,10 @@ impl CliSession {
 
     /// Start an interactive session, optionally with an initial message
     pub async fn interactive(&mut self, prompt: Option<String>) -> Result<()> {
+        // Dedicated bottom-of-screen field. Without this, keystrokes echo into
+        // the agent's stream (rustyline only owns the TTY between turns).
+        self.composer = composer::Composer::try_install();
+
         if let Some(prompt) = prompt {
             let msg = Message::user().with_text(&prompt);
             self.process_message(msg, CancellationToken::default(), true)
@@ -520,8 +527,14 @@ impl CliSession {
         let history_manager = HistoryManager::new();
         history_manager.load(&mut editor);
 
+        self.sync_composer_meta().await?;
+
         loop {
-            self.display_context_usage().await?;
+            if self.composer.is_none() {
+                self.display_context_usage().await?;
+            } else {
+                self.sync_composer_meta().await?;
+            }
 
             let conversation_strings: Vec<String> = self
                 .messages
@@ -536,13 +549,20 @@ impl CliSession {
                 .collect();
 
             output::run_status_hook("waiting");
-            let input = input::get_input(&mut editor, Some(&conversation_strings))?;
+            let input = self
+                .read_user_input(&mut editor, &conversation_strings)
+                .await?;
             if matches!(input, InputResult::Exit) {
                 break;
+            }
+            if let InputResult::Message(ref content) = input {
+                let _ = editor.add_history_entry(content.as_str());
             }
             self.handle_input(input, &history_manager, &mut editor, &conversation_strings)
                 .await?;
         }
+
+        self.composer = None;
 
         println!(
             "\n  {} {}",
@@ -551,6 +571,86 @@ impl CliSession {
         );
 
         Ok(())
+    }
+
+    async fn read_user_input(
+        &mut self,
+        editor: &mut rustyline::Editor<GooseCompleter, rustyline::history::DefaultHistory>,
+        conversation_strings: &[String],
+    ) -> Result<InputResult> {
+        if let Some(queued) = self.composer.as_mut().and_then(|c| c.state.pop_queue()) {
+            return Ok(input::interpret_line(&queued));
+        }
+        if self.composer.is_some() {
+            return self.composer_read().await;
+        }
+        input::get_input(editor, Some(&conversation_strings.to_vec()))
+    }
+
+    async fn composer_read(&mut self) -> Result<InputResult> {
+        loop {
+            let action = {
+                let c = self
+                    .composer
+                    .as_mut()
+                    .ok_or_else(|| anyhow::anyhow!("composer missing"))?;
+                c.next_action().await
+            };
+            match action {
+                Some(composer::ComposerAction::Submit(text))
+                | Some(composer::ComposerAction::Queue(text)) => {
+                    return Ok(input::interpret_line(&text));
+                }
+                Some(composer::ComposerAction::Exit) => return Ok(InputResult::Exit),
+                Some(composer::ComposerAction::Interrupt)
+                | Some(composer::ComposerAction::Redraw)
+                | None => continue,
+            }
+        }
+    }
+
+    async fn sync_composer_meta(&mut self) -> Result<()> {
+        if self.composer.is_none() {
+            return Ok(());
+        }
+        let theme = output::get_theme();
+        let model = self
+            .agent
+            .provider()
+            .await
+            .ok()
+            .map(|p| p.get_model_config().model_name.clone())
+            .unwrap_or_default();
+        let cwd = std::env::current_dir()
+            .ok()
+            .map(|p| composer::abbreviate_home(&p.display().to_string()))
+            .unwrap_or_default();
+        let (tokens, cost) = match self.get_session().await {
+            Ok(metadata) => (
+                composer::format_tokens(metadata.total_tokens.unwrap_or(0) as usize),
+                composer::format_cost(
+                    metadata.accumulated_cost_usd,
+                    metadata.accumulated_total_tokens.unwrap_or(0),
+                ),
+            ),
+            Err(_) => (String::new(), String::new()),
+        };
+        if let Some(c) = self.composer.as_mut() {
+            c.state.set_theme(theme);
+            c.state.model = model;
+            c.state.cwd = cwd;
+            c.state.tokens = tokens;
+            c.state.cost = cost;
+            c.paint();
+        }
+        Ok(())
+    }
+
+    fn restore_composer(&mut self, mut composer: Option<composer::Composer>) {
+        if let Some(c) = composer.as_mut() {
+            c.set_busy(false);
+        }
+        self.composer = composer;
     }
 
     fn create_editor(
@@ -701,17 +801,24 @@ impl CliSession {
 
                 let _provider = self.agent.provider().await?;
 
-                println!();
+                if self.composer.is_none() {
+                    println!();
+                }
                 output::run_status_hook("thinking");
-                output::show_thinking();
+                let pinned = self.composer.is_some();
+                if !pinned {
+                    output::show_thinking();
+                }
                 let start_time = Instant::now();
                 self.process_agent_response(true, CancellationToken::default())
                     .await?;
                 output::hide_thinking();
 
-                let elapsed = start_time.elapsed();
-                let elapsed_str = format_elapsed_time(elapsed);
-                println!("{}", console::style(format!("  ⏱ {}", elapsed_str)).dim());
+                if !pinned {
+                    let elapsed = start_time.elapsed();
+                    let elapsed_str = format_elapsed_time(elapsed);
+                    println!("{}", console::style(format!("  ⏱ {}", elapsed_str)).dim());
+                }
             }
             RunMode::Plan => {
                 let mut plan_messages = self.messages.clone();
@@ -1028,30 +1135,51 @@ impl CliSession {
         });
         let _drop_handle = AbortOnDropHandle::new(handle);
 
-        let mut stream = self
-            .agent
-            .reply(
-                user_message.clone(),
-                session_config.clone(),
-                Some(cancel_token.clone()),
-            )
-            .await?;
+        let mut stream = Some(
+            self.agent
+                .reply(
+                    user_message.clone(),
+                    session_config.clone(),
+                    Some(cancel_token.clone()),
+                )
+                .await?,
+        );
+
+        let mut composer = self.composer.take();
+        if let Some(c) = composer.as_mut() {
+            c.set_busy(true);
+        }
 
         let mut progress_bars = output::McpSpinners::new();
         let cancel_token_clone = cancel_token.clone();
         let mut markdown_buffer = streaming_buffer::MarkdownBuffer::new();
         let mut prompted_credits_urls: HashSet<String> = HashSet::new();
         let mut thinking_header_shown = false;
+        let mut fatal: Option<anyhow::Error> = None;
+        let mut interrupt_kind: Option<bool> = None;
 
         use futures::StreamExt;
         loop {
             tokio::select! {
-                result = stream.next() => {
+                result = stream.as_mut().unwrap().next() => {
                     match result {
                         Some(Ok(AgentEvent::Message(message))) => {
                             if let Some((id, security_prompt)) = find_tool_confirmation(&message) {
                                 let permission = if interactive {
-                                    prompt_tool_confirmation(&security_prompt)?
+                                    if let Some(c) = composer.as_mut() {
+                                        c.suspend();
+                                    }
+                                    let result = prompt_tool_confirmation(&security_prompt);
+                                    if let Some(c) = composer.as_mut() {
+                                        c.resume();
+                                    }
+                                    match result {
+                                        Ok(p) => p,
+                                        Err(e) => {
+                                            fatal = Some(e);
+                                            break;
+                                        }
+                                    }
                                 } else {
                                     // Non-interactive/headless mode: refuse to run in
                                     // Approve/SmartApprove modes since auto-allowing would
@@ -1060,12 +1188,12 @@ impl CliSession {
                                     let goose_mode = config.get_goose_mode().unwrap_or(GooseMode::Auto);
                                     if goose_mode == GooseMode::Approve || goose_mode == GooseMode::SmartApprove {
                                         cancel_token_clone.cancel();
-                                        drop(stream);
-                                        return Err(anyhow::anyhow!(
+                                        fatal = Some(anyhow::anyhow!(
                                             "Tool approval required in non-interactive mode with GooseMode::{goose_mode}. \
                                              This is an invalid configuration — Approve/SmartApprove modes require an \
                                              interactive terminal. Use GooseMode::Auto for headless sessions."
                                         ));
+                                        break;
                                     }
                                     tracing::warn!(
                                         "Tool confirmation required in non-interactive mode, auto-allowing"
@@ -1090,7 +1218,6 @@ impl CliSession {
                                     ));
                                     self.messages.push(response_message);
                                     cancel_token_clone.cancel();
-                                    drop(stream);
                                     break;
                                 }
                                 self.agent.handle_confirmation(id, PermissionConfirmation {
@@ -1104,17 +1231,23 @@ impl CliSession {
                                         "Elicitation requested in non-interactive mode, cancelling"
                                     );
                                     cancel_token_clone.cancel();
-                                    drop(stream);
-                                    return Err(anyhow::anyhow!(
+                                    fatal = Some(anyhow::anyhow!(
                                         "Elicitation requested but no interactive terminal is available to collect user input"
                                     ));
+                                    break;
                                 }
 
                                 output::hide_thinking();
                                 let _ = progress_bars.hide();
+                                if let Some(c) = composer.as_mut() {
+                                    c.suspend();
+                                }
 
                                 match elicitation::collect_elicitation_input(&elicitation_message, &schema) {
                                     Ok(Some(user_data)) => {
+                                        if let Some(c) = composer.as_mut() {
+                                            c.resume();
+                                        }
                                         let user_data_value = serde_json::to_value(user_data)
                                             .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
                                         let response_message = Message::user()
@@ -1126,18 +1259,25 @@ impl CliSession {
                                         self.messages.push(response_message.clone());
                                         // Elicitation responses return an empty stream - the response
                                         // unblocks the waiting tool call via ActionRequiredManager
-                                        let _ = self.agent.reply(response_message, session_config.clone(), Some(cancel_token.clone())).await?;
+                                        if let Err(e) = self.agent.reply(response_message, session_config.clone(), Some(cancel_token.clone())).await {
+                                            fatal = Some(e);
+                                            break;
+                                        }
                                     }
                                     Ok(None) => {
+                                        if let Some(c) = composer.as_mut() {
+                                            c.resume();
+                                        }
                                         output::render_text("Information request cancelled.", Some(Color::Yellow), true);
                                         cancel_token_clone.cancel();
-                                        drop(stream);
                                         break;
                                     }
                                     Err(e) => {
+                                        if let Some(c) = composer.as_mut() {
+                                            c.resume();
+                                        }
                                         output::render_error(&format!("Failed to collect input: {}", e));
                                         cancel_token_clone.cancel();
-                                        drop(stream);
                                         break;
                                     }
                                 }
@@ -1157,6 +1297,9 @@ impl CliSession {
                                         interactive,
                                         &mut prompted_credits_urls,
                                     );
+                                    if let Some(c) = composer.as_mut() {
+                                        c.paint();
+                                    }
                                 }
                             }
                         }
@@ -1170,6 +1313,12 @@ impl CliSession {
                                 is_json_mode,
                                 self.debug,
                             );
+                            if composer.is_some() {
+                                let _ = progress_bars.hide();
+                                if let Some(c) = composer.as_mut() {
+                                    c.paint();
+                                }
+                            }
                         }
                         Some(Ok(AgentEvent::HistoryReplaced(updated_conversation))) => {
                             self.messages = updated_conversation;
@@ -1177,30 +1326,46 @@ impl CliSession {
                         Some(Err(e)) => {
                             handle_agent_error(&e, is_stream_json_mode);
                             cancel_token_clone.cancel();
-                            drop(stream);
-                            if let Err(e) = self.handle_interrupted_messages(false).await {
-                                eprintln!("Error handling interruption: {}", e);
-                            } else if !is_stream_json_mode {
-                                output::render_error(
-                                    "The error above was an exception we were not able to handle.\n\
-                                    These errors are often related to connection or authentication\n\
-                                    We've removed the conversation up to the most recent user message\n\
-                                    - depending on the error you may be able to continue",
-                                );
-                            }
+                            interrupt_kind = Some(false);
                             break;
                         }
                         None => break,
                     }
                 }
-                _ = cancel_token_clone.cancelled() => {
-                    drop(stream);
-                    if let Err(e) = self.handle_interrupted_messages(true).await {
-                        eprintln!("Error handling interruption: {}", e);
+                _ = tokio::time::sleep(std::time::Duration::from_millis(80)) => {
+                    if let Some(c) = composer.as_mut() {
+                        match c.drain_keys() {
+                            Some(composer::ComposerAction::Interrupt)
+                            | Some(composer::ComposerAction::Exit) => {
+                                cancel_token_clone.cancel();
+                            }
+                            _ => {}
+                        }
                     }
+                }
+                _ = cancel_token_clone.cancelled() => {
+                    interrupt_kind = Some(true);
                     break;
                 }
             }
+        }
+
+        drop(stream);
+        if let Some(user) = interrupt_kind {
+            if let Err(e) = self.handle_interrupted_messages(user).await {
+                eprintln!("Error handling interruption: {}", e);
+            } else if !user && !is_stream_json_mode {
+                output::render_error(
+                    "The error above was an exception we were not able to handle.\n\
+                    These errors are often related to connection or authentication\n\
+                    We've removed the conversation up to the most recent user message\n\
+                    - depending on the error you may be able to continue",
+                );
+            }
+        }
+        self.restore_composer(composer);
+        if let Some(e) = fatal {
+            return Err(e);
         }
 
         if !is_json_mode && !is_stream_json_mode {
@@ -1228,7 +1393,9 @@ impl CliSession {
                 messages: self.messages.messages().to_vec(),
                 metadata,
             };
-            println!("{}", serde_json::to_string_pretty(&json_output)?);
+            let rendered = serde_json::to_string_pretty(&json_output)?;
+            println!("{}", rendered);
+            return Ok(());
         } else if is_stream_json_mode {
             let total_tokens = self
                 .agent
