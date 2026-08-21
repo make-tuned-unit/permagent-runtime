@@ -29,7 +29,9 @@ targets:
         codeSign: true
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: ai.permagent.mobile
+        # Team Z58XSBM78S cannot claim ai.permagent.mobile (that ID belongs to
+        # another Apple Developer team). Device and TestFlight builds use this.
+        PRODUCT_BUNDLE_IDENTIFIER: ai.permagent.ios
         SWIFT_VERSION: "6.0"
         TARGETED_DEVICE_FAMILY: "1,2"
         ENABLE_USER_SCRIPT_SANDBOXING: "YES"
@@ -165,7 +167,7 @@ targets:
       - path: PermagentMobile/Fonts
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: ai.permagent.mobile.watchkitapp
+        PRODUCT_BUNDLE_IDENTIFIER: ai.permagent.ios.watchkitapp
         SWIFT_VERSION: "6.0"
         DEVELOPMENT_TEAM: Z58XSBM78S
         MARKETING_VERSION: "1.31.0"
@@ -189,7 +191,7 @@ targets:
         WKApplication: true
         WKWatchOnly: false
         WKRunsIndependentlyOfCompanionApp: true
-        WKCompanionAppBundleIdentifier: ai.permagent.mobile
+        WKCompanionAppBundleIdentifier: ai.permagent.ios
         NSMicrophoneUsageDescription: Permagent uses the microphone so you can chat with your agent and dictate notes. Audio is transcribed on your Mac.
         ITSAppUsesNonExemptEncryption: false
         UIAppFonts:
@@ -222,7 +224,7 @@ targets:
       - path: Shared/WatchBridge.swift
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: ai.permagent.mobile.tests
+        PRODUCT_BUNDLE_IDENTIFIER: ai.permagent.ios.tests
         SWIFT_VERSION: "6.0"
         # Test bundles have no checked-in plist; without generation, code
         # signing (now that the target has a team) fails with "does not have

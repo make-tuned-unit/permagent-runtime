@@ -615,7 +615,7 @@ struct Availability: Decodable {
 /// Sessions are created by `POST /api/sessions`, which returns the id. The
 /// phone must ask for one and use what it is given.
 enum MobileSession {
-    private static let key = "ai.permagent.mobile-chat-session"
+    private static let key = "ai.permagent.ios-chat-session"
 
     private struct SessionResponse: Decodable { let id: String }
     private struct CreateBody: Encodable { let workingDir: String }
