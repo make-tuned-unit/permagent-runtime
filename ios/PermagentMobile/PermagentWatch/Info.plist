@@ -41,7 +41,7 @@
 	<key>WKCompanionAppBundleIdentifier</key>
 	<string>ai.permagent.ios</string>
 	<key>WKRunsIndependentlyOfCompanionApp</key>
-	<true/>
+	<false/>
 	<key>WKWatchOnly</key>
 	<false/>
 	<key>INAlternativeAppNames</key>
