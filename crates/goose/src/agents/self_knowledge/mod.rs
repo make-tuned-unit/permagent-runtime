@@ -161,6 +161,7 @@ pub static WORKER_DESCRIPTORS: &[FeatureDescriptor] = &[
     // runs live scan tooling is switched on deliberately, and until then the
     // brief stays byte-for-byte identical.
     crate::strix::SELF_KNOWLEDGE_FEATURE,
+    crate::agents::platform_extensions::finance::SELF_KNOWLEDGE_FEATURE,
 ];
 
 /// The Git Steward's worker-descriptor id. The descriptor itself spells the id
@@ -344,6 +345,7 @@ pub static SURFACE_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::activity_journal::TIMELINE_FEATURE,
     crate::scheduler::RUN_ROSTER_FEATURE,
     crate::agents::platform_extensions::project_manager::GROW_FEATURE,
+    crate::agents::platform_extensions::finance::FINANCE_TAB_FEATURE,
     crate::agents::platform_extensions::project_manager::FIRST_PARTY_ANALYTICS_FEATURE,
     crate::agents::platform_extensions::analyze::CODEBASE_INDEX_FEATURE,
     crate::agents::platform_extensions::project_manager::CODING_HARNESS_FEATURE,
@@ -1036,6 +1038,7 @@ mod tests {
         "concierge",
         // Same render-gated contract, on the `strix_enabled` config key.
         "strix",
+        "financier",
     ];
     /// Every known surface id must have exactly one descriptor.
     const KNOWN_SURFACE_IDS: &[&str] = &[
@@ -1056,6 +1059,7 @@ mod tests {
         "timeline",
         "run_roster",
         "grow",
+        "finance_tab",
         "first_party_analytics",
         "codebase",
         "coding_harness",

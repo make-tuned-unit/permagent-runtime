@@ -1057,6 +1057,15 @@ impl SessionStorage {
                     if version < 45 {
                         spectral_schema::migrate_v44_to_v45(&self.pool).await?;
                     }
+                    // v46: Financier ledger (watchlist / notes / positions).
+                    // New tables + indexes, additive and base-independent.
+                    if version < 46 {
+                        spectral_schema::migrate_v45_to_v46(&self.pool).await?;
+                    }
+                    // v47: household spend ledger + RSI-alert dedup.
+                    if version < 47 {
+                        spectral_schema::migrate_v46_to_v47(&self.pool).await?;
+                    }
                     // Version-independent safety net for recognition columns.
                     // The always-on v23 above can stamp schema_version past the
                     // cfg-gated `version < 22` migration, leaving a feature-off DB

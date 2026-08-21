@@ -702,6 +702,22 @@ pub fn default_roster() -> HashMap<String, WorkerPersona> {
     );
 
     roster.insert(
+        "financier".to_string(),
+        WorkerPersona {
+            first_name: "Financier".to_string(),
+            role: "Market research and the Finance money board — live quotes, holdings, \
+                   validated picks, a watchlist, research notes, and recorded positions. \
+                   Reports numbers; never sizes a position and cannot place an order"
+                .to_string(),
+            tool_kinds: vec!["finance".to_string()],
+            availability_check: String::new(),
+            cost_tier: "paid_api".to_string(),
+            engine: WorkerEngineKind::Pending,
+            ..Default::default()
+        },
+    );
+
+    roster.insert(
         "permagent".to_string(),
         WorkerPersona {
             first_name: "Permagent".to_string(),
@@ -1319,6 +1335,7 @@ workers:
                 "claude_code",
                 "codex",
                 "cursor",
+                "financier",
                 "librarian",
                 "permagent",
                 "reviewer",
@@ -1374,6 +1391,11 @@ workers:
         // proposes, it does not take handed-off work.
         assert_eq!(roster["steward"].engine, WorkerEngineKind::Pending);
         assert_eq!(roster["steward"].availability_check, "bin_exists:git");
+
+        // Financier: registered so scheduled/HUD identity is its own, engine
+        // pending so it is never dispatched a goal — it reports numbers.
+        assert_eq!(roster["financier"].engine, WorkerEngineKind::Pending);
+        assert_eq!(roster["financier"].first_name, "Financier");
     }
 
     #[test]

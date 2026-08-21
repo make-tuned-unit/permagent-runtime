@@ -116,7 +116,7 @@ export type ActivePanel = 'chat' | 'skills' | 'settings' | 'terminal' | 'browser
 
 // ── Workspace types ──
 
-export type ToolType = 'chat' | 'skills' | 'trace' | 'world' | 'terminal' | 'browser' | 'memory' | 'dashboard' | 'build' | 'grow' | 'automate' | 'projects' | 'people';
+export type ToolType = 'chat' | 'skills' | 'trace' | 'world' | 'terminal' | 'browser' | 'memory' | 'dashboard' | 'build' | 'grow' | 'finance' | 'automate' | 'projects' | 'people';
 
 /** Queued Build-tab PTY launch (project chip, agent event, or a Grow action). */
 export interface PendingTerminalLaunch {
@@ -667,6 +667,7 @@ const OPEN_EVENT_BY_TOOL: Partial<Record<ToolType, { event: ActivityEventName; s
   world: { event: 'world_view_opened', surface: 'world' },
   memory: { event: 'brain_opened', surface: 'brain' },
   grow: { event: 'grow_opened', surface: 'grow' },
+  finance: { event: 'finance_opened', surface: 'finance' },
 };
 
 /** Extract the primary tool type from a workspace layout tree. */
@@ -1015,12 +1016,12 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
     // Route EVERY dropped file through the local Reader (#296) BEFORE it enters
     // the message. The Reader extracts text locally (Vision OCR for images, PDF
-    // text layer / UTF-8 for documents) and ingests it into the Brain; Henry
-    // receives a compact digest, NOT the raw bytes — the token-leak fix. Only
-    // "visual" images (little/no text, e.g. a photo) fall through to base64 so
+    // text layer / UTF-8 for documents) and ingests it into the Brain. Images
+    // fold the full OCR into the outgoing text so Henry can read the screenshot.
+    // Only "visual" images (little/no text, e.g. a photo) also send pixels so
     // the agent can still SEE them. Documents previously died silently on drop.
     let images: Array<{ data: string; mime_type: string }> | undefined;
-    const digests: Array<{ name: string; summary: string; recall_query: string }> = [];
+    const digests: Array<{ name: string; summary: string; recall_query: string; ocr: boolean }> = [];
     if (files && files.length > 0) {
       console.log('[send] total files:', files.length,
         'types:', files.map(f => `${f.name}(type="${f.type}")`));
@@ -1031,12 +1032,19 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
           const d = await readerIngest(f);
           if (isImage && d.is_visual) {
             // Sparse/low-confidence text → the agent needs to see the image.
+            // Any OCR that did land still rides in the digest.
             console.log('[reader] visual image, falling through to vision:', f.name);
             visualImages.push(f);
           } else {
-            // Extracted + ingested into the Brain. Digest only — bytes never sent.
-            console.log('[reader] ingested', f.name, '→', d.token_count, 'tok kept out of context');
-            digests.push({ name: f.name, summary: d.summary, recall_query: d.recall_query });
+            console.log('[reader] ingested', f.name, '→', d.token_count, 'tok extracted');
+          }
+          if (d.summary.trim()) {
+            digests.push({
+              name: f.name,
+              summary: d.summary,
+              recall_query: d.recall_query,
+              ocr: isImage,
+            });
           }
         } catch (err) {
           if (isImage) {
@@ -1055,7 +1063,12 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
               err instanceof Error && err.message && !err.message.startsWith('reader ingest HTTP')
                 ? err.message
                 : 'could not extract text from this file';
-            digests.push({ name: f.name, summary: `(extraction failed: ${reason})`, recall_query: '' });
+            digests.push({
+              name: f.name,
+              summary: `(extraction failed: ${reason})`,
+              recall_query: '',
+              ocr: false,
+            });
           }
         }
       }
@@ -1085,14 +1098,17 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       }
     }
 
-    // Fold any Reader digests into the outgoing text so Henry sees the summary
-    // + recall handle (and can follow up via search_memory), never the bytes.
+    // Fold any Reader digests into the outgoing text. Screenshots send the
+    // full OCR; documents send a gist + recall handle.
     let outgoingText = text;
     if (digests.length > 0) {
       const block = digests
-        .map(d => d.recall_query
-          ? `📎 ${d.name} — ${d.summary} (recall: "${d.recall_query}")`
-          : `📎 ${d.name} — ${d.summary}`)
+        .map(d => {
+          const body = d.ocr ? `OCR:\n${d.summary}` : d.summary;
+          return d.recall_query
+            ? `📎 ${d.name} — ${body} (recall: "${d.recall_query}")`
+            : `📎 ${d.name} — ${body}`;
+        })
         .join('\n');
       // Replace the bare "(file upload)" placeholder ChatInput sends for
       // file-only messages; otherwise append.

@@ -27,6 +27,7 @@ pub mod dictation;
 pub mod errors;
 pub mod events;
 pub mod features;
+pub mod finance;
 pub mod findings;
 pub mod first_party_analytics;
 pub mod gateway;
@@ -174,6 +175,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(gateway::routes(state.clone()))
         .merge(sampling::routes(state.clone()))
         .merge(features::routes())
+        .merge(finance::routes(state.clone()))
         .merge(dev_roots::routes())
         .merge(onboarding::routes())
         // Built-in browser bookmarks + saved tab sets (#790): small JSON state.

@@ -38,6 +38,7 @@ fn pin_config_for_daemon_bin_tests() {
     permagent::config::base::pin_config_to_temp_root_for_tests();
 }
 
+mod finance_rsi_sweep;
 mod routes;
 mod session_event_bus;
 mod state;

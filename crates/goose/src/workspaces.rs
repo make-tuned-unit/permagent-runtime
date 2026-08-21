@@ -51,6 +51,14 @@ fn grow_layout() -> serde_json::Value {
     })
 }
 
+fn finance_layout() -> serde_json::Value {
+    serde_json::json!({
+        "type": "panel",
+        "tool": "finance",
+        "config": {}
+    })
+}
+
 fn people_layout() -> serde_json::Value {
     serde_json::json!({
         "type": "panel",
@@ -106,22 +114,19 @@ pub async fn seed_presets_if_empty(pool: &Pool<Sqlite>) -> Result<bool, String> 
     }
 
     // Sidebar order is a product decision (ruling 2026-07-10, People added
-    // 2026-08-20): Home, Projects, People, Build, Grow, Automate, World, Brain.
+    // 2026-08-20, Finance 2026-08-21): Home, Projects, People, Build, Grow,
+    // Finance, Automate, World, Brain.
     // Keep in lockstep with CANONICAL_WORKSPACE_ORDER below.
     let presets = [
         ("Home", "home", 0, home_layout(), true),
-        // Icon keys renamed 2026-08-03: three tabs carried glyphs whose names
-        // lied about what they drew — "code" was a four-rectangle mosaic and
-        // "layout-dashboard" was a hamburger — so Build, Automate and Projects
-        // were three interchangeable abstract shapes. See ICON_PATHS in
-        // Sidebar.tsx, which still aliases the old keys for existing rows.
         ("Projects", "folder", 1, projects_layout(), false),
         ("People", "users", 2, people_layout(), false),
         ("Build", "brackets", 3, build_layout(), false),
         ("Grow", "trending-up", 4, grow_layout(), false),
-        ("Automate", "bolt", 5, automate_layout(), false),
-        ("World", "globe", 6, world_layout(), false),
-        ("Brain", "brain", 7, brain_layout(), false),
+        ("Finance", "coin", 5, finance_layout(), false),
+        ("Automate", "bolt", 6, automate_layout(), false),
+        ("World", "globe", 7, world_layout(), false),
+        ("Brain", "brain", 8, brain_layout(), false),
     ];
 
     let mut first_id = String::new();
@@ -168,9 +173,10 @@ pub const CANONICAL_WORKSPACE_ORDER: &[(&str, i32)] = &[
     ("People", 2),
     ("Build", 3),
     ("Grow", 4),
-    ("Automate", 5),
-    ("World", 6),
-    ("Brain", 7),
+    ("Finance", 5),
+    ("Automate", 6),
+    ("World", 7),
+    ("Brain", 8),
 ];
 
 /// Normalize the preset workspaces' sort_order to [`CANONICAL_WORKSPACE_ORDER`].
@@ -302,6 +308,42 @@ pub async fn ensure_people_workspace(pool: &Pool<Sqlite>) -> Result<bool, String
     sqlx::query(
         "INSERT INTO workspaces (id, user_id, name, icon, sort_order, layout_json, is_default)
          VALUES (?, 'default', 'People', 'users', 2, ?, 0)",
+    )
+    .bind(&id)
+    .bind(&layout_str)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// Ensure the "Finance" workspace exists for existing users seeded before it
+/// was a first-class tab. Inserted at sort_order 5; canonical order finalizes.
+/// Idempotent.
+pub async fn ensure_finance_workspace(pool: &Pool<Sqlite>) -> Result<bool, String> {
+    let has_finance: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM workspaces WHERE user_id = 'default' AND name = 'Finance')",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    if has_finance {
+        return Ok(false);
+    }
+
+    sqlx::query(
+        "UPDATE workspaces SET sort_order = sort_order + 1
+         WHERE user_id = 'default' AND sort_order >= 5",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let id = Uuid::now_v7().to_string();
+    let layout_str = serde_json::to_string(&finance_layout()).map_err(|e| e.to_string())?;
+    sqlx::query(
+        "INSERT INTO workspaces (id, user_id, name, icon, sort_order, layout_json, is_default)
+         VALUES (?, 'default', 'Finance', 'coin', 5, ?, 0)",
     )
     .bind(&id)
     .bind(&layout_str)
@@ -463,7 +505,10 @@ mod tests {
         seed_presets_if_empty(&pool).await.unwrap();
         assert_eq!(
             order_of(&pool).await,
-            ["Home", "Projects", "People", "Build", "Grow", "Automate", "World", "Brain"]
+            [
+                "Home", "Projects", "People", "Build", "Grow", "Finance", "Automate", "World",
+                "Brain"
+            ]
         );
 
         // Simulate a legacy install: scramble to the pre-2026-07-10 order and
@@ -489,8 +534,8 @@ mod tests {
         assert_eq!(
             order_of(&pool).await,
             [
-                "Home", "Projects", "People", "Build", "Grow", "Automate", "World", "Brain",
-                "My Lab"
+                "Home", "Projects", "People", "Build", "Grow", "Finance", "Automate", "World",
+                "Brain", "My Lab"
             ]
         );
 
@@ -513,7 +558,10 @@ mod tests {
         ensure_canonical_workspace_order(&pool).await.unwrap();
         assert_eq!(
             order_of(&pool).await,
-            ["Home", "Projects", "People", "Build", "Grow", "Automate", "World", "Brain"]
+            [
+                "Home", "Projects", "People", "Build", "Grow", "Finance", "Automate", "World",
+                "Brain"
+            ]
         );
         let tool: String = sqlx::query_scalar(
             "SELECT json_extract(layout_json, '$.tool') FROM workspaces WHERE name = 'People'",
@@ -522,5 +570,34 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(tool, "people");
+    }
+
+    #[tokio::test]
+    async fn ensure_finance_workspace_inserts_for_legacy_seeds() {
+        let pool = test_pool().await;
+        seed_presets_if_empty(&pool).await.unwrap();
+        sqlx::query("DELETE FROM workspaces WHERE name = 'Finance'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(!order_of(&pool).await.iter().any(|n| n == "Finance"));
+
+        assert!(ensure_finance_workspace(&pool).await.unwrap());
+        assert!(!ensure_finance_workspace(&pool).await.unwrap());
+        ensure_canonical_workspace_order(&pool).await.unwrap();
+        assert_eq!(
+            order_of(&pool).await,
+            [
+                "Home", "Projects", "People", "Build", "Grow", "Finance", "Automate", "World",
+                "Brain"
+            ]
+        );
+        let tool: String = sqlx::query_scalar(
+            "SELECT json_extract(layout_json, '$.tool') FROM workspaces WHERE name = 'Finance'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(tool, "finance");
     }
 }

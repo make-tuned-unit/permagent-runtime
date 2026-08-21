@@ -52,6 +52,9 @@ export const AGENT_TRIM = {
   // available cyan, error red) — identity must never read as a state, and a
   // security agent must never be mistaken for an alarm.
   strix: '#8C4A5C',
+  // The Financier — market research and the Finance tab. Muted antique gold:
+  // not Henry's warm white-gold, not STATE working-amber. Identity trim only.
+  financier: '#C4A35A',
 } as const;
 
 export type AgentHudState = keyof typeof STATE;

@@ -504,9 +504,9 @@ export interface ReaderDigest {
 
 /**
  * Route a dropped file to the local Reader for OCR/extraction + Brain ingest.
- * Returns a compact digest instead of the raw bytes. When `is_visual` is true
- * the Reader found too little text to ingest — the caller should fall back to
- * sending the image to the agent so visual Q&A still works.
+ * Image digests carry the full OCR in `summary`. When `is_visual` is true the
+ * Reader found too little text to ingest as the sole source — the caller should
+ * still send the image so visual Q&A works, and fold any OCR that did land.
  */
 export async function readerIngest(file: File): Promise<ReaderDigest> {
   if (!_daemonToken) await loadDaemonToken();
@@ -534,6 +534,31 @@ export async function readerIngest(file: File): Promise<ReaderDigest> {
     throw new Error(detail || `reader ingest HTTP ${resp.status}`);
   }
   return resp.json() as Promise<ReaderDigest>;
+}
+
+/** Drop a bank/card statement onto the Finance tab. CSV/OFX/QFX parse
+ *  directly; PDF/screenshots go through Reader OCR first. */
+export async function uploadFinanceStatement(file: File): Promise<{
+  inserted: number;
+  parsed: number;
+  sourceFile: string;
+  ocrUsed: boolean;
+}> {
+  if (!_daemonToken) await loadDaemonToken();
+  const form = new FormData();
+  form.append('file', file, file.name);
+  const headers: Record<string, string> = {};
+  if (_daemonToken) headers['Authorization'] = `Bearer ${_daemonToken}`;
+  const resp = await fetch(`${API_BASE_URL}/api/finance/statements`, {
+    method: 'POST',
+    headers,
+    body: form,
+  });
+  if (!resp.ok) {
+    const detail = await resp.text().catch(() => '');
+    throw new Error(detail || `statement ingest HTTP ${resp.status}`);
+  }
+  return resp.json();
 }
 
 /** One selectable voice from the loaded Kokoro pack (GET /api/voices). */

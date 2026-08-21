@@ -115,6 +115,14 @@ function SignatureGear({ variant, trim }: { variant: ReturnType<typeof portraitS
           <path d="M24 44 A9 9 0 0 0 40 44" fill="none" stroke={trim} strokeWidth="2" />
         </>
       );
+    case 'financier':
+      return (
+        <>
+          <circle cx="48" cy="8" r="5" fill="none" stroke={ENV.bronze} strokeWidth="1.4" />
+          <circle cx="48" cy="8" r="2.2" fill={trim} />
+          <rect x="14" y="44" width="10" height="14" rx="1" fill={ENV.darkStone} />
+        </>
+      );
     case 'unknown':
       return null;
   }

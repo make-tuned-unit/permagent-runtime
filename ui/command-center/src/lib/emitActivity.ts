@@ -32,6 +32,7 @@ export type ActivityEventName =
   | 'world_view_opened'
   | 'inbox_opened'
   | 'grow_opened'
+  | 'finance_opened'
   | 'brain_opened';
 
 /** Snake_case `SourceSurface` wire names for the surfaces the UI emits from. */
@@ -41,6 +42,7 @@ export type ActivitySourceSurface =
   | 'world'
   | 'inbox'
   | 'grow'
+  | 'finance'
   | 'brain'
   | 'voice';
 

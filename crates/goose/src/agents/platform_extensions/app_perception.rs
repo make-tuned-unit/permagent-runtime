@@ -51,6 +51,7 @@ pub const OBSERVABLE_SURFACES: &[&str] = &[
     "sessions",
     "briefings",
     "grow",
+    "finance",
     "brain",
     "build",
     "world",
@@ -125,6 +126,11 @@ pub const TAB_SURFACES: &[TabSurface] = &[
         reads: "growth_actions",
     },
     TabSurface {
+        tab: "Finance",
+        surface: "finance",
+        reads: "finance_ledger",
+    },
+    TabSurface {
         tab: "Inbox",
         surface: "inbox",
         reads: "inbox_files",
@@ -155,25 +161,25 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
         id: "app_awareness",
         display_name: "App awareness",
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
-        what_it_does:
-            "You can directly perceive the aggregate data your Permagent home renders by \
+        what_it_does: "You can directly perceive the aggregate data your Permagent home renders by \
              calling observe_app for analytics, projects, people, goals, cards, spend, sessions, \
-             briefings, grow, inbox, decision_inbox, skills, automate, trace, brain, build, \
+             briefings, grow, finance, inbox, decision_inbox, skills, automate, trace, brain, build, \
              world, settings, or an overview. This is structured local state, not screenshot \
              vision and not the website in the Build browser. \
              `inbox` is the Downloads intake folder (files from the in-app browser); \
              `decision_inbox` is what is waiting on the user's approval. \
              `grow` returns the growth actions YOU recommended for a project, what you predicted \
              each would move, and how the 7/14/28-day sweep judged it — you have no memory of \
-             those recommendations, so read them rather than saying you do not know. `people` is \
+             those recommendations, so read them rather than saying you do not know. `finance` is \
+             the Finance tab ledger: watchlist, research notes, recorded positions, and household \
+             spend — not live quotes (research_ticker) and not an order. `people` is \
              the CRM directory: names, roles, companies, last contact, quiet contacts, follow-ups, and recent meetings — \
              never emails or phone numbers. `brain` is \
              memory counts, recall health, and librarian schedule/phase — never memory contents. \
              `build` is coding-session summaries and the in-app browser bookmarks/tab sets. \
              `world` is the worker roster and availability. `settings` is which providers and \
              extensions are configured/enabled — never secret values, only whether a key is present",
-        why_it_matters:
-            "Treat the app as your home: answer questions about what is happening here from \
+        why_it_matters: "Treat the app as your home: answer questions about what is happening here from \
              observe_app without navigating, taking screenshots, or calling browser page tools. \
              The result is deliberately bounded to summaries and small ranked lists so private \
              database rows do not become conversation history",
@@ -184,8 +190,8 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ObserveAppParams {
     /// Room of the app to observe: analytics, projects, people, goals, cards, spend,
-    /// sessions, briefings, grow, inbox (Downloads intake), decision_inbox
-    /// (approvals queue), skills, automate, trace, brain, build, world,
+    /// sessions, briefings, grow, finance (Finance tab ledger), inbox (Downloads intake),
+    /// decision_inbox (approvals queue), skills, automate, trace, brain, build, world,
     /// settings, or overview.
     surface: String,
     /// Narrow scope. Required for analytics/cards; optional project name, slug,
@@ -385,13 +391,13 @@ async fn query_recall_health(pool: &Pool<Sqlite>) -> Value {
             return json!({
                 "status": "unavailable",
                 "reason": "recognition_events table is not present in the session database"
-            })
+            });
         }
         Err(e) => {
             return json!({
                 "status": "unavailable",
                 "reason": safe_text(&format!("could not check recognition_events: {e}"), 200)
-            })
+            });
         }
         Ok(true) => {}
     }
@@ -540,7 +546,7 @@ impl AppPerceptionClient {
             .with_instructions(
                 "Read the structured data behind the Permagent app. Use observe_app directly \
                  when the user asks what is happening in analytics, projects, goals/cards, \
-                 spend, sessions, growth actions you have recommended, agent briefings, the \
+                 spend, sessions, growth actions you have recommended, the Finance tab, agent briefings, the \
                  Downloads inbox (files from the in-app browser), the Decision Inbox \
                  (approvals waiting on the user), skills, scheduled automations, execution \
                  trace, brain memory health, build coding sessions or browser bookmarks, \
@@ -591,7 +597,7 @@ impl AppPerceptionClient {
                 Ok(o) => o,
                 // A failed judgement query must not be reported as "not yet judged".
                 Err(e) => {
-                    return unavailable("grow", format!("could not read growth outcomes: {e}"))
+                    return unavailable("grow", format!("could not read growth outcomes: {e}"));
                 }
             };
             recent.push(json!({
@@ -628,6 +634,106 @@ impl AppPerceptionClient {
             )
         } else {
             available("grow", data)
+        }
+    }
+
+    /// The Finance tab ledger — same store the tab and The Financier write.
+    ///
+    /// Quotes are fetched at GET time on the tab, not here: observe_app is
+    /// local aggregate state. Live prices stay on research_ticker. Nothing
+    /// here can place an order.
+    async fn observe_finance(&self, pool: &Pool<Sqlite>) -> Value {
+        let watchlist = match crate::finance_ledger::list_watchlist(pool).await {
+            Ok(rows) => rows,
+            Err(e) => {
+                return unavailable("finance", format!("could not read finance watchlist: {e}"));
+            }
+        };
+        let notes = match crate::finance_ledger::list_notes(pool).await {
+            Ok(rows) => rows,
+            Err(e) => return unavailable("finance", format!("could not read finance notes: {e}")),
+        };
+        let positions = match crate::finance_ledger::list_positions(pool).await {
+            Ok(rows) => rows,
+            Err(e) => {
+                return unavailable("finance", format!("could not read finance positions: {e}"));
+            }
+        };
+        let txns = match crate::finance_ledger::list_transactions(pool, 80).await {
+            Ok(rows) => rows,
+            Err(e) => {
+                return unavailable("finance", format!("could not read household spend: {e}"));
+            }
+        };
+
+        let open = positions.iter().filter(|p| p.exit_date.is_none()).count();
+        let closed = positions.len().saturating_sub(open);
+        let watch_total = watchlist.len();
+        let note_total = notes.len();
+        let pos_total = positions.len();
+        let txn_total = txns.len();
+
+        let watch_items = watchlist
+            .iter()
+            .take(LIST_LIMIT)
+            .map(|item| {
+                json!({
+                    "symbol": safe_text(&item.symbol, 24),
+                    "label": item.label.as_ref().map(|v| safe_text(v, 80)),
+                })
+            })
+            .collect();
+        let note_items = notes
+            .iter()
+            .take(LIST_LIMIT)
+            .map(|note| {
+                json!({
+                    "title": safe_text(&note.title, 120),
+                    "symbol": note.symbol.as_ref().map(|v| safe_text(v, 24)),
+                })
+            })
+            .collect();
+        let pos_items = positions
+            .iter()
+            .take(LIST_LIMIT)
+            .map(|pos| {
+                json!({
+                    "symbol": safe_text(&pos.symbol, 24),
+                    "shares": pos.shares,
+                    "entry_date": safe_text(&pos.entry_date, 40),
+                    "open": pos.exit_date.is_none(),
+                })
+            })
+            .collect();
+        let txn_items = txns
+            .iter()
+            .take(LIST_LIMIT)
+            .map(|txn| {
+                json!({
+                    "date": safe_text(&txn.date, 40),
+                    "amount": txn.amount,
+                    "payee": safe_text(&txn.payee, 80),
+                    "category": safe_text(&txn.category, 40),
+                })
+            })
+            .collect();
+
+        let data = json!({
+            "open_positions": open,
+            "closed_positions": closed,
+            "watchlist": ranked(watch_items, watch_total),
+            "notes": ranked(note_items, note_total),
+            "positions": ranked(pos_items, pos_total),
+            "household": ranked(txn_items, txn_total),
+        });
+        if watch_total + note_total + pos_total + txn_total == 0 {
+            empty(
+                "finance",
+                "query succeeded; the Finance tab ledger is empty",
+                data,
+            )
+        } else {
+            available("finance", data)
         }
     }
 
@@ -1089,7 +1195,7 @@ impl AppPerceptionClient {
         let total = match briefings::try_unacknowledged_count(pool).await {
             Ok(total) => total.max(0) as usize,
             Err(e) => {
-                return unavailable("briefings", format!("briefings count query failed: {e}"))
+                return unavailable("briefings", format!("briefings count query failed: {e}"));
             }
         };
         let rows = match briefings::try_unacknowledged(pool, LIST_LIMIT as i64).await {
@@ -1125,7 +1231,7 @@ impl AppPerceptionClient {
                 return unavailable(
                     "decision_inbox",
                     format!("decision inbox query failed: {e}"),
-                )
+                );
             }
         };
         let rows = match decisions::list_open_decisions(pool).await {
@@ -1134,7 +1240,7 @@ impl AppPerceptionClient {
                 return unavailable(
                     "decision_inbox",
                     format!("open decisions query failed: {e}"),
-                )
+                );
             }
         };
         let total = rows.len();
@@ -1278,13 +1384,13 @@ impl AppPerceptionClient {
                 );
             }
             Err(e) => {
-                return unavailable("automate", format!("could not read scheduler store: {e}"))
+                return unavailable("automate", format!("could not read scheduler store: {e}"));
             }
         };
         let jobs: Vec<scheduler::ScheduledJob> = match serde_json::from_str(&raw) {
             Ok(jobs) => jobs,
             Err(e) => {
-                return unavailable("automate", format!("scheduler store is unreadable: {e}"))
+                return unavailable("automate", format!("scheduler store is unreadable: {e}"));
             }
         };
         let total = jobs.len();
@@ -1946,6 +2052,7 @@ impl AppPerceptionClient {
             "sessions" => self.observe_sessions(args.window.as_deref()).await,
             "briefings" => self.observe_briefings(&pool).await,
             "grow" => self.observe_grow(&pool, args.scope.as_deref()).await,
+            "finance" => self.observe_finance(&pool).await,
             "inbox" => self.observe_inbox(&pool).await,
             "decision_inbox" => self.observe_decision_inbox(&pool).await,
             "skills" => self.observe_skills(&pool).await,
@@ -1961,7 +2068,7 @@ impl AppPerceptionClient {
                     "Unknown surface \"{}\". Use one of: {}.",
                     safe_text(&args.surface, 80),
                     OBSERVABLE_SURFACES.join(", ")
-                ))
+                ));
             }
         };
         redact_json(&mut payload);
@@ -1977,7 +2084,7 @@ impl AppPerceptionClient {
             "observe_app".to_string(),
             "Read aggregate state from the data behind the Permagent app. Call this directly \
              when asked about analytics, projects, people, goals/cards, spend, sessions, growth \
-             actions you recommended, agent briefings, the Downloads inbox, the Decision \
+             actions you recommended, the Finance tab, agent briefings, the Downloads inbox, the Decision \
              Inbox, skills, scheduled automations, execution trace, brain memory health, \
              build coding sessions or browser bookmarks, world workers, settings \
              configuration, or what is happening overall. It does not require navigation and \
@@ -1991,9 +2098,11 @@ impl AppPerceptionClient {
              are unavailable. If a project returns no events, say the collector is not \
              installed for it rather than that the data does not exist.\n\n\
              surface: analytics | projects | people | goals | cards | spend | sessions | briefings | \
-             grow | inbox | decision_inbox | skills | automate | trace | brain | build | \
+             grow | finance | inbox | decision_inbox | skills | automate | trace | brain | build | \
              world | settings | overview. `inbox` is the Downloads intake folder (files from \
              the in-app browser); `decision_inbox` is what is waiting on the user's approval. \
+             `finance` is the Finance tab ledger (watchlist, notes, positions, household spend — \
+             not live quotes and not an order). \
              `people` is the CRM directory (names, roles, companies, last contact, recent \
              meetings — never emails or phone numbers). To open a person in the app, \
              navigate_app to the People tab with state: { \"person\": \"<display name>\" }. \
@@ -2153,6 +2262,35 @@ mod tests {
         assert_eq!(value["limit"], LIST_LIMIT);
         assert_eq!(value["total"], 54);
         assert_eq!(value["truncated"], true);
+    }
+
+    #[tokio::test]
+    async fn observe_finance_reads_the_ledger_and_missing_schema_is_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = test_client(dir.path().to_path_buf());
+        let pool = memory_pool().await;
+        assert_eq!(client.observe_finance(&pool).await["status"], "unavailable");
+
+        crate::session::spectral_schema::apply_finance_ledger_schema(&pool)
+            .await
+            .unwrap();
+        crate::session::spectral_schema::apply_finance_spend_schema(&pool)
+            .await
+            .unwrap();
+        let empty = client.observe_finance(&pool).await;
+        assert_eq!(empty["status"], "empty");
+        assert_eq!(empty["data"]["open_positions"], 0);
+        assert_eq!(empty["data"]["watchlist"]["total"], 0);
+
+        crate::finance_ledger::add_watchlist(&pool, "SHOP", None, None)
+            .await
+            .unwrap();
+        let payload = client.observe_finance(&pool).await;
+        assert_eq!(payload["status"], "available");
+        assert_eq!(payload["data"]["watchlist"]["total"], 1);
+        assert_eq!(payload["data"]["watchlist"]["items"][0]["symbol"], "SHOP");
+        let encoded = payload.to_string();
+        assert!(!encoded.contains("place an order"));
     }
 
     #[tokio::test]

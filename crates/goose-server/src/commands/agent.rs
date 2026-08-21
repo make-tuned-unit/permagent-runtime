@@ -68,6 +68,11 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
             Ok(false) => {}
             Err(e) => tracing::warn!("Failed to add People workspace: {}", e),
         }
+        match permagent::workspaces::ensure_finance_workspace(&pool).await {
+            Ok(true) => info!("Added Finance workspace for existing user"),
+            Ok(false) => {}
+            Err(e) => tracing::warn!("Failed to add Finance workspace: {}", e),
+        }
         // Normalize preset sidebar order to the code-owned canon (runs every
         // start; user-created workspaces untouched).
         match permagent::workspaces::ensure_canonical_workspace_order(&pool).await {
@@ -177,6 +182,10 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
     // user-only via the Decision Inbox); no-ops unless `steward_scan_enabled`
     // is set, and says so in the log either way.
     crate::steward_sweep::spawn(app_state.clone());
+
+    // RSI-14 heat on open holdings. Daily dedup; copy names the threshold,
+    // never a sell. Independent of the Finance GET poll.
+    crate::finance_rsi_sweep::spawn(app_state.clone());
 
     // Central notification policy (#66): classify workflow facts once, then
     // route them according to the user's channel thresholds.

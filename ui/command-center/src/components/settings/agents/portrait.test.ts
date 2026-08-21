@@ -47,7 +47,7 @@ describe('agent portrait spec', () => {
       .map(identity => agentIdForWorldAgent(identity.id))
       .filter((id): id is string => id !== null);
     const variants = reachable.map(id => portraitSpec(id).variant).sort();
-    expect(variants).toEqual(['librarian', 'steward', 'strix', 'watcher']);
+    expect(variants).toEqual(['financier', 'librarian', 'steward', 'strix', 'watcher']);
     // …and the world's own characters that no agent id reaches get no variant.
     expect(portraitSpec('henry').variant).toBe('unknown');
     expect(portraitSpec('reader').variant).toBe('unknown');

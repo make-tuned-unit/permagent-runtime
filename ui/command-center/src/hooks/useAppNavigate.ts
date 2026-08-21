@@ -127,7 +127,7 @@ function dispatchClipboard(payload: { text?: string; reason?: string }) {
 // (setActivePanel) instead. Listing 'trace' here made navigate_app("Trace")
 // fall into the tool-host search, which no-ops because nothing hosts it.
 const VALID_TOOL_TYPES = new Set<string>([
-  'chat', 'skills', 'world', 'terminal', 'browser', 'memory', 'dashboard', 'build', 'automate', 'projects', 'people', 'grow',
+  'chat', 'skills', 'world', 'terminal', 'browser', 'memory', 'dashboard', 'build', 'automate', 'projects', 'people', 'grow', 'finance',
 ]);
 
 /** Legacy Console overlay tool_types → the Settings section that replaced

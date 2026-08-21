@@ -314,14 +314,29 @@ async function connect(): Promise<void> {
             break;
           }
           case 'proactive_nudge': {
+            const p = (evt.payload ?? {}) as {
+              kind?: string; message?: string; subject?: string;
+              url?: string; link?: string; source_url?: string;
+            };
+            // Holding overbought signals are a Finance-tab fact, not a Watcher
+            // thread. They still arrive as proactive_nudge so the tray/OS path
+            // is one, but clicking opens Finance. Copy is a sell *signal*,
+            // never an order.
+            if (p.kind === 'rsi_heat' || p.kind === 'sell_signal') {
+              if (prefs.echo || prefs.system) {
+                push({
+                  kind: 'echo',
+                  title: p.kind === 'sell_signal' ? 'Sell signal' : 'RSI heat',
+                  body: p.message ?? `Overbought signal on ${p.subject ?? 'a holding'}`,
+                  target: 'finance',
+                });
+              }
+              break;
+            }
             // Echo / the Watcher (#672): Henry resurfaces a dormant thread (news
             // + analytics later). The daemon owns the gentle once-a-day budget,
             // so anything that arrives here is meant to be seen.
             if (prefs.echo) {
-              const p = (evt.payload ?? {}) as {
-                kind?: string; message?: string; subject?: string;
-                url?: string; link?: string; source_url?: string;
-              };
               // If the nudge carries a source link (project news), clicking the
               // notification opens it in the in-app browser on the Build tab.
               // Fallback target by nudge kind: a dormant thread lives in the

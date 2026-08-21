@@ -278,6 +278,7 @@ export type RigVariant =
   | 'watcher'
   | 'steward'
   | 'strix'
+  | 'financier'
   | null;
 
 /**
@@ -403,6 +404,17 @@ function gearChunks(
       trim.push({ geo: torus(0.11, 0.012, 5, 16), p: [0, 1.5, 0], r: [1.57, 0, 0], bone: 'spine' });
       // The scanning lens — emissive, driven by state.
       state.push({ geo: sphere(0.035, 8, 6), p: [0, -0.28, 0.11], bone: 'armL' });
+      break;
+    }
+    case 'financier': {
+      // Ledger tablet at the hip + a coin on a chain. The tablet's face sits
+      // on the STATE channel so a live quote fetch actually lights it.
+      metal.push(
+        { geo: box(0.12, 0.16, 0.02), p: [0.22, 0.78, 0.08], r: [0.1, 0.3, 0.15], bone: 'spine', color: DARK },
+        { geo: torus(0.035, 0.008, 6, 14), p: [-0.2, 0.72, 0.1], r: [1.2, 0, 0], bone: 'spine', color: BRONZE },
+      );
+      trim.push({ geo: torus(0.1, 0.01, 5, 16), p: [0, 1.5, 0], r: [1.57, 0, 0], bone: 'spine' });
+      state.push({ geo: sphere(0.028, 8, 6), p: [0.22, 0.78, 0.1], bone: 'spine' });
       break;
     }
   }

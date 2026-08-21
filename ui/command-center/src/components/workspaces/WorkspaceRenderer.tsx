@@ -15,6 +15,7 @@ import { ErrorBoundary } from '../common/ErrorBoundary';
 import { Dashboard } from '../dashboard/Dashboard';
 import { BuildView } from '../build/BuildView';
 import { GrowView } from '../grow/GrowView';
+import { FinanceView } from '../finance/FinanceView';
 import { AutomateView } from '../automate/AutomateView';
 import { ProjectsView } from '../projects/ProjectsView';
 import { PeopleView } from '../people/PeopleView';
@@ -30,6 +31,7 @@ const TOOL_COMPONENTS: Record<ToolType, React.ComponentType> = {
   dashboard: Dashboard,
   build: BuildView,
   grow: GrowView,
+  finance: FinanceView,
   automate: AutomateView,
   projects: ProjectsView,
   people: PeopleView,

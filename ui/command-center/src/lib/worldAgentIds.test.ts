@@ -34,7 +34,7 @@ describe('world ↔ agents id bridge', () => {
   });
 
   it('round-trips every mapped id', () => {
-    for (const worldId of ['librarian', 'watcher', 'steward', 'strix']) {
+    for (const worldId of ['librarian', 'watcher', 'steward', 'strix', 'financier']) {
       const agentId = agentIdForWorldAgent(worldId);
       expect(agentId).not.toBeNull();
       expect(worldAgentIdForAgent(agentId as string)).toBe(worldId);

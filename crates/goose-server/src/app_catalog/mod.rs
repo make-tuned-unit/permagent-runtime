@@ -53,6 +53,11 @@ mod tests {
             .expect("Grow must be in the navigate_app catalog");
         assert_eq!(grow.tool_type, "grow");
 
+        let finance = catalog
+            .find_by_name("Finance")
+            .expect("Finance must be in the navigate_app catalog");
+        assert_eq!(finance.tool_type, "finance");
+
         let people = catalog
             .find_by_name("People")
             .expect("People must be in the navigate_app catalog");
