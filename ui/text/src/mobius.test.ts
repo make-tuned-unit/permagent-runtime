@@ -19,4 +19,16 @@ describe("möbius intro", () => {
       .join("");
     assert.match(text, /[\u2800-\u28FF]/);
   });
+
+  it("settles on the Permagent brand cyan, not a white/gray fallback", () => {
+    const settled = getMobiusIntroFrame(MOBIUS_INTRO_FRAMES - 1);
+    const colors = new Set(
+      settled.flatMap((runs) => runs.map((r) => r.color.toUpperCase())),
+    );
+    assert.ok(colors.has("#00D5FF"), `brand cyan missing: ${[...colors]}`);
+    assert.ok(
+      ![...colors].every((c) => c === "#FFFFFF" || c === "#444444"),
+      "ribbon collapsed to white/wait",
+    );
+  });
 });

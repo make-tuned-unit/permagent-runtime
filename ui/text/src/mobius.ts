@@ -7,20 +7,17 @@ export const MOBIUS_SAMPLES = 360;
 export const MOBIUS_INTRO_FRAMES = 45; // 0..=44 in the CLI
 export const MOBIUS_INTERVAL_MS = 26;
 
-/** xterm-256 ribbon [51, 50, 44, 45, 39, 33, 63, 99, 135, 141, 171, 177] as hex. */
+/** Brand ribbon: cyan #00D5FF → purple #A855CC (tokens.ts), not the 256-color
+ *  approximation. Truecolor hex so Ink/xterm paint the same colors as the GUI. */
 const RIBBON = [
-  "#00FFFF",
-  "#00FFD7",
-  "#00D7D7",
-  "#00D7FF",
-  "#00AFFF",
-  "#0087FF",
-  "#5F5FFF",
-  "#875FFF",
-  "#AF5FFF",
-  "#AF87FF",
-  "#D75FFF",
-  "#D787FF",
+  "#00D5FF",
+  "#00B8F5",
+  "#3D8AE8",
+  "#5B6ED4",
+  "#7A55C4",
+  "#8D44AE",
+  "#A855CC",
+  "#C893E0",
 ];
 const HOT = "#FFFFFF";
 const WAIT = "#444444";

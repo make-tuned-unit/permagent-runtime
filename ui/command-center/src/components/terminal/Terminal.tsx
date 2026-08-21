@@ -158,6 +158,10 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         customGlyphs: true,
         rescaleOverlappingGlyphs: true,
         drawBoldTextInBrightColors: false,
+        // 1 = off. Anything higher rewrites 256/truecolor toward the default
+        // fg so Claude's orange ✻, Cursor's palette, and the Permagent ribbon
+        // all collapse to white-on-dark / gray-on-light.
+        minimumContrastRatio: 1,
       });
 
       const fitAddon = new FitAddon();

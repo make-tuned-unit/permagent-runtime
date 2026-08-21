@@ -424,7 +424,10 @@ impl Highlighter for GooseCompleter {
         prompt: &'p str,
         _default: bool,
     ) -> Cow<'b, str> {
-        Cow::Borrowed(prompt)
+        // Brand cyan (#00D5FF) so the ∞ prompt is the same color as the GUI
+        // accent — rustyline otherwise prints it in the default fg, which is
+        // how the "rudimentary" uncolored prompt happened.
+        Cow::Owned(format!("\x1b[38;2;0;213;255m{prompt}\x1b[0m"))
     }
 
     fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
