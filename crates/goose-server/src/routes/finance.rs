@@ -15,6 +15,7 @@ use axum::{
 use permagent::finance_ledger::{self, NewPosition};
 use permagent::finance_statements;
 use permagent::market_data::{self, FundamentalsError, Quote};
+use permagent::overbought::{self, OverboughtReading};
 use permagent::pick_loop::{self, LoopGate};
 use permagent::picker::{self, TradeEntry, TradeRow};
 use serde::{Deserialize, Serialize};
@@ -157,6 +158,8 @@ struct HoldingRow {
     unrealized_pct: Option<f64>,
     realized: Option<f64>,
     rsi: Option<f64>,
+    sell_signal: bool,
+    overbought_signs: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -201,10 +204,12 @@ struct FundamentalsView {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct RsiAlert {
+struct SellSignal {
     symbol: String,
-    rsi: f64,
-    threshold: f64,
+    rsi: Option<f64>,
+    rsi_threshold: f64,
+    signs: Vec<String>,
+    summary: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -224,7 +229,7 @@ struct FinanceBoard {
     positions: Vec<finance_ledger::Position>,
     picker: PickerView,
     picks: Vec<ValidatedPick>,
-    rsi_alerts: Vec<RsiAlert>,
+    sell_signals: Vec<SellSignal>,
     rsi_threshold: f64,
     household: HouseholdView,
 }
@@ -297,7 +302,7 @@ async fn get_board(
     let picker = PickerView::from(picker::status().await);
     let polybot = permagent::polybot::status();
 
-    let (holdings, rsi_alerts) = assemble_holdings(&positions, rsi_threshold()).await;
+    let (holdings, sell_signals) = assemble_holdings(&positions, rsi_threshold()).await;
     let picks = assemble_picks(&picker).await;
 
     let recent = finance_ledger::list_transactions(&pool, 80)
@@ -324,7 +329,7 @@ async fn get_board(
         positions,
         picker,
         picks,
-        rsi_alerts,
+        sell_signals,
         rsi_threshold: rsi_threshold(),
         household: HouseholdView { recent, forecast },
     }))
@@ -333,7 +338,7 @@ async fn get_board(
 async fn assemble_holdings(
     local: &[finance_ledger::Position],
     threshold: f64,
-) -> (HoldingsView, Vec<RsiAlert>) {
+) -> (HoldingsView, Vec<SellSignal>) {
     let picker_trades = picker::trades().await.ok().map(|raw| {
         raw.iter()
             .filter_map(picker::parse_trade_row)
@@ -358,11 +363,25 @@ async fn assemble_holdings(
     }
     let quotes = quote_map(&unique).await;
 
+    let mut readings: HashMap<String, OverboughtReading> = HashMap::new();
+    for (i, sym) in unique.iter().enumerate() {
+        if i >= 10 {
+            break;
+        }
+        let high = quotes
+            .get(sym)
+            .and_then(|q| q.as_ref().ok())
+            .and_then(|q| q.fifty_two_week_high);
+        if let Ok(closes) = market_data::daily_closes(sym, "6mo").await {
+            readings.insert(sym.clone(), overbought::assess(&closes, high, threshold));
+        }
+    }
+
     let mut rows = Vec::new();
     let mut net_unrealized = 0.0;
     let mut net_realized = 0.0;
     let mut open_count = 0usize;
-    let mut alerts = Vec::new();
+    let mut sell_signals = Vec::new();
 
     for seed in rows_src {
         let (quote, quote_error) = match quotes.get(&seed.symbol) {
@@ -392,20 +411,22 @@ async fn assemble_holdings(
                     (None, None, None)
                 }
             };
-        let rsi = if seed.exit_date.is_none() && unique.iter().take(10).any(|s| s == &seed.symbol) {
-            match market_data::daily_closes(&seed.symbol, "6mo").await {
-                Ok(closes) => pick_loop::rsi_14(&closes),
-                Err(_) => None,
-            }
-        } else {
-            None
-        };
-        if let Some(rsi) = rsi {
-            if rsi >= threshold && !alerts.iter().any(|a: &RsiAlert| a.symbol == seed.symbol) {
-                alerts.push(RsiAlert {
+        let reading = readings.get(&seed.symbol);
+        let rsi = reading.and_then(|r| r.rsi);
+        let sell_signal = reading.map(|r| r.signal).unwrap_or(false);
+        let overbought_signs = reading.map(|r| r.signs.clone()).unwrap_or_default();
+        if sell_signal
+            && !sell_signals
+                .iter()
+                .any(|a: &SellSignal| a.symbol == seed.symbol)
+        {
+            if let Some(r) = reading {
+                sell_signals.push(SellSignal {
                     symbol: seed.symbol.clone(),
-                    rsi,
-                    threshold,
+                    rsi: r.rsi,
+                    rsi_threshold: r.rsi_threshold,
+                    signs: r.signs.clone(),
+                    summary: r.summary(&seed.symbol),
                 });
             }
         }
@@ -427,6 +448,8 @@ async fn assemble_holdings(
             unrealized_pct,
             realized,
             rsi,
+            sell_signal,
+            overbought_signs,
         });
     }
 
@@ -440,7 +463,7 @@ async fn assemble_holdings(
             net_pnl,
             rows,
         },
-        alerts,
+        sell_signals,
     )
 }
 

@@ -209,9 +209,14 @@ impl FinanceClient {
                  finance_note_update / finance_note_delete, and finance_position_add / \
                  finance_position_close / finance_position_delete write the ledger. Call \
                  finance_board before changing anything so you are editing the live board.\n\n\
-                 Holdings and bank balances NEVER go into the Picker ranker. RSI heat \
-                 names the threshold ('RSI 78 on SHOP — above your 74 threshold') and \
-                 never says to sell.\n\n\
+                 Holdings and bank balances NEVER go into the Picker ranker. \
+                 holding_sell_signals reads Yahoo daily closes on OPEN lots only \
+                 and reports overbought sell signals (RSI-14 vs your threshold, \
+                 stochastic, stretch above the 20-day average, upper Bollinger \
+                 band, proximity to the 52-week high). Call it when the user asks \
+                 whether a holding looks overbought or whether there is a sell \
+                 signal. Report the signs. A signal is not an order and is not a \
+                 position size.\n\n\
                  The picker_* tools drive the user's OWN stock scanner and only exist if \
                  they run one: call picker_status first, since it is often not running and \
                  picker_start brings it up. picker_scan takes many minutes. record_trade \
@@ -459,13 +464,22 @@ impl FinanceClient {
         ))]))
     }
 
+    async fn handle_sell_signals(&self) -> std::result::Result<CallToolResult, String> {
+        let pool = self.pool().await?;
+        let threshold = crate::overbought::rsi_threshold();
+        let lots = crate::overbought::assess_open_lots(&pool, threshold).await?;
+        Ok(CallToolResult::success(vec![Content::text(
+            crate::overbought::describe_open_lots(&lots),
+        )]))
+    }
+
     async fn handle_board(&self) -> std::result::Result<CallToolResult, String> {
         let pool = self.pool().await?;
         let watchlist = crate::finance_ledger::list_watchlist(&pool).await?;
         let notes = crate::finance_ledger::list_notes(&pool).await?;
         let positions = crate::finance_ledger::list_positions(&pool).await?;
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Finance tab ledger.\n\nWatchlist ({}):\n{}\n\nNotes ({}):\n{}\n\nPositions ({}):\n{}\n\nThis is the ledger, not live prices — use research_ticker for a quote.",
+            "Finance tab ledger.\n\nWatchlist ({}):\n{}\n\nNotes ({}):\n{}\n\nPositions ({}):\n{}\n\nThis is the ledger, not live prices — research_ticker for a quote, holding_sell_signals for overbought sell signals on open lots.",
             watchlist.len(),
             serde_json::to_string_pretty(&watchlist).unwrap_or_default(),
             notes.len(),
@@ -759,6 +773,18 @@ impl FinanceClient {
                     .to_string(),
                 schema::<NoParams>(),
             ),
+            Tool::new(
+                "holding_sell_signals".to_string(),
+                "Overbought sell signals on OPEN holdings only: RSI-14 vs the user's \
+                 threshold, stochastic %K, stretch above the 20-day average, upper \
+                 Bollinger band, and proximity to the 52-week high, from Yahoo daily \
+                 closes. Holdings never go into the Picker ranker. Call this when the \
+                 user asks if a position looks overbought or whether there is a sell \
+                 signal. Report the signs. A signal is not an order and not a size — \
+                 you cannot place an order."
+                    .to_string(),
+                schema::<NoParams>(),
+            ),
         ]
     }
 }
@@ -804,6 +830,7 @@ impl McpClientTrait for FinanceClient {
             "picker_top_picks" => self.handle_top_picks().await,
             "record_trade" => self.handle_record_trade(arguments).await,
             "list_trades" => self.handle_trades().await,
+            "holding_sell_signals" => self.handle_sell_signals().await,
             _ => Err(format!("Unknown tool: {}", name)),
         };
         announce("available");
@@ -837,8 +864,10 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
              finance_position_add / finance_position_close / finance_position_delete). If \
              the user runs their own stock scanner, picker_status / picker_start / \
              picker_scan / picker_top_picks drive it and record_trade / list_trades keep \
-             that history. Picker picks are gated on the tab by Yahoo plus a loop-engineering \
-             check; holdings never feed the ranker. Reports timestamped numbers; never sizes \
+             that history. holding_sell_signals reports overbought sell signals on open \
+             lots (RSI, stochastic, 20-day stretch, Bollinger, 52-week high) without \
+             feeding holdings into the ranker. Picker picks are gated on the tab by Yahoo \
+             plus a loop-engineering check. Reports timestamped numbers; never sizes \
              a position and cannot place an order",
         why_it_matters:
             "A price stated from memory is months stale. The Financier grounds every number \
@@ -855,8 +884,9 @@ pub const FINANCE_TAB_FEATURE: crate::agents::self_knowledge::FeatureDescriptor 
         display_name: "Finance tab",
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
         what_it_does: "The Financier's money board: Polybot status, holdings with live P&L, \
-             Picker picks gated by Yahoo plus a loop-engineering check, RSI-14 heat on \
-             open holdings, household spend from dropped statements, a watchlist with live \
+             Picker picks gated by Yahoo plus a loop-engineering check, overbought sell \
+             signals on open holdings (RSI-14, stochastic, 20-day stretch, Bollinger, \
+             52-week high), household spend from dropped statements, a watchlist with live \
              quotes, research notes, and a trade journal. Start the scanner, run a scan, \
              and record, edit, or close trades on this tab — you do not have to open Picker \
              to enter trade data. The Financier writes the same rows through its tools. \
@@ -909,6 +939,7 @@ mod tests {
             );
         }
         assert!(names.contains(&"record_trade".to_string()));
+        assert!(names.contains(&"holding_sell_signals".to_string()));
     }
 
     #[test]

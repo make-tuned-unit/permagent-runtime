@@ -327,16 +327,17 @@ pub fn entry_from_event(event: &PermagentEvent) -> Option<NewEntry> {
                 "dormant_thread" => format!("Resurfaced '{}'", truncate(subject, 80)),
                 "project_news" => format!("News: {}", truncate(subject, 80)),
                 "rsi_heat" => format!("RSI heat: {}", truncate(subject, 80)),
+                "sell_signal" => format!("Sell signal: {}", truncate(subject, 80)),
                 _ => format!("Nudge: {}", truncate(subject, 80)),
             };
-            let actor = if nudge_kind == "rsi_heat" {
+            let actor = if matches!(nudge_kind, "rsi_heat" | "sell_signal") {
                 Actor::resolve("financier")
             } else {
                 Actor::resolve("watcher")
             };
             let (ref_kind, ref_id) = if nudge_kind == "dormant_thread" {
                 (Some("memory"), Some(subject.to_string()))
-            } else if nudge_kind == "rsi_heat" {
+            } else if matches!(nudge_kind, "rsi_heat" | "sell_signal") {
                 (Some("symbol"), Some(subject.to_string()))
             } else if let Some(url) = payload_str(event, "url").filter(|url| !url.is_empty()) {
                 (Some("url"), Some(url.to_string()))
@@ -884,6 +885,21 @@ mod tests {
         assert_eq!(rsi.ref_kind.as_deref(), Some("symbol"));
         assert_eq!(rsi.ref_id.as_deref(), Some("SHOP"));
         assert!(rsi.detail.as_deref().unwrap().contains("above your 74"));
+
+        let sell = entry_from_event(&events::proactive_nudge(
+            "sell_signal",
+            "SHOP",
+            "Sell signal on SHOP — RSI 78 — above your 74 threshold. A signal, not an order.",
+            1,
+            "2026-08-21T10:00:00.000Z",
+            None,
+            None,
+        ))
+        .unwrap();
+        assert_eq!(sell.title, "Sell signal: SHOP");
+        assert_eq!(sell.actor.as_str(), "financier");
+        assert_eq!(sell.ref_kind.as_deref(), Some("symbol"));
+        assert!(sell.detail.as_deref().unwrap().contains("not an order"));
     }
 
     #[tokio::test]

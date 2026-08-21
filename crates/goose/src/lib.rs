@@ -60,6 +60,7 @@ pub mod model;
 pub mod oauth;
 #[cfg(feature = "otel")]
 pub mod otel;
+pub mod overbought;
 pub mod people;
 pub mod people_bridge;
 pub mod people_create;

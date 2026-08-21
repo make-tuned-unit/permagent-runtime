@@ -1,7 +1,7 @@
 /**
  * Finance — money board. Polybot status, holdings with live P&L, Picker
- * picks run through Yahoo + a loop-engineering gate, RSI heat on open
- * holdings, household spend, then the research ledger. Research, not a
+ * picks run through Yahoo + a loop-engineering gate, overbought sell
+ * signals on open holdings, household spend, then the research ledger. Research, not a
  * brokerage: nothing here places an order. The Picker ranker never sees
  * holdings or bank balances.
  */
@@ -101,6 +101,8 @@ interface HoldingRow {
   unrealizedPct?: number | null;
   realized?: number | null;
   rsi?: number | null;
+  sellSignal?: boolean;
+  overboughtSigns?: string[];
 }
 
 interface HoldingsView {
@@ -146,10 +148,12 @@ interface ValidatedPick {
   loop?: LoopGate | null;
 }
 
-interface RsiAlert {
+interface SellSignal {
   symbol: string;
-  rsi: number;
-  threshold: number;
+  rsi?: number | null;
+  rsiThreshold: number;
+  signs: string[];
+  summary: string;
 }
 
 interface Transaction {
@@ -265,7 +269,7 @@ interface FinanceBoard {
   positions: Position[];
   picker: PickerStatus;
   picks: ValidatedPick[];
-  rsiAlerts: RsiAlert[];
+  sellSignals: SellSignal[];
   rsiThreshold: number;
   household: HouseholdView;
 }
@@ -378,7 +382,7 @@ export function FinanceView() {
               setDraft={setDraft}
               onRecorded={(hint) => { if (hint) setError(hint); }}
             />
-            <RsiHeatSection alerts={board.rsiAlerts} threshold={board.rsiThreshold} colors={colors} />
+            <SellSignalsSection signals={board.sellSignals} threshold={board.rsiThreshold} colors={colors} />
             <PicksSection
               board={board}
               colors={colors}
@@ -658,7 +662,7 @@ function HoldingsSection({
             <tbody>
               {rows.map((p) => {
                 const closed = Boolean(p.exitDate);
-                const rsiHot = !closed && p.rsi != null && p.rsi >= rsiThreshold;
+                const rsiHot = Boolean(p.sellSignal) || (!closed && p.rsi != null && p.rsi >= rsiThreshold);
                 const pnl = closed ? p.realized : p.unrealized;
                 return (
                   <tr key={p.id} style={closed ? { opacity: 0.65 } : undefined}>
@@ -685,6 +689,9 @@ function HoldingsSection({
                     </td>
                     <td style={{ ...td(colors), color: rsiHot ? colors.danger : colors.text }}>
                       {p.rsi != null ? p.rsi.toFixed(1) : '—'}
+                      {p.sellSignal ? (
+                        <div style={{ ...type.micro, color: colors.danger }}>sell signal</div>
+                      ) : null}
                     </td>
                     <td style={{ ...td(colors), ...type.micro, color: colors.textMuted }}>{p.notes || '—'}</td>
                     <td style={td(colors)}>
@@ -765,28 +772,31 @@ function LotActions({
   );
 }
 
-function RsiHeatSection({
-  alerts, threshold, colors,
+function SellSignalsSection({
+  signals, threshold, colors,
 }: {
-  alerts: RsiAlert[];
+  signals: SellSignal[];
   threshold: number;
   colors: ThemeColors;
 }) {
   return (
     <section>
-      <SectionTitle colors={colors}>RSI heat</SectionTitle>
+      <SectionTitle colors={colors}>Sell signals</SectionTitle>
       <p style={{ ...type.micro, color: colors.textMuted, margin: '0 0 8px' }}>
-        Threshold {threshold} on open holdings only. Names the number — never a sell.
+        Open holdings only. RSI-14 ≥ {threshold}, or two of: stochastic %K ≥ 80, 8% above the 20-day average, upper Bollinger band, within 2% of the 52-week high. A signal, not an order — nothing here sells.
       </p>
-      {alerts.length === 0 ? (
+      {signals.length === 0 ? (
         <p style={{ ...type.micro, color: colors.textMuted, margin: 0 }}>
-          No open holding is at or above the threshold.
+          No open holding is showing overbought signs.
         </p>
       ) : (
         <ul style={{ margin: 0, paddingLeft: 18 }}>
-          {alerts.map((a) => (
-            <li key={a.symbol} style={{ ...type.body, color: colors.danger }}>
-              RSI {a.rsi.toFixed(0)} on {a.symbol} — above your {a.threshold} threshold
+          {signals.map((a) => (
+            <li key={a.symbol} style={{ ...type.body, color: colors.danger, marginBottom: 8 }}>
+              <div>{a.summary}</div>
+              {a.signs.length > 0 && (
+                <div style={{ ...type.micro, color: colors.textMuted }}>{a.signs.join(' · ')}</div>
+              )}
             </li>
           ))}
         </ul>

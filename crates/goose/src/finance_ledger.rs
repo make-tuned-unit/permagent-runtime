@@ -15,7 +15,7 @@ fn now_iso() -> String {
 
 /// Config key for the holdings RSI-14 heat threshold (default 74).
 pub const RSI_THRESHOLD_KEY: &str = "finance_rsi_threshold";
-/// Default RSI-14 threshold. Alert copy names this number, never a sell.
+/// Default RSI-14 threshold. One of the overbought signs on open lots.
 pub const DEFAULT_RSI_THRESHOLD: f64 = 74.0;
 
 /// Uppercase ticker the ledger keys on. Empty / whitespace is refused.
