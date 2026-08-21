@@ -65,7 +65,7 @@ fn dev_scan_roots(home: &Path) -> Vec<(PathBuf, u32)> {
         for base in [home.to_path_buf(), home.join("Documents")] {
             let p = base.join(name);
             if p.is_dir() {
-                roots.push((p, 4));
+                roots.push((p, 6));
             }
         }
     }
@@ -73,17 +73,19 @@ fn dev_scan_roots(home: &Path) -> Vec<(PathBuf, u32)> {
     for extra in ["Developer", "Documents/GitHub"] {
         let p = home.join(extra);
         if p.is_dir() {
-            roots.push((p, 4));
+            roots.push((p, 6));
         }
     }
 
     if roots.is_empty() {
         // Fallback: walk `home`, skipping irrelevant subdirs.
         //
-        // Depth 4, not 3. A repo one folder deep — `Documents/dev/<repo>/target`
-        // — needs four levels, and at 3 the walk stopped one short of exactly
-        // the directories this scanner exists to find.
-        roots.push((home.to_path_buf(), 4));
+        // Depth 6, not 3. A repo one folder deep — `Documents/dev/<repo>/target`
+        // — needs four levels; a nested package such as
+        // `Documents/dev/<repo>/ui/desktop/src-tauri/target` needs six, and
+        // at 3 the walk stopped one short of exactly the directories this
+        // scanner exists to find.
+        roots.push((home.to_path_buf(), 6));
     }
     roots
 }
@@ -110,8 +112,16 @@ fn should_skip_dev_dir(path: &Path, home: &Path) -> bool {
 
 // ── Individual scanners ─────────────────────────────────────────
 
+/// Minimum size before a cache dir is worth reporting.
+const DEV_CACHE_MIN_BYTES: u64 = 10_000_000;
+
 /// Scan for cargo target/ directories (with Cargo.toml sibling)
 /// and node_modules/ directories (with package.json sibling).
+///
+/// Also reports cargo target *farms* that are not named `target` next to a
+/// Cargo.toml — per-lane `.shared-target/<lane>` trees and Cursor sandbox
+/// `cursor-sandbox-cache/*/cargo-target` dirs. Those two layouts held >100 GB
+/// on 2026-08-21 while this scan reported a clean disk.
 pub fn scan_dev_caches(counter: &mut u32) -> Vec<ScanFinding> {
     // Confirmed roots are resolved HERE, at the impure entry point, and never
     // inside `scan_dev_caches_in` — that function takes its root as a
@@ -120,10 +130,22 @@ pub fn scan_dev_caches(counter: &mut u32) -> Vec<ScanFinding> {
     // or the real $HOME from inside it made three tests depend on the machine
     // they ran on.
     let confirmed = crate::config::dev_roots::dev_roots();
-    if !confirmed.is_empty() {
-        return scan_dev_caches_in_roots(&confirmed, counter);
-    }
-    scan_dev_caches_in(&home_dir(), counter)
+    let mut findings = if !confirmed.is_empty() {
+        scan_dev_caches_in_roots(&confirmed, counter)
+    } else {
+        scan_dev_caches_in(&home_dir(), counter)
+    };
+    // Sidecar farms live next to worktrees and under $TMPDIR, not inside a
+    // confirmed repo root. Always look — a confirmed-root-only walk is what
+    // missed them in the first place.
+    findings.extend(scan_sidecar_cargo_targets_in(
+        &home_dir(),
+        &std::env::temp_dir(),
+        counter,
+    ));
+    dedup_findings_by_path(&mut findings);
+    findings.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+    findings
 }
 
 /// Scan an explicit set of roots — the user's confirmed code directories.
@@ -170,24 +192,19 @@ fn scan_dev_caches_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> {
                 continue;
             }
 
+            // Per-lane cargo target farm. Each child is a CARGO_TARGET_DIR, not
+            // a directory named `target` next to Cargo.toml — the old check
+            // walked right past these.
+            if name == ".shared-target" {
+                findings.extend(scan_shared_target_lanes(path, counter));
+                continue;
+            }
+
             // Cargo target/ with Cargo.toml sibling
             if name == "target" {
                 if let Some(parent) = path.parent() {
                     if parent.join("Cargo.toml").exists() {
-                        let sz = size::dir_size(path);
-                        if sz > 10_000_000 {
-                            // >10MB to be worth reporting
-                            *counter += 1;
-                            findings.push(ScanFinding {
-                                id: format!("finding-{:03}", counter),
-                                finding_type: "dev_cache".to_string(),
-                                path: path.to_string_lossy().to_string(),
-                                size_bytes: sz,
-                                age_days: size::age_days(path),
-                                recommendation: safety::recommendation_for("dev_cache").to_string(),
-                            });
-                            debug!("dev_cache: {} ({} bytes)", path.display(), sz);
-                        }
+                        push_dev_cache(&mut findings, counter, path, true);
                     }
                 }
             }
@@ -196,19 +213,7 @@ fn scan_dev_caches_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> {
             if name == "node_modules" {
                 if let Some(parent) = path.parent() {
                     if parent.join("package.json").exists() {
-                        let sz = size::dir_size(path);
-                        if sz > 10_000_000 {
-                            *counter += 1;
-                            findings.push(ScanFinding {
-                                id: format!("finding-{:03}", counter),
-                                finding_type: "dev_cache".to_string(),
-                                path: path.to_string_lossy().to_string(),
-                                size_bytes: sz,
-                                age_days: size::age_days(path),
-                                recommendation: safety::recommendation_for("dev_cache").to_string(),
-                            });
-                            debug!("dev_cache: {} ({} bytes)", path.display(), sz);
-                        }
+                        push_dev_cache(&mut findings, counter, path, true);
                     }
                 }
             }
@@ -217,6 +222,113 @@ fn scan_dev_caches_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> {
 
     // Sort largest first
     findings.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+    findings
+}
+
+fn push_dev_cache(
+    findings: &mut Vec<ScanFinding>,
+    counter: &mut u32,
+    path: &Path,
+    check_exclude: bool,
+) {
+    if check_exclude && safety::is_excluded(path) {
+        return;
+    }
+    let sz = size::dir_size(path);
+    if sz <= DEV_CACHE_MIN_BYTES {
+        return;
+    }
+    *counter += 1;
+    findings.push(ScanFinding {
+        id: format!("finding-{:03}", counter),
+        finding_type: "dev_cache".to_string(),
+        path: path.to_string_lossy().to_string(),
+        size_bytes: sz,
+        age_days: size::age_days(path),
+        recommendation: safety::recommendation_for("dev_cache").to_string(),
+    });
+    debug!("dev_cache: {} ({} bytes)", path.display(), sz);
+}
+
+fn dedup_findings_by_path(findings: &mut Vec<ScanFinding>) {
+    let mut seen = std::collections::HashSet::new();
+    findings.retain(|f| seen.insert(f.path.clone()));
+}
+
+/// Report each lane under a `.shared-target` directory.
+fn scan_shared_target_lanes(dir: &Path, counter: &mut u32) -> Vec<ScanFinding> {
+    let mut findings = Vec::new();
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return findings,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            push_dev_cache(&mut findings, counter, &path, true);
+        }
+    }
+    findings
+}
+
+/// Cargo target farms that a repo-root walk never reaches: `.shared-target`
+/// next to worktrees, and Cursor's `$TMPDIR/cursor-sandbox-cache/*/cargo-target`.
+fn scan_sidecar_cargo_targets_in(home: &Path, tmp: &Path, counter: &mut u32) -> Vec<ScanFinding> {
+    let mut findings = Vec::new();
+    let conventional = ["dev", "code", "src", "projects", "repos", "workspace"];
+    for name in &conventional {
+        for base in [home.to_path_buf(), home.join("Documents")] {
+            collect_shared_target_farms(&base.join(name), &mut findings, counter);
+        }
+    }
+    findings.extend(scan_cursor_sandbox_targets_in(tmp, counter));
+    findings
+}
+
+fn collect_shared_target_farms(
+    code_root: &Path,
+    findings: &mut Vec<ScanFinding>,
+    counter: &mut u32,
+) {
+    if !code_root.is_dir() {
+        return;
+    }
+    let direct = code_root.join(".shared-target");
+    if direct.is_dir() {
+        findings.extend(scan_shared_target_lanes(&direct, counter));
+    }
+    let entries = match fs::read_dir(code_root) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let shared = entry.path().join(".shared-target");
+        if shared.is_dir() {
+            findings.extend(scan_shared_target_lanes(&shared, counter));
+        }
+    }
+}
+
+/// Cursor sandbox `CARGO_TARGET_DIR`s. `$TMPDIR/cursor-sandbox-cache` is
+/// outside every code root, and on macOS it lives under `/var/folders`.
+/// Skip `is_excluded` — `/private/var` is otherwise blocked, and these
+/// directories are rebuildable caches, not secrets.
+fn scan_cursor_sandbox_targets_in(tmp: &Path, counter: &mut u32) -> Vec<ScanFinding> {
+    let mut findings = Vec::new();
+    let cache = tmp.join("cursor-sandbox-cache");
+    if !cache.is_dir() {
+        return findings;
+    }
+    let entries = match fs::read_dir(&cache) {
+        Ok(e) => e,
+        Err(_) => return findings,
+    };
+    for entry in entries.flatten() {
+        let cargo_target = entry.path().join("cargo-target");
+        if cargo_target.is_dir() {
+            push_dev_cache(&mut findings, counter, &cargo_target, false);
+        }
+    }
     findings
 }
 
@@ -523,10 +635,64 @@ mod tests {
         let roots = dev_scan_roots(home.path());
         assert_eq!(roots.len(), 1, "expected the $HOME fallback: {roots:?}");
         assert!(
-            roots[0].1 >= 4,
-            "fallback must reach depth 4, got {}",
+            roots[0].1 >= 6,
+            "fallback must reach depth 6 (nested package targets), got {}",
             roots[0].1
         );
+    }
+
+    /// Regression, 2026-08-21. Per-lane `CARGO_TARGET_DIR` trees live at
+    /// `<worktrees>/.shared-target/<lane>` — not named `target`, no sibling
+    /// Cargo.toml. The scan that only looked for `target/` next to Cargo.toml
+    /// reported a clean disk while tens of GB sat in those lanes.
+    #[test]
+    fn finds_shared_target_lanes_without_cargo_toml_sibling() {
+        let home = TempDir::new().unwrap();
+        let lane = home
+            .path()
+            .join("Documents/dev/permagent-worktrees/.shared-target/financier");
+        fs::create_dir_all(&lane).unwrap();
+        fs::write(lane.join("big.o"), vec![0u8; 11_000_000]).unwrap();
+
+        let mut counter = 0;
+        let findings = scan_dev_caches_in(home.path(), &mut counter);
+        assert!(
+            findings.iter().any(|f| f.path.contains("financier")),
+            "a .shared-target lane must be found without Cargo.toml: {findings:?}"
+        );
+
+        // Sidecar discovery must also find it when the walk root is a *repo*
+        // (confirmed roots never visit the sibling worktrees directory).
+        let mut counter = 0;
+        let empty_tmp = TempDir::new().unwrap();
+        let sidecar = scan_sidecar_cargo_targets_in(home.path(), empty_tmp.path(), &mut counter);
+        assert!(
+            sidecar.iter().any(|f| f.path.contains("financier")),
+            "sidecar scan must find .shared-target next to worktrees: {sidecar:?}"
+        );
+    }
+
+    /// Regression, 2026-08-21. Cursor sandboxes set CARGO_TARGET_DIR to
+    /// `$TMPDIR/cursor-sandbox-cache/<id>/cargo-target`, outside every code
+    /// root. One of these held 105 GB while the weekly scan missed it.
+    #[test]
+    fn finds_cursor_sandbox_cargo_target() {
+        let tmp = TempDir::new().unwrap();
+        let cargo_target = tmp
+            .path()
+            .join("cursor-sandbox-cache/af74febe857c7047aab2841aad58aeaa/cargo-target");
+        fs::create_dir_all(&cargo_target).unwrap();
+        fs::write(cargo_target.join("big.o"), vec![0u8; 11_000_000]).unwrap();
+
+        let mut counter = 0;
+        let findings = scan_cursor_sandbox_targets_in(tmp.path(), &mut counter);
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected the sandbox cargo-target: {findings:?}"
+        );
+        assert!(findings[0].path.contains("cargo-target"));
+        assert!(findings[0].size_bytes >= 11_000_000);
     }
 
     #[test]
