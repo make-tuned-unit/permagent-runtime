@@ -24,19 +24,19 @@
 //! server-side and is announced with `stopped`.
 
 use crate::routes::errors::ErrorResponse;
-use crate::state::{AppState, SharedTts, build_kokoro_tts};
+use crate::state::{build_kokoro_tts, AppState, SharedTts};
 use crate::voice::provider::{AudioOutput, SttConfig, TtsConfig};
 use axum::{
-    Json, Router,
     extract::{
-        Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
+        Query, State,
     },
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
+    Json, Router,
 };
-use permagent::download_manager::{DownloadProgress, DownloadStatus, get_download_manager};
+use permagent::download_manager::{get_download_manager, DownloadProgress, DownloadStatus};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -55,8 +55,8 @@ struct SavePronunciationRequest {
 }
 
 /// GET /voice/pronunciations — every saved pronunciation.
-async fn list_pronunciations()
--> Json<std::collections::HashMap<String, crate::voice::user_lexicon::PronunciationEntry>> {
+async fn list_pronunciations(
+) -> Json<std::collections::HashMap<String, crate::voice::user_lexicon::PronunciationEntry>> {
     Json(crate::voice::user_lexicon::all())
 }
 
