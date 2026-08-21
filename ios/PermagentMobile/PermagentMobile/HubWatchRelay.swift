@@ -62,9 +62,11 @@ final class HubWatchRelay: NSObject, WCSessionDelegate {
     nonisolated func session(_ session: WCSession,
                              didReceiveMessageData messageData: Data,
                              replyHandler: @escaping (Data) -> Void) {
+        // WCSession's handler is not Sendable. Box it so we can finish
+        // `handle` on MainActor and still reply without a data-race error.
+        let reply = SendableReply(replyHandler)
         Task { @MainActor in
-            let reply = await handle(messageData)
-            replyHandler(Self.encode(reply))
+            reply.call(Self.encode(await handle(messageData)))
         }
     }
 
@@ -240,4 +242,12 @@ final class HubWatchRelay: NSObject, WCSessionDelegate {
     private static func encode(_ payload: WatchResponse) -> Data {
         (try? JSONEncoder().encode(payload)) ?? Data()
     }
+}
+
+/// WCSession's reply handler is not Sendable. Boxing it lets `handle`
+/// finish on MainActor without a data-race diagnostic on the closure.
+private final class SendableReply: @unchecked Sendable {
+    private let handler: (Data) -> Void
+    init(_ handler: @escaping (Data) -> Void) { self.handler = handler }
+    func call(_ data: Data) { handler(data) }
 }
