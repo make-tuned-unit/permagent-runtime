@@ -478,8 +478,25 @@ impl FinanceClient {
         let watchlist = crate::finance_ledger::list_watchlist(&pool).await?;
         let notes = crate::finance_ledger::list_notes(&pool).await?;
         let positions = crate::finance_ledger::list_positions(&pool).await?;
+        let daily = crate::financier_close::latest(&pool).await.ok().flatten();
+        let daily_line = match daily.as_ref() {
+            Some(p) => match p.ticker.as_deref() {
+                Some(t) => format!(
+                    "Tomorrow's pick ({}, {} candidate(s)): {} — {}",
+                    p.day, p.candidate_count, t, p.why
+                ),
+                None => format!(
+                    "No pick for {} ({} candidate(s)): {}",
+                    p.day, p.candidate_count, p.why
+                ),
+            },
+            None => {
+                "No close-scan judgment yet. The scanner runs at 15:30 ET on trading days.".into()
+            }
+        };
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Finance tab ledger.\n\nWatchlist ({}):\n{}\n\nNotes ({}):\n{}\n\nPositions ({}):\n{}\n\nThis is the ledger, not live prices — research_ticker for a quote, holding_sell_signals for overbought sell signals on open lots.",
+            "Finance tab ledger.\n\nTomorrow (Opus on gated survivors; none is valid):\n{}\n\nWatchlist ({}):\n{}\n\nNotes ({}):\n{}\n\nPositions ({}):\n{}\n\nThis is the ledger, not live prices — research_ticker for a quote, holding_sell_signals for overbought sell signals on open lots.",
+            daily_line,
             watchlist.len(),
             serde_json::to_string_pretty(&watchlist).unwrap_or_default(),
             notes.len(),
