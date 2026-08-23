@@ -261,7 +261,7 @@ pub fn parse_judgment(
     model: &str,
 ) -> DailyPick {
     let allowed: Vec<&str> = candidates.iter().map(|c| c.ticker.as_str()).collect();
-    let parsed = extract_json(text).and_then(|v| {
+    let parsed = extract_json(text).map(|v| {
         let pick = match v.get("pick") {
             Some(serde_json::Value::Null) | None => None,
             Some(serde_json::Value::String(s)) => {
@@ -281,7 +281,7 @@ pub fn parse_judgment(
             .filter(|s| !s.is_empty())
             .unwrap_or("No paragraph.")
             .to_string();
-        Some((pick, why))
+        (pick, why)
     });
     let Some((pick, why)) = parsed else {
         return none_pick(
