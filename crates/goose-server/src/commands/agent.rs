@@ -187,6 +187,9 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
     // never a sell. Independent of the Finance GET poll.
     crate::finance_rsi_sweep::spawn(app_state.clone());
 
+    // Picker at 15:30 ET on trading days; The Financier judges with Opus.
+    crate::picker_close_scan::spawn(app_state.clone());
+
     // Central notification policy (#66): classify workflow facts once, then
     // route them according to the user's channel thresholds.
     crate::notification_router::spawn(app_state.clone());

@@ -14,6 +14,7 @@ use axum::{
 };
 use permagent::finance_ledger::{self, NewPosition};
 use permagent::finance_statements;
+use permagent::financier_close::{self, DailyPick};
 use permagent::market_data::{self, FundamentalsError, Quote};
 use permagent::overbought::{self, OverboughtReading};
 use permagent::pick_loop::{self, LoopGate};
@@ -231,6 +232,7 @@ struct FinanceBoard {
     picks: Vec<ValidatedPick>,
     sell_signals: Vec<SellSignal>,
     rsi_threshold: f64,
+    daily_pick: Option<DailyPick>,
     household: HouseholdView,
 }
 
@@ -304,6 +306,7 @@ async fn get_board(
 
     let (holdings, sell_signals) = assemble_holdings(&positions, rsi_threshold()).await;
     let picks = assemble_picks(&picker).await;
+    let daily_pick = financier_close::latest(&pool).await.ok().flatten();
 
     let recent = finance_ledger::list_transactions(&pool, 80)
         .await
@@ -331,6 +334,7 @@ async fn get_board(
         picks,
         sell_signals,
         rsi_threshold: rsi_threshold(),
+        daily_pick,
         household: HouseholdView { recent, forecast },
     }))
 }

@@ -271,7 +271,18 @@ interface FinanceBoard {
   picks: ValidatedPick[];
   sellSignals: SellSignal[];
   rsiThreshold: number;
+  dailyPick?: DailyPick | null;
   household: HouseholdView;
+}
+
+interface DailyPick {
+  day: string;
+  asOf: string;
+  ticker?: string | null;
+  companyName?: string | null;
+  why: string;
+  model?: string | null;
+  candidateCount: number;
 }
 
 const POLL_MS = 60_000;
@@ -382,6 +393,7 @@ export function FinanceView() {
               setDraft={setDraft}
               onRecorded={(hint) => { if (hint) setError(hint); }}
             />
+            <TomorrowSection pick={board.dailyPick ?? null} colors={colors} />
             <SellSignalsSection signals={board.sellSignals} threshold={board.rsiThreshold} colors={colors} />
             <PicksSection
               board={board}
@@ -769,6 +781,45 @@ function LotActions({
         Remove
       </button>
     </div>
+  );
+}
+
+
+function TomorrowSection({
+  pick, colors,
+}: {
+  pick: DailyPick | null;
+  colors: ThemeColors;
+}) {
+  const ticker = pick?.ticker?.trim() || null;
+  return (
+    <section>
+      <SectionTitle colors={colors}>Tomorrow</SectionTitle>
+      <p style={{ ...type.micro, color: colors.textMuted, margin: '0 0 8px' }}>
+        15:30 ET close scan · Opus on names that cleared the loop gate. A
+        hypothesis, not an order. None is valid.
+      </p>
+      {!pick && (
+        <p style={{ ...type.micro, color: colors.textMuted, margin: 0 }}>
+          No close judgment yet. The scanner runs at 15:30 ET on trading days.
+        </p>
+      )}
+      {pick && !ticker && (
+        <p style={{ ...type.micro, color: colors.textMuted, margin: 0 }}>{pick.why}</p>
+      )}
+      {pick && ticker && (
+        <article>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
+            <strong style={{ ...type.heading }}>{ticker}</strong>
+            {pick.companyName && (
+              <span style={{ ...type.micro, color: colors.textMuted }}>{pick.companyName}</span>
+            )}
+            <span style={{ ...type.micro, color: colors.textMuted }}>{pick.day}</span>
+          </div>
+          <p style={{ ...type.body, color: colors.text, margin: '8px 0 0' }}>{pick.why}</p>
+        </article>
+      )}
+    </section>
   );
 }
 

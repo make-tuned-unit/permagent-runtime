@@ -328,16 +328,23 @@ pub fn entry_from_event(event: &PermagentEvent) -> Option<NewEntry> {
                 "project_news" => format!("News: {}", truncate(subject, 80)),
                 "rsi_heat" => format!("RSI heat: {}", truncate(subject, 80)),
                 "sell_signal" => format!("Sell signal: {}", truncate(subject, 80)),
+                "daily_pick" if subject == "none" => "No pick tomorrow".to_string(),
+                "daily_pick" => format!("Tomorrow: {}", truncate(subject, 80)),
                 _ => format!("Nudge: {}", truncate(subject, 80)),
             };
-            let actor = if matches!(nudge_kind, "rsi_heat" | "sell_signal") {
+            // Financier scored the lot / named tomorrow's pick; the Watcher
+            // delivered the nudge. Actor stays financier so the journal
+            // attributes the fact.
+            let actor = if matches!(nudge_kind, "rsi_heat" | "sell_signal" | "daily_pick") {
                 Actor::resolve("financier")
             } else {
                 Actor::resolve("watcher")
             };
             let (ref_kind, ref_id) = if nudge_kind == "dormant_thread" {
                 (Some("memory"), Some(subject.to_string()))
-            } else if matches!(nudge_kind, "rsi_heat" | "sell_signal") {
+            } else if matches!(nudge_kind, "rsi_heat" | "sell_signal")
+                || (nudge_kind == "daily_pick" && subject != "none")
+            {
                 (Some("symbol"), Some(subject.to_string()))
             } else if let Some(url) = payload_str(event, "url").filter(|url| !url.is_empty()) {
                 (Some("url"), Some(url.to_string()))
@@ -900,6 +907,35 @@ mod tests {
         assert_eq!(sell.actor.as_str(), "financier");
         assert_eq!(sell.ref_kind.as_deref(), Some("symbol"));
         assert!(sell.detail.as_deref().unwrap().contains("not an order"));
+
+        let pick = entry_from_event(&events::proactive_nudge(
+            "daily_pick",
+            "SHOP",
+            "SHOP — loop gate held and the window is tomorrow.",
+            1,
+            "2026-08-24T19:40:00.000Z",
+            None,
+            None,
+        ))
+        .unwrap();
+        assert_eq!(pick.title, "Tomorrow: SHOP");
+        assert_eq!(pick.actor.as_str(), "financier");
+        assert_eq!(pick.ref_kind.as_deref(), Some("symbol"));
+        assert_eq!(pick.ref_id.as_deref(), Some("SHOP"));
+
+        let none = entry_from_event(&events::proactive_nudge(
+            "daily_pick",
+            "none",
+            "The scanner finished and no name cleared the loop gate.",
+            1,
+            "2026-08-24T19:40:00.000Z",
+            None,
+            None,
+        ))
+        .unwrap();
+        assert_eq!(none.title, "No pick tomorrow");
+        assert_eq!(none.actor.as_str(), "financier");
+        assert!(none.ref_kind.is_none());
     }
 
     #[tokio::test]

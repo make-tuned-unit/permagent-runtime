@@ -333,6 +333,18 @@ async function connect(): Promise<void> {
               }
               break;
             }
+            if (p.kind === 'daily_pick') {
+              if (prefs.echo) {
+                const named = Boolean(p.subject) && p.subject !== 'none';
+                push({
+                  kind: 'echo',
+                  title: named ? 'The Financier · tomorrow' : 'The Financier · no pick tomorrow',
+                  body: p.message ?? (named ? `${p.subject}` : 'No pick for tomorrow.'),
+                  target: 'finance',
+                });
+              }
+              break;
+            }
             // Echo / the Watcher (#672): Henry resurfaces a dormant thread (news
             // + analytics later). The daemon owns the gentle once-a-day budget,
             // so anything that arrives here is meant to be seen.

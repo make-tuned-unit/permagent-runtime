@@ -39,6 +39,7 @@ fn pin_config_for_daemon_bin_tests() {
 }
 
 mod finance_rsi_sweep;
+mod picker_close_scan;
 mod routes;
 mod session_event_bus;
 mod state;

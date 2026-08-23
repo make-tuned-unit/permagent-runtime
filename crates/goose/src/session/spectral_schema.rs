@@ -1361,12 +1361,29 @@ pub async fn apply_finance_spend_schema(pool: &Pool<Sqlite>) -> Result<()> {
     )
     .execute(pool)
     .await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS finance_daily_picks (
+            day              TEXT PRIMARY KEY,
+            as_of            TEXT NOT NULL,
+            ticker           TEXT,
+            company_name     TEXT,
+            why              TEXT NOT NULL,
+            model            TEXT,
+            candidate_count  INTEGER NOT NULL DEFAULT 0,
+            created_at       TEXT NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
 /// v47: spend ledger + RSI alert dedup. Additive and base-independent.
 pub async fn migrate_v46_to_v47(pool: &Pool<Sqlite>) -> Result<()> {
     info!("Migrating Spectral schema v46 -> v47 (finance spend + RSI alerts)");
+    // Re-apply the v46 ledger first. A DB can be stamped 46/47 with the
+    // spend tables present and watchlist/notes/positions gone (2026-08-21).
+    apply_finance_ledger_schema(pool).await?;
     apply_finance_spend_schema(pool).await?;
     sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (47)")
         .execute(pool)
@@ -5366,7 +5383,14 @@ mod inbox_schema_tests {
             .await
             .unwrap();
         migrate_v46_to_v47(&pool).await.unwrap();
-        for table in ["finance_transactions", "finance_rsi_alerts"] {
+        for table in [
+            "finance_watchlist",
+            "finance_notes",
+            "finance_positions",
+            "finance_transactions",
+            "finance_rsi_alerts",
+            "finance_daily_picks",
+        ] {
             assert!(object_exists(&pool, table).await, "{table}");
         }
         assert_eq!(current_version(&pool).await, 47);
