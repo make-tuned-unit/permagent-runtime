@@ -32,10 +32,10 @@ export function TaskDais() {
 
   const platformMat = useMemo(() => {
     const map = makeStoneTexture('#a4aab8');
-    return new THREE.MeshStandardMaterial({ map, roughness: 0.5, metalness: 0.08 });
+    return new THREE.MeshLambertMaterial({ map });
   }, []);
   const stepMat = useMemo(
-    () => new THREE.MeshStandardMaterial({ map: makeStoneTexture('#8e94a2'), roughness: 0.55, metalness: 0.06 }),
+    () => new THREE.MeshLambertMaterial({ map: makeStoneTexture('#8e94a2') }),
     [],
   );
 

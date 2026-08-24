@@ -1,9 +1,10 @@
-import { useRef, useEffect, useCallback } from 'react';
+import { useRef, useEffect, useCallback, useMemo } from 'react';
 import { useThree, useFrame } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import type { CameraMode, AgentState } from '../types';
 import { useTourActive } from './tourState';
+import { getReduceMotion } from '../../../styles/tokens';
 
 interface WorldCameraProps {
   mode: CameraMode;
@@ -51,6 +52,8 @@ export function WorldCamera({
   // While the tour owns the camera, OrbitControls must unmount (its damped
   // update loop would fight the spline every frame).
   const tourActive = useTourActive();
+  // Read once per mount, matching every other reduceMotion consumer in world/.
+  const reduceMotion = useMemo(() => getReduceMotion(), []);
   const controlsRef = useRef<React.ComponentRef<typeof OrbitControls>>(null);
   const lastInteraction = useRef(Date.now());
   const transitionRef = useRef<{
@@ -259,11 +262,13 @@ export function WorldCamera({
       }
     }
 
-    // Auto-rotate orbit when idle
+    // Auto-rotate orbit when idle. Under reduceMotion the camera simply
+    // stands still: an establishing shot the user drives themselves, which is
+    // the same static-fallback rule the tour already follows (bible §7).
     if (mode === 'orbit' && controlsRef.current) {
       const ctrl = controlsRef.current as unknown as { autoRotate: boolean };
       const timeSinceInteraction = Date.now() - lastInteraction.current;
-      ctrl.autoRotate = timeSinceInteraction > AUTO_ROTATE_DELAY;
+      ctrl.autoRotate = !reduceMotion && timeSinceInteraction > AUTO_ROTATE_DELAY;
     }
   });
 
@@ -298,7 +303,7 @@ export function WorldCamera({
       enablePan
       keyPanSpeed={12}
       keyEvents={typeof window !== 'undefined'}
-      autoRotate
+      autoRotate={!reduceMotion}
       autoRotateSpeed={0.3}
       onChange={handleOrbitInteraction}
     />

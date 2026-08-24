@@ -8,10 +8,8 @@ import { ENV } from '../shared/palette';
 import { InstancedProp, type InstanceTransform } from '../shared/instancing';
 
 /** Shared Stone-tier blockout material (module singleton — one program, no dupes). */
-export const blockoutMat = new THREE.MeshStandardMaterial({
+export const blockoutMat = new THREE.MeshLambertMaterial({
   color: ENV.darkStone,
-  roughness: 0.9,
-  metalness: 0.05,
 });
 
 /** Shared unit cube; instances scale it into floors/walls/ceilings. */

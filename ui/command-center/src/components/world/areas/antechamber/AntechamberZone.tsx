@@ -80,8 +80,10 @@ export default function AntechamberZone({ onReady }: ZoneContentProps) {
         rotation={[0, -Math.PI / 2, 0]}
       />
 
-      {/* Single cold downlight */}
-      <pointLight position={[26.9, 5.4, 0]} color={ENV.horizonBlue} intensity={0.5} distance={9} decay={2} />
+      {/* The cold downlight is gone. This room is meant to be the most
+          austere in the world — bare dark stone, the densest fog, a dormant
+          ring (bible §3 A5) — and the plaque and sigils are emissive, so what
+          the downlight actually contributed was a faint pool on the floor. */}
 
       {/* Local haze — approximates the +0.004 fog-density bias (FogExp2 is
           scene-global in three.js); a dark back-face shell deepens the room */}

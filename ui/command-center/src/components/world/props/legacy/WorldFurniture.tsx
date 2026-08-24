@@ -13,28 +13,28 @@ export function useMarbleMat() {
   return useMemo(
     // #16 realism pass: marble props carry the shared stone canvas texture
     // (speckle + veining) instead of a flat color — stairs, benches, trim.
-    () => new THREE.MeshStandardMaterial({ map: makeStoneTexture('#aeb4c0'), roughness: 0.35, metalness: 0.05 }),
+    () => new THREE.MeshLambertMaterial({ map: makeStoneTexture('#aeb4c0') }),
     []
   );
 }
 
 export function useDarkStoneMat() {
   return useMemo(
-    () => new THREE.MeshStandardMaterial({ color: '#2A2A3E', roughness: 0.3, metalness: 0.15 }),
+    () => new THREE.MeshLambertMaterial({ color: '#2A2A3E' }),
     []
   );
 }
 
 export function useWoodMat() {
   return useMemo(
-    () => new THREE.MeshStandardMaterial({ color: '#5C4033', roughness: 0.6, metalness: 0 }),
+    () => new THREE.MeshLambertMaterial({ color: '#5C4033' }),
     []
   );
 }
 
 function useFabricMat(color: string) {
   return useMemo(
-    () => new THREE.MeshStandardMaterial({ color, roughness: 0.85, metalness: 0 }),
+    () => new THREE.MeshLambertMaterial({ color }),
     [color]
   );
 }
@@ -189,7 +189,7 @@ export function ReadingDesk({ position }: { position: [number, number, number] }
       {/* Open book on desk */}
       <mesh position={[0, 0.87, 0]} rotation-x={-0.1}>
         <boxGeometry args={[0.5, 0.02, 0.35]} />
-        <meshStandardMaterial color="#F5F0E0" roughness={0.9} />
+        <meshLambertMaterial color="#F5F0E0" />
       </mesh>
       {/* Desk lamp */}
       <group position={[0.7, 0.85, -0.3]}>
@@ -205,7 +205,9 @@ export function ReadingDesk({ position }: { position: [number, number, number] }
           <coneGeometry args={[0.12, 0.15, 8, 1, true]} />
           <meshStandardMaterial color="#888" metalness={0.4} roughness={0.4} />
         </mesh>
-        <pointLight position={[0, 0.5, 0.1]} color={COLORS.neonAmber} intensity={0.5} distance={3} />
+        {/* A 3-unit desk lamp pool. Every point light in a forward renderer
+            is paid for by every lit fragment on screen, so a lamp this small
+            is the worst possible trade. The fixture still reads as a lamp. */}
       </group>
     </group>
   );
@@ -231,7 +233,7 @@ function ArmillarySphere({ position }: { position: [number, number, number] }) {
       {/* Base pedestal */}
       <mesh position-y={0.5} castShadow>
         <cylinderGeometry args={[0.3, 0.4, 1, 8]} />
-        <meshStandardMaterial color={COLORS.primaryMarble} roughness={0.3} metalness={0.1} />
+        <meshLambertMaterial color={COLORS.primaryMarble} />
       </mesh>
       {/* Rings */}
       <group ref={ref} position-y={1.5}>
@@ -252,7 +254,8 @@ function ArmillarySphere({ position }: { position: [number, number, number] }) {
           <sphereGeometry args={[0.15, 16, 16]} />
           <meshBasicMaterial color={COLORS.neonAmber} transparent opacity={0.7} />
         </mesh>
-        <pointLight color={COLORS.neonAmber} intensity={0.4} distance={3} />
+        {/* Same trade as the desk lamp: the emissive orb above is the whole
+            accent, the 3-unit light was just a glow on the base. */}
       </group>
     </group>
   );
@@ -347,25 +350,24 @@ export function PortalGateway({ position }: { position: [number, number, number]
       {/* Archway frame */}
       <mesh position-y={2}>
         <torusGeometry args={[1.5, 0.15, 8, 32, Math.PI]} />
-        <meshStandardMaterial color={COLORS.primaryMarble} roughness={0.3} metalness={0.15} />
+        <meshLambertMaterial color={COLORS.primaryMarble} />
       </mesh>
       {/* Left pillar */}
       <mesh position={[-1.5, 1, 0]}>
         <cylinderGeometry args={[0.15, 0.18, 2, 8]} />
-        <meshStandardMaterial color={COLORS.primaryMarble} roughness={0.3} />
+        <meshLambertMaterial color={COLORS.primaryMarble} />
       </mesh>
       {/* Right pillar */}
       <mesh position={[1.5, 1, 0]}>
         <cylinderGeometry args={[0.15, 0.18, 2, 8]} />
-        <meshStandardMaterial color={COLORS.primaryMarble} roughness={0.3} />
+        <meshLambertMaterial color={COLORS.primaryMarble} />
       </mesh>
       {/* Swirling vortex inside */}
       <mesh ref={ref} position-y={1.8}>
         <torusGeometry args={[1, 0.3, 8, 32]} />
         <meshBasicMaterial color={COLORS.neonAmber} transparent opacity={0.2} depthWrite={false} />
       </mesh>
-      {/* Inner glow */}
-      <pointLight position={[0, 1.8, 0]} color={COLORS.neonAmber} intensity={0.6} distance={4} />
+      {/* The vortex torus above is additive and carries the inner glow. */}
     </group>
   );
 }
@@ -444,7 +446,7 @@ export function ArmChair({ position, rotation = 0 }: { position: [number, number
       {[[-0.3, -0.25], [-0.3, 0.25], [0.3, -0.25], [0.3, 0.25]].map(([x, z], i) => (
         <mesh key={i} position={[x, 0.1, z]}>
           <cylinderGeometry args={[0.03, 0.03, 0.2, 6]} />
-          <meshStandardMaterial color="#5C4033" roughness={0.6} />
+          <meshLambertMaterial color="#5C4033" />
         </mesh>
       ))}
     </group>
@@ -476,7 +478,7 @@ function Stool({ position }: { position: [number, number, number] }) {
       {/* Seat */}
       <mesh position-y={0.65} castShadow>
         <cylinderGeometry args={[0.2, 0.2, 0.06, 12]} />
-        <meshStandardMaterial color="#2A2A3E" roughness={0.5} metalness={0.1} />
+        <meshLambertMaterial color="#2A2A3E" />
       </mesh>
       {/* Stem */}
       <mesh position-y={0.35}>

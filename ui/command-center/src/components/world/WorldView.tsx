@@ -1,5 +1,6 @@
-import { Suspense, useState, useCallback, useEffect, useRef } from 'react';
+import { Suspense, useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
+import { AdaptiveEvents, PerformanceMonitor, usePerformanceMonitor } from '@react-three/drei';
 import * as THREE from 'three';
 import type { CameraMode, AgentState } from './types';
 import { COLORS, STATIONS } from './constants';
@@ -20,13 +21,25 @@ import { StewardHUD } from './StewardHUD';
 import { StrixHUD } from './StrixHUD';
 import { FinancierHUD } from './FinancierHUD';
 import { AgentPicker } from './AgentPicker';
-import { PerfSampler } from './shared/perf';
+import { PerfProbe, perfProbeEnabled, devDprOverride } from './shared/PerfProbe';
 import { useWorldVisibility } from './atmosphere/useWorldVisibility';
 import { installDevHarness } from './atmosphere/devHarness';
+import { getReduceMotion } from '../../styles/tokens';
 import { TourMode } from './camera/TourMode';
 
 // DEV-ONLY: window.__worldDev harness for ambience evidence (no-op in prod).
 installDevHarness();
+
+// One-shot fact-finding, not a feature: does the WebView we actually ship in
+// expose WebGPU? macOS 26 / Safari 26 enables it by default and Apple says
+// WKWebView inherits that, but nobody has confirmed it inside our Tauri shell.
+// R3F v8 has no WebGPU path, so this changes no behaviour — it just means the
+// next person deciding about a renderer migration has a measurement instead of
+// a blog post. (Research note THREEJS_WORLD_2026-08-24 §5 risk 1.)
+if (typeof navigator !== 'undefined') {
+  const hasWebGPU = 'gpu' in navigator && !!(navigator as { gpu?: unknown }).gpu;
+  console.info(`[world] navigator.gpu present: ${hasWebGPU}`);
+}
 
 // Cardinal pedestal → product tab (World click-through / launchpad). Station ids
 // are the World's own names (constants.ts); each maps to the ToolType its label
@@ -145,6 +158,87 @@ function useSelectedAgentProxy(selectedAgentId: string | null): AgentState | nul
   return ref.current;
 }
 
+// The World is ambience, not a game. It has no reason to render at whatever
+// rate the panel happens to refresh at — on a ProMotion display that is 120
+// frames a second of a marble hall standing still, on a machine that is always
+// on and often also running local inference on the same GPU.
+//
+// So the render loop is driven here instead of by r3f. `frameloop="never"`
+// hands us the wheel: r3f stops its own requestAnimationFrame loop and only
+// renders when `advance(t)` is called, and in that mode it takes the clock
+// time from the timestamp we pass — in SECONDS, not milliseconds, which is the
+// one thing that is easy to get wrong and produces a scene that either freezes
+// or runs at a thousand times speed.
+//
+// The tolerance below matters more than it looks. Without it, a display whose
+// refresh rate is already at or near the target aliases catastrophically: a
+// frame arriving at 33.2ms against a 33.3ms budget gets skipped, the next one
+// lands at 66.6ms, and a 30Hz panel renders at 15fps. Allowing a frame that is
+// within a few milliseconds of due costs nothing and removes the cliff.
+const TARGET_FPS = 30;
+const FRAME_TOLERANCE_MS = 4;
+
+function FrameCap({ active }: { active: boolean }) {
+  const advance = useThree((s) => s.advance);
+  useEffect(() => {
+    if (!active) return;
+    const minDelta = 1000 / TARGET_FPS - FRAME_TOLERANCE_MS;
+    const t0 = performance.now();
+    let last = -Infinity;
+    let handle = 0;
+    const tick = (now: number) => {
+      handle = requestAnimationFrame(tick);
+      if (now - last < minDelta) return;
+      last = now;
+      advance((now - t0) / 1000);
+    };
+    handle = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(handle);
+  }, [active, advance]);
+  return null;
+}
+
+// Resolution is the one lever that trades quality for frame time linearly on a
+// fill-rate-bound scene, which makes it the right response to "something else
+// took the GPU" — and on this machine something else regularly does, because
+// local inference runs on it.
+//
+// One owner. drei ships an <AdaptiveDpr/> that also writes dpr, driven off
+// r3f's separate regression system, and running both would give two components
+// a different opinion about the same number every frame. This reads the
+// PerformanceMonitor's factor and is the only thing that calls setDpr.
+//
+// Bounds are expressed against the monitor's own observed refresh rate rather
+// than as absolute fps, because the target here is not 60: the frame cap above
+// holds us at 30, and this machine's display refreshes at 30Hz anyway. An
+// absolute lower bound of 40fps — drei's default — would read a perfectly
+// healthy capped scene as permanently failing and grind the resolution down to
+// nothing.
+const MIN_DPR = 0.75;
+const MAX_DPR = 1.5;
+
+// Module scope so the identity is stable across renders — drei re-reads this
+// on every sample.
+const adaptiveBounds = (refreshrate: number): [number, number] => [
+  refreshrate * 0.8,
+  refreshrate * 0.95,
+];
+
+function AdaptiveResolution({ enabled }: { enabled: boolean }) {
+  const setDpr = useThree((s) => s.setDpr);
+  const applied = useRef(MAX_DPR);
+  usePerformanceMonitor({
+    onChange: ({ factor }) => {
+      if (!enabled) return;
+      const next = Math.round((MIN_DPR + factor * (MAX_DPR - MIN_DPR)) * 20) / 20;
+      if (next === applied.current) return;
+      applied.current = next;
+      setDpr(next);
+    },
+  });
+  return null;
+}
+
 function SceneContent({
   cameraMode,
   selectedAgentId,
@@ -214,6 +308,14 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
   // has not been sized yet. Prevents GPU burn behind other tabs and the
   // zero-size GL_INVALID_FRAMEBUFFER_OPERATION spam at startup.
   const canvasActive = useWorldVisibility(containerRef);
+  // Read once per mount, like every other reduceMotion consumer in world/.
+  const reduceMotion = useMemo(() => getReduceMotion(), []);
+  // Someone who asked for less motion did not ask for the resolution to
+  // breathe in and out underneath them, so the adaptive lever is held still
+  // for them (bible §8: reduceMotion gets a static fallback, not a quieter
+  // version of the same movement). A dev dpr sweep also pins it, or the sweep
+  // would be measuring the adaptation rather than the scene.
+  const adaptiveDprEnabled = !reduceMotion && !(import.meta.env.DEV && devDprOverride());
 
   const handleSelectAgent = useCallback((id: string) => {
     if (id === 'henry') {
@@ -387,9 +489,12 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
           // 2048 (set on the key light in atmosphere/Lighting).
           shadows={{ type: THREE.PCFSoftShadowMap }}
           // Bible §8 item 1: the scene is fill-rate bound (~4fps at dpr 2).
-          dpr={[1, 1.5]}
-          // Bible §8 item 2: stop rendering when the World tab is hidden.
-          frameloop={canvasActive ? 'always' : 'never'}
+          // `?dpr=N` in dev pins it for a fill-rate sweep; never set in the app.
+          dpr={(import.meta.env.DEV && devDprOverride()) || [1, 1.5]}
+          // Bible §8 item 2 still holds — nothing renders when the World tab
+          // is hidden — but the gate now lives in <FrameCap/>, which owns the
+          // loop and simply does not run while `canvasActive` is false.
+          frameloop="never"
           camera={{
             position: [20, 15, 20],
             fov: 50,
@@ -411,20 +516,33 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
             }
           }}
         >
-          <SceneContent
-            cameraMode={cameraMode}
-            selectedAgentId={selectedAgent}
-            onModeChange={handleModeChange}
-            onHoverAgent={setHoveredAgent}
-            onSelectAgent={handleSelectAgent}
-            hoveredAgent={hoveredAgent}
-            onHoverStation={setHoveredStation}
-            onClickStation={handleClickStation}
-            focusPoint={focusPoint}
-            onFocusDone={handleFocusDone}
-          />
-          {/* Shared perf probe (bible §6): publishes window.__worldPerf 1/s. */}
-          <PerfSampler />
+          {/* Everything that renders sits inside the monitor so its frame
+              sampling sees the real scene. */}
+          <PerformanceMonitor factor={1} bounds={adaptiveBounds}>
+            <SceneContent
+              cameraMode={cameraMode}
+              selectedAgentId={selectedAgent}
+              onModeChange={handleModeChange}
+              onHoverAgent={setHoveredAgent}
+              onSelectAgent={handleSelectAgent}
+              hoveredAgent={hoveredAgent}
+              onHoverStation={setHoveredStation}
+              onClickStation={handleClickStation}
+              focusPoint={focusPoint}
+              onFocusDone={handleFocusDone}
+            />
+            <AdaptiveResolution enabled={adaptiveDprEnabled} />
+          </PerformanceMonitor>
+          {/* Stops raycasting the scene on every pointer move while the frame
+              budget is already under pressure. Cheap, and invisible when it is
+              not needed. */}
+          <AdaptiveEvents />
+          <FrameCap active={canvasActive} />
+          {/* The shared perf probe (bible §6) lives in WorldScene — one per
+              Canvas, or the two of them zero each other's gl.info reads. */}
+          {/* Dev measurement harness, only with ?perf=1 (frame-time percentiles
+              into document.title so WKWebView runs can be read from outside). */}
+          {import.meta.env.DEV && perfProbeEnabled() && <PerfProbe />}
         </Canvas>
       </Suspense>
       <WorldHUD

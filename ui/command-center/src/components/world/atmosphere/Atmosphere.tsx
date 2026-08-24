@@ -15,6 +15,7 @@ import { getTimeOfDay, startTimeOfDay } from './timeOfDay';
 import { MouthShaft } from './MouthShaft';
 import { Water } from './Water';
 import { NightAmbience } from './NightAmbience';
+import { FrozenShadows } from './FrozenShadows';
 
 // Bible §1 light formula: one warm key (shadows), one cool fill (no shadows),
 // near-black ambient 0.08. These are the established §1 colors — they are
@@ -26,6 +27,11 @@ const LIGHT = {
   fill: '#8EC8E8',
   oculus: '#FFF8E7',
   shaft: '#FFFAE5',
+  // The warm bounce that used to come off the mezzanine shelves, and the cold
+  // stone it lands on. Same temperatures as the two hall pointLights this
+  // replaced (#ffc48a / #ffb87a warm, against the platform's dark stone).
+  bounceSky: '#FFC48A',
+  bounceGround: '#1C2033',
 } as const;
 
 /**
@@ -97,6 +103,7 @@ function Lighting() {
   const keyRef = useRef<THREE.DirectionalLight>(null);
   const fillRef = useRef<THREE.DirectionalLight>(null);
   const ambientRef = useRef<THREE.AmbientLight>(null);
+  const bounceRef = useRef<THREE.HemisphereLight>(null);
 
   useFrame((_, dt) => {
     const tod = getTimeOfDay();
@@ -113,11 +120,38 @@ function Lighting() {
     key.intensity = THREE.MathUtils.damp(key.intensity, tod.keyIntensity, 0.8, dt);
     fill.intensity = THREE.MathUtils.damp(fill.intensity, tod.fillIntensity, 0.8, dt);
     ambient.intensity = THREE.MathUtils.damp(ambient.intensity, tod.ambientIntensity, 0.8, dt);
+    const bounce = bounceRef.current;
+    if (bounce) {
+      // Rides the fill's curve — it is the same kind of light, arriving from
+      // above instead of from the side. Kept deliberately low: the two point
+      // lights it replaced had decay 2, so their warmth died within a few
+      // metres of the rotunda floor, while a hemisphere light reaches every
+      // upward-facing surface in the world with no falloff at all. Matching
+      // their nominal intensity would quietly raise the whole scene's exposure
+      // and cost the deep-space mood the bible's near-black ambient is there
+      // to protect (§1).
+      bounce.intensity = THREE.MathUtils.damp(bounce.intensity, tod.fillIntensity * 0.55, 0.8, dt);
+    }
   });
 
   return (
     <>
       <ambientLight ref={ambientRef} intensity={0.08} color={LIGHT.ambient} />
+      {/* The warm bounce from above. This is a substitution, not an addition:
+          it took over from the two 20-unit warm pointLights that sat on the
+          rotunda floor in areas/hall/HallStructure. A hemisphere light is the
+          right shape for "light bouncing down off the shelves" — it grades
+          from a warm sky to a cold ground with no position and no falloff — and
+          a forward renderer evaluates it far more cheaply than a point light,
+          which every lit fragment on screen has to loop over whether or not it
+          is anywhere near it. Damped with the rest of the light rig below, so
+          the bounce cools and dims at night with everything else. */}
+      <hemisphereLight
+        ref={bounceRef}
+        intensity={0.14}
+        color={LIGHT.bounceSky}
+        groundColor={LIGHT.bounceGround}
+      />
       {/* Warm key light from above-and-to-the-side — the single shadow caster */}
       <directionalLight
         ref={keyRef}
@@ -428,6 +462,7 @@ export function Atmosphere() {
       <TimeBinder />
       {import.meta.env.DEV && <SceneCensusHook />}
       <Lighting />
+      <FrozenShadows />
       <Starfield reduceMotion={reduceMotion} />
       <OrbitalArcs reduceMotion={reduceMotion} />
       <LightShaft reduceMotion={reduceMotion} />

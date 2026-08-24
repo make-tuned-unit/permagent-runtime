@@ -33,34 +33,26 @@ export const BEACON_POS: [number, number, number] = [-5.5, 0, -10.5];
 const TOWER_H = 4.6;
 
 // Materials owned here (one-off prop; the beacon core is animated).
-const towerStone = new THREE.MeshStandardMaterial({
+const towerStone = new THREE.MeshLambertMaterial({
   color: ENV.darkStone,
-  roughness: 0.4,
-  metalness: 0.15,
 });
-const towerMarble = new THREE.MeshStandardMaterial({
+const towerMarble = new THREE.MeshLambertMaterial({
   color: ENV.marble,
-  roughness: 0.35,
-  metalness: 0.05,
 });
 const towerBronze = new THREE.MeshStandardMaterial({
   color: ENV.bronze,
   metalness: 0.75,
   roughness: 0.4,
 });
-const vigilTrim = new THREE.MeshStandardMaterial({
+const vigilTrim = new THREE.MeshLambertMaterial({
   color: ENV.deepVoid,
   emissive: AGENT_TRIM.watcher,
   emissiveIntensity: 0.5,
-  roughness: 0.5,
-  metalness: 0,
 });
-const beaconCore = new THREE.MeshStandardMaterial({
+const beaconCore = new THREE.MeshLambertMaterial({
   color: ENV.deepVoid,
   emissive: AGENT_TRIM.watcher,
   emissiveIntensity: 0.12, // dark until a real nudge
-  roughness: 0.3,
-  metalness: 0,
 });
 const flareHalo = new THREE.MeshBasicMaterial({
   color: AGENT_TRIM.watcher,
@@ -137,7 +129,7 @@ export function WatcherBeacon() {
     // reduceMotion: a steady dim hold while the presentation window is open —
     // legible without the bloom animation.
     const flare = reduceMotion ? (d.active ? 0.35 : 0) : d.flare;
-    (core.material as THREE.MeshStandardMaterial).emissiveIntensity =
+    (core.material as THREE.MeshLambertMaterial).emissiveIntensity =
       0.12 + flare * 2.2 + (d.active ? 0.5 : 0);
     (halo.material as THREE.MeshBasicMaterial).opacity = flare * 0.55;
     halo.scale.setScalar(1 + flare * 2.4);

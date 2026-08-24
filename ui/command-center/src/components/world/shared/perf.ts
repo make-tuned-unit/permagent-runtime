@@ -4,6 +4,14 @@
 // (amended 2026-06-11, W4: clock-reset resnap — r3f resets the clock when the
 // frameloop is re-enabled after gating, which stalled the sampler ~15-20s with
 // stale reads after every World tab re-show).
+// (FROZEN AMENDMENT 2026-08-24: single-instance guard. #639 added a second
+// <PerfSampler/> in WorldView alongside the original in WorldScene. Two
+// samplers in the same frame is self-defeating: the first reads the real
+// counts and resets gl.info, the second then reads the zeroed object and — by
+// writing `latest` last — is the one that wins. Every draw-call and triangle
+// number the overlay has published since has been 0. Same measurement-
+// corruption class as the two amendments above, so it is fixed the same way:
+// the duplicate mount is gone AND the module now refuses to sample twice.)
 // One measurement method for all lane evidence so numbers are comparable.
 // Mount <PerfSampler/> inside the Canvas; read window.__worldPerf or getPerfSnapshot().
 
@@ -31,14 +39,35 @@ export function getPerfSnapshot(): PerfSnapshot | null {
   return latest;
 }
 
+// Only the first mounted sampler owns gl.info. Any second one is a mounting
+// mistake, not a second opinion.
+let samplerMounted = false;
+
 export function PerfSampler() {
   const gl = useThree((s) => s.gl);
   const frames = useRef(0);
   const last = useRef(0);
+  const owner = useRef<boolean | null>(null);
+  if (owner.current === null) {
+    owner.current = !samplerMounted;
+    samplerMounted = true;
+    if (!owner.current && import.meta.env.DEV) {
+      console.warn(
+        '[world] a second <PerfSampler/> was mounted; it is inert. ' +
+          'Mount exactly one — two of them zero each other\'s gl.info reads.',
+      );
+    }
+  }
+  useEffect(() => {
+    return () => {
+      if (owner.current) samplerMounted = false;
+    };
+  }, []);
 
   // Manual reset gives a stable read point regardless of who drives rendering
   // (auto-render or EffectComposer) and where three places its auto-reset.
   useEffect(() => {
+    if (!owner.current) return;
     const prev = gl.info.autoReset;
     gl.info.autoReset = false;
     return () => {
@@ -50,6 +79,7 @@ export function PerfSampler() {
   // pre-render, so gl.info holds the previous frame's full counts — read, then
   // reset so the next frame accumulates from zero.
   useFrame(({ clock }) => {
+    if (!owner.current) return;
     frames.current += 1;
     const t = clock.elapsedTime;
     if (t < last.current) {

@@ -18,11 +18,10 @@ const WALL_RADIUS = 15.45;
 const BOOK_Y = 10.95;
 const PULL_DISTANCE = 0.5;
 
-const bookMaterial = new THREE.MeshStandardMaterial({
+const bookMaterial = new THREE.MeshLambertMaterial({
   color: '#2A2438',
   emissive: new THREE.Color(ENV.violet),
   emissiveIntensity: 0.0,
-  roughness: 0.6,
 });
 
 export function ShelfBook() {
@@ -47,7 +46,7 @@ export function ShelfBook() {
     mesh.visible = true;
     mesh.position.set(Math.cos(angle) * r, BOOK_Y, Math.sin(angle) * r);
     mesh.rotation.y = Math.PI / 2 - angle + tablet.reach * 0.35;
-    (mesh.material as THREE.MeshStandardMaterial).emissiveIntensity =
+    (mesh.material as THREE.MeshLambertMaterial).emissiveIntensity =
       0.15 + tablet.glow * 1.1;
   });
 
