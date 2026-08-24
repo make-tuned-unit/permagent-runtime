@@ -266,6 +266,39 @@ export function recommendedChoiceId(d: Decision): string | null {
 }
 
 /**
+ * The `check_approval` object riding a Tier-2 command-approval choice payload
+ * (verification approval ladder). Fields are exactly as documented at the
+ * call site — snake_case on the wire, `first_token` / `deny` optional.
+ */
+export interface CheckApprovalPayload {
+  command: string;
+  cwd: string;
+  first_token?: string;
+  reason: string;
+  deny?: string;
+  tier: string;
+  project_id: string;
+}
+
+/**
+ * A choice decision proposing a blocked verification-check command for the
+ * user to rule on (`payload.proposal === 'check_approval'`). Returns null for
+ * every other decision — ordinary choice cards (and every other kind) are
+ * unaffected. Untrusted payload (S2): validated field by field, never trusted
+ * wholesale.
+ */
+export function checkApprovalOf(d: Decision): CheckApprovalPayload | null {
+  if (d.kind !== 'choice' || !d.payload) return null;
+  const payload = d.payload as { proposal?: unknown; check_approval?: unknown };
+  if (payload.proposal !== 'check_approval') return null;
+  const ca = payload.check_approval;
+  if (!ca || typeof ca !== 'object') return null;
+  const c = ca as Record<string, unknown>;
+  if (typeof c.command !== 'string') return null;
+  return c as unknown as CheckApprovalPayload;
+}
+
+/**
  * The agent's original draft for an editable decision (payload.draft). Present
  * on draft-carrying kinds (e.g. automation_proposal); null otherwise. When
  * present, the item offers "approve with edits": the user revises this text and

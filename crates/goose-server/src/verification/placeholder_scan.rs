@@ -331,6 +331,9 @@ pub async fn run(
         truncated: total > listed.len(),
         summary: Some(SUMMARY.to_string()),
         lint: None,
+        // Synthesized by the pipeline, not declared by anyone, so there is no
+        // command and nothing for the approval ladder to have decided.
+        approval: None,
     })
 }
 

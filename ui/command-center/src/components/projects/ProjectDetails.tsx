@@ -9,6 +9,7 @@ import { MemoriesPanel } from './MemoriesPanel';
 import { NotesPanel } from './NotesPanel';
 import { PeoplePanel } from './PeoplePanel';
 import { StackPanel } from './StackPanel';
+import { VerificationApprovalPanel } from './VerificationApprovalPanel';
 import type { Project } from './types';
 
 export { ActivityPanel };
@@ -39,6 +40,10 @@ export function ProjectDetails({ project, onProjectUpdated }: {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
           {/* Stack organizer (#512): services + login identity, reference-only. */}
           <StackPanel project={project} />
+          {/* Verification approval ladder: the allowlist + earned privilege
+              governing Tier-1 auto-approval of model-authored check commands
+              — editable ONLY here (one concept, one place). */}
+          <VerificationApprovalPanel project={project} />
           <DocumentsPanel project={project} />
           <NotesPanel project={project} />
           <MemoriesPanel project={project} />

@@ -386,6 +386,7 @@ mod tests {
             truncated: false,
             summary: None,
             lint: None,
+            approval: None,
         }
     }
 
