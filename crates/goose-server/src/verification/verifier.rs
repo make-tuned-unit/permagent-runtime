@@ -49,6 +49,17 @@ pub struct VerifierConfig {
     /// gate byte-identical.
     #[serde(default)]
     pub panel_models: Vec<String>,
+    /// Whether the independent cross-family review runs at all, globally.
+    /// DEFAULT ON — a goal that finishes without an independent review is what
+    /// the gate exists to prevent, so opting out is deliberate. A project or a
+    /// single goal can still override this either way
+    /// (`independent_review` in its metadata).
+    #[serde(default = "default_true")]
+    pub independent_review: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for VerifierConfig {
@@ -58,6 +69,7 @@ impl Default for VerifierConfig {
             usd_per_1k_tokens: None,
             auto_approve_goal_types: Vec::new(),
             panel_models: Vec::new(),
+            independent_review: true,
         }
     }
 }

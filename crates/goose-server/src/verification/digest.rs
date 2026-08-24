@@ -91,6 +91,43 @@ pub struct VerifierDetail {
     pub degraded_reason: Option<String>,
 }
 
+/// The independent review, as the UI reads it: who reviewed, from which family,
+/// through which lenses, what they found, and what it cost. Distilled from
+/// [`crate::verification::review::IndependentReview`] so the digest stays a flat,
+/// render-ready summary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndependentReviewDetail {
+    /// `passed` / `rejected` / `blocked` / `escalated` / `unavailable` /
+    /// `skipped` / `disabled`.
+    pub decision: String,
+    /// `code` (five lenses over a diff) or `rubric` (four lenses over prose).
+    pub mode: String,
+    /// One plain sentence — the summary layer renders this verbatim.
+    pub one_line: String,
+    /// `provider/model`, empty when no reviewer could be chosen.
+    pub reviewer: String,
+    /// The reviewer's vendor family, and the worker's, so the card SHOWS the
+    /// comparison instead of asserting its conclusion.
+    pub reviewer_family: String,
+    pub worker_family: String,
+    /// Whether the review was genuinely cross-family.
+    pub cross_family: bool,
+    /// How the reviewer was chosen: `configured` / `derived` / `best-fit`.
+    pub source: String,
+    /// The lens names applied, in prompt order.
+    pub lenses: Vec<String>,
+    /// What the reviewer says it examined.
+    pub checked: String,
+    /// One rendered line per grounded finding: `[LENS] summary — evidence`.
+    pub findings: Vec<String>,
+    /// Estimated USD for this one review. `None` ⇒ unpriced, which is also why
+    /// it would have been refused — never a quiet $0.00.
+    pub estimated_cost_usd: Option<f64>,
+    /// Why it could not sign off or could not run.
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EvidenceDigest {
@@ -108,8 +145,60 @@ pub struct EvidenceDigest {
     pub diff: DiffSummary,
     pub out_of_path_files: Vec<String>,
     pub verifier: VerifierDetail,
+    /// The cross-family second opinion. `None` for a record written before the
+    /// gate existed, or a verdict that never reached it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub independent_review: Option<IndependentReviewDetail>,
     pub started_at: String,
     pub finished_at: String,
+}
+
+/// Flatten a review into the digest's render-ready shape.
+pub fn review_detail_from(
+    r: &crate::verification::review::IndependentReview,
+) -> IndependentReviewDetail {
+    IndependentReviewDetail {
+        decision: r.decision.as_str().to_string(),
+        mode: r.mode.as_str().to_string(),
+        one_line: r.summary.clone(),
+        reviewer: r.reviewer.as_ref().map(|p| p.label()).unwrap_or_default(),
+        reviewer_family: r
+            .reviewer
+            .as_ref()
+            .map(|p| p.family.clone())
+            .unwrap_or_default(),
+        worker_family: r
+            .reviewer
+            .as_ref()
+            .map(|p| p.worker_family.clone())
+            .unwrap_or_default(),
+        cross_family: r.cross_family,
+        source: r
+            .reviewer
+            .as_ref()
+            .map(|p| p.source.as_str().to_string())
+            .unwrap_or_default(),
+        lenses: r.lenses.clone(),
+        checked: r.checked.clone(),
+        findings: r
+            .findings
+            .iter()
+            .map(|f| {
+                format!(
+                    "[{}] {} — {}",
+                    f.lens.as_str(),
+                    f.summary,
+                    if f.evidence.trim().is_empty() {
+                        "—"
+                    } else {
+                        f.evidence.trim()
+                    }
+                )
+            })
+            .collect(),
+        estimated_cost_usd: r.estimated_cost_usd,
+        reason: r.reason.clone(),
+    }
 }
 
 // ── Summary-line builders ───────────────────────────────────────────────────
@@ -328,6 +417,9 @@ pub fn assemble_digest(
             model: verifier_run.model.clone(),
             degraded_reason: verifier_run.degraded_reason.clone(),
         },
+        // Filled in after the independent review runs — the digest is assembled
+        // before the gate, so the verdict it reviews already exists.
+        independent_review: None,
         started_at: started_at.to_string(),
         finished_at: finished_at.to_string(),
     };
