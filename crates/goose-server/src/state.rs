@@ -300,6 +300,20 @@ impl AppState {
                     "Opening Brain with per-project wing rules (empty ⇒ no fixture fallback)"
                 );
                 builder = builder.wing_rules(project_wing_rules);
+                // Halls are the second classifier axis, and `hall_rules` is
+                // REPLACE-not-merge exactly like `wing_rules` above: passing
+                // nothing keeps Spectral's defaults, which file 82 of the live
+                // brain's approval records under `event`, not `fact`. Build the
+                // list ONLY through `permagent::hall_rules::hall_rules()` —
+                // it prepends our structural approval rule to every default,
+                // so the rule can never ship without them.
+                let hall_rules = permagent::hall_rules::hall_rules();
+                tracing::info!(
+                    target: "permagentd::brain",
+                    rules = hall_rules.len(),
+                    "Opening Brain with hall rules (approval shape first, then Spectral defaults)"
+                );
+                builder = builder.hall_rules(hall_rules);
                 let raw_brain = match builder.build() {
                     Ok(b) => {
                         tracing::info!(

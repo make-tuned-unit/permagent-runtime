@@ -45,6 +45,7 @@ pub mod goal_transition;
 pub mod goose_apps;
 pub mod grow_media;
 pub mod growth;
+pub mod hall_rules;
 pub mod hints;
 pub mod identity;
 pub mod inbox;
