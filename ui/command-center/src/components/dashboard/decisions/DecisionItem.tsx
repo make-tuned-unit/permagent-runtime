@@ -30,7 +30,7 @@ import type { ReactNode } from 'react';
 import { font, radius, ease } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import type { AnswerBody, Decision } from './types';
-import { choiceOptions, recommendedChoiceId, draftText } from './types';
+import { checkApprovalOf, choiceOptions, recommendedChoiceId, draftText } from './types';
 import type { AnswerResult } from './useDecisions';
 import { EvidenceDigest } from './EvidenceDigest';
 import { decisionsClient } from './client';
@@ -270,6 +270,11 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
   // Full tool-call arguments (tool_approval) / gated tool input
   // (session_gate) — the detail above holds only a clipped preview.
   const toolArgs = toolArgumentsText(d);
+  // Tier-2 command approval (verification approval ladder): a choice decision
+  // asking the user to rule on a blocked shell command. When present, the
+  // command/cwd/reason render as their own block — the whole point of the
+  // card is that the user can see EXACTLY what they'd be authorising.
+  const checkApproval = checkApprovalOf(d);
   const intelItems = d.kind === 'project_intel_proposal' && Array.isArray(d.payload?.items)
     ? d.payload.items.filter((item): item is Record<string, unknown> =>
         typeof item === 'object' && item !== null)
@@ -331,6 +336,36 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
           maxHeight: 96, overflow: 'auto',
         }}>
           {d.detail}
+        </div>
+      )}
+
+      {/* Command approval (verification approval ladder, Tier 2): the exact
+          blocked command, its cwd, and why it was stopped. Rendered as plain
+          text only (S2, never dangerouslySetInnerHTML) — no truncation, CSS
+          wraps/scrolls instead so the full command stays inspectable. */}
+      {checkApproval && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 4 }}>
+            Command
+          </div>
+          <pre style={{
+            margin: 0, borderRadius: radius.sm, background: colors.codeBg,
+            padding: '10px 12px', fontFamily: font.mono, fontSize: 12,
+            lineHeight: 1.6, color: colors.text, maxHeight: 240,
+            overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+            userSelect: 'text',
+          }}>
+            {checkApproval.command}
+          </pre>
+          <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 6 }}>
+            <span style={{ color: colors.textDim }}>in </span>
+            <span style={{ fontFamily: font.mono, overflowWrap: 'anywhere' }}>{checkApproval.cwd}</span>
+          </div>
+          {checkApproval.reason && (
+            <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4 }}>
+              {checkApproval.reason}
+            </div>
+          )}
         </div>
       )}
 
@@ -671,7 +706,10 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
 function badgeFor(d: Decision, colors: ReturnType<typeof useTheme>['colors']) {
   switch (d.kind) {
     case 'unblock': return { label: 'unblock', color: colors.warning, bg: colors.warning + '24' };
-    case 'choice': return { label: 'choice', color: colors.purpleBright, bg: colors.purpleSoft };
+    case 'choice':
+      return checkApprovalOf(d)
+        ? { label: 'command approval', color: colors.danger, bg: colors.danger + '24' }
+        : { label: 'choice', color: colors.purpleBright, bg: colors.purpleSoft };
     case 'risk_gate': return { label: 'permission', color: colors.danger, bg: colors.danger + '24' };
     case 'session_gate': return { label: 'terminal gate', color: colors.danger, bg: colors.danger + '24' };
     case 'enrichment_proposal': return { label: 'enrichment', color: colors.purpleBright, bg: colors.purpleSoft };

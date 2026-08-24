@@ -160,6 +160,228 @@ async fn persist_find_online_hints_on_reject(
     }
 }
 
+/// Drop this project's command-approval privilege one level, with the reason
+/// recorded. Best-effort by design: this is a consequence of another decision,
+/// never the decision itself, so a ladder write that fails must not fail it.
+async fn demote_check_privilege(pool: &Pool<Sqlite>, decision: &Decision, why: &str) {
+    use crate::verification_approval as approval;
+    let Some(project_id) = decision.project_id.as_deref() else {
+        return;
+    };
+    let reason = why.to_string();
+    let goal_id = decision.goal_id.clone();
+    if let Err(e) = approval::update(pool, project_id, move |s| {
+        s.demote();
+        s.push_audit(approval::AuditRow {
+            at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            command: String::new(),
+            cwd: None,
+            tier: approval::Tier::User,
+            decision: approval::GateDecision::Denied,
+            privilege: s.clean_runs,
+            level: s.level(),
+            reason,
+            deny: None,
+            goal_id,
+        });
+    })
+    .await
+    {
+        tracing::warn!(
+            target: "permagentd::decisions",
+            project_id = %project_id, error = %e,
+            "could not demote command-approval privilege after a rejection"
+        );
+    }
+}
+
+/// Apply the answer to a [`decisions::PROPOSAL_CHECK_APPROVAL`] card.
+///
+/// The three answers and what each one costs:
+///
+/// - **approve once** — a grant for this exact command string, spent the first
+///   time it is seen. Widens nothing.
+/// - **approve and allowlist** — adds the command's *first token* to this
+///   project's allowlist, so every future check starting with that token is
+///   Tier 0. This is the only way the allowlist ever grows, and only a person
+///   can do it.
+/// - **deny** — the command does not run, and the agent's privilege drops one
+///   level with the reason written into the audit.
+///
+/// Approve of either kind unparks the goal so the checks run again with the new
+/// state. Failed → Ready is the only unpark the goal state machine allows, so
+/// this takes the same route the `unblock` decision takes — including raising
+/// the attempt cap, because Ready means "another attempt" and a goal already at
+/// its cap would re-park immediately without ever reaching the command the user
+/// just approved.
+async fn apply_check_approval(
+    pool: &Pool<Sqlite>,
+    decision: &Decision,
+    proof: DecisionProof,
+    acted_by: &str,
+) -> Result<EffectResult, GuardError> {
+    use crate::verification_approval as approval;
+
+    let payload: decisions::ChoicePayload = serde_json::from_value(decision.payload.clone())
+        .map_err(|e| GuardError::Invalid(format!("check-approval payload unreadable: {e}")))?;
+    let Some(subject) = payload.check_approval else {
+        return Err(GuardError::Invalid(
+            "check-approval decision carries no command — nothing safe to apply".to_string(),
+        ));
+    };
+
+    // `reject` is a deny however it was expressed.
+    let chosen = match decision.answer.as_deref() {
+        Some("reject") => decisions::CHECK_APPROVAL_DENY,
+        _ => decision
+            .answer_choice_id
+            .as_deref()
+            .unwrap_or(decisions::CHECK_APPROVAL_DENY),
+    };
+
+    let (row_decision, note) = match chosen {
+        decisions::CHECK_APPROVAL_ONCE => (
+            approval::GateDecision::ApprovedOnce,
+            format!("approved once: `{}`", subject.command),
+        ),
+        decisions::CHECK_APPROVAL_ALLOWLIST => match subject.first_token.as_deref() {
+            Some(tok) if !tok.trim().is_empty() => (
+                approval::GateDecision::ApprovedAndAllowlisted,
+                format!("`{tok}` added to this project's allowlist"),
+            ),
+            // Offered nothing to allowlist, so this answer cannot mean what it
+            // says. Refuse rather than silently downgrade it to approve-once —
+            // the user should see that their choice did not apply.
+            _ => {
+                return Err(GuardError::Invalid(
+                    "this command has no first token to allowlist — approve it once instead"
+                        .to_string(),
+                ))
+            }
+        },
+        decisions::CHECK_APPROVAL_DENY => (
+            approval::GateDecision::Denied,
+            "denied; the agent's approval privilege drops one level".to_string(),
+        ),
+        other => {
+            return already_applied(format!(
+                "unrecognized command-approval option '{other}' — no effect applied"
+            ))
+        }
+    };
+
+    let command = subject.command.clone();
+    let first_token = subject.first_token.clone();
+    let reason = format!("{} (decision {})", note, decision.id);
+    let goal_id_for_row = decision.goal_id.clone();
+    let cwd = subject.cwd.clone();
+    let deny = subject.deny.clone();
+
+    let settings = approval::update(pool, &subject.project_id, move |s| {
+        match row_decision {
+            approval::GateDecision::ApprovedOnce => s.grant_once(&command),
+            approval::GateDecision::ApprovedAndAllowlisted => {
+                if let Some(tok) = first_token.as_deref() {
+                    s.allowlist_token(tok);
+                }
+            }
+            approval::GateDecision::Denied => s.demote(),
+            _ => {}
+        }
+        s.push_audit(approval::AuditRow {
+            at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            command,
+            cwd: Some(cwd),
+            tier: approval::Tier::User,
+            decision: row_decision,
+            privilege: s.clean_runs,
+            level: s.level(),
+            reason,
+            deny: deny.as_deref().and_then(deny_category_from_str),
+            goal_id: goal_id_for_row,
+        });
+    })
+    .await
+    .map_err(GuardError::Db)?;
+
+    if row_decision == approval::GateDecision::Denied {
+        return already_applied(format!(
+            "{note} — the goal stays parked and the command will not run"
+        ));
+    }
+
+    // Approved: send the goal back for another run, which will now clear the
+    // gate. Reuses the `unblock` unpark shape so there is one way a parked goal
+    // comes back, not two.
+    let Some(goal_id) = decision.goal_id.as_deref() else {
+        return already_applied(format!("{note} (no goal attached to re-run)"));
+    };
+    match goal_state(pool, goal_id).await?.as_deref() {
+        Some("ready" | "in_progress" | "review" | "complete") => {
+            return already_applied(format!("{note}; the goal had already moved on"))
+        }
+        None => return already_applied(format!("{note}; the goal was already gone")),
+        _ => {}
+    }
+    let card = crate::cards::get_card(pool, goal_id)
+        .await
+        .map_err(GuardError::Db)?
+        .ok_or_else(|| GuardError::NotFound(format!("goal '{goal_id}' not found")))?;
+    let attempt_count = card
+        .metadata_json
+        .get("attempt_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let mut budget = card
+        .metadata_json
+        .get("budget")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let attempt_cap = attempt_count + goal_transition::DEFAULT_ATTEMPT_CAP;
+    budget.insert("attempt_cap".to_string(), serde_json::json!(attempt_cap));
+    let mut patch = serde_json::Map::new();
+    patch.insert(
+        "needs_human_attention".to_string(),
+        serde_json::json!(false),
+    );
+    patch.insert("budget".to_string(), serde_json::Value::Object(budget));
+    goal_transition::advance_goal_checked(
+        pool,
+        goal_id,
+        GoalAction::Ready,
+        acted_by,
+        Some(proof),
+        TransitionEffects {
+            metadata_patch: patch,
+            ..Default::default()
+        },
+    )
+    .await?;
+    already_applied(format!(
+        "{note}; the goal is unparked and its checks will run again \
+         (privilege now {})",
+        settings.level().as_str()
+    ))
+}
+
+/// Parse a deny slug back into its category. An unrecognised slug records no
+/// category rather than guessing one.
+fn deny_category_from_str(s: &str) -> Option<crate::verification_approval::DenyCategory> {
+    use crate::verification_approval::DenyCategory as D;
+    Some(match s {
+        "pipe_to_interpreter" => D::PipeToInterpreter,
+        "network_tool" => D::NetworkTool,
+        "destructive_outside_root" => D::DestructiveOutsideRoot,
+        "git_mutating" => D::GitMutating,
+        "privilege_escalation" => D::PrivilegeEscalation,
+        "redirect_outside_root" => D::RedirectOutsideRoot,
+        "command_substitution" => D::CommandSubstitution,
+        "unparseable" => D::Unparseable,
+        _ => return None,
+    })
+}
+
 fn emit_person_updated(payload: &decisions::EnrichmentProposalPayload) {
     if let Some(uuid) = payload.entity_uuid.as_deref().filter(|s| !s.is_empty()) {
         crate::events::emit(crate::events::person_changed("", uuid, "updated"));
@@ -332,6 +554,11 @@ pub async fn apply_decision_effect(
                     },
                 )
                 .await?;
+                // A rejected review is the standing "the agent got it wrong"
+                // signal, so the approval ladder loses a level here too. The
+                // demotion is best-effort: a rejection must land whatever the
+                // ladder does.
+                demote_check_privilege(pool, decision, "a review of this goal was rejected").await;
                 already_applied("goal rejected: Review → InProgress for rework")
             }
         }
@@ -510,6 +737,23 @@ pub async fn apply_decision_effect(
         ("model_upgrade", Some("approve")) => apply_model_upgrade(decision).await,
         ("model_upgrade", Some("reject")) => {
             already_applied("model upgrade declined; the active model is unchanged")
+        }
+        // The verification approval ladder's Tier-2 answer. Three outcomes, and
+        // only a person can produce any of them: the agent files this card, it
+        // never answers one.
+        ("choice", Some("choice"))
+            if decision.payload.get("proposal").and_then(|v| v.as_str())
+                == Some(decisions::PROPOSAL_CHECK_APPROVAL) =>
+        {
+            apply_check_approval(pool, decision, proof, &acted_by).await
+        }
+        // A rejected command-approval card is a deny, and a deny costs
+        // privilege exactly as an explicit `deny` option does.
+        ("choice", Some("reject"))
+            if decision.payload.get("proposal").and_then(|v| v.as_str())
+                == Some(decisions::PROPOSAL_CHECK_APPROVAL) =>
+        {
+            apply_check_approval(pool, decision, proof, &acted_by).await
         }
         // Review-fail → debugger proposal (the verification FAIL arm files it).
         // Only the debug_dispatch proposal has an effect; every other choice

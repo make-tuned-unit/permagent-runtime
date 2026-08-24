@@ -44,6 +44,19 @@ const OUTBOX_ELIGIBLE_KINDS: &[&str] = &[
 /// decision filed by the verification gate; its effect arm keys on this).
 pub const PROPOSAL_DEBUG_DISPATCH: &str = "debug_dispatch";
 
+/// Payload marker for the verification approval ladder's Tier-2 card: a
+/// model-authored `command_exit_zero` check whose command the gate refused to
+/// run unattended. Filed as a `choice` so the three answers the user actually
+/// has — approve once, approve and allowlist, deny — are the three options.
+pub const PROPOSAL_CHECK_APPROVAL: &str = "check_approval";
+
+/// Option ids on a [`PROPOSAL_CHECK_APPROVAL`] choice. The effect arm keys on
+/// these exact strings, so they are constants rather than literals scattered
+/// across the filer and the applier.
+pub const CHECK_APPROVAL_ONCE: &str = "approve-once";
+pub const CHECK_APPROVAL_ALLOWLIST: &str = "approve-and-allowlist";
+pub const CHECK_APPROVAL_DENY: &str = "deny";
+
 /// Return the stable outbox claim key for a durable decision effect.
 pub fn effect_outbox_claim_key(decision_id: &str, kind: &str) -> Option<String> {
     OUTBOX_ELIGIBLE_KINDS
@@ -204,6 +217,45 @@ pub struct ChoicePayload {
     /// choice payloads stay byte-identical on the wire.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposal: Option<String>,
+    /// The command a [`PROPOSAL_CHECK_APPROVAL`] card is asking about. Typed
+    /// rather than smuggled through `question`, so the effect arm never has to
+    /// re-parse prose to learn what it is authorising. `#[serde(default)]` +
+    /// skip-when-absent keeps every pre-existing choice payload parsing and
+    /// byte-identical on the wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_approval: Option<CheckApprovalPayload>,
+}
+
+/// The Tier-2 card's subject: one command the approval ladder refused to run.
+///
+/// Everything here is a snapshot taken at filing time and shown to the
+/// approver. The effect arm re-derives what it needs and never trusts a
+/// snapshot to authorise a mutation — the same second-look contract
+/// [`RepoTarget`] follows.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CheckApprovalPayload {
+    /// The exact command the check would have run. This is the thing being
+    /// approved; it is shown verbatim.
+    pub command: String,
+    /// The directory it would have run in.
+    pub cwd: String,
+    /// The first token, when the lexer found one — what
+    /// [`CHECK_APPROVAL_ALLOWLIST`] would add to the project allowlist. Absent
+    /// for a command that could not be lexed, in which case allowlisting is not
+    /// offered at all: there is nothing safe to add.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_token: Option<String>,
+    /// Why the gate refused, in plain words.
+    pub reason: String,
+    /// The deny category that fired, if the refusal was a deny rather than
+    /// unearned privilege.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deny: Option<String>,
+    /// The tier the classifier assigned.
+    pub tier: String,
+    /// Which project's ladder this decision updates.
+    pub project_id: String,
 }
 
 /// The concrete repo object a Steward git-health `risk_gate` targets
@@ -1043,6 +1095,13 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
         _ => unreachable!("kind validated above"),
     };
     payload_result.map_err(|e| format!("payload failed schema for kind '{}': {}", req.kind, e))
+}
+
+/// Trim a headline to [`MAX_HEADLINE_CHARS`]. Public so callers that build a
+/// headline from user- or goal-supplied text can fit it before
+/// [`create_decision`] refuses it outright.
+pub fn truncate_for_headline(s: &str) -> String {
+    truncate_headline(s)
 }
 
 fn truncate_headline(s: &str) -> String {

@@ -1133,9 +1133,15 @@ pub(crate) async fn dispatch_goal_fn(
     //   3. else the #456 project-default build check — source
     //      "project-default".
     // A failing check clamps the verdict to Fail and blocks auto-approval.
+    //   0. Checks the user wrote are never overwritten, and are now STAMPED
+    //      `user` rather than left unmarked. The approval ladder
+    //      (`verification_approval`) exempts user-authored checks from its gate,
+    //      and it can only do that from a positive signal: an absent stamp means
+    //      "unknown", which is gated. Without this stamp every user-authored
+    //      check would be gated as though the model had written it.
     let (seeded_checks, checks_source): (Option<serde_json::Value>, &str) =
         if card.metadata_json.get("completion_checks").is_some() {
-            (None, "")
+            (None, crate::verification_approval::USER_CHECKS_SOURCE)
         } else if let Some(acc) = checks_from_acceptance(
             &card.metadata_json,
             &card.description,
@@ -1346,6 +1352,12 @@ pub(crate) async fn dispatch_goal_fn(
     }
     if let Some(checks) = seeded_checks.clone() {
         claim_patch.insert("completion_checks".to_string(), checks);
+    }
+    // The stamp is written whenever there are checks to attribute — seeded ones
+    // here, or the user's own, which carry no seeded value but must still be
+    // marked so the approval ladder can recognise them.
+    if seeded_checks.is_some() || checks_source == crate::verification_approval::USER_CHECKS_SOURCE
+    {
         claim_patch.insert(
             "completion_checks_source".to_string(),
             serde_json::json!(checks_source),
@@ -1590,6 +1602,7 @@ pub(crate) async fn dispatch_goal_fn(
     if let Some(ref baseline) = baseline_commit {
         patch.insert("baseline_commit".to_string(), serde_json::json!(baseline));
     }
+    let have_seeded_checks = seeded_checks.is_some();
     if let Some(checks) = seeded_checks {
         tracing::info!(
             target: "permagentd::brain",
@@ -1599,6 +1612,8 @@ pub(crate) async fn dispatch_goal_fn(
             checks
         );
         patch.insert("completion_checks".to_string(), checks);
+    }
+    if have_seeded_checks || checks_source == crate::verification_approval::USER_CHECKS_SOURCE {
         patch.insert(
             "completion_checks_source".to_string(),
             serde_json::json!(checks_source),

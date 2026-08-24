@@ -2133,6 +2133,29 @@ struct SetBrandBody {
     donts: Option<Vec<String>>,
 }
 
+/// Body for `PUT /api/projects/{id}/verification-approval`. Every field is
+/// optional and only the present ones are applied, so two settings panels
+/// cannot overwrite each other's field.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetVerificationApprovalBody {
+    /// Replaces the project's allowlist wholesale (de-duplicated and sorted).
+    #[serde(default)]
+    allowlist: Option<Vec<String>>,
+    #[serde(default)]
+    read_only_threshold: Option<u32>,
+    #[serde(default)]
+    full_threshold: Option<u32>,
+    /// Set the earned-privilege count directly. Lets a person hand back trust
+    /// they took away, and take back trust they gave.
+    #[serde(default)]
+    clean_runs: Option<u32>,
+    /// Restore defaults: no allowlist, no privilege, no standing grants. The
+    /// audit history is kept.
+    #[serde(default)]
+    reset: Option<bool>,
+}
+
 /// PUT /api/projects/{id}/brand — merge-write this project's Grow brand kit.
 async fn set_project_brand_handler(
     State(state): State<Arc<AppState>>,
@@ -2169,6 +2192,71 @@ async fn set_project_brand_handler(
     Ok(Json(ProjectResponse::from(updated)))
 }
 
+/// PUT /api/projects/{id}/verification-approval — merge-write this project's
+/// command-approval ladder.
+///
+/// A merge, not a replacement: the caller sends only what it is changing, and
+/// the audit history and any standing approve-once grants survive untouched.
+/// This is the ONLY write path for the allowlist and the privilege count, so
+/// that "editable in the project's Settings" means one place and not several.
+///
+/// Note what is not here: there is no way to *grant* privilege by API beyond
+/// setting the count, and the agent has no credentials to call it. Widening
+/// happens when a person answers a Decision Inbox card, or here.
+async fn set_verification_approval_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<SetVerificationApprovalBody>,
+) -> Result<Json<ProjectResponse>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let project = projects::get_project_by_id_or_slug(&pool, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+
+    permagent::verification_approval::update(&pool, &project.id, move |s| {
+        if body.reset.unwrap_or(false) {
+            // A reset returns the ladder to a project that has earned nothing.
+            // The audit survives: it is the record of how we got here, and
+            // erasing it would make the reset itself invisible.
+            let audit = std::mem::take(&mut s.audit);
+            *s = permagent::verification_approval::ApprovalSettings {
+                audit,
+                ..Default::default()
+            };
+            return;
+        }
+        if let Some(list) = body.allowlist {
+            s.allowlist = Vec::new();
+            for tok in list {
+                s.allowlist_token(&tok);
+            }
+        }
+        if let Some(n) = body.read_only_threshold {
+            s.read_only_threshold = n;
+        }
+        if let Some(n) = body.full_threshold {
+            s.full_threshold = n;
+        }
+        if let Some(n) = body.clean_runs {
+            s.clean_runs = n;
+        }
+    })
+    .await
+    .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+    let updated = projects::get_project(&pool, &project.id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+    events::emit(events::project_changed(&updated.id, "updated"));
+    Ok(Json(ProjectResponse::from(updated)))
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/projects", get(list_projects_handler))
@@ -2184,6 +2272,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route(
             "/api/projects/{id}/brand",
             axum::routing::put(set_project_brand_handler),
+        )
+        .route(
+            "/api/projects/{id}/verification-approval",
+            axum::routing::put(set_verification_approval_handler),
         )
         .route("/api/projects/{id}/intel", get(list_project_intel_handler))
         .route(

@@ -5,6 +5,7 @@
 //! Output is captured verbatim with a last-16KiB cap per stream and a
 //! `truncated` flag. `error` never counts as pass.
 
+use permagent::verification_approval::{self as approval, ChecksSource, DenyCategory, Tier};
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
@@ -156,6 +157,12 @@ pub struct CheckResult {
     /// reason, carried into the digest and the verifier's prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lint: Option<String>,
+    /// What the approval ladder decided about this command, when it was a
+    /// `command_exit_zero`. Carried onto the goal card so the verification
+    /// section can show who authorised the command next to the command itself
+    /// — a self-approval that nobody can see is a silent one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<approval::AuditRow>,
 }
 
 impl CheckResult {
@@ -173,6 +180,7 @@ impl CheckResult {
             truncated: false,
             summary: None,
             lint: None,
+            approval: None,
         }
     }
 }
@@ -275,22 +283,184 @@ fn tail_bytes(bytes: &[u8], max_bytes: usize) -> (String, bool) {
     tail_str(&s, max_bytes)
 }
 
+// ── The approval gate ───────────────────────────────────────────────────────
+
+/// One command the gate refused to run, ready to become a Decision Inbox card.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParkedCheck {
+    pub check_index: usize,
+    pub cmd: String,
+    pub cwd: Option<String>,
+    /// The first token, when there is one to allowlist. `None` for a command
+    /// the lexer could not read — there is nothing safe to add in that case,
+    /// so the Inbox card offers approve-once only.
+    pub first_token: Option<String>,
+    pub tier: Tier,
+    pub deny: Option<DenyCategory>,
+    pub reason: String,
+}
+
+/// The approval ladder, carried through one verification run.
+///
+/// Holds the project's state on the way in and collects what happened on the
+/// way out: an [`approval::AuditRow`] per gated command, and a [`ParkedCheck`]
+/// for each one that was refused.
+#[derive(Debug)]
+pub struct CheckGate {
+    config: approval::GateConfig,
+    settings: approval::ApprovalSettings,
+    source: ChecksSource,
+    goal_id: Option<String>,
+    rows: Vec<approval::AuditRow>,
+    parked: Vec<ParkedCheck>,
+    /// Gated commands that actually ran — the privilege this run may earn if
+    /// the goal later verifies clean.
+    clean_candidates: u32,
+    /// Approve-once grants this run spent. Must be persisted, or the grant
+    /// outlives its one use.
+    spent_grants: Vec<String>,
+}
+
+impl CheckGate {
+    /// The production gate: this project's allowlist and privilege, and the
+    /// provenance stamped on this goal's checks.
+    pub fn new(
+        project_root: impl Into<PathBuf>,
+        settings: approval::ApprovalSettings,
+        build_command: Option<&str>,
+        source: ChecksSource,
+        goal_id: Option<String>,
+    ) -> Self {
+        let config = settings.gate_config(project_root, build_command);
+        Self {
+            config,
+            settings,
+            source,
+            goal_id,
+            rows: Vec::new(),
+            parked: Vec::new(),
+            clean_candidates: 0,
+            spent_grants: Vec::new(),
+        }
+    }
+
+    /// A gate for checks the user wrote themselves, which the ladder does not
+    /// govern. Also what the runner's own tests use: they assert on how a
+    /// command is *executed*, not on whether it is allowed to be.
+    pub fn user_authored(project_root: impl Into<PathBuf>) -> Self {
+        Self::new(
+            project_root,
+            approval::ApprovalSettings::default(),
+            None,
+            ChecksSource::User,
+            None,
+        )
+    }
+
+    /// Audit rows produced this run, for the project's visible history.
+    pub fn audit_rows(&self) -> &[approval::AuditRow] {
+        &self.rows
+    }
+
+    /// Commands the gate refused. Non-empty means the goal must be parked.
+    pub fn parked(&self) -> &[ParkedCheck] {
+        &self.parked
+    }
+
+    /// How much privilege this run earns *if* the goal later verifies clean.
+    /// The caller decides whether it did; the gate only counts.
+    pub fn clean_candidates(&self) -> u32 {
+        self.clean_candidates
+    }
+
+    /// Approve-once grants this run spent, for the caller to persist.
+    pub fn spent_grants(&self) -> &[String] {
+        &self.spent_grants
+    }
+}
+
+/// **This is the point at which a model-authored sentence becomes a process.**
+///
+/// Every `command_exit_zero` check passes through here before
+/// [`run_command_check`] is allowed to hand it to `/bin/sh`. There is no other
+/// path to the shell from a completion check, and there must not be one: if you
+/// are adding a new way to execute check-declared text, it belongs behind this
+/// function or behind a gate of its own.
+///
+/// Returns `Ok(())` when the command may run. `Err(reason)` means it may not,
+/// and the caller must record the check as an error and leave the goal for a
+/// person — never fall through to running it anyway.
+pub fn gate_command_check(
+    index: usize,
+    cmd: &str,
+    cwd: Option<&str>,
+    gate: &mut CheckGate,
+) -> Result<(), String> {
+    let clean_runs = gate.settings.clean_runs;
+    let outcome = approval::decide(cmd, cwd, gate.source, &mut gate.settings, &gate.config);
+
+    // A user-authored check is not governed by the ladder, so it produces no
+    // audit row and earns no privilege — there is nothing to account for.
+    if outcome.decision == approval::GateDecision::UserAuthored {
+        return Ok(());
+    }
+
+    gate.rows
+        .push(outcome.audit_row(cmd, cwd, clean_runs, gate.goal_id.as_deref()));
+
+    if outcome.decision == approval::GateDecision::ApprovedOnce {
+        gate.spent_grants.push(cmd.to_string());
+    }
+
+    if outcome.allowed() {
+        if outcome.decision.counts_toward_privilege() {
+            gate.clean_candidates = gate.clean_candidates.saturating_add(1);
+        }
+        return Ok(());
+    }
+
+    gate.parked.push(ParkedCheck {
+        check_index: index,
+        cmd: cmd.to_string(),
+        cwd: cwd.map(|c| c.to_string()),
+        first_token: approval::first_token_of(cmd),
+        tier: outcome.classification.tier,
+        deny: outcome.classification.deny,
+        reason: outcome.reason.clone(),
+    });
+    Err(outcome.reason)
+}
+
 // ── Runner ──────────────────────────────────────────────────────────────────
 
 /// Run all checks sequentially in `working_dir`. No short-circuit: every
 /// declared check produces a result row.
-pub async fn run_checks(checks: &[CompletionCheck], working_dir: &Path) -> Vec<CheckResult> {
+///
+/// `gate` decides which `command_exit_zero` checks are allowed to run at all,
+/// and accumulates what it decided.
+pub async fn run_checks(
+    checks: &[CompletionCheck],
+    working_dir: &Path,
+    gate: &mut CheckGate,
+) -> Vec<CheckResult> {
     let mut results = Vec::with_capacity(checks.len());
     for (i, check) in checks.iter().enumerate() {
-        results.push(run_one(i, check, working_dir).await);
+        results.push(run_one(i, check, working_dir, gate).await);
     }
     results
 }
 
-async fn run_one(index: usize, check: &CompletionCheck, working_dir: &Path) -> CheckResult {
+async fn run_one(
+    index: usize,
+    check: &CompletionCheck,
+    working_dir: &Path,
+    gate: &mut CheckGate,
+) -> CheckResult {
     let started_at = chrono::Utc::now().to_rfc3339();
     let start = std::time::Instant::now();
     let check_type = check.type_name();
+    // Where this check's audit row will land, if the gate writes one.
+    let row_slot = gate.rows.len();
 
     let outcome = match check {
         CompletionCheck::CommandExitZero {
@@ -298,16 +468,25 @@ async fn run_one(index: usize, check: &CompletionCheck, working_dir: &Path) -> C
             cwd,
             expect,
             timeout_secs,
-        } => {
-            run_command_check(
-                cmd,
-                cwd.as_deref(),
-                expect.as_deref(),
-                *timeout_secs,
-                working_dir,
-            )
-            .await
-        }
+        } => match gate_command_check(index, cmd, cwd.as_deref(), gate) {
+            Ok(()) => {
+                run_command_check(
+                    cmd,
+                    cwd.as_deref(),
+                    expect.as_deref(),
+                    *timeout_secs,
+                    working_dir,
+                )
+                .await
+            }
+            // Not a verdict on the work — an Error, which parks the goal for a
+            // person rather than condemning a diff that may be finished and
+            // correct. The command did not run, so nothing was learned about it.
+            Err(why) => Err(format!(
+                "this check was not run: {}. Approve it in the Decision Inbox to let it run.",
+                why
+            )),
+        },
         CompletionCheck::HttpAssert {
             method,
             base_url,
@@ -330,6 +509,9 @@ async fn run_one(index: usize, check: &CompletionCheck, working_dir: &Path) -> C
         }
     };
 
+    // The row this check's own gating produced, if any — never a neighbour's.
+    let approval = gate.rows.get(row_slot).cloned();
+
     match outcome {
         Ok((status, evidence, truncated)) => CheckResult {
             check_index: index,
@@ -341,10 +523,12 @@ async fn run_one(index: usize, check: &CompletionCheck, working_dir: &Path) -> C
             truncated,
             summary: None,
             lint: None,
+            approval,
         },
         Err(message) => {
             let mut r = CheckResult::error(index, check_type, started_at, message);
             r.duration_ms = start.elapsed().as_millis() as u64;
+            r.approval = approval;
             r
         }
     }
@@ -780,7 +964,12 @@ mod tests {
             body_contains: None,
         };
         let dir = tempfile::tempdir().unwrap();
-        let results = run_checks(std::slice::from_ref(&check), dir.path()).await;
+        let results = run_checks(
+            std::slice::from_ref(&check),
+            dir.path(),
+            &mut CheckGate::user_authored(dir.path()),
+        )
+        .await;
         assert_eq!(results[0].status, CheckStatus::Error);
         assert!(results[0]
             .evidence
@@ -800,7 +989,12 @@ mod tests {
             body_contains: None,
         };
         let dir = tempfile::tempdir().unwrap();
-        let results = run_checks(std::slice::from_ref(&check), dir.path()).await;
+        let results = run_checks(
+            std::slice::from_ref(&check),
+            dir.path(),
+            &mut CheckGate::user_authored(dir.path()),
+        )
+        .await;
         assert_eq!(results[0].status, CheckStatus::Error);
     }
 
@@ -821,7 +1015,12 @@ mod tests {
                 timeout_secs: 30,
             },
         ];
-        let results = run_checks(&checks, dir.path()).await;
+        let results = run_checks(
+            &checks,
+            dir.path(),
+            &mut CheckGate::user_authored(dir.path()),
+        )
+        .await;
         assert_eq!(results[0].status, CheckStatus::Pass);
         assert_eq!(results[0].evidence.exit_code, Some(0));
         assert!(results[0]
@@ -854,7 +1053,12 @@ mod tests {
             expect: Some("412 passed".to_string()),
             timeout_secs: 30,
         }];
-        let results = run_checks(&checks, dir.path()).await;
+        let results = run_checks(
+            &checks,
+            dir.path(),
+            &mut CheckGate::user_authored(dir.path()),
+        )
+        .await;
         assert_eq!(results[0].status, CheckStatus::Fail);
         assert_eq!(results[0].evidence.exit_code, Some(0));
         assert_eq!(results[0].evidence.expect_matched, Some(false));
@@ -872,7 +1076,12 @@ mod tests {
             expect: Some("412 passed".to_string()),
             timeout_secs: 30,
         }];
-        let results = run_checks(&checks, dir.path()).await;
+        let results = run_checks(
+            &checks,
+            dir.path(),
+            &mut CheckGate::user_authored(dir.path()),
+        )
+        .await;
         assert_eq!(results[0].status, CheckStatus::Pass);
         assert_eq!(results[0].evidence.expect_matched, Some(true));
         assert!(results[0].evidence.message.is_none());
@@ -890,7 +1099,12 @@ mod tests {
             expect: Some("Compiling permagent".to_string()),
             timeout_secs: 30,
         }];
-        let results = run_checks(&checks, dir.path()).await;
+        let results = run_checks(
+            &checks,
+            dir.path(),
+            &mut CheckGate::user_authored(dir.path()),
+        )
+        .await;
         assert_eq!(results[0].status, CheckStatus::Pass);
     }
 
@@ -911,7 +1125,12 @@ mod tests {
                 timeout_secs: 30,
             },
         ];
-        let results = run_checks(&checks, dir.path()).await;
+        let results = run_checks(
+            &checks,
+            dir.path(),
+            &mut CheckGate::user_authored(dir.path()),
+        )
+        .await;
         assert_eq!(results[0].status, CheckStatus::Pass);
         assert_eq!(results[1].status, CheckStatus::Fail);
     }
@@ -926,7 +1145,12 @@ mod tests {
             expect: Some("/[unclosed/".to_string()),
             timeout_secs: 30,
         }];
-        let results = run_checks(&checks, dir.path()).await;
+        let results = run_checks(
+            &checks,
+            dir.path(),
+            &mut CheckGate::user_authored(dir.path()),
+        )
+        .await;
         assert_eq!(results[0].status, CheckStatus::Error);
         assert!(results[0]
             .evidence
@@ -947,7 +1171,12 @@ mod tests {
             expect: None,
             timeout_secs: 30,
         }];
-        let results = run_checks(&checks, dir.path()).await;
+        let results = run_checks(
+            &checks,
+            dir.path(),
+            &mut CheckGate::user_authored(dir.path()),
+        )
+        .await;
         assert_eq!(results[0].status, CheckStatus::Pass);
         assert_eq!(results[0].evidence.expect_matched, None);
     }
@@ -962,7 +1191,12 @@ mod tests {
             expect: Some("all good".to_string()),
             timeout_secs: 30,
         }];
-        let results = run_checks(&checks, dir.path()).await;
+        let results = run_checks(
+            &checks,
+            dir.path(),
+            &mut CheckGate::user_authored(dir.path()),
+        )
+        .await;
         assert_eq!(results[0].status, CheckStatus::Fail);
         let m = results[0].evidence.message.as_deref().unwrap_or_default();
         assert!(m.contains("command failed AND"), "message was {m:?}");
@@ -1010,7 +1244,12 @@ mod tests {
             expect: None,
             timeout_secs: 30,
         }];
-        let results = run_checks(&checks, dir.path()).await;
+        let results = run_checks(
+            &checks,
+            dir.path(),
+            &mut CheckGate::user_authored(dir.path()),
+        )
+        .await;
         assert_eq!(results[0].status, CheckStatus::Error);
         assert_eq!(results[0].evidence.exit_code, Some(126));
     }
@@ -1024,7 +1263,12 @@ mod tests {
             expect: None,
             timeout_secs: 30,
         }];
-        let results = run_checks(&checks, dir.path()).await;
+        let results = run_checks(
+            &checks,
+            dir.path(),
+            &mut CheckGate::user_authored(dir.path()),
+        )
+        .await;
         assert_eq!(results[0].status, CheckStatus::Fail);
         assert_eq!(results[0].evidence.exit_code, Some(1));
     }
@@ -1057,7 +1301,12 @@ mod tests {
             expect: None,
             timeout_secs: 30,
         }];
-        let results = run_checks(&checks, dir.path()).await;
+        let results = run_checks(
+            &checks,
+            dir.path(),
+            &mut CheckGate::user_authored(dir.path()),
+        )
+        .await;
         assert_eq!(results[0].status, CheckStatus::Error);
         assert_eq!(results[0].evidence.exit_code, None);
         let message = results[0].evidence.message.as_deref().unwrap_or_default();
@@ -1081,7 +1330,12 @@ mod tests {
             expect: None,
             timeout_secs: 30,
         }];
-        let results = run_checks(&checks, dir.path()).await;
+        let results = run_checks(
+            &checks,
+            dir.path(),
+            &mut CheckGate::user_authored(dir.path()),
+        )
+        .await;
         assert_eq!(results[0].status, CheckStatus::Fail);
         assert_eq!(results[0].evidence.exit_code, Some(143));
     }
@@ -1095,7 +1349,12 @@ mod tests {
             expect: None,
             timeout_secs: 1,
         }];
-        let results = run_checks(&checks, dir.path()).await;
+        let results = run_checks(
+            &checks,
+            dir.path(),
+            &mut CheckGate::user_authored(dir.path()),
+        )
+        .await;
         assert_eq!(results[0].status, CheckStatus::Error);
         assert!(results[0]
             .evidence
@@ -1122,7 +1381,12 @@ mod tests {
                 timeout_secs: 10,
             },
         ];
-        let results = run_checks(&checks, dir.path()).await;
+        let results = run_checks(
+            &checks,
+            dir.path(),
+            &mut CheckGate::user_authored(dir.path()),
+        )
+        .await;
         assert_eq!(results[0].status, CheckStatus::Error);
         assert!(results[0]
             .evidence
@@ -1153,7 +1417,12 @@ mod tests {
                 expect: None,
                 timeout_secs: 10,
             }];
-            let results = run_checks(&checks, dir.path()).await;
+            let results = run_checks(
+                &checks,
+                dir.path(),
+                &mut CheckGate::user_authored(dir.path()),
+            )
+            .await;
             assert_eq!(results[0].status, CheckStatus::Error);
             assert!(results[0]
                 .evidence
@@ -1179,7 +1448,12 @@ mod tests {
                 path: "../escape.txt".to_string(),
             },
         ];
-        let results = run_checks(&checks, dir.path()).await;
+        let results = run_checks(
+            &checks,
+            dir.path(),
+            &mut CheckGate::user_authored(dir.path()),
+        )
+        .await;
         assert_eq!(results[0].status, CheckStatus::Pass);
         assert_eq!(results[1].status, CheckStatus::Fail);
         assert_eq!(results[2].status, CheckStatus::Error);
@@ -1208,7 +1482,12 @@ mod tests {
                 paths: vec!["nonexistent.rs".to_string()],
             },
         ];
-        let results = run_checks(&checks, dir.path()).await;
+        let results = run_checks(
+            &checks,
+            dir.path(),
+            &mut CheckGate::user_authored(dir.path()),
+        )
+        .await;
         assert_eq!(results[0].status, CheckStatus::Pass);
         assert_eq!(results[1].status, CheckStatus::Fail);
         let m = results[1].evidence.matches.as_ref().unwrap();
@@ -1227,7 +1506,12 @@ mod tests {
             expect: None,
             timeout_secs: 30,
         }];
-        let results = run_checks(&checks, dir.path()).await;
+        let results = run_checks(
+            &checks,
+            dir.path(),
+            &mut CheckGate::user_authored(dir.path()),
+        )
+        .await;
         assert_eq!(results[0].status, CheckStatus::Pass);
         assert!(results[0].truncated);
         assert!(results[0].evidence.stdout_tail.as_ref().unwrap().len() <= MAX_TAIL_BYTES);

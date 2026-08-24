@@ -118,6 +118,7 @@ pub mod tracing;
 pub mod trading_calendar;
 pub mod turn_sampling;
 pub mod utils;
+pub mod verification_approval;
 pub mod wing_rules;
 pub mod workspace_trust;
 pub mod workspaces;
