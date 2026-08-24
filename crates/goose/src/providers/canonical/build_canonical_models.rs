@@ -624,6 +624,7 @@ async fn check_canonical_mappings() -> Result<()> {
         ("databricks", "claude-3-5-sonnet-20241022"),
         ("tetrate", "claude-3-5-sonnet-computer-use"),
         ("xai", "grok-code-fast-1"),
+        ("zai", "glm-4.7"),
         ("azure_openai", "gpt-4o"),
         ("aws_bedrock", "anthropic.claude-3-5-sonnet-20241022-v2:0"),
         ("venice", "llama-3.3-70b"),

@@ -45,6 +45,11 @@ pub(crate) static PROVIDER_CONFIG_DEFS: &[ProviderConfigDef] = &[
         oauth_cache_path: None,
     },
     ProviderConfigDef {
+        id: "zai",
+        keys: &[key("ZAI_API_KEY", true, true)],
+        oauth_cache_path: None,
+    },
+    ProviderConfigDef {
         id: "nanogpt",
         keys: &[key("NANOGPT_API_KEY", true, true)],
         oauth_cache_path: None,

@@ -29,6 +29,7 @@ use permagent::providers::openai::OPEN_AI_DEFAULT_MODEL;
 use permagent::providers::sagemaker_tgi::SAGEMAKER_TGI_DEFAULT_MODEL;
 use permagent::providers::snowflake::SNOWFLAKE_DEFAULT_MODEL;
 use permagent::providers::xai::XAI_DEFAULT_MODEL;
+use permagent::providers::zai::ZAI_DEFAULT_MODEL;
 use permagent::session::{SessionManager, SessionType};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -870,6 +871,14 @@ async fn test_litellm_provider() -> Result<()> {
 #[tokio::test]
 async fn test_xai_provider() -> Result<()> {
     ProviderTestConfig::with_llm_provider("Xai", XAI_DEFAULT_MODEL, &["XAI_API_KEY"])
+        .run()
+        .await
+}
+
+/// Live smoke test — skipped automatically unless ZAI_API_KEY is set.
+#[tokio::test]
+async fn test_zai_provider() -> Result<()> {
+    ProviderTestConfig::with_llm_provider("Zai", ZAI_DEFAULT_MODEL, &["ZAI_API_KEY"])
         .run()
         .await
 }

@@ -305,6 +305,62 @@ pub static KNOWN_MODELS: &[ModelKnowledge] = &[
         context_window: 204_800,
         is_local: false,
     },
+    // ── Z.AI / Zhipu GLM — pricing from the Z.AI list price table ───────────
+    // All three rows priced from https://docs.z.ai/guides/overview/pricing
+    // (fetched 2026-08-24); context/output limits from the per-model guides
+    // under https://docs.z.ai/guides/llm/ (same date). Z.AI publishes no
+    // SWE-bench Verified row, so `orchestration_strength` below is derived from
+    // the nearest agentic benchmark Z.AI does publish and is APPROXIMATE — it is
+    // not on the same measured scale as the SWE-bench-derived rows above.
+    ModelKnowledge {
+        provider: "zai",
+        model: "glm-5.2",
+        display_name: "GLM-5.2",
+        family: "glm",
+        // edit 0.940: no aider row; top-of-open-weight coding proxy (Z.AI reports
+        // the highest open-source scores across several coding benchmarks).
+        // orch 0.81: Terminal-Bench 2.1 81.0 vs Claude Opus 4.8 85.0 (docs.z.ai
+        // glm-5.2 guide, 2026-08-24) — agentic proxy, not SWE-bench Verified.
+        edit_format_reliability: 0.940,
+        orchestration_strength: 0.81,
+        input_usd_per_mtok: 1.40,
+        output_usd_per_mtok: 4.40,
+        cache_support: true,
+        context_window: 1_000_000,
+        is_local: false,
+    },
+    ModelKnowledge {
+        provider: "zai",
+        model: "glm-4.7",
+        display_name: "GLM-4.7",
+        family: "glm",
+        // edit 0.930: no aider row; mid/high open-weight proxy, level with Kimi.
+        // orch 0.79: LiveCodeBench V6 84.9 and tau^2-Bench 84.7 for tool
+        // invocation (docs.z.ai glm-4.7 guide, 2026-08-24) — agentic proxy.
+        edit_format_reliability: 0.930,
+        orchestration_strength: 0.79,
+        input_usd_per_mtok: 0.60,
+        output_usd_per_mtok: 2.20,
+        cache_support: true,
+        context_window: 204_800,
+        is_local: false,
+    },
+    ModelKnowledge {
+        provider: "zai",
+        model: "glm-4.5-air",
+        display_name: "GLM-4.5 Air",
+        family: "glm",
+        // edit 0.880 / orch 0.62: ESTIMATES. The 106B Air variant has no public
+        // aider or SWE-bench row; scored below the full GLM-4.5 line on the
+        // strength of its parameter count alone. Cheapest paid Z.AI rung.
+        edit_format_reliability: 0.880,
+        orchestration_strength: 0.62,
+        input_usd_per_mtok: 0.20,
+        output_usd_per_mtok: 1.10,
+        cache_support: true,
+        context_window: 131_072,
+        is_local: false,
+    },
     // ── Ollama local ($0, private) ───────────────────────────────────────────
     ModelKnowledge {
         provider: "ollama",
@@ -391,6 +447,30 @@ mod tests {
         let local = lookup("ollama", "qwen3").unwrap();
         assert!(local.blended_cost_per_mtok().abs() < 1e-9);
         assert!(local.is_local);
+    }
+
+    /// Z.AI is selectable by the router: its rows resolve, carry the published
+    /// list price, and sit between the cheap open-weight tier and the frontier.
+    /// This asserts availability only — nothing here changes default routing.
+    #[test]
+    fn zai_glm_rows_resolve_with_published_prices() {
+        let glm47 = lookup("zai", "glm-4.7").expect("glm-4.7 must be in the KB");
+        assert_eq!(glm47.input_usd_per_mtok, 0.60);
+        assert_eq!(glm47.output_usd_per_mtok, 2.20);
+        assert!(glm47.cache_support, "Z.AI bills a cached-input rate");
+        assert!(!glm47.is_local);
+
+        let air = lookup("zai", "glm-4.5-air").expect("glm-4.5-air must be in the KB");
+        let flagship = lookup("zai", "glm-5.2").expect("glm-5.2 must be in the KB");
+        assert_eq!(flagship.context_window, 1_000_000);
+
+        // Cost-conscious ordering holds within the provider: Air < 4.7 < 5.2.
+        assert!(air.blended_cost_per_mtok() < glm47.blended_cost_per_mtok());
+        assert!(glm47.blended_cost_per_mtok() < flagship.blended_cost_per_mtok());
+
+        // And the cheapest Z.AI rung undercuts the frontier it would stand in for.
+        let opus = lookup("anthropic", "claude-opus-4-8").unwrap();
+        assert!(air.blended_cost_per_mtok() < opus.blended_cost_per_mtok());
     }
 
     #[test]

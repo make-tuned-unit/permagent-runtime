@@ -477,6 +477,7 @@ pub const BUILTIN_PROVIDERS: &[(&str, &str)] = &[
     ("openai", "OPENAI_API_KEY"),
     ("google", "GOOGLE_API_KEY"),
     ("xai", "XAI_API_KEY"),
+    ("zai", "ZAI_API_KEY"),
     ("ollama", ""), // keyless local; models come from discovery, not the KB
 ];
 
@@ -1273,6 +1274,25 @@ mod tests {
             !builtins.iter().any(|p| p.provider == "ollama"),
             "keyless ollama must not be enumerated as a keyed builtin"
         );
+    }
+
+    /// Z.AI is discoverable the moment ZAI_API_KEY is set — the "just make them
+    /// selectable" half of the change. Adding it to BUILTIN_PROVIDERS is what
+    /// lets discovery enumerate its KB models at all.
+    #[test]
+    fn zai_is_a_keyed_builtin_with_kb_models() {
+        let builtins = builtin_provider_models();
+        let zai = builtins
+            .iter()
+            .find(|p| p.provider == "zai")
+            .expect("zai must be a keyed builtin");
+        assert_eq!(zai.api_key_env, "ZAI_API_KEY");
+        assert!(
+            zai.models.iter().any(|m| m == "glm-4.7"),
+            "zai builtin must carry its KB model ids, got {:?}",
+            zai.models
+        );
+        assert_eq!(provider_key_env("zai").as_deref(), Some("ZAI_API_KEY"));
     }
 
     /// F1 support: provider availability powers the summon consistency guard —
