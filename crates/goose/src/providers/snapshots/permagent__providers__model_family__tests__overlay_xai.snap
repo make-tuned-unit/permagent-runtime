@@ -1,0 +1,12 @@
+---
+source: crates/goose/src/providers/model_family.rs
+expression: card
+---
+family: xai
+bytes: 215
+approx_tokens: 54
+---
+# Model Notes
+
+Call tools natively. Never write a tool call as text, as JSON, or as XML tool markup in your reply.
+When a tool has already given you the fact, answer with it — do not narrate a plan to go find it.

@@ -2696,6 +2696,32 @@ CATEGORIES: Technology, Data Migration, Networking";
 
 #[cfg(test)]
 mod tests {
+    /// A fence, not a behaviour test. The Librarian's prompt is a separate,
+    /// hand-tuned contract from the agent's system prompt — the per-model-family
+    /// overlay work deliberately does not touch it, and a future "let's unify
+    /// the prompts" refactor must trip over this rather than silently reword the
+    /// three-field index contract the whole memory index depends on.
+    ///
+    /// If you MEANT to change the wording, re-derive the digest and say so in
+    /// the commit message.
+    #[test]
+    fn librarian_prompt_is_byte_stable() {
+        use sha2::{Digest, Sha256};
+        let digest: String = Sha256::digest(LIBRARIAN_SYSTEM_PROMPT.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(
+            LIBRARIAN_SYSTEM_PROMPT.len(),
+            1794,
+            "Librarian prompt length changed"
+        );
+        assert_eq!(
+            digest, "db80afa13b46ba625856c2c8d805a84bf78042ce3455ea08716f589f7c3b5ce5",
+            "Librarian prompt wording changed — this prompt is deliberately out of scope for prompt refactors"
+        );
+    }
+
     use super::*;
 
     #[test]

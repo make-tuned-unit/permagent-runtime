@@ -1,0 +1,13 @@
+---
+source: crates/goose/src/providers/model_family.rs
+expression: card
+---
+family: openai
+bytes: 300
+approx_tokens: 75
+---
+# Model Notes
+
+Call tools natively. Never write a tool call as text or as JSON in your reply.
+Use Markdown where it earns its place — code, tables, short lists — not by default in prose.
+When the next step is already clear, take it; do not re-read context you have or re-plan a settled decision.

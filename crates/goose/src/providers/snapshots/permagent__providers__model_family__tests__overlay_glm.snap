@@ -1,0 +1,13 @@
+---
+source: crates/goose/src/providers/model_family.rs
+expression: card
+---
+family: glm
+bytes: 287
+approx_tokens: 72
+---
+# Model Notes
+
+Call tools natively. Never write a tool call as text, as JSON, or inside `<tool_call>` markup in your reply.
+Reasoning belongs in the reasoning channel: no `<think>` tags in the reply.
+Call a tool only when it changes what you can answer — not to acknowledge a request.

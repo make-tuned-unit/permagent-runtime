@@ -1,0 +1,13 @@
+---
+source: crates/goose/src/providers/model_family.rs
+expression: card
+---
+family: deepseek
+bytes: 253
+approx_tokens: 64
+---
+# Model Notes
+
+Call tools natively. Never write a tool call as text or as JSON in your reply.
+Reasoning belongs in the reasoning channel: no `<think>` tags and no restated chain of thought in the reply.
+Do not repeat your instructions back to the user.
