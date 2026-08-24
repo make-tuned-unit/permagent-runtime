@@ -42,12 +42,68 @@ pub fn note_episode_id(project_id: &str, note_id: &str) -> String {
 
 /// The `RememberOpts` a note's Brain index is written with. Shared by the
 /// create and update paths so both name the same episode.
-fn note_remember_opts(project_id: &str, note_id: &str) -> spectral::RememberOpts {
+///
+/// `wing` is the project's slug, resolved by the async caller (this function
+/// stays pure/DB-free so it is unit-testable without a pool). `None` means
+/// "no resolvable wing" — either the lookup failed/found nothing, or the note
+/// belongs to the implicit `personal` project — and is passed straight
+/// through to Spectral as-is, which falls back to its classifier (landing the
+/// note in `general`) rather than a guessed-wrong wing.
+fn note_remember_opts(
+    project_id: &str,
+    note_id: &str,
+    wing: Option<&str>,
+) -> spectral::RememberOpts {
     spectral::RememberOpts {
         source: Some(NOTE_SOURCE.to_string()),
         visibility: spectral::Visibility::Private,
         episode_id: Some(note_episode_id(project_id, note_id)),
+        wing: wing.map(str::to_string),
         ..Default::default()
+    }
+}
+
+/// Resolve a note's wing: the owning project's slug, or `None` when it can't
+/// be honestly determined.
+///
+/// A note's project is a property of the note itself: the app knows which
+/// project it is being saved into, with no inference at all. That is why this
+/// path may pass the wing outright, while a chat turn may not — there, the
+/// project the UI has open is only a hypothesis about what the conversation is
+/// about, and [`crate::session_wing`] makes each turn earn its wing. Here we
+/// look the slug up and pass it as-is, bypassing Spectral's classifier
+/// entirely (see `RememberOpts::wing`).
+///
+/// Two cases fall back to `None` (classify → `general`), deliberately never a
+/// guess: the implicit `personal` project is skipped, mirroring
+/// `crate::wing_rules::project_wing_rules`'s exclusion (a personal note
+/// should stay unwinged rather than pinned to a literal "personal" wing that
+/// would swallow anything mentioning the word); and a lookup that errors or
+/// finds no row is logged and treated the same way. An honest `general` beats
+/// a wrong wing — a wrong wing is invisible and poisons TACT routing, while
+/// an unwinged memory is at least visibly unscoped.
+async fn resolve_note_wing(pool: &Pool<Sqlite>, project_id: &str) -> Option<String> {
+    match sqlx::query_scalar::<_, String>("SELECT slug FROM projects WHERE id = ?")
+        .bind(project_id)
+        .fetch_optional(pool)
+        .await
+    {
+        Ok(Some(slug)) if slug == crate::session_wing::PERSONAL_SLUG => None,
+        Ok(Some(slug)) => Some(slug),
+        Ok(None) => {
+            tracing::warn!(
+                project = %project_id,
+                "note: no project row found for wing lookup; leaving unwinged"
+            );
+            None
+        }
+        Err(e) => {
+            tracing::warn!(
+                project = %project_id, error = %e,
+                "note: wing lookup failed; leaving unwinged"
+            );
+            None
+        }
     }
 }
 
@@ -111,7 +167,8 @@ pub async fn create_note_indexed_with_id(
     let mut stored_memory_key: Option<&str> = None;
     if let Some(brain) = brain {
         let content = note_memory_content(title, body);
-        let opts = note_remember_opts(project_id, note_id);
+        let wing = resolve_note_wing(pool, project_id).await;
+        let opts = note_remember_opts(project_id, note_id, wing.as_deref());
         match brain.remember_with(&memory_key, &content, opts).await {
             Ok(_) => {
                 stored_memory_key = Some(&memory_key);
@@ -331,7 +388,8 @@ pub async fn update_note_body(
     if let Some(brain) = brain {
         let memory_key = format!("note:{}:{}", project_id, note_id);
         let content = note_memory_content(title.as_deref(), body);
-        let opts = note_remember_opts(project_id, note_id);
+        let wing = resolve_note_wing(pool, project_id).await;
+        let opts = note_remember_opts(project_id, note_id, wing.as_deref());
         if let Err(e) = brain.remember_with(&memory_key, &content, opts).await {
             tracing::warn!(
                 project = %project_id, note = %note_id, error = %e,
@@ -469,16 +527,35 @@ mod tests {
     /// so they link instead of being filed apart by the write-gap heuristic.
     #[test]
     fn note_writes_share_one_stable_episode() {
-        let created = note_remember_opts("proj-1", "note-1");
-        let enhanced = note_remember_opts("proj-1", "note-1");
+        let created = note_remember_opts("proj-1", "note-1", None);
+        let enhanced = note_remember_opts("proj-1", "note-1", None);
 
         assert_eq!(created.episode_id.as_deref(), Some("note:proj-1:note-1"));
         assert_eq!(created.episode_id, enhanced.episode_id);
         // Distinct notes are distinct episodes.
         assert_ne!(
             created.episode_id,
-            note_remember_opts("proj-1", "note-2").episode_id
+            note_remember_opts("proj-1", "note-2", None).episode_id
         );
+    }
+
+    /// A note written from a project with a known slug is stored in that
+    /// project's wing, bypassing Spectral's classifier — and the episode id
+    /// (derived from project_id/note_id, unrelated to the wing) is unaffected.
+    #[test]
+    fn note_written_into_its_project_wing() {
+        let opts = note_remember_opts("proj-1", "note-1", Some("permagent"));
+        assert_eq!(opts.wing.as_deref(), Some("permagent"));
+        assert_eq!(opts.episode_id.as_deref(), Some("note:proj-1:note-1"));
+    }
+
+    /// No resolvable wing (lookup failed, no row, or the implicit `personal`
+    /// project) must pass `wing: None` through as-is — never a guess — so
+    /// Spectral's classifier decides (landing it in `general`).
+    #[test]
+    fn note_without_a_resolvable_project_stays_unwinged() {
+        let opts = note_remember_opts("proj-1", "note-1", None);
+        assert_eq!(opts.wing, None);
     }
 
     async fn test_pool() -> Pool<Sqlite> {
@@ -533,6 +610,43 @@ mod tests {
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].id, "note-1");
         assert_eq!(notes[0].project_id, proj);
+    }
+
+    /// The wing lookup resolves a known project's slug, skips the implicit
+    /// "personal" project (mirroring `crate::wing_rules::project_wing_rules`'s
+    /// exclusion), and falls back to unwinged for a project id with no row —
+    /// the three cases `resolve_note_wing`'s doc comment promises.
+    #[tokio::test]
+    async fn resolve_note_wing_looks_up_slug_skips_personal_and_falls_back() {
+        let pool = test_pool().await;
+        let acme = a_project(&pool, "Acme").await;
+        assert_eq!(
+            resolve_note_wing(&pool, &acme).await.as_deref(),
+            Some("acme")
+        );
+
+        let personal = create_project(
+            &pool,
+            CreateProject {
+                name: "Personal".to_string(),
+                slug: Some("personal".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .id;
+        assert_eq!(
+            resolve_note_wing(&pool, &personal).await,
+            None,
+            "the implicit personal project stays unwinged"
+        );
+
+        assert_eq!(
+            resolve_note_wing(&pool, "does-not-exist").await,
+            None,
+            "no project row -> honest None, not a guess"
+        );
     }
 
     /// A note can be titleless (body-only) and still round-trips.

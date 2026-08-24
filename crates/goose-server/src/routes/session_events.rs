@@ -956,12 +956,18 @@ pub async fn session_reply(
             let turn_idx = all_messages.len();
 
             if !user_text.is_empty() && !assistant_text.is_empty() {
+                // See reply.rs: tool-call arguments are corroboration evidence
+                // that only exists at write time.
+                let tool_text = crate::brain_ops::turn_tool_call_text(all_messages.messages());
+                let pool = task_state.session_manager().pool_clone().await.ok();
                 crate::brain_ops::spawn_persist_chat_turn(
                     brain.clone(),
+                    pool,
                     task_session_id.clone(),
                     turn_idx,
                     user_text,
                     assistant_text,
+                    tool_text,
                 );
             }
         }

@@ -186,38 +186,61 @@ async fn already_ingested_digest(key: &str, filename: &str) -> Option<Digest> {
     })
 }
 
-/// Summarize extracted text, write the full text to the Brain under `key`, and
-/// build the compact digest. Shared tail of the image and document paths.
-async fn finalize_text_ingest(key: String, full_text: String, filename: &str) -> Digest {
-    finalize_text_ingest_with_identity(key, full_text, filename, filename).await
+/// The `RememberOpts` a Reader ingest writes its full text under.
+///
+/// Pure and DB-free (mirrors `project_notes::note_remember_opts` and
+/// `brain_ops::chat_turn_opts` — both extracted for the same reason) so the
+/// wing/episode wiring is unit-testable without a Brain or a runtime.
+///
+/// `wing` is the project slug when the caller resolved one, or `None` for an
+/// anonymous drop / an unresolvable project — passed straight through to
+/// Spectral, which classifies (landing the memory in `general`) rather than
+/// guess. `key` doubles as the episode id: it is the content-hash identity of
+/// these exact bytes (`reader:file:{sha256}`) or the path-stable project
+/// identity (`doc:{project}:{rel}`), so it is stable for this document
+/// version/identity and shared by every write this ingest makes, while a
+/// different document dropped in the same minute gets its own episode instead
+/// of being merged in by the write-gap heuristic (R45).
+fn reader_remember_opts(key: &str, wing: Option<&str>) -> RememberOpts {
+    RememberOpts {
+        source: Some(READER_SOURCE.to_string()),
+        visibility: Visibility::Private,
+        episode_id: Some(key.to_string()),
+        wing: wing.map(str::to_string),
+        ..Default::default()
+    }
 }
 
-/// Shared write tail with an explicit durable document identity.
+/// Summarize extracted text, write the full text to the Brain under `key`, and
+/// build the compact digest. Shared tail of the image and document paths.
 ///
-/// Anonymous drops retain the historical filename identity. Project-tree
-/// ingestion passes its `doc:{project}:{normalized-relative-path}` key instead,
-/// so two projects may each own `README.md` without one retiring the other.
+/// Anonymous drop: no project is known here (the caller has only bytes and a
+/// filename), so this always writes unwinged (`wing: None`) — Spectral's
+/// classifier decides.
+async fn finalize_text_ingest(key: String, full_text: String, filename: &str) -> Digest {
+    finalize_text_ingest_with_identity(key, full_text, filename, filename, None).await
+}
+
+/// Shared write tail with an explicit durable document identity and wing.
+///
+/// Anonymous drops retain the historical filename identity and pass
+/// `wing: None` — the Reader has no project to attribute here. Project-tree
+/// ingestion passes its `doc:{project}:{normalized-relative-path}` key instead
+/// (so two projects may each own `README.md` without one retiring the other)
+/// and the project's slug as `wing`, resolved by the caller (this module uses
+/// the global brain handle, not a passed pool, so it cannot look the slug up
+/// itself — see `reader_remember_opts`).
 async fn finalize_text_ingest_with_identity(
     key: String,
     full_text: String,
     filename: &str,
     doc_identity: &str,
+    wing: Option<&str>,
 ) -> Digest {
     let summary = summarize(&full_text).await;
 
     if let Some(brain) = get_global_brain() {
-        let opts = RememberOpts {
-            source: Some(READER_SOURCE.to_string()),
-            visibility: Visibility::Private,
-            // The ingested document is the episode (R45). `key` is the
-            // content-hash identity of these exact bytes
-            // (`reader:file:{sha256}`), so it is stable for this document
-            // version and shared by every write this ingest makes — while a
-            // different document dropped in the same minute gets its own
-            // episode instead of being merged in by the write-gap heuristic.
-            episode_id: Some(key.clone()),
-            ..Default::default()
-        };
+        let opts = reader_remember_opts(&key, wing);
         if let Err(e) = brain.remember_with(&key, &full_text, opts).await {
             tracing::warn!("reader: brain write failed for {key}: {e}");
         }
@@ -539,11 +562,17 @@ pub fn doc_memory_key(project_id: &str, rel: &str) -> String {
 
 /// Ingest bytes under an explicit key (path-stable `doc:` keys for project /
 /// inbox files). Idempotent on that key via the existing Brain write.
+///
+/// `wing` is the owning project's slug — the caller resolves it (a `doc:`
+/// identity always names a known project) and passes it through to the
+/// durable write; `None` when it could not be honestly resolved (see
+/// `reader_remember_opts`).
 pub async fn ingest_bytes_as(
     key: String,
     bytes: &[u8],
     filename: &str,
     mime: &str,
+    wing: Option<&str>,
 ) -> anyhow::Result<Digest> {
     let full_text = extract_document_text(bytes, filename, mime).await?;
     if full_text.trim().is_empty() {
@@ -568,13 +597,21 @@ pub async fn ingest_bytes_as(
     }
 
     let identity = key.clone();
-    Ok(finalize_text_ingest_with_identity(key, full_text, filename, &identity).await)
+    Ok(finalize_text_ingest_with_identity(key, full_text, filename, &identity, wing).await)
 }
 
 /// Ingest every text file under `root` keyed as `doc:{project}:{rel}`.
+///
+/// `wing` is the owning project's slug, resolved by the caller (this function
+/// only has `project_id`, the row id — not the slug — so it cannot resolve it
+/// itself); pass `None` when it could not be honestly resolved (unknown
+/// project, lookup failure, or the implicit `personal` project — see
+/// `project_notes::resolve_note_wing` for the same three-way rule applied to
+/// notes).
 pub async fn ingest_tree_for_project(
     project_id: &str,
     root: &std::path::Path,
+    wing: Option<&str>,
 ) -> anyhow::Result<Vec<Digest>> {
     let mut digests = Vec::new();
     for path in list_ingestible(root) {
@@ -594,7 +631,7 @@ pub async fn ingest_tree_for_project(
         } else {
             "text/plain"
         };
-        match ingest_bytes_as(key, &bytes, name, mime).await {
+        match ingest_bytes_as(key, &bytes, name, mime, wing).await {
             Ok(d) => digests.push(d),
             Err(e) => tracing::warn!(path = %path.display(), error = %e, "tree ingest skipped"),
         }
@@ -792,6 +829,29 @@ fn truncate(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A project-tree ingest (a `doc:{project}:{rel}` identity) carries its
+    /// resolved project slug through to the write — the wing lands unwinged
+    /// only when the caller genuinely couldn't resolve one, never by default.
+    #[test]
+    fn doc_identity_carries_its_resolved_wing() {
+        let key = doc_memory_key("proj-1", "README.md");
+        let opts = reader_remember_opts(&key, Some("permagent"));
+        assert_eq!(opts.wing.as_deref(), Some("permagent"));
+        // The key doubles as the episode id, independent of the wing.
+        assert_eq!(opts.episode_id.as_deref(), Some(key.as_str()));
+    }
+
+    /// An anonymous drop (a `reader:file:{sha256}` identity) has no project to
+    /// attribute — it must stay unwinged, letting Spectral classify.
+    #[test]
+    fn anonymous_drop_stays_unwinged() {
+        let key = content_key(b"anonymous bytes");
+        assert!(key.starts_with("reader:file:"));
+        let opts = reader_remember_opts(&key, None);
+        assert_eq!(opts.wing, None);
+        assert_eq!(opts.episode_id.as_deref(), Some(key.as_str()));
+    }
 
     /// #339: first ingest of a document records its content-key and has no
     /// prior version to retire; re-ingesting the SAME bytes (same key) reports

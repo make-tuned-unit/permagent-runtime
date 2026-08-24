@@ -1891,12 +1891,19 @@ async fn stream_reply_with_tts(
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as usize)
                 .unwrap_or(0);
+            // Voice has no tool-call transcript in hand at this seam, so the
+            // corroboration check sees prose only. That is honest: a voice
+            // turn is winged when it names its project and left `general`
+            // otherwise, exactly like a typed turn that names nothing.
+            let pool = state.session_manager().pool_clone().await.ok();
             crate::brain_ops::spawn_persist_chat_turn(
                 brain.clone(),
+                pool,
                 sid.to_string(),
                 turn_idx,
                 transcript.to_string(),
                 full_reply,
+                String::new(),
             );
         }
     }

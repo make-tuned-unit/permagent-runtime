@@ -24,14 +24,24 @@ function isProject(value: unknown): value is Project {
 
 // ── Main component ─────────────────────────────────────────────────────────
 
-/** Emit a ProjectSelected activity event via Tauri IPC (fire-and-forget). */
-function emitProjectSelected(project: Project) {
+/**
+ * Emit a ProjectSelected activity event via Tauri IPC (fire-and-forget).
+ *
+ * `sessionId` is the id of the chat session this selection led to — pass it
+ * whenever one is in scope (e.g. a "start chat in this project" action).
+ * Opening a project's board with no chat session attached is a genuine,
+ * sessionless selection: `sessionId` stays absent there, and `session_id` is
+ * still sent explicitly as `null` (never omitted) to match the daemon's
+ * ActivityEvent shape — never fabricate an id.
+ */
+function emitProjectSelected(project: Project, sessionId: string | null = null) {
   import('@tauri-apps/api/core')
     .then(({ invoke }) => {
       invoke('emit_activity', {
         event_type: 'project_selected',
         source_surface: 'project_picker',
         payload: { project_id: project.id, project_name: project.name },
+        session_id: sessionId,
         project_id: `project:${project.slug}`,
       });
     })

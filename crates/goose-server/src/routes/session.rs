@@ -548,8 +548,11 @@ async fn create_session(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<Option<CreateSessionRequest>>,
 ) -> Result<Json<Session>, StatusCode> {
+    let payload = payload.unwrap_or_default();
     let working_dir = payload
-        .and_then(|p| p.working_dir.filter(|s| !s.trim().is_empty()))
+        .working_dir
+        .clone()
+        .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()));
 
     let config = permagent::config::Config::global();
@@ -566,6 +569,45 @@ async fn create_session(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
+    // Capture the project the client had open, ONCE, at creation. This is a
+    // hypothesis about the conversation's scope, not its wing — see
+    // `permagent::session_wing`. A client that sends nothing gets a session
+    // with no hint, and its turns stay honestly `general`; nothing is inferred
+    // from what was open in some other window five hours ago.
+    if let Some(project_id) = payload
+        .project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        match state.session_manager().pool_clone().await {
+            Ok(pool) => {
+                if let Err(e) = permagent::session_wing::set_session_project_hint(
+                    &pool,
+                    &session.id,
+                    project_id,
+                )
+                .await
+                {
+                    // Never fail session creation over the hint: a chat without
+                    // a project hint works, it is simply unscoped.
+                    tracing::warn!(
+                        target: "permagentd::session",
+                        session = %session.id,
+                        project = %project_id,
+                        error = %e,
+                        "could not record the session project hint"
+                    );
+                }
+            }
+            Err(e) => tracing::warn!(
+                target: "permagentd::session",
+                error = %e,
+                "no session pool for the project hint"
+            ),
+        }
+    }
+
     // #629 multi-client liveness: a session started on the phone appears in the
     // desktop's sessions list without a manual refresh.
     permagent::events::emit(permagent::events::session_changed(&session.id, "created"));
@@ -573,10 +615,14 @@ async fn create_session(
     Ok(Json(session))
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Deserialize, ToSchema, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateSessionRequest {
     working_dir: Option<String>,
+    /// The project the client had open when it started this chat, in canonical
+    /// `project:<slug>` form. Optional and never inferred: a global chat sends
+    /// nothing, and its memories stay in `general` — honestly.
+    project_id: Option<String>,
 }
 
 pub fn routes(state: Arc<AppState>) -> Router {
