@@ -16,7 +16,17 @@ pub fn install() {
     #[cfg(target_os = "linux")]
     INIT.call_once(|| {
         unsafe {
-            libc::signal(libc::SIGABRT, sigabrt_handler as libc::sighandler_t);
+            // Cast via `*const ()` rather than straight to the integer type.
+            // Clippy 1.97's `function_casts_as_integer` rejects the direct
+            // form: a function ITEM is zero-sized, so `as <int>` is a special
+            // case rather than a pointer cast, and spelling the pointer step
+            // out is what makes it a real address. Same value, no cfg here —
+            // this whole block is already Linux-only, which is why a macOS
+            // clippy run cannot see this lint at all.
+            libc::signal(
+                libc::SIGABRT,
+                sigabrt_handler as *const () as libc::sighandler_t,
+            );
         }
         eprintln!("[test_sigabrt_handler] SIGABRT handler installed for #190 diagnostics");
     });

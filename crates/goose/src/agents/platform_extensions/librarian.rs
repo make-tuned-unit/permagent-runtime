@@ -2527,16 +2527,17 @@ CATEGORIES: team meeting, project planning, engineering"#;
     }
 
     #[tokio::test]
-    async fn test_list_tools_returns_two_tools() {
+    async fn test_list_tools_returns_three_tools() {
         let client = LibrarianClient::new(test_context()).unwrap();
         let result = client
             .list_tools("test", None, CancellationToken::new())
             .await
             .unwrap();
-        assert_eq!(result.tools.len(), 2);
+        assert_eq!(result.tools.len(), 3);
         let names: Vec<String> = result.tools.iter().map(|t| t.name.to_string()).collect();
         assert!(names.contains(&"describe_memory".to_string()));
         assert!(names.contains(&"list_undescribed".to_string()));
+        assert!(names.contains(&"backfill_approval_halls".to_string()));
     }
 
     #[tokio::test]
