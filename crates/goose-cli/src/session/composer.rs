@@ -17,6 +17,12 @@ use std::time::Instant;
 pub const MAX_INPUT_ROWS: usize = 6;
 pub const PLACEHOLDER: &str = "Ask Permagent to do anything";
 
+/// DEC private mode 2004. Also the readiness signal the desktop app's
+/// terminal pane waits for before delivering a follow-up prompt
+/// (`ui/command-center/src/components/terminal/followUpDelivery.ts`).
+pub const ENABLE_BRACKETED_PASTE: &str = "\x1b[?2004h";
+pub const DISABLE_BRACKETED_PASTE: &str = "\x1b[?2004l";
+
 const CYAN: (u8, u8, u8) = (0x00, 0xD5, 0xFF);
 const MAGENTA: (u8, u8, u8) = (0xA8, 0x55, 0xCC);
 const DIM: (u8, u8, u8) = (0x5A, 0x6D, 0x84);
@@ -43,6 +49,11 @@ pub enum KeyEvent {
     CtrlC,
     CtrlD,
     Tab,
+    /// `ESC [ 200 ~` — everything until [`KeyEvent::PasteEnd`] is literal text,
+    /// so a pasted directive stays ONE message instead of one per line.
+    PasteStart,
+    /// `ESC [ 201 ~`
+    PasteEnd,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +81,11 @@ pub struct ComposerState {
     pub tokens: String,
     pub maybe_exit: bool,
     pub light: bool,
+    /// Inside `ESC[200~ … ESC[201~`: the terminal is replaying pasted bytes,
+    /// not reporting keystrokes.
+    pub pasting: bool,
+    /// Last pasted byte was CR — used to fold a CRLF pair into one line break.
+    pub paste_saw_cr: bool,
 }
 
 impl ComposerState {
@@ -100,8 +116,20 @@ impl ComposerState {
     }
 
     pub fn apply(&mut self, key: KeyEvent) -> ComposerAction {
+        if self.pasting {
+            return self.apply_pasted(key);
+        }
         self.maybe_exit = matches!(key, KeyEvent::CtrlC) && self.maybe_exit_after(key);
         match key {
+            KeyEvent::PasteStart => {
+                self.maybe_exit = false;
+                self.history_idx = None;
+                self.stash = None;
+                self.pasting = true;
+                self.paste_saw_cr = false;
+                ComposerAction::Redraw
+            }
+            KeyEvent::PasteEnd => ComposerAction::Redraw,
             KeyEvent::Char(c) if !c.is_control() => {
                 self.maybe_exit = false;
                 self.history_idx = None;
@@ -161,6 +189,37 @@ impl ComposerState {
             }
             KeyEvent::Tab | KeyEvent::Char(_) => ComposerAction::Redraw,
         }
+    }
+
+    /// Keys arriving between the paste markers are *content*. A terminal
+    /// replays a pasted newline as CR, so treating CR as Enter here is what
+    /// split one 32-line directive into 32 queued messages; inside a paste it
+    /// is a literal line break, and only the CR that follows `ESC[201~`
+    /// submits.
+    fn apply_pasted(&mut self, key: KeyEvent) -> ComposerAction {
+        match key {
+            KeyEvent::PasteEnd => {
+                self.pasting = false;
+            }
+            KeyEvent::Enter | KeyEvent::AltEnter => {
+                self.insert_char('\n');
+                self.paste_saw_cr = true;
+                return ComposerAction::Redraw;
+            }
+            KeyEvent::Newline => {
+                // A CRLF pair is one line break, not two.
+                if !self.paste_saw_cr {
+                    self.insert_char('\n');
+                }
+            }
+            KeyEvent::Tab => self.insert_char('\t'),
+            KeyEvent::Char(c) if !c.is_control() => self.insert_char(c),
+            // Escape/Ctrl+C bytes inside a paste must not interrupt the turn
+            // or exit the session; drop everything else.
+            _ => {}
+        }
+        self.paste_saw_cr = false;
+        ComposerAction::Redraw
     }
 
     fn maybe_exit_after(&self, key: KeyEvent) -> bool {
@@ -393,10 +452,11 @@ fn input_layout(state: &ComposerState, width: usize) -> InputLayout {
         .saturating_sub(2) // borders
         .saturating_sub(2) // box padding
         .saturating_sub(prompt_w);
-    let logical: Vec<&str> = if state.buffer.is_empty() {
+    let display = sanitize_keep_newlines(&state.buffer);
+    let logical: Vec<&str> = if display.is_empty() {
         vec![""]
     } else {
-        state.buffer.split('\n').collect()
+        display.split('\n').collect()
     };
     let prefix = before_cursor(&state.buffer, state.cursor);
     let cursor_line = prefix.bytes().filter(|&byte| byte == b'\n').count();
@@ -415,7 +475,7 @@ fn input_layout(state: &ComposerState, width: usize) -> InputLayout {
     let mut cursor_col = 0;
     for (logical_idx, line) in logical.iter().enumerate().skip(first).take(visible_count) {
         let line = *line;
-        if state.buffer.is_empty() {
+        if display.is_empty() {
             rows.push(truncate(PLACEHOLDER, text_w));
         } else if logical_idx == cursor_line {
             let (visible, col) = line_viewport(line, cursor_in_line, text_w);
@@ -444,7 +504,7 @@ pub fn status_line(state: &ComposerState) -> String {
     }
     if !state.queued.is_empty() {
         let n = state.queued.len();
-        let preview = truncate(state.queued.last().map(String::as_str).unwrap_or(""), 40);
+        let preview = queue_preview(state.queued.last().map(String::as_str).unwrap_or(""));
         return format!("• Queued {n} · {preview}  —  will send when this turn ends");
     }
     if state.busy {
@@ -454,6 +514,35 @@ pub fn status_line(state: &ComposerState) -> String {
         );
     }
     "• Ready  ·  enter send · ctrl+j newline · /help".to_string()
+}
+
+/// One queued message is one row: its first line, plus how many more it
+/// carries. A pasted directive is a single queue entry, not one per line.
+fn queue_preview(text: &str) -> String {
+    let mut lines = text.lines();
+    let first = sanitize_row(lines.next().unwrap_or(""));
+    let extra = lines.count();
+    if extra == 0 {
+        truncate(&first, 40)
+    } else {
+        format!("{} (+{extra} lines)", truncate(&first, 26))
+    }
+}
+
+/// Replace control bytes with spaces so pasted text can never emit a raw
+/// newline (or escape) from inside the pinned frame — one stray `\n` scrolls
+/// the terminal and smears a copy of the composer into the scrollback.
+/// Byte lengths are preserved, so cursor offsets stay valid.
+fn sanitize_keep_newlines(s: &str) -> String {
+    s.chars()
+        .map(|c| if c == '\n' || !c.is_control() { c } else { ' ' })
+        .collect()
+}
+
+fn sanitize_row(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -549,17 +638,44 @@ fn prepare_output_ansi(bottom: usize, restore_saved_cursor: bool) -> String {
     }
 }
 
-fn clear_resized_frame_ansi(rows: usize, old_height: usize, new_height: usize) -> String {
-    if old_height == new_height {
-        return String::new();
-    }
-    let clear_height = old_height.max(new_height);
-    let clear_start = rows.saturating_sub(clear_height) + 1;
+/// Erase the bottom `height` rows — the pinned strip — without printing a
+/// single newline.
+fn clear_frame_ansi(rows: usize, height: usize) -> String {
+    let clear_start = rows.saturating_sub(height) + 1;
     let mut ansi = String::from("\x1b[?25l");
     for row in clear_start..=rows {
         ansi.push_str(&format!("\x1b[{row};1H\x1b[K"));
     }
     ansi
+}
+
+/// DECSTBM for a strip of `height` rows pinned at the bottom of `rows`.
+fn set_region_ansi(rows: usize, height: usize) -> String {
+    format!("\x1b[1;{}r", region_bottom_row(rows, height))
+}
+
+fn region_bottom_row(rows: usize, height: usize) -> usize {
+    rows.saturating_sub(height).max(1)
+}
+
+/// The exact bytes one composer frame writes: every row is addressed
+/// absolutely (`CSI row;1H`) and erased in place, so a frame never contains a
+/// newline and can never scroll a copy of itself into the scrollback.
+pub fn paint_frame_ansi(state: &ComposerState, cols: usize, rows: usize) -> String {
+    let cols = cols.max(24);
+    let height = composer_rows(state, cols);
+    let start = rows.saturating_sub(height) + 1;
+    let mut out = String::from("\x1b[?25l");
+    for (i, line) in render_ansi(state, cols).iter().enumerate() {
+        out.push_str(&format!("\x1b[{};1H\x1b[K{}", start + i, line));
+    }
+    // Park the cursor inside the field so typing never lands in the stream.
+    let layout = input_layout(state, cols);
+    let prompt_w = measure_text_width(prompt_glyph());
+    let row = start + 2 /* status + top border */ + layout.cursor_row;
+    let col = 3 + prompt_w + layout.cursor_col;
+    out.push_str(&format!("\x1b[{};{}H\x1b[?25h", row, col.min(cols)));
+    out
 }
 
 fn busy_second_changed(busy: bool, last: Option<u64>, current: u64) -> bool {
@@ -683,6 +799,17 @@ pub fn decode_keys(input: &[u8], pending: &mut Vec<u8>) -> Vec<KeyEvent> {
                 i += 1;
             }
             0x1b => {
+                match paste_marker(&bytes[i..]) {
+                    Some(Ok((ev, len))) => {
+                        events.push(ev);
+                        i += len;
+                        continue;
+                    }
+                    // A proper prefix of a marker: wait for the rest instead of
+                    // decoding `ESC [ 2 0 0 ~` as Escape plus five characters.
+                    Some(Err(())) => break,
+                    None => {}
+                }
                 if i + 1 >= bytes.len() {
                     break;
                 }
@@ -746,6 +873,28 @@ pub fn decode_keys(input: &[u8], pending: &mut Vec<u8>) -> Vec<KeyEvent> {
     }
     pending.drain(..i);
     events
+}
+
+pub const PASTE_START: &[u8] = b"\x1b[200~";
+pub const PASTE_END: &[u8] = b"\x1b[201~";
+
+/// `Some(Ok((event, consumed)))` for a complete bracketed-paste marker,
+/// `Some(Err(()))` when `bytes` is only a prefix of one (a 64-byte read can
+/// split `ESC[200~` anywhere), `None` when it is not a marker at all.
+#[allow(clippy::result_unit_err)]
+fn paste_marker(bytes: &[u8]) -> Option<Result<(KeyEvent, usize), ()>> {
+    for (seq, ev) in [
+        (PASTE_START, KeyEvent::PasteStart),
+        (PASTE_END, KeyEvent::PasteEnd),
+    ] {
+        if bytes.starts_with(seq) {
+            return Some(Ok((ev, seq.len())));
+        }
+        if bytes.len() < seq.len() && seq.starts_with(bytes) {
+            return Some(Err(()));
+        }
+    }
+    None
 }
 
 fn utf8_width(b: u8) -> usize {
@@ -887,6 +1036,8 @@ mod tty {
         cols: usize,
         rows: usize,
         last_height: usize,
+        last_rows: usize,
+        last_cols: usize,
         last_busy_second: Option<u64>,
         output_prepared: bool,
         has_output_cursor: bool,
@@ -939,6 +1090,8 @@ mod tty {
                 cols: cols as usize,
                 rows: rows as usize,
                 last_height: 0,
+                last_rows: 0,
+                last_cols: 0,
                 last_busy_second: None,
                 output_prepared: false,
                 has_output_cursor: false,
@@ -956,7 +1109,7 @@ mod tty {
         }
 
         fn region_bottom(&self) -> usize {
-            self.rows.saturating_sub(self.last_height).max(1)
+            region_bottom_row(self.rows, self.last_height)
         }
 
         fn install_region(&mut self) {
@@ -970,50 +1123,78 @@ mod tty {
                 self.installed = true;
             }
             self.last_height = height;
+            self.last_rows = self.rows;
+            self.last_cols = self.cols;
             let bottom = self.region_bottom();
-            print!("\x1b[1;{bottom}r");
+            // DECSTBM homes the cursor, so re-park it explicitly afterwards.
+            print!("{}", set_region_ansi(self.rows, height));
             print!("\x1b[{bottom};1H");
+            // Tell the terminal to bracket pastes. Without this a pasted
+            // directive arrives as bare CR-separated lines — one submit per
+            // line — and the desktop app's follow-up delivery, which waits for
+            // mode 2004 before writing, never fires at all.
+            print!("{ENABLE_BRACKETED_PASTE}");
             let _ = io::stdout().flush();
         }
 
-        fn reset_region(&self) {
-            print!("\x1b[r");
-            print!("\x1b[?25h");
+        fn release_region(&mut self) {
+            // Order matters: reset DECSTBM first (it homes the cursor), then
+            // erase the pinned strip and park under the last output line. If
+            // the strip were still drawn when the full-screen region takes
+            // over, the next scroll would push a copy of it into the
+            // scrollback — one leaked composer per suspend.
+            let start = self.rows.saturating_sub(self.last_height) + 1;
+            print!("{DISABLE_BRACKETED_PASTE}\x1b[r");
+            print!("\x1b[{start};1H\x1b[J\x1b[?25h");
+            self.output_prepared = false;
+            self.has_output_cursor = false;
+            self.installed = false;
             let _ = io::stdout().flush();
+        }
+
+        /// Re-assert the scroll region whenever the geometry it was derived
+        /// from moved. Watching only `height` (the first cut) leaves a stale
+        /// DECSTBM after a terminal-pane resize: the pinned strip then sits
+        /// *inside* the scrolling region and every streamed chunk scrolls
+        /// another copy of it into the scrollback.
+        fn resync_region(&mut self) -> String {
+            self.refresh_size();
+            let height = composer_rows(&self.state, self.cols);
+            if height == self.last_height
+                && self.rows == self.last_rows
+                && self.cols == self.last_cols
+            {
+                return String::new();
+            }
+            // Erase from wherever the old frame started down to the bottom:
+            // after a resize the old and new strips are different rows.
+            let new_start = self.rows.saturating_sub(height) + 1;
+            let old_start = if self.last_rows == 0 {
+                new_start
+            } else {
+                self.last_rows.saturating_sub(self.last_height) + 1
+            };
+            let clear_from = old_start.min(new_start).max(1);
+            let mut ansi = clear_frame_ansi(self.rows, self.rows.saturating_sub(clear_from) + 1);
+            ansi.push_str(&set_region_ansi(self.rows, height));
+            self.has_output_cursor = false;
+            self.last_height = height;
+            self.last_rows = self.rows;
+            self.last_cols = self.cols;
+            ansi
         }
 
         pub fn paint(&mut self) {
-            self.refresh_size();
-            let height = composer_rows(&self.state, self.cols);
-            if height != self.last_height {
-                self.has_output_cursor = false;
-                print!(
-                    "{}",
-                    clear_resized_frame_ansi(self.rows, self.last_height, height)
-                );
-                self.last_height = height;
-                let bottom = self.region_bottom();
-                print!("\x1b[1;{bottom}r");
-            }
-            let start = self.rows.saturating_sub(height) + 1;
-            let frame = render_ansi(&self.state, self.cols);
+            let mut out = self.resync_region();
             if self.output_prepared {
                 // Preserve partial-line streaming position while the edit cursor
                 // temporarily owns the terminal between output events.
-                print!("\x1b[s");
+                out.push_str("\x1b[s");
                 self.has_output_cursor = true;
                 self.output_prepared = false;
             }
-            print!("\x1b[?25l");
-            for (i, line) in frame.iter().enumerate() {
-                print!("\x1b[{};1H\x1b[K{}", start + i, line);
-            }
-            // Park the cursor inside the field so typing never lands in the stream.
-            let layout = input_layout(&self.state, self.cols);
-            let prompt_w = measure_text_width(prompt_glyph());
-            let row = start + 2 /* status + top border */ + layout.cursor_row;
-            let col = 3 + prompt_w + layout.cursor_col;
-            print!("\x1b[{};{}H\x1b[?25h", row, col.min(self.cols));
+            out.push_str(&paint_frame_ansi(&self.state, self.cols, self.rows));
+            print!("{out}");
             let _ = io::stdout().flush();
             self.last_busy_second = self.state.busy.then(|| self.state.elapsed_secs());
         }
@@ -1021,20 +1202,10 @@ mod tty {
         /// Transfer terminal ownership to normal output. Call [`paint`] after
         /// the write to restore the pinned composer and its edit cursor.
         pub fn prepare_output(&mut self) {
-            self.refresh_size();
-            let height = composer_rows(&self.state, self.cols);
-            if height != self.last_height {
-                self.has_output_cursor = false;
-                print!(
-                    "{}",
-                    clear_resized_frame_ansi(self.rows, self.last_height, height)
-                );
-                self.last_height = height;
-                let bottom = self.region_bottom();
-                print!("\x1b[1;{bottom}r");
-            }
+            let mut out = self.resync_region();
             let bottom = self.region_bottom();
-            print!("{}", prepare_output_ansi(bottom, self.has_output_cursor));
+            out.push_str(&prepare_output_ansi(bottom, self.has_output_cursor));
+            print!("{out}");
             self.output_prepared = true;
             let _ = io::stdout().flush();
         }
@@ -1046,14 +1217,10 @@ mod tty {
 
         pub fn suspend(&mut self) {
             self.paused.store(true, Ordering::Relaxed);
-            self.output_prepared = false;
-            self.has_output_cursor = false;
-            self.reset_region();
+            self.release_region();
             if let Some(raw) = self.raw.as_mut() {
                 raw.restore();
             }
-            println!();
-            let _ = io::stdout().flush();
         }
 
         pub fn resume(&mut self) {
@@ -1130,8 +1297,7 @@ mod tty {
     impl Drop for Composer {
         fn drop(&mut self) {
             self.paused.store(true, Ordering::Relaxed);
-            self.reset_region();
-            print!("\r\n");
+            self.release_region();
             let _ = io::stdout().flush();
         }
     }
@@ -1376,7 +1542,7 @@ mod tests {
         assert_eq!(prepare_output_ansi(17, false), "\x1b[?25l\x1b[17;1H");
         assert_eq!(prepare_output_ansi(17, true), "\x1b[?25l\x1b[u");
 
-        let shrink = clear_resized_frame_ansi(24, 10, 5);
+        let shrink = clear_frame_ansi(24, 10);
         assert!(shrink.contains("\x1b[15;1H\x1b[K"));
         assert!(shrink.contains("\x1b[24;1H\x1b[K"));
     }
@@ -1386,6 +1552,258 @@ mod tests {
         assert!(!busy_second_changed(true, Some(4), 4));
         assert!(busy_second_changed(true, Some(4), 5));
         assert!(!busy_second_changed(false, Some(4), 5));
+    }
+
+    // ── bracketed paste ────────────────────────────────────────────────────
+
+    fn paste_bytes(body: &str, trailing_cr: bool) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(PASTE_START);
+        bytes.extend_from_slice(body.as_bytes());
+        bytes.extend_from_slice(PASTE_END);
+        if trailing_cr {
+            bytes.push(b'\r');
+        }
+        bytes
+    }
+
+    fn feed(state: &mut ComposerState, pending: &mut Vec<u8>, bytes: &[u8]) -> Vec<ComposerAction> {
+        decode_keys(bytes, pending)
+            .into_iter()
+            .map(|ev| state.apply(ev))
+            .collect()
+    }
+
+    fn non_redraw(actions: &[ComposerAction]) -> Vec<ComposerAction> {
+        actions
+            .iter()
+            .filter(|a| !matches!(a, ComposerAction::Redraw))
+            .cloned()
+            .collect()
+    }
+
+    fn thirty_lines(sep: &str) -> String {
+        (0..30)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join(sep)
+    }
+
+    #[test]
+    fn bracketed_paste_of_thirty_lines_is_one_message() {
+        // A terminal replays pasted newlines as CR; that is exactly what used
+        // to submit once per line.
+        for sep in ["\r", "\n", "\r\n"] {
+            let mut state = idle();
+            let mut pending = Vec::new();
+            let actions = feed(
+                &mut state,
+                &mut pending,
+                &paste_bytes(&thirty_lines(sep), true),
+            );
+            let submitted = non_redraw(&actions);
+            assert_eq!(submitted.len(), 1, "sep {sep:?}: {submitted:?}");
+            let ComposerAction::Submit(text) = &submitted[0] else {
+                panic!("sep {sep:?}: expected a single Submit, got {submitted:?}");
+            };
+            assert_eq!(text.lines().count(), 30, "sep {sep:?}: {text:?}");
+            assert!(text.starts_with("line 0"), "{text:?}");
+            assert!(text.ends_with("line 29"), "{text:?}");
+            assert!(state.buffer.is_empty());
+            assert!(!state.pasting);
+        }
+    }
+
+    #[test]
+    fn paste_split_across_reads_still_lands_as_one_message() {
+        // A 64-byte read can cut `ESC[200~` in half.
+        let bytes = paste_bytes(&thirty_lines("\r"), true);
+        let mut state = idle();
+        let mut pending = Vec::new();
+        let mut actions = Vec::new();
+        for chunk in bytes.chunks(7) {
+            actions.extend(feed(&mut state, &mut pending, chunk));
+        }
+        let submitted = non_redraw(&actions);
+        assert_eq!(submitted.len(), 1, "{submitted:?}");
+        let ComposerAction::Submit(text) = &submitted[0] else {
+            panic!("{submitted:?}");
+        };
+        assert_eq!(text.lines().count(), 30);
+        assert!(
+            pending.is_empty(),
+            "no partial marker left over: {pending:?}"
+        );
+    }
+
+    #[test]
+    fn bare_enter_still_submits_and_paste_then_enter_submits_once() {
+        let mut state = idle();
+        let mut pending = Vec::new();
+        let typed = non_redraw(&feed(&mut state, &mut pending, b"hi\r"));
+        assert_eq!(typed, vec![ComposerAction::Submit("hi".into())]);
+
+        // Paste with no trailing CR: it only fills the field.
+        let pasted = non_redraw(&feed(
+            &mut state,
+            &mut pending,
+            &paste_bytes("one\rtwo", false),
+        ));
+        assert!(
+            pasted.is_empty(),
+            "a paste alone must not submit: {pasted:?}"
+        );
+        assert_eq!(state.buffer, "one\ntwo");
+        let enter = non_redraw(&feed(&mut state, &mut pending, b"\r"));
+        assert_eq!(enter, vec![ComposerAction::Submit("one\ntwo".into())]);
+    }
+
+    #[test]
+    fn escape_inside_a_paste_does_not_interrupt_the_turn() {
+        let mut state = idle();
+        state.set_busy(true);
+        let mut pending = Vec::new();
+        // ESC bytes inside pasted text must be swallowed, not treated as
+        // "interrupt the agent".
+        let actions = non_redraw(&feed(
+            &mut state,
+            &mut pending,
+            &paste_bytes("a\x1bb\x03c", false),
+        ));
+        assert!(actions.is_empty(), "{actions:?}");
+        assert_eq!(state.buffer, "abc");
+    }
+
+    #[test]
+    fn decode_recognises_paste_markers_and_waits_on_a_partial_one() {
+        let mut pending = Vec::new();
+        assert_eq!(
+            decode_keys(PASTE_START, &mut pending),
+            vec![KeyEvent::PasteStart]
+        );
+        assert_eq!(
+            decode_keys(PASTE_END, &mut pending),
+            vec![KeyEvent::PasteEnd]
+        );
+        assert!(decode_keys(b"\x1b[20", &mut pending).is_empty());
+        assert_eq!(pending, b"\x1b[20".to_vec());
+        assert_eq!(decode_keys(b"0~", &mut pending), vec![KeyEvent::PasteStart]);
+        assert!(pending.is_empty());
+        // Not a paste marker: the old unknown-CSI path is untouched.
+        assert_eq!(decode_keys(b"\x1b[2~", &mut pending)[0], KeyEvent::Escape);
+    }
+
+    #[test]
+    fn a_pasted_directive_queues_as_one_item_with_a_one_line_row() {
+        let mut state = idle();
+        state.set_busy(true);
+        let mut pending = Vec::new();
+        let queued = non_redraw(&feed(
+            &mut state,
+            &mut pending,
+            &paste_bytes(&thirty_lines("\r"), true),
+        ));
+        assert_eq!(queued.len(), 1, "{queued:?}");
+        assert!(matches!(queued[0], ComposerAction::Queue(_)));
+        assert_eq!(state.queued.len(), 1);
+        let row = status_line(&state);
+        assert!(row.contains("Queued 1"), "{row}");
+        assert!(row.contains("line 0"), "{row}");
+        assert!(row.contains("(+29 lines)"), "{row}");
+        assert!(
+            !row.contains('\n'),
+            "the queue row must stay one line: {row:?}"
+        );
+    }
+
+    // ── pinned region ──────────────────────────────────────────────────────
+
+    #[test]
+    fn a_frame_never_contains_a_newline() {
+        let mut state = idle();
+        state.buffer = "pasted\nlines\there".into();
+        state.cursor = state.buffer.len();
+        let frame = paint_frame_ansi(&state, 80, 30);
+        assert!(!frame.contains('\n'), "frame must address rows absolutely");
+        assert!(!frame.contains('\r'));
+    }
+
+    #[test]
+    fn pinned_block_is_drawn_once_per_frame_and_never_in_the_scrollback() {
+        let (cols, rows) = (80usize, 30usize);
+        let mut state = idle();
+        state.model = "MiniMax-M2.7".into();
+        state.cwd = "~/Documents/dev/atlasatlantic".into();
+        state.set_busy(true);
+        let chunks = [
+            "search.7\n",
+            "Found 653 matches across 41 files\n",
+            "…still working\n",
+            "done\n",
+        ];
+        let bottom = region_bottom_row(rows, composer_rows(&state, cols));
+
+        let mut log = String::new();
+        let mut scrollback = String::new();
+        for chunk in chunks {
+            log.push_str(&prepare_output_ansi(bottom, false));
+            // Everything the agent writes between the handoff and the repaint
+            // is what ends up in the scrollback.
+            scrollback.push_str(chunk);
+            log.push_str(chunk);
+            let frame = paint_frame_ansi(&state, cols, rows);
+            assert_eq!(frame.matches('╭').count(), 1, "one input box per frame");
+            assert_eq!(frame.matches('╰').count(), 1);
+            assert_eq!(
+                frame.matches("• Working").count(),
+                1,
+                "one status line per frame"
+            );
+            log.push_str(&frame);
+        }
+
+        assert_eq!(log.matches('╭').count(), chunks.len());
+        assert_eq!(log.matches(&state.cwd).count(), chunks.len());
+        for marker in ['╭', '╰', '│'] {
+            assert!(
+                !scrollback.contains(marker),
+                "pinned bytes leaked into the scrollback segment: {scrollback:?}"
+            );
+        }
+        assert!(!scrollback.contains("• Working"));
+        assert!(!scrollback.contains(&state.cwd));
+    }
+
+    #[test]
+    fn resize_reasserts_the_scroll_region_not_just_a_height_change() {
+        // The strip must always sit BELOW the scrolling region; a pane that
+        // changed height without changing the composer's height used to keep
+        // the stale DECSTBM and scroll the composer into the scrollback.
+        for (rows, height) in [(30usize, 5usize), (24, 5), (12, 5), (6, 5)] {
+            let bottom = region_bottom_row(rows, height);
+            let start = rows.saturating_sub(height) + 1;
+            assert_eq!(set_region_ansi(rows, height), format!("\x1b[1;{bottom}r"));
+            assert!(
+                bottom < start || rows <= height,
+                "rows {rows}: {bottom}/{start}"
+            );
+        }
+        assert!(clear_frame_ansi(30, 5).contains("\x1b[26;1H\x1b[K"));
+        assert!(clear_frame_ansi(30, 5).contains("\x1b[30;1H\x1b[K"));
+        assert!(!clear_frame_ansi(30, 5).contains('\n'));
+    }
+
+    #[test]
+    fn pasted_control_bytes_cannot_break_the_pinned_frame() {
+        let mut state = idle();
+        state.buffer = "col\tone\u{7}two".into();
+        state.cursor = state.buffer.len();
+        let frame = render_plain(&state, 60);
+        assert_eq!(frame.len(), composer_rows(&state, 60));
+        assert!(frame
+            .iter()
+            .all(|l| !l.contains('\t') && !l.contains('\u{7}')));
+        assert!(frame.iter().all(|l| measure_text_width(l) <= 60));
     }
 
     #[test]
@@ -1399,5 +1817,218 @@ mod tests {
         assert!(footer.contains("claude-opus-4-6"), "{footer}");
         assert!(footer.contains("~/dev/app"), "{footer}");
         assert!(footer.contains("$0.12"), "{footer}");
+    }
+}
+
+/// Real-PTY verification for the two defects this module fixes. Ignored by
+/// default because it needs `--nocapture` (libtest otherwise diverts `print!`
+/// away from the pty) and a serial run:
+///
+/// ```text
+/// cargo test -p permagent-cli pty_ -- --ignored --nocapture --test-threads=1
+/// ```
+#[cfg(all(test, unix))]
+mod pty_tests {
+    use super::*;
+    use std::os::unix::io::RawFd;
+
+    struct Pty {
+        master: RawFd,
+        slave: RawFd,
+        saved_in: RawFd,
+        saved_out: RawFd,
+    }
+
+    impl Pty {
+        fn open(rows: u16, cols: u16) -> Self {
+            let mut master = 0;
+            let mut slave = 0;
+            let mut ws = libc::winsize {
+                ws_row: rows,
+                ws_col: cols,
+                ws_xpixel: 0,
+                ws_ypixel: 0,
+            };
+            assert_eq!(
+                unsafe {
+                    libc::openpty(
+                        &mut master,
+                        &mut slave,
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        &mut ws,
+                    )
+                },
+                0,
+                "openpty"
+            );
+            unsafe {
+                let flags = libc::fcntl(master, libc::F_GETFL);
+                libc::fcntl(master, libc::F_SETFL, flags | libc::O_NONBLOCK);
+            }
+            let saved_in = unsafe { libc::dup(0) };
+            let saved_out = unsafe { libc::dup(1) };
+            unsafe {
+                libc::dup2(slave, 0);
+                libc::dup2(slave, 1);
+            }
+            Self {
+                master,
+                slave,
+                saved_in,
+                saved_out,
+            }
+        }
+
+        fn resize(&self, rows: u16, cols: u16) {
+            let ws = libc::winsize {
+                ws_row: rows,
+                ws_col: cols,
+                ws_xpixel: 0,
+                ws_ypixel: 0,
+            };
+            unsafe { libc::ioctl(self.master, libc::TIOCSWINSZ, &ws) };
+        }
+
+        fn write(&self, bytes: &[u8]) {
+            let mut sent = 0;
+            while sent < bytes.len() {
+                let n = unsafe {
+                    libc::write(
+                        self.master,
+                        bytes[sent..].as_ptr() as *const libc::c_void,
+                        bytes.len() - sent,
+                    )
+                };
+                if n > 0 {
+                    sent += n as usize;
+                } else {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
+        }
+
+        fn drain(&self) -> String {
+            let mut out = Vec::new();
+            let mut buf = [0u8; 8192];
+            loop {
+                let n = unsafe {
+                    libc::read(
+                        self.master,
+                        buf.as_mut_ptr() as *mut libc::c_void,
+                        buf.len(),
+                    )
+                };
+                if n <= 0 {
+                    break;
+                }
+                out.extend_from_slice(&buf[..n as usize]);
+            }
+            String::from_utf8_lossy(&out).into_owned()
+        }
+    }
+
+    impl Drop for Pty {
+        fn drop(&mut self) {
+            unsafe {
+                libc::dup2(self.saved_in, 0);
+                libc::dup2(self.saved_out, 1);
+                libc::close(self.saved_in);
+                libc::close(self.saved_out);
+                libc::close(self.slave);
+                libc::close(self.master);
+            }
+        }
+    }
+
+    fn settle() {
+        std::thread::sleep(std::time::Duration::from_millis(120));
+    }
+
+    #[test]
+    #[ignore = "needs --nocapture and a real pty; run serially"]
+    fn pty_paste_is_one_message_and_the_frame_never_scrolls() {
+        let pty = Pty::open(24, 80);
+        let mut composer = Composer::try_install().expect("composer on a pty");
+        settle();
+
+        let startup = pty.drain();
+        assert!(
+            startup.contains(ENABLE_BRACKETED_PASTE),
+            "startup must turn on bracketed paste (the app's readiness gate): {startup:?}"
+        );
+        assert!(startup.contains("\x1b[1;19r"), "scroll region: {startup:?}");
+
+        // 20-line bracketed paste, exactly as the terminal delivers one.
+        let body = (1..=20)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\r");
+        let mut bytes = Vec::from(PASTE_START);
+        bytes.extend_from_slice(body.as_bytes());
+        bytes.extend_from_slice(PASTE_END);
+        bytes.push(b'\r');
+        pty.write(&bytes);
+        settle();
+
+        let mut action = None;
+        for _ in 0..40 {
+            if let Some(a) = composer.drain_keys() {
+                action = Some(a);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let typed = pty.drain();
+        match action {
+            Some(ComposerAction::Submit(text)) => {
+                assert_eq!(text.lines().count(), 20, "one message, 20 lines: {text:?}");
+            }
+            other => panic!("expected a single Submit, got {other:?}"),
+        }
+        assert!(
+            !typed.contains('\n'),
+            "the composer must not emit a newline while echoing a paste"
+        );
+
+        // Stream four chunks past the pinned strip.
+        composer.set_busy(true);
+        let _ = pty.drain();
+        let chunks = [
+            "search.7",
+            "Found 653 matches across 41 files",
+            "…still working",
+            "done",
+        ];
+        for chunk in chunks {
+            composer.prepare_output();
+            println!("{chunk}");
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            composer.paint();
+        }
+        let streamed = pty.drain();
+        assert_eq!(
+            streamed.matches('╭').count(),
+            chunks.len(),
+            "one input box per frame, not per line of output"
+        );
+        assert_eq!(streamed.matches("• Working").count(), chunks.len());
+
+        // A pane resize must re-assert the region, or the strip ends up inside
+        // the scrolling area and every chunk scrolls a copy into the scrollback.
+        pty.resize(16, 80);
+        composer.paint();
+        let resized = pty.drain();
+        assert!(
+            resized.contains("\x1b[1;11r"),
+            "resize must re-assert DECSTBM: {resized:?}"
+        );
+
+        drop(composer);
+        let teardown = pty.drain();
+        assert!(
+            teardown.contains(DISABLE_BRACKETED_PASTE) && teardown.contains("\x1b[r"),
+            "teardown must release paste mode and the region: {teardown:?}"
+        );
     }
 }
