@@ -34,6 +34,7 @@ pub mod device_registry;
 pub mod error;
 pub mod event_at_backfill;
 pub mod federation;
+pub mod forecaster_sweep;
 pub mod growth_sweep;
 pub mod middleware;
 pub mod notification_router;

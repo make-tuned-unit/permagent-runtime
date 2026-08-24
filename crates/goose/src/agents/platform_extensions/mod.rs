@@ -17,6 +17,7 @@ pub mod execution_receipt;
 pub mod ext_manager;
 pub mod file_to_project;
 pub mod finance;
+pub mod forecaster;
 pub mod gate_classifier;
 pub mod goal_a2a;
 pub mod goal_engine;
@@ -771,6 +772,24 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 ],
                 teaching: &[],
                 client_factory: |ctx| Box::new(finance::FinanceClient::new(ctx).unwrap()),
+            },
+        );
+
+        map.insert(
+            forecaster::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: forecaster::EXTENSION_NAME,
+                display_name: "Forecaster",
+                description:
+                    "Where the market around each project is going, from other people's public numbers — competitor package downloads, category pageviews, Hacker News mentions — bound to the competitor and adjacent rows the user already approved on a project's Ecosystem panel. forecaster_series is the honesty surface: every bound series with its real point count, its span, and a verdict (forecastable, too short and by how much, collector stale, or awaiting approval). forecaster_bind proposes a new series and never activates one; approval is the user's, through the same review gate as project intelligence. Says where a category is heading; never why it moved, and never what to do about it",
+                default_enabled: true,
+                unprefixed_tools: true,
+                hidden: false,
+                why_it_matters:
+                    "Notice a shift in the market around a project from real, dated numbers rather than a hunch — and be told plainly when a series is too short or too stale to support the claim, instead of being handed a trend that was never there.",
+                required_secrets: &[],
+                teaching: &[],
+                client_factory: |ctx| Box::new(forecaster::ForecasterClient::new(ctx).unwrap()),
             },
         );
 
