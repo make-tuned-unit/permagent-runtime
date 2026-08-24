@@ -111,6 +111,21 @@ export function BuildView() {
   const openChatDock = useCommandCenter(s => s.openChatDock);
   useEffect(() => {
     if (!pendingTerminalLaunch) return;
+    // When the terminal pane is hidden, TerminalManager isn't mounted at all
+    // (BuildView renders it only inside `!buildTerminalHidden`) — the ref
+    // below is null. Claiming and clearing anyway is how a "Send to Claude"
+    // press turned into nothing: the launch looked consumed but no tab was
+    // ever created. Unhide instead and return without claiming; that flips
+    // buildTerminalHidden, which is in this effect's deps, so the effect
+    // re-runs on the next commit with TerminalManager mounted and the ref
+    // live (its useImperativeHandle is a layout effect and runs before this
+    // passive one). If the ref is null for some other reason — the pane
+    // isn't hidden, so there's nothing to unhide — leave the launch queued
+    // rather than drop it; a later mount can still pick it up.
+    if (!terminalRef.current) {
+      if (buildTerminalHidden) toggleBuildTerminal();
+      return;
+    }
     // Claim SYNCHRONOUSLY, before createProjectTab: the clear below is async
     // (a store update), so a StrictMode double-invoke or a remount racing the
     // same tick would otherwise still see this launch and open a second tab
@@ -120,13 +135,13 @@ export function BuildView() {
       return;
     }
     const { id, rootPath, label, command, supervisedSessionId, followUpInput, growthAction } = pendingTerminalLaunch;
-    terminalRef.current?.createProjectTab(rootPath, label, command, supervisedSessionId, {
+    terminalRef.current.createProjectTab(rootPath, label, command, supervisedSessionId, {
       followUpInput,
       growthAction,
       launchId: id,
     });
     setPendingTerminalLaunch(null);
-  }, [pendingTerminalLaunch, setPendingTerminalLaunch]);
+  }, [pendingTerminalLaunch, setPendingTerminalLaunch, buildTerminalHidden, toggleBuildTerminal]);
 
   const agentName = data?.agent.name ?? 'Agent';
   const hasActive = (data?.in_flight.length ?? 0) > 0;

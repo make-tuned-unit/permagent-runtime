@@ -159,4 +159,53 @@ describe('BuildView pendingTerminalLaunch — consume once', () => {
     });
     expect(createProjectTabSpy).toHaveBeenCalledTimes(1);
   });
+
+  it('unhides a hidden terminal pane and still opens exactly one tab', async () => {
+    // With the pane hidden, BuildView doesn't render TerminalManager at all
+    // (see the `!buildTerminalHidden &&` guard around it), so terminalRef is
+    // null going in — this is the case the "just call the ref" fix can't
+    // cover, because there is no manager to call.
+    useCommandCenter.setState({ buildTerminalHidden: true });
+
+    const { root } = mountBuildView();
+    await act(async () => {
+      root.render(<BuildView />);
+      await Promise.resolve();
+    });
+    expect(useCommandCenter.getState().buildTerminalHidden).toBe(true);
+
+    let launchId: string | undefined;
+    await act(async () => {
+      useCommandCenter.getState().setPendingTerminalLaunch({
+        rootPath: '/tmp/proj2',
+        label: 'proj2 · claude',
+        command: 'claude',
+      });
+      launchId = useCommandCenter.getState().pendingTerminalLaunch?.id;
+      // First pass: the pane is still hidden at this point, so the effect
+      // has nothing to call createProjectTab on — it can only flip the pane
+      // visible, not claim the launch. If this fired, the launch would be
+      // silently dropped instead of retried once a manager exists.
+      expect(createProjectTabSpy).not.toHaveBeenCalled();
+      // Let the unhide re-render, TerminalManager mount (setting the ref via
+      // its layout effect), and the effect's re-run — triggered because
+      // buildTerminalHidden is in its dep array — consume the launch.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(launchId).toBeTruthy();
+    expect(useCommandCenter.getState().buildTerminalHidden).toBe(false);
+    expect(createProjectTabSpy).toHaveBeenCalledTimes(1);
+    expect(createProjectTabSpy).toHaveBeenCalledWith(
+      '/tmp/proj2',
+      'proj2 · claude',
+      'claude',
+      undefined,
+      expect.objectContaining({ launchId }),
+    );
+    // Consumed, not left queued behind the unhide.
+    expect(useCommandCenter.getState().pendingTerminalLaunch).toBeNull();
+  });
 });
