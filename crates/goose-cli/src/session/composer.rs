@@ -18,7 +18,7 @@ pub const MAX_INPUT_ROWS: usize = 6;
 pub const PLACEHOLDER: &str = "Ask Permagent to do anything";
 
 const CYAN: (u8, u8, u8) = (0x00, 0xD5, 0xFF);
-const GOLD: (u8, u8, u8) = (0xC4, 0x88, 0x3A);
+const MAGENTA: (u8, u8, u8) = (0xA8, 0x55, 0xCC);
 const DIM: (u8, u8, u8) = (0x5A, 0x6D, 0x84);
 const FG_DARK: (u8, u8, u8) = (0xE8, 0xE4, 0xDF);
 const BG_DARK: (u8, u8, u8) = (0x1C, 0x24, 0x32);
@@ -344,10 +344,98 @@ fn is_vte_with_broken_emoji_width() -> bool {
     version < 7000
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InputLayout {
+    rows: Vec<String>,
+    cursor_row: usize,
+    cursor_col: usize,
+}
+
+/// Return a display-width-limited slice which keeps `cursor` visible.
+fn line_viewport(line: &str, cursor: usize, width: usize) -> (String, usize) {
+    if width == 0 {
+        return (String::new(), 0);
+    }
+    let cursor = cursor.min(line.len());
+    let chars: Vec<char> = line.chars().collect();
+    // `cursor` is a byte offset from the edit buffer; `get` degrades a stray
+    // mid-codepoint offset to "count the whole line" instead of panicking.
+    let cursor_idx = line.get(..cursor).unwrap_or(line).chars().count();
+    let mut start = cursor_idx;
+    let mut before_width = 0;
+    while start > 0 {
+        let char_width = measure_text_width(&chars[start - 1].to_string());
+        if before_width + char_width > width {
+            break;
+        }
+        before_width += char_width;
+        start -= 1;
+    }
+
+    let mut body = String::new();
+    let mut body_width = 0;
+    for ch in chars.into_iter().skip(start) {
+        let char_width = measure_text_width(&ch.to_string());
+        if body_width + char_width > width {
+            break;
+        }
+        body.push(ch);
+        body_width += char_width;
+    }
+    (body, before_width.min(width))
+}
+
+/// A single width-aware layout plan drives height, rendered rows, and cursor.
+fn input_layout(state: &ComposerState, width: usize) -> InputLayout {
+    let width = width.max(24);
+    let prompt_w = measure_text_width(prompt_glyph());
+    let text_w = width
+        .saturating_sub(2) // borders
+        .saturating_sub(2) // box padding
+        .saturating_sub(prompt_w);
+    let logical: Vec<&str> = if state.buffer.is_empty() {
+        vec![""]
+    } else {
+        state.buffer.split('\n').collect()
+    };
+    let prefix = before_cursor(&state.buffer, state.cursor);
+    let cursor_line = prefix.bytes().filter(|&byte| byte == b'\n').count();
+    let cursor_line_start = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let cursor_in_line = state.cursor.saturating_sub(cursor_line_start);
+    let visible_count = logical.len().clamp(1, MAX_INPUT_ROWS);
+    let first = if logical.len() <= MAX_INPUT_ROWS {
+        0
+    } else {
+        cursor_line
+            .saturating_sub(MAX_INPUT_ROWS - 1)
+            .min(logical.len() - MAX_INPUT_ROWS)
+    };
+
+    let mut rows = Vec::with_capacity(visible_count);
+    let mut cursor_col = 0;
+    for (logical_idx, line) in logical.iter().enumerate().skip(first).take(visible_count) {
+        let line = *line;
+        if state.buffer.is_empty() {
+            rows.push(truncate(PLACEHOLDER, text_w));
+        } else if logical_idx == cursor_line {
+            let (visible, col) = line_viewport(line, cursor_in_line, text_w);
+            rows.push(visible);
+            cursor_col = col;
+        } else {
+            rows.push(truncate(line, text_w));
+        }
+    }
+
+    InputLayout {
+        rows,
+        cursor_row: cursor_line.saturating_sub(first).min(visible_count - 1),
+        cursor_col,
+    }
+}
+
 /// Rows the composer occupies, including status + box + footer.
-pub fn composer_rows(buffer: &str) -> usize {
-    let input_rows = buffer.split('\n').count().clamp(1, MAX_INPUT_ROWS);
-    4 + input_rows
+pub fn composer_rows(state: &ComposerState, width: usize) -> usize {
+    4 + input_layout(state, width).rows.len()
 }
 
 pub fn status_line(state: &ComposerState) -> String {
@@ -414,20 +502,10 @@ pub fn render_plain(state: &ComposerState, width: usize) -> Vec<String> {
     let content_w = inner.saturating_sub(2);
     let text_w = content_w.saturating_sub(prompt_w);
 
-    let raw_lines: Vec<&str> = if state.buffer.is_empty() {
-        vec![""]
-    } else {
-        state.buffer.split('\n').collect()
-    };
-    let visible = raw_lines.len().clamp(1, MAX_INPUT_ROWS);
-    for i in 0..visible {
-        let body = if state.buffer.is_empty() {
-            PLACEHOLDER.to_string()
-        } else {
-            raw_lines.get(i).copied().unwrap_or("").to_string()
-        };
+    let layout = input_layout(state, width);
+    for (i, body) in layout.rows.iter().enumerate() {
         let prefix = if i == 0 { prompt } else { "  " };
-        let row = format!("│ {}{} │", prefix, pad_to(&body, text_w));
+        let row = format!("│ {}{} │", prefix, pad_to(body, text_w));
         lines.push(truncate(&row, width));
     }
     lines.push(bot);
@@ -463,22 +541,52 @@ fn sgr_bg(rgb: (u8, u8, u8)) -> String {
     format!("\x1b[48;2;{};{};{}m", rgb.0, rgb.1, rgb.2)
 }
 
+fn prepare_output_ansi(bottom: usize, restore_saved_cursor: bool) -> String {
+    if restore_saved_cursor {
+        "\x1b[?25l\x1b[u".to_string()
+    } else {
+        format!("\x1b[?25l\x1b[{bottom};1H")
+    }
+}
+
+fn clear_resized_frame_ansi(rows: usize, old_height: usize, new_height: usize) -> String {
+    if old_height == new_height {
+        return String::new();
+    }
+    let clear_height = old_height.max(new_height);
+    let clear_start = rows.saturating_sub(clear_height) + 1;
+    let mut ansi = String::from("\x1b[?25l");
+    for row in clear_start..=rows {
+        ansi.push_str(&format!("\x1b[{row};1H\x1b[K"));
+    }
+    ansi
+}
+
+fn busy_second_changed(busy: bool, last: Option<u64>, current: u64) -> bool {
+    busy && last != Some(current)
+}
+
 /// ANSI frame for the TTY painter. Same layout as [`render_plain`], colored
 /// and with a filled input field so it reads as a real text box, not a prompt
 /// mixed into the stream.
 pub fn render_ansi(state: &ComposerState, width: usize) -> Vec<String> {
     let width = width.max(24);
     let inner = width.saturating_sub(2);
-    let (fg, bg, accent, dim) = if state.light {
-        (FG_LIGHT, BG_LIGHT, CYAN, DIM)
+    let (fg, bg, dim) = if state.light {
+        (FG_LIGHT, BG_LIGHT, DIM)
     } else {
-        (FG_DARK, BG_DARK, if state.busy { GOLD } else { CYAN }, DIM)
+        (FG_DARK, BG_DARK, DIM)
+    };
+    let accent = if state.busy || !state.queued.is_empty() {
+        MAGENTA
+    } else {
+        CYAN
     };
     let reset = "\x1b[0m";
     let mut lines = Vec::new();
 
     let status_color = if state.busy || !state.queued.is_empty() {
-        GOLD
+        MAGENTA
     } else {
         accent
     };
@@ -495,21 +603,12 @@ pub fn render_ansi(state: &ComposerState, width: usize) -> Vec<String> {
     let prompt_w = measure_text_width(prompt);
     let content_w = inner.saturating_sub(2);
     let text_w = content_w.saturating_sub(prompt_w);
-    let raw_lines: Vec<&str> = if state.buffer.is_empty() {
-        vec![""]
-    } else {
-        state.buffer.split('\n').collect()
-    };
-    let visible = raw_lines.len().clamp(1, MAX_INPUT_ROWS);
+    let layout = input_layout(state, width);
     let fill = format!("{}{}", sgr_bg(bg), sgr_fg(fg));
-    for i in 0..visible {
-        let (body, is_placeholder) = if state.buffer.is_empty() {
-            (PLACEHOLDER.to_string(), true)
-        } else {
-            (raw_lines.get(i).copied().unwrap_or("").to_string(), false)
-        };
+    for (i, body) in layout.rows.iter().enumerate() {
+        let is_placeholder = state.buffer.is_empty();
         let prefix = if i == 0 { prompt } else { "  " };
-        let body_s = pad_to(&body, text_w);
+        let body_s = pad_to(body, text_w);
         let body_color = if is_placeholder {
             sgr_fg(dim)
         } else {
@@ -788,6 +887,9 @@ mod tty {
         cols: usize,
         rows: usize,
         last_height: usize,
+        last_busy_second: Option<u64>,
+        output_prepared: bool,
+        has_output_cursor: bool,
         installed: bool,
     }
 
@@ -837,6 +939,9 @@ mod tty {
                 cols: cols as usize,
                 rows: rows as usize,
                 last_height: 0,
+                last_busy_second: None,
+                output_prepared: false,
+                has_output_cursor: false,
                 installed: false,
             };
             c.install_region();
@@ -856,7 +961,7 @@ mod tty {
 
         fn install_region(&mut self) {
             self.refresh_size();
-            let height = composer_rows(&self.state.buffer);
+            let height = composer_rows(&self.state, self.cols);
             if !self.installed {
                 // Push the cursor up so the reserved strip is empty.
                 for _ in 0..height {
@@ -879,33 +984,58 @@ mod tty {
 
         pub fn paint(&mut self) {
             self.refresh_size();
-            let height = composer_rows(&self.state.buffer);
+            let height = composer_rows(&self.state, self.cols);
             if height != self.last_height {
+                self.has_output_cursor = false;
+                print!(
+                    "{}",
+                    clear_resized_frame_ansi(self.rows, self.last_height, height)
+                );
                 self.last_height = height;
                 let bottom = self.region_bottom();
                 print!("\x1b[1;{bottom}r");
             }
             let start = self.rows.saturating_sub(height) + 1;
             let frame = render_ansi(&self.state, self.cols);
+            if self.output_prepared {
+                // Preserve partial-line streaming position while the edit cursor
+                // temporarily owns the terminal between output events.
+                print!("\x1b[s");
+                self.has_output_cursor = true;
+                self.output_prepared = false;
+            }
             print!("\x1b[?25l");
             for (i, line) in frame.iter().enumerate() {
                 print!("\x1b[{};1H\x1b[K{}", start + i, line);
             }
             // Park the cursor inside the field so typing never lands in the stream.
+            let layout = input_layout(&self.state, self.cols);
             let prompt_w = measure_text_width(prompt_glyph());
-            let prefix = before_cursor(&self.state.buffer, self.state.cursor);
-            let cursor_line = prefix.bytes().filter(|&b| b == b'\n').count();
-            let line_start = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
-            let col_text = measure_text_width(
-                self.state
-                    .buffer
-                    .get(line_start..self.state.cursor)
-                    .unwrap_or(""),
-            );
-            let row =
-                start + 1 /* status */ + 1 /* top border */ + cursor_line.min(MAX_INPUT_ROWS - 1);
-            let col = 3 + prompt_w + col_text;
+            let row = start + 2 /* status + top border */ + layout.cursor_row;
+            let col = 3 + prompt_w + layout.cursor_col;
             print!("\x1b[{};{}H\x1b[?25h", row, col.min(self.cols));
+            let _ = io::stdout().flush();
+            self.last_busy_second = self.state.busy.then(|| self.state.elapsed_secs());
+        }
+
+        /// Transfer terminal ownership to normal output. Call [`paint`] after
+        /// the write to restore the pinned composer and its edit cursor.
+        pub fn prepare_output(&mut self) {
+            self.refresh_size();
+            let height = composer_rows(&self.state, self.cols);
+            if height != self.last_height {
+                self.has_output_cursor = false;
+                print!(
+                    "{}",
+                    clear_resized_frame_ansi(self.rows, self.last_height, height)
+                );
+                self.last_height = height;
+                let bottom = self.region_bottom();
+                print!("\x1b[1;{bottom}r");
+            }
+            let bottom = self.region_bottom();
+            print!("{}", prepare_output_ansi(bottom, self.has_output_cursor));
+            self.output_prepared = true;
             let _ = io::stdout().flush();
         }
 
@@ -916,6 +1046,8 @@ mod tty {
 
         pub fn suspend(&mut self) {
             self.paused.store(true, Ordering::Relaxed);
+            self.output_prepared = false;
+            self.has_output_cursor = false;
             self.reset_region();
             if let Some(raw) = self.raw.as_mut() {
                 raw.restore();
@@ -938,16 +1070,28 @@ mod tty {
         /// non-redraw action, if any.
         pub fn drain_keys(&mut self) -> Option<ComposerAction> {
             let mut first = None;
+            let mut changed = false;
             while let Ok(bytes) = self.key_rx.try_recv() {
                 let events = decode_keys(&bytes, &mut self.parse_buf);
                 for ev in events {
+                    changed = true;
                     let action = self.state.apply(ev);
                     if !matches!(action, ComposerAction::Redraw) && first.is_none() {
                         first = Some(action);
                     }
                 }
             }
-            self.paint();
+            // Repaint on an edit, and also once a second while busy so the
+            // elapsed counter ticks even when nothing was typed.
+            if changed
+                || busy_second_changed(
+                    self.state.busy,
+                    self.last_busy_second,
+                    self.state.elapsed_secs(),
+                )
+            {
+                self.paint();
+            }
             first
         }
 
@@ -970,7 +1114,11 @@ mod tty {
                         }
                     }
                     _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {
-                        if self.state.busy {
+                        if busy_second_changed(
+                            self.state.busy,
+                            self.last_busy_second,
+                            self.state.elapsed_secs(),
+                        ) {
                             self.paint();
                         }
                     }
@@ -1003,6 +1151,7 @@ impl Composer {
         None
     }
     pub fn paint(&mut self) {}
+    pub fn prepare_output(&mut self) {}
     pub fn set_busy(&mut self, busy: bool) {
         self.state.set_busy(busy);
     }
@@ -1170,10 +1319,73 @@ mod tests {
 
     #[test]
     fn composer_rows_grow_with_newlines_and_cap() {
-        assert_eq!(composer_rows(""), 5);
-        assert_eq!(composer_rows("a\nb"), 6);
+        let mut state = idle();
+        assert_eq!(composer_rows(&state, 24), 5);
+        state.buffer = "a\nb".into();
+        state.cursor = state.buffer.len();
+        assert_eq!(composer_rows(&state, 24), 6);
         let many = (0..20).map(|_| "x").collect::<Vec<_>>().join("\n");
-        assert_eq!(composer_rows(&many), 4 + MAX_INPUT_ROWS);
+        state.buffer = many;
+        state.cursor = state.buffer.len();
+        assert_eq!(composer_rows(&state, 24), 4 + MAX_INPUT_ROWS);
+    }
+
+    #[test]
+    fn narrow_layout_keeps_long_unicode_tail_and_cursor_visible() {
+        for width in [24, 40, 80, 120] {
+            let mut state = idle();
+            state.buffer = "beginning-🙂-東京-abcdefghijklmnopqrstuvwxyz-END".into();
+            state.cursor = state.buffer.len();
+            let layout = input_layout(&state, width);
+            assert!(layout.rows[0].ends_with("END"), "width {width}: {layout:?}");
+            assert!(layout.cursor_col <= width, "width {width}: {layout:?}");
+            let frame = render_plain(&state, width);
+            assert_eq!(frame.len(), composer_rows(&state, width));
+            assert!(
+                frame.iter().all(|line| measure_text_width(line) <= width),
+                "width {width}: {frame:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn multiline_viewport_follows_cursor_beyond_six_lines() {
+        let mut state = idle();
+        state.buffer = (0..9)
+            .map(|line| format!("line-{line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        state.cursor = state.buffer.find("line-7").unwrap() + "line-7".len();
+        let layout = input_layout(&state, 32);
+        assert_eq!(layout.rows.len(), MAX_INPUT_ROWS);
+        assert!(layout.rows.iter().any(|row| row == "line-7"), "{layout:?}");
+        assert!(layout.cursor_row < MAX_INPUT_ROWS);
+    }
+
+    #[test]
+    fn ansi_palette_and_output_handoff_match_brand_contract() {
+        let state = idle();
+        let idle_ansi = render_ansi(&state, 24).join("");
+        assert!(idle_ansi.contains("\x1b[38;2;0;213;255m"));
+
+        let mut busy = state;
+        busy.set_busy(true);
+        let busy_ansi = render_ansi(&busy, 24).join("");
+        assert!(busy_ansi.contains("\x1b[38;2;168;85;204m"));
+        assert!(!busy_ansi.contains("\x1b[38;2;196;136;58m"));
+        assert_eq!(prepare_output_ansi(17, false), "\x1b[?25l\x1b[17;1H");
+        assert_eq!(prepare_output_ansi(17, true), "\x1b[?25l\x1b[u");
+
+        let shrink = clear_resized_frame_ansi(24, 10, 5);
+        assert!(shrink.contains("\x1b[15;1H\x1b[K"));
+        assert!(shrink.contains("\x1b[24;1H\x1b[K"));
+    }
+
+    #[test]
+    fn busy_timer_repaints_only_when_the_displayed_second_changes() {
+        assert!(!busy_second_changed(true, Some(4), 4));
+        assert!(busy_second_changed(true, Some(4), 5));
+        assert!(!busy_second_changed(false, Some(4), 5));
     }
 
     #[test]

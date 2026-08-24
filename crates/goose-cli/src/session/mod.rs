@@ -789,6 +789,17 @@ impl CliSession {
                 history.save(editor);
                 self.push_message(Message::user().with_text(content));
 
+                // Submission clears the edit field, so write the accepted turn
+                // into the scrollback immediately. This also covers follow-ups
+                // when they are dequeued and accepted by the normal input path.
+                if let Some(c) = self.composer.as_mut() {
+                    c.prepare_output();
+                }
+                output::render_user_transcript(content);
+                if let Some(c) = self.composer.as_mut() {
+                    c.paint();
+                }
+
                 if let Err(e) = crate::project_tracker::update_project_tracker(
                     Some(content),
                     Some(&self.session_id),
@@ -1202,7 +1213,13 @@ impl CliSession {
                                 };
 
                                 if permission == Permission::Cancel {
+                                    if let Some(c) = composer.as_mut() {
+                                        c.prepare_output();
+                                    }
                                     output::render_text("Tool call cancelled. Returning to chat...", Some(Color::Yellow), true);
+                                    if let Some(c) = composer.as_mut() {
+                                        c.paint();
+                                    }
                                     self.agent.handle_confirmation(id.clone(), PermissionConfirmation {
                                         principal_type: PrincipalType::Tool,
                                         permission: Permission::DenyOnce,
@@ -1267,16 +1284,24 @@ impl CliSession {
                                     Ok(None) => {
                                         if let Some(c) = composer.as_mut() {
                                             c.resume();
+                                            c.prepare_output();
                                         }
                                         output::render_text("Information request cancelled.", Some(Color::Yellow), true);
+                                        if let Some(c) = composer.as_mut() {
+                                            c.paint();
+                                        }
                                         cancel_token_clone.cancel();
                                         break;
                                     }
                                     Err(e) => {
                                         if let Some(c) = composer.as_mut() {
                                             c.resume();
+                                            c.prepare_output();
                                         }
                                         output::render_error(&format!("Failed to collect input: {}", e));
+                                        if let Some(c) = composer.as_mut() {
+                                            c.paint();
+                                        }
                                         cancel_token_clone.cancel();
                                         break;
                                     }
@@ -1285,6 +1310,9 @@ impl CliSession {
                                 log_tool_metrics(&message, &self.messages);
                                 self.messages.push(message.clone());
 
+                                if let Some(c) = composer.as_mut() {
+                                    c.prepare_output();
+                                }
                                 if interactive { output::hide_thinking() };
                                 let _ = progress_bars.hide();
 
@@ -1297,13 +1325,16 @@ impl CliSession {
                                         interactive,
                                         &mut prompted_credits_urls,
                                     );
-                                    if let Some(c) = composer.as_mut() {
-                                        c.paint();
-                                    }
+                                }
+                                if let Some(c) = composer.as_mut() {
+                                    c.paint();
                                 }
                             }
                         }
                         Some(Ok(AgentEvent::McpNotification((extension_id, notification)))) => {
+                            if let Some(c) = composer.as_mut() {
+                                c.prepare_output();
+                            }
                             handle_mcp_notification(
                                 &extension_id,
                                 &notification,
@@ -1324,7 +1355,13 @@ impl CliSession {
                             self.messages = updated_conversation;
                         }
                         Some(Err(e)) => {
+                            if let Some(c) = composer.as_mut() {
+                                c.prepare_output();
+                            }
                             handle_agent_error(&e, is_stream_json_mode);
+                            if let Some(c) = composer.as_mut() {
+                                c.paint();
+                            }
                             cancel_token_clone.cancel();
                             interrupt_kind = Some(false);
                             break;
@@ -1352,6 +1389,9 @@ impl CliSession {
 
         drop(stream);
         if let Some(user) = interrupt_kind {
+            if let Some(c) = composer.as_mut() {
+                c.prepare_output();
+            }
             if let Err(e) = self.handle_interrupted_messages(user).await {
                 eprintln!("Error handling interruption: {}", e);
             } else if !user && !is_stream_json_mode {
@@ -1362,14 +1402,20 @@ impl CliSession {
                     - depending on the error you may be able to continue",
                 );
             }
+            if let Some(c) = composer.as_mut() {
+                c.paint();
+            }
+        }
+
+        if !is_json_mode && !is_stream_json_mode {
+            if let Some(c) = composer.as_mut() {
+                c.prepare_output();
+            }
+            output::flush_markdown_buffer_current_theme(&mut markdown_buffer);
         }
         self.restore_composer(composer);
         if let Some(e) = fatal {
             return Err(e);
-        }
-
-        if !is_json_mode && !is_stream_json_mode {
-            output::flush_markdown_buffer_current_theme(&mut markdown_buffer);
         }
 
         if is_json_mode {

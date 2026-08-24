@@ -268,6 +268,31 @@ pub fn render_message(message: &Message, debug: bool) {
     let _ = std::io::stdout().flush();
 }
 
+/// Stable transcript text for a user turn. Keeping this formatter pure makes
+/// it possible to guarantee that an accepted prompt remains visible even
+/// after the pinned composer clears its editable buffer.
+pub fn format_user_transcript(content: &str) -> String {
+    content
+        .lines()
+        .enumerate()
+        .map(|(index, line)| {
+            if index == 0 {
+                format!("❯ {line}")
+            } else {
+                format!("  {line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub fn render_user_transcript(content: &str) {
+    let transcript = format_user_transcript(content);
+    if !transcript.is_empty() {
+        println!("\n{}", style(transcript).cyan());
+    }
+}
+
 /// Render a streaming message, using a buffer to accumulate text content
 /// and only render when markdown constructs are complete.
 pub fn render_message_streaming(
@@ -1718,6 +1743,14 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::env;
+
+    #[test]
+    fn accepted_user_turn_has_a_stable_multiline_transcript() {
+        assert_eq!(
+            format_user_transcript("fix wiring\nthen verify"),
+            "❯ fix wiring\n  then verify"
+        );
+    }
 
     #[test]
     fn banner_palette_follows_the_provider() {
