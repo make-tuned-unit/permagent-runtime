@@ -11,10 +11,18 @@ const ZAI_PROVIDER_NAME: &str = "zai";
 /// Source: https://docs.z.ai/api-reference/llm/chat-completion (fetched 2026-08-24)
 pub const ZAI_API_HOST: &str = "https://api.z.ai/api/paas/v4";
 
+/// The GLM Coding Plan's OpenAI-protocol base URL. The Coding Plan is a
+/// flat-rate subscription rather than per-token billing, so for heavy coding use
+/// it is far cheaper than the pay-as-you-go rates above — set `ZAI_HOST` to this
+/// to spend against the plan instead of the API balance. Same model ids either
+/// way, which is why it needs no separate provider.
+/// Source: https://docs.z.ai/devpack/quick-start (fetched 2026-08-24)
+pub const ZAI_CODING_PLAN_HOST: &str = "https://api.z.ai/api/coding/paas/v4";
+
 /// Z.AI also publishes an Anthropic-protocol base URL for the GLM Coding Plan
 /// (https://api.z.ai/api/anthropic). We speak the OpenAI-compatible protocol
-/// here; the Anthropic endpoint is reachable by overriding ZAI_HOST only if a
-/// future Anthropic-shaped provider is added.
+/// here, so this is recorded for reference only — it is NOT a valid `ZAI_HOST`
+/// for this provider, which would send OpenAI-shaped requests to it.
 /// Source: https://docs.z.ai/devpack/quick-start (fetched 2026-08-24)
 pub const ZAI_ANTHROPIC_HOST: &str = "https://api.z.ai/api/anthropic";
 
@@ -150,6 +158,19 @@ mod tests {
             Some("https://api.z.ai/api/paas/v4"),
             "default host must be the documented OpenAI-compatible base URL"
         );
+    }
+
+    /// The Coding Plan is reachable by pointing ZAI_HOST at it — same protocol,
+    /// same model ids, flat-rate billing instead of per-token.
+    #[test]
+    fn coding_plan_host_is_the_openai_protocol_one() {
+        assert_eq!(ZAI_CODING_PLAN_HOST, "https://api.z.ai/api/coding/paas/v4");
+        assert!(
+            ZAI_CODING_PLAN_HOST.starts_with("https://api.z.ai/"),
+            "the Coding Plan must stay on the Z.AI host"
+        );
+        // The Anthropic-protocol URL must never be mistaken for a ZAI_HOST value.
+        assert_ne!(ZAI_ANTHROPIC_HOST, ZAI_CODING_PLAN_HOST);
     }
 
     #[test]
