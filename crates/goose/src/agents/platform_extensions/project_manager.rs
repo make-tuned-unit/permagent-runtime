@@ -2168,7 +2168,8 @@ impl ProjectManagerClient {
                 String,
                 String,
             ),
-        >(&sql);
+            // `sql` only appends fixed literal fragments above; values are bound below.
+        >(sqlx::AssertSqlSafe(sql));
         if let Some(ref pid) = project_id {
             query = query.bind(pid);
         }

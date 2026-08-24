@@ -1055,7 +1055,8 @@ pub async fn goal_spent_tokens(
          WHERE id IN ({})",
         placeholders
     );
-    let mut query = sqlx::query_scalar::<_, i64>(&sql);
+    // `placeholders` is only "?" repeated `ids.len()` times; ids are bound below.
+    let mut query = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql));
     for id in &ids {
         query = query.bind(id);
     }

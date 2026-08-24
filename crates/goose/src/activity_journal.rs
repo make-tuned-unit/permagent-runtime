@@ -487,7 +487,7 @@ pub async fn page(
          ORDER BY aj.ts DESC, aj.id DESC
          LIMIT ?3"
     );
-    let rows = sqlx::query(&sql)
+    let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(before)
         .bind(actor)
         .bind(limit.clamp(1, 500))

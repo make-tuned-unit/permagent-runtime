@@ -11,7 +11,7 @@ publish = false
 [dev-dependencies]
 permagent = { path = "../goose", default-features = false, features = ["rustls-tls"] }
 spectral = { workspace = true }
-sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio-rustls"] }
+sqlx = { version = "0.9", default-features = false, features = ["sqlite", "runtime-tokio", "tls-rustls"] }
 tokio = { workspace = true }
 tempfile = { workspace = true }
 serde_json = { workspace = true }

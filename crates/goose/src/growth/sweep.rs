@@ -289,12 +289,15 @@ mod tests {
                 )
             })
             .collect();
-        sqlx::query(&format!(
+        // Test-only fixture (#[cfg(test)]); every caller in this file passes a
+        // hardcoded literal `project` ("p1") and NaiveDate literals — no
+        // external input reaches this string.
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "INSERT INTO analytics_events
                 (project_id, kind, path, visitor_hash, session_id, is_bot, created_at)
              VALUES {}",
             values.join(",")
-        ))
+        )))
         .execute(pool)
         .await
         .unwrap();

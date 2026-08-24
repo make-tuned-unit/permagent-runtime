@@ -1075,7 +1075,10 @@ async fn first_party_step_options(
         project_id: &str,
         since: &str,
     ) -> Vec<NamedCount> {
-        sqlx::query_as::<_, (String, i64)>(sql)
+        // Both call sites below build `sql` from fixed literal fragments plus
+        // the `bot_filter` literal chosen from two hardcoded options — no
+        // external data reaches the SQL text; project_id/since are bound.
+        sqlx::query_as::<_, (String, i64)>(sqlx::AssertSqlSafe(sql))
             .bind(project_id)
             .bind(since)
             .fetch_all(pool)
@@ -1287,20 +1290,23 @@ async fn first_party_stats(
     // visitor_hash rotates daily, so none of this is computable without a
     // session id. Rows predating the relay change have NULL and are simply not
     // counted, rather than being invented as one-page sessions.
-    let (sessions, session_pageviews, bounced): (i64, i64, i64) = sqlx::query_as(&format!(
-        "SELECT count(*), coalesce(sum(views), 0), coalesce(sum(views = 1), 0) FROM (
+    // `bot_filter` is a fixed fragment chosen from two literals above; no
+    // external data reaches this SQL text.
+    let (sessions, session_pageviews, bounced): (i64, i64, i64) =
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT count(*), coalesce(sum(views), 0), coalesce(sum(views = 1), 0) FROM (
            SELECT session_id, count(*) AS views
            FROM analytics_events
            WHERE project_id = ?1 AND kind = 'pageview' AND session_id IS NOT NULL
              AND created_at >= datetime('now', ?2){bot_filter}
            GROUP BY session_id
          )"
-    ))
-    .bind(&project.id)
-    .bind(&since)
-    .fetch_one(&pool)
-    .await
-    .unwrap_or((0, 0, 0));
+        )))
+        .bind(&project.id)
+        .bind(&since)
+        .fetch_one(&pool)
+        .await
+        .unwrap_or((0, 0, 0));
     let bounce_rate = (sessions > 0).then(|| bounced as f64 / sessions as f64);
     let pages_per_session = (sessions > 0).then(|| session_pageviews as f64 / sessions as f64);
 
@@ -1313,25 +1319,26 @@ async fn first_party_stats(
     .await
     .unwrap_or(0);
 
-    let by_day: Vec<DayCount> = sqlx::query_as::<_, (String, i64, i64)>(&format!(
-        "SELECT date(created_at), count(*), count(DISTINCT visitor_hash)
+    let by_day: Vec<DayCount> =
+        sqlx::query_as::<_, (String, i64, i64)>(sqlx::AssertSqlSafe(format!(
+            "SELECT date(created_at), count(*), count(DISTINCT visitor_hash)
          FROM analytics_events
          WHERE project_id = ?1 AND kind = 'pageview'
            AND created_at >= datetime('now', ?2){bot_filter}
          GROUP BY date(created_at) ORDER BY date(created_at)"
-    ))
-    .bind(&project.id)
-    .bind(&since)
-    .fetch_all(&pool)
-    .await
-    .unwrap_or_default()
-    .into_iter()
-    .map(|(day, pageviews, visitors)| DayCount {
-        day,
-        pageviews,
-        visitors,
-    })
-    .collect();
+        )))
+        .bind(&project.id)
+        .bind(&since)
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(day, pageviews, visitors)| DayCount {
+            day,
+            pageviews,
+            visitors,
+        })
+        .collect();
 
     let named = |rows: Vec<(String, i64)>| -> Vec<NamedCount> {
         rows.into_iter()
@@ -1351,12 +1358,12 @@ async fn first_party_stats(
 
     // Raw referrers, grouped by HOST rather than full URL — a hundred distinct
     // deep links from one site are one source, not a hundred.
-    let referrer_rows = sqlx::query_as::<_, (String, i64)>(&format!(
+    let referrer_rows = sqlx::query_as::<_, (String, i64)>(sqlx::AssertSqlSafe(format!(
         "SELECT referrer, count(*) FROM analytics_events
          WHERE project_id = ?1 AND kind = 'pageview' AND referrer IS NOT NULL
            AND referrer <> '' AND created_at >= datetime('now', ?2){bot_filter}
          GROUP BY referrer ORDER BY count(*) DESC LIMIT 200"
-    ))
+    )))
     .bind(&project.id)
     .bind(&since)
     .fetch_all(&pool)
@@ -1419,7 +1426,7 @@ async fn first_party_stats(
     // Entry pages: the first pageview of each session. Feeds the funnel view
     // and answers "where do people land?".
     let top_entry_pages = named(
-        sqlx::query_as::<_, (String, i64)>(&format!(
+        sqlx::query_as::<_, (String, i64)>(sqlx::AssertSqlSafe(format!(
             "SELECT path, count(*) FROM (
                SELECT session_id, path,
                       row_number() OVER (PARTITION BY session_id ORDER BY id) AS rn
@@ -1428,7 +1435,7 @@ async fn first_party_stats(
                  AND created_at >= datetime('now', ?2){bot_filter}
              ) WHERE rn = 1
              GROUP BY path ORDER BY count(*) DESC LIMIT 10"
-        ))
+        )))
         .bind(&project.id)
         .bind(&since)
         .fetch_all(&pool)
@@ -1437,12 +1444,12 @@ async fn first_party_stats(
     );
 
     let top_events = named(
-        sqlx::query_as::<_, (String, i64)>(&format!(
+        sqlx::query_as::<_, (String, i64)>(sqlx::AssertSqlSafe(format!(
             "SELECT coalesce(name, '(unnamed)'), count(*) FROM analytics_events
              WHERE project_id = ?1 AND kind = 'event'
                AND created_at >= datetime('now', ?2){bot_filter}
              GROUP BY name ORDER BY count(*) DESC LIMIT 10"
-        ))
+        )))
         .bind(&project.id)
         .bind(&since)
         .fetch_all(&pool)

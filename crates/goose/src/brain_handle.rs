@@ -596,6 +596,33 @@ impl SafeBrain {
             .map_err(Into::into)
     }
 
+    /// Set the **hall** on an existing memory, re-hashing the constellation
+    /// fingerprints it participates in so TACT tier-1 routes on the new hall
+    /// (Spectral R40, #298).
+    ///
+    /// Returns `Ok(false)` for an unknown id — a miss, not an error. Callers
+    /// that are correcting a known row MUST treat `false` as a failure to
+    /// apply and report it, rather than folding it into a success count: a
+    /// silent miss is how a backfill reports "done" over rows it never
+    /// touched.
+    ///
+    /// `hall` must be one of the default vocabulary — `fact`, `preference`,
+    /// `discovery`, `advice`, `rule`, `event`. Spectral does not validate it,
+    /// so an unrecognised value is stored verbatim and will simply never match
+    /// a hall rule.
+    ///
+    /// Descriptions never feed recognition, and neither does this: the hall is
+    /// a routing axis over content that is already stored.
+    pub async fn set_hall(&self, id: &str, hall: &str) -> anyhow::Result<bool> {
+        let brain = self.inner.clone();
+        let id = id.to_string();
+        let hall = hall.to_string();
+        tokio::task::spawn_blocking(move || brain.set_hall(&id, &hall))
+            .await
+            .map_err(|e| anyhow::anyhow!("brain task panicked: set_hall: {e}"))?
+            .map_err(Into::into)
+    }
+
     /// Create (or idempotently return) a **person** node in the graph, returning
     /// its bare 64-hex `EntityId` — the people-bridge key.
     ///

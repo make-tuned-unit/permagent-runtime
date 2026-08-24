@@ -49,7 +49,8 @@ cuda = ["local-inference", "candle-core/cuda", "candle-nn/cuda", "llama-cpp-2/cu
 rustls-tls = [
     "reqwest/rustls",
     "rmcp/reqwest",
-    "sqlx/runtime-tokio-rustls",
+    "sqlx/runtime-tokio",
+    "sqlx/tls-rustls",
     "jsonwebtoken/aws_lc_rs",
     "oauth2/reqwest",
     "oauth2/rustls-tls",
@@ -61,7 +62,8 @@ native-tls = [
     "dep:sec1",
     "reqwest/native-tls",
     "rmcp/reqwest-native-tls",
-    "sqlx/runtime-tokio-native-tls",
+    "sqlx/runtime-tokio",
+    "sqlx/tls-native-tls",
     "jsonwebtoken/rust_crypto",
     "oauth2/reqwest",
     "oauth2/native-tls",
@@ -139,7 +141,7 @@ tokio-cron-scheduler = "0.14.0"
 croner = "2.2.0"
 urlencoding = { workspace = true }
 v_htmlescape = "0.17"
-sqlx = { version = "0.8", default-features = false, features = [
+sqlx = { version = "0.9", default-features = false, features = [
     "sqlite",
     "chrono",
     "json",
@@ -206,7 +208,7 @@ llama-cpp-2 = { version = "0.1.151", features = ["sampler", "mtmd"], optional = 
 encoding_rs = "0.8.35"
 pastey = "0.2.3"
 shell-words = { workspace = true }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
 process-wrap = { version = "9.1.0", features = ["std"] }
 pem = { version = "3", optional = true }
 pkcs1 = { version = "0.7", default-features = false, features = ["pkcs8"], optional = true }

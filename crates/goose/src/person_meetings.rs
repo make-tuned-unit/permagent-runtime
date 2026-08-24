@@ -162,10 +162,10 @@ pub async fn list_for_person(
     pool: &Pool<Sqlite>,
     entity_uuid: &str,
 ) -> Result<Vec<PersonMeeting>, String> {
-    let rows = sqlx::query(&format!(
+    let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {MEETING_COLS} FROM person_meetings WHERE entity_uuid = ? \
          ORDER BY starts_at DESC"
-    ))
+    )))
     .bind(entity_uuid)
     .fetch_all(pool)
     .await
@@ -438,9 +438,9 @@ pub async fn create_meeting(pool: &Pool<Sqlite>, new: NewMeeting) -> Result<Pers
 }
 
 async fn fetch_meeting(pool: &Pool<Sqlite>, id: &str) -> Result<PersonMeeting, String> {
-    let row = sqlx::query(&format!(
+    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {MEETING_COLS} FROM person_meetings WHERE id = ?"
-    ))
+    )))
     .bind(id)
     .fetch_one(pool)
     .await

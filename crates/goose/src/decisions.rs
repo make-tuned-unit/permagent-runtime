@@ -1156,10 +1156,10 @@ pub async fn create_decision(pool: &Pool<Sqlite>, req: NewDecision) -> Result<De
 }
 
 pub async fn get_decision(pool: &Pool<Sqlite>, id: &str) -> Result<Option<Decision>, String> {
-    let row = sqlx::query(&format!(
+    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {} FROM decisions WHERE id = ?",
         DECISION_COLUMNS
-    ))
+    )))
     .bind(id)
     .fetch_optional(pool)
     .await
@@ -1173,11 +1173,11 @@ pub async fn find_open_decision_for_goal(
     goal_id: &str,
     kind: &str,
 ) -> Result<Option<Decision>, String> {
-    let row = sqlx::query(&format!(
+    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {} FROM decisions WHERE goal_id = ? AND kind = ? AND status = 'open' \
          ORDER BY created_at DESC LIMIT 1",
         DECISION_COLUMNS
-    ))
+    )))
     .bind(goal_id)
     .bind(kind)
     .fetch_optional(pool)
@@ -1287,13 +1287,13 @@ pub async fn find_open_tool_approval_by_request_id(
     pool: &Pool<Sqlite>,
     request_id: &str,
 ) -> Result<Option<Decision>, String> {
-    let row = sqlx::query(&format!(
+    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {} FROM decisions \
          WHERE kind = 'tool_approval' AND status = 'open' \
            AND json_extract(payload_json, '$.request_id') = ? \
          ORDER BY created_at DESC LIMIT 1",
         DECISION_COLUMNS
-    ))
+    )))
     .bind(request_id)
     .fetch_optional(pool)
     .await
@@ -1313,14 +1313,14 @@ pub async fn find_open_session_gate(
     target_session_id: &str,
     request_id: &str,
 ) -> Result<Option<Decision>, String> {
-    let row = sqlx::query(&format!(
+    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {} FROM decisions \
          WHERE kind = 'session_gate' AND status = 'open' \
            AND json_extract(payload_json, '$.target_session_id') = ? \
            AND json_extract(payload_json, '$.request_id') = ? \
          ORDER BY created_at DESC LIMIT 1",
         DECISION_COLUMNS
-    ))
+    )))
     .bind(target_session_id)
     .bind(request_id)
     .fetch_optional(pool)
@@ -1444,7 +1444,10 @@ pub async fn inbox_summary(pool: &Pool<Sqlite>) -> Result<InboxSummary, String> 
            AND COALESCE(json_extract(c.metadata_json, '$.needs_human_attention'), 0) = 0",
         placeholders
     );
-    let mut goals_q = sqlx::query_scalar(&goals_sql);
+    // `placeholders` is just N repetitions of the literal "?" (N = the fixed
+    // ACTIVE_BINDINGS array length) joined by ", " — no external data reaches
+    // the SQL text; each binding is still a real bound value below.
+    let mut goals_q = sqlx::query_scalar(sqlx::AssertSqlSafe(goals_sql));
     for b in crate::goal_state::GoalState::ACTIVE_BINDINGS {
         goals_q = goals_q.bind(*b);
     }

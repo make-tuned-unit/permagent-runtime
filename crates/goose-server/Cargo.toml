@@ -99,7 +99,7 @@ uuid = { workspace = true }
 trash = "5"
 libc = "0.2"
 rcgen = "0.14"
-rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+rusqlite = { version = "0.37", features = ["bundled", "backup"] }
 axum-server = { version = "0.8.0" }
 aws-lc-rs = { version = "1.17.0", optional = true }
 openssl = { version = "0.10", optional = true }
@@ -115,7 +115,7 @@ ort = { version = "2.0.0-rc.12", features = ["download-binaries"] }
 misaki-rs = { version = "0.3", default-features = false }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 strsim = "0.11"
-sqlx = { version = "0.8", default-features = false, features = [
+sqlx = { version = "0.9", default-features = false, features = [
     "sqlite",
     "chrono",
     "json",

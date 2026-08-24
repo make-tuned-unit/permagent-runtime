@@ -1290,7 +1290,10 @@ async fn load_summary(pool: &Pool<Sqlite>, project_id: &str, period_days: u32) -
         let id = project_id.to_string();
         let since = since.clone();
         async move {
-            sqlx::query_as::<_, (String, i64)>(&sql)
+            // Every call site below builds `sql` from fixed literal fragments
+            // (the `base` constant plus a hardcoded SELECT/GROUP BY/LIMIT) — no
+            // external data reaches the SQL text; project_id/since are bound.
+            sqlx::query_as::<_, (String, i64)>(sqlx::AssertSqlSafe(sql))
                 .bind(id)
                 .bind(since)
                 .fetch_all(&pool)

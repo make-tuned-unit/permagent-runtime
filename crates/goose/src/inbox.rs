@@ -110,7 +110,7 @@ pub async fn insert_inbox_file(
          RETURNING {SELECT_COLS}",
     );
 
-    let row = sqlx::query(&sql)
+    let row = sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(&id)
         .bind(&new.filename)
         .bind(&new.original_url)
@@ -128,7 +128,7 @@ pub async fn insert_inbox_file(
 /// List inbox files, newest first.
 pub async fn list_inbox_files(pool: &Pool<Sqlite>) -> Result<Vec<InboxFile>, String> {
     let sql = format!("SELECT {SELECT_COLS} FROM inbox_files ORDER BY created_at DESC, id DESC");
-    let rows = sqlx::query(&sql)
+    let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
         .fetch_all(pool)
         .await
         .map_err(|e| e.to_string())?;
@@ -138,7 +138,7 @@ pub async fn list_inbox_files(pool: &Pool<Sqlite>) -> Result<Vec<InboxFile>, Str
 /// Fetch one inbox file by id.
 pub async fn get_inbox_file(pool: &Pool<Sqlite>, id: &str) -> Result<Option<InboxFile>, String> {
     let sql = format!("SELECT {SELECT_COLS} FROM inbox_files WHERE id = ?");
-    let row = sqlx::query(&sql)
+    let row = sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(id)
         .fetch_optional(pool)
         .await
@@ -174,7 +174,7 @@ pub async fn mark_inbox_file(
          WHERE id = ?
          RETURNING {SELECT_COLS}",
     );
-    let row = sqlx::query(&sql)
+    let row = sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(status)
         .bind(project_id)
         .bind(id)

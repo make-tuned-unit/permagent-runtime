@@ -1293,7 +1293,10 @@ impl SessionStorage {
         query.push_str(", ");
         query.push_str("updated_at = datetime('now') WHERE id = ?");
 
-        let mut q = sqlx::query(&query);
+        // `query` is assembled only from hardcoded column-name literals passed
+        // to `add_update!` above and fixed SQL fragments — no external data
+        // reaches the SQL text; every value is bound below.
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(query));
 
         if let Some(name) = builder.name {
             q = q.bind(name);
@@ -1595,7 +1598,10 @@ impl SessionStorage {
             where_clause
         );
 
-        let mut q = sqlx::query_as::<_, Session>(&query);
+        // `where_clause` interpolates only "?" placeholders (count derived from
+        // `types.len()`) — no external data reaches the SQL text; the actual
+        // type values are bound below.
+        let mut q = sqlx::query_as::<_, Session>(sqlx::AssertSqlSafe(query));
         for b in &binds {
             q = q.bind(b);
         }
@@ -1700,7 +1706,8 @@ impl SessionStorage {
             where_clause
         );
 
-        let mut q = sqlx::query_as::<_, SessionSummary>(&query);
+        // Same as list_sessions_by_types: `where_clause` is only "?" placeholders.
+        let mut q = sqlx::query_as::<_, SessionSummary>(sqlx::AssertSqlSafe(query));
         for b in &binds {
             q = q.bind(b);
         }
@@ -1757,7 +1764,8 @@ impl SessionStorage {
         );
 
         let pool = self.pool().await?;
-        let mut q = sqlx::query_as::<_, (i64, Option<i64>)>(&query);
+        // `placeholders` is only "?" repeated `types.len()` times.
+        let mut q = sqlx::query_as::<_, (i64, Option<i64>)>(sqlx::AssertSqlSafe(query));
         for t in types {
             q = q.bind(t.to_string());
         }

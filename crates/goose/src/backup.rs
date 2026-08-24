@@ -166,7 +166,12 @@ impl DbTarget {
         }
     }
 
-    pub(crate) fn label(&self) -> &str {
+    /// Human-facing `"<subdir>/<file>"` label for this database.
+    ///
+    /// `pub` rather than `pub(crate)`: this module moved from the daemon crate
+    /// into the library, and `permagent-daemon`'s backup routes render this
+    /// label in their responses.
+    pub fn label(&self) -> &str {
         match self {
             DbTarget::Brain => "brain/memory.db",
             DbTarget::BrainGraph => "brain/graph.sqlite",
@@ -609,24 +614,24 @@ pub async fn backup_scheduler_loop() {
     loop {
         interval.tick().await;
 
-        let base = permagent::config::paths::Paths::data_dir();
+        let base = crate::config::paths::Paths::data_dir();
         let backup_root = base.join("backups");
 
         for (source, target) in [
             (
-                permagent::config::paths::Paths::brain_dir().join("memory.db"),
+                crate::config::paths::Paths::brain_dir().join("memory.db"),
                 DbTarget::Brain,
             ),
             (
-                permagent::config::paths::Paths::brain_dir().join("graph.sqlite"),
+                crate::config::paths::Paths::brain_dir().join("graph.sqlite"),
                 DbTarget::BrainGraph,
             ),
             (
-                permagent::config::paths::Paths::brain_dir().join("recognition.db"),
+                crate::config::paths::Paths::brain_dir().join("recognition.db"),
                 DbTarget::BrainRecognition,
             ),
             (
-                permagent::config::paths::Paths::spectral_db(),
+                crate::config::paths::Paths::spectral_db(),
                 DbTarget::Spectral,
             ),
         ] {

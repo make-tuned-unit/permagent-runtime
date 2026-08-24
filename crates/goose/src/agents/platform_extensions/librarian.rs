@@ -163,6 +163,12 @@ fn default_limit() -> usize {
     20
 }
 
+/// No parameters. The repair is defined entirely by the misfiled-approval
+/// predicate in [`crate::hall_backfill`] — there is nothing for a caller to
+/// narrow, and a filter argument would let a run report "clean" over a subset.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct BackfillApprovalHallsParams {}
+
 // (Ollama response types removed — streaming NDJSON parser handles inline)
 
 // ---------------------------------------------------------------------------
@@ -182,7 +188,10 @@ impl LibrarianClient {
             .with_instructions(
                 "The Librarian generates prose descriptions for memories stored in the Brain. \
                  Use describe_memory to create a who/what/where/when/why description for a \
-                 specific memory. Use list_undescribed to find memories that need descriptions.",
+                 specific memory. Use list_undescribed to find memories that need descriptions. \
+                 Use backfill_approval_halls to repair approval records that were filed into the \
+                 wrong hall before the approval rule existed — it snapshots first and is safe to \
+                 re-run.",
             );
 
         let active_model = resolve_model();
@@ -234,6 +243,30 @@ impl LibrarianClient {
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&response).unwrap(),
         )]))
+    }
+
+    /// Move approval records misfiled into the `event` hall into `fact`.
+    ///
+    /// Thin wrapper over [`crate::hall_backfill::run_on_default_paths`] — the
+    /// same function the `POST /api/brain/backfill-approval-halls` route calls,
+    /// so the tool and the route cannot drift apart.
+    async fn handle_backfill_approval_halls(
+        &self,
+        _arguments: Option<JsonObject>,
+    ) -> Result<CallToolResult, String> {
+        let brain = self.get_brain()?;
+        let report = crate::hall_backfill::run_on_default_paths(&brain).await?;
+
+        // The structured report goes to the agent alongside the summary, so a
+        // remainder or a per-row error is visible rather than summarised away.
+        let detail = serde_json::to_string_pretty(&report)
+            .unwrap_or_else(|e| format!("(report could not be serialised: {e})"));
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "{}\n\n{}",
+            report.summary(),
+            detail
+        ))]))
     }
 
     async fn handle_list_undescribed(
@@ -313,6 +346,17 @@ impl McpClientTrait for LibrarianClient {
                     .to_string(),
                 schema::<ListUndescribedParams>(),
             ),
+            Tool::new(
+                "backfill_approval_halls".to_string(),
+                "One-shot repair: move approval records (\"the user was asked X and answered Y\") \
+                 that were filed into the `event` hall before the approval hall rule existed into \
+                 the `fact` hall, where they belong. Snapshots all three brain databases before \
+                 writing anything, and is safe to run twice — a second run finds nothing to do. \
+                 Reports the exact before and after counts; report a non-zero remainder to the \
+                 user verbatim rather than describing the run as complete."
+                    .to_string(),
+                schema::<BackfillApprovalHallsParams>(),
+            ),
         ];
 
         Ok(ListToolsResult {
@@ -335,6 +379,7 @@ impl McpClientTrait for LibrarianClient {
                     .await
             }
             "list_undescribed" => self.handle_list_undescribed(arguments).await,
+            "backfill_approval_halls" => self.handle_backfill_approval_halls(arguments).await,
             _ => Err(format!("Unknown tool: {}", name)),
         };
 

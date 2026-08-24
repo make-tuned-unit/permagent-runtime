@@ -356,9 +356,9 @@ pub async fn upsert_person(
         }
     };
 
-    let row = sqlx::query(&format!(
+    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {SELECT_COLS} FROM people WHERE entity_uuid = ?"
-    ))
+    )))
     .bind(&entity_uuid)
     .fetch_one(&mut *tx)
     .await
@@ -404,9 +404,9 @@ pub async fn rename_canonical_id(
 
 /// Fetch a single person by opaque `entity_uuid`.
 pub async fn get_by_uuid(pool: &Pool<Sqlite>, entity_uuid: &str) -> Result<Option<Person>, String> {
-    let row = sqlx::query(&format!(
+    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {SELECT_COLS} FROM people WHERE entity_uuid = ?"
-    ))
+    )))
     .bind(entity_uuid)
     .fetch_optional(pool)
     .await
@@ -419,9 +419,9 @@ pub async fn get_by_canonical_id(
     pool: &Pool<Sqlite>,
     canonical_id: &str,
 ) -> Result<Option<Person>, String> {
-    let row = sqlx::query(&format!(
+    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {SELECT_COLS} FROM people WHERE canonical_id = ?"
-    ))
+    )))
     .bind(canonical_id)
     .fetch_optional(pool)
     .await
@@ -446,9 +446,9 @@ pub async fn get_by_graph_entity_id(
     pool: &Pool<Sqlite>,
     graph_entity_id: &str,
 ) -> Result<Option<Person>, String> {
-    let row = sqlx::query(&format!(
+    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {SELECT_COLS} FROM people WHERE graph_entity_id = ? ORDER BY created_at ASC"
-    ))
+    )))
     .bind(graph_entity_id)
     .fetch_optional(pool)
     .await
@@ -485,7 +485,10 @@ pub async fn list_people(
          ORDER BY last_contact_at IS NULL, last_contact_at DESC, display_name ASC",
     );
 
-    let mut q = sqlx::query(&sql);
+    // `sql` interpolates only fixed clause strings from the allow-list above
+    // (`clauses`) plus the const SELECT_COLS/table name — no user input reaches
+    // the SQL text itself; values are bound below.
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
     if let Some(ref company) = filter.company {
         q = q.bind(company.clone());
     }

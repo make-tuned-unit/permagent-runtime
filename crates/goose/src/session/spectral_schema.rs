@@ -1697,13 +1697,15 @@ pub async fn apply_activity_journal_schema(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query("DROP TRIGGER IF EXISTS trg_activity_journal_no_delete")
         .execute(&mut *tx)
         .await?;
-    sqlx::query(&format!(
+    // `RETENTION_DAYS` is a compile-time i64 const in activity_journal.rs, not
+    // external data.
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         "CREATE TRIGGER trg_activity_journal_no_delete
          BEFORE DELETE ON activity_journal
          WHEN OLD.ts >= strftime('%Y-%m-%dT%H:%M:%fZ','now','-{} days')
          BEGIN SELECT RAISE(ABORT, 'activity_journal is append-only'); END",
         crate::activity_journal::RETENTION_DAYS
-    ))
+    )))
     .execute(&mut *tx)
     .await?;
 
@@ -3197,15 +3199,18 @@ pub async fn apply_analytics_events_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("utm_campaign", "utm_campaign TEXT"),
         ("country", "country TEXT"),
     ] {
-        let present: i64 = sqlx::query_scalar(&format!(
+        // `column`/`ddl` come only from the fixed literal array above.
+        let present: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "SELECT COUNT(*) FROM pragma_table_info('analytics_events') WHERE name = '{column}'"
-        ))
+        )))
         .fetch_one(pool)
         .await?;
         if present == 0 {
-            sqlx::query(&format!("ALTER TABLE analytics_events ADD COLUMN {ddl}"))
-                .execute(pool)
-                .await?;
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "ALTER TABLE analytics_events ADD COLUMN {ddl}"
+            )))
+            .execute(pool)
+            .await?;
         }
     }
     // Bots are excluded from every default figure, so the filter belongs in the

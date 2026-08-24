@@ -96,7 +96,9 @@ impl<'a> ChatHistorySearch<'a> {
 
     async fn fetch_rows(&self, keywords: &[String]) -> Result<Vec<SqlQueryRow>> {
         let sql = self.build_sql(keywords);
-        let mut query_builder = sqlx::query_as::<_, SqlQueryRow>(&sql);
+        // `build_sql` only appends fixed literal fragments and "?" placeholders;
+        // keyword text is always bound below, never interpolated.
+        let mut query_builder = sqlx::query_as::<_, SqlQueryRow>(sqlx::AssertSqlSafe(sql));
 
         for keyword in keywords {
             query_builder = query_builder.bind(keyword);
