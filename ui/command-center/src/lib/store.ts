@@ -120,6 +120,11 @@ export type ToolType = 'chat' | 'skills' | 'trace' | 'world' | 'terminal' | 'bro
 
 /** Queued Build-tab PTY launch (project chip, agent event, or a Grow action). */
 export interface PendingTerminalLaunch {
+  /** One press = one id. BuildView's consumer dedupes on it (pendingLaunch.ts)
+   *  so a double-mount (StrictMode, or a remount mid-navigate) cannot open two
+   *  tabs for the same press — reported 2026-08 as "Send to Claude" opening
+   *  two terminal tabs. */
+  id: string;
   rootPath: string;
   label: string;
   command?: string;
@@ -129,6 +134,11 @@ export interface PendingTerminalLaunch {
   /** When this harness session ends, report the action as implemented. */
   growthAction?: { projectId: string; actionId: string };
 }
+
+/** Producers rarely care about the launch id — the store mints one when omitted. */
+export type PendingTerminalLaunchInput = Omit<PendingTerminalLaunch, 'id'> & { id?: string };
+
+let launchSeq = 0;
 
 export interface LayoutSplit {
   type: 'split';
@@ -426,7 +436,7 @@ interface CommandCenterStore {
 
   // --- Project terminal launch (from agent: project_launch event) ---
   pendingTerminalLaunch: PendingTerminalLaunch | null;
-  setPendingTerminalLaunch: (launch: PendingTerminalLaunch | null) => void;
+  setPendingTerminalLaunch: (launch: PendingTerminalLaunchInput | null) => void;
   /** One-shot Grow lens (Home growth card → Results). Consumed then cleared. */
   openGrowLens: 'results' | null;
   setOpenGrowLens: (lens: 'results' | null) => void;
@@ -1714,7 +1724,11 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   clearPendingWorldAgent: () => set({ pendingWorldAgent: null }),
 
   pendingTerminalLaunch: null,
-  setPendingTerminalLaunch: (launch) => set({ pendingTerminalLaunch: launch }),
+  setPendingTerminalLaunch: (launch) => set({
+    pendingTerminalLaunch: launch
+      ? { ...launch, id: launch.id ?? `launch-${Date.now()}-${++launchSeq}` }
+      : null,
+  }),
   openGrowLens: null,
   setOpenGrowLens: (lens) => set({ openGrowLens: lens }),
 

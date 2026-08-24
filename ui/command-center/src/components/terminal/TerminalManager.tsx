@@ -15,6 +15,7 @@ import {
   resolveActiveTabId,
   type PtySessionInfo,
 } from './terminalReattach';
+import { createClaimSet } from '../../lib/claimSet';
 
 export interface TerminalManagerHandle {
   createProjectTab: (
@@ -22,7 +23,13 @@ export interface TerminalManagerHandle {
     label: string,
     initialCommand?: string,
     supervisedSessionId?: string,
-    extras?: { followUpInput?: string; growthAction?: { projectId: string; actionId: string } },
+    extras?: {
+      followUpInput?: string;
+      growthAction?: { projectId: string; actionId: string };
+      /** Second layer of the double-tab defence (see pendingLaunch.ts) — when
+       *  present and already claimed by this manager, the tab is not created. */
+      launchId?: string;
+    },
   ) => void;
   getActiveTab: () => TerminalTab;
   /** Every tab this manager owns — used by a detached pane window to tear
@@ -78,6 +85,14 @@ let persistedActiveTabId: string | null = null;
 // writing into one PTY is a worse outcome than an orphan.
 let detachedSessionIds: string[] = [];
 
+// Second layer of the double-tab defence (see pendingLaunch.ts): BuildView
+// claims a launch id first, but if it somehow reached here twice anyway (a
+// second manager instance, or a caller bypassing BuildView), this manager
+// refuses to open a second tab for an id it has already seen. A DEDICATED
+// set — never shared with BuildView's — because both layers must be able to
+// claim independently.
+const projectTabLaunchClaims = createClaimSet(50);
+
 // ── …and a DURABLE copy, because module-level state is not durable ──────────
 //
 // The module variables above survive a React unmount. They do not survive
@@ -109,6 +124,7 @@ export function __resetTerminalPersistenceForTests() {
   persistedTabs = null;
   persistedActiveTabId = null;
   detachedSessionIds = [];
+  projectTabLaunchClaims.reset();
   try {
     storage()?.removeItem(TERMINAL_STATE_KEY);
   } catch {
@@ -388,8 +404,16 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
     label: string,
     initialCommand?: string,
     supervisedSessionId?: string,
-    extras?: { followUpInput?: string; growthAction?: { projectId: string; actionId: string } },
+    extras?: {
+      followUpInput?: string;
+      growthAction?: { projectId: string; actionId: string };
+      launchId?: string;
+    },
   ) => {
+    // Second-layer guard (see pendingLaunch.ts) — BuildView already claims
+    // the id before calling here; this refuses a duplicate call for the same
+    // id regardless of how it arrived.
+    if (extras?.launchId && !projectTabLaunchClaims.claim(extras.launchId)) return;
     const tab: TerminalTab = {
       ...createTab(cwd),
       label,
