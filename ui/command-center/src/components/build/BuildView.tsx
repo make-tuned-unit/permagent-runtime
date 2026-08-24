@@ -8,6 +8,7 @@ import { useCommandCenter } from '../../lib/store';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
 import { TerminalManager } from '../terminal/TerminalManager';
 import type { TerminalManagerHandle } from '../terminal/TerminalManager';
+import { claimLaunch } from './pendingLaunch';
 import { Browser } from '../browser';
 import { ProjectChip } from './ProjectChip';
 import { CostStatusline } from './CostStatusline';
@@ -110,10 +111,19 @@ export function BuildView() {
   const openChatDock = useCommandCenter(s => s.openChatDock);
   useEffect(() => {
     if (!pendingTerminalLaunch) return;
-    const { rootPath, label, command, supervisedSessionId, followUpInput, growthAction } = pendingTerminalLaunch;
+    // Claim SYNCHRONOUSLY, before createProjectTab: the clear below is async
+    // (a store update), so a StrictMode double-invoke or a remount racing the
+    // same tick would otherwise still see this launch and open a second tab
+    // (see pendingLaunch.ts).
+    if (!claimLaunch(pendingTerminalLaunch.id)) {
+      setPendingTerminalLaunch(null);
+      return;
+    }
+    const { id, rootPath, label, command, supervisedSessionId, followUpInput, growthAction } = pendingTerminalLaunch;
     terminalRef.current?.createProjectTab(rootPath, label, command, supervisedSessionId, {
       followUpInput,
       growthAction,
+      launchId: id,
     });
     setPendingTerminalLaunch(null);
   }, [pendingTerminalLaunch, setPendingTerminalLaunch]);

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -6,6 +6,7 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import '@xterm/xterm/css/xterm.css';
 import { useEventBus } from '../../lib/eventBus';
 import { useTheme } from '../../styles/useTheme';
+import { font } from '../../styles/tokens';
 import { getXtermTheme } from './xtermTheme';
 import { onRepaintRegain } from '../../lib/repaintOnRegain';
 import { handlePtyData, type PtyDataPayload, type PtyStreamSink } from './ptyStream';
@@ -19,6 +20,8 @@ import {
 } from './ptyGrid';
 import { api as daemonApi } from '../../lib/api';
 import { buildCodingSessionPayload, isHarnessCommand } from './codingSession';
+import { createFollowUpDelivery, type FollowUpDelivery } from './followUpDelivery';
+import { FiCopy, FiSend, FiX } from 'react-icons/fi';
 
 // ── Tauri API loader (cached, no module-level mutation) ──
 
@@ -58,25 +61,6 @@ export function scheduleInitialCommand(
   return () => clearTimeout(timer);
 }
 
-/**
- * Paste a multi-line prompt after the coding CLI has had a moment to draw.
- *
- * Bracketed paste keeps embedded newlines from submitting early in a TUI
- * (Claude Code / Codex treat a raw `\n` as Enter). The trailing CR submits
- * once the paste completes.
- */
-export function scheduleFollowUpInput(
-  invoke: TauriApi['invoke'],
-  sessionId: string,
-  text: string,
-): () => void {
-  const timer = setTimeout(() => {
-    const payload = `\x1b[200~${text}\x1b[201~\r`;
-    invoke('write_to_pty', { sessionId, data: payload }).catch(() => {});
-  }, 2200);
-  return () => clearTimeout(timer);
-}
-
 interface TerminalProps {
   sessionId: string | null;
   onSessionSpawned?: (sessionId: string) => void;
@@ -110,6 +94,12 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
   const supervisedSessionIdRef = useRef(supervisedSessionId);
   const followUpInputRef = useRef(followUpInput);
   const growthActionRef = useRef(growthAction);
+  // The readiness-gated follow-up delivery for this mount (see
+  // followUpDelivery.ts) — `sendNow()` backs the pending chip's button.
+  const followUpDeliveryRef = useRef<FollowUpDelivery | null>(null);
+  // Surfaced when the ceiling elapses without the TUI taking the tty; cleared
+  // once delivery actually happens (including a late, post-ceiling delivery).
+  const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
 
   sessionIdRef.current = sessionId;
   onSessionSpawnedRef.current = onSessionSpawned;
@@ -125,7 +115,6 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
   useEffect(() => {
     let cancelled = false;
     let cancelInitialCommand: (() => void) | null = null;
-    let cancelFollowUp: (() => void) | null = null;
 
     (async () => {
       if (!containerRef.current) return;
@@ -270,7 +259,15 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
             const follow = followUpInputRef.current;
             followUpInputRef.current = undefined;
             if (follow) {
-              cancelFollowUp = scheduleFollowUpInput(api.invoke, result.session_id, follow);
+              const spawnedSessionId = result.session_id;
+              followUpDeliveryRef.current = createFollowUpDelivery({
+                text: follow,
+                write: (d) => {
+                  void api.invoke('write_to_pty', { sessionId: spawnedSessionId, data: d }).catch(() => {});
+                },
+                onPending: () => setPendingPrompt(follow),
+                onSent: () => setPendingPrompt(null),
+              });
             }
           }
         } catch (err) {
@@ -326,6 +323,9 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         write: (data) => {
           if (replayUpTo === null) { held.push({ data, seq: pendingSeq }); return; }
           term.write(data);
+          // Readiness for the follow-up paste (createFollowUpDelivery) is
+          // read off these same bytes — feed the identical verbatim chunk.
+          followUpDeliveryRef.current?.onData(data);
           scheduleFlush();
         },
         onCwd: (path) => onCwdChangeRef.current?.(path),
@@ -341,6 +341,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
           // missing chunk is not.
           if (chunk.seq !== undefined && upTo !== null && chunk.seq <= upTo) continue;
           term.write(chunk.data);
+          followUpDeliveryRef.current?.onData(chunk.data);
         }
         held.length = 0;
         scheduleFlush();
@@ -389,7 +390,10 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
             const replay = await api.invoke('get_pty_output', {
               sessionId: sessionIdRef.current,
             }) as { data: string; seq: number };
-            if (!cancelled && replay?.data) term.write(replay.data);
+            if (!cancelled && replay?.data) {
+              term.write(replay.data);
+              followUpDeliveryRef.current?.onData(replay.data);
+            }
             if (!cancelled) releaseHeld(replay?.seq ?? null);
           } catch {
             // Session may have exited during the handoff — release anyway, or
@@ -615,7 +619,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         if (resizeTimer) clearTimeout(resizeTimer);
         if (flushTimer) clearTimeout(flushTimer);
         cancelInitialCommand?.();
-        cancelFollowUp?.();
+        followUpDeliveryRef.current?.cancel();
         resizeObserver.disconnect();
         term.dispose();
         xtermRef.current = null;
@@ -626,7 +630,7 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
     return () => {
       cancelled = true;
       cancelInitialCommand?.();
-      cancelFollowUp?.();
+      followUpDeliveryRef.current?.cancel();
       cleanupRef.current?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -687,11 +691,73 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
 
   const xtermBg = getXtermTheme(theme, colors).background;
 
+  const dismissPending = () => setPendingPrompt(null);
+  const sendPendingNow = () => followUpDeliveryRef.current?.sendNow();
+  const copyPending = () => {
+    if (!pendingPrompt) return;
+    try {
+      void navigator.clipboard?.writeText(pendingPrompt);
+    } catch {
+      /* clipboard access can be denied — the chip stays up either way */
+    }
+  };
+
   return (
-    <div
-      ref={containerRef}
-      className="pty-terminal h-full w-full"
-      style={{ backgroundColor: xtermBg }}
-    />
+    // The wrapper must NOT change the box `fitVisibleTerminal` and the
+    // ResizeObserver measure below — it exists only to position the chip,
+    // so the xterm container div stays byte-for-byte the same as before.
+    <div className="relative h-full w-full">
+      <div
+        ref={containerRef}
+        className="pty-terminal h-full w-full"
+        style={{ backgroundColor: xtermBg }}
+      />
+      {pendingPrompt && (
+        <div
+          role="status"
+          className="absolute bottom-2 right-2 z-10 max-w-xs rounded-lg px-3 py-2 text-xs"
+          style={{
+            backgroundColor: colors.surfaceHi,
+            border: `1px solid ${colors.border}`,
+            boxShadow: colors.elevationFloating,
+            color: colors.text,
+            fontFamily: font.body,
+          }}
+        >
+          <div className="flex items-start justify-between gap-2">
+            <span style={{ color: colors.textMuted }}>
+              Prompt not delivered — the agent didn&apos;t take the terminal in time.
+            </span>
+            <button
+              type="button"
+              onClick={dismissPending}
+              aria-label="Dismiss"
+              className="shrink-0"
+              style={{ color: colors.textMuted, background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+            >
+              <FiX size={12} />
+            </button>
+          </div>
+          <div className="mt-2 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={sendPendingNow}
+              className="flex items-center gap-1 rounded px-2 py-1"
+              style={{ backgroundColor: colors.cyan, color: colors.textOnCyan, border: 'none', cursor: 'pointer', fontFamily: font.body, fontWeight: 600 }}
+            >
+              <FiSend size={11} /> Send now
+            </button>
+            <button
+              type="button"
+              onClick={copyPending}
+              className="flex items-center gap-1 rounded px-2 py-1"
+              style={{ backgroundColor: 'transparent', color: colors.text, border: `1px solid ${colors.border}`, cursor: 'pointer', fontFamily: font.body }}
+            >
+              <FiCopy size={11} /> Copy
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
