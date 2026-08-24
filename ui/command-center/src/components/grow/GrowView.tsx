@@ -21,6 +21,14 @@ import { ViewHeader } from '../common/ViewHeader';
 import type { Project } from '../projects/types';
 import { FunnelPanel } from './FunnelPanel';
 import { drainFreshness } from './analyticsFormat';
+import {
+  fromDatetimeLocalValue,
+  groupPostsByDay,
+  readPostMeta,
+  toDatetimeLocalValue,
+  type PostStatus,
+  type SocialCard,
+} from './calendarPosts';
 
 // Appended to every Grow prompt that DRAFTS user-facing copy (value props,
 // posts, outreach) so the output reads like a sharp human wrote it, not a
@@ -122,14 +130,6 @@ async function saveStrategy(projectId: string, pillar: string, content: string):
 /** Run-all: one turn where Henry produces and SAVES every pillar. */
 function runAllPrompt(projectName: string): string {
   return `Build the complete go-to-market strategy for "${projectName}" using everything you know about the project (Brain, people, docs, goals). Work through all five pillars — audience, value, positioning, channels, content — and for EACH one, save your result with the set_project_strategy tool (project: "${projectName}", pillar: "<key>"): content = a 2-3 sentence summary, points = [{label, detail}] labeled specifics (personas with watering holes, channels with fit reasons, alternatives with your counter-positioning), metrics = [{label, value}] stat chips (price hypothesis, audience size, post cadence). The Strategy cards render this as rich content, so fill all three fields. Also save the "workback" pillar: the launch workback schedule — points = [{label: "<date or week>", detail: "<milestone>"}] counting back from launch day. THEN turn the workback into real to-dos: create a Kanban card on this project's board for each concrete milestone with the card_create tool (title = the milestone, description = why it matters and its target week). Finish with a one-paragraph summary.${HUMANIZE_VOICE}`;
-}
-
-interface SocialCard {
-  id: string;
-  title: string;
-  description: string;
-  // social_post cards carry scheduling in metadata; tolerant read.
-  metadata_json?: Record<string, unknown> | null;
 }
 
 // The deterministic growth inbox (backend GET /api/projects/:id/growth-inbox).
@@ -259,6 +259,7 @@ export function GrowView() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [posts, setPosts] = useState<SocialCard[]>([]);
   const [postsState, setPostsState] = useState<LoadState>('loading');
+  const [postsMutationError, setPostsMutationError] = useState<string | null>(null);
   const [lens, setLens] = useState<GrowLens>('actions');
   const [ctx, setCtx] = useState<{ people: number; goals: number } | null>(null);
   const [focusLens, setFocusLens] = useState<GrowLens | null>(null);
@@ -326,6 +327,33 @@ export function GrowView() {
     loadPosts(activeId);
     return () => { ++postsRequestGeneration.current; };
   }, [activeId, loadPosts]);
+
+  // PATCH/DELETE /api/projects/:id/cards/:cardId — confirmed paths in routes/cards.rs
+  // (patch + delete on the same resource; there is no PUT /api/cards/:id).
+  const mutatePost = useCallback(async (
+    projectId: string,
+    post: SocialCard,
+    body: Record<string, unknown> | null,
+  ) => {
+    setPostsMutationError(null);
+    const path = `/api/projects/${encodeURIComponent(projectId)}/cards/${encodeURIComponent(post.id)}`;
+    try {
+      if (body === null) {
+        await apiFetch(path, { method: 'DELETE' });
+      } else {
+        await apiFetch(path, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      }
+      loadPosts(projectId, { silent: true });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Could not update the post.';
+      setPostsMutationError(msg);
+      throw e;
+    }
+  }, [loadPosts]);
 
   // Keep the Content calendar live while it's on screen: "+ Draft a post with
   // Henry" hands off to chat, and before this poll the drafted social_post
@@ -570,7 +598,7 @@ export function GrowView() {
               <span style={{ fontSize: 10, color: colors.textDim, background: colors.bgDeeper, padding: '1px 6px', borderRadius: radius.pill, fontVariantNumeric: 'tabular-nums' }}>{posts.length}</span>
               <div style={{ flex: 1 }} />
               <button
-                onClick={() => send(`For "${active.name}", draft a social post I can schedule (pick the best channel from the strategy above), and create it as a social_post card on this project.${HUMANIZE_VOICE}`)}
+                onClick={() => send(`For "${active.name}", draft a social post I can schedule (pick the best channel from the strategy above), and create it as a social_post card on this project with card_create: title = the hook, description = the post body, scheduled_for = an RFC-3339 instant on the day you recommend posting it, post_status = "draft". It lands on this project's content calendar on that day, so pick a real date rather than leaving it unscheduled.${HUMANIZE_VOICE}`)}
                 style={{
                   fontSize: 11, fontFamily: font.body, color: colors.text,
                   background: 'transparent', border: `1px solid ${colors.border}`,
@@ -578,6 +606,15 @@ export function GrowView() {
                 }}
               >+ Draft a post with Henry</button>
             </div>
+            {postsMutationError && (
+              <div role="alert" style={{
+                fontSize: 12, color: colors.danger, marginBottom: 10,
+                background: colors.bgDeeper, border: `1px solid ${colors.border}`,
+                borderRadius: radius.md, padding: '8px 10px',
+              }}>
+                Couldn&apos;t save changes: {postsMutationError}
+              </div>
+            )}
             {postsState === 'error' ? (
               <ErrorState
                 colors={colors}
@@ -592,22 +629,15 @@ export function GrowView() {
                 border: `1px dashed ${colors.border}`, borderRadius: radius.lg, padding: 28,
                 textAlign: 'center', fontSize: 12, color: colors.textDim,
               }}>
-                No posts yet. Draft one with Henry above — he'll write it in the project's voice and file it here as a scheduled card.
+                No posts yet. Draft one with Henry above — he&apos;ll write it in the project&apos;s voice and file it here as a scheduled card.
               </div>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {posts.map((post) => (
-                  <div key={post.id} style={{
-                    background: colors.surface, border: `1px solid ${colors.border}`,
-                    borderRadius: radius.md, padding: '12px 14px',
-                  }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>{post.title}</div>
-                    {post.description && (
-                      <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4, lineHeight: 1.5 }}>{post.description}</div>
-                    )}
-                  </div>
-                ))}
-              </div>
+              <CalendarLens
+                projectId={active.id}
+                posts={posts}
+                colors={colors}
+                onMutate={mutatePost}
+              />
             )}
           </section>
           )}
@@ -803,6 +833,212 @@ function SkeletonCards({ colors, count = 2, height = 76 }: { colors: ThemeColors
           }}
         />
       ))}
+    </div>
+  );
+}
+
+function CalendarLens({
+  projectId, posts, colors, onMutate,
+}: {
+  projectId: string;
+  posts: SocialCard[];
+  colors: ThemeColors;
+  onMutate: (projectId: string, post: SocialCard, body: Record<string, unknown> | null) => Promise<void>;
+}) {
+  const groups = groupPostsByDay(posts);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {groups.map((group) => (
+        <div key={group.day}>
+          <div style={{
+            fontFamily: font.mono, fontSize: 11, color: colors.textDim,
+            textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8,
+          }}>{group.label}</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {group.posts.map((post) => (
+              <CalendarPostRow
+                key={post.id}
+                projectId={projectId}
+                post={post}
+                colors={colors}
+                onMutate={onMutate}
+              />
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CalendarPostRow({
+  projectId, post, colors, onMutate,
+}: {
+  projectId: string;
+  post: SocialCard;
+  colors: ThemeColors;
+  onMutate: (projectId: string, post: SocialCard, body: Record<string, unknown> | null) => Promise<void>;
+}) {
+  const meta = readPostMeta(post);
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState(post.title);
+  const [body, setBody] = useState(post.description ?? '');
+  const [when, setWhen] = useState(toDatetimeLocalValue(meta.scheduledFor));
+  const [status, setStatus] = useState<PostStatus>(meta.status);
+  const [busy, setBusy] = useState(false);
+
+  // Re-seed from the server only when the server's VALUES change. The 15s
+  // calendar poll hands back a fresh object every tick, so depending on `post`
+  // itself would wipe a half-typed reschedule four times a minute.
+  useEffect(() => {
+    if (editing) return;
+    setTitle(post.title);
+    setBody(post.description ?? '');
+    setWhen(toDatetimeLocalValue(meta.scheduledFor));
+    setStatus(meta.status);
+  }, [post.title, post.description, meta.scheduledFor, meta.status, editing]);
+
+  const btn: CSSProperties = {
+    fontSize: 11, fontFamily: font.body, color: colors.text,
+    background: 'transparent', border: `1px solid ${colors.border}`,
+    borderRadius: radius.md, padding: '4px 10px', cursor: busy ? 'wait' : 'pointer',
+  };
+  const chip: CSSProperties = {
+    fontSize: 10, fontFamily: font.mono, color: colors.textDim,
+    background: colors.bgDeeper, padding: '1px 6px', borderRadius: radius.pill,
+    textTransform: 'uppercase', letterSpacing: '0.04em',
+  };
+
+  const saveEdit = async () => {
+    setBusy(true);
+    try {
+      await onMutate(projectId, post, { title, description: body });
+      setEditing(false);
+    } catch { /* surfaced by parent */ }
+    finally { setBusy(false); }
+  };
+
+  const saveSchedule = async (nextWhen: string, nextStatus: PostStatus) => {
+    setBusy(true);
+    setWhen(nextWhen);
+    setStatus(nextStatus);
+    const scheduledFor = fromDatetimeLocalValue(nextWhen);
+    // Writing `null` would be indistinguishable from "never scheduled" on read,
+    // so an emptied field REMOVES the key rather than storing a null.
+    const metadataJson = {
+      ...(post.metadataJson ?? {}),
+      postStatus: nextStatus,
+      ...(scheduledFor ? { scheduledFor } : {}),
+    };
+    if (!scheduledFor) delete (metadataJson as Record<string, unknown>).scheduledFor;
+    try {
+      await onMutate(projectId, post, { metadataJson });
+    } catch { /* surfaced by parent */ }
+    finally { setBusy(false); }
+  };
+
+  const remove = async () => {
+    setBusy(true);
+    try { await onMutate(projectId, post, null); }
+    catch { /* surfaced by parent */ }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{
+      background: colors.surface, border: `1px solid ${colors.border}`,
+      borderRadius: radius.md, padding: '12px 14px',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <span style={chip}>{status}</span>
+        <div style={{ flex: 1 }} />
+        {!editing ? (
+          <>
+            <button type="button" style={btn} disabled={busy} onClick={() => setEditing(true)}>Edit</button>
+            <button type="button" style={btn} disabled={busy} onClick={() => void remove()}>Delete</button>
+          </>
+        ) : (
+          <>
+            <button type="button" style={btn} disabled={busy} onClick={() => void saveEdit()}>Save</button>
+            <button type="button" style={btn} disabled={busy} onClick={() => setEditing(false)}>Cancel</button>
+          </>
+        )}
+      </div>
+      {editing ? (
+        <>
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            aria-label="Post title"
+            style={{
+              width: '100%', fontSize: 13, fontWeight: 600, fontFamily: font.body,
+              color: colors.text, background: colors.bgDeeper, border: `1px solid ${colors.border}`,
+              borderRadius: radius.sm, padding: '6px 8px', marginBottom: 6, boxSizing: 'border-box',
+            }}
+          />
+          <textarea
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            aria-label="Post body"
+            rows={3}
+            style={{
+              width: '100%', fontSize: 12, fontFamily: font.body, lineHeight: 1.5,
+              color: colors.textMuted, background: colors.bgDeeper, border: `1px solid ${colors.border}`,
+              borderRadius: radius.sm, padding: '6px 8px', resize: 'vertical', boxSizing: 'border-box',
+            }}
+          />
+        </>
+      ) : (
+        <>
+          <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>{post.title}</div>
+          {post.description && (
+            <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 4, lineHeight: 1.5 }}>{post.description}</div>
+          )}
+        </>
+      )}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10, alignItems: 'center' }}>
+        <label style={{ fontSize: 11, color: colors.textDim, display: 'flex', alignItems: 'center', gap: 6 }}>
+          Schedule
+          <input
+            type="datetime-local"
+            aria-label="Reschedule post"
+            value={when}
+            disabled={busy}
+            // Commit on blur, not on change: a datetime-local fires change on
+            // every segment the user edits, and reads back "" while the value
+            // is incomplete — saving those would PATCH once per keystroke and
+            // briefly unschedule the post mid-edit.
+            onChange={(e) => setWhen(e.target.value)}
+            onBlur={() => {
+              if (when === toDatetimeLocalValue(meta.scheduledFor)) return;
+              void saveSchedule(when, status === 'draft' && when ? 'scheduled' : status);
+            }}
+            style={{
+              fontSize: 11, fontFamily: font.body, color: colors.text,
+              background: colors.bgDeeper, border: `1px solid ${colors.border}`,
+              borderRadius: radius.sm, padding: '4px 6px',
+            }}
+          />
+        </label>
+        <label style={{ fontSize: 11, color: colors.textDim, display: 'flex', alignItems: 'center', gap: 6 }}>
+          Status
+          <select
+            aria-label="Post status"
+            value={status}
+            disabled={busy}
+            onChange={(e) => void saveSchedule(when, e.target.value as PostStatus)}
+            style={{
+              fontSize: 11, fontFamily: font.body, color: colors.text,
+              background: colors.bgDeeper, border: `1px solid ${colors.border}`,
+              borderRadius: radius.sm, padding: '4px 6px',
+            }}
+          >
+            <option value="draft">draft</option>
+            <option value="scheduled">scheduled</option>
+            <option value="posted">posted</option>
+          </select>
+        </label>
+      </div>
     </div>
   );
 }

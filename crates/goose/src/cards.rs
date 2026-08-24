@@ -795,6 +795,52 @@ pub const DUE_DATE_KEY: &str = "dueDate";
 /// is an explicit statement that you want the to-do back.
 pub const DUE_DISMISSED_KEY: &str = "dueDismissedAt";
 
+/// Metadata key holding when a `social_post` is scheduled to go out (RFC-3339
+/// instant, UTC).
+///
+/// Lives in `metadata_json` rather than a column for the same reason as
+/// [`DUE_DATE_KEY`]: no migration, cheap to withdraw if the content calendar
+/// does not earn a dedicated schema. It is deliberately NOT a protected goal
+/// key, so the ordinary `update_card` path may write it.
+pub const POST_SCHEDULED_FOR_KEY: &str = "scheduledFor";
+
+/// Metadata key holding a `social_post`'s lifecycle status:
+/// `"draft"` | `"scheduled"` | `"posted"`.
+///
+/// Same rationale as [`POST_SCHEDULED_FOR_KEY`]: metadata rather than a column
+/// so the field can land without a migration and be withdrawn cheaply. Not a
+/// protected goal key — ordinary `update_card` may write it.
+pub const POST_STATUS_KEY: &str = "postStatus";
+
+/// Accepted `postStatus` values for [`POST_STATUS_KEY`].
+const POST_STATUSES: &[&str] = &["draft", "scheduled", "posted"];
+
+/// Validate social-post scheduling metadata before it is written.
+///
+/// `scheduled_for`, when present, must parse as RFC-3339. `status`, when
+/// present, must be one of `draft` / `scheduled` / `posted`. Either argument
+/// may be `None` (partial updates); absent fields are not checked.
+pub fn validate_post_metadata(
+    scheduled_for: Option<&str>,
+    status: Option<&str>,
+) -> Result<(), String> {
+    if let Some(status) = status {
+        if !POST_STATUSES.contains(&status) {
+            return Err(format!(
+                "postStatus must be one of \"draft\", \"scheduled\", or \"posted\", got '{status}'"
+            ));
+        }
+    }
+    if let Some(scheduled_for) = scheduled_for {
+        chrono::DateTime::parse_from_rfc3339(scheduled_for).map_err(|_| {
+            format!(
+                "scheduledFor must be an RFC-3339 instant (e.g. 2026-08-15T18:00:00Z), got '{scheduled_for}'"
+            )
+        })?;
+    }
+    Ok(())
+}
+
 /// Column names treated as terminal for to-dos, lower-cased.
 ///
 /// Standard (non-goal) cards sit on `manual` columns, which carry no
@@ -1607,6 +1653,30 @@ mod tests {
 
         let fetched = get_card(&pool, &card.id).await.unwrap().unwrap();
         assert_eq!(fetched.title, "Test Card");
+    }
+
+    #[test]
+    fn validate_post_metadata_accepts_valid_values() {
+        assert!(validate_post_metadata(None, None).is_ok());
+        assert!(validate_post_metadata(Some("2026-08-15T18:00:00Z"), Some("draft")).is_ok());
+        assert!(
+            validate_post_metadata(Some("2026-08-15T18:00:00+00:00"), Some("scheduled")).is_ok()
+        );
+        assert!(validate_post_metadata(None, Some("posted")).is_ok());
+    }
+
+    #[test]
+    fn validate_post_metadata_rejects_bad_status_or_timestamp() {
+        let status_err = validate_post_metadata(None, Some("queued")).unwrap_err();
+        assert!(
+            status_err.contains("draft") && status_err.contains("queued"),
+            "unexpected: {status_err}"
+        );
+        let ts_err = validate_post_metadata(Some("2026-08-15"), None).unwrap_err();
+        assert!(
+            ts_err.contains("RFC-3339") && ts_err.contains("2026-08-15"),
+            "unexpected: {ts_err}"
+        );
     }
 
     // ── Due to-dos ─────────────────────────────────────────────────────────

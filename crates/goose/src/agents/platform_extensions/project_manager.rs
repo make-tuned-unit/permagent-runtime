@@ -83,6 +83,12 @@ struct CardCreateParams {
     /// Defaults to false.
     #[serde(default)]
     auto_dispatch: Option<bool>,
+    /// For social_post cards only: RFC-3339 instant (UTC) when the post is scheduled.
+    /// Rejected on any other card_type.
+    scheduled_for: Option<String>,
+    /// For social_post cards only: "draft" | "scheduled" | "posted".
+    /// Defaults to "draft" when creating a social_post. Rejected on any other card_type.
+    post_status: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -93,6 +99,22 @@ struct CardMoveParams {
     column: String,
     /// Position within the column (optional, defaults to end)
     position: Option<i32>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct CardUpdateParams {
+    /// Card ID (UUID) to update
+    card_id: String,
+    /// New title (optional)
+    title: Option<String>,
+    /// New description / post body (optional)
+    description: Option<String>,
+    /// For social_post cards only: RFC-3339 instant (UTC) to (re)schedule.
+    /// Rejected on any other card_type.
+    scheduled_for: Option<String>,
+    /// For social_post cards only: "draft" | "scheduled" | "posted".
+    /// Rejected on any other card_type.
+    post_status: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -326,7 +348,10 @@ pub const GROW_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
         what_it_does: "A per-project go-to-market workspace: strategy pillars (audience, value \
              proposition, positioning, channels, content) you think through with the user, a \
-             content calendar of drafted posts, and a growth view with a live analytics lens — a \
+             content calendar of drafted posts — you write and schedule them yourself with \
+             `card_create`, rewrite or move them with `card_update`, and each one shows on its \
+             scheduled day as draft, scheduled, or posted — and a growth view with a live \
+             analytics lens — a \
              provider-pluggable stats client (Plausible or GoatCounter) that pulls the project's \
              real visitor and traffic numbers into the view — with any post or outreach you draft \
              written in a crisp human voice, never chatbot boilerplate",
@@ -463,12 +488,28 @@ impl ProjectManagerClient {
                 types exist:
                   - 'standard': manual task or note, user-managed
                   - 'goal': agentic goal routed to worker agents (future)
-                  - 'social_post': scheduled social media post (future)
+                  - 'social_post': a drafted social media post on the project's content calendar (Grow tab)
 
                 When the user says "add a card", "create a task", "track this", or
                 similar, use card_create with card_type='standard'. Ask which project
                 if not clear from context — default to the active project if the user
                 is currently in one, otherwise Personal.
+
+                ## Content calendar
+
+                social_post cards ARE the Grow tab's content calendar, which renders
+                each one on its scheduled day. Create one with card_create
+                card_type='social_post' plus scheduled_for (an RFC-3339 instant) and
+                post_status ('draft', 'scheduled', or 'posted'); rewrite or reschedule
+                it with card_update. Always pick a real date: a post with no
+                scheduled_for lands in the calendar's Unscheduled pile.
+
+                The copy you put in the description is what the user publishes, so
+                write it in their voice, the way a sharp person actually writes. Lead
+                with the point, stay concrete, keep sentences short, and cut every AI
+                tell: no em-dashes, no "I'm excited to announce", no hype words like
+                "seamless" or "unlock", no throat-clearing openers. Specifics over
+                claims. Apply your "humanize" skill for the full voice spec.
 
                 Use `research_project_intel` when the user asks to research or
                 refresh a project's ecosystem or competitive landscape. It returns
@@ -1180,6 +1221,10 @@ impl ProjectManagerClient {
             .get("auto_dispatch")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let scheduled_for = args.get("scheduled_for").and_then(|v| v.as_str());
+        let post_status = args.get("post_status").and_then(|v| v.as_str());
+        let metadata_json =
+            social_post_metadata_for_create(card_type_str, scheduled_for, post_status)?;
 
         let card = cards::create_card(
             &pool,
@@ -1193,7 +1238,7 @@ impl ProjectManagerClient {
                 card_type: Some(card_type_str.to_string()),
                 column_id,
                 created_by: Some("user".to_string()),
-                metadata_json: None,
+                metadata_json,
             },
         )
         .await?;
@@ -1311,6 +1356,70 @@ impl ProjectManagerClient {
         Ok(vec![Content::text(format!(
             "Moved card \"{}\" to column \"{}\" (position {})",
             moved.title, target_col.name, moved.position
+        ))])
+    }
+
+    async fn handle_card_update(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let card_id = args
+            .get("card_id")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing required parameter: card_id")?;
+        let title = args.get("title").and_then(|v| v.as_str()).map(String::from);
+        let description = args
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let scheduled_for = args.get("scheduled_for").and_then(|v| v.as_str());
+        let post_status = args.get("post_status").and_then(|v| v.as_str());
+
+        let pool = self
+            .context
+            .session_manager
+            .pool_clone()
+            .await
+            .map_err(|e| e.to_string())?;
+        let card = cards::get_card(&pool, card_id)
+            .await?
+            .ok_or_else(|| format!("Card '{}' not found", card_id))?;
+
+        let metadata_json = if scheduled_for.is_some() || post_status.is_some() {
+            Some(merge_social_post_metadata(
+                &card.card_type,
+                &card.metadata_json,
+                scheduled_for,
+                post_status,
+            )?)
+        } else {
+            None
+        };
+
+        if title.is_none() && description.is_none() && metadata_json.is_none() {
+            return Err(
+                "card_update requires at least one of: title, description, scheduled_for, post_status"
+                    .to_string(),
+            );
+        }
+
+        let updated = cards::update_card(
+            &pool,
+            card_id,
+            cards::UpdateCard {
+                title,
+                description,
+                metadata_json,
+                ..Default::default()
+            },
+        )
+        .await?
+        .ok_or("Card not found after update")?;
+
+        Ok(vec![Content::text(format!(
+            "Updated card \"{}\" (id: {})",
+            updated.title, updated.id
         ))])
     }
 
@@ -1552,6 +1661,7 @@ impl ProjectManagerClient {
         let resolve_schema = serde_json::to_value(schema_for!(ProjectResolveParams)).unwrap();
         let card_create_schema = serde_json::to_value(schema_for!(CardCreateParams)).unwrap();
         let card_move_schema = serde_json::to_value(schema_for!(CardMoveParams)).unwrap();
+        let card_update_schema = serde_json::to_value(schema_for!(CardUpdateParams)).unwrap();
         let card_delete_schema = serde_json::to_value(schema_for!(CardDeleteParams)).unwrap();
         let card_list_schema = serde_json::to_value(schema_for!(CardListParams)).unwrap();
         let col_create_schema = serde_json::to_value(schema_for!(ColumnCreateParams)).unwrap();
@@ -1681,6 +1791,22 @@ impl ProjectManagerClient {
             )
             .annotate(ToolAnnotations::from_raw(
                 Some("Move Card".to_string()),
+                Some(false),
+                Some(true),
+                Some(false),
+                Some(false),
+            )),
+            Tool::new(
+                "card_update".to_string(),
+                indoc! {r#"
+                Edit a card's title, description, or (for social_post) schedule and post_status.
+                Use to rewrite or reschedule a drafted Grow-tab post without recreating it.
+            "#}
+                .to_string(),
+                card_update_schema.as_object().unwrap().clone(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Update Card".to_string()),
                 Some(false),
                 Some(true),
                 Some(false),
@@ -1933,6 +2059,7 @@ impl McpClientTrait for ProjectManagerClient {
             "project_resolve" => self.handle_resolve(arguments).await,
             "card_create" => self.handle_card_create(arguments).await,
             "card_move" => self.handle_card_move(arguments).await,
+            "card_update" => self.handle_card_update(arguments).await,
             "card_delete" => self.handle_card_delete(arguments).await,
             "card_list" => self.handle_card_list(arguments).await,
             "column_create" => self.handle_column_create(arguments).await,
@@ -1959,6 +2086,69 @@ impl McpClientTrait for ProjectManagerClient {
     }
 }
 
+/// Build `metadata_json` for `card_create`. Post-schedule fields are
+/// social_post-only — rejecting (not ignoring) them on other types keeps the
+/// tool honest about what it accepts.
+fn social_post_metadata_for_create(
+    card_type: &str,
+    scheduled_for: Option<&str>,
+    post_status: Option<&str>,
+) -> Result<Option<serde_json::Value>, String> {
+    if (scheduled_for.is_some() || post_status.is_some()) && card_type != "social_post" {
+        return Err(format!(
+            "scheduled_for and post_status are only valid for card_type='social_post' \
+             (got '{card_type}')"
+        ));
+    }
+    if card_type != "social_post" {
+        return Ok(None);
+    }
+    let status = post_status.unwrap_or("draft");
+    cards::validate_post_metadata(scheduled_for, Some(status))?;
+    let mut map = serde_json::Map::new();
+    map.insert(
+        cards::POST_STATUS_KEY.to_string(),
+        serde_json::json!(status),
+    );
+    if let Some(when) = scheduled_for {
+        map.insert(
+            cards::POST_SCHEDULED_FOR_KEY.to_string(),
+            serde_json::json!(when),
+        );
+    }
+    Ok(Some(serde_json::Value::Object(map)))
+}
+
+/// Merge post-schedule keys into existing metadata without clobbering siblings.
+fn merge_social_post_metadata(
+    card_type: &str,
+    existing: &serde_json::Value,
+    scheduled_for: Option<&str>,
+    post_status: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    if card_type != "social_post" {
+        return Err(format!(
+            "scheduled_for and post_status are only valid for card_type='social_post' \
+             (got '{card_type}')"
+        ));
+    }
+    cards::validate_post_metadata(scheduled_for, post_status)?;
+    let mut map = existing.as_object().cloned().unwrap_or_default();
+    if let Some(when) = scheduled_for {
+        map.insert(
+            cards::POST_SCHEDULED_FOR_KEY.to_string(),
+            serde_json::json!(when),
+        );
+    }
+    if let Some(status) = post_status {
+        map.insert(
+            cards::POST_STATUS_KEY.to_string(),
+            serde_json::json!(status),
+        );
+    }
+    Ok(serde_json::Value::Object(map))
+}
+
 /// Simple Levenshtein distance for fuzzy name matching.
 fn levenshtein(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
@@ -1975,4 +2165,64 @@ fn levenshtein(a: &str, b: &str) -> usize {
         std::mem::swap(&mut prev, &mut curr);
     }
     prev[n]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn card_create_rejects_schedule_on_non_social_post() {
+        let err = social_post_metadata_for_create("standard", Some("2026-08-15T18:00:00Z"), None)
+            .unwrap_err();
+        assert!(
+            err.contains("social_post") && err.contains("standard"),
+            "unexpected: {err}"
+        );
+    }
+
+    #[test]
+    fn card_create_defaults_social_post_status_to_draft() {
+        let meta = social_post_metadata_for_create("social_post", None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(meta[cards::POST_STATUS_KEY], "draft");
+        assert!(meta.get(cards::POST_SCHEDULED_FOR_KEY).is_none());
+    }
+
+    #[test]
+    fn card_update_merges_metadata_without_clobbering_unrelated_keys() {
+        let existing = serde_json::json!({
+            "channel": "x",
+            cards::POST_STATUS_KEY: "draft",
+        });
+        let merged = merge_social_post_metadata(
+            "social_post",
+            &existing,
+            Some("2026-08-20T12:00:00Z"),
+            Some("scheduled"),
+        )
+        .unwrap();
+        assert_eq!(merged["channel"], "x");
+        assert_eq!(
+            merged[cards::POST_SCHEDULED_FOR_KEY],
+            "2026-08-20T12:00:00Z"
+        );
+        assert_eq!(merged[cards::POST_STATUS_KEY], "scheduled");
+    }
+
+    #[test]
+    fn card_update_rejects_schedule_on_non_social_post() {
+        let err = merge_social_post_metadata(
+            "goal",
+            &serde_json::json!({}),
+            Some("2026-08-15T18:00:00Z"),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("social_post") && err.contains("goal"),
+            "unexpected: {err}"
+        );
+    }
 }
