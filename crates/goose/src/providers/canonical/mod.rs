@@ -1,12 +1,14 @@
 mod cost;
 mod model;
 mod name_builder;
+pub mod published_prices;
 mod registry;
 
 pub use cost::{cache_hit_rate_of, cache_savings_of, cost_breakdown, cost_of, CostBreakdown};
 pub use model::{CanonicalModel, Limit, Modalities, Modality, Pricing};
 pub use name_builder::{
-    canonical_name, map_provider_name, map_to_canonical_model, strip_version_suffix,
+    canonical_name, infer_provider_from_model, map_provider_name, map_to_canonical_model,
+    strip_version_suffix,
 };
 pub use registry::CanonicalModelRegistry;
 
@@ -72,9 +74,46 @@ pub fn maybe_get_canonical_model(provider: &str, model: &str) -> Option<Canonica
     // map_to_canonical_model returns the canonical ID (provider/model)
     // Parse it to get provider and model parts for registry lookup
     let canonical_id = map_to_canonical_model(provider, model, registry)?;
-    if let Some((canon_provider, canon_model)) = canonical_id.split_once('/') {
-        registry.get(canon_provider, canon_model).cloned()
-    } else {
-        None
+    let (canon_provider, canon_model) = canonical_id.split_once('/')?;
+    let mut found = registry.get(canon_provider, canon_model).cloned()?;
+
+    // Backfill from the hand-maintained table ONLY when the generated one has
+    // no price. A regenerated registry always wins; see `published_prices` for
+    // why an unpriced-but-billable model is a spend-gate failure, not a
+    // cosmetic gap.
+    if found.cost.input.is_none() || found.cost.output.is_none() {
+        if let Some(published) = published_prices::published_pricing(canon_provider, canon_model) {
+            found.cost = published;
+        }
     }
+    Some(found)
+}
+
+/// Resolve a price for a provider/model pair even when the generated registry
+/// has no ROW for it at all — the case that wrote 211 zero-cost ledger entries
+/// on 2026-08-24. Falls back to the hand-maintained published table keyed by the
+/// canonical provider inferred from the model name.
+pub fn maybe_get_pricing(provider: &str, model: &str) -> Option<Pricing> {
+    if let Some(m) = maybe_get_canonical_model(provider, model) {
+        if m.cost.input.is_some() && m.cost.output.is_some() {
+            return Some(m.cost);
+        }
+    }
+    // The configured provider id is often a wrapper around someone else's models
+    // ("custom_deepseek" serving "deepseek-v4-flash"), so try the id as given AND
+    // the provider the model NAME implies — the same inference the canonical
+    // mapper uses when a direct registry lookup misses.
+    let bare = strip_version_suffix(model);
+    let candidates = [
+        Some(map_provider_name(provider)),
+        infer_provider_from_model(&bare),
+    ];
+    for candidate_provider in candidates.into_iter().flatten() {
+        for name in [bare.as_str(), model] {
+            if let Some(p) = published_prices::published_pricing(candidate_provider, name) {
+                return Some(p);
+            }
+        }
+    }
+    None
 }

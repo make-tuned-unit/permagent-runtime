@@ -17,7 +17,7 @@ use crate::cost_router::cache::SystemPromptParts;
 use crate::providers::base::stream_from_single_message;
 use crate::providers::base::{MessageStream, Provider, ProviderUsage};
 use crate::providers::canonical::{
-    cache_hit_rate_of, cache_savings_of, cost_breakdown, maybe_get_canonical_model,
+    cache_hit_rate_of, cache_savings_of, cost_breakdown, maybe_get_pricing,
 };
 use crate::providers::errors::ProviderError;
 use crate::providers::toolshim::{
@@ -637,10 +637,14 @@ impl Agent {
         // ledger failure must never abort the agent turn — log and move on.
         let provider = session.provider_name.clone();
         let model = usage.model.clone();
+        // `maybe_get_pricing`, not `maybe_get_canonical_model(..).cost`: the
+        // generated registry has no ROW at all for a newly-selectable model, so
+        // the canonical lookup returns `None` and there is nothing to read a
+        // price off. That is how 128 `deepseek-v4-flash` calls billed as $0.00
+        // on 2026-08-23 — see `providers::canonical::published_prices`.
         let pricing = provider
             .as_deref()
-            .and_then(|p| maybe_get_canonical_model(p, &model))
-            .map(|m| m.cost);
+            .and_then(|p| maybe_get_pricing(p, &model));
         let breakdown = pricing
             .as_ref()
             .and_then(|p| cost_breakdown(&usage.usage, p));

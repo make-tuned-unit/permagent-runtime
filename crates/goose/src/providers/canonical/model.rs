@@ -33,7 +33,7 @@ pub struct Modalities {
     pub output: Vec<Modality>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 pub struct Pricing {
     /// Cost in USD per million input tokens
     #[serde(skip_serializing_if = "Option::is_none")]

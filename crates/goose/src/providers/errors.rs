@@ -64,6 +64,147 @@ impl ProviderError {
     pub fn is_endpoint_not_found(&self) -> bool {
         matches!(self, ProviderError::EndpointNotFound(_))
     }
+
+    /// Is this a PERMANENT client-side failure — one that will fail identically
+    /// on every retry, no matter how long we wait?
+    ///
+    /// Observed 2026-08-23 (session 20260823_4): Anthropic returned HTTP 400
+    /// `invalid_request_error` — "Your credit balance is too low to access the
+    /// Anthropic API" — on every request. The retry layer treated it exactly
+    /// like a transient timeout: 3/3 retries with exponential backoff, ~8s of
+    /// dead wall-clock per turn, three identical WARN lines, and then the raw
+    /// API error read out to the user. A depleted balance does not refill
+    /// because we slept 4 seconds.
+    ///
+    /// Permanent: auth (401/403), billing/credit (402 and the 400 variants
+    /// providers use for it), a malformed request (400 `invalid_request_error`),
+    /// a model that does not exist (404), and a payload over the limit (413 —
+    /// surfaced as `ContextLengthExceeded`). Transient — and therefore NOT
+    /// permanent: 408, 429, every 5xx, and remote network failures.
+    pub fn is_permanent(&self) -> bool {
+        match self {
+            ProviderError::Authentication(_)
+            | ProviderError::CreditsExhausted { .. }
+            | ProviderError::ContextLengthExceeded(_)
+            | ProviderError::EndpointNotFound(_)
+            | ProviderError::NotImplemented(_) => true,
+            ProviderError::RequestFailed(msg) => is_permanent_client_message(msg),
+            _ => false,
+        }
+    }
+
+    /// A short, human sentence safe to show a user or read aloud — never the
+    /// raw provider payload. `raw` bodies carry request ids, model ids, JSON
+    /// braces and support URLs; session 20260823_4 read one of those out loud.
+    pub fn user_facing_summary(&self) -> String {
+        match self {
+            ProviderError::CreditsExhausted { .. } => {
+                "the provider rejected the request for billing reasons (credit balance too low)"
+                    .to_string()
+            }
+            ProviderError::Authentication(_) => {
+                "the provider rejected the API key for this model".to_string()
+            }
+            ProviderError::ContextLengthExceeded(_) => {
+                "the conversation is too long for this model's context window".to_string()
+            }
+            ProviderError::RateLimitExceeded { .. } => {
+                "the provider is rate-limiting this model right now".to_string()
+            }
+            ProviderError::ServerError(_) => "the provider had a server error".to_string(),
+            ProviderError::NetworkError(_) => "the provider could not be reached".to_string(),
+            ProviderError::EndpointNotFound(_) => {
+                "that model or endpoint does not exist on this provider".to_string()
+            }
+            _ => "the provider request failed".to_string(),
+        }
+    }
+}
+
+/// Providers disagree on which status code carries "you are out of money".
+/// Anthropic sends HTTP 400 `invalid_request_error` with "credit balance is too
+/// low"; OpenAI sends 429 `insufficient_quota`; others send a plain 402. Match
+/// the *body*, not just the status, so the billing case is recognised wherever
+/// it is sent from.
+///
+/// ## Why the markers are narrow
+///
+/// A bare "billing" substring is NOT enough. OpenAI's ordinary 429 rate-limit
+/// body reads "…Please add a payment method to your account to increase your
+/// rate limit. Visit https://platform.openai.com/account/billing…" — matching on
+/// "billing" there would classify a genuine, retryable rate limit as a permanent
+/// billing failure and stop the turn dead. Every marker below is a phrase that
+/// only appears when the account actually cannot pay, and
+/// [`looks_like_rate_limit`] vetoes the match if the body is also describing a
+/// rate limit.
+pub fn is_billing_message(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    let billing_marker = m.contains("credit balance")
+        || m.contains("insufficient_quota")
+        || m.contains("insufficient credits")
+        || m.contains("insufficient balance")
+        || m.contains("insufficient funds")
+        || m.contains("billing_hard_limit_reached")
+        || m.contains("payment required")
+        || m.contains("purchase credits")
+        || m.contains("plans & billing")
+        || m.contains("exceeded your current quota");
+
+    billing_marker && !looks_like_rate_limit(&m)
+}
+
+/// Does this body describe a THROTTLE rather than an empty account? A throttle
+/// clears by waiting, so it must stay retryable even when the same body also
+/// mentions payment.
+fn looks_like_rate_limit(lowercased: &str) -> bool {
+    // "exceeded your current quota" is OpenAI's out-of-money phrasing and never
+    // appears in a throttle body, so it wins outright.
+    if lowercased.contains("exceeded your current quota")
+        || lowercased.contains("insufficient_quota")
+    {
+        return false;
+    }
+    lowercased.contains("rate limit")
+        || lowercased.contains("rate_limit")
+        || lowercased.contains("try again in")
+        || lowercased.contains("requests per")
+        || lowercased.contains("tokens per")
+        || lowercased.contains("too many requests")
+}
+
+/// An auth rejection that a provider chose to send as something other than a
+/// 401/403 (some send 400 `authentication_error`, some say "invalid x-api-key").
+fn is_auth_message(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    m.contains("authentication_error")
+        || m.contains("permission_error")
+        || m.contains("invalid api key")
+        || m.contains("invalid x-api-key")
+        || m.contains("invalid_api_key")
+}
+
+/// Message-level classification for the `RequestFailed` catch-all, which is
+/// where 4xx bodies land once the status code has been discarded.
+fn is_permanent_client_message(msg: &str) -> bool {
+    if is_billing_message(msg) || is_auth_message(msg) {
+        return true;
+    }
+    let m = msg.to_ascii_lowercase();
+    // A 400 the provider itself labelled "invalid request" is deterministic:
+    // the same bytes produce the same rejection forever.
+    m.contains("invalid_request_error")
+        || m.contains("bad request (400)")
+        || m.contains("status: 400")
+        || m.contains("status 400")
+        // A model/route that does not exist will not appear because we waited.
+        || m.contains("resource not found (404)")
+        || m.contains("model_not_found")
+        || m.contains("status: 404")
+        || m.contains("status 404")
+        // Payload too large is a property of the request, not of the moment.
+        || m.contains("(413)")
+        || m.contains("status: 413")
+        || m.contains("status 413")
 }
 
 fn is_network_error(err: &reqwest::Error) -> bool {
