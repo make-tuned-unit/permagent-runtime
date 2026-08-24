@@ -147,6 +147,40 @@ mod tests {
     /// into Settings (Spend / Sovereignty / Models / Autonomy). The catalog
     /// must no longer offer it, or the agent would navigate users to a surface
     /// the app doesn't mount.
+    /// The Financier is a seeded sidebar tab, so `navigate_app("Financier")`
+    /// must resolve — the exact wiring gap that made `navigate_app("Grow")` a
+    /// dead end. Its `tool_type` must also match the `ToolType` the frontend
+    /// renderer keys on, or the tab opens onto "Unknown tool".
+    #[test]
+    fn the_financier_tab_is_navigable() {
+        let catalog: AppCatalog =
+            serde_yaml::from_str(CATALOG_YAML).expect("catalog.yaml must parse");
+        let financier = catalog
+            .find_by_name("Financier")
+            .expect("Financier must be in the navigate_app catalog");
+        assert_eq!(financier.tool_type, "financier");
+        assert_eq!(financier.panel_type, "workspace");
+    }
+
+    /// Spend moved OUT of Settings and onto the Financier tab. The catalog is
+    /// what the agent reads to decide where to send the user, so a stale
+    /// "Spend section" claim here would route someone to a pane that no longer
+    /// exists — the same class of defect as the retired Governance entry below.
+    #[test]
+    fn settings_no_longer_advertises_a_spend_section() {
+        let catalog: AppCatalog =
+            serde_yaml::from_str(CATALOG_YAML).expect("catalog.yaml must parse");
+        let settings = catalog
+            .find_by_name("Settings")
+            .expect("Settings must be in the catalog");
+        for affordance in &settings.affords {
+            assert!(
+                !affordance.contains("Spend section"),
+                "Settings must not offer a Spend section it no longer has: {affordance}"
+            );
+        }
+    }
+
     #[test]
     fn governance_is_gone_from_the_catalog() {
         let catalog: AppCatalog =

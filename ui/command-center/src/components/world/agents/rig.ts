@@ -278,6 +278,7 @@ export type RigVariant =
   | 'watcher'
   | 'steward'
   | 'strix'
+  | 'financier'
   | null;
 
 /**
@@ -286,7 +287,9 @@ export type RigVariant =
  * recognizable equipment merged into the SAME channel draw calls (zero extra
  * cost): Henry a presiding collar + chest core, the Librarian a satchel and
  * spine-rack of books, the Reader a scanning arc + cyclops lens, the Watcher a
- * vigil antenna + extra eyes, the Steward a groundskeeper yoke + key ring.
+ * vigil antenna + extra eyes, the Steward a groundskeeper yoke + key ring, the
+ * Guard a hooded brow + forearm scanner, the Financier a ledger tablet and the
+ * balance it reads by.
  */
 function gearChunks(
   variant: RigVariant,
@@ -403,6 +406,31 @@ function gearChunks(
       trim.push({ geo: torus(0.11, 0.012, 5, 16), p: [0, 1.5, 0], r: [1.57, 0, 0], bone: 'spine' });
       // The scanning lens — emissive, driven by state.
       state.push({ geo: sphere(0.035, 8, 6), p: [0, -0.28, 0.11], bone: 'armL' });
+      break;
+    }
+    case 'financier': {
+      // The ledger-keeper: a ruled tablet clipped to the left forearm, a balance
+      // beam yoked across the shoulder blades with a pan hanging at each end,
+      // and a stack of counters at the right hip.
+      //
+      // Nothing here touches the STATE channel, unlike the Guard's scanner lens.
+      // No daemon event reports this agent working, so its presence is
+      // sim-ambient (roster.ts); a part that lit up would be glowing at invented
+      // activity rather than at anything a wire actually carries.
+      metal.push(
+        // Ledger tablet, face out on the forearm.
+        { geo: box(0.16, 0.2, 0.02), p: [0.5, 0.82, 0.07], r: [0, -0.22, 0.06], bone: 'foreL', color: DARK },
+        // Balance beam across the back, with a hanger and a pan at each end.
+        { geo: cyl(0.008, 0.008, 0.46, 6), p: [0, 1.66, -0.13], r: [0, 0, Math.PI / 2], bone: 'spine', color: BRONZE },
+        { geo: cyl(0.004, 0.004, 0.1, 4), p: [0.22, 1.61, -0.13], bone: 'spine', color: BRONZE },
+        { geo: cyl(0.004, 0.004, 0.1, 4), p: [-0.22, 1.61, -0.13], bone: 'spine', color: BRONZE },
+        { geo: cyl(0.05, 0.032, 0.02, 10), p: [0.22, 1.55, -0.13], bone: 'spine', color: BRONZE },
+        { geo: cyl(0.05, 0.032, 0.02, 10), p: [-0.22, 1.55, -0.13], bone: 'spine', color: BRONZE },
+        // Stack of counters on the right hip.
+        { geo: cyl(0.045, 0.045, 0.06, 10), p: [-0.21, 0.7, 0.07], r: [0, 0, 0.14], bone: 'spine', color: GUN },
+      );
+      // Identity trim: the ruled line down the tablet's face.
+      trim.push({ geo: box(0.13, 0.01, 0.008), p: [0.5, 0.87, 0.085], r: [0, -0.22, 0.06], bone: 'foreL' });
       break;
     }
   }

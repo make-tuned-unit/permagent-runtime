@@ -753,6 +753,45 @@ export interface CrashExportResponse {
   content: string;
 }
 
+// ── The Financier ────────────────────────────────────────────────────────
+/** A quote as read at one moment (GET /api/finance/quote). Every field except
+ *  the symbol is optional and stays optional here: the upstream shape is not
+ *  contractual, and a missing field must render as "not reported" rather than
+ *  as a zero. A zero price is a wrong number, and wrong numbers about money
+ *  are worse than none. */
+export interface Quote {
+  symbol: string;
+  name?: string | null;
+  currency?: string | null;
+  exchange?: string | null;
+  price?: number | null;
+  previous_close?: number | null;
+  change?: number | null;
+  change_percent?: number | null;
+  day_high?: number | null;
+  day_low?: number | null;
+  fifty_two_week_high?: number | null;
+  fifty_two_week_low?: number | null;
+  volume?: number | null;
+  quoted_at?: string | null;
+  market_closed: boolean;
+}
+
+/** Where the Financier's inference would run right now
+ *  (GET /api/finance/routing). `cloud_consent_key` travels on the wire so the
+ *  client never hard-codes a config key — the same rule the agent gate rows
+ *  follow. */
+export interface FinancierRouting {
+  kind: 'on_device' | 'local_ollama' | 'cloud' | 'refused';
+  provider?: string | null;
+  model?: string | null;
+  is_local: boolean;
+  statement: string;
+  cloud_allowed: boolean;
+  cloud_consent_key: string;
+  enabled: boolean;
+}
+
 /** One row of the cloud-egress audit log (GET /api/security/egress-log). */
 export interface EgressLogEntry {
   id: string;
@@ -1133,6 +1172,24 @@ export const api = {
     apiFetch<SovereigntyStatus>('/api/security/sovereignty', {
       method: 'POST',
       body: JSON.stringify(body),
+    }),
+
+  /** Where the Financier's inference would run right now. */
+  getFinancierRouting: () => apiFetch<FinancierRouting>('/api/finance/routing'),
+
+  /** One live quote. Rejects (never resolves to a blank quote) when the fetch
+   *  failed or the data boundary refused it — the caller must show the reason,
+   *  not an empty row that reads as "nothing to report". */
+  getQuote: (symbol: string) =>
+    apiFetch<Quote>(`/api/finance/quote?symbol=${encodeURIComponent(symbol)}`),
+
+  /** Flip one extension's enabled bit — the SAME `extensions.<key>.enabled`
+   *  that `is_extension_enabled` reads and that a new session is filtered on.
+   *  There is one route for this and every surface offering the switch calls
+   *  it, so a second source of truth cannot appear. */
+  setExtensionEnabled: (name: string, enabled: boolean) =>
+    apiFetch<string>(`/config/extensions/${encodeURIComponent(name)}/enabled`, {
+      method: 'POST', body: JSON.stringify({ enabled }),
     }),
 
   /** Recent cloud-egress audit entries (everything that has left this machine). */

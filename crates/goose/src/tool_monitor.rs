@@ -488,13 +488,19 @@ fn test_gaming_message(test_paths: &[String]) -> String {
 
 /// The deny text for a session over its spend ceiling. It must not tell the
 /// user to answer anything in the Decision Inbox: nothing in the codebase
-/// handles the spend-gate choice options, so raising the ceiling in Settings is
-/// the only action that actually lets the run continue.
+/// handles the spend-gate choice options, so raising the ceiling is the only
+/// action that actually lets the run continue.
+///
+/// The ceilings live on the **Financier tab** (2026-08-19). They were on
+/// Settings → Spend, and this message still said so after that pane was
+/// removed — sending a blocked user to a page that no longer exists. The
+/// destination named here has to be re-checked whenever the budget editor
+/// moves, which is what the assertion in `budget_block_message` tests pins.
 fn budget_block_message(verdict: crate::cost_router::budget::BudgetVerdict) -> String {
     let mut msg = format!(
         "BLOCKED by the spend ceiling: this {} has spent ${:.2}, which crossed the \
          ${:.2} ceiling. No further tools will run and all work so far is preserved. \
-         Raise the ceiling in Settings → Spend to continue.",
+         Raise the ceiling on the Financier tab to continue.",
         verdict.scope.word(),
         verdict.spent,
         verdict.crossed,
@@ -2142,8 +2148,9 @@ diff --git a/tests/math_tests.rs b/tests/math_tests.rs
         assert!(
             budget_msg.contains("$5.00")
                 && budget_msg.contains("ceiling")
-                && budget_msg.contains("Settings → Spend"),
-            "budget deny must name the dollar figure, ceiling, and Settings, got: {budget_msg}"
+                && budget_msg.contains("Financier tab"),
+            "budget deny must name the dollar figure, the ceiling, and where to raise it, \
+             got: {budget_msg}"
         );
         assert!(
             budget_msg.contains("No further tools will run") && budget_msg.contains("preserved"),

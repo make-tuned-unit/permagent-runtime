@@ -27,6 +27,24 @@
 //!
 //! This is deliberately a *research* source, not an execution source. Nothing
 //! in this module can place an order.
+//!
+//! ## Every read crosses the sovereignty boundary first
+//!
+//! A ticker is not neutral traffic. Asking for a quote on a symbol discloses
+//! what the user holds, or is thinking about holding, to whoever is on the
+//! other end — and the symbol has to travel in the URL for the request to mean
+//! anything, so it cannot be hidden. What it CAN be is recorded: both fetches
+//! below call [`crate::sovereignty::guard_outbound_egress`] before a client
+//! exists, which writes an append-only local audit row
+//! ([`crate::sovereignty::EgressKind::MarketData`]) naming the destination and
+//! the symbol, and which returns `false` under sovereign mode so the read is
+//! refused rather than sent. That is the same boundary and the same audit
+//! store every other outbound path in this codebase uses; there is no second
+//! one.
+//!
+//! The refusal is deliberately not softened into an empty result. A user who
+//! turned the boundary on and got back "no data" would reasonably conclude the
+//! source was down; they are told instead that their own setting stopped it.
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -140,6 +158,21 @@ pub async fn fundamentals(
     // which an unauthenticated request is attempted.
     let key = fundamentals_key().ok_or(FundamentalsError::NotConfigured)?;
     let symbol = normalize_symbol(symbol).map_err(FundamentalsError::Failed)?;
+    // After the key check on purpose: with no key configured nothing was ever
+    // going to be sent, and auditing a request that does not happen would put
+    // a row in the log that misrepresents what left the machine.
+    if !crate::sovereignty::guard_outbound_egress(
+        crate::sovereignty::EgressKind::MarketData,
+        FUNDAMENTALS_URL,
+        &symbol,
+    )
+    .await
+    {
+        return Err(FundamentalsError::Failed(egress_refused_message(
+            &symbol,
+            "financialdatasets.ai",
+        )));
+    }
     // `^` is legal in a ticker (`^GSPC`) and must be percent-encoded, so the
     // query is built by the URL parser rather than string-formatted.
     let limit = limit.to_string();
@@ -181,6 +214,25 @@ pub async fn fundamentals(
         ))
     })?;
     parse_fundamentals(&body, &symbol).map_err(FundamentalsError::Failed)
+}
+
+/// Why a market-data read did not happen, in the user's own terms.
+///
+/// [`crate::sovereignty::guard_outbound_egress`] returns `false` for two
+/// distinct reasons — sovereign mode is on, or the audit row could not be
+/// written — and this codebase's standing rule is that different causes get
+/// different sentences. The distinction is not observable from the boolean, so
+/// this names both rather than guessing at one, and it says plainly that
+/// nothing was sent. A caller must never fall back to a remembered price here:
+/// the whole point of the refusal is that no number was obtained.
+fn egress_refused_message(symbol: &str, destination: &str) -> String {
+    format!(
+        "{} did not read {symbol} from {destination}: the request was refused at the data \
+         boundary before anything was sent — either sovereign mode is on (Settings > \
+         Sovereignty) or the egress audit could not be written, and an unrecorded read is not \
+         allowed. No price or statement was retrieved, so none can be reported.",
+        crate::sovereignty::SOVEREIGN_BLOCK_PREFIX
+    )
 }
 
 /// A non-2xx from the fundamentals source, put into words. A rejected
@@ -318,6 +370,16 @@ pub struct Quote {
 /// say so rather than substituting anything it remembers.
 pub async fn quote(symbol: &str) -> Result<Quote, String> {
     let symbol = normalize_symbol(symbol)?;
+    // Before any client exists, so a refusal cannot race a request.
+    if !crate::sovereignty::guard_outbound_egress(
+        crate::sovereignty::EgressKind::MarketData,
+        QUOTE_BASE,
+        &symbol,
+    )
+    .await
+    {
+        return Err(egress_refused_message(&symbol, "the market data source"));
+    }
     let client = reqwest::Client::builder()
         .timeout(TIMEOUT)
         .user_agent(USER_AGENT)
@@ -717,5 +779,42 @@ mod tests {
             statements: Vec::new(),
         });
         assert!(empty.contains("NOT evidence"), "{empty}");
+    }
+
+    /// A boundary refusal must name BOTH causes and must not imply a number
+    /// was obtained. The failure this guards against is a caller — or the
+    /// model reading the message — treating "refused" as "no data found" and
+    /// filling the gap from memory, which is how a months-stale price gets
+    /// reported as today's.
+    #[test]
+    fn the_refusal_message_names_both_causes_and_claims_no_number() {
+        let message = egress_refused_message("SYMB", "the market data source");
+        assert!(
+            message.starts_with(crate::sovereignty::SOVEREIGN_BLOCK_PREFIX),
+            "{message}"
+        );
+        assert!(message.contains("SYMB"), "{message}");
+        assert!(message.contains("sovereign mode"), "{message}");
+        assert!(message.contains("egress audit"), "{message}");
+        assert!(
+            message.contains("was not sent") || message.contains("before anything was sent"),
+            "{message}"
+        );
+        assert!(message.contains("none can be reported"), "{message}");
+    }
+
+    /// The audited destination is the endpoint constant, never a URL with the
+    /// key in it. `FUNDAMENTALS_URL` is the bare endpoint and the credential
+    /// travels in a header, so an audit row can never carry the secret — but
+    /// this pins it, because the audit store is readable in the UI.
+    #[test]
+    fn the_audited_destinations_carry_no_credential() {
+        for destination in [QUOTE_BASE, FUNDAMENTALS_URL] {
+            assert!(
+                !destination.contains('?'),
+                "{destination} must have no query string"
+            );
+            assert!(!destination.to_lowercase().contains("key"), "{destination}");
+        }
     }
 }

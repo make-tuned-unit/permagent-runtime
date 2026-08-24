@@ -31,6 +31,11 @@ export const ICON_PATHS: Record<string, string> = {
   /** Automate — a lightning bolt, the convention shared by every automation
    *  tool the user has met (Shortcuts, Zapier, IFTTT). */
   bolt: 'M13 2L4 14h6l-1 8 9-12h-6z',
+  /** Financier — a balance scale. Picked over a dollar sign (this tab reports
+   *  in whatever currency the source quotes, and a `$` would be a claim about
+   *  one) and over a bar chart, which at 18px is another abstract rectangle in
+   *  a rail that already had too many. */
+  scale: 'M12 4v16M7 20h10M12 6l-6 2 3 5a3 3 0 006 0l-3-5zM12 6l6 2-3 5a3 3 0 01-6 0l3-5z',
 
   // ── Legacy keys ──────────────────────────────────────────────────────────
   // Still present in existing databases (the workspaces.icon column persists
@@ -62,6 +67,7 @@ const CANONICAL_ICON_BY_NAME: Record<string, string> = {
   Automate: 'bolt',
   World: 'globe',
   Brain: 'brain',
+  Financier: 'scale',
 };
 
 /**

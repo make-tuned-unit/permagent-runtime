@@ -52,6 +52,16 @@ export const AGENT_TRIM = {
   // available cyan, error red) — identity must never read as a state, and a
   // security agent must never be mistaken for an alarm.
   strix: '#8C4A5C',
+  // The Financier — the ledger-keeper: it reads spend and books the numbers, it
+  // does not move money. Ledger-ink indigo, the blue-black of ruled columns.
+  // Occupies the one wide gap left in the trim wheel (~230deg): every other
+  // AGENT_TRIM entry sits in the warm arc (henry cream, aria amber, felix pink,
+  // librarian grey-brown, strix oxblood), the greens/teals (steward, reader) or
+  // the violets (nova), and the nearest neighbour — the Watcher's #9FB8D8 — is a
+  // pale, washed-out steel blue against this saturated deep one. It is also far
+  // from every STATE colour (idle grey #8A94A6, working amber, available cyan,
+  // error red), because identity must never read as a state.
+  financier: '#4E5BB8',
 } as const;
 
 export type AgentHudState = keyof typeof STATE;

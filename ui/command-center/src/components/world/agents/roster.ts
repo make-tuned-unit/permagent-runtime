@@ -115,6 +115,25 @@ export const ROSTER: AgentIdentity[] = [
     home: { x: 8.6, y: 0, z: 5.4 },
     weathering: 0.3,
   },
+  {
+    // The Financier — the ledger-keeper: it reads what the fleet spends and
+    // books the numbers, and it never moves money. Unlike the Guard it has NO
+    // live wire: nothing in the daemon emits agent_state_changed for it, so its
+    // presence here is sim-ambient like the Reader/Watcher/Steward and the §4
+    // clamp holds it to idle/available. It cannot show a working pose, because
+    // nothing tells this view when it is working. Home takes the last free
+    // quadrant, mirroring the Guard across the rotunda on the -x/+z side.
+    id: 'financier',
+    name: 'The Financier',
+    role: 'agent',
+    trimColor: AGENT_TRIM.financier,
+    isHenry: false,
+    mezzanineLocked: false,
+    home: { x: -8.2, y: 0, z: 6.1 },
+    // Indoor work at a desk — less worn than the Steward (0.35) out on the
+    // grounds or the Guard (0.3) on sweeps, more than the freshly-built Reader.
+    weathering: 0.2,
+  },
 ];
 
 export function getIdentity(id: string): AgentIdentity | undefined {

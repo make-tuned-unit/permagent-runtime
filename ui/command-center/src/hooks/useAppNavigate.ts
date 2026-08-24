@@ -117,7 +117,7 @@ export function dispatchOpenItem(payload: {
 // (setActivePanel) instead. Listing 'trace' here made navigate_app("Trace")
 // fall into the tool-host search, which no-ops because nothing hosts it.
 const VALID_TOOL_TYPES = new Set<string>([
-  'chat', 'skills', 'world', 'terminal', 'browser', 'memory', 'dashboard', 'build', 'automate', 'projects', 'grow',
+  'chat', 'skills', 'world', 'terminal', 'browser', 'memory', 'dashboard', 'build', 'automate', 'projects', 'grow', 'financier',
 ]);
 
 /** Legacy Console overlay tool_types → the Settings section that replaced
@@ -127,7 +127,6 @@ const LEGACY_OVERLAY_SECTIONS: Record<string, string> = {
   sessions: 'sessions',
   inbox: 'inbox',
   trace: 'activity',
-  governance: 'spend',
 };
 
 /**

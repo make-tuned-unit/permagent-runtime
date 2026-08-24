@@ -63,6 +63,14 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
             Ok(false) => {}
             Err(e) => tracing::warn!("Failed to add Grow workspace: {}", e),
         }
+        // Additive migration: ensure the Financier workspace exists for
+        // existing users. The seed above only fires on a database with no
+        // workspaces at all, so without this the tab reaches new installs only.
+        match permagent::workspaces::ensure_financier_workspace(&pool).await {
+            Ok(true) => info!("Added Financier workspace for existing user"),
+            Ok(false) => {}
+            Err(e) => tracing::warn!("Failed to add Financier workspace: {}", e),
+        }
         // Normalize preset sidebar order to the code-owned canon (runs every
         // start; user-created workspaces untouched).
         match permagent::workspaces::ensure_canonical_workspace_order(&pool).await {

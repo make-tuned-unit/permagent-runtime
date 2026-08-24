@@ -22,7 +22,6 @@ import { makeQrMatrix } from '../../lib/qrMatrix';
 import { SessionsList } from '../sessions/SessionsList';
 import { InboxPanel } from '../inbox/InboxPanel';
 import { ExecutionTrace } from '../trace/ExecutionTrace';
-import { SpendPanel } from './SpendPanel';
 import { AgentsPanel } from './agents/AgentsPanel';
 import { FeaturesPanel } from './features/FeaturesPanel';
 import { timeAgo } from './format';
@@ -71,7 +70,6 @@ const CATEGORIES = [
     { key: 'sessions',    label: 'Sessions',         icon: 'M3 12a9 9 0 109-9 9.75 9.75 0 00-6.74 2.74L3 8M3 3v5h5M12 7v5l4 2' },
     { key: 'inbox',       label: 'Inbox',            icon: 'M22 12h-6l-2 3h-4l-2-3H2M5.45 5.11L2 12v6a2 2 0 002 2h16a2 2 0 002-2v-6l-3.45-6.89A2 2 0 0016.76 4H7.24a2 2 0 00-1.79 1.11z' },
     { key: 'activity',    label: 'Activity',         icon: 'M22 12h-4l-3 9L9 3l-3 9H2' },
-    { key: 'spend',       label: 'Spend',            icon: 'M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6' },
   ]},
   { group: 'Connections', items: [
     { key: 'tools',       label: 'Tools & MCPs',     icon: 'M14.7 6.3a1 1 0 011.4 0l1.6 1.6a1 1 0 010 1.4l-9 9-3 .6.6-3 9-9.6zM3 21h18' },
@@ -325,8 +323,16 @@ export function ApprovalsStrip() {
   );
 }
 
-export function AutonomyPanel({ goto }: { goto?: (key: string) => void }) {
+// `goto` is deliberately gone: this panel's only cross-link used to be the
+// spend-cap pointer, and spend is no longer a Settings section at all — it
+// navigates to the Financier WORKSPACE, which `goto` (a settings-section
+// switcher) cannot express. Keeping an unused prop would leave the next reader
+// thinking there is still a settings pane on the other end of it.
+export function AutonomyPanel() {
   const { colors } = useThemeHook();
+  // Set only when the Financier tab could not be reached, so the pointer below
+  // reports a dead end instead of appearing to do nothing.
+  const [spendNavError, setSpendNavError] = useState<string | null>(null);
   // Trust level is REAL (2026-07-10 audit): it reads/writes the daemon's
   // GOOSE_MODE, which gates tool-call approval in the agent loop.
   const [trust, setTrust] = useState<string | null>(null);
@@ -431,11 +437,26 @@ export function AutonomyPanel({ goto }: { goto?: (key: string) => void }) {
           </div>
         )}
       </Section>
-      {/* Spend caps moved to Settings → Spend (which supersedes the old
-          sliders here with the full soft/gate/hard ceilings for both scopes),
-          so there is exactly one writer of the budget. */}
-      <Section title="Spend caps" sub="The session and per-task ceilings the cost router enforces now live on the Spend page, alongside everything you have spent.">
-        <button style={ghost(colors)} onClick={() => goto?.('spend')}>Set spend caps in Spend →</button>
+      {/* Spend caps live with the money, on the Financier tab — they moved
+          out of here (the old sliders) to Settings → Spend and then out of
+          Settings entirely, so there is exactly one writer of the budget. This
+          is a pointer, not a second control: it navigates, it does not write.
+          `navigateToTool` returns false when no workspace hosts the tab, and
+          that is reported rather than silently doing nothing. */}
+      <Section title="Spend caps" sub="The session and per-task ceilings the cost router enforces live on the Financier tab, alongside everything you have spent.">
+        <button
+          style={ghost(colors)}
+          onClick={() => {
+            if (!navigateToTool('financier')) {
+              setSpendNavError('The Financier tab is not in your sidebar. Restart the app to have it added.');
+            }
+          }}
+        >
+          Open the Financier →
+        </button>
+        {spendNavError && (
+          <div style={{ marginTop: 10, fontSize: 12, color: colors.danger }}>{spendNavError}</div>
+        )}
       </Section>
     </div>
   );
@@ -1437,22 +1458,13 @@ function ActivityPane() {
   );
 }
 
-function SpendPane() {
-  return (
-    <div>
-      <H1 sub="What you run costs money — everything you have spent, per project and per session, plus the caps the cost router enforces. Enforced locally, not by a cloud admin.">Spend</H1>
-      <SpendPanel />
-    </div>
-  );
-}
-
 const PANELS: Record<string, (props: PanelProps) => JSX.Element> = {
   agent: PersonaPanel, preferences: PreferencesPanel,
   memory: MemoryPanel, autonomy: AutonomyPanel, tools: ToolsPanel,
   models: ModelsPanel, keys: KeysPanel, devices: DevicesPanel, search: SearchPanel,
   appearance: AppearancePanel, shortcuts: ShortcutsPanel, data: DataPanel,
   sovereignty: SovereigntyPanel,
-  sessions: SessionsPane, inbox: InboxPane, activity: ActivityPane, spend: SpendPane,
+  sessions: SessionsPane, inbox: InboxPane, activity: ActivityPane,
   agents: AgentsPanel,
   features: FeaturesPanel,
 };

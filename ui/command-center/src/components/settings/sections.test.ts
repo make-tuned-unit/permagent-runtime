@@ -33,6 +33,15 @@ describe('resolveSettingsSection', () => {
     expect(resolveSettingsSection('does-not-exist')).toBe(DEFAULT_SETTINGS_SECTION);
   });
 
+  it('degrades the retired "spend" deep-link instead of opening a dead pane', () => {
+    // Spend moved to the Financier tab (2026-08-19) and is no longer a Settings
+    // section. A stale deep-link — from an older catalog, a saved link, or a
+    // model that remembers the old layout — must land somewhere real. Landing
+    // on a pane key with no component behind it is a blank screen.
+    expect(SETTINGS_SECTION_KEYS).not.toContain('spend');
+    expect(resolveSettingsSection('spend')).toBe(DEFAULT_SETTINGS_SECTION);
+  });
+
   it('every declared pane key resolves to itself', () => {
     for (const key of SETTINGS_SECTION_KEYS) {
       expect(resolveSettingsSection(key)).toBe(key);

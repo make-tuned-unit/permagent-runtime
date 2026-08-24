@@ -68,21 +68,20 @@ tabs:
     description: >-
       The Settings tab is where providers, models, appearance, and scheduling
       defaults are configured. It also hosts the Console pages (Sessions,
-      Inbox, Activity/trace, Spend) and the sovereign controls — spend and
-      budget, the sovereignty data boundary with its egress audit log, the
-      worker roster, the Guard's security-sweep toggle, and the Features
-      switches for the off-by-default workers.
+      Inbox, Activity/trace) and the sovereign controls — the sovereignty data
+      boundary with its egress audit log, the worker roster, the Guard's
+      security-sweep toggle, and the Features switches for the off-by-default
+      workers. Spend and budget are NOT here any more: they moved to the
+      Financier tab.
     affords:
       - Configure AI provider (Anthropic, OpenAI, Ollama)
       - Adjust appearance / theme
       - Set Librarian schedule
-      - Review spend per project/session and set budget caps (Spend section)
       - Toggle the data boundary and read the egress audit log (Sovereignty section)
       - Enable or disable the Guard's security sweeps (Models section)
       - Switch on or off Initiative, the Decision Playbook, the Concierge and the Steward's git-health sweep (Features section)
     suggest_when:
       - User asks how to configure a provider, change model, or adjust the Librarian
-      - User asks what something is costing, wants a spend cap, or worries about a bill
       - User asks what data has left the machine or wants to audit egress
       - User asks how to turn on the Concierge, the Playbook, Initiative or the git-health sweep
     customizable_layout: false
@@ -132,6 +131,27 @@ tabs:
     suggest_when:
       - User wants to take a project to market, plan a launch, or draft a post
       - User asks about audience, growth, or content for a project
+    customizable_layout: false
+
+  - name: Financier
+    tool_type: financier
+    panel_type: workspace
+    reads: cost_ledger
+    description: >-
+      The Financier tab is where money lives — what the user's own AI work has
+      cost (per session and per project, from the cost ledger) with the budget
+      ceilings the cost router enforces, a live market read for a single
+      symbol, and the record of which market reads left this machine. It stores
+      no holdings, balances or statements and cannot place an order.
+    affords:
+      - Review what has been spent per project and per session, and set budget caps
+      - Read a live price, day and 52-week range, and volume for one symbol
+      - See where the Financier's own work runs, and allow or refuse cloud use
+      - Read which market data has left this machine
+    suggest_when:
+      - User asks what something is costing, wants a spend cap, or worries about a bill
+      - User asks about a stock price, a ticker, or a company's numbers
+      - User asks where the Financier runs or whether its data leaves the machine
     customizable_layout: false
 
   - name: Inbox

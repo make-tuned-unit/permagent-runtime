@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { api, apiFetch, extractText, extractThinking, fileToBase64, hasToolActivity, readerIngest } from './api';
+import { fallbackWorkspaceId, FINANCE_EXTENSION_KEY, layoutHostsFinancier } from './financeGate';
 import { emitActivity, type ActivityEventName, type ActivitySourceSurface } from './emitActivity';
 import type { SessionSummary, DaemonMessage, SSEEvent, AppContextPayload, TokenState } from './api';
 import { costFromFrame } from './costMeter';
@@ -116,7 +117,7 @@ export type ActivePanel = 'chat' | 'skills' | 'settings' | 'terminal' | 'browser
 
 // ── Workspace types ──
 
-export type ToolType = 'chat' | 'skills' | 'trace' | 'world' | 'terminal' | 'browser' | 'memory' | 'dashboard' | 'build' | 'grow' | 'automate' | 'projects';
+export type ToolType = 'chat' | 'skills' | 'trace' | 'world' | 'terminal' | 'browser' | 'memory' | 'dashboard' | 'build' | 'grow' | 'automate' | 'projects' | 'financier';
 
 export interface LayoutSplit {
   type: 'split';
@@ -197,6 +198,14 @@ interface CommandCenterStore {
    *  (freshest layout / currently-active workspace, not a stale snapshot). */
   retryWorkspaceSave: () => Promise<void>;
   dismissWorkspaceSaveFailure: () => void;
+
+  /**
+   * Whether the `finance` platform extension is enabled. The Financier tab
+   * is hidden until this is an explicit `true` — fail closed on unread.
+   */
+  financeEnabled: boolean;
+  loadFinanceEnabled: () => Promise<void>;
+  setFinanceEnabled: (enabled: boolean) => void;
 
   // --- Connection state ---
   connectionStatus: ConnectionStatus;
@@ -662,7 +671,8 @@ function layoutHasTool(node: LayoutNode, tool: ToolType): boolean {
  * app_navigate handler. Returns false if no workspace hosts the tool.
  */
 export function navigateToTool(tool: ToolType): boolean {
-  const { workspaces, switchWorkspace, setActivePanel } = useCommandCenter.getState();
+  const { workspaces, switchWorkspace, setActivePanel, financeEnabled } = useCommandCenter.getState();
+  if (tool === 'financier' && !financeEnabled) return false;
   const ws = workspaces.find(w => layoutHasTool(w.layoutJson, tool));
   if (!ws) return false;
   setActivePanel('chat');
@@ -701,6 +711,31 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   workspaces: [],
   activeWorkspaceId: null,
   workspacesLoaded: false,
+  financeEnabled: false,
+
+  loadFinanceEnabled: async () => {
+    try {
+      const { extensions } = await api.getExtensions();
+      const finance = extensions.find(e => e.name === FINANCE_EXTENSION_KEY);
+      get().setFinanceEnabled(finance?.enabled === true);
+    } catch {
+      get().setFinanceEnabled(false);
+    }
+  },
+
+  setFinanceEnabled: (enabled) => {
+    set(s => {
+      const next: Partial<CommandCenterStore> = { financeEnabled: enabled };
+      if (!enabled && s.activeWorkspaceId) {
+        const active = s.workspaces.find(w => w.id === s.activeWorkspaceId);
+        if (active && layoutHostsFinancier(active.layoutJson)) {
+          const fallback = fallbackWorkspaceId(s.workspaces);
+          if (fallback) next.activeWorkspaceId = fallback;
+        }
+      }
+      return next;
+    });
+  },
 
   loadWorkspaces: async () => {
     try {

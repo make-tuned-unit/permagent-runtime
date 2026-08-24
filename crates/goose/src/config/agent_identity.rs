@@ -702,6 +702,46 @@ pub fn default_roster() -> HashMap<String, WorkerPersona> {
     );
 
     roster.insert(
+        crate::financier::FINANCIER_ID.to_string(),
+        WorkerPersona {
+            first_name: crate::financier::FINANCIER_NAME.to_string(),
+            role: "Money — reads live quotes and, with an optional key, company financial \
+                   statements, and reports what the user's own AI work is costing from the \
+                   cost ledger. REPORTS numbers only: it never sizes a position and there is \
+                   no tool anywhere in its extension that can place an order"
+                .to_string(),
+            tool_kinds: vec!["research".to_string()],
+            // Narrowed to its own extension. The Financier handles the one
+            // subject the user asked to keep tightest, so it is granted the
+            // finance tools and nothing else — a grant is a subset of what the
+            // session already had (`narrow_extensions_for_agent`), so this can
+            // only take capability away, never add it.
+            extension_grants: Some(vec![
+                crate::agents::platform_extensions::finance::EXTENSION_NAME.to_string(),
+            ]),
+            // "always": the research half needs no key, no account and no local
+            // service — a quote is reachable on a fresh install. Claiming a
+            // dependency here would report the Financier unavailable to
+            // everyone who has not set the optional fundamentals key.
+            availability_check: "always".to_string(),
+            // Its preferred route is on-device or a local Ollama
+            // (`financier::resolve_financier_route`), and it reaches a cloud
+            // model only under a standing permission that is off by default —
+            // so the tier that describes its DEFAULT is the free local one.
+            // Spelled `local_free` because that is the string
+            // `goal_state::cost_tier_rank` scores; "local" is not a tier it
+            // knows and would silently rank as the most expensive rung.
+            cost_tier: "local_free".to_string(),
+            // Registered and describable, not dispatchable for handed-off
+            // goals — the same standing-character shape the Guard and the
+            // Steward use. Nothing runs the Financier on a cadence, and this
+            // is where that is said rather than implied.
+            engine: WorkerEngineKind::Pending,
+            ..Default::default()
+        },
+    );
+
+    roster.insert(
         "permagent".to_string(),
         WorkerPersona {
             first_name: "Permagent".to_string(),
@@ -1319,6 +1359,7 @@ workers:
                 "claude_code",
                 "codex",
                 "cursor",
+                "financier",
                 "librarian",
                 "permagent",
                 "reviewer",
@@ -1353,6 +1394,24 @@ workers:
         assert_eq!(
             roster["claude_code"].availability_check,
             "bin_exists:claude"
+        );
+
+        // The Financier: a standing character, not a dispatch target. Its
+        // research half needs no key and no local service, so it is available
+        // on a fresh install, and its grants are narrowed to its own tools.
+        let financier = &roster[crate::financier::FINANCIER_ID];
+        assert_eq!(financier.first_name, crate::financier::FINANCIER_NAME);
+        assert_eq!(financier.engine, WorkerEngineKind::Pending);
+        assert_eq!(financier.availability_check, "always");
+        // `local_free` and not "local": only the former is a tier
+        // `goal_state::cost_tier_rank` scores, and an unknown string there
+        // ranks as the MOST expensive rung — the opposite of the truth about a
+        // worker whose preferred route is on-device.
+        assert_eq!(financier.cost_tier, "local_free");
+        assert_eq!(
+            financier.extension_grants.as_deref(),
+            Some(&["finance".to_string()][..]),
+            "the Financier is granted its own extension and nothing else"
         );
 
         // Codex: external CLI fast-follow.

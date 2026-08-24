@@ -16,7 +16,16 @@ vi.mock('../../../lib/api', () => ({
     readConfig: vi.fn(),
     upsertConfig: vi.fn(),
     getIntegrations: vi.fn(),
+    getExtensions: vi.fn(),
+    setExtensionEnabled: vi.fn(),
   },
+}));
+
+const store = vi.hoisted(() => ({ setFinanceEnabled: vi.fn() }));
+vi.mock('../../../lib/store', () => ({
+  useCommandCenter: Object.assign(vi.fn(() => ({})), {
+    getState: () => ({ setFinanceEnabled: store.setFinanceEnabled }),
+  }),
 }));
 
 import { FeaturesPanel } from './FeaturesPanel';
@@ -28,6 +37,8 @@ import { GMAIL_CONNECT_COMMAND } from './features';
 const readConfig = vi.mocked(api.readConfig);
 const upsertConfig = vi.mocked(api.upsertConfig);
 const getIntegrations = vi.mocked(api.getIntegrations);
+const getExtensions = vi.mocked(api.getExtensions);
+const setExtensionEnabled = vi.mocked(api.setExtensionEnabled);
 
 let container: HTMLDivElement;
 let root: Root;
@@ -55,8 +66,15 @@ beforeEach(() => {
   readConfig.mockReset();
   upsertConfig.mockReset();
   getIntegrations.mockReset();
+  getExtensions.mockReset();
+  setExtensionEnabled.mockReset();
+  store.setFinanceEnabled.mockReset();
   readConfig.mockImplementation(async (key: string) => key === 'initiative_enabled');
   upsertConfig.mockResolvedValue({});
+  setExtensionEnabled.mockResolvedValue('Enabled extension finance');
+  getExtensions.mockResolvedValue({
+    extensions: [{ enabled: false, type: 'platform', name: 'finance' }],
+  } as never);
   getIntegrations.mockResolvedValue([
     { provider: 'gmail', connected: false, token_present: false },
     { provider: 'slack', connected: false, token_present: false },
@@ -72,7 +90,7 @@ describe('FeaturesPanel', () => {
   // REGRESSION on the Guard's row: `strix_enabled` used to be switchable only
   // from the Models pane, so this pane read four keys and the Guard was not
   // among them. The assertion below fails on that roster.
-  it('reads every config key, the Guard included, and renders one toggle per row', async () => {
+  it('reads every config key plus the finance extension, and renders one toggle per row', async () => {
     await mount();
     const keys = readConfig.mock.calls.map(c => c[0]).sort();
     expect(keys).toEqual([
@@ -82,12 +100,14 @@ describe('FeaturesPanel', () => {
       'steward_scan_enabled',
       'strix_enabled',
     ]);
-    expect(toggles()).toHaveLength(5);
+    expect(getExtensions).toHaveBeenCalled();
+    expect(toggles()).toHaveLength(6);
     expect(container.textContent).toContain('Initiative');
     expect(container.textContent).toContain('Decision Playbook');
     expect(container.textContent).toContain('Concierge');
     expect(container.textContent).toContain('Steward git-health');
     expect(container.textContent).toContain('The Guard');
+    expect(container.textContent).toContain('The Financier');
     // The read-back value is honoured: initiative on, the rest off.
     expect(toggles()[0].style.transform).toBe('');
     const knob = (t: HTMLButtonElement) => (t.firstElementChild as HTMLElement).style.transform;
@@ -140,7 +160,7 @@ describe('FeaturesPanel', () => {
   // toggles()[4] did not exist.
   it('flipping the Guard row writes strix_enabled and nothing else', async () => {
     await mount();
-    expect(toggles()).toHaveLength(5);
+    expect(toggles()).toHaveLength(6);
     await act(async () => { toggles()[4].click(); });
     await flush();
     expect(upsertConfig).toHaveBeenCalledTimes(1);
@@ -159,8 +179,19 @@ describe('FeaturesPanel', () => {
         : Promise.resolve(key === 'initiative_enabled'),
     );
     await mount();
-    expect(toggles()).toHaveLength(4);
+    expect(toggles()).toHaveLength(5);
     expect(container.textContent).toContain('Loading…');
+  });
+
+  it('flipping The Financier writes the finance extension, not a second config key', async () => {
+    await mount();
+    expect(toggles()).toHaveLength(6);
+    await act(async () => { toggles()[5].click(); });
+    await flush();
+    expect(setExtensionEnabled).toHaveBeenCalledTimes(1);
+    expect(setExtensionEnabled).toHaveBeenCalledWith('finance', true);
+    expect(upsertConfig).not.toHaveBeenCalled();
+    expect(store.setFinanceEnabled).toHaveBeenCalledWith(true);
   });
 
   it('links to Settings → Agents for the live roster', async () => {

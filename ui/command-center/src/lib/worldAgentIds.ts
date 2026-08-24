@@ -13,6 +13,7 @@ const WORLD_TO_AGENT_ID: Readonly<Record<string, string>> = {
   watcher: 'watcher',
   steward: 'git_steward',
   strix: 'strix',
+  financier: 'financier',
 };
 
 /**

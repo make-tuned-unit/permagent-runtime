@@ -95,44 +95,50 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
 
 /// Self-knowledge descriptor for the **sovereign controls** in Settings.
 /// The standalone Governance surface was retired (2026-08 ruling) and its
-/// panels folded into Settings: Spend (per-session/per-project cost and the
-/// budget ceilings), Sovereignty (the data-boundary toggle and the egress
-/// audit log), Models (the worker roster and primary-model readout), and
+/// panels folded into Settings: Sovereignty (the data-boundary toggle and the
+/// egress audit log), Models (the worker roster and primary-model readout), and
 /// Autonomy (the pending-approvals strip). Co-located with the sovereignty
 /// spine because the egress-audit "pull-the-cable" viewer is the headline
 /// control. Enforced locally on the user's own machine — not by any cloud
 /// admin.
+///
+/// Spend is NOT in this list any more: cost and the budget ceilings moved to
+/// the Financier tab (2026-08-19). This prose is what the agent tells a user
+/// who asks where to look, so a stale section name here sends them to a pane
+/// that does not exist — the same defect the retired Governance entry caused.
 pub const GOVERNANCE_SURFACE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
     crate::agents::self_knowledge::FeatureDescriptor {
         id: "governance",
         display_name: "Sovereign controls (Settings)",
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
         what_it_does:
-            "The controls the user governs about their own machine, all inside Settings: the \
-             Spend section (per-session and per-project token and dollar consumption drawn from \
-             the cost ledger, a running total, and the optional session and per-task budget \
-             ceilings that gate through the Decision Inbox), the Sovereignty section (the \
+            "The controls the user governs about their own machine, inside Settings: the \
+             Sovereignty section (the \
              on/off data-boundary 'pull the cable' control plus the append-only egress audit \
              log — every cloud INFERENCE call that was allowed or blocked, when, and of what \
              kind; the Guard's code scanner and analytics egress are not in it, so a quiet log \
              is not proof nothing left), the \
              Models section (the active primary model, the worker roster each role can dispatch \
              to, and the Guard's security-sweep toggle), and the Autonomy section (the \
-             pending-approvals strip and the tool-approval trust level itself)",
+             pending-approvals strip and the tool-approval trust level itself). Money is NOT \
+             here: per-session and per-project cost from the cost ledger, the running total, \
+             and the session and per-task budget ceilings all live on the Financier tab",
         why_it_matters:
-            "This is where the user answers 'what is this costing me, what has left my machine, \
-             what am I running, and what needs my sign-off' — on their own terms. When they ask \
-             about spend, want a budget cap, worry about what data left the machine, or ask \
-             which model a role uses, bring them to the matching Settings section (Spend, \
-             Sovereignty, Models, or Autonomy). These are controls the user owns and enforces \
+            "This is where the user answers 'what has left my machine, what am I running, and \
+             what needs my sign-off' — on their own terms. When they worry about what data left \
+             the machine, or ask which model a role uses, bring them to the matching Settings \
+             section (Sovereignty, Models, or Autonomy). When they ask what something is \
+             costing or want a budget cap, take them to the Financier tab instead — that is \
+             where spend and the ceilings live. These are controls the user owns and enforces \
              locally; they are not org administration and not a place other people manage",
         state_source: crate::agents::self_knowledge::StateSource::Static,
         teaching: &[crate::agents::self_knowledge::TeachingStep {
             title: "Open the sovereign controls",
             body: "Show the user the sovereign controls in Settings — the Sovereignty section's \
-                   data boundary and egress audit log, with Spend and the worker roster on \
-                   their neighboring sections — and point out that everything here is enforced \
-                   locally on their machine, not by any cloud admin.",
+                   data boundary and egress audit log, with the worker roster on a neighbouring \
+                   section — and point out that everything here is enforced locally on their \
+                   machine, not by any cloud admin. If what they actually want is spend, that \
+                   is the Financier tab.",
             open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
                 tab: "Settings",
                 section: Some("sovereignty"),
@@ -294,6 +300,14 @@ pub enum EgressKind {
     /// A crash-report upload (no ambient path exists today; a future one must
     /// flow through the same boundary — see [`guard_outbound_egress`]).
     CrashReport,
+    /// A market-data read on the user's behalf — a quote or a company's
+    /// financial statements. Not inference: no prompt and no model is
+    /// involved. It is audited because the *request itself* is the sensitive
+    /// content. A symbol the user asked about discloses what they hold or are
+    /// considering, and it necessarily travels in the URL to reach the data
+    /// source at all, so the honest control is not to hide it but to record
+    /// every such read where the user can see it.
+    MarketData,
 }
 
 impl EgressKind {
@@ -304,6 +318,7 @@ impl EgressKind {
             EgressKind::Telemetry => "telemetry",
             EgressKind::CodeScan => "code_scan",
             EgressKind::CrashReport => "crash_report",
+            EgressKind::MarketData => "market_data",
         }
     }
 }
@@ -612,6 +627,58 @@ mod tests {
             d.why_it_matters.contains("Never try to work around"),
             "must instruct the agent to never circumvent the boundary"
         );
+    }
+
+    /// A market-data read is fail-closed exactly like every other non-inference
+    /// egress: under sovereign mode it is NOT allowed, and an audit row is
+    /// still built with `blocked = true`. "Blocked or allowed" is the whole
+    /// promise of the audit — a refusal that writes no row is half the log
+    /// missing.
+    #[test]
+    fn a_market_data_read_is_planned_fail_closed_like_any_other_egress() {
+        let (allowed, rec) = plan_outbound_egress(
+            EgressKind::MarketData,
+            "https://example.invalid",
+            "SYMB",
+            true,
+        );
+        assert!(!allowed, "sovereign mode must suppress a market-data read");
+        assert!(rec.blocked);
+        assert_eq!(rec.kind.as_str(), "market_data");
+        assert_eq!(rec.provider, "https://example.invalid");
+        assert_eq!(rec.model, "SYMB");
+        // The payload is never captured for a non-inference read: the hash is
+        // of the destination, and no prompt rides along.
+        assert!(rec.prompt.is_none());
+
+        let (allowed, rec) = plan_outbound_egress(
+            EgressKind::MarketData,
+            "https://example.invalid",
+            "SYMB",
+            false,
+        );
+        assert!(allowed);
+        assert!(!rec.blocked, "an allowed read is still recorded");
+    }
+
+    /// Every kind has a distinct wire string. The audit is queried by `kind`
+    /// (the Financier tab narrows to `market_data`), so a collision would make
+    /// one kind of egress render as another.
+    #[test]
+    fn every_egress_kind_has_a_distinct_string() {
+        let kinds = [
+            EgressKind::Inference,
+            EgressKind::Embedding,
+            EgressKind::Telemetry,
+            EgressKind::CodeScan,
+            EgressKind::CrashReport,
+            EgressKind::MarketData,
+        ];
+        let mut seen: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
+        seen.sort_unstable();
+        let count = seen.len();
+        seen.dedup();
+        assert_eq!(seen.len(), count, "egress kind strings must be distinct");
     }
 
     #[test]

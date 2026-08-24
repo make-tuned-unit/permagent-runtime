@@ -433,6 +433,62 @@ pub async fn add_extension(
     }
 }
 
+/// Body of `POST /config/extensions/{name}/enabled`.
+#[derive(Deserialize, ToSchema)]
+pub struct SetExtensionEnabledRequest {
+    pub enabled: bool,
+}
+
+/// Flip one extension's enabled bit — the switch that decides whether a
+/// capability's tools reach a new session at all.
+///
+/// **Why this route exists.** The bit lives at `extensions.<key>.enabled` and
+/// is what `config::is_extension_enabled` reads, which is in turn what the
+/// Agents surface reports and what `get_enabled_extensions` filters a new
+/// session on. Until now the only thing that could WRITE it was the interactive
+/// CLI (`goose configure`): the Tools pane lists extensions read-only, and the
+/// Agents surface's capability rows could only point at that list. So a
+/// capability shipping `default_enabled: false` — the Financier is one — could
+/// be seen but never switched on from the app.
+///
+/// It is deliberately a `/config/extensions/...` route and not an agent-scoped
+/// one. The enabled bit is a property of the extension, not of whoever happens
+/// to be rendering it, so every surface that offers the switch writes the same
+/// key through the same handler and no second source of truth can appear. That
+/// is the same rule the gate flags follow via `/config/upsert`.
+///
+/// A name that matches no extension is a 404 rather than a silent success:
+/// `config::set_extension_enabled` no-ops on an unknown key, and reporting that
+/// as saved would leave the caller believing a switch had moved.
+#[utoipa::path(
+    post,
+    path = "/config/extensions/{name}/enabled",
+    request_body = SetExtensionEnabledRequest,
+    responses(
+        (status = 200, description = "Enabled state updated", body = String),
+        (status = 404, description = "No such extension"),
+    )
+)]
+pub async fn set_extension_enabled_route(
+    Path(name): Path<String>,
+    Json(body): Json<SetExtensionEnabledRequest>,
+) -> Result<Json<String>, ErrorResponse> {
+    let key = permagent::config::extensions::name_to_key(&name);
+    // Known from the platform registry OR from config.yaml. Checking only
+    // config.yaml 404s the first flip of a `default_enabled: false`
+    // capability (the Financier) that migrations have not yet written.
+    if !permagent::config::extension_key_is_known(&key) {
+        return Err(ErrorResponse::not_found(format!(
+            "no extension named '{name}'"
+        )));
+    }
+    permagent::config::set_extension_enabled(&key, body.enabled);
+    Ok(Json(format!(
+        "{} extension {name}",
+        if body.enabled { "Enabled" } else { "Disabled" }
+    )))
+}
+
 #[utoipa::path(
     delete,
     path = "/config/extensions/{name}",
@@ -1571,6 +1627,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/config/extensions", post(add_extension))
         .route("/config/extensions/probe", post(probe_extension))
         .route("/config/extensions/{name}", delete(remove_extension))
+        .route(
+            "/config/extensions/{name}/enabled",
+            post(set_extension_enabled_route),
+        )
         .route("/config/providers", get(providers))
         .route("/config/providers/{name}/models", get(get_provider_models))
         .route("/config/provider-catalog", get(get_provider_catalog))
@@ -1807,6 +1867,18 @@ mod tests {
         assert!(v.get("tool_count").is_none());
         // A clean probe carries no error field noise.
         assert!(v["error"].is_null());
+    }
+
+    /// An unknown name must 404 rather than report success: `set_extension_enabled`
+    /// used to no-op on a missing key, which left a caller believing a switch
+    /// had moved. The Financier is the other half of this pin — it MUST be
+    /// known, even before it has been written to config.yaml.
+    #[test]
+    fn the_enable_route_knows_finance_and_rejects_invented_names() {
+        assert!(permagent::config::extension_key_is_known("finance"));
+        assert!(!permagent::config::extension_key_is_known(
+            "definitely_not_an_extension"
+        ));
     }
 
     /// A secret read is untagged, so the masked struct flattens to the response

@@ -33,6 +33,7 @@ pub mod download_manager;
 pub mod echo;
 pub mod events;
 pub mod execution;
+pub mod financier;
 pub mod gateway;
 pub mod goal_landing;
 pub mod goal_state;

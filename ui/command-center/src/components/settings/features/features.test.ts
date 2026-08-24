@@ -6,16 +6,18 @@ import {
   GMAIL_CONNECT_COMMAND,
   gmailTokenPresent,
   readFlag,
+  writesViaExtension,
 } from './features';
 
 describe('features helpers', () => {
-  it('names exactly the five daemon config keys, in display order', () => {
+  it('names every off-by-default worker switch, in display order', () => {
     expect(FEATURE_KEYS).toEqual([
       'initiative_enabled',
       'playbook_enabled',
       'concierge_enabled',
       'steward_scan_enabled',
       'strix_enabled',
+      'finance',
     ]);
   });
 
@@ -36,7 +38,7 @@ describe('features helpers', () => {
   it('every switch states what it does and when it takes effect', () => {
     expect(FEATURE_KEYS).toEqual(FEATURE_ROWS.map(r => r.key));
     expect(new Set(FEATURE_KEYS).size).toBe(FEATURE_ROWS.length);
-    expect(FEATURE_ROWS).toHaveLength(5);
+    expect(FEATURE_ROWS).toHaveLength(6);
     for (const row of FEATURE_ROWS) {
       expect(row.what.length).toBeGreaterThan(0);
       expect(row.label.length).toBeGreaterThan(0);
@@ -69,6 +71,17 @@ describe('features helpers', () => {
     expect(conciergePreconditionCopy(false)).toContain(GMAIL_CONNECT_COMMAND);
     expect(conciergePreconditionCopy(true)).not.toContain(GMAIL_CONNECT_COMMAND);
     expect(conciergePreconditionCopy(null)).toMatch(/Checking/);
+  });
+
+  it('lists The Financier among the switches, writing the extension key not a second boolean', () => {
+    const financier = FEATURE_ROWS.find(r => r.key === 'finance');
+    expect(financier).toBeDefined();
+    expect(financier!.label).toMatch(/Financier/);
+    expect(writesViaExtension('finance')).toBe(true);
+    expect(writesViaExtension('strix_enabled')).toBe(false);
+    // A second `financier_enabled` key is the exact drift this row exists to
+    // prevent: a switch that looks live and that nothing in the daemon reads.
+    expect(FEATURE_KEYS).not.toContain('financier_enabled');
   });
 
   it('only a literal true reads as on (bare-value /config/read contract)', () => {

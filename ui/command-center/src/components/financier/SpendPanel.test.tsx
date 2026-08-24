@@ -1,8 +1,8 @@
 /**
  * @vitest-environment jsdom
  *
- * Settings → Spend wiring (panel moved here from the retired Governance
- * surface). Pins that the panel is REAL, not decorative:
+ * Spend wiring (the panel now lives on the Financier tab). Pins that the panel
+ * is REAL, not decorative:
  *   1. it renders the running total + tokens from GET /api/governance/spend,
  *   2. it lists per-project and per-session spend from that same payload,
  *   3. saving the budget round-trips to POST /api/governance/budget,

@@ -12,8 +12,13 @@ export const SETTINGS_SECTION_KEYS = [
   'models', 'keys', 'devices', 'search', 'appearance', 'shortcuts', 'data',
   'sovereignty',
   // Console pages folded into Settings (2026-08 ruling): Sessions history,
-  // Downloads inbox, the Execution trace ('activity'), and Spend.
-  'sessions', 'inbox', 'activity', 'spend',
+  // Downloads inbox, and the Execution trace ('activity').
+  //
+  // 'spend' is deliberately NOT here any more. It moved to the Financier tab
+  // (2026-08-19), which is now the one place money lives. A deep-link that
+  // still says 'spend' therefore falls through `resolveSettingsSection` to the
+  // default pane rather than opening a blank one — see the alias test.
+  'sessions', 'inbox', 'activity',
   // Settings → Agents (Phase 2 UI over the merged /api/agents surface).
   'agents',
   // Settings → Features: the switches for the off-by-default workers

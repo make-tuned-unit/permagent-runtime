@@ -16,7 +16,7 @@ const SEED_SECRET_VALUE = 'super-secret-value-NEVER-RENDER-me-9f3a';
 vi.mock('../../../lib/api', () => ({
   apiFetch: vi.fn(),
   getApiBaseUrl: vi.fn(() => 'http://localhost:1234'),
-  api: { readConfig: vi.fn(), upsertConfig: vi.fn() },
+  api: { readConfig: vi.fn(), upsertConfig: vi.fn(), setExtensionEnabled: vi.fn() },
 }));
 
 /**
@@ -622,6 +622,53 @@ describe('AgentsPanel', () => {
       el => el.textContent,
     );
     expect(hints).toEqual(['GROW_KEY: Runs the GTM sweep. — unavailable without it']);
+  });
+
+  /**
+   * REGRESSION. A capability row used to offer only a "Manage in Tools" link,
+   * and the Tools pane lists extensions read-only — so nothing in the whole app
+   * could switch on a capability shipping `default_enabled: false`. The
+   * Financier was exactly that: declared on the roster, described, and
+   * unreachable. The row must now WRITE, through the one route that owns the
+   * `extensions.<key>.enabled` bit.
+   */
+  it('switches a capability on through the shared extension route', async () => {
+    const capability = { ...ROSTER.capabilities[0], enabled: false };
+    apiFetchMock.mockImplementation(async (endpoint: string) => {
+      if (endpoint === '/api/agents/roster') {
+        return { ...ROSTER, capabilities: [capability] } as never;
+      }
+      throw new Error(`unexpected fetch ${endpoint}`);
+    });
+    vi.mocked(api.setExtensionEnabled).mockResolvedValue('Enabled extension grow' as never);
+    await mount();
+
+    const row = container.querySelector('[data-testid="capability-row-grow"]') as HTMLElement;
+    expect(row.textContent).toContain('disabled');
+    const toggle = row.querySelector('button') as HTMLButtonElement;
+    await act(async () => { toggle.click(); });
+    // The capability KEY is what the route is addressed by — the same key the
+    // daemon derived the row from, never a display name.
+    expect(api.setExtensionEnabled).toHaveBeenCalledWith('grow', true);
+  });
+
+  it('never reports a failed capability write as a success', async () => {
+    const capability = { ...ROSTER.capabilities[0], enabled: false };
+    apiFetchMock.mockImplementation(async (endpoint: string) => {
+      if (endpoint === '/api/agents/roster') {
+        return { ...ROSTER, capabilities: [capability] } as never;
+      }
+      throw new Error(`unexpected fetch ${endpoint}`);
+    });
+    vi.mocked(api.setExtensionEnabled).mockRejectedValue(new Error('config is read-only'));
+    await mount();
+
+    const row = container.querySelector('[data-testid="capability-row-grow"]') as HTMLElement;
+    const toggle = row.querySelector('button') as HTMLButtonElement;
+    await act(async () => { toggle.click(); });
+    expect(row.textContent).toContain('config is read-only');
+    // The optimistic guess is dropped, so the row shows what the daemon says.
+    expect(row.textContent).toContain('disabled');
   });
 
   it('does not claim a pending-engine persona runs a CLI it cannot restrict', async () => {

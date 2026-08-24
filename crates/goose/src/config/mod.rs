@@ -24,8 +24,8 @@ pub use base::{Config, ConfigError};
 pub use declarative_providers::DeclarativeProviderConfig;
 pub use experiments::ExperimentManager;
 pub use extensions::{
-    extension_is_grantable, get_all_extension_names, get_all_extensions, get_enabled_extensions,
-    get_extension_by_name, get_warnings, is_extension_enabled, name_to_key,
+    extension_is_grantable, extension_key_is_known, get_all_extension_names, get_all_extensions,
+    get_enabled_extensions, get_extension_by_name, get_warnings, is_extension_enabled, name_to_key,
     narrow_extensions_for_agent, remove_extension, resolve_extensions_for_agent,
     resolve_extensions_for_new_session, set_extension, set_extension_enabled, ExtensionEntry,
 };

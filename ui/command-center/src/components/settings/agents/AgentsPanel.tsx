@@ -714,8 +714,11 @@ export function AgentsPanel({ goto }: PanelProps) {
   const pendingAgentFocus = useCommandCenter(s => s.pendingAgentFocus);
   const clearPendingAgentFocus = useCommandCenter(s => s.clearPendingAgentFocus);
 
+  // Returns the promise so a caller that just WROTE something can wait for the
+  // daemon's answer before dropping its optimistic guess (see CapabilityRow).
+  // Callers that only want a refresh can still ignore it.
   const loadRoster = useCallback(() => {
-    fetchRoster()
+    return fetchRoster()
       // Never hand a non-array to the render path — a degraded daemon reply used
       // to take whole settings panes down with `.map of undefined`.
       .then(r => {
@@ -863,7 +866,12 @@ export function AgentsPanel({ goto }: PanelProps) {
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {roster.capabilities.map(cap => (
-            <CapabilityRow key={cap.key} capability={cap} onManage={() => goto('tools')} />
+            <CapabilityRow
+              key={cap.key}
+              capability={cap}
+              onManage={() => goto('tools')}
+              onFlipped={loadRoster}
+            />
           ))}
           {roster.capabilities.length === 0 && (
             <div style={{ fontSize: 12, color: colors.textDim }}>
@@ -970,15 +978,62 @@ function PersonaRow({ persona, onOpen }: { persona: DispatchPersona; onOpen: () 
   );
 }
 
+/**
+ * One capability, with a switch that actually works.
+ *
+ * This row used to offer only a "Manage in Tools" deep-link — and the Tools
+ * pane lists extensions READ-ONLY. There was no control anywhere in the app
+ * that could flip `extensions.<key>.enabled`; only the interactive CLI could.
+ * So a capability shipping `default_enabled: false` (the Financier is one) was
+ * visible, described, and impossible to turn on. That is why "I still don't
+ * see The Financier" survived it being declared on the roster.
+ *
+ * The toggle writes through `POST /config/extensions/{name}/enabled`, which
+ * sets the same `extensions.<key>.enabled` that `is_extension_enabled` reads,
+ * that this row's own `enabled` field is derived from, and that a new session
+ * is filtered on. One key, one route — the same rule the gate flags follow via
+ * `/config/upsert`.
+ *
+ * Optimistic write with revert-on-error, matching `AgentEnableRow` above: the
+ * guess is an overlay with a lifetime, not a copy of the server's value, so a
+ * write that returns 200 without changing anything renders the daemon's answer
+ * rather than sticking on the guess.
+ */
 function CapabilityRow({
   capability,
   onManage,
+  onFlipped,
 }: {
   capability: Capability;
   onManage: () => void;
+  /** Re-read the roster so the row shows what the daemon now says. */
+  onFlipped: () => Promise<void>;
 }) {
   const { colors } = useTheme();
-  // Capabilities are not agents — no detail route; deep-link to Tools instead.
+  const [pending, setPending] = useState<boolean | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const enabled = pending ?? capability.enabled;
+
+  const save = async (value: boolean) => {
+    setPending(value);
+    setError(null);
+    try {
+      await api.setExtensionEnabled(capability.key, value);
+    } catch (err) {
+      // A failed write is never shown as a success.
+      setPending(null);
+      setError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    try {
+      await onFlipped();
+    } catch (err) {
+      setError(`Saved, but could not re-read it: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setPending(null);
+    }
+  };
+
   return (
     <div
       data-testid={`capability-row-${capability.key}`}
@@ -987,10 +1042,13 @@ function CapabilityRow({
         border: `1px solid ${colors.border}`,
       }}
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, marginBottom: 4 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 4 }}>
         <span style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>{capability.display_name}</span>
-        <span style={{ fontSize: 11, color: capability.enabled ? colors.cyan : colors.textDim }}>
-          {capability.enabled ? 'enabled' : 'disabled'}
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 11, color: enabled ? colors.cyan : colors.textDim }}>
+            {enabled ? 'enabled' : 'disabled'}
+          </span>
+          <Toggle on={enabled} onChange={v => { void save(v); }} />
         </span>
       </div>
       <div style={{ fontSize: 11, color: colors.textMuted, marginBottom: 4 }}>
@@ -1002,6 +1060,9 @@ function CapabilityRow({
           <div key={hint} data-testid="required-secret-hint" style={{ marginTop: 2 }}>{hint}</div>
         ))}
       </div>
+      {error && (
+        <div style={{ fontSize: 11, color: colors.danger, marginBottom: 8 }}>{error}</div>
+      )}
       <button
         type="button"
         onClick={onManage}
@@ -1010,7 +1071,10 @@ function CapabilityRow({
           cursor: 'pointer', padding: 0, fontFamily: font.body, fontWeight: 600,
         }}
       >
-        Manage in Tools
+        {/* Still a useful link — Tools is where a capability's transport, tool
+            list and key requirements are inspected. It is no longer the only
+            way to reach the switch, because it never had one. */}
+        Inspect in Tools
       </button>
     </div>
   );

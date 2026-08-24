@@ -21,7 +21,16 @@ vi.mock('../dashboard/decisions/DecisionInbox', () => ({
   DecisionInbox: () => null,
 }));
 
+// The spend-cap pointer navigates to a WORKSPACE, so the store's navigator is
+// what it calls. Mocked to keep this a pure render test; `true` is the normal
+// case (the Financier tab is in the sidebar).
+vi.mock('../../lib/store', () => ({
+  useCommandCenter: Object.assign(vi.fn(() => ({})), { getState: vi.fn(() => ({})) }),
+  navigateToTool: vi.fn(() => true),
+}));
+
 import { api } from '../../lib/api';
+import { navigateToTool } from '../../lib/store';
 import { AutonomyPanel } from './SettingsView';
 import { useDecisions } from '../dashboard/decisions/useDecisions';
 
@@ -47,8 +56,8 @@ afterEach(() => {
   container.remove();
 });
 
-async function mount(goto?: (key: string) => void) {
-  await act(async () => { root.render(<AutonomyPanel goto={goto} />); });
+async function mount() {
+  await act(async () => { root.render(<AutonomyPanel />); });
   await act(async () => { await Promise.resolve(); await Promise.resolve(); });
 }
 
@@ -85,17 +94,30 @@ describe('AutonomyPanel guardrail wiring', () => {
     expect(container.textContent).toContain('Open Decision Inbox');
   });
 
-  it('replaced the spend-cap sliders with a link to Settings → Spend', async () => {
-    const goto = vi.fn();
-    await mount(goto);
-    // No sliders left — the Spend pane is the one writer of the budget now.
+  it('replaced the spend-cap sliders with a link to the Financier tab', async () => {
+    await mount();
+    // No sliders left, and no second writer of the budget: the ceilings are set
+    // in exactly one place, which is now the Financier tab.
     expect(container.querySelectorAll('input[type="range"]')).toHaveLength(0);
     const link = Array.from(container.querySelectorAll('button')).find(
-      b => b.textContent?.includes('Set spend caps in Spend'),
+      b => b.textContent?.includes('Open the Financier'),
     ) as HTMLButtonElement;
     expect(link).toBeTruthy();
     await act(async () => { link.click(); });
-    expect(goto).toHaveBeenCalledWith('spend');
+    expect(navigateToTool).toHaveBeenCalledWith('financier');
+  });
+
+  it('says so when no workspace hosts the Financier tab, rather than doing nothing', async () => {
+    // `navigateToTool` returns false when the sidebar has no such workspace —
+    // the state an existing install is in until the startup backfill has run.
+    // A button that silently no-ops is the failure this branch exists to avoid.
+    vi.mocked(navigateToTool).mockReturnValueOnce(false);
+    await mount();
+    const link = Array.from(container.querySelectorAll('button')).find(
+      b => b.textContent?.includes('Open the Financier'),
+    ) as HTMLButtonElement;
+    await act(async () => { link.click(); });
+    expect(container.textContent).toContain('not in your sidebar');
   });
 
   it('dropped the preview "Always confirm before…" toggles', async () => {

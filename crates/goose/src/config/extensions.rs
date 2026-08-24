@@ -114,7 +114,36 @@ pub fn set_extension_enabled(key: &str, enabled: bool) {
     if let Some(entry) = extensions.get_mut(key) {
         entry.enabled = enabled;
         save_extensions_map(extensions);
+        return;
     }
+    // A platform extension shipping `default_enabled: false` (the Financier)
+    // is in the registry even when it has never been written to config.yaml.
+    // Inserting here — rather than no-op'ing — is what makes the app's
+    // enable switch actually enable it on a first flip.
+    if let Some(def) = PLATFORM_EXTENSIONS.get(key) {
+        extensions.insert(
+            key.to_string(),
+            ExtensionEntry {
+                enabled,
+                config: ExtensionConfig::Platform {
+                    name: def.name.to_string(),
+                    description: def.description.to_string(),
+                    display_name: Some(def.display_name.to_string()),
+                    bundled: Some(true),
+                    available_tools: Vec::new(),
+                },
+            },
+        );
+        save_extensions_map(extensions);
+    }
+}
+
+/// True when `key` names either a configured extension or a platform
+/// extension in the registry. Used by the enable route so a first flip of a
+/// never-written `default_enabled: false` capability is a 200, not a 404.
+pub fn extension_key_is_known(key: &str) -> bool {
+    PLATFORM_EXTENSIONS.contains_key(key)
+        || get_all_extension_names().iter().any(|known| known == key)
 }
 
 pub fn get_all_extensions() -> Vec<ExtensionEntry> {
@@ -256,6 +285,20 @@ mod tests {
         ] {
             assert_eq!(name_to_key(display), key, "display name {display:?}");
         }
+    }
+
+    /// The Financier's enable switch addresses `finance`. If this key is not
+    /// known before it has ever been written to config.yaml, the app route
+    /// 404s and a `default_enabled: false` capability can be seen but never
+    /// turned on.
+    #[test]
+    fn finance_is_a_known_platform_extension_before_it_is_in_config() {
+        assert!(
+            extension_key_is_known("finance"),
+            "finance must be known from the registry, not only from config.yaml"
+        );
+        assert!(!extension_key_is_known("financier_enabled"));
+        assert!(!extension_key_is_known("definitely_not_an_extension"));
     }
 
     /// Keying is idempotent: a key fed back through normalisation is unchanged.

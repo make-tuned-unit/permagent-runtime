@@ -12,7 +12,9 @@
  *
  * The set mirrors the Rust gate table
  * (`crates/goose/src/agents/self_knowledge/mod.rs::worker_gate`), which pins it
- * from the other side.
+ * from the other side — plus the Financier, whose switch is the `finance`
+ * platform-extension enabled bit (NOT a sixth `*_enabled` config key). Writing
+ * a second boolean would be a switch nothing in the daemon reads.
  */
 
 export type FeatureKey =
@@ -20,7 +22,14 @@ export type FeatureKey =
   | 'playbook_enabled'
   | 'concierge_enabled'
   | 'steward_scan_enabled'
-  | 'strix_enabled';
+  | 'strix_enabled'
+  | 'finance';
+
+/** The Financier's row writes `POST /config/extensions/{name}/enabled`, not
+ *  `/config/upsert`. Every other row is a plain boolean config key. */
+export function writesViaExtension(key: FeatureKey): boolean {
+  return key === 'finance';
+}
 
 export type FeatureRow = {
   key: FeatureKey;
@@ -62,6 +71,12 @@ export const FEATURE_ROWS: readonly FeatureRow[] = [
     label: 'The Guard (security sweeps)',
     what: 'Sweeps ONE of your own projects per pass — rotating, least-recently-scanned first — for exposed secrets, vulnerable dependencies, injection and access-control weaknesses, and files a security report with a fix plan as a note on that project. It reports only: it never edits code to fix what it found. Needs Docker and the external `strix` scanner installed, and each sweep spends your API credits.',
     effect: 'Off by default. Takes effect within about 15 minutes, no restart. Sweep cadence is a cost dial under Settings → Models.',
+  },
+  {
+    key: 'finance',
+    label: 'The Financier',
+    what: 'The money tab: what your own AI work costs, a live market read, and which market reads left this machine. It reports numbers; it cannot place an order. Off, the tab is hidden and its tools are not loaded into new sessions.',
+    effect: 'Off by default. Takes effect immediately — no restart. Writes the finance extension\'s enabled bit, the same switch as Settings → Agents.',
   },
 ];
 

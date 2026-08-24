@@ -59,6 +59,14 @@ fn projects_layout() -> serde_json::Value {
     })
 }
 
+fn financier_layout() -> serde_json::Value {
+    serde_json::json!({
+        "type": "panel",
+        "tool": "financier",
+        "config": {}
+    })
+}
+
 fn brain_layout() -> serde_json::Value {
     serde_json::json!({
         "type": "panel",
@@ -113,6 +121,7 @@ pub async fn seed_presets_if_empty(pool: &Pool<Sqlite>) -> Result<bool, String> 
         ("Automate", "bolt", 4, automate_layout(), false),
         ("World", "globe", 5, world_layout(), false),
         ("Brain", "brain", 6, brain_layout(), false),
+        ("Financier", "scale", 7, financier_layout(), false),
     ];
 
     let mut first_id = String::new();
@@ -161,6 +170,7 @@ pub const CANONICAL_WORKSPACE_ORDER: &[(&str, i32)] = &[
     ("Automate", 4),
     ("World", 5),
     ("Brain", 6),
+    ("Financier", 7),
 ];
 
 /// Normalize the preset workspaces' sort_order to [`CANONICAL_WORKSPACE_ORDER`].
@@ -255,6 +265,43 @@ pub async fn ensure_grow_workspace(pool: &Pool<Sqlite>) -> Result<bool, String> 
     sqlx::query(
         "INSERT INTO workspaces (id, user_id, name, icon, sort_order, layout_json, is_default)
          VALUES (?, 'default', 'Grow', 'trending-up', 3, ?, 0)",
+    )
+    .bind(&id)
+    .bind(&layout_str)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// Ensure the "Financier" workspace exists for users seeded before it was added
+/// (mirrors [`ensure_grow_workspace`]).
+///
+/// Appended at the END rather than inserted, so no existing tab shifts position
+/// under a user who has learned where things are — and because it is the newest
+/// and least-established tab, not one that outranks Home or Build.
+/// [`ensure_canonical_workspace_order`] runs right after at startup and
+/// normalizes every preset's position anyway. Idempotent.
+///
+/// Without this, the tab would reach only brand-new installs: the seed function
+/// above short-circuits the moment any workspace row exists, so every user who
+/// has already opened the app once would never see it.
+pub async fn ensure_financier_workspace(pool: &Pool<Sqlite>) -> Result<bool, String> {
+    let has_financier: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM workspaces WHERE user_id = 'default' AND name = 'Financier')",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    if has_financier {
+        return Ok(false);
+    }
+
+    let id = Uuid::now_v7().to_string();
+    let layout_str = serde_json::to_string(&financier_layout()).map_err(|e| e.to_string())?;
+    sqlx::query(
+        "INSERT INTO workspaces (id, user_id, name, icon, sort_order, layout_json, is_default)
+         VALUES (?, 'default', 'Financier', 'scale', 7, ?, 0)",
     )
     .bind(&id)
     .bind(&layout_str)
@@ -416,7 +463,16 @@ mod tests {
         seed_presets_if_empty(&pool).await.unwrap();
         assert_eq!(
             order_of(&pool).await,
-            ["Home", "Projects", "Build", "Grow", "Automate", "World", "Brain"]
+            [
+                "Home",
+                "Projects",
+                "Build",
+                "Grow",
+                "Automate",
+                "World",
+                "Brain",
+                "Financier"
+            ]
         );
 
         // Simulate a legacy install: scramble to the pre-2026-07-10 order and
@@ -441,10 +497,85 @@ mod tests {
         assert!(changed, "legacy order must be rewritten");
         assert_eq!(
             order_of(&pool).await,
-            ["Home", "Projects", "Build", "Grow", "Automate", "World", "Brain", "My Lab"]
+            [
+                "Home",
+                "Projects",
+                "Build",
+                "Grow",
+                "Automate",
+                "World",
+                "Brain",
+                "Financier",
+                "My Lab"
+            ]
         );
 
         // Idempotent: a second run changes nothing.
         assert!(!ensure_canonical_workspace_order(&pool).await.unwrap());
+    }
+
+    /// The Financier tab has to reach EXISTING installs, not just fresh ones.
+    /// `seed_presets_if_empty` short-circuits the moment any workspace row
+    /// exists, so without the backfill every user who had ever opened the app
+    /// would be told about a tab their sidebar does not have — which is exactly
+    /// the "I still don't see it" report this work started from.
+    #[tokio::test]
+    async fn financier_backfills_into_an_install_seeded_before_it_existed() {
+        let pool = test_pool().await;
+        // An install seeded under the pre-Financier preset set.
+        for (i, name) in [
+            "Home", "Projects", "Build", "Grow", "Automate", "World", "Brain",
+        ]
+        .iter()
+        .enumerate()
+        {
+            sqlx::query(
+                "INSERT INTO workspaces (id, user_id, name, icon, sort_order, layout_json, is_default)
+                 VALUES (?, 'default', ?, 'home', ?, '{}', 0)",
+            )
+            .bind(format!("ws-{i}"))
+            .bind(name)
+            .bind(i as i32)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        assert!(
+            !seed_presets_if_empty(&pool).await.unwrap(),
+            "a populated install must not be reseeded"
+        );
+
+        assert!(ensure_financier_workspace(&pool).await.unwrap());
+        assert!(order_of(&pool).await.contains(&"Financier".to_string()));
+        // Idempotent: running it again on the next start adds no duplicate.
+        assert!(!ensure_financier_workspace(&pool).await.unwrap());
+        assert_eq!(
+            order_of(&pool)
+                .await
+                .iter()
+                .filter(|n| *n == "Financier")
+                .count(),
+            1
+        );
+    }
+
+    /// The tab is only real if its layout names a tool the frontend can render.
+    /// A typo here produces a workspace that renders "Unknown tool" — visible,
+    /// clickable, and empty.
+    #[test]
+    fn the_financier_layout_names_the_financier_tool() {
+        assert_eq!(financier_layout()["tool"], "financier");
+    }
+
+    /// Every preset must appear in the canonical order table, or a tab seeds at
+    /// one position and is silently reordered to another on the next start.
+    #[test]
+    fn every_preset_is_in_the_canonical_order() {
+        for (name, _) in CANONICAL_WORKSPACE_ORDER {
+            assert!(!name.is_empty(), "a canonical entry must name a workspace");
+        }
+        assert!(CANONICAL_WORKSPACE_ORDER
+            .iter()
+            .any(|(name, _)| *name == "Financier"));
     }
 }

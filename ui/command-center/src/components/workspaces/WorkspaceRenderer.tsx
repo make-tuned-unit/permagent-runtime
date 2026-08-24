@@ -17,6 +17,7 @@ import { BuildView } from '../build/BuildView';
 import { GrowView } from '../grow/GrowView';
 import { AutomateView } from '../automate/AutomateView';
 import { ProjectsView } from '../projects/ProjectsView';
+import { FinancierView } from '../financier/FinancierView';
 
 const TOOL_COMPONENTS: Record<ToolType, React.ComponentType> = {
   chat: ChatView,
@@ -31,6 +32,7 @@ const TOOL_COMPONENTS: Record<ToolType, React.ComponentType> = {
   grow: GrowView,
   automate: AutomateView,
   projects: ProjectsView,
+  financier: FinancierView,
 };
 
 function LayoutNodeRenderer({

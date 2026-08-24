@@ -18,6 +18,8 @@
 import { useEffect, useState } from 'react';
 import { H1, Row, Section, Toggle } from '../atoms';
 import { api } from '../../../lib/api';
+import { FINANCE_EXTENSION_KEY } from '../../../lib/financeGate';
+import { useCommandCenter } from '../../../lib/store';
 import { font } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import {
@@ -25,6 +27,7 @@ import {
   FEATURE_ROWS,
   gmailTokenPresent,
   readFlag,
+  writesViaExtension,
   type FeatureKey,
   type IntegrationStatus,
 } from './features';
@@ -49,6 +52,18 @@ export function FeaturesPanel({ goto }: PanelProps) {
   useEffect(() => {
     let active = true;
     for (const row of FEATURE_ROWS) {
+      if (writesViaExtension(row.key)) {
+        // The Financier rides `extensions.finance.enabled`, not a top-level
+        // boolean. Reading `/config/read?key=finance` would miss it.
+        api.getExtensions()
+          .then(data => {
+            if (!active) return;
+            const ext = data.extensions.find(e => e.name === FINANCE_EXTENSION_KEY);
+            setFlags(f => ({ ...f, finance: ext?.enabled === true }));
+          })
+          .catch(() => { if (active) setFlags(f => ({ ...f, finance: false })); });
+        continue;
+      }
       api.readConfig(row.key)
         .then(raw => { if (active) setFlags(f => ({ ...f, [row.key]: readFlag(raw) })); })
         .catch(() => { if (active) setFlags(f => ({ ...f, [row.key]: false })); });
@@ -63,7 +78,15 @@ export function FeaturesPanel({ goto }: PanelProps) {
     const prev = flags[key];
     setFlags(f => ({ ...f, [key]: v }));
     setErrors(e => ({ ...e, [key]: undefined }));
-    api.upsertConfig(key, v).catch(err => {
+    const write = writesViaExtension(key)
+      ? api.setExtensionEnabled(key, v).then(() => {
+          // Same bit the sidebar / renderer read. A Features flip that did not
+          // update the store would leave the tab hidden after the user turned
+          // it on (or visible after they turned it off).
+          useCommandCenter.getState().setFinanceEnabled(v);
+        })
+      : api.upsertConfig(key, v);
+    write.catch(err => {
       setFlags(f => ({ ...f, [key]: prev }));
       setErrors(e => ({
         ...e,
@@ -117,7 +140,7 @@ export function FeaturesPanel({ goto }: PanelProps) {
       </Section>
 
       <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>
-        Each worker is listed under{' '}
+        Each worker — including The Financier — is listed under{' '}
         <button
           onClick={() => goto('agents')}
           style={{

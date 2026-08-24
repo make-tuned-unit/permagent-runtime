@@ -1,19 +1,30 @@
 /**
- * Settings → Spend (moved here when the Governance surface folded into
- * Settings). Per-session and per-project token + dollar consumption with a
- * running total, from the REAL `GET /api/governance/spend` (which aggregates
- * the cost_ledger rollup). Also the full budget the cost-router enforces by
- * gating the agent through the Decision Inbox — BOTH the per-session and the
- * per-task ceilings — set here via `POST /api/governance/budget`. This panel
- * fully supersedes the old Autonomy "Spend cap" sliders.
+ * Spend — per-session and per-project token + dollar consumption with a running
+ * total, from the REAL `GET /api/governance/spend` (which aggregates the
+ * cost_ledger rollup). Also the full budget the cost-router enforces by gating
+ * the agent through the Decision Inbox — BOTH the per-session and the per-task
+ * ceilings — set here via `POST /api/governance/budget`.
+ *
+ * ## Where this has lived
+ *
+ * It began on the standalone Governance surface, moved into Settings when that
+ * folded in, and now sits on the Financier tab. Each move was a MOVE: it
+ * superseded the old Autonomy "Spend cap" sliders, and Settings no longer has a
+ * Spend section. The point is not the location, it is that there has never been
+ * a second one — the budget has exactly one writer, so two surfaces cannot
+ * disagree about what the ceiling is.
+ *
+ * It renders inside `FinancierView` rather than standing alone, because "what
+ * the machine is costing me" is the same question as "what is my money doing",
+ * and the user asked for that question to have one answer in one place.
  */
 
 import { useCallback, useEffect, useState } from 'react';
 import { api, type SpendSnapshot } from '../../lib/api';
 import { font, tabularNums } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
-import { Card, SectionLabel, StatRow } from './atoms';
-import { bandColor, bandLabel, formatTokens, formatUsd, timeAgo } from './format';
+import { Card, SectionLabel, StatRow } from '../settings/atoms';
+import { bandColor, bandLabel, formatTokens, formatUsd, timeAgo } from '../settings/format';
 
 export function SpendPanel() {
   const { colors } = useTheme();
