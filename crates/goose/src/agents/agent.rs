@@ -880,6 +880,11 @@ impl Agent {
         // carries `is_error` (the MCP-level failure the transport reports as a
         // successful round-trip — the case a naive `Result` check misses).
         let task_outcome = task_id.map(|tid| (tid, tool_name_str.clone(), args_value.clone()));
+        // Owned copies for the offload stub's file path — `request_id` is still
+        // needed by this function's own return value.
+        let offload_tool_name = tool_name_str.clone();
+        let offload_request_id = request_id.clone();
+        let offload_session_id = session.id.clone();
         // Split the stream off before the future moves into the async block.
         let ToolCallResult {
             notification_stream,
@@ -887,7 +892,15 @@ impl Agent {
         } = result;
         let resolved = async move {
             let out = result_future.await;
-            let out = super::large_response_handler::process_tool_response(out);
+            // Always-on: every resolved tool result passes here, so an
+            // oversized one is spilled to a file and replaced by a head+tail
+            // stub carrying its path (see `large_response_handler`).
+            let out = super::large_response_handler::process_tool_response(
+                out,
+                &offload_tool_name,
+                &offload_request_id,
+                &offload_session_id,
+            );
 
             if let Some((tid, tool_name, args)) = task_outcome {
                 if let Some(logger) = crate::tasks::global() {
