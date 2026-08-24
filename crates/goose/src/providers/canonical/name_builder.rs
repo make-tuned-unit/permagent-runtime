@@ -145,7 +145,7 @@ fn swap_claude_word_order(model: &str) -> Option<String> {
 }
 
 /// Infer the real provider from model name patterns
-fn infer_provider_from_model(model: &str) -> Option<&'static str> {
+pub fn infer_provider_from_model(model: &str) -> Option<&'static str> {
     let model_lower = model.to_lowercase();
 
     if model_lower.contains("claude") {

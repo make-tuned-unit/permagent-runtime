@@ -10,7 +10,7 @@ use tokio_util::io::StreamReader;
 
 use super::api_client::ApiClient;
 use super::base::{MessageStream, Provider};
-use super::errors::ProviderError;
+use super::errors::{is_billing_message, ProviderError};
 use super::retry::ProviderRetry;
 use super::utils::{ImageFormat, RequestLog};
 use crate::conversation::message::Message;
@@ -185,14 +185,36 @@ pub fn map_http_error_to_provider_error(
             let payload_str = extract_message();
             if check_context_length_exceeded(&payload_str) {
                 ProviderError::ContextLengthExceeded(payload_str)
+            } else if is_billing_message(&payload_str) {
+                // Anthropic sends "Your credit balance is too low to access the
+                // Anthropic API" as a 400 `invalid_request_error`, not a 402.
+                // Typing it here is what keeps it out of the retry loop and out
+                // of the user-facing reply (2026-08-23, session 20260823_4).
+                ProviderError::CreditsExhausted {
+                    details: payload_str,
+                    top_up_url: None,
+                }
             } else {
                 ProviderError::RequestFailed(format!("Bad request (400): {}", payload_str))
             }
         }
-        StatusCode::TOO_MANY_REQUESTS => ProviderError::RateLimitExceeded {
-            details: extract_message(),
-            retry_delay: None,
-        },
+        StatusCode::TOO_MANY_REQUESTS => {
+            let details = extract_message();
+            // OpenAI reports a depleted balance as 429 `insufficient_quota`.
+            // Waiting does not top up an account, so this must not be retried
+            // as an ordinary rate limit.
+            if is_billing_message(&details) {
+                ProviderError::CreditsExhausted {
+                    details,
+                    top_up_url: None,
+                }
+            } else {
+                ProviderError::RateLimitExceeded {
+                    details,
+                    retry_delay: None,
+                }
+            }
+        }
         _ if status.is_server_error() => {
             ProviderError::ServerError(format!("Server error ({}): {}", status, extract_message()))
         }
@@ -292,6 +314,38 @@ mod tests {
         Some(json!({"error": {"message": "This request exceeds the maximum context length"}})),
         "ContextLengthExceeded"
         ; "400 context length"
+    )]
+    // ── 2026-08-23, session 20260823_4 ────────────────────────────────────
+    // Anthropic sends "out of credit" as a 400 `invalid_request_error`, not a
+    // 402. Typed as a generic RequestFailed it was retried 3/3 times and its raw
+    // payload was read aloud to the user.
+    #[test_case(
+        StatusCode::BAD_REQUEST,
+        Some(json!({"error": {"type": "invalid_request_error", "message": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."}})),
+        "CreditsExhausted"
+        ; "400 anthropic credit balance too low"
+    )]
+    // OpenAI sends a depleted balance as a 429. Waiting does not top up an account.
+    #[test_case(
+        StatusCode::TOO_MANY_REQUESTS,
+        Some(json!({"error": {"code": "insufficient_quota", "message": "You exceeded your current quota, please check your plan and billing details."}})),
+        "CreditsExhausted"
+        ; "429 openai insufficient quota is billing"
+    )]
+    // …but an ordinary OpenAI throttle links to /account/billing in its own body,
+    // and must stay a retryable rate limit.
+    #[test_case(
+        StatusCode::TOO_MANY_REQUESTS,
+        Some(json!({"error": {"message": "Rate limit reached for gpt-4 on requests per min. Please try again in 20s. Please add a payment method to your account to increase your rate limit. Visit https://platform.openai.com/account/billing to add a payment method."}})),
+        "RateLimitExceeded"
+        ; "429 throttle that mentions billing stays a rate limit"
+    )]
+    // A 400 that is genuinely malformed still maps to RequestFailed.
+    #[test_case(
+        StatusCode::BAD_REQUEST,
+        Some(json!({"error": {"message": "unknown parameter: 'temperture'"}})),
+        "RequestFailed"
+        ; "400 malformed request"
     )]
     #[test_case(
         StatusCode::INTERNAL_SERVER_ERROR,

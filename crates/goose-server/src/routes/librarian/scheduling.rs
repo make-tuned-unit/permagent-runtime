@@ -313,6 +313,14 @@ async fn warm_and_run(schedule: &LibrarianSchedule, keep_alive_secs: u64) -> Res
     let (total, described) = query_memory_counts()?;
     librarian_state::set_warming(total, described);
 
+    // A new window: clear last night's circuit, then take ONE readiness probe at
+    // the loopback dedicated endpoint before any memory is processed. A dead
+    // `127.0.0.1:8080` now costs a single WARN line for the night instead of one
+    // per memory (2026-08-22: 281 identical failures) or the three the per-call
+    // circuit still allowed.
+    librarian_state::reset_dedicated_endpoint_gate();
+    permagent::agents::platform_extensions::librarian::probe_dedicated_endpoint().await;
+
     // Warm-load through the mesh pool ladder so the warm follows EXACTLY the
     // routing the batch itself will follow: with the pool engine on, this
     // warms the trusted healthy peer the scheduler would pick (falling back

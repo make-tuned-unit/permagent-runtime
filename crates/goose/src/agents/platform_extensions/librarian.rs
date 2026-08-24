@@ -482,24 +482,31 @@ async fn describe_one_with_context(
             break;
         }
         if let Some(salvaged) = salvage_structured_description(&raw) {
+            let failures = librarian_state::record_parse_failure(true);
             tracing::warn!(
                 memory_id = %memory_id,
                 attempt = attempt,
+                model = %model,
+                reason = %structured_parse_failure(&raw),
+                parse_failures_this_session = failures,
                 "Structured output incomplete; salvaged index fields instead of storing raw"
             );
+            log_malformed_model_output(memory_id, model, &raw);
             quality = DescriptionQuality::Fallback;
             description = Some(salvaged);
             break;
         }
 
         if attempt == 1 {
-            let snippet: String = raw.chars().take(500).collect();
+            let failures = librarian_state::record_parse_failure(false);
             tracing::warn!(
                 memory_id = %memory_id,
+                model = %model,
                 reason = %structured_parse_failure(&raw),
-                snippet = %snippet,
+                parse_failures_this_session = failures,
                 "Structured output still malformed after retry, storing raw"
             );
+            log_malformed_model_output(memory_id, model, &raw);
             quality = DescriptionQuality::Fallback;
             description = Some(raw);
         }
@@ -1147,6 +1154,51 @@ fn salvage_structured_description(raw: &str) -> Option<String> {
     ))
 }
 
+/// How much of an unparseable model response to keep in the debug log.
+///
+/// A prior health review asked for the RAW output at the parse-failure site:
+/// the previous 500-character snippet routinely cut off before the malformed
+/// part, which is usually a truncated JSON tail or a trailing prose apology,
+/// so the log showed a plausible-looking prefix and hid the actual defect. 2 KB
+/// covers a full three-field response with room to spare while staying far too
+/// small to turn a bad night into a log-volume problem.
+const MALFORMED_OUTPUT_LOG_LIMIT: usize = 2048;
+
+/// Truncate on a CHARACTER boundary, never a byte one: the raw output is
+/// model-generated text, and a byte slice through a multi-byte codepoint would
+/// panic on the very output we are trying to diagnose.
+///
+/// Built by taking characters rather than slicing, so the boundary is correct
+/// by construction — there is no index to get wrong.
+fn truncate_for_log(raw: &str, limit: usize) -> String {
+    if raw.len() <= limit {
+        return raw.to_string();
+    }
+    let mut kept = String::with_capacity(limit + 1);
+    for ch in raw.chars() {
+        if kept.len() + ch.len_utf8() > limit {
+            break;
+        }
+        kept.push(ch);
+    }
+    format!("{kept}…[truncated, {} bytes total]", raw.len())
+}
+
+/// The raw model output behind a parse failure, at DEBUG so it costs nothing in
+/// normal operation and is one log-level away when the Librarian starts failing.
+/// Carries the model id, because "which model produced this" is the first
+/// question and the previous log did not answer it.
+fn log_malformed_model_output(memory_id: &str, model: &str, raw: &str) {
+    tracing::debug!(
+        target: "permagent::librarian",
+        memory_id = %memory_id,
+        model = %model,
+        raw_len = raw.len(),
+        raw_output = %truncate_for_log(raw, MALFORMED_OUTPUT_LOG_LIMIT),
+        "raw model output that failed the structured-description contract"
+    );
+}
+
 fn structured_parse_failure(raw: &str) -> &'static str {
     let (facts, terms, categories) = extract_labeled_fields(raw);
     if facts.is_none() {
@@ -1603,6 +1655,175 @@ async fn try_apple_on_device(
 /// minis that is the split losing its Metal budget to another model). A 4xx
 /// is our request's fault and must surface as-is rather than be papered over
 /// by the fallback.
+/// The readiness probe for the dedicated Librarian endpoint, run ONCE at the top
+/// of a nightly window.
+///
+/// ## The storm this ends
+///
+/// `PERMAGENT_LIBRARIAN_ENDPOINT=http://127.0.0.1:8080` is the nightly
+/// Qwen3.8-27B llama-server split, started by launchd at 01:50 local with retry
+/// slots across the window. The Librarian's own batch window opens at 02:00
+/// local — 05:00 UTC — which is exactly when the health review saw the storm
+/// begin on three consecutive days (281 failures 2026-08-22, 23 on 08-23, 24 on
+/// 08-24). The split refuses to start when the machine is busy (a build
+/// running, high load, under ~50% free memory), and on a refusal every memory
+/// in the pass re-dialled a port nothing was listening on.
+///
+/// The per-call circuit in `librarian_state` capped that at three attempts.
+/// This probe takes it to one, BEFORE any memory is processed, so the pass runs
+/// on the Ollama fallback from the first memory instead of the fourth.
+///
+/// ## Why it retries at all
+///
+/// The split's RPC server needs roughly ten seconds to initialise Metal before
+/// it binds. A single-shot probe at 02:00 would write off a split that is
+/// merely still starting — turning a "slow" night into a "no split" night. So
+/// the probe backs off exponentially across a bounded budget that comfortably
+/// covers that init, then gives up for good. Total cost of a genuinely dead
+/// endpoint: `PROBE_ATTEMPTS` HTTP connects and ONE log line, once per day.
+///
+/// Only loopback is probed. A remote peer can legitimately come up mid-window;
+/// nothing on THIS machine starts listening because we waited.
+///
+/// Returns `true` when the endpoint is ready (or there is nothing to probe).
+pub async fn probe_dedicated_endpoint() -> bool {
+    let Some(endpoint) = crate::config::librarian_endpoint() else {
+        return true;
+    };
+    if !crate::mesh::endpoint_is_loopback(&endpoint) {
+        return true;
+    }
+
+    let backend = crate::config::librarian_backend();
+    // `/v1/models` on llama-server and `/api/tags` on Ollama both prove two
+    // things at once: something is listening, AND it speaks the protocol the
+    // batch is about to use. A bare TCP connect proves only the first.
+    let path = if backend == "ollama" {
+        "/api/tags"
+    } else {
+        "/v1/models"
+    };
+    let url = format!("{endpoint}{path}");
+
+    let client = match reqwest::Client::builder().timeout(PROBE_TIMEOUT).build() {
+        Ok(c) => c,
+        // Can't probe: leave it to the per-call circuit rather than writing off
+        // an endpoint we never actually tested.
+        Err(_) => return true,
+    };
+
+    let mut last_error = String::new();
+    for attempt in 0..PROBE_ATTEMPTS {
+        if attempt > 0 {
+            tokio::time::sleep(probe_backoff(attempt)).await;
+        }
+        match client.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                librarian_state::note_dedicated_endpoint_ok(&endpoint);
+                tracing::info!(
+                    target: "permagent::librarian",
+                    endpoint = %endpoint,
+                    backend = %backend,
+                    attempt = attempt + 1,
+                    "dedicated Librarian endpoint is ready"
+                );
+                return true;
+            }
+            // Something IS listening but unhappy (a 5xx, or a 404 on a build
+            // without that route). Not our call to write off — the per-call
+            // circuit still applies, and a wrong route is not a dead service.
+            Ok(resp) => {
+                tracing::debug!(
+                    target: "permagent::librarian",
+                    endpoint = %endpoint,
+                    status = %resp.status(),
+                    "dedicated Librarian endpoint answered the readiness probe with a non-success status"
+                );
+                return true;
+            }
+            Err(err) => last_error = err.to_string(),
+        }
+    }
+
+    if librarian_state::mark_dedicated_endpoint_down(&endpoint) {
+        // The split script names which guard tripped ("refusing — N build
+        // process(es) running", "refusing — only 38% memory free", …). When the
+        // operator has pointed us at its log, quote that reason: "nothing is
+        // listening" is true but not actionable, and the reason is the whole
+        // diagnosis.
+        let reason = split_refusal_reason();
+        tracing::warn!(
+            target: "permagent::librarian",
+            endpoint = %endpoint,
+            backend = %backend,
+            attempts = PROBE_ATTEMPTS,
+            error = %last_error,
+            split_refusal = reason.as_deref().unwrap_or("unknown (no status log configured)"),
+            fallback_model = DEFAULT_MODEL,
+            "Librarian readiness probe found nothing listening on loopback — \
+             skipping the dedicated endpoint for this pass; the batch runs on the local pool"
+        );
+    }
+    false
+}
+
+/// Per-attempt timeout. Short enough that a dead port costs the window no
+/// meaningful time; long enough that a loaded-but-alive llama-server answers.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The daily ceiling. Three attempts on the backoff below span ~18s of
+/// wall-clock, which covers the split's ~10s Metal initialisation with margin
+/// and then stops for the night.
+const PROBE_ATTEMPTS: u32 = 3;
+
+/// Exponential backoff between probe attempts: 4s, 8s, 16s, capped at 32s.
+/// `attempt` is 0-based and 0 means "no wait, this is the first try".
+fn probe_backoff(attempt: u32) -> std::time::Duration {
+    if attempt == 0 {
+        return std::time::Duration::ZERO;
+    }
+    let exponent = (attempt - 1).min(3);
+    std::time::Duration::from_secs(4u64 << exponent)
+}
+
+/// Config key naming the split script's log, so a refusal can be quoted in the
+/// one WARN the probe emits. Optional and unset by default — the daemon must
+/// not hardcode a path under the operator's home directory.
+const KEY_ENDPOINT_STATUS_LOG: &str = "PERMAGENT_LIBRARIAN_ENDPOINT_STATUS_LOG";
+
+/// The most recent "refusing — …" line from the split script's log, if the
+/// operator has configured one.
+fn split_refusal_reason() -> Option<String> {
+    let path = crate::config::Config::global()
+        .get_param::<String>(KEY_ENDPOINT_STATUS_LOG)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())?;
+    let contents = std::fs::read_to_string(&path).ok()?;
+    last_refusal_line(&contents)
+}
+
+/// Pure: the last refusal reason in a split-script log, normalised to just the
+/// reason. Split out from the IO so it is directly testable.
+fn last_refusal_line(log: &str) -> Option<String> {
+    log.lines()
+        .rev()
+        .find(|line| line.contains("refusing"))
+        .map(|line| {
+            let reason = line
+                .split_once("refusing")
+                .map(|(_, rest)| rest)
+                .unwrap_or(line);
+            reason
+                .trim_start_matches([' ', '\u{2014}', '-', ':'])
+                .trim()
+                .chars()
+                .take(200)
+                .collect::<String>()
+        })
+        .filter(|r| !r.is_empty())
+}
+
 fn is_endpoint_down(err: &str) -> bool {
     err.contains("unreachable")
         || err.contains("error (5")
@@ -2228,6 +2449,147 @@ mod index_quality_tests {
     /// memory. The prompt asked for 4-10 terms and 2-5 categories; it returned
     /// 18 terms including two bare numbers. Everything past the cap is index
     /// noise that costs retrieval precision.
+    /// The daily ceiling: a dead loopback endpoint costs a BOUNDED number of
+    /// attempts, and the backoff between them covers the split's ~10s Metal
+    /// initialisation so a merely-slow start is not written off.
+    #[test]
+    fn probe_backoff_is_bounded_and_covers_metal_init() {
+        assert_eq!(probe_backoff(0), std::time::Duration::ZERO);
+        assert_eq!(probe_backoff(1), std::time::Duration::from_secs(4));
+        assert_eq!(probe_backoff(2), std::time::Duration::from_secs(8));
+        // Capped, so a misconfigured attempt count cannot stall a window.
+        assert_eq!(probe_backoff(9), std::time::Duration::from_secs(32));
+
+        let total: std::time::Duration = (0..PROBE_ATTEMPTS)
+            .map(probe_backoff)
+            .sum::<std::time::Duration>()
+            + PROBE_TIMEOUT * PROBE_ATTEMPTS;
+        assert!(
+            total >= std::time::Duration::from_secs(15),
+            "the probe budget must outlast the split's ~10s Metal init, got {total:?}"
+        );
+        assert!(
+            total <= std::time::Duration::from_secs(60),
+            "a dead endpoint must not cost the window a minute, got {total:?}"
+        );
+    }
+
+    /// The split script names which guard tripped. That reason — not "nothing is
+    /// listening" — is the actionable half of the diagnosis.
+    #[test]
+    fn split_refusal_reason_is_extracted_from_the_log() {
+        let log = "\
+2026-08-24T01:50:01 start: refusing — 2 build process(es) running; Librarian will use its Ollama fallback
+2026-08-24T02:20:01 start: refusing — only 38% memory free, the split needs ~9.3 GB; Librarian will use its Ollama fallback
+";
+        let reason = last_refusal_line(log).expect("a refusal is present");
+        assert!(
+            reason.starts_with("only 38% memory free"),
+            "must quote the LAST refusal, and drop the leading dash: {reason}"
+        );
+        assert!(
+            !reason.contains("refusing"),
+            "the word 'refusing' is the marker, not the reason: {reason}"
+        );
+    }
+
+    #[test]
+    fn split_refusal_reason_is_none_when_the_split_never_refused() {
+        assert_eq!(last_refusal_line(""), None);
+        assert_eq!(
+            last_refusal_line("2026-08-24T01:50:01 start: llama-server listening on :8080\n"),
+            None
+        );
+    }
+
+    /// A refusal line must never blow up the one WARN it decorates.
+    #[test]
+    fn split_refusal_reason_is_bounded() {
+        let log = format!("start: refusing — {}", "x".repeat(5000));
+        let reason = last_refusal_line(&log).expect("a refusal is present");
+        assert!(reason.chars().count() <= 200, "reason must be bounded");
+    }
+
+    /// The prior health review's open item: the parse-failure log must carry
+    /// the RAW model output, bounded. 2 KB, cut on a character boundary.
+    #[test]
+    fn malformed_output_log_is_truncated_to_two_kb() {
+        let short = "FACTS: fine";
+        assert_eq!(
+            truncate_for_log(short, MALFORMED_OUTPUT_LOG_LIMIT),
+            short,
+            "output under the limit must be logged verbatim"
+        );
+
+        let long = "x".repeat(MALFORMED_OUTPUT_LOG_LIMIT * 3);
+        let logged = truncate_for_log(&long, MALFORMED_OUTPUT_LOG_LIMIT);
+        assert!(
+            logged.starts_with(&"x".repeat(MALFORMED_OUTPUT_LOG_LIMIT)),
+            "the first 2 KB must survive"
+        );
+        assert!(
+            logged.contains("truncated"),
+            "a truncated log must say so: {logged}"
+        );
+        assert!(
+            logged.contains(&long.len().to_string()),
+            "a truncated log must report the true length so the rate is readable"
+        );
+    }
+
+    /// Multi-byte model output must not panic the logger. A local model
+    /// answering in Japanese or emitting an emoji is an ordinary Tuesday.
+    #[test]
+    fn malformed_output_log_never_splits_a_codepoint() {
+        for filler in ["日", "🙂", "é"] {
+            let raw = filler.repeat(MALFORMED_OUTPUT_LOG_LIMIT);
+            let logged = truncate_for_log(&raw, MALFORMED_OUTPUT_LOG_LIMIT);
+            assert!(logged.len() <= MALFORMED_OUTPUT_LOG_LIMIT + 64);
+            assert!(!logged.is_empty());
+        }
+    }
+
+    /// The rate the health review asked for: salvaged and unsalvageable failures
+    /// both count, and only the unsalvageable ones count in the second figure.
+    ///
+    /// Asserted as a DELTA, and deliberately without `set_warming`. The counters
+    /// live on the process-wide `LibrarianRuntimeState` alongside
+    /// `lifetime_stats`, which is rendered into the system prompt and
+    /// snapshot-asserted by `agents::prompt_manager`. An earlier version of this
+    /// test called `set_warming(10, 0)` to zero the counters and moved
+    /// `lifetime_stats.pending` to 10 as a side effect — which raced the full
+    /// suite and broke four unrelated prompt snapshots with
+    /// "0 described, 10 pending". Reading a baseline costs nothing and cannot
+    /// perturb anything else.
+    #[test]
+    #[serial_test::serial(librarian_global_state)]
+    fn parse_failures_are_counted_for_the_health_review() {
+        use crate::agents::platform_extensions::librarian_state;
+
+        let before = librarian_state::get_state().session_stats;
+
+        let after_first = librarian_state::record_parse_failure(true);
+        let after_second = librarian_state::record_parse_failure(false);
+        let after_third = librarian_state::record_parse_failure(true);
+        assert_eq!(
+            (after_second, after_third),
+            (after_first + 1, after_first + 2),
+            "the returned running count must advance by one per failure"
+        );
+
+        let after = librarian_state::get_state().session_stats;
+        assert_eq!(
+            after.parse_failures_this_session,
+            before.parse_failures_this_session + 3,
+            "every parse failure counts, salvaged or not"
+        );
+        assert_eq!(
+            after.unsalvageable_parse_failures_this_session,
+            before.unsalvageable_parse_failures_this_session + 1,
+            "only the failure that stored a raw dump is unsalvageable"
+        );
+    }
+
     #[test]
     fn a_local_models_overlong_list_is_trimmed_to_the_spec() {
         let raw = "FACTS: The user migrated their brain between two Macs.\n\

@@ -42,6 +42,7 @@ pub mod cache;
 pub mod cheap;
 pub mod derived;
 pub mod escalation;
+pub mod fallback;
 pub mod hold_done;
 pub mod knowledge;
 pub mod mesh;

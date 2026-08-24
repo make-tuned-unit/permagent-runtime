@@ -1766,6 +1766,11 @@ impl Agent {
             // THIS reply finish. Bounds the re-entry: a hook that keeps saying
             // "not yet" is eventually told to stop and hand over.
             let mut after_turn_holds: u8 = 0;
+            // A PERMANENT provider rejection (billing / auth) gets exactly ONE
+            // model swap per reply. Without this bound, a fallback that is also
+            // out of credit would ping-pong the turn forever — the same
+            // unbounded-retry defect this PR removes from the retry layer.
+            let mut permanent_failure_fallback_used = false;
 
             loop {
                 if is_token_cancelled(&cancel_token) {
@@ -1855,6 +1860,7 @@ impl Agent {
                 let mut messages_to_add = Conversation::default();
                 let mut tools_updated = false;
                 let mut did_recovery_compact_this_iteration = false;
+                let mut did_switch_provider_this_iteration = false;
                 let mut exit_chat = false;
 
                 // Track whether this provider turn has already emitted visible
@@ -2280,25 +2286,58 @@ impl Agent {
                         Err(ref provider_err @ ProviderError::CreditsExhausted { details: _, ref top_up_url }) => {
                             #[cfg(feature = "telemetry")]
                             crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
+                            // The RAW payload belongs in the log — request ids, JSON,
+                            // support URLs. It must never reach the reply, which is
+                            // typed on screen AND read aloud over TTS (2026-08-23).
                             error!("Error: {}", provider_err);
 
-                            let user_msg = if top_up_url.is_some() {
-                                "Please add credits to your account, then resend your message to continue.".to_string()
-                            } else {
-                                "Please check your account with your provider to add more credits, then resend your message to continue.".to_string()
+                            let failed_provider = match self.provider().await {
+                                Ok(p) => p.get_name().to_string(),
+                                Err(_) => "the model provider".to_string(),
                             };
+
+                            let fallback = if permanent_failure_fallback_used {
+                                None
+                            } else {
+                                self.switch_to_permanent_failure_fallback(
+                                    &session_config.id,
+                                    &failed_provider,
+                                ).await
+                            };
+
+                            let user_msg = crate::cost_router::fallback::permanent_failure_reply(
+                                &failed_provider,
+                                provider_err,
+                                fallback.as_ref(),
+                            );
+
+                            if fallback.is_some() {
+                                // Finish the turn on the new model instead of ending
+                                // the session: the same shape as recovery compaction.
+                                permanent_failure_fallback_used = true;
+                                did_switch_provider_this_iteration = true;
+                                let message = Message::assistant().with_system_notification(
+                                    SystemNotificationType::InlineMessage,
+                                    user_msg,
+                                );
+                                persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                                yield AgentEvent::Message(message);
+                                break;
+                            }
 
                             let notification_data = serde_json::json!({
                                 "top_up_url": top_up_url,
                             });
 
-                            yield AgentEvent::Message(
-                                Message::assistant().with_system_notification_with_data(
-                                    SystemNotificationType::CreditsExhausted,
-                                    user_msg,
-                                    notification_data,
-                                )
+                            let message = Message::assistant().with_system_notification_with_data(
+                                SystemNotificationType::CreditsExhausted,
+                                user_msg,
+                                notification_data,
                             );
+                            // Persist, so the explanation survives a reload rather
+                            // than leaving the session ending on an unanswered turn.
+                            persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                            yield AgentEvent::Message(message);
                             state_guard.mark_error();
                             break;
                         }
@@ -2322,16 +2361,54 @@ impl Agent {
                             // provider's own credentials — so it is never misread (by the
                             // user or by a downstream model) as an auth problem with a
                             // website, document, or tool the agent was using.
-                            let provider_label = match self.provider().await {
-                                Ok(provider) => format!("LLM provider ({})", provider.get_name()),
-                                Err(_) => "LLM provider".to_string(),
+                            let failed_provider = match self.provider().await {
+                                Ok(provider) => provider.get_name().to_string(),
+                                Err(_) => String::new(),
                             };
+                            let provider_label = if failed_provider.is_empty() {
+                                "LLM provider".to_string()
+                            } else {
+                                format!("LLM provider ({failed_provider})")
+                            };
+                            // An auth rejection is permanent for THIS key: try the
+                            // configured fallback exactly once before giving up.
+                            // The BARE provider id goes to the resolver — it compares
+                            // against configured provider ids, and a display label
+                            // would never match, silently offering a fallback on the
+                            // very provider whose key was just rejected.
+                            let fallback = if permanent_failure_fallback_used {
+                                None
+                            } else {
+                                self.switch_to_permanent_failure_fallback(
+                                    &session_config.id,
+                                    &failed_provider,
+                                ).await
+                            };
+
+                            if let Some(ref target) = fallback {
+                                permanent_failure_fallback_used = true;
+                                did_switch_provider_this_iteration = true;
+                                let message = Message::assistant().with_system_notification(
+                                    SystemNotificationType::InlineMessage,
+                                    format!(
+                                        "Authentication failed for your {provider_label}: the API key was rejected. \
+                                         Switching to {} for the rest of this turn.",
+                                        target.model
+                                    ),
+                                );
+                                persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                                yield AgentEvent::Message(message);
+                                break;
+                            }
+
+                            // No raw payload in the reply: an auth body can carry a
+                            // key fragment, and this text is also read aloud.
                             let message = Message::assistant().with_text(
                                 format!(
-                                    "Authentication failed for your {provider_label}: the API key was rejected (HTTP 401). \
+                                    "Authentication failed for your {provider_label}: the API key was rejected. \
                                      This is a credential problem with the model provider configured in Permagent — \
                                      not with any website, page, or service the agent was reading. \
-                                     Check that the provider's API key is set, valid, and has the required permissions, then resend your message.\n\nDetails: {provider_err}"
+                                     Check that the provider's API key is set, valid, and has the required permissions, then resend your message."
                                 )
                             );
                             persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
@@ -2454,8 +2531,11 @@ impl Agent {
                             yield AgentEvent::Message(message);
                             exit_chat = true;
                         }
-                        None if did_recovery_compact_this_iteration => {
-                            // continue from last user message after recovery compact
+                        None if did_recovery_compact_this_iteration || did_switch_provider_this_iteration => {
+                            // Continue from the last user message: either the history was
+                            // just compacted, or the model was just swapped after a
+                            // permanent provider rejection. Both changed the inputs, so
+                            // the turn is worth re-running rather than ending.
                         }
                         None => {
                             match self.handle_retry_logic(&mut conversation, &session_config, &initial_messages).await {
@@ -2609,6 +2689,79 @@ impl Agent {
             .apply()
             .await
             .context("Failed to persist provider config to session")
+    }
+
+    /// Swap the live provider after the current one PERMANENTLY rejected the
+    /// request (billing / auth), so the turn can finish on another model.
+    ///
+    /// Returns the target that is now live, or `None` when nothing is
+    /// configured to fall back to — the caller must then say so plainly rather
+    /// than retrying into the same wall. Errors from creating the fallback are
+    /// swallowed into `None`: a broken fallback is the same user-visible
+    /// situation as no fallback, and must never mask the original rejection.
+    ///
+    /// Regression context: session 20260823_4 (2026-08-23) burned every turn on
+    /// an Anthropic "credit balance too low" 400 until the user noticed and
+    /// switched to DeepSeek by hand.
+    async fn switch_to_permanent_failure_fallback(
+        &self,
+        session_id: &str,
+        failed_provider: &str,
+    ) -> Option<crate::cost_router::role_map::RoleModel> {
+        let target = crate::cost_router::fallback::permanent_failure_fallback(failed_provider)?;
+
+        let model_config = match crate::model::ModelConfig::new(&target.model) {
+            Ok(mc) => mc.with_canonical_limits(&target.provider),
+            Err(e) => {
+                warn!(
+                    fallback_provider = %target.provider,
+                    fallback_model = %target.model,
+                    error = %e,
+                    "Configured fallback model is invalid; continuing without a fallback"
+                );
+                return None;
+            }
+        };
+
+        let extensions = self.get_extension_configs().await;
+        let provider = match crate::providers::create(&target.provider, model_config, extensions)
+            .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(
+                    fallback_provider = %target.provider,
+                    fallback_model = %target.model,
+                    error = %e,
+                    "Could not create the configured fallback provider; continuing without a fallback"
+                );
+                return None;
+            }
+        };
+
+        if let Err(e) = self.update_provider(provider, session_id).await {
+            warn!(
+                fallback_provider = %target.provider,
+                fallback_model = %target.model,
+                error = %e,
+                "Could not activate the configured fallback provider"
+            );
+            return None;
+        }
+
+        // Routing snapshot note: the ONE line that explains, after the fact, why
+        // this session's spend moved to a different model mid-turn.
+        tracing::warn!(
+            target: "permagent::cost_router",
+            session_id = %session_id,
+            from_provider = %failed_provider,
+            to_provider = %target.provider,
+            to_model = %target.model,
+            reason = "permanent_provider_rejection",
+            "routing snapshot: switched model after a permanent provider rejection"
+        );
+
+        Some(target)
     }
 
     pub async fn update_goose_mode(&self, mode: GooseMode, session_id: &str) -> Result<()> {

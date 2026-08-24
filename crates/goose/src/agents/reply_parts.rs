@@ -17,7 +17,7 @@ use crate::cost_router::cache::SystemPromptParts;
 use crate::providers::base::stream_from_single_message;
 use crate::providers::base::{MessageStream, Provider, ProviderUsage};
 use crate::providers::canonical::{
-    cache_hit_rate_of, cache_savings_of, cost_breakdown, maybe_get_canonical_model,
+    cache_hit_rate_of, cache_savings_of, cost_breakdown, maybe_get_pricing, worst_case_pricing,
 };
 use crate::providers::errors::ProviderError;
 use crate::providers::toolshim::{
@@ -637,10 +637,14 @@ impl Agent {
         // ledger failure must never abort the agent turn — log and move on.
         let provider = session.provider_name.clone();
         let model = usage.model.clone();
+        // `maybe_get_pricing`, not `maybe_get_canonical_model(..).cost`: the
+        // generated registry has no ROW at all for a newly-selectable model, so
+        // the canonical lookup returns `None` and there is nothing to read a
+        // price off. That is how 128 `deepseek-v4-flash` calls billed as $0.00
+        // on 2026-08-23 — see `providers::canonical::published_prices`.
         let pricing = provider
             .as_deref()
-            .and_then(|p| maybe_get_canonical_model(p, &model))
-            .map(|m| m.cost);
+            .and_then(|p| maybe_get_pricing(p, &model));
         let breakdown = pricing
             .as_ref()
             .and_then(|p| cost_breakdown(&usage.usage, p));
@@ -656,12 +660,37 @@ impl Agent {
         };
 
         // Not chargeable → cost 0 (never bill local/in-quota). Chargeable with a
-        // known price → the folded `cost_of` total. Chargeable but unpriced → 0,
-        // flagged `is_estimated` so it is never mistaken for a real $0.
+        // known price → the folded `cost_of` total.
+        //
+        // Chargeable but UNPRICED → billed at the worst case we know of for that
+        // provider, still flagged `is_estimated`. It used to record $0.00, and
+        // because nothing downstream read the flag, the budget ceilings summed
+        // 211 real calls as zero and could never fire (2026-08-24 health review).
+        // An unknown price now fails CLOSED: an unmeasurable call can only make
+        // the cap fire early, never late. `is_estimated` still marks it, so the
+        // figure is never mistaken for a measured cost.
+        let estimated_breakdown = if cost_tier.is_chargeable() && breakdown.is_none() {
+            provider
+                .as_deref()
+                .and_then(worst_case_pricing)
+                .and_then(|p| cost_breakdown(&usage.usage, &p))
+        } else {
+            None
+        };
+        if let Some(est) = &estimated_breakdown {
+            tracing::warn!(
+                model = %model,
+                provider = provider.as_deref().unwrap_or("unknown"),
+                estimated_cost_usd = est.total_cost,
+                "no published price for this model — billing it at the provider's most \
+                 expensive known rate so the spend cap still applies"
+            );
+        }
+
         let (cost_usd, input_cost, output_cost, cache_read_cost, cache_write_cost, is_estimated) =
-            match (cost_tier.is_chargeable(), &breakdown) {
-                (false, _) => (0.0, 0.0, 0.0, 0.0, 0.0, false),
-                (true, Some(b)) => (
+            match (cost_tier.is_chargeable(), &breakdown, &estimated_breakdown) {
+                (false, _, _) => (0.0, 0.0, 0.0, 0.0, 0.0, false),
+                (true, Some(b), _) => (
                     b.total_cost,
                     b.input_cost,
                     b.output_cost,
@@ -669,7 +698,17 @@ impl Agent {
                     b.cache_write_cost,
                     false,
                 ),
-                (true, None) => (0.0, 0.0, 0.0, 0.0, 0.0, true),
+                (true, None, Some(b)) => (
+                    b.total_cost,
+                    b.input_cost,
+                    b.output_cost,
+                    b.cache_read_cost,
+                    b.cache_write_cost,
+                    true,
+                ),
+                // Nothing priced anywhere in the registry — keep $0 rather than
+                // inventing a number, and let `is_estimated` carry the warning.
+                (true, None, None) => (0.0, 0.0, 0.0, 0.0, 0.0, true),
             };
         let cache_savings_usd = if cost_tier.is_chargeable() {
             pricing

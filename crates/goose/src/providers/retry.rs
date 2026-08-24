@@ -101,7 +101,17 @@ fn is_local_connection_refused(message: &str) -> bool {
         && (m.contains("localhost") || m.contains("127.0.0.1") || m.contains("[::1]"))
 }
 
+/// Should this error be retried at all?
+///
+/// The FIRST question is error class, not config: a permanent client error
+/// (auth, billing, malformed request, missing model, oversized payload) fails
+/// identically on every attempt, so retrying only buys dead wall-clock and
+/// duplicate WARN lines. See [`ProviderError::is_permanent`] for the 2026-08-23
+/// incident that made this explicit.
 pub fn should_retry(error: &ProviderError, config: &RetryConfig) -> bool {
+    if error.is_permanent() {
+        return false;
+    }
     match error {
         ProviderError::RateLimitExceeded { .. } | ProviderError::ServerError(_) => true,
         // Deterministic locally: retrying cannot make a missing local service appear.
@@ -267,17 +277,21 @@ impl<P: Provider> ProviderRetry for P {
 mod tests {
     use super::*;
 
+    /// A `RequestFailed` with no recognisable permanent marker stays retryable
+    /// under the default config — that is what `transient_only` exists to turn
+    /// off. (Before 2026-08-24 this test used a "Bad request (400)" message;
+    /// that case is now classified permanent, which is the point of the fix.)
     #[test]
-    fn default_config_retries_request_failed() {
+    fn default_config_retries_unclassified_request_failed() {
         let config = RetryConfig::default();
-        let error = ProviderError::RequestFailed("Bad request (400): model not found".into());
+        let error = ProviderError::RequestFailed("Request failed with status 502".into());
         assert!(should_retry(&error, &config));
     }
 
     #[test]
     fn transient_only_skips_request_failed() {
         let config = RetryConfig::default().transient_only();
-        let error = ProviderError::RequestFailed("Bad request (400): model not found".into());
+        let error = ProviderError::RequestFailed("Request failed with status 502".into());
         assert!(!should_retry(&error, &config));
     }
 
@@ -336,6 +350,214 @@ mod tests {
                 "must fail fast: {msg}"
             );
         }
+    }
+
+    /// The 2026-08-23 incident, as a table. Every row is a real status/error-type
+    /// pair a provider sends; the boolean is whether the retry layer may try again.
+    /// PERMANENT rows cost ~8s of dead wall-clock per turn before this fix.
+    #[test]
+    fn retry_decision_table() {
+        let config = RetryConfig::default();
+        let cases: Vec<(&str, ProviderError, bool)> = vec![
+            // ── PERMANENT — must never retry ──────────────────────────────
+            (
+                "anthropic 400 invalid_request_error: credit balance too low",
+                ProviderError::CreditsExhausted {
+                    details: "Your credit balance is too low to access the Anthropic API. \
+                              Please go to Plans & Billing to upgrade or purchase credits."
+                        .into(),
+                    top_up_url: None,
+                },
+                false,
+            ),
+            (
+                "400 invalid_request_error, untyped",
+                ProviderError::RequestFailed(
+                    "Bad request (400): {\"type\":\"invalid_request_error\"}".into(),
+                ),
+                false,
+            ),
+            (
+                "401 unauthorized",
+                ProviderError::Authentication("Authentication failed. Status: 401".into()),
+                false,
+            ),
+            (
+                "403 forbidden",
+                ProviderError::Authentication("Authentication failed. Status: 403".into()),
+                false,
+            ),
+            (
+                "402 payment required",
+                ProviderError::CreditsExhausted {
+                    details: "payment required".into(),
+                    top_up_url: None,
+                },
+                false,
+            ),
+            (
+                "404 model not found",
+                ProviderError::RequestFailed("Resource not found (404): no such model".into()),
+                false,
+            ),
+            (
+                "404 endpoint not found",
+                ProviderError::EndpointNotFound("models endpoint not found".into()),
+                false,
+            ),
+            (
+                "413 payload too large",
+                ProviderError::ContextLengthExceeded("input length exceeds limit".into()),
+                false,
+            ),
+            (
+                "429 insufficient_quota is billing, not a rate limit",
+                ProviderError::CreditsExhausted {
+                    details: "insufficient_quota".into(),
+                    top_up_url: None,
+                },
+                false,
+            ),
+            // ── TRANSIENT — must still retry ──────────────────────────────
+            (
+                "408 request timeout",
+                ProviderError::RequestFailed("Request failed with status 408".into()),
+                true,
+            ),
+            (
+                "429 genuine rate limit",
+                ProviderError::RateLimitExceeded {
+                    details: "too many requests".into(),
+                    retry_delay: None,
+                },
+                true,
+            ),
+            (
+                "500 internal server error",
+                ProviderError::ServerError("Server error (500)".into()),
+                true,
+            ),
+            (
+                "502 bad gateway",
+                ProviderError::ServerError("Server error (502)".into()),
+                true,
+            ),
+            (
+                "503 service unavailable",
+                ProviderError::ServerError("Server error (503)".into()),
+                true,
+            ),
+            (
+                "remote network timeout",
+                ProviderError::NetworkError("Request timed out".into()),
+                true,
+            ),
+        ];
+
+        for (label, error, expected) in cases {
+            assert_eq!(
+                should_retry(&error, &config),
+                expected,
+                "retry decision wrong for: {label}"
+            );
+        }
+    }
+
+    /// The trap in classifying by message: OpenAI's ordinary 429 rate-limit body
+    /// mentions payment and links to `/account/billing`. Matching on "billing"
+    /// would turn a throttle — the single most retryable error there is — into a
+    /// permanent failure that kills the turn.
+    #[test]
+    fn a_rate_limit_that_mentions_billing_is_still_retryable() {
+        use crate::providers::errors::is_billing_message;
+        let openai_429 = "Rate limit reached for gpt-4 in organization org-abc123 on requests \
+                          per min (RPM): Limit 3, Used 3. Please try again in 20s. Please add a \
+                          payment method to your account to increase your rate limit. Visit \
+                          https://platform.openai.com/account/billing to add a payment method.";
+        assert!(
+            !is_billing_message(openai_429),
+            "a throttle body that links to /account/billing must not read as out-of-credit"
+        );
+        assert!(should_retry(
+            &ProviderError::RateLimitExceeded {
+                details: openai_429.into(),
+                retry_delay: None,
+            },
+            &RetryConfig::default()
+        ));
+    }
+
+    /// The genuinely-terminal bodies, from three providers that each say it
+    /// differently.
+    #[test]
+    fn real_billing_bodies_are_recognised() {
+        use crate::providers::errors::is_billing_message;
+        for body in [
+            "Your credit balance is too low to access the Anthropic API. Please go to Plans & \
+             Billing to upgrade or purchase credits.",
+            "You exceeded your current quota, please check your plan and billing details.",
+            "{\"code\":\"insufficient_quota\",\"message\":\"You have run out of credits\"}",
+            "402 Payment Required",
+            "Insufficient balance on your account.",
+        ] {
+            assert!(is_billing_message(body), "must read as billing: {body}");
+        }
+    }
+
+    /// The exact production shape: the whole retry loop must make ZERO extra
+    /// attempts on a billing rejection. Before the fix this ran 4 attempts
+    /// (1 + 3 retries) with exponential backoff on every single turn.
+    #[tokio::test]
+    async fn billing_error_costs_zero_retries() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let attempts = AtomicUsize::new(0);
+        let config = RetryConfig::default();
+
+        let result: Result<(), ProviderError> = retry_operation(&config, || {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            async {
+                Err(ProviderError::CreditsExhausted {
+                    details: "Your credit balance is too low to access the Anthropic API.".into(),
+                    top_up_url: None,
+                })
+            }
+        })
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1,
+            "a permanent billing error must be attempted exactly once"
+        );
+    }
+
+    /// The user-facing sentence must never carry the provider payload: no JSON
+    /// braces, no error-type token, no support URL. Session 20260823_4 read the
+    /// raw body out loud over TTS.
+    #[test]
+    fn user_facing_summary_never_leaks_raw_api_error() {
+        let raw = "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\
+                   \"message\":\"Your credit balance is too low to access the Anthropic API. \
+                   Please go to Plans & Billing to upgrade or purchase credits.\"}}";
+        let err = ProviderError::CreditsExhausted {
+            details: raw.to_string(),
+            top_up_url: Some("https://console.anthropic.com/settings/billing".into()),
+        };
+        let summary = err.user_facing_summary();
+        for leaked in [
+            "invalid_request_error",
+            "{",
+            "}",
+            "https://",
+            "console.anthropic.com",
+        ] {
+            assert!(
+                !summary.contains(leaked),
+                "user-facing summary leaked {leaked:?}: {summary}"
+            );
+        }
+        assert!(summary.len() < 160, "summary should be one short sentence");
     }
 
     /// A REMOTE host can be transiently down — that is what retries are for.
