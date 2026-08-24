@@ -2,6 +2,8 @@ pub mod agent_identity;
 pub mod base;
 pub mod declarative_providers;
 pub mod dev_roots;
+#[cfg(test)]
+mod dev_signing_guard;
 mod experiments;
 pub mod extensions;
 pub mod gmail_oauth;

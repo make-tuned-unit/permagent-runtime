@@ -42,10 +42,17 @@ mkdir -p "$BIN_DIR"
 
 # Unlike the daemon, the CLI links nothing but system frameworks (verified with
 # `otool -L`: AppKit, CoreFoundation, Vision, Metal, libSystem …). There is no
-# sherpa-onnx / onnxruntime pair to travel with it, so no dylib staging, no
-# rpath rewriting — and because nothing rewrites the Mach-O, the ad-hoc
-# signature cargo's linker already applied survives the copy and needs no
-# re-signing here. Tauri re-signs externalBin with the bundle identity anyway.
+# sherpa-onnx / onnxruntime pair to travel with it, so no dylib staging and no
+# rpath rewriting — nothing here rewrites the Mach-O, so whatever signature the
+# source carries survives the copy intact and needs no re-signing here.
+#
+# That source signature is now the Developer ID one, not cargo's ad-hoc one:
+# `npm run build:cli` runs scripts/sign-dev-binaries.sh straight after cargo,
+# to keep the designated requirement stable across rebuilds so the keychain
+# grant sticks (docs/operations/DEV_SIGNING.md). It makes no difference to what
+# ships. Tauri re-signs every externalBin with the bundle identity, the bundle
+# entitlements and the hardened runtime as the last step of `tauri build`, so
+# the staged copy's signature is replaced wholesale either way.
 cp "$SRC" "$DST"
 chmod +x "$DST"
 echo "CLI sidecar copied: $DST ($(du -h "$DST" | cut -f1))"
