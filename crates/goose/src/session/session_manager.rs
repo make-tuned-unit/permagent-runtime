@@ -1072,6 +1072,12 @@ impl SessionStorage {
                     // gate never re-ran. Same every-boot pattern as briefings.
                     spectral_schema::apply_finance_ledger_schema(&self.pool).await?;
                     spectral_schema::apply_finance_spend_schema(&self.pool).await?;
+                    // v48: The Forecaster's market-series registry, points,
+                    // forecasts and briefs. New tables + indexes, additive and
+                    // base-independent.
+                    if version < 48 {
+                        spectral_schema::migrate_v47_to_v48(&self.pool).await?;
+                    }
                     // Version-independent safety net for recognition columns.
                     // The always-on v23 above can stamp schema_version past the
                     // cfg-gated `version < 22` migration, leaving a feature-off DB

@@ -2084,9 +2084,9 @@ mod tests {
     fn extension_tool_inventories() -> Vec<(&'static str, Vec<rmcp::model::Tool>)> {
         use crate::agents::platform_extensions::{
             analyze, app_conductor, app_perception, apps, browser, chatrecall, dashboard, desktop,
-            developer, ext_manager, file_to_project, finance, inbox_tools, listen, model_manager,
-            orchestrator, people, project_manager, pronunciation, recipe_author, retrospect,
-            skills, storage_health, summarize, summon, todo,
+            developer, ext_manager, file_to_project, finance, forecaster, inbox_tools, listen,
+            model_manager, orchestrator, people, project_manager, pronunciation, recipe_author,
+            retrospect, skills, storage_health, summarize, summon, todo,
         };
 
         let mut project_manager_tools = project_manager::ProjectManagerClient::get_tools();
@@ -2154,6 +2154,10 @@ mod tests {
                 file_to_project::FileToProjectClient::get_tools(),
             ),
             (finance::EXTENSION_NAME, finance::FinanceClient::get_tools()),
+            (
+                forecaster::EXTENSION_NAME,
+                forecaster::ForecasterClient::get_tools(),
+            ),
             (listen::EXTENSION_NAME, listen::ListenClient::get_tools()),
             (
                 model_manager::EXTENSION_NAME,

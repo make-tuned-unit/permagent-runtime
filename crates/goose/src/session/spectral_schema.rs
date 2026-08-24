@@ -790,6 +790,12 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // installs never run the version ladder.
     apply_finance_spend_schema(pool).await?;
 
+    // The Forecaster's market-series registry, points, forecasts and briefs
+    // (schema v48). Same reason again: fresh installs never run the version
+    // ladder, and a first-boot install would otherwise fail every bind with
+    // `no such table: forecaster_series` until the second daemon boot.
+    apply_forecaster_schema(pool).await?;
+
     // Failure-learning incident capture. Version-independent, additive, and
     // idempotent so the pinned fresh-init base stamp remains unchanged.
     apply_incidents_schema(pool).await?;
@@ -1389,6 +1395,144 @@ pub async fn migrate_v46_to_v47(pool: &Pool<Sqlite>) -> Result<()> {
         .execute(pool)
         .await?;
     info!("Spectral schema migrated to v47 (finance spend + RSI alerts)");
+    Ok(())
+}
+
+/// Apply The Forecaster's schema (v48): the market series registry, its
+/// append-only points, its forecasts, and the weekly per-project brief.
+///
+/// A deliberate departure from the Financier, which never stores a quote
+/// (`apply_finance_ledger_schema`, "a price is only a price at read time").
+/// The Forecaster *must* store, because history is the product: the Financier
+/// answers *what is it now*, the Forecaster *where is it going*, and only the
+/// second needs a past. The rule is scoped, not broken — nothing here caches a
+/// live quote for a read-time answer.
+///
+/// `forecaster_series` carries no subject list of its own. A row hangs off an
+/// existing `project_intel` row (`intel_id`) or off the project itself, so the
+/// Market card and the Ecosystem panel are one concept rather than two lists
+/// that can disagree. `intel_id` is nullable and deliberately un-foreign-keyed:
+/// dismissing an intel row must not silently delete collected history.
+///
+/// Fully idempotent (IF NOT EXISTS), so it is safe on every boot and on fresh
+/// installs.
+pub async fn apply_forecaster_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS forecaster_series (
+            id                TEXT PRIMARY KEY,
+            project_id        TEXT NOT NULL,
+            intel_id          TEXT,
+            source_kind       TEXT NOT NULL,
+            subject           TEXT NOT NULL,
+            cadence           TEXT NOT NULL DEFAULT 'daily'
+                              CHECK (cadence IN ('daily','weekly')),
+            label             TEXT NOT NULL DEFAULT '',
+            status            TEXT NOT NULL DEFAULT 'proposed'
+                              CHECK (status IN ('proposed','active','dismissed')),
+            last_collected_at TEXT,
+            last_error        TEXT,
+            created_at        TEXT NOT NULL
+                              DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+    // The registry's identity. Re-proposing the same subject for the same
+    // project must reach the existing row rather than fork its history.
+    sqlx::query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_forecaster_series_subject
+         ON forecaster_series (project_id, source_kind, subject)",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_forecaster_series_project
+         ON forecaster_series (project_id, status)",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_forecaster_series_intel
+         ON forecaster_series (intel_id) WHERE intel_id IS NOT NULL",
+    )
+    .execute(pool)
+    .await?;
+
+    // Append-only observations. The composite primary key is what makes
+    // re-collecting an overlapping window idempotent: the collector always
+    // writes INSERT OR IGNORE and a second pass over the same days inserts
+    // zero rows rather than doubling the series.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS forecaster_points (
+            series_id  TEXT NOT NULL,
+            ts         TEXT NOT NULL,
+            value      REAL NOT NULL,
+            PRIMARY KEY (series_id, ts)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // `method` is NOT NULL by design. A forecast whose label does not match
+    // what produced it is the failure mode this whole feature is built to
+    // avoid, so the column cannot be skipped on the way in.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS forecaster_forecasts (
+            id               TEXT PRIMARY KEY,
+            series_id        TEXT NOT NULL,
+            made_at          TEXT NOT NULL,
+            horizon          INTEGER NOT NULL,
+            method           TEXT NOT NULL,
+            point_json       TEXT NOT NULL DEFAULT '[]',
+            quantiles_json   TEXT NOT NULL DEFAULT '{}',
+            mase_vs_baseline REAL,
+            folds            INTEGER,
+            fold_wins        INTEGER
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_forecaster_forecasts_series
+         ON forecaster_forecasts (series_id, made_at DESC)",
+    )
+    .execute(pool)
+    .await?;
+
+    // One synthesised market brief per project per sweep. `method_mix` records
+    // which methods actually produced the numbers the prose restates, so the
+    // brief can never outrun its own evidence.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS forecaster_briefs (
+            id             TEXT PRIMARY KEY,
+            project_id     TEXT NOT NULL,
+            generated_at   TEXT NOT NULL,
+            summary        TEXT NOT NULL,
+            method_mix     TEXT NOT NULL DEFAULT '{}',
+            input_json     TEXT NOT NULL DEFAULT '{}',
+            model          TEXT
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_forecaster_briefs_project
+         ON forecaster_briefs (project_id, generated_at DESC)",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// v48: The Forecaster's series registry, points, forecasts and briefs.
+/// New tables and indexes only; additive and base-version independent.
+pub async fn migrate_v47_to_v48(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v47 -> v48 (forecaster market series)");
+    apply_forecaster_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (48)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v48 (forecaster market series)");
     Ok(())
 }
 
@@ -5025,6 +5169,65 @@ mod inbox_schema_tests {
         .execute(&pool)
         .await
         .unwrap();
+    }
+
+    /// Fresh installs never run the `version < N` ladder, so the tables have
+    /// to be there from `init_spectral_db`; existing installs reach them
+    /// through the migration, twice over, without error or duplication.
+    #[tokio::test]
+    async fn migrate_v47_to_v48_adds_forecaster_tables_idempotently() {
+        let pool = mem_pool().await;
+        init_spectral_db(&pool).await.unwrap();
+        // Fresh-install path.
+        assert!(object_exists(&pool, "forecaster_series").await);
+        assert!(object_exists(&pool, "forecaster_points").await);
+        assert!(object_exists(&pool, "forecaster_forecasts").await);
+        assert!(object_exists(&pool, "forecaster_briefs").await);
+
+        migrate_v47_to_v48(&pool).await.unwrap();
+        migrate_v47_to_v48(&pool).await.unwrap();
+        assert_eq!(current_version(&pool).await, 48);
+        assert!(object_exists(&pool, "idx_forecaster_series_subject").await);
+        assert!(object_exists(&pool, "idx_forecaster_forecasts_series").await);
+
+        sqlx::query(
+            "INSERT INTO forecaster_series
+             (id, project_id, intel_id, source_kind, subject, cadence, label, status, created_at)
+             VALUES ('s1','p1','intel-1','npm','langchain','daily','langchain downloads','active','now')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // One subject, one series: a second propose for the same triple is a
+        // constraint violation, not a forked history.
+        let dup = sqlx::query(
+            "INSERT INTO forecaster_series
+             (id, project_id, source_kind, subject, cadence, status, created_at)
+             VALUES ('s2','p1','npm','langchain','daily','proposed','now')",
+        )
+        .execute(&pool)
+        .await;
+        assert!(
+            dup.is_err(),
+            "duplicate (project, source_kind, subject) must be refused"
+        );
+
+        // Points are append-only and re-collection is a no-op, not a double.
+        for _ in 0..2 {
+            sqlx::query(
+                "INSERT OR IGNORE INTO forecaster_points (series_id, ts, value)
+                 VALUES ('s1','2026-08-01',10.0)",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM forecaster_points")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(n, 1, "re-collecting the same timestamp inserts nothing");
     }
 
     #[tokio::test]

@@ -169,6 +169,11 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
     // events the drain above already pulled; no model call, no network.
     crate::growth_sweep::spawn(app_state.clone());
 
+    // The Forecaster's market collection pass. HTTP and arithmetic over public
+    // sources; no model call. Weekly by default, and it collects only series a
+    // human has approved.
+    crate::forecaster_sweep::spawn(app_state.clone());
+
     // The Concierge (#640): flag-gated (`concierge_enabled`, default OFF),
     // draft-only, local-tier inbox triage. The loop always spawns and re-reads
     // the flag every tick, so a Settings → Features flip needs no restart.

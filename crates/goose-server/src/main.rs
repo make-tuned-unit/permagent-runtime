@@ -11,6 +11,7 @@ mod configuration;
 mod device_registry;
 mod error;
 mod event_at_backfill;
+mod forecaster_sweep;
 mod growth_sweep;
 mod logging;
 mod middleware;

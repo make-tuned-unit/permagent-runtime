@@ -39,6 +39,7 @@ pub mod execution;
 pub mod finance_ledger;
 pub mod finance_statements;
 pub mod financier_close;
+pub mod forecaster;
 pub mod gateway;
 pub mod goal_landing;
 pub mod goal_refinement;
