@@ -1,3 +1,5 @@
+// The shared "one run row per attempted pass" seam the three sweep loops use.
+mod agent_pass;
 mod agent_state_tick;
 mod analytics;
 mod analytics_drain;

@@ -200,6 +200,50 @@ pub async fn try_unacknowledged(pool: &Pool<Sqlite>, limit: i64) -> Result<Vec<B
     Ok(rows.into_iter().map(row_to_briefing).collect())
 }
 
+/// Everything this agent has reported, newest first — acknowledged or not.
+///
+/// Deliberately NOT filtered on `acknowledged_at`, unlike every other read in
+/// this module. Those reads answer "what has Henry not seen yet"; this one
+/// answers "what has this agent actually done", and the moment Henry reads a
+/// briefing it would vanish from an unacknowledged-only view — leaving the
+/// agent's own page emptier the more attentive Henry has been. A record of work
+/// that erases itself on being read is not a record.
+///
+/// `agent_keys` is the full set of persona keys that file under one worker (see
+/// [`crate::config::agent_identity::worker_keys_for_descriptor_id`]) because
+/// `from_agent` holds persona keys while the page is addressed by descriptor id.
+/// An empty slice matches nothing and is returned as an empty list rather than
+/// degenerating into an unfiltered query.
+///
+/// Fallible on purpose: an unreadable table must reach the surface as "could
+/// not be read", never as "this agent has reported nothing".
+pub async fn for_agent(
+    pool: &Pool<Sqlite>,
+    agent_keys: &[&str],
+    limit: i64,
+) -> Result<Vec<Briefing>> {
+    if agent_keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = std::iter::repeat_n("?", agent_keys.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT id, from_agent, kind, severity, summary, detail, ref_kind, ref_id,
+                created_at, acknowledged_at
+           FROM agent_briefings
+          WHERE from_agent IN ({placeholders})
+          ORDER BY created_at DESC
+          LIMIT ?"
+    );
+    let mut query = sqlx::query(&sql);
+    for key in agent_keys {
+        query = query.bind(*key);
+    }
+    let rows = query.bind(limit).fetch_all(pool).await?;
+    Ok(rows.into_iter().map(row_to_briefing).collect())
+}
+
 /// How many briefings are waiting, by severity — cheap enough for a HUD poll.
 pub async fn unacknowledged_count(pool: &Pool<Sqlite>) -> i64 {
     try_unacknowledged_count(pool).await.unwrap_or(0)
@@ -307,6 +351,93 @@ mod tests {
             ref_kind: None,
             ref_id: None,
         }
+    }
+
+    /// The agent's own page must keep showing what the agent reported after
+    /// Henry has read it. Every other read here filters on `acknowledged_at`;
+    /// this one must not, or the record of an agent's work would empty itself
+    /// out as Henry got more attentive.
+    #[tokio::test]
+    async fn for_agent_keeps_acknowledged_briefings() {
+        let pool = pool().await;
+        let id = file_briefing(&pool, new("watcher", Severity::Info, "one"))
+            .await
+            .unwrap();
+        acknowledge(&pool, &[id]).await.unwrap();
+
+        assert!(
+            unacknowledged(&pool, 10).await.is_empty(),
+            "precondition: the inbox read drops it once acknowledged"
+        );
+        let mine = for_agent(&pool, &["watcher"], 10).await.unwrap();
+        assert_eq!(
+            mine.len(),
+            1,
+            "the agent's own record must survive being read"
+        );
+        assert_eq!(mine[0].summary, "one");
+    }
+
+    /// The Steward files under the persona key `steward` while its page is
+    /// addressed by the descriptor id `git_steward`. Matching on one key alone
+    /// returns nothing, which renders identically to an idle agent.
+    #[tokio::test]
+    async fn for_agent_spans_every_key_a_worker_files_under() {
+        let pool = pool().await;
+        file_briefing(&pool, new("steward", Severity::Attention, "repo drift")).await;
+        file_briefing(&pool, new("watcher", Severity::Info, "not mine")).await;
+
+        assert!(
+            for_agent(&pool, &["git_steward"], 10)
+                .await
+                .unwrap()
+                .is_empty(),
+            "precondition: the descriptor id alone matches nothing the Steward wrote"
+        );
+        let keys = crate::config::agent_identity::worker_keys_for_descriptor_id("git_steward");
+        let found = for_agent(&pool, &keys, 10).await.unwrap();
+        assert_eq!(
+            found.len(),
+            1,
+            "the bridge must reach the Steward's own rows"
+        );
+        assert_eq!(found[0].summary, "repo drift");
+    }
+
+    #[tokio::test]
+    async fn for_agent_returns_newest_first_and_leaks_no_other_agent() {
+        let pool = pool().await;
+        for n in 0..3 {
+            file_briefing(&pool, new("watcher", Severity::Info, &format!("n{n}"))).await;
+            // `created_at` is second-resolution RFC3339, so without a gap the
+            // ordering under test would be decided by insertion luck.
+            tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        }
+        file_briefing(&pool, new("steward", Severity::Info, "other")).await;
+
+        let mine = for_agent(&pool, &["watcher"], 10).await.unwrap();
+        assert_eq!(mine.len(), 3, "another agent's briefings must not leak in");
+        assert_eq!(mine[0].summary, "n2", "newest first");
+        assert_eq!(mine[2].summary, "n0");
+    }
+
+    /// An unreadable table is not an idle agent. This is the distinction the
+    /// whole evidence surface rests on.
+    #[tokio::test]
+    async fn for_agent_errors_when_the_table_is_missing() {
+        let bare = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        assert!(for_agent(&bare, &["watcher"], 10).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn for_agent_with_no_keys_matches_nothing_rather_than_everything() {
+        let pool = pool().await;
+        file_briefing(&pool, new("watcher", Severity::Info, "one")).await;
+        assert!(for_agent(&pool, &[], 10).await.unwrap().is_empty());
     }
 
     /// The severity ordering exists in exactly one place — the `CASE severity`

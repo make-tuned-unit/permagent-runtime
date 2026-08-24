@@ -64,6 +64,42 @@ pub fn test_root() -> PathBuf {
     TEST_ROOT.path().to_path_buf()
 }
 
+/// A `Project` row for the pure sweep helpers to sort and filter.
+///
+/// The rotation helpers in `strix`, `steward_sweep` and `watcher_insights` are
+/// pure over a project list precisely so their refusals ("no active project has
+/// a root path") are testable without a daemon, a database, or a scanner. They
+/// read four fields; the rest exist only because `Project` has no `Default`.
+///
+/// `#[allow(dead_code)]`: this module is compiled into BOTH crate roots, and
+/// only the bin root declares the sweep modules that use this.
+#[allow(dead_code)]
+pub fn project_fixture(
+    id: &str,
+    name: &str,
+    root_path: Option<&str>,
+    metadata_json: serde_json::Value,
+) -> permagent::projects::Project {
+    permagent::projects::Project {
+        id: id.to_string(),
+        user_id: "u".to_string(),
+        slug: name.to_lowercase().replace(' ', "-"),
+        name: name.to_string(),
+        description: String::new(),
+        status: "active".to_string(),
+        root_path: root_path.map(|r| r.to_string()),
+        site_url: None,
+        repo_url: None,
+        notes: String::new(),
+        metadata_json,
+        graph_entity_id: None,
+        tags: Vec::new(),
+        created_at: "2026-08-01T00:00:00Z".to_string(),
+        updated_at: "2026-08-01T00:00:00Z".to_string(),
+        last_opened_at: "2026-08-01T00:00:00Z".to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// No test binary may resolve the session database to the developer's real

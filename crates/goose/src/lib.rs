@@ -8,6 +8,7 @@ pub mod acp;
 pub mod action_required_manager;
 pub mod activity;
 pub mod activity_journal;
+pub mod agent_runs;
 pub mod agents;
 pub mod app_catalog;
 pub mod app_views;

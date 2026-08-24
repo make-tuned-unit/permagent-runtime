@@ -1060,6 +1060,15 @@ impl SessionStorage {
                     // went missing in production.
                     spectral_schema::apply_briefings_schema(&self.pool).await?;
 
+                    // Version-independent: durable agent-run records, the one
+                    // table that distinguishes "this worker ran and found
+                    // nothing" from "this worker never ran". Applied by table
+                    // existence for the same reason as the briefings table
+                    // directly above — a version gate is how that one went
+                    // missing — and doubly so here, because a missing table
+                    // makes every agent's page report an unreadable history.
+                    spectral_schema::apply_agent_runs_schema(&self.pool).await?;
+
                     spectral_schema::apply_skill_path_column(&self.pool).await?;
 
                     // Version-independent: ensure the projects.graph_entity_id

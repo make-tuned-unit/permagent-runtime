@@ -32,7 +32,10 @@ pub use execute_commands::COMPACT_TRIGGERS;
 pub use extension::{ExtensionConfig, ExtensionError};
 pub use extension_manager::ExtensionManager;
 pub use prompt_manager::PromptManager;
-pub use subagent_handler::SUBAGENT_TOOL_REQUEST_TYPE;
+// Re-exported (rather than making the module public) so an out-of-crate
+// caller can run ONE bounded subagent turn — `POST /api/agents/{id}/ask`
+// in goose-server needs exactly this and nothing else from the handler.
+pub use subagent_handler::{run_subagent_task, SubagentRunParams, SUBAGENT_TOOL_REQUEST_TYPE};
 pub use subagent_task_config::TaskConfig;
 pub use tool_execution::{ToolCallContext, ToolCallResult};
 pub use types::{FrontendTool, RetryConfig, SessionConfig, SuccessCheck};

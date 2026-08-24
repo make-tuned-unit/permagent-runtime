@@ -834,6 +834,24 @@ impl AppState {
                     ),
                 }
 
+                // Agent run records ride the same retention pass rather than a
+                // task of their own: identical window, identical failure
+                // policy, and one place to look when either grows unbounded.
+                match permagent::agent_runs::prune(&pool).await {
+                    Ok(n) if n > 0 => tracing::info!(
+                        target: "permagentd::journal",
+                        "Agent run retention: pruned {} rows older than {} days",
+                        n,
+                        permagent::agent_runs::RETENTION_DAYS
+                    ),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(
+                        target: "permagentd::journal",
+                        error = %e,
+                        "Agent run retention pass failed (non-fatal)"
+                    ),
+                }
+
                 let mut rx = permagent::events::subscribe();
                 tracing::info!(
                     target: "permagentd::journal",

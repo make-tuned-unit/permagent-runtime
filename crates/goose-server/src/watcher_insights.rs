@@ -8,7 +8,9 @@
 //! `projects.metadata_json.watcher_insights` (newest first, capped) — no
 //! schema migration; the Overview card reads it straight off ProjectResponse.
 
+use crate::agent_pass::{record_pass, Pass};
 use crate::state::AppState;
+use permagent::agent_runs::Trigger;
 use permagent::conversation::message::Message;
 use permagent::projects::{self, Project, UpdateProject};
 use sqlx::{Pool, Sqlite};
@@ -25,7 +27,7 @@ pub fn spawn(state: Arc<AppState>) {
         // Let boot settle before the first pass.
         tokio::time::sleep(Duration::from_secs(180)).await;
         loop {
-            if let Err(e) = run_once(&state).await {
+            if let Err(e) = run_once(&state, Trigger::Interval).await {
                 tracing::debug!("watcher insights pass skipped: {e}");
             }
             tokio::time::sleep(TICK).await;
@@ -33,33 +35,90 @@ pub fn spawn(state: Arc<AppState>) {
     });
 }
 
-async fn run_once(state: &Arc<AppState>) -> Result<(), String> {
+/// One insight pass, recorded.
+///
+/// The pass itself lives in [`insight_pass`]; this wrapper exists so that
+/// exactly ONE run row is written per invocation, with `started_at` stamped
+/// before any work. Same shape as the Guard's and the Steward's loops.
+///
+/// The Watcher has no feature flag and no "is it due yet" gate — `spawn` calls
+/// this on every tick — so unlike those two there is no path above this
+/// function that declines to run, and every tick produces a row.
+async fn run_once(state: &Arc<AppState>, trigger: Trigger) -> Result<(), String> {
+    let started_at = chrono::Utc::now();
     let pool = state
         .session_manager()
         .pool_clone()
         .await
         .map_err(|e| e.to_string())?;
-    let projects = projects::list_projects(&pool, Some("active")).await?;
-    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let pass = insight_pass(&pool).await;
+    let _ = record_pass(
+        &pool,
+        permagent::echo::SELF_KNOWLEDGE_FEATURE.id,
+        trigger,
+        started_at,
+        &pass.outcome,
+    )
+    .await;
+    pass.result
+}
 
-    for project in projects {
-        // The default Personal bucket isn't a project the Watcher reports on.
-        if project.id == "00000000-0000-0000-0000-000000000001" {
+/// Run the Watcher's insight pass now, because a person asked.
+///
+/// Called by `POST /api/agents/{id}/run`, which reports the run row this pass
+/// records rather than its own account of what happened.
+///
+/// The same body as the interval pass — only the recorded trigger differs, so a
+/// manual run lands in the same history rather than a parallel one. There is no
+/// gate to re-check here: the Watcher's pass is unconditional, and its silence
+/// comes from having nothing real to say, never from being switched off.
+pub async fn run_pass_now(state: &Arc<AppState>) -> Result<(), String> {
+    run_once(state, Trigger::Manual).await
+}
+
+/// The Watcher's actual pass.
+///
+/// Returns a [`Pass`] rather than returning early so `run_once` can record
+/// whichever way it went. Note what the row can and cannot say: the per-project
+/// `continue`s below are NOT pass-level skips — a project already at its daily
+/// cap, or with no real signals, is the honesty law working, and the pass as a
+/// whole still ran and examined it. So the common shape of a healthy row here
+/// is `ok`, N examined, nothing produced.
+async fn insight_pass(pool: &Pool<Sqlite>) -> Pass {
+    let projects = match projects::list_projects(pool, Some("active")).await {
+        Ok(projects) => projects,
+        // Not a skip: the pass could not read its own worklist.
+        Err(e) => return Pass::failed(None, e),
+    };
+    let observable = observable_projects(&projects);
+    if observable.is_empty() {
+        return Pass::skipped(
+            "no active project to observe (the default Personal bucket is not one the Watcher \
+             reports on)",
+        );
+    }
+    // What this pass looked at. Counted before the loop because it is the
+    // denominator the row is claiming — "examined 6, produced nothing" is a
+    // very different sentence from "examined 0, produced nothing".
+    let examined = observable.len() as i64;
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let mut placed: Vec<String> = Vec::new();
+
+    for project in observable {
+        if insights_on_day(project, &today) >= PER_DAY {
             continue;
         }
-        if insights_on_day(&project, &today) >= PER_DAY {
-            continue;
-        }
-        let (signals, card_refs) = gather_signals(&pool, &project.id).await;
+        let (signals, card_refs) = gather_signals(pool, &project.id).await;
         if signals.is_empty() {
             continue; // nothing real happened — the Watcher stays silent
         }
         let Some(text) = compose(&project.name, &signals).await else {
             continue;
         };
-        if let Err(e) = append_insight(&pool, &project, &text, &card_refs).await {
+        if let Err(e) = append_insight(pool, project, &text, &card_refs).await {
             tracing::debug!(project = %project.name, "watcher insight write failed: {e}");
         } else {
+            placed.push(project.name.clone());
             tracing::info!(
                 target: "permagentd::watcher",
                 project = %project.name,
@@ -75,7 +134,7 @@ async fn run_once(state: &Arc<AppState>) -> Result<(), String> {
             // anyone. Severity is about what is REQUIRED, not how interesting
             // the Watcher found it.
             permagent::briefings::file_briefing(
-                &pool,
+                pool,
                 permagent::briefings::NewBriefing {
                     from_agent: "watcher".to_string(),
                     kind: "insight".to_string(),
@@ -89,7 +148,36 @@ async fn run_once(state: &Arc<AppState>) -> Result<(), String> {
             .await;
         }
     }
-    Ok(())
+    Pass::completed(Some(examined), produced_line(&placed))
+}
+
+/// The projects this pass will consider.
+///
+/// The default bucket is not a project the Watcher reports on, so it is not
+/// counted as examined either: `examined` has to be what the pass actually
+/// looked at, or the number is decoration.
+fn observable_projects(all: &[Project]) -> Vec<&Project> {
+    all.iter()
+        .filter(|p| p.id != projects::PERSONAL_PROJECT_ID)
+        .collect()
+}
+
+/// The one-line `produced` summary for a completed pass.
+///
+/// `None` when no insight was placed, which is the normal result and the whole
+/// reason this row exists: the Watcher's honesty law is silence over filler, so
+/// most passes produce nothing, and until now a silent pass and an absent one
+/// looked identical. The projects are NAMED for the same reason the stale-card
+/// signal names its cards — a bare count sends the reader hunting.
+fn produced_line(placed: &[String]) -> Option<String> {
+    if placed.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{} insight(s) placed, on: {}",
+        placed.len(),
+        placed.join(", ")
+    ))
 }
 
 fn insights_on_day(project: &Project, day: &str) -> usize {
@@ -341,5 +429,178 @@ mod tests {
     #[test]
     fn no_stale_cards_produces_no_signal() {
         assert!(format_stale_signal(&[]).is_none());
+    }
+
+    // ── Run recording ─────────────────────────────────────────────────────
+    //
+    // COVERED here: which projects a pass counts as examined, the pass-level
+    // skip and its reason, the `produced` line, and the fact that each lands in
+    // an `agent_runs` row under `watcher` with the trigger it was given.
+    //
+    // NOT covered: `insight_pass` end-to-end (it needs an `AppState`, a project
+    // database and a configured LLM provider), and one thing the row genuinely
+    // cannot say yet — a pass where every project had signals but `compose`
+    // returned `None` because no provider is configured records `ok / examined
+    // N / produced nothing`, identical to a pass where nothing was worth
+    // saying. Attributing that to the provider from inside the loop would be a
+    // guess, and a guessed reason is worse than none.
+
+    use crate::test_support::project_fixture;
+    use permagent::agent_runs::{recent_for_agent, Outcome};
+
+    const WATCHER_ID: &str = permagent::echo::SELF_KNOWLEDGE_FEATURE.id;
+
+    async fn runs_pool() -> Pool<Sqlite> {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        permagent::session::spectral_schema::apply_agent_runs_schema(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    fn started() -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::from_timestamp(1_760_000_000, 0).unwrap()
+    }
+
+    /// The row this record exists for. The Watcher's honesty law means most
+    /// passes place nothing, so a silent pass and an absent one were the same
+    /// thing from outside — for a worker whose whole job is silence, that made
+    /// "is it running?" unanswerable.
+    #[tokio::test]
+    async fn a_pass_that_placed_no_insight_still_writes_one_ok_run_row() {
+        let pool = runs_pool().await;
+        let pass = Pass::completed(Some(4), produced_line(&[]));
+        assert!(pass.result.is_ok());
+        let _ = record_pass(
+            &pool,
+            WATCHER_ID,
+            Trigger::Interval,
+            started(),
+            &pass.outcome,
+        )
+        .await;
+
+        let runs = recent_for_agent(&pool, WATCHER_ID, 10).await.unwrap();
+        assert_eq!(runs.len(), 1, "exactly one row per pass");
+        assert_eq!(runs[0].outcome, Outcome::Ok);
+        assert_eq!(
+            runs[0].examined,
+            Some(4),
+            "the projects it looked at — 'examined 4, produced nothing' is a very \
+             different sentence from 'examined 0, produced nothing'"
+        );
+        assert_eq!(runs[0].produced, None);
+    }
+
+    /// `examined` must be what the pass actually looked at. The default bucket
+    /// is skipped before any work, so counting it would inflate the number the
+    /// row is claiming.
+    #[test]
+    fn the_personal_bucket_is_not_counted_as_examined() {
+        let projects = vec![
+            project_fixture(
+                projects::PERSONAL_PROJECT_ID,
+                "Personal",
+                None,
+                serde_json::json!({}),
+            ),
+            project_fixture("a", "Alpha", None, serde_json::json!({})),
+            project_fixture("b", "Beta", None, serde_json::json!({})),
+        ];
+        let observable = observable_projects(&projects);
+        assert_eq!(observable.len(), 2);
+        assert!(observable.iter().all(|p| p.name != "Personal"));
+    }
+
+    /// Nothing to observe is not the same as observing everything and finding
+    /// nothing worth saying, and the row has to be able to tell them apart.
+    #[tokio::test]
+    async fn a_fleet_with_nothing_to_observe_records_a_skip_naming_the_reason() {
+        let personal_only = vec![project_fixture(
+            projects::PERSONAL_PROJECT_ID,
+            "Personal",
+            None,
+            serde_json::json!({}),
+        )];
+        assert!(observable_projects(&personal_only).is_empty());
+
+        // The reason the pass itself uses for this condition.
+        let pass = Pass::skipped(
+            "no active project to observe (the default Personal bucket is not one the Watcher \
+             reports on)",
+        );
+        let pool = runs_pool().await;
+        let _ = record_pass(
+            &pool,
+            WATCHER_ID,
+            Trigger::Interval,
+            started(),
+            &pass.outcome,
+        )
+        .await;
+
+        let runs = recent_for_agent(&pool, WATCHER_ID, 10).await.unwrap();
+        assert_eq!(runs[0].outcome, Outcome::Skipped);
+        assert!(
+            runs[0]
+                .reason
+                .as_deref()
+                .unwrap()
+                .contains("Personal bucket"),
+            "the reason must name what was excluded: {:?}",
+            runs[0].reason
+        );
+        assert_eq!(
+            runs[0].examined, None,
+            "a pass that declined to observe examined nothing — never a fabricated 0"
+        );
+    }
+
+    /// `produced` names the projects, for the same reason the stale-card signal
+    /// names its cards: a bare count sends the reader hunting.
+    #[test]
+    fn produced_names_the_projects_it_counts() {
+        assert_eq!(produced_line(&[]), None);
+        let line = produced_line(&["Atlas".to_string(), "Beacon".to_string()]).unwrap();
+        assert!(line.contains("Atlas") && line.contains("Beacon"), "{line}");
+        assert!(
+            line.contains('2'),
+            "the count is still useful alongside: {line}"
+        );
+    }
+
+    /// A manual run and a scheduled one land in the same history, each labelled
+    /// for what it was. (`run_pass_now` binds `Trigger::Manual` and `spawn`
+    /// binds `Trigger::Interval` in one line each; what is testable without an
+    /// `AppState` is that the trigger handed to `record_pass` survives the
+    /// round trip, which is what those two lines depend on.)
+    #[tokio::test]
+    async fn a_manual_pass_is_recorded_as_manual_beside_the_scheduled_ones() {
+        let pool = runs_pool().await;
+        let _ = record_pass(
+            &pool,
+            WATCHER_ID,
+            Trigger::Interval,
+            started(),
+            &Pass::completed(Some(2), None).outcome,
+        )
+        .await;
+        let _ = record_pass(
+            &pool,
+            WATCHER_ID,
+            Trigger::Manual,
+            started() + chrono::Duration::seconds(30),
+            &Pass::completed(Some(2), None).outcome,
+        )
+        .await;
+
+        let runs = recent_for_agent(&pool, WATCHER_ID, 10).await.unwrap();
+        assert_eq!(runs.len(), 2, "one history, not two");
+        assert_eq!(runs[0].trigger, Trigger::Manual);
+        assert_eq!(runs[1].trigger, Trigger::Interval);
     }
 }

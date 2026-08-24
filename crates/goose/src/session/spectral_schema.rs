@@ -730,6 +730,11 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // migrate_v26_to_v27. Purely additive, base-independent.
     apply_activity_journal_schema(pool).await?;
 
+    // Durable agent-run records. Idempotent and base-independent; also applied
+    // by table existence on every boot (session_manager) for the same reason
+    // the briefings table is.
+    apply_agent_runs_schema(pool).await?;
+
     // Per-call cost ledger + session cost-rollup columns (schema v28). Idempotent;
     // shared with migrate_v27_to_v28. The ADD COLUMNs below are PRAGMA-guarded, so
     // they no-op here (fresh installs already got the columns from the sessions
@@ -1408,6 +1413,53 @@ pub async fn apply_activity_journal_schema(pool: &Pool<Sqlite>) -> Result<()> {
          BEGIN SELECT RAISE(ABORT, 'activity_journal is append-only'); END",
         crate::activity_journal::RETENTION_DAYS
     ))
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Apply the durable agent-run schema: `agent_runs`, one row per COMPLETED pass
+/// of a background worker — including the passes that found nothing and the
+/// passes that were skipped.
+///
+/// Applied by table existence on every boot rather than behind a version gate.
+/// That is the standing lesson from the recognition columns and the briefings
+/// table: a version-gated migration is exactly how a table goes missing in
+/// production, and a MISSING table here does not degrade gracefully — the
+/// agent's page would report "could not be read" for every worker, which is the
+/// one thing this table exists to stop it saying.
+///
+/// Not append-only-guarded like `activity_journal`. The run row is inserted once
+/// when the pass ends and never updated, so the guard would protect nothing that
+/// the write path does not already guarantee, while blocking the retention pass
+/// from doing its job without a second window-matched trigger to maintain.
+pub async fn apply_agent_runs_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut tx = pool.begin().await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS agent_runs (
+            id          TEXT PRIMARY KEY,
+            agent_id    TEXT NOT NULL,
+            trigger     TEXT NOT NULL,
+            outcome     TEXT NOT NULL,
+            started_at  TEXT NOT NULL,
+            finished_at TEXT NOT NULL,
+            examined    INTEGER,
+            produced    TEXT,
+            reason      TEXT
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    // The only read is "this agent's recent passes, newest first", which this
+    // composite index serves end to end without a sort.
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_agent_runs_agent_started
+            ON agent_runs(agent_id, started_at DESC)",
+    )
     .execute(&mut *tx)
     .await?;
 

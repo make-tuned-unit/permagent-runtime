@@ -34,6 +34,30 @@ pub fn descriptor_id_for_worker_key(key: &str) -> &str {
     }
 }
 
+/// Every persona key that files records under this worker-descriptor id — the
+/// INVERSE of [`descriptor_id_for_worker_key`], and the reason it has to exist.
+///
+/// The two namespaces have exactly one divergence today (`git_steward` the
+/// descriptor vs `steward` the persona), and every per-agent read that joins on
+/// a stored agent string has to bridge it or silently return nothing. The
+/// Steward files its briefings under `from_agent = "steward"`, so an evidence
+/// panel keyed on the descriptor id and matching exactly would show the Steward
+/// as having reported nothing — for an agent that reports constantly. An empty
+/// panel that means "wrong key" is indistinguishable from one that means "idle",
+/// which is the failure this whole surface exists to end.
+///
+/// The descriptor id itself is always included, so a caller can match on the
+/// returned set without also special-casing the no-divergence agents.
+/// `every_worker_key_round_trips_through_its_descriptor_id` pins the two
+/// functions against each other over the whole seeded roster.
+pub fn worker_keys_for_descriptor_id(descriptor_id: &str) -> Vec<&str> {
+    let mut keys = vec![descriptor_id];
+    if descriptor_id == crate::agents::self_knowledge::GIT_STEWARD_FEATURE_ID {
+        keys.push("steward");
+    }
+    keys
+}
+
 /// Whether a per-agent secret is set — presence ONLY. There is deliberately
 /// no public getter returning the value on a read path, and nothing here
 /// may ever reach an API response body; `app_perception`'s settings surface
@@ -894,6 +918,30 @@ mod tests {
                 "persona key {key:?} aliases {mapped:?}, which is not a worker descriptor id"
             );
         }
+    }
+
+    /// The inverse bridge has to round-trip every seeded persona key, or a
+    /// per-agent evidence read keyed on the descriptor id silently misses the
+    /// rows that agent actually wrote. This is the assertion that would have
+    /// caught the Steward's briefings (`from_agent = "steward"`) being invisible
+    /// on the `git_steward` page.
+    #[test]
+    fn every_worker_key_round_trips_through_its_descriptor_id() {
+        for key in default_roster().keys() {
+            let descriptor = descriptor_id_for_worker_key(key);
+            let back = worker_keys_for_descriptor_id(descriptor);
+            assert!(
+                back.contains(&key.as_str()),
+                "persona key {key:?} maps to descriptor {descriptor:?}, but that descriptor \
+                 does not list {key:?} among the keys that file records under it — every read \
+                 joining on a stored agent string would miss this agent's rows"
+            );
+        }
+        // The descriptor id is always present, so callers need no special case
+        // for the agents whose two namespaces agree.
+        assert_eq!(worker_keys_for_descriptor_id("strix"), vec!["strix"]);
+        let steward = worker_keys_for_descriptor_id("git_steward");
+        assert!(steward.contains(&"git_steward") && steward.contains(&"steward"));
     }
 
     #[test]

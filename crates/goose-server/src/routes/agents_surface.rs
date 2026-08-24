@@ -12,6 +12,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use permagent::agent_runs::{self, AgentRun};
 use permagent::agents::extension::ExtensionConfig;
 use permagent::agents::platform_extensions::{
     RequiredSecretDef, SecretImpact, PLATFORM_EXTENSIONS,
@@ -19,10 +20,21 @@ use permagent::agents::platform_extensions::{
 use permagent::agents::self_knowledge::{
     self, worker_live_state_for, FeatureDescriptor, FeatureFlags, StateSource, WORKER_DESCRIPTORS,
 };
-use permagent::config::agent_identity::{self, WorkerPersona};
+use permagent::agents::{
+    run_subagent_task, AgentRunnerConfig, GoosePlatform, SubagentRunParams, TaskConfig,
+};
+use permagent::briefings::{self, Briefing};
+use permagent::config::agent_identity::{self, WorkerEngineKind, WorkerPersona};
 use permagent::config::extensions::name_to_key;
+use permagent::config::paths::Paths;
 use permagent::config::worker_probe;
-use permagent::config::{extension_is_grantable, get_all_extensions, is_extension_enabled, Config};
+use permagent::config::{
+    extension_is_grantable, get_all_extensions, get_enabled_extensions, is_extension_enabled,
+    narrow_extensions_for_agent, Config, GooseMode, PermissionManager,
+};
+use permagent::providers::base::Provider;
+use permagent::recipe::Recipe;
+use permagent::session::session_manager::{SessionManager, SessionType};
 use permagent::{activity_journal, cards, decisions};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -35,6 +47,20 @@ const MAX_LIMIT: i64 = 200;
 const MAX_GRANTS: usize = 100;
 const MAX_SECRETS: usize = 100;
 const MAX_REQUIRED_SECRETS: usize = 100;
+
+/// A bounded question is a bounded turn, and both caps are load-bearing: the
+/// ask box must not be a way to start an unmetered agent run from a settings
+/// page. `ASK_MAX_TURNS` bounds the tool loop and `ASK_TIMEOUT` bounds the wall
+/// clock; expiry is reported AS a timeout rather than hanging the request or
+/// passing a partial answer off as a whole one.
+const ASK_MAX_TURNS: usize = 8;
+const ASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+const MAX_QUESTION_CHARS: usize = 4000;
+
+/// A sweep walks every project or repository, so it needs far more room than an
+/// ask. Finite all the same — an unbounded pass would hold the request open
+/// until the client gave up, which is indistinguishable from a hang.
+const RUN_PASS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
 type ApiResult<T> = Result<Json<T>, ApiError>;
 
@@ -80,6 +106,184 @@ fn gate_for(descriptor_id: &str, flags: FeatureFlags) -> Option<Gate> {
     })
 }
 
+/// Whether a bounded question can be put to this agent right now, and when it
+/// cannot, the TRUE reason.
+///
+/// Always present on the row, never omitted, and never a bare boolean: a
+/// control the UI has to guess about renders as enabled-by-hope, and an agent
+/// that answers nothing while its box looks live is the exact failure this
+/// whole surface exists to end.
+#[derive(Serialize, Clone)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum AskAvailability {
+    Available,
+    Unavailable { reason: String },
+}
+
+/// Whether this agent has an on-demand pass this process can start, and when it
+/// does not, the TRUE reason — which for most agents is not "unsupported" but a
+/// concrete statement of where its work actually happens instead.
+#[derive(Serialize, Clone)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum RunAvailability {
+    Available,
+    Unavailable { reason: String },
+}
+
+/// The three agents that have an on-demand pass, and the ONE place that knows
+/// it. `POST /api/agents/{id}/run` and the `run_now` signal both read this, so
+/// the button and the route can never disagree about what is runnable — a
+/// disagreement between the two would put an enabled control in front of a
+/// route that refuses it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RunPass {
+    Guard,
+    Steward,
+    Watcher,
+}
+
+/// Keyed on worker-DESCRIPTOR ids (`git_steward`, not the `steward` persona
+/// key); callers holding a persona key bridge through
+/// `agent_identity::descriptor_id_for_worker_key` first.
+fn run_pass_for(descriptor_id: &str) -> Option<RunPass> {
+    match descriptor_id {
+        "strix" => Some(RunPass::Guard),
+        "git_steward" => Some(RunPass::Steward),
+        "watcher" => Some(RunPass::Watcher),
+        _ => None,
+    }
+}
+
+/// Why this agent has no on-demand pass. Every sentence here is a claim about
+/// where the agent's work really happens, taken from its own module, because
+/// "not supported" tells the reader nothing they can act on and invites the
+/// guess that the feature is merely missing.
+fn run_unavailable_reason(descriptor_id: &str) -> String {
+    match descriptor_id {
+        "scheduler" => "the Scheduler has no pass of its own to run — it is the cron service that \
+             fires OTHER agents' jobs, and an individual automation is run from Automate"
+            .into(),
+        "librarian" => "the Librarian's curation pass is not started from here — it owns its own \
+             schedule and already has its own on-demand run at POST /api/librarian/run-now"
+            .into(),
+        "initiative" => "this agent has no on-demand pass — its tick is driven natively by the \
+             daemon's own initiative loop over recorded activity"
+            .into(),
+        "onboarding_coach" => "this agent has no pass at all — what it knows is computed on read \
+             from the activity the user already generates, so there is nothing here to trigger"
+            .into(),
+        "growth_measurement" => "this agent has no on-demand pass — its measurement runs only as \
+             part of the daemon's nightly growth sweep"
+            .into(),
+        "playbook" => "this agent has no on-demand pass — its synthesis runs only as part of the \
+             daemon's own playbook loop"
+            .into(),
+        "concierge" => "this agent has no on-demand pass — its triage runs only on the daemon's \
+             own Concierge tick"
+            .into(),
+        other if worker_descriptor(other).is_none() => format!(
+            "'{other}' is a dispatch persona, not a background worker: it has no pass of its own \
+             — it runs when a goal is dispatched to it"
+        ),
+        other => format!(
+            "'{other}' has no on-demand pass wired in this process, so nothing here can start it"
+        ),
+    }
+}
+
+fn run_availability(id: &str) -> RunAvailability {
+    let descriptor_id = agent_identity::descriptor_id_for_worker_key(id);
+    if run_pass_for(descriptor_id).is_some() {
+        return RunAvailability::Available;
+    }
+    RunAvailability::Unavailable {
+        reason: run_unavailable_reason(descriptor_id),
+    }
+}
+
+/// The dispatch persona a page id answers under, across the two namespaces.
+///
+/// A persona key and a worker-descriptor id are separate keyspaces that diverge
+/// exactly once (`steward` the persona, `git_steward` the descriptor). A lookup
+/// matching only one of them would report the Steward as having no persona on
+/// the page addressed by its descriptor id and as having one on the page
+/// addressed by its key — the same agent answering differently depending on
+/// which row the user clicked.
+fn persona_for_page<'a>(
+    id: &str,
+    personas: &'a HashMap<String, WorkerPersona>,
+) -> Option<(&'a str, &'a WorkerPersona)> {
+    if let Some((key, worker)) = personas.get_key_value(id) {
+        return Some((key.as_str(), worker));
+    }
+    agent_identity::worker_keys_for_descriptor_id(id)
+        .into_iter()
+        .find_map(|key| personas.get_key_value(key).map(|(k, w)| (k.as_str(), w)))
+}
+
+/// Said in ONE place because the `ask` signal and the ask route's refusal must
+/// be the same sentence — two spellings of the same fact drift, and a control
+/// disabled for one reason while the route refuses for another is worse than
+/// either alone.
+fn no_persona_reason(id: &str) -> String {
+    format!(
+        "'{id}' is a background worker with no dispatch persona in agent.yaml, so there is no \
+         persona block to answer in its voice and no extension grants to bound the answer to — \
+         there is nothing to ask under"
+    )
+}
+
+/// `ask` runs a BOUNDED question-answering turn as an in-process subagent
+/// carrying this persona's system-prompt block and its extension grants. It is
+/// not dispatch, and it never touches the agent's background loop.
+///
+/// Available iff this process can run the persona as a chat turn. An
+/// `ExternalCli` / `SupervisedCli` persona is a binary this process launches
+/// against a goal in an isolated worktree; there is no in-process turn for it to
+/// take, so the control is refused with that as its reason rather than quietly
+/// answering as somebody else.
+///
+/// `Pending` IS askable, and that is the delicate distinction on this page.
+/// `Pending` means "no runnable engine for a handed-off GOAL in a worktree" —
+/// see `WorkerEngineKind::Pending` and the orchestrator's refusal to dispatch
+/// one. Answering a bounded question is a different act with a different
+/// requirement: the persona block and the extension grants are configuration,
+/// and both exist. So the Librarian, the Steward and the Guard can be asked,
+/// and the answer comes from a subagent wearing their persona — NOT from their
+/// background loop, which this path neither starts nor reads.
+fn ask_availability_for_persona(key: &str, worker: &WorkerPersona) -> AskAvailability {
+    match &worker.engine {
+        WorkerEngineKind::InternalSubagent | WorkerEngineKind::Pending => {
+            AskAvailability::Available
+        }
+        WorkerEngineKind::ExternalCli { bin, .. } => AskAvailability::Unavailable {
+            reason: format!(
+                "'{key}' runs as the external CLI '{bin}', which this process launches against a \
+                 goal in an isolated worktree — it has no in-process turn that could answer a \
+                 question here"
+            ),
+        },
+        WorkerEngineKind::SupervisedCli { bin } => AskAvailability::Unavailable {
+            reason: format!(
+                "'{key}' runs as the supervised external CLI '{bin}' in a visible Build-tab \
+                 terminal with permission gates — this process cannot run it as a chat turn"
+            ),
+        },
+    }
+}
+
+fn ask_availability_for_descriptor(
+    descriptor_id: &str,
+    personas: &HashMap<String, WorkerPersona>,
+) -> AskAvailability {
+    match persona_for_page(descriptor_id, personas) {
+        Some((key, worker)) => ask_availability_for_persona(key, worker),
+        None => AskAvailability::Unavailable {
+            reason: no_persona_reason(descriptor_id),
+        },
+    }
+}
+
 #[derive(Serialize, Clone)]
 struct BackgroundWorker {
     id: String,
@@ -90,6 +294,9 @@ struct BackgroundWorker {
     live_state: LiveState,
     dispatchable: bool,
     gate: Option<Gate>,
+    /// Capability signals, ALWAYS present. See [`AskAvailability`].
+    ask: AskAvailability,
+    run_now: RunAvailability,
 }
 
 #[derive(Serialize, Clone)]
@@ -141,6 +348,12 @@ struct DispatchPersona {
     grants_enforced: bool,
     secrets: Secrets,
     gate: Option<Gate>,
+    /// Capability signals, ALWAYS present. `availability` above answers "is the
+    /// binary/credential this persona needs on this machine"; these two answer
+    /// "is there a control here that will do anything", which is a different
+    /// question and used to be answered by guesswork in the client.
+    ask: AskAvailability,
+    run_now: RunAvailability,
 }
 
 #[derive(Serialize, Clone)]
@@ -215,17 +428,23 @@ fn bounded<T>(mut items: Vec<T>, limit: usize) -> (Vec<T>, bool) {
 fn background_workers(
     scheduled_job_count: Option<usize>,
     flags: FeatureFlags,
+    personas: &HashMap<String, WorkerPersona>,
 ) -> Vec<BackgroundWorker> {
     WORKER_DESCRIPTORS
         .iter()
-        .map(|d| background_worker(d, scheduled_job_count, flags))
+        .map(|d| background_worker(d, scheduled_job_count, flags, personas))
         .collect()
 }
 
+/// `personas` is the live dispatch roster, needed for one honest sentence: a
+/// worker's ask box is only real if some persona answers for it, and most
+/// workers have none. Passing the roster in rather than reading it here keeps
+/// this a pure function, which is what lets the roster's shape be tested.
 fn background_worker(
     d: &FeatureDescriptor,
     scheduled_job_count: Option<usize>,
     flags: FeatureFlags,
+    personas: &HashMap<String, WorkerPersona>,
 ) -> BackgroundWorker {
     let state_source = match d.state_source {
         StateSource::Queryable => "queryable",
@@ -241,6 +460,8 @@ fn background_worker(
         live_state,
         dispatchable: false,
         gate: gate_for(d.id, flags),
+        ask: ask_availability_for_descriptor(d.id, personas),
+        run_now: run_availability(d.id),
     }
 }
 
@@ -304,6 +525,8 @@ fn dispatch_persona(
     };
     DispatchPersona {
         secrets: secrets_for_agent(&key),
+        ask: ask_availability_for_persona(&key, &worker),
+        run_now: run_availability(&key),
         // A persona key and a worker-descriptor id are separate namespaces
         // (`steward` vs `git_steward`), so the gate is looked up through the
         // bridge — without it the Steward's persona page would carry no switch
@@ -521,8 +744,9 @@ fn capabilities() -> Vec<Capability> {
 async fn roster(State(state): State<Arc<AppState>>) -> Json<RosterResponse> {
     let jobs = state.scheduler().list_scheduled_jobs().await;
     let flags = FeatureFlags::from_live_config();
+    let personas = state.agent_config.read().await.workers.clone();
     Json(RosterResponse {
-        workers: background_workers(Some(jobs.len()), flags),
+        workers: background_workers(Some(jobs.len()), flags, &personas),
         dispatch_roster: dispatch_roster(&state, flags).await,
         capabilities: capabilities(),
     })
@@ -556,10 +780,12 @@ async fn detail(
     let jobs = state.scheduler().list_scheduled_jobs().await;
     let flags = FeatureFlags::from_live_config();
     if let Some(d) = worker_descriptor(&id) {
+        let personas = state.agent_config.read().await.workers.clone();
         return Ok(Json(AgentDetail::Worker(background_worker(
             d,
             Some(jobs.len()),
             flags,
+            &personas,
         ))));
     }
     if capabilities()
@@ -643,9 +869,131 @@ struct ScheduledJobItem {
     consecutive_failures: u32,
 }
 
+/// Durable evidence that a pass happened at all — the section that answers "did
+/// this agent actually run?" rather than "did it produce something".
+///
+/// Three states, and the middle one is the point of the whole type. An agent
+/// whose code never records a run can only ever produce an empty list, and an
+/// empty list renders as an idle agent that is presumably about to do
+/// something. `NotRecorded` says the true thing instead: nothing will EVER
+/// appear here, so stop reading this panel as a liveness light.
+#[derive(Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum RunsSection {
+    Ok {
+        items: Vec<AgentRun>,
+        truncated: bool,
+    },
+    /// This agent's code calls nothing that records a run. NOT the same fact as
+    /// "has not run yet", and the surface must never render it as one.
+    NotRecorded {
+        reason: String,
+    },
+    Unavailable {
+        reason: String,
+    },
+}
+
+/// Where this agent's work goes INSTEAD of a run row. Every sentence names a
+/// real store this agent writes, taken from its own module, so the reader is
+/// pointed at evidence rather than left with an absence.
+fn runs_not_recorded_reason(descriptor_id: &str) -> String {
+    match descriptor_id {
+        "scheduler" => "the Scheduler records no run rows: it is the cron service, and what it \
+             did is in this page's scheduled_jobs section — per-job fire count, last run, last \
+             status, and consecutive failures"
+            .into(),
+        "librarian" => "the Librarian records no run rows: its curation passes report through \
+             its own schedule and status endpoints (GET /api/librarian/run-status), and the \
+             journal rows it writes carry its own id, so this page's activity section holds them"
+            .into(),
+        "concierge" => "the Concierge records no run rows: a tick that finds nothing leaves \
+             nothing behind, and a tick that finds something surfaces as an editable \
+             Decision-Inbox draft card and a once-a-day digest notification"
+            .into(),
+        "initiative" => "the Initiative driver records no run rows: a tick stopped by the free \
+             Tier-0 gate writes nothing at all, and a tick that proceeds surfaces as a \
+             Decision-Inbox proposal"
+            .into(),
+        "playbook" => "the Playbook synthesis records no run rows: what it distills is stored as \
+             its own class of Brain memory, not as a run"
+            .into(),
+        "growth_measurement" => "the growth measurement pass records no run rows: each closed \
+             window is written as a growth_action_outcomes verdict, and a pass with no window to \
+             judge deliberately writes nothing"
+            .into(),
+        "onboarding_coach" => "the onboarding coach has no pass to record: what it knows is \
+             computed on read from the activity the user already generated"
+            .into(),
+        other => format!(
+            "'{other}' records no run rows, so nothing will ever appear here — which is not the \
+             same fact as 'has not run yet'"
+        ),
+    }
+}
+
+/// Gated on `agent_runs::records_runs` BEFORE the read, so an agent that
+/// records nothing can never reach the query and come back with the empty list
+/// that would read as idleness. A read error propagates as `Unavailable`:
+/// "could not look" and "nothing happened" are the two facts this page exists
+/// to keep apart.
+async fn runs_section(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    descriptor_id: &str,
+    limit: i64,
+) -> RunsSection {
+    if !agent_runs::records_runs(descriptor_id) {
+        return RunsSection::NotRecorded {
+            reason: runs_not_recorded_reason(descriptor_id),
+        };
+    }
+    match agent_runs::recent_for_agent(pool, descriptor_id, limit + 1).await {
+        Ok(items) => {
+            let (items, truncated) = bounded(items, limit as usize);
+            RunsSection::Ok { items, truncated }
+        }
+        Err(error) => RunsSection::Unavailable {
+            reason: error.to_string(),
+        },
+    }
+}
+
+/// The agent's own reports, read across EVERY persona key it files under.
+///
+/// The Steward files briefings as `from_agent = "steward"` while this page is
+/// addressed by the descriptor id `git_steward`. Matching the id alone returns
+/// nothing, and nothing renders exactly like an agent that has never reported —
+/// for the agent that reports most. `worker_keys_for_descriptor_id` is the
+/// bridge, and `the_briefings_section_finds_the_stewards_rows_filed_under_its_persona_key`
+/// is the regression that keeps it wired.
+async fn briefings_section(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    descriptor_id: &str,
+    limit: i64,
+) -> ListSection<Briefing> {
+    let keys = agent_identity::worker_keys_for_descriptor_id(descriptor_id);
+    match briefings::for_agent(pool, &keys, limit + 1).await {
+        Ok(items) => {
+            let (items, truncated) = bounded(items, limit as usize);
+            ListSection::Ok { items, truncated }
+        }
+        Err(error) => ListSection::Unavailable {
+            reason: error.to_string(),
+        },
+    }
+}
+
 #[derive(Serialize)]
 struct WorkReview {
     activity: ActivitySection,
+    /// Did it run? See [`RunsSection`] — the only section here that can say
+    /// "this agent leaves no trace of running at all", which for most of the
+    /// roster is the honest answer.
+    runs: RunsSection,
+    /// What it reported. Unlike `activity`, these rows are written by the agent
+    /// under its own persona key, so this section carries real rows for the
+    /// workers whose journal attribution goes to `henry` instead of themselves.
+    briefings: ListSection<Briefing>,
     goals: ListSection<GoalItem>,
     spend: ListSection<SpendItem>,
     scheduled_jobs: ListSection<ScheduledJobItem>,
@@ -674,8 +1022,13 @@ async fn work(
         ));
     }
     let limit = query.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+    // Runs and briefings are stored under the worker-DESCRIPTOR id and under
+    // the agent's persona keys respectively, while this route is addressed by
+    // either. Both reads bridge, so the Steward's page carries its rows whether
+    // the user arrived at `steward` or at `git_steward`.
+    let descriptor_id = agent_identity::descriptor_id_for_worker_key(&id).to_string();
     let pool = state.session_manager().pool_clone().await;
-    let (activity, goals, spend) = match pool {
+    let (activity, goals, spend, runs, briefings) = match pool {
         Err(error) => {
             let reason = error.to_string();
             (
@@ -683,6 +1036,12 @@ async fn work(
                     reason: reason.clone(),
                 },
                 ListSection::Unavailable {
+                    reason: reason.clone(),
+                },
+                ListSection::Unavailable {
+                    reason: reason.clone(),
+                },
+                RunsSection::Unavailable {
                     reason: reason.clone(),
                 },
                 ListSection::Unavailable { reason },
@@ -800,7 +1159,9 @@ async fn work(
                     },
                 }
             };
-            (activity, goals, spend)
+            let runs = runs_section(&pool, &descriptor_id, limit).await;
+            let briefings = briefings_section(&pool, &descriptor_id, limit).await;
+            (activity, goals, spend, runs, briefings)
         }
     };
     // Scheduled jobs expose last-fire and aggregate counters only. There is no
@@ -830,6 +1191,8 @@ async fn work(
             attribution: "actor_exact_match",
             result: activity,
         },
+        runs,
+        briefings,
         goals,
         spend,
         scheduled_jobs: ListSection::Ok {
@@ -1006,6 +1369,397 @@ async fn set_secret(
     }))
 }
 
+// ── Ask one agent a bounded question ────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct AskRequest {
+    question: String,
+}
+
+/// What the tools of this turn actually were.
+///
+/// Named for what happened rather than for what was intended, because the two
+/// diverge: `narrow_extensions_for_agent` can only ever REMOVE, so a grant
+/// naming an extension that is globally disabled silently produces nothing.
+/// Reporting only the declared list would tell the user the agent held a tool
+/// it never had.
+#[derive(Serialize, Clone, PartialEq, Debug)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+enum AppliedToolScope {
+    /// The persona declares no grants, so the turn carried the globally enabled
+    /// set unchanged — the same set any in-process run here would get. Said
+    /// plainly: the reader must not be told "its own tools" when the set is
+    /// everyone's.
+    InheritGlobal { extensions: Vec<String> },
+    /// Narrowed to the persona's own grants. `granted` is what agent.yaml
+    /// declares; `applied` is what survived the narrowing, and the two differ
+    /// exactly when a declared grant was not available to narrow from.
+    Explicit {
+        granted: Vec<String>,
+        applied: Vec<String>,
+    },
+}
+
+#[derive(Serialize)]
+struct AskResponse {
+    answer: String,
+    display_name: String,
+    /// True when the answer came from a subagent carrying THIS persona's
+    /// system-prompt block. It is never a claim that the agent's background
+    /// loop ran, and nothing on this path can start one.
+    persona_applied: bool,
+    tool_scope: AppliedToolScope,
+}
+
+/// Narrow the turn's extension set to the persona's grants, and describe what
+/// actually happened.
+///
+/// TRAP, deliberately avoided: `summon`'s `handle_delegate` does NOT apply
+/// `WorkerPersona::extension_grants`, so copying that path would hand this turn
+/// the full tool set while the response claimed a scope. The narrowing here is
+/// the same `narrow_extensions_for_agent` the orchestrator's in-process
+/// dispatch uses (`platform_extensions/orchestrator.rs`), which is a `retain`
+/// over the caller's own set and so can only ever remove — a grant cannot
+/// widen, and this route cannot become a privilege-escalation seam.
+fn apply_tool_scope(
+    worker: &WorkerPersona,
+    base: Vec<ExtensionConfig>,
+) -> (Vec<ExtensionConfig>, AppliedToolScope) {
+    let granted = worker.extension_grants.clone();
+    let narrowed = narrow_extensions_for_agent(base, granted.as_deref());
+    let applied: Vec<String> = narrowed.iter().map(|config| config.key()).collect();
+    let scope = match granted {
+        None => AppliedToolScope::InheritGlobal {
+            extensions: applied,
+        },
+        Some(granted) => AppliedToolScope::Explicit { granted, applied },
+    };
+    (narrowed, scope)
+}
+
+/// The route's gate, and it is the SAME fact the `ask` signal serialises — a
+/// route more permissive than its own signal would answer for an agent the page
+/// showed as unaskable, and the user would have no way to know which was true.
+///
+/// The two refusals are different facts and carry different codes: an id nobody
+/// has heard of is a 404, while an agent that exists and cannot be asked is a
+/// 409 with the reason the signal already gave.
+fn resolve_ask_target(
+    id: &str,
+    personas: &HashMap<String, WorkerPersona>,
+) -> Result<(String, WorkerPersona), ApiError> {
+    let Some((key, worker)) = persona_for_page(id, personas) else {
+        if worker_descriptor(id).is_some() {
+            return Err(ApiError(StatusCode::CONFLICT, no_persona_reason(id)));
+        }
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            format!("agent '{id}' was not found"),
+        ));
+    };
+    match ask_availability_for_persona(key, worker) {
+        AskAvailability::Available => Ok((key.to_string(), worker.clone())),
+        AskAvailability::Unavailable { reason } => Err(ApiError(StatusCode::CONFLICT, reason)),
+    }
+}
+
+/// The provider for the ask turn: the persona's configured role→model when it
+/// has one (the same mapping a dispatch to it would take), otherwise the
+/// configured default.
+///
+/// A missing or unbuildable provider is an ERROR, never an empty answer. There
+/// is no template, no fallback sentence and no "the agent had nothing to say"
+/// on this path — an ask box that answers when nothing answered it is the exact
+/// class of false surface this work exists to remove.
+async fn ask_provider(worker: &WorkerPersona) -> Result<Arc<dyn Provider>, ApiError> {
+    let unavailable = |message: String| ApiError(StatusCode::SERVICE_UNAVAILABLE, message);
+    let config = Config::global();
+    let (provider_name, model_name) = match worker
+        .routing_role()
+        .and_then(permagent::cost_router::role_model)
+    {
+        Some(mapped) => (mapped.provider, mapped.model),
+        None => {
+            let provider_name = config.get_goose_provider().map_err(|error| {
+                unavailable(format!(
+                    "no provider is configured, so there is nothing to answer the question: {error}"
+                ))
+            })?;
+            let model_name = config.get_goose_model().map_err(|error| {
+                unavailable(format!(
+                    "no model is configured, so there is nothing to answer the question: {error}"
+                ))
+            })?;
+            (provider_name, model_name)
+        }
+    };
+    if provider_name.trim().is_empty() || model_name.trim().is_empty() {
+        return Err(unavailable(
+            "the configured provider or model is blank, so there is nothing to answer the question"
+                .into(),
+        ));
+    }
+    permagent::providers::create_with_named_model(&provider_name, &model_name, Vec::new())
+        .await
+        .map_err(|error| {
+            unavailable(format!(
+                "the provider could not be created, so no answer was produced: {error}"
+            ))
+        })
+}
+
+/// `POST /api/agents/{id}/ask` — one bounded question, answered by an
+/// in-process subagent wearing this agent's persona and holding only this
+/// agent's granted tools.
+///
+/// What this IS: a question-answering turn carrying the persona's
+/// system-prompt block and its narrowed extension set.
+///
+/// What this is NOT, and must never be described as: a message to the agent's
+/// background loop. Nothing here starts, reads, or reaches the Steward's sweep,
+/// the Guard's scan or the Librarian's curation. `POST /api/agents/{id}/run` is
+/// the only route that starts a pass, and it exists for exactly three agents.
+async fn ask(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<AskRequest>,
+) -> ApiResult<AskResponse> {
+    let question = body.question.trim().to_string();
+    if question.is_empty() {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            "question must not be empty".into(),
+        ));
+    }
+    if question.chars().count() > MAX_QUESTION_CHARS {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            format!("question must be at most {MAX_QUESTION_CHARS} characters"),
+        ));
+    }
+    let personas = state.agent_config.read().await.workers.clone();
+    let (key, worker) = resolve_ask_target(&id, &personas)?;
+
+    let (extensions, tool_scope) = apply_tool_scope(&worker, get_enabled_extensions());
+    let provider = ask_provider(&worker).await?;
+
+    // The daemon's own directory, and no project is implied by it. A question
+    // put from a settings page carries no working context, so claiming one by
+    // reaching for a project's path would be an invention.
+    let working_dir = std::env::current_dir().unwrap_or_else(|_| Paths::data_dir());
+    let session_manager = Arc::new(SessionManager::instance());
+    let display_name = worker.display_name();
+    let session = session_manager
+        .create_session(
+            working_dir.clone(),
+            format!("Question for {display_name}"),
+            SessionType::SubAgent,
+            GooseMode::Auto,
+        )
+        .await
+        .map_err(|error| {
+            ApiError(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("the question could not be given a session to run in: {error}"),
+            )
+        })?;
+
+    let task_config = TaskConfig::new(provider, &session.id, &working_dir, extensions)
+        .with_max_turns(Some(ASK_MAX_TURNS));
+    let recipe = Recipe::builder()
+        .version("1.0.0")
+        .title(format!("Question for {display_name}"))
+        .description("A bounded question put to one agent from Settings → Agents")
+        .prompt(&question)
+        .build()
+        .map_err(|error| ApiError(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    let runner = AgentRunnerConfig::new(
+        session_manager,
+        PermissionManager::instance(),
+        None,
+        // Auto, because nobody is here to answer an approval prompt: a mode
+        // that parks would hold the request open rather than refuse it, and a
+        // hung request is the least honest failure available.
+        GooseMode::Auto,
+        true,
+        GoosePlatform::GooseCli,
+    );
+
+    let turn = run_subagent_task(SubagentRunParams {
+        config: runner,
+        recipe,
+        task_config,
+        return_last_only: true,
+        session_id: session.id,
+        cancellation_token: None,
+        on_message: None,
+        notification_tx: None,
+        persona_override: Some((worker.system_prompt_block(), display_name.clone())),
+    });
+    let answer = match tokio::time::timeout(ASK_TIMEOUT, turn).await {
+        Err(_) => {
+            return Err(ApiError(
+                StatusCode::GATEWAY_TIMEOUT,
+                format!(
+                    "'{key}' did not answer within {}s — the turn is abandoned and no answer is \
+                     reported, rather than a partial one passed off as whole",
+                    ASK_TIMEOUT.as_secs()
+                ),
+            ))
+        }
+        Ok(Err(error)) => {
+            return Err(ApiError(
+                StatusCode::BAD_GATEWAY,
+                format!("the turn for '{key}' failed, so there is no answer: {error}"),
+            ))
+        }
+        Ok(Ok(answer)) => answer,
+    };
+    if answer.trim().is_empty() {
+        return Err(ApiError(
+            StatusCode::BAD_GATEWAY,
+            format!("'{key}' produced no text — an empty answer is an error here, never an answer"),
+        ));
+    }
+    Ok(Json(AskResponse {
+        answer,
+        display_name,
+        persona_applied: true,
+        tool_scope,
+    }))
+}
+
+// ── Run one agent's pass on demand ──────────────────────────────────────────
+
+#[derive(Serialize)]
+struct RunNowResponse {
+    run: AgentRun,
+}
+
+/// `POST /api/agents/{id}/run` — start this agent's pass, then report the run
+/// row the pass itself recorded.
+///
+/// The response body is the AGENT'S OWN record, not this route's account of
+/// what it did. That is deliberate: a handler that returned its own "ok" would
+/// be a status light with no evidence behind it, which is the failure the
+/// `agent_runs` table was added to end. Three checks keep the claim real:
+///
+/// * the run store is read BEFORE the pass, so a pass that records nothing
+///   cannot be reported using a previous run's row;
+/// * a pass that finishes without recording anything is an ERROR here, not a
+///   synthesised success; and
+/// * expiry is reported as a timeout, with no run claimed, because the pass may
+///   still be running and will record its own row when it finishes.
+async fn run_now(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> ApiResult<RunNowResponse> {
+    let known = state.agent_config.read().await.workers.contains_key(&id)
+        || worker_descriptor(&id).is_some();
+    if !known {
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            format!("agent '{id}' was not found"),
+        ));
+    }
+    let descriptor_id = agent_identity::descriptor_id_for_worker_key(&id).to_string();
+    let Some(pass) = run_pass_for(&descriptor_id) else {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            run_unavailable_reason(&descriptor_id),
+        ));
+    };
+
+    // Read the store first. Without a readable run table the pass could still
+    // run, but its result would be unverifiable — and reporting a run this
+    // route cannot see would be precisely the unevidenced claim it exists to
+    // avoid. Refusing before starting is the honest order.
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|error| {
+            ApiError(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!(
+                    "the run store could not be read, so a pass would leave no record this route \
+                 could verify — not started: {error}"
+                ),
+            )
+        })?;
+    let before = agent_runs::recent_for_agent(&pool, &descriptor_id, 1)
+        .await
+        .map_err(|error| {
+            ApiError(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!(
+                    "the run store could not be read, so a pass would leave no record this route \
+                     could verify — not started: {error}"
+                ),
+            )
+        })?
+        .into_iter()
+        .next()
+        .map(|run| run.id);
+
+    let outcome = match pass {
+        RunPass::Guard => {
+            tokio::time::timeout(RUN_PASS_TIMEOUT, crate::strix::run_pass_now(&state)).await
+        }
+        RunPass::Steward => {
+            tokio::time::timeout(RUN_PASS_TIMEOUT, crate::steward_sweep::run_pass_now(&state)).await
+        }
+        RunPass::Watcher => {
+            tokio::time::timeout(
+                RUN_PASS_TIMEOUT,
+                crate::watcher_insights::run_pass_now(&state),
+            )
+            .await
+        }
+    };
+    match outcome {
+        Err(_) => {
+            return Err(ApiError(
+                StatusCode::GATEWAY_TIMEOUT,
+                format!(
+                    "the pass for '{descriptor_id}' did not finish within {}s; it may still be \
+                     running, and no run is reported here until one is recorded",
+                    RUN_PASS_TIMEOUT.as_secs()
+                ),
+            ))
+        }
+        Ok(Err(reason)) => {
+            return Err(ApiError(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("the pass for '{descriptor_id}' failed: {reason}"),
+            ))
+        }
+        Ok(Ok(())) => {}
+    }
+
+    let latest = agent_runs::recent_for_agent(&pool, &descriptor_id, 1)
+        .await
+        .map_err(|error| {
+            ApiError(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("the pass completed but its run could not be read back: {error}"),
+            )
+        })?
+        .into_iter()
+        .next();
+    match latest {
+        Some(run) if Some(&run.id) != before.as_ref() => Ok(Json(RunNowResponse { run })),
+        _ => Err(ApiError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!(
+                "the pass for '{descriptor_id}' completed but recorded no run, so there is \
+                 nothing to show — reporting success here without the agent's own row would be \
+                 exactly the claim this page exists to stop making"
+            ),
+        )),
+    }
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         // matchit prefers this static segment over `{id}`. The write handlers
@@ -1015,17 +1769,47 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/api/agents/{id}/work", get(work))
         .route("/api/agents/{id}/grants", post(set_grants))
         .route("/api/agents/{id}/secrets", post(set_secret))
+        .route("/api/agents/{id}/ask", post(ask))
+        .route("/api/agents/{id}/run", post(run_now))
         .with_state(state)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use permagent::briefings::{NewBriefing, Severity};
+
+    /// The seeded dispatch roster, which is what a real install carries: every
+    /// default worker is merged into agent.yaml on load, so testing against it
+    /// is testing against what the surface actually sees.
+    fn personas() -> HashMap<String, WorkerPersona> {
+        agent_identity::default_roster()
+    }
+
+    async fn runs_pool() -> sqlx::Pool<sqlx::Sqlite> {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        permagent::session::spectral_schema::apply_agent_runs_schema(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    async fn briefings_pool() -> sqlx::Pool<sqlx::Sqlite> {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        permagent::session::spectral_schema::apply_briefings_schema(&pool)
+            .await
+            .unwrap();
+        pool
+    }
 
     #[test]
     fn workers_are_never_dispatchable_and_have_no_affordance() {
-        let value =
-            serde_json::to_value(background_workers(Some(3), FeatureFlags::default())).unwrap();
+        let value = serde_json::to_value(background_workers(
+            Some(3),
+            FeatureFlags::default(),
+            &personas(),
+        ))
+        .unwrap();
         let workers = value.as_array().unwrap();
         // The roster no longer filters on host config, so the count IS pinnable
         // now — the caveat this comment used to carry ("6 of 9 here, depends on
@@ -1088,7 +1872,7 @@ mod tests {
         )]);
         let shaped_secrets = secret_names_from_map("researcher", seeded);
         let roster = RosterResponse {
-            workers: background_workers(Some(0), FeatureFlags::default()),
+            workers: background_workers(Some(0), FeatureFlags::default(), &personas()),
             dispatch_roster: vec![DispatchPersona {
                 key: "researcher".into(),
                 display_name: "Researcher".into(),
@@ -1101,11 +1885,16 @@ mod tests {
                 grants_enforced: true,
                 secrets: shaped_secrets,
                 gate: None,
+                ask: AskAvailability::Available,
+                run_now: RunAvailability::Unavailable {
+                    reason: "no pass".into(),
+                },
             }],
             capabilities: capabilities(),
         };
-        let detail =
-            AgentDetail::Worker(background_workers(Some(0), FeatureFlags::default()).remove(0));
+        let detail = AgentDetail::Worker(
+            background_workers(Some(0), FeatureFlags::default(), &personas()).remove(0),
+        );
         let work = WorkReview {
             activity: ActivitySection {
                 attribution: "actor_exact_match",
@@ -1113,6 +1902,13 @@ mod tests {
                     items: Vec::new(),
                     truncated: false,
                 },
+            },
+            runs: RunsSection::NotRecorded {
+                reason: "records nothing".into(),
+            },
+            briefings: ListSection::Ok {
+                items: Vec::new(),
+                truncated: false,
             },
             goals: ListSection::Ok {
                 items: Vec::new(),
@@ -1292,8 +2088,12 @@ mod tests {
     /// would return no `strix` row here at all and fail on the `expect`.
     #[test]
     fn gated_worker_is_listed_while_its_flag_is_off() {
-        let value =
-            serde_json::to_value(background_workers(Some(0), FeatureFlags::default())).unwrap();
+        let value = serde_json::to_value(background_workers(
+            Some(0),
+            FeatureFlags::default(),
+            &personas(),
+        ))
+        .unwrap();
         let guard = value
             .as_array()
             .unwrap()
@@ -1319,7 +2119,7 @@ mod tests {
                 steward_scan_enabled: true,
             },
         ] {
-            let rows = background_workers(Some(0), flags);
+            let rows = background_workers(Some(0), flags, &personas());
             assert_eq!(rows.len(), WORKER_DESCRIPTORS.len());
             let ids: Vec<&str> = rows.iter().map(|w| w.id.as_str()).collect();
             assert_eq!(ids, expected);
@@ -1343,7 +2143,8 @@ mod tests {
         let off = FeatureFlags::default();
         for id in ["playbook", "strix"] {
             let d = worker_descriptor(id).unwrap_or_else(|| panic!("{id} stopped resolving"));
-            let body = serde_json::to_value(background_worker(d, Some(0), off)).unwrap();
+            let body =
+                serde_json::to_value(background_worker(d, Some(0), off, &personas())).unwrap();
             assert_eq!(body["id"], id);
             assert!(
                 body["gate"]["config_key"].is_string(),
@@ -1395,5 +2196,335 @@ mod tests {
         assert!(persona.gate.is_none());
         let body = serde_json::to_string(&persona).unwrap();
         assert!(body.contains("\"gate\":null"), "{body}");
+    }
+
+    /// THE point of `RunsSection`, and the assertion the whole liveness surface
+    /// rests on. The Playbook's code calls nothing that records a run, so this
+    /// panel can only ever be empty for it — and an empty `ok` list renders as
+    /// "idle, presumably about to do something", which is a claim nobody made.
+    /// Asserted on the serialised TAG, because the enum variant is invisible to
+    /// the client and the tag is what the UI branches on.
+    #[tokio::test]
+    async fn an_agent_that_records_no_runs_serialises_not_recorded_not_an_empty_ok_list() {
+        let pool = runs_pool().await;
+        for id in [
+            "playbook",
+            "scheduler",
+            "librarian",
+            "concierge",
+            "onboarding_coach",
+        ] {
+            let value = serde_json::to_value(runs_section(&pool, id, 10).await).unwrap();
+            assert_eq!(
+                value["status"], "not_recorded",
+                "{id} records no runs, so its section must say so: {value}"
+            );
+            assert!(
+                value.get("items").is_none(),
+                "{id} must not carry a list a reader could mistake for a run history"
+            );
+            let reason = value["reason"].as_str().unwrap();
+            assert!(!reason.is_empty(), "{id} gave no reason");
+            assert!(
+                !agent_runs::records_runs(id),
+                "{id} is now a run-recording agent; this test's premise moved"
+            );
+        }
+    }
+
+    /// The other side of the same distinction: an agent that DOES record runs
+    /// and has not run yet is a genuine empty list — worth waiting for — and
+    /// must serialise differently from the agent that will never appear here.
+    #[tokio::test]
+    async fn an_agent_that_records_runs_but_has_none_yet_serialises_an_empty_ok_list() {
+        let pool = runs_pool().await;
+        let value = serde_json::to_value(runs_section(&pool, "strix", 10).await).unwrap();
+        assert_eq!(value["status"], "ok");
+        assert_eq!(value["items"].as_array().unwrap().len(), 0);
+        assert_eq!(value["truncated"], false);
+
+        let never = serde_json::to_value(runs_section(&pool, "playbook", 10).await).unwrap();
+        assert_ne!(
+            value["status"], never["status"],
+            "'has not run yet' and 'records no runs' must not serialise alike"
+        );
+    }
+
+    /// An unreadable table must not render as an idle agent. `recent_for_agent`
+    /// propagates the error; this pins that the section keeps it rather than
+    /// degrading it into `ok` with nothing in it.
+    #[tokio::test]
+    async fn a_missing_runs_table_is_unavailable_not_an_empty_history() {
+        let bare = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let value = serde_json::to_value(runs_section(&bare, "strix", 10).await).unwrap();
+        assert_eq!(value["status"], "unavailable");
+        assert!(!value["reason"].as_str().unwrap().is_empty());
+    }
+
+    /// REGRESSION, and the bridge this whole section needed. The Steward files
+    /// briefings under `from_agent = "steward"` while its page is addressed as
+    /// `git_steward`. Without `worker_keys_for_descriptor_id` the read returns
+    /// nothing, and nothing renders exactly like an agent that has never
+    /// reported — for the agent that reports most.
+    #[tokio::test]
+    async fn the_briefings_section_finds_the_stewards_rows_filed_under_its_persona_key() {
+        let pool = briefings_pool().await;
+        permagent::briefings::file_briefing(
+            &pool,
+            NewBriefing {
+                from_agent: "steward".into(),
+                kind: "repo_health".into(),
+                severity: Severity::Attention,
+                summary: "three merged branches are still around".into(),
+                detail: None,
+                ref_kind: None,
+                ref_id: None,
+            },
+        )
+        .await
+        .expect("the Steward filed a briefing");
+
+        let value =
+            serde_json::to_value(briefings_section(&pool, "git_steward", 10).await).unwrap();
+        assert_eq!(value["status"], "ok");
+        let items = value["items"].as_array().unwrap();
+        assert_eq!(
+            items.len(),
+            1,
+            "the page addressed as git_steward must reach the Steward's own rows: {value}"
+        );
+        assert_eq!(items[0]["from_agent"], "steward");
+
+        // And the read is still scoped: another agent's briefings do not leak in.
+        let watcher = serde_json::to_value(briefings_section(&pool, "watcher", 10).await).unwrap();
+        assert_eq!(watcher["items"].as_array().unwrap().len(), 0);
+    }
+
+    /// Both signals must carry a REAL reason for an agent that has neither
+    /// affordance — the Onboarding coach has no dispatch persona and no pass at
+    /// all — and neither may be a bare boolean or an omitted field, because a
+    /// missing field renders as an enabled control in the client.
+    #[test]
+    fn ask_and_run_now_are_unavailable_with_a_true_reason_for_an_agent_that_has_neither() {
+        let roster = personas();
+        let value = serde_json::to_value(background_worker(
+            worker_descriptor("onboarding_coach").unwrap(),
+            Some(0),
+            FeatureFlags::default(),
+            &roster,
+        ))
+        .unwrap();
+        assert_eq!(value["ask"]["status"], "unavailable");
+        assert!(value["ask"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("no dispatch persona"));
+        assert_eq!(value["run_now"]["status"], "unavailable");
+        assert!(!value["run_now"]["reason"].as_str().unwrap().is_empty());
+
+        // Every worker row carries both keys, always — an absent key is the
+        // failure mode this replaces.
+        for row in background_workers(Some(0), FeatureFlags::default(), &roster) {
+            let row = serde_json::to_value(row).unwrap();
+            assert!(row["ask"]["status"].is_string(), "{row}");
+            assert!(row["run_now"]["status"].is_string(), "{row}");
+        }
+    }
+
+    /// The Guard has both: an `engine: Pending` persona (askable — see
+    /// `ask_availability_for_persona` on why Pending is not the same bar) and a
+    /// real on-demand pass.
+    #[test]
+    fn ask_and_run_now_are_available_for_the_agent_that_has_both() {
+        let roster = personas();
+        let value = serde_json::to_value(background_worker(
+            worker_descriptor("strix").unwrap(),
+            Some(0),
+            FeatureFlags::default(),
+            &roster,
+        ))
+        .unwrap();
+        assert_eq!(value["ask"]["status"], "available");
+        assert!(value["ask"].get("reason").is_none());
+        assert_eq!(value["run_now"]["status"], "available");
+
+        // The Steward's WORKER row and its PERSONA row must agree, across the
+        // `git_steward` / `steward` namespace split — the same agent cannot be
+        // askable on one of its two pages and not the other.
+        let worker = serde_json::to_value(background_worker(
+            worker_descriptor("git_steward").unwrap(),
+            Some(0),
+            FeatureFlags::default(),
+            &roster,
+        ))
+        .unwrap();
+        let persona = serde_json::to_value(dispatch_persona(
+            "steward".to_string(),
+            roster["steward"].clone(),
+            Availability::Available,
+            FeatureFlags::default(),
+        ))
+        .unwrap();
+        assert_eq!(worker["ask"]["status"], "available");
+        assert_eq!(persona["ask"]["status"], "available");
+        assert_eq!(worker["run_now"]["status"], "available");
+        assert_eq!(persona["run_now"]["status"], "available");
+    }
+
+    /// An external CLI is a binary launched against a goal in a worktree; there
+    /// is no in-process turn for it to take. The signal says so, and the route's
+    /// gate must refuse for the SAME reason — a route more permissive than its
+    /// own signal would answer for an agent the page showed as unaskable.
+    #[test]
+    fn the_ask_route_refuses_an_unknown_agent_and_an_external_cli_persona_with_a_real_message() {
+        let roster = personas();
+
+        let unknown = resolve_ask_target("no_such_agent_4c19", &roster).unwrap_err();
+        assert_eq!(unknown.0, StatusCode::NOT_FOUND);
+        assert!(unknown.1.contains("no_such_agent_4c19"));
+
+        let external = resolve_ask_target("claude_code", &roster).unwrap_err();
+        assert_eq!(external.0, StatusCode::CONFLICT);
+        assert!(
+            external.1.contains("claude"),
+            "the refusal must name the binary it cannot run as a turn: {}",
+            external.1
+        );
+        // The signal and the refusal are the same sentence.
+        match ask_availability_for_persona("claude_code", &roster["claude_code"]) {
+            AskAvailability::Unavailable { reason } => assert_eq!(reason, external.1),
+            AskAvailability::Available => panic!("an external CLI must not be askable"),
+        }
+
+        // A background worker with no persona is a 409 with the shared reason,
+        // never a 404: the agent exists, it just cannot be asked.
+        let no_persona = resolve_ask_target("onboarding_coach", &roster).unwrap_err();
+        assert_eq!(no_persona.0, StatusCode::CONFLICT);
+        assert_eq!(no_persona.1, no_persona_reason("onboarding_coach"));
+
+        // And an askable one resolves, so the refusals above are not vacuous.
+        let (key, _) = resolve_ask_target("git_steward", &roster).unwrap();
+        assert_eq!(
+            key, "steward",
+            "the page id must resolve through the bridge"
+        );
+    }
+
+    /// The trap this route was written around. `summon`'s delegate path does
+    /// not apply `extension_grants`, so a straight copy would hand the turn
+    /// every tool while the response claimed a scope. Proven on the real
+    /// narrowing: a persona granted one extension must not come away holding
+    /// the other, and the reported scope must name both what was granted and
+    /// what survived.
+    #[test]
+    fn a_grant_narrows_the_asked_agents_tools_and_the_scope_reports_what_survived() {
+        let builtin = |name: &str| ExtensionConfig::Builtin {
+            name: name.to_string(),
+            description: String::new(),
+            display_name: None,
+            timeout: None,
+            bundled: None,
+            available_tools: Vec::new(),
+        };
+        let base = vec![builtin("developer"), builtin("computercontroller")];
+
+        let mut granted = WorkerPersona {
+            extension_grants: Some(vec!["developer".to_string()]),
+            ..Default::default()
+        };
+        let (narrowed, scope) = apply_tool_scope(&granted, base.clone());
+        assert_eq!(
+            narrowed.iter().map(|c| c.key()).collect::<Vec<_>>(),
+            vec!["developer".to_string()],
+            "the ungranted extension must not reach the turn"
+        );
+        assert_eq!(
+            scope,
+            AppliedToolScope::Explicit {
+                granted: vec!["developer".to_string()],
+                applied: vec!["developer".to_string()],
+            }
+        );
+
+        // A grant naming something the run never had cannot manufacture it, and
+        // the scope must show the gap rather than repeating the declaration.
+        granted.extension_grants = Some(vec!["developer".into(), "not_installed_9f2a".into()]);
+        let (narrowed, scope) = apply_tool_scope(&granted, base.clone());
+        assert_eq!(narrowed.len(), 1);
+        match scope {
+            AppliedToolScope::Explicit { granted, applied } => {
+                assert_eq!(granted.len(), 2);
+                assert_eq!(applied, vec!["developer".to_string()]);
+            }
+            other => panic!("expected an explicit scope, got {other:?}"),
+        }
+
+        // No grants means the global set, and it is named as inherited rather
+        // than dressed up as the agent's own.
+        let inherits = WorkerPersona::default();
+        let (narrowed, scope) = apply_tool_scope(&inherits, base);
+        assert_eq!(narrowed.len(), 2);
+        assert!(matches!(scope, AppliedToolScope::InheritGlobal { .. }));
+    }
+
+    /// The `run_now` signal and the run route read one function, so they cannot
+    /// disagree — and every agent it declares runnable must be a real worker
+    /// that RECORDS the run it is about to start. A pass that runs and records
+    /// nothing would make the route's own honesty check (no new row ⇒ error)
+    /// fire on every press.
+    #[test]
+    fn every_agent_with_an_on_demand_pass_is_a_real_worker_that_records_its_runs() {
+        let runnable: Vec<&str> = WORKER_DESCRIPTORS
+            .iter()
+            .map(|d| d.id)
+            .filter(|id| run_pass_for(id).is_some())
+            .collect();
+        assert_eq!(
+            runnable,
+            vec!["git_steward", "watcher", "strix"],
+            "the runnable set changed; the reasons on every other agent may now be stale"
+        );
+        for id in &runnable {
+            assert!(
+                agent_runs::records_runs(id),
+                "'{id}' has a run button but records no run, so pressing it can only error"
+            );
+            assert!(matches!(run_availability(id), RunAvailability::Available));
+        }
+        // Every other worker states a real reason instead.
+        for d in WORKER_DESCRIPTORS
+            .iter()
+            .filter(|d| run_pass_for(d.id).is_none())
+        {
+            match run_availability(d.id) {
+                RunAvailability::Unavailable { reason } => {
+                    assert!(!reason.is_empty(), "{} gave no reason", d.id);
+                    assert!(
+                        reason.len() > 40,
+                        "{}'s reason is too thin to act on: {reason}",
+                        d.id
+                    );
+                }
+                RunAvailability::Available => {
+                    panic!("{} claims a pass that run_pass_for does not have", d.id)
+                }
+            }
+        }
+    }
+
+    /// The Steward's two page ids must answer identically. `steward` the
+    /// persona key and `git_steward` the descriptor id are one agent, and a
+    /// run button that worked on one page and refused on the other would be the
+    /// same half-wired split this surface keeps closing.
+    #[test]
+    fn the_stewards_two_ids_answer_the_same_way_about_running() {
+        assert!(matches!(
+            run_availability("steward"),
+            RunAvailability::Available
+        ));
+        assert!(matches!(
+            run_availability("git_steward"),
+            RunAvailability::Available
+        ));
     }
 }

@@ -34,17 +34,27 @@ import { useTheme } from '../../../styles/useTheme';
 import { api } from '../../../lib/api';
 import { useCommandCenter } from '../../../lib/store';
 import {
+  askAgent,
   fetchAgentDetail,
   fetchAgentWork,
   fetchRoster,
+  readAgentCapability,
+  runAgentNow,
   saveGrants,
   saveSecret,
+  type AgentCapability,
   type AgentDetail,
+  type AgentRun,
+  type AppliedToolScope,
+  type AskAnswer,
   type BackgroundWorker,
+  type BriefingItem,
   type Capability,
   type DispatchPersona,
   type ListSection,
   type RosterResponse,
+  type RunOutcome,
+  type RunsSection,
   type Secrets,
   type WorkReview,
 } from '../../../lib/agentsApi';
@@ -343,17 +353,174 @@ function GrantsEditor({
   );
 }
 
+/**
+ * What the answer's tools actually were, in a sentence.
+ *
+ * `inherit_global` is deliberately NOT described as "its own tools": the turn
+ * carried the globally enabled set, the same set any other in-process run would
+ * get, and calling that the agent's own scope would overstate what happened.
+ * `explicit` names the grants that were declared but not available, because a
+ * grant that narrowed to nothing is invisible otherwise.
+ */
+function toolScopeLabel(scope: AppliedToolScope): string {
+  if (scope.mode === 'inherit_global') {
+    return scope.extensions.length === 0
+      ? 'the globally enabled tools, of which there are currently none'
+      : `the globally enabled tools (${scope.extensions.join(', ')}) — not a set of its own`;
+  }
+  const missing = scope.granted.filter(g => !scope.applied.includes(g));
+  const base = scope.applied.length === 0
+    ? 'narrowed to its own grants, none of which were available'
+    : `narrowed to its own grants: ${scope.applied.join(', ')}`;
+  return missing.length === 0
+    ? base
+    : `${base} (declared but not available: ${missing.join(', ')})`;
+}
+
+/**
+ * The first question this page exists to answer: "can I actually talk to this
+ * one?". It is a request/response ask against THIS agent's id — the answer
+ * comes back whole, and the identity and tool scope it came back under are
+ * printed beside it, which is the whole difference between this and a generic
+ * chat box that would answer as nobody in particular.
+ */
+function AskAgentBlock({
+  agentId,
+  agentName,
+  ask,
+}: {
+  agentId: string;
+  agentName: string;
+  ask: AgentCapability;
+}) {
+  const { colors } = useTheme();
+  const [question, setQuestion] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [answer, setAnswer] = useState<AskAnswer | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Disabled and VISIBLE, never hidden: the user needs to see that asking is a
+  // thing this surface does, and why it is off for this agent.
+  const blocked = ask.status === 'unavailable';
+  const canSend = !blocked && !busy && question.trim().length > 0;
+
+  const send = async () => {
+    if (!canSend) return;
+    setBusy(true);
+    setError(null);
+    setAnswer(null);
+    try {
+      setAnswer(await askAgent(agentId, question.trim()));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'The agent did not answer');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Section
+      title="Ask this agent"
+      sub="Asks this agent, under its own persona and tool scope. The answer arrives whole when it is ready — there is nothing to watch while it thinks."
+    >
+      {blocked && (
+        <div
+          data-testid="ask-unavailable"
+          style={{ fontSize: 12, color: colors.warning, marginBottom: 10, lineHeight: 1.5 }}
+        >
+          {agentName} cannot be asked anything here — {ask.reason}
+        </div>
+      )}
+      <textarea
+        data-testid="ask-question"
+        value={question}
+        disabled={blocked || busy}
+        onChange={e => setQuestion(e.target.value)}
+        placeholder={blocked ? '' : `Ask ${agentName} a question`}
+        style={{
+          width: '100%', padding: 12, background: colors.inputBg,
+          border: `1px solid ${colors.border}`, borderRadius: 8, color: colors.text,
+          fontFamily: font.body, fontSize: 13, outline: 'none', minHeight: 80,
+          resize: 'vertical', cursor: blocked || busy ? 'not-allowed' : 'text',
+          opacity: blocked || busy ? 0.55 : 1,
+        }}
+      />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 10 }}>
+        <button
+          type="button"
+          data-testid="ask-send"
+          disabled={!canSend}
+          onClick={() => { void send(); }}
+          style={{
+            padding: '7px 14px', borderRadius: radius.sm, border: `1px solid ${colors.border}`,
+            background: colors.surface, color: canSend ? colors.cyan : colors.textDim,
+            cursor: canSend ? 'pointer' : 'not-allowed', fontSize: 12, fontWeight: 600,
+            fontFamily: font.body,
+          }}
+        >
+          {busy ? 'Asking…' : 'Ask'}
+        </button>
+        {busy && (
+          <span data-testid="ask-pending" style={{ fontSize: 12, color: colors.textMuted }}>
+            Waiting for {agentName} to answer…
+          </span>
+        )}
+      </div>
+      {error && (
+        <div data-testid="ask-error" style={{ marginTop: 10, fontSize: 12, color: colors.danger }}>
+          Could not ask {agentName} — {error}
+        </div>
+      )}
+      {answer && (
+        <div style={{ marginTop: 14 }}>
+          <div
+            data-testid="ask-answer-attribution"
+            style={{ fontSize: 11, color: colors.textDim, marginBottom: 6, lineHeight: 1.5 }}
+          >
+            Answered by {answer.display_name} · tools: {toolScopeLabel(answer.tool_scope)} ·{' '}
+            {answer.persona_applied
+              ? 'its own persona was applied'
+              : 'answered WITHOUT its persona'}
+          </div>
+          <div
+            data-testid="ask-answer"
+            style={{
+              fontSize: 12, color: colors.text, lineHeight: 1.55, whiteSpace: 'pre-wrap',
+              padding: '10px 12px', borderRadius: radius.md,
+              background: colors.bgDeeper, border: `1px solid ${colors.border}`,
+            }}
+          >
+            {answer.answer}
+          </div>
+        </div>
+      )}
+    </Section>
+  );
+}
+
 function WorkSection({
   title,
+  action,
   children,
 }: {
   title: string;
+  /** Sits on the header line, right-aligned — where "Run now" lives, next to
+   *  the Runs list it writes into. */
+  action?: React.ReactNode;
   children: React.ReactNode;
 }) {
   const { colors } = useTheme();
   return (
     <div style={{ marginBottom: 18 }}>
-      <div style={{ fontSize: 12, fontWeight: 600, color: colors.text, marginBottom: 8 }}>{title}</div>
+      <div
+        style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          gap: 12, marginBottom: 8, minHeight: 20,
+        }}
+      >
+        <div style={{ fontSize: 12, fontWeight: 600, color: colors.text }}>{title}</div>
+        {action}
+      </div>
       {children}
     </div>
   );
@@ -367,12 +534,281 @@ function renderListUnavailable(reason: string, colors: ReturnType<typeof useThem
   );
 }
 
-function WorkReviewBlock({ work }: { work: WorkReview }) {
+/**
+ * "No runs recorded YET" — a fact about the record, from an agent that does
+ * keep one. Deliberately different words from the not-recorded line below, which
+ * is a fact about the agent.
+ */
+const EMPTY_RUNS_NOTE =
+  'No runs recorded yet. This agent does record its passes, so one will appear here after its next.';
+
+const EMPTY_BRIEFINGS_NOTE =
+  'No briefings from this agent. Absence here is not proof it had nothing to say — an agent that files no briefings reports through its activity instead.';
+
+/**
+ * `ok` and `skipped` are both the agent working as designed — a skipped pass
+ * means nothing was due, and colouring it as a failure is exactly the false
+ * alarm this page exists to stop. Only `failed` gets the error treatment.
+ */
+function runOutcomeTone(outcome: RunOutcome): LabelTone {
+  if (outcome === 'failed') return 'error';
+  if (outcome === 'ok') return 'ok';
+  return 'unknown';
+}
+
+/**
+ * One recorded pass. Every optional field is rendered ONLY when the daemon sent
+ * one: `examined: null` means this pass does not count items, and printing it
+ * as 0 would be a claim that the agent looked at nothing.
+ */
+function RunRow({ run }: { run: AgentRun }) {
+  const { colors } = useTheme();
+  const tone = runOutcomeTone(run.outcome);
+  return (
+    <div
+      data-testid={`run-row-${run.id}`}
+      style={{ fontSize: 12, color: colors.text, lineHeight: 1.45 }}
+    >
+      <span style={{ color: colors.textDim, fontFamily: font.mono, marginRight: 8 }}>
+        {run.started_at}
+      </span>
+      <span style={{ color: colors.textMuted, marginRight: 8 }}>{run.trigger}</span>
+      <span
+        data-testid={`run-outcome-${run.id}`}
+        data-tone={tone}
+        style={{ color: toneColor(tone, colors), fontWeight: tone === 'error' ? 600 : 400 }}
+      >
+        {run.outcome}
+      </span>
+      {run.examined !== null && (
+        <span style={{ color: colors.textMuted }}> · examined {run.examined}</span>
+      )}
+      {run.produced !== null && (
+        <span style={{ color: colors.textMuted }}> · produced {run.produced}</span>
+      )}
+      {run.reason !== null && (
+        <div style={{ color: tone === 'error' ? colors.danger : colors.textMuted, marginTop: 2 }}>
+          {run.reason}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Runs, and the one control that adds to them.
+ *
+ * "Run now" is a REQUEST/RESPONSE call: it resolves when the pass has finished
+ * and the runtime has written its row. There is no progress stream behind it,
+ * so nothing here says live, streaming, or watching — the honest promise is
+ * "press it, wait, see the run it recorded".
+ */
+function RunsBlock({
+  agentId,
+  runs,
+  runNow,
+  onRan,
+}: {
+  agentId: string;
+  runs: RunsSection;
+  runNow: AgentCapability;
+  /** Re-read the work review, so the pass just run joins the list. */
+  onRan: () => Promise<void>;
+}) {
+  const { colors } = useTheme();
+  const [busy, setBusy] = useState(false);
+  const [lastRun, setLastRun] = useState<AgentRun | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const blocked = runNow.status === 'unavailable';
+
+  const go = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const { run } = await runAgentNow(agentId);
+      setLastRun(run);
+      // The list on screen is a snapshot taken before this pass existed.
+      await onRan();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'The run did not complete');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const button = (
+    <button
+      type="button"
+      data-testid="run-now"
+      disabled={blocked || busy}
+      onClick={() => { void go(); }}
+      style={{
+        padding: '4px 10px', borderRadius: radius.sm, border: `1px solid ${colors.border}`,
+        background: colors.surface, color: blocked || busy ? colors.textDim : colors.cyan,
+        cursor: blocked || busy ? 'not-allowed' : 'pointer', fontSize: 11, fontWeight: 600,
+        fontFamily: font.body,
+      }}
+    >
+      {busy ? 'Running…' : 'Run now'}
+    </button>
+  );
+
+  return (
+    <WorkSection title="Runs" action={button}>
+      {blocked && (
+        <div
+          data-testid="run-now-unavailable"
+          style={{ fontSize: 12, color: colors.warning, marginBottom: 8, lineHeight: 1.5 }}
+        >
+          This agent cannot be run from here — {runNow.reason}
+        </div>
+      )}
+      {busy && (
+        <div data-testid="run-now-pending" style={{ fontSize: 12, color: colors.textMuted, marginBottom: 8 }}>
+          Running one pass. This returns the recorded run when the pass finishes.
+        </div>
+      )}
+      {error && (
+        <div data-testid="run-now-error" style={{ fontSize: 12, color: colors.danger, marginBottom: 8 }}>
+          Could not run it — {error}
+        </div>
+      )}
+      {lastRun && (
+        <div
+          data-testid="run-now-result"
+          style={{
+            marginBottom: 10, padding: '8px 10px', borderRadius: radius.md,
+            background: colors.bgDeeper, border: `1px solid ${colors.border}`,
+          }}
+        >
+          <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 4 }}>
+            The pass you just ran:
+          </div>
+          <RunRow run={lastRun} />
+        </div>
+      )}
+      {runs.status === 'unavailable' && renderListUnavailable(runs.reason, colors)}
+      {runs.status === 'not_recorded' && (
+        // NOT an empty list and NOT an error: this agent's code writes no run
+        // record at all, so there is nothing here to be missing.
+        <div
+          data-testid="runs-not-recorded"
+          style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}
+        >
+          This agent records no runs — {runs.reason}
+        </div>
+      )}
+      {runs.status === 'ok' && runs.items.length === 0 && (
+        <div
+          data-testid="empty-runs"
+          style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}
+        >
+          {EMPTY_RUNS_NOTE}
+        </div>
+      )}
+      {runs.status === 'ok' && runs.items.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {runs.items.map(run => <RunRow key={run.id} run={run} />)}
+          {runs.truncated && (
+            <div style={{ fontSize: 11, color: colors.textDim }}>{truncatedNote(runs.items.length)}</div>
+          )}
+        </div>
+      )}
+    </WorkSection>
+  );
+}
+
+function briefingSeverityColor(
+  severity: BriefingItem['severity'],
+  colors: ReturnType<typeof useTheme>['colors'],
+): string {
+  // A briefing asking for a decision is not a failure — it is warning-toned, so
+  // it cannot be confused with a run that went wrong.
+  if (severity === 'action_required' || severity === 'attention') return colors.warning;
+  return colors.textMuted;
+}
+
+function BriefingsBlock({ briefings }: { briefings: ListSection<BriefingItem> }) {
+  const { colors } = useTheme();
+  if (briefings.status === 'unavailable') {
+    return (
+      <WorkSection title="Briefings">
+        {renderListUnavailable(briefings.reason, colors)}
+      </WorkSection>
+    );
+  }
+  return (
+    <WorkSection title="Briefings">
+      {briefings.items.length === 0 ? (
+        <div
+          data-testid="empty-briefings"
+          style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}
+        >
+          {EMPTY_BRIEFINGS_NOTE}
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {briefings.items.map(item => (
+            <div
+              key={item.id}
+              data-testid={`briefing-row-${item.id}`}
+              style={{ fontSize: 12, color: colors.text, lineHeight: 1.45 }}
+            >
+              <span
+                style={{
+                  color: briefingSeverityColor(item.severity, colors),
+                  fontWeight: item.severity === 'action_required' ? 600 : 400,
+                  marginRight: 8,
+                }}
+              >
+                {item.severity}
+              </span>
+              <span>{item.summary}</span>
+              <div style={{ color: colors.textDim, fontSize: 11, marginTop: 2 }}>
+                <span style={{ fontFamily: font.mono, marginRight: 8 }}>{item.created_at}</span>
+                {item.acknowledged_at === null
+                  ? 'not acknowledged'
+                  : `acknowledged ${item.acknowledged_at}`}
+              </div>
+              {item.detail && (
+                <div style={{ color: colors.textMuted, marginTop: 2 }}>{item.detail}</div>
+              )}
+            </div>
+          ))}
+          {briefings.truncated && (
+            <div style={{ fontSize: 11, color: colors.textDim }}>
+              {truncatedNote(briefings.items.length)}
+            </div>
+          )}
+        </div>
+      )}
+    </WorkSection>
+  );
+}
+
+function WorkReviewBlock({
+  work,
+  agentId,
+  runNow,
+  onRan,
+}: {
+  work: WorkReview;
+  agentId: string;
+  runNow: AgentCapability;
+  onRan: () => Promise<void>;
+}) {
   const { colors } = useTheme();
   const activity = work.activity;
 
   return (
     <div>
+      {/* Runs first: "did it actually do the thing" is the question this whole
+          section is here to answer, and everything below is context for it. */}
+      <RunsBlock agentId={agentId} runs={work.runs} runNow={runNow} onRan={onRan} />
+
+      <BriefingsBlock briefings={work.briefings} />
+
       <WorkSection title="Activity">
         {activity.status === 'unavailable'
           ? renderListUnavailable(activity.reason, colors)
@@ -595,10 +1031,24 @@ function AgentDetailPane({
     return () => { cancelled = true; };
   }, [id]);
 
+  // The work review is a snapshot taken on open, so a pass run from this page
+  // would otherwise be absent from the very list that answers "did it run?".
+  const refreshWork = useCallback(async () => {
+    const next = await fetchAgentWork(id);
+    setWork(next);
+    setWorkError(null);
+  }, [id]);
+
   // Validated, never cast: an older daemon serialises no gate at all, and a
   // missing gate must read as "no switch known" rather than as a switch that is
   // off — offering to flip a key that daemon does not read would be a lie.
   const gate = readAgentGate(detail);
+
+  // Same reasoning as the gate, and the same shape of bug if it were skipped: a
+  // daemon that serialises neither field must leave both controls DISABLED with
+  // a reason, never enabled on a guess that would fail when pressed.
+  const ask = readAgentCapability(detail, 'ask');
+  const runNow = readAgentCapability(detail, 'run_now');
 
   const headerLive = detail.kind === 'worker'
     ? liveStateLabel(detail.live_state)
@@ -646,6 +1096,10 @@ function AgentDetailPane({
           onFlipped={reloadAfterFlip}
         />
       )}
+
+      {/* First, above everything else on the page: the user asked to be able to
+          ask an agent a question before anything else about it. */}
+      <AskAgentBlock agentId={id} agentName={detail.display_name} ask={ask} />
 
       <Section title="World">
         <WorldLink agentId={id} />
@@ -696,7 +1150,14 @@ function AgentDetailPane({
       <Section title="Work review" sub="Rows are exact attribution to this id — empty means nothing is attributed, not that the agent was idle.">
         {workError && <div style={{ fontSize: 12, color: colors.danger }}>{workError}</div>}
         {!workError && !work && <div style={{ fontSize: 12, color: colors.textDim }}>Loading work…</div>}
-        {work && <WorkReviewBlock work={work} />}
+        {work && (
+          <WorkReviewBlock
+            work={work}
+            agentId={id}
+            runNow={runNow}
+            onRan={refreshWork}
+          />
+        )}
       </Section>
     </div>
   );

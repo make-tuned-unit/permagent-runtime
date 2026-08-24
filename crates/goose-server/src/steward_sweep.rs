@@ -16,7 +16,9 @@
 //! Honesty laws, inherited from the Guard's loop: no findings → silence, never
 //! filler; `gh` being unavailable is a stated fact, not a pretend-clean CI.
 
+use crate::agent_pass::{record_pass, Pass};
 use crate::state::AppState;
+use permagent::agent_runs::Trigger;
 use permagent::projects::{self, Project, UpdateProject};
 use permagent::steward::{self, git_health, hygiene};
 use sqlx::{Pool, Sqlite};
@@ -81,7 +83,7 @@ pub fn spawn(state: Arc<AppState>) {
             let due = last_sweep.is_none_or(|t| t.elapsed() >= sweep_interval());
             if is_enabled() && due {
                 last_sweep = Some(tokio::time::Instant::now());
-                if let Err(e) = sweep_once(&state).await {
+                if let Err(e) = sweep_once(&state, Trigger::Interval).await {
                     tracing::debug!(target: "permagentd::steward", "sweep skipped: {e}");
                 }
             }
@@ -100,24 +102,74 @@ fn announce(state_label: &str) {
     ));
 }
 
-async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
+/// One sweep, recorded.
+///
+/// The pass itself lives in [`sweep_pass`]; this wrapper exists so that exactly
+/// ONE run row is written per invocation, whichever of the pass's exits it
+/// takes, with `started_at` stamped before any work. Same shape as the Guard's
+/// loop, deliberately — the two surfaces have to be readable side by side.
+///
+/// A pass that cannot get a pool records nothing and returns the error it
+/// always has: there is nowhere to write the row, and inventing one would be
+/// the opposite of what this record is for.
+async fn sweep_once(state: &Arc<AppState>, trigger: Trigger) -> Result<(), String> {
+    let started_at = chrono::Utc::now();
     let pool = state
         .session_manager()
         .pool_clone()
         .await
         .map_err(|e| e.to_string())?;
-    let projects = projects::list_projects(&pool, Some("active")).await?;
+    let pass = sweep_pass(&pool).await;
+    let _ = record_pass(
+        &pool,
+        steward::SELF_KNOWLEDGE_FEATURE.id,
+        trigger,
+        started_at,
+        &pass.outcome,
+    )
+    .await;
+    pass.result
+}
 
-    // ONE project per sweep, rotating least-recently-scanned first — same
-    // shape as the Guard: one focused pass per interval, predictable cycle,
-    // and a never-scanned project sorts first (empty stamp).
-    let mut candidates: Vec<&Project> = projects
-        .iter()
-        .filter(|p| p.id != PERSONAL_PROJECT_ID && p.root_path.is_some())
-        .collect();
-    candidates.sort_by_key(|p| last_scan_stamp(p));
-    let Some(project) = candidates.first().copied() else {
-        return Ok(());
+/// Run the Steward's git-health sweep now, because a person asked.
+///
+/// Called by `POST /api/agents/{id}/run`, which reports the run row this pass
+/// records rather than its own account of what happened.
+///
+/// The same body, the same gate, the same refusals as the interval pass — only
+/// the recorded trigger differs, so a manual run lands in the same history
+/// rather than a parallel one. The pass body re-checks `steward_scan_enabled`
+/// for this caller's sake: `spawn` is what keeps a switched-off sweep from
+/// recording a skip every fifteen minutes, and a manual press has no `spawn`
+/// above it.
+pub async fn run_pass_now(state: &Arc<AppState>) -> Result<(), String> {
+    sweep_once(state, Trigger::Manual).await
+}
+
+/// The Steward's actual pass.
+///
+/// Returns a [`Pass`] rather than returning early so `sweep_once` can record
+/// whichever way it went. Every `return` below used to be a bare `Ok(())`: a
+/// sweep that found a non-repo root, or had no repo to survey at all, left the
+/// same trace as a sweep that never happened.
+async fn sweep_pass(pool: &Pool<Sqlite>) -> Pass {
+    // Unreachable from the interval loop, which checks the same flag in `spawn`
+    // before calling at all; this is the gate for a MANUAL pass. `Err` so the
+    // person who pressed the button is told why nothing happened.
+    if !is_enabled() {
+        let reason = format!("the git-health sweep is off ({STEWARD_SCAN_ENABLED_KEY}=false)");
+        return Pass::skipped(reason.clone()).returning(Err(reason));
+    }
+
+    let projects = match projects::list_projects(pool, Some("active")).await {
+        Ok(projects) => projects,
+        // Not a skip: the sweep could not read its own worklist.
+        Err(e) => return Pass::failed(None, e),
+    };
+
+    let project = match choose_target(&projects) {
+        Ok(project) => project,
+        Err(reason) => return Pass::skipped(reason),
     };
     let root = PathBuf::from(project.root_path.clone().unwrap_or_default());
 
@@ -125,7 +177,7 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
     let health = git_health::collect_repo_health(&root).await;
     // The rotation advances on every attempt — survey, skip, or error — so
     // one broken project can never starve the rest of the cycle.
-    if let Err(e) = stamp_last_scan(&pool, project).await {
+    if let Err(e) = stamp_last_scan(pool, project).await {
         tracing::warn!(target: "permagentd::steward", "last-scan stamp failed: {e}");
     }
     let Some(health) = health else {
@@ -137,7 +189,7 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
             "root is not a readable git repository — nothing surveyed"
         );
         announce("available");
-        return Ok(());
+        return Pass::skipped(not_a_repo_skip_reason(&project.name));
     };
 
     // ── Proposals: detections WITH an effect arm ──
@@ -160,7 +212,7 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
             evidence.push(format!("merged via: {via}"));
         }
         match hygiene::propose_repo_hygiene(
-            &pool,
+            pool,
             hygiene::RepoHygieneProposal {
                 action_class: hygiene::ACTION_REPO_WORKTREE_REAP.to_string(),
                 repo_path: health.repo_path.clone(),
@@ -191,7 +243,7 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
             evidence.push(format!("merged via: {via}"));
         }
         match hygiene::propose_repo_hygiene(
-            &pool,
+            pool,
             hygiene::RepoHygieneProposal {
                 action_class: hygiene::ACTION_REPO_BRANCH_DELETE.to_string(),
                 repo_path: health.repo_path.clone(),
@@ -225,10 +277,14 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
             flags.push(format!("failing CI: {r}"));
         }
     }
+    // Whether the briefing actually landed, not whether we tried to file one:
+    // the run row's `produced` line is a claim that something exists to go and
+    // read, so it has to be answerable by the same call that would have made it.
+    let mut briefed = false;
     if !flags.is_empty() {
         let summary = flags.join("; ");
-        permagent::briefings::file_briefing(
-            &pool,
+        briefed = permagent::briefings::file_briefing(
+            pool,
             permagent::briefings::NewBriefing {
                 from_agent: "steward".to_string(),
                 kind: "repo_health_alert".to_string(),
@@ -243,9 +299,10 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
                 ref_id: None,
             },
         )
-        .await;
+        .await
+        .is_some();
         if let Err(e) = steward::surface_repo_health_report(
-            &pool,
+            pool,
             steward::RepoHealthReport {
                 repo_path: health.repo_path.clone(),
                 summary,
@@ -271,7 +328,56 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
         "git-health sweep complete — next sweep takes the next least-recently-scanned project"
     );
     announce("available");
-    Ok(())
+    // One repo per sweep by rotation, so `examined` is 1 — what this pass
+    // actually surveyed, not the size of the fleet it is working through.
+    Pass::completed(Some(1), produced_line(proposed, briefed))
+}
+
+/// Pick the repo this sweep surveys, or say why there is nothing to survey.
+///
+/// Pure over the project list for the same reason as the Guard's: this refusal
+/// used to be a bare `return Ok(())`, so "no project has a root path" and "the
+/// Steward swept and everything was tidy" were the same silence from outside.
+fn choose_target(projects: &[Project]) -> Result<&Project, String> {
+    // ONE project per sweep, rotating least-recently-scanned first — same
+    // shape as the Guard: one focused pass per interval, predictable cycle,
+    // and a never-scanned project sorts first (empty stamp).
+    let mut candidates: Vec<&Project> = projects
+        .iter()
+        .filter(|p| p.id != PERSONAL_PROJECT_ID && p.root_path.is_some())
+        .collect();
+    candidates.sort_by_key(|p| last_scan_stamp(p));
+    candidates.first().copied().ok_or_else(|| {
+        "no active project outside the default Personal bucket has a root path to survey"
+            .to_string()
+    })
+}
+
+/// The skip reason a root that is not a git repository is recorded under —
+/// the loop's own words, in one place so the log line and the row agree.
+fn not_a_repo_skip_reason(project_name: &str) -> String {
+    format!("{project_name}: root is not a readable git repository — nothing surveyed")
+}
+
+/// The one-line `produced` summary for a completed sweep.
+///
+/// `None` when the repo was tidy and green, which is the normal healthy result:
+/// the pass still records an `ok` row, it just has nothing to point at. Only
+/// outputs that actually landed are named — a proposal the anti-nag gate
+/// suppressed was not produced, and neither was a briefing that failed to file.
+fn produced_line(proposed: usize, briefed: bool) -> Option<String> {
+    let mut parts = Vec::new();
+    if proposed > 0 {
+        parts.push(format!("{proposed} repo-hygiene decision(s) filed"));
+    }
+    if briefed {
+        parts.push("1 repo-health briefing filed".to_string());
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("; "))
+    }
 }
 
 /// Recent failing CI runs via `gh run list --limit 3`. `None` when gh is
@@ -358,4 +464,235 @@ async fn stamp_last_scan(pool: &Pool<Sqlite>, project: &Project) -> Result<(), S
     )
     .await
     .map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::project_fixture;
+    use permagent::agent_runs::{recent_for_agent, Outcome};
+
+    // COVERED here: the rotation choice and its refusal, the not-a-repo skip
+    // wording, the `produced` line, and the fact that each lands in an
+    // `agent_runs` row under `git_steward` with the trigger it was given.
+    //
+    // NOT covered: `sweep_pass` end-to-end. It needs an `AppState`, a real git
+    // repository with worktrees and merged branches, and `gh` authenticated
+    // against a GitHub remote — a test of it would assert the developer's
+    // machine. The seams below are the parts that decide what the row says.
+
+    async fn runs_pool() -> Pool<Sqlite> {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        permagent::session::spectral_schema::apply_agent_runs_schema(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    fn started() -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::from_timestamp(1_760_000_000, 0).unwrap()
+    }
+
+    /// Metadata for a project the Steward has already swept, keyed off the
+    /// production constant so a rename cannot leave this test passing against
+    /// a key nothing writes.
+    fn swept_at(stamp: &str) -> serde_json::Value {
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            LAST_SCAN_KEY.to_string(),
+            serde_json::Value::String(stamp.to_string()),
+        );
+        serde_json::Value::Object(meta)
+    }
+
+    /// The row the run record exists for: a sweep that surveyed a repo and
+    /// found it tidy and green writes nothing anywhere else in the system, so
+    /// without this row it looks exactly like a sweep that never ran.
+    #[tokio::test]
+    async fn a_sweep_that_found_a_tidy_repo_still_writes_one_ok_run_row() {
+        let pool = runs_pool().await;
+        let pass = Pass::completed(Some(1), produced_line(0, false));
+        assert!(pass.result.is_ok());
+        let _ = record_pass(
+            &pool,
+            steward::SELF_KNOWLEDGE_FEATURE.id,
+            Trigger::Interval,
+            started(),
+            &pass.outcome,
+        )
+        .await;
+
+        let runs = recent_for_agent(&pool, steward::SELF_KNOWLEDGE_FEATURE.id, 10)
+            .await
+            .unwrap();
+        assert_eq!(runs.len(), 1, "exactly one row per pass");
+        assert_eq!(runs[0].outcome, Outcome::Ok);
+        assert_eq!(
+            runs[0].examined,
+            Some(1),
+            "the rotation surveys one repo per sweep, and that is what it examined"
+        );
+        assert_eq!(
+            runs[0].produced, None,
+            "a tidy repo produced nothing and must not claim otherwise"
+        );
+    }
+
+    /// A fleet with nothing to survey is not a Steward that found everything
+    /// clean — the row has to be able to tell those apart.
+    #[test]
+    fn a_fleet_with_nothing_to_survey_says_so_rather_than_going_quiet() {
+        assert_eq!(
+            choose_target(&[]).unwrap_err(),
+            "no active project outside the default Personal bucket has a root path to survey"
+        );
+
+        let personal_only = vec![project_fixture(
+            PERSONAL_PROJECT_ID,
+            "Personal",
+            Some("/tmp/personal"),
+            serde_json::json!({}),
+        )];
+        assert!(choose_target(&personal_only).is_err());
+
+        let rootless = vec![project_fixture("p1", "Notes", None, serde_json::json!({}))];
+        assert!(choose_target(&rootless).is_err());
+    }
+
+    /// The rotation itself, pinned: least-recently-swept first, a never-swept
+    /// project ahead of every swept one.
+    #[test]
+    fn the_least_recently_swept_project_goes_next() {
+        let projects = vec![
+            project_fixture(
+                "a",
+                "Alpha",
+                Some("/tmp/a"),
+                swept_at("2026-08-10T00:00:00Z"),
+            ),
+            project_fixture("b", "Beta", Some("/tmp/b"), serde_json::json!({})),
+            project_fixture(
+                "c",
+                "Gamma",
+                Some("/tmp/c"),
+                swept_at("2026-08-01T00:00:00Z"),
+            ),
+        ];
+        assert_eq!(
+            choose_target(&projects).unwrap().id,
+            "b",
+            "never swept goes first"
+        );
+    }
+
+    /// A skip row is only worth having if it carries the reason the sweep
+    /// actually had — so the reason comes from the production helper rather
+    /// than being retyped here.
+    #[tokio::test]
+    async fn a_skipped_sweep_records_the_reason_the_sweep_actually_had() {
+        let pool = runs_pool().await;
+        let reason = choose_target(&[]).unwrap_err();
+        let _ = record_pass(
+            &pool,
+            steward::SELF_KNOWLEDGE_FEATURE.id,
+            Trigger::Interval,
+            started(),
+            &Pass::skipped(reason.clone()).outcome,
+        )
+        .await;
+
+        let runs = recent_for_agent(&pool, steward::SELF_KNOWLEDGE_FEATURE.id, 10)
+            .await
+            .unwrap();
+        assert_eq!(runs[0].outcome, Outcome::Skipped);
+        assert_eq!(runs[0].reason.as_deref(), Some(reason.as_str()));
+        assert_eq!(
+            runs[0].examined, None,
+            "a pass that declined to survey examined nothing — never a fabricated 0"
+        );
+    }
+
+    /// A root that is not a git repository is the Steward's most common skip,
+    /// and the row has to name the project or the reader cannot act on it.
+    #[tokio::test]
+    async fn a_root_that_is_not_a_repository_is_recorded_as_a_named_skip() {
+        let pool = runs_pool().await;
+        let reason = not_a_repo_skip_reason("Atlas");
+        assert!(reason.starts_with("Atlas:"), "name the project: {reason}");
+        let _ = record_pass(
+            &pool,
+            steward::SELF_KNOWLEDGE_FEATURE.id,
+            Trigger::Interval,
+            started(),
+            &Pass::skipped(reason.clone()).outcome,
+        )
+        .await;
+
+        let runs = recent_for_agent(&pool, steward::SELF_KNOWLEDGE_FEATURE.id, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            runs[0].outcome,
+            Outcome::Skipped,
+            "a non-repo root is the sweep working as designed, not a failure"
+        );
+        assert_eq!(runs[0].reason.as_deref(), Some(reason.as_str()));
+    }
+
+    /// `produced` names only what actually landed. A proposal the anti-nag gate
+    /// suppressed and a briefing that failed to file both produced nothing.
+    #[test]
+    fn produced_names_only_the_outputs_that_landed() {
+        assert_eq!(produced_line(0, false), None);
+        assert_eq!(
+            produced_line(2, false).unwrap(),
+            "2 repo-hygiene decision(s) filed"
+        );
+        assert_eq!(
+            produced_line(0, true).unwrap(),
+            "1 repo-health briefing filed"
+        );
+        let both = produced_line(1, true).unwrap();
+        assert!(
+            both.contains("decision(s)") && both.contains("briefing"),
+            "{both}"
+        );
+    }
+
+    /// A manual run and a scheduled one land in the same history, each labelled
+    /// for what it was. (`run_pass_now` binds `Trigger::Manual` and `spawn`
+    /// binds `Trigger::Interval` in one line each; what is testable without an
+    /// `AppState` is that the trigger handed to `record_pass` survives the
+    /// round trip, which is what those two lines depend on.)
+    #[tokio::test]
+    async fn a_manual_pass_is_recorded_as_manual_beside_the_scheduled_ones() {
+        let pool = runs_pool().await;
+        let _ = record_pass(
+            &pool,
+            steward::SELF_KNOWLEDGE_FEATURE.id,
+            Trigger::Interval,
+            started(),
+            &Pass::completed(Some(1), None).outcome,
+        )
+        .await;
+        let _ = record_pass(
+            &pool,
+            steward::SELF_KNOWLEDGE_FEATURE.id,
+            Trigger::Manual,
+            started() + chrono::Duration::seconds(30),
+            &Pass::completed(Some(1), None).outcome,
+        )
+        .await;
+
+        let runs = recent_for_agent(&pool, steward::SELF_KNOWLEDGE_FEATURE.id, 10)
+            .await
+            .unwrap();
+        assert_eq!(runs.len(), 2, "one history, not two");
+        assert_eq!(runs[0].trigger, Trigger::Manual);
+        assert_eq!(runs[1].trigger, Trigger::Interval);
+    }
 }

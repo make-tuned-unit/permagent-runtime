@@ -14,7 +14,9 @@
 //!     so a path outside the user's own project roots cannot be reached even
 //!     if a project row is malformed.
 
+use crate::agent_pass::{record_pass, Pass};
 use crate::state::AppState;
+use permagent::agent_runs::Trigger;
 use permagent::projects::{self, Project, UpdateProject};
 use permagent::strix;
 use sqlx::{Pool, Sqlite};
@@ -105,7 +107,7 @@ pub fn spawn(state: Arc<AppState>) {
         };
         if first_sweep_now {
             last_sweep = Some(tokio::time::Instant::now());
-            if let Err(e) = sweep_once(&state).await {
+            if let Err(e) = sweep_once(&state, Trigger::Interval).await {
                 tracing::debug!(target: "permagentd::strix", "first sweep skipped: {e}");
             }
         } else {
@@ -115,7 +117,7 @@ pub fn spawn(state: Arc<AppState>) {
             let due = last_sweep.is_none_or(|t| t.elapsed() >= sweep_interval());
             if strix::is_enabled() && due {
                 last_sweep = Some(tokio::time::Instant::now());
-                if let Err(e) = sweep_once(&state).await {
+                if let Err(e) = sweep_once(&state, Trigger::Interval).await {
                     tracing::debug!(target: "permagentd::strix", "sweep skipped: {e}");
                 }
             }
@@ -135,7 +137,71 @@ fn announce(state_label: &str) {
     ));
 }
 
-async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
+/// One sweep, recorded.
+///
+/// The pass itself lives in [`sweep_pass`]; this wrapper exists so that exactly
+/// ONE run row is written per invocation, whichever of the pass's many exits it
+/// takes. `started_at` is stamped before any work so the row measures the pass,
+/// not the write.
+///
+/// The pool is acquired here rather than inside the pass because a sweep that
+/// declines — sovereign mode, a failed preflight — is the single most useful
+/// thing this table records, and it cannot be recorded without a pool. The
+/// clone is not database work (the daemon's pool is already open by the time a
+/// sweep runs), so the sovereign early return it now sits above stays cheap.
+/// The one behavioural consequence is narrow and deliberate: with the database
+/// unreachable, a sovereign-mode tick now returns the pool error instead of
+/// `Ok(())` — and a sweep that cannot reach the database has nothing truthful
+/// to say either way.
+async fn sweep_once(state: &Arc<AppState>, trigger: Trigger) -> Result<(), String> {
+    let started_at = chrono::Utc::now();
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| e.to_string())?;
+    let pass = sweep_pass(state, &pool).await;
+    let _ = record_pass(
+        &pool,
+        strix::STRIX_FEATURE_ID,
+        trigger,
+        started_at,
+        &pass.outcome,
+    )
+    .await;
+    pass.result
+}
+
+/// Run the Guard's sweep now, because a person asked.
+///
+/// Called by `POST /api/agents/{id}/run`, which reports the run row this pass
+/// records rather than its own account of what happened.
+///
+/// The same body, the same gates, the same refusals as the interval pass — only
+/// the recorded trigger differs, so a manual run lands in the same history
+/// rather than a parallel one. The pass body re-checks `strix_enabled` for this
+/// caller's sake: `spawn` is what keeps a switched-off Guard from recording a
+/// skip every fifteen minutes, and a manual press has no `spawn` above it.
+pub async fn run_pass_now(state: &Arc<AppState>) -> Result<(), String> {
+    sweep_once(state, Trigger::Manual).await
+}
+
+/// The Guard's actual pass.
+///
+/// Returns a [`Pass`] instead of returning early so `sweep_once` can record
+/// whichever way it went. Every `return` below used to be a bare `Ok(())` or an
+/// `Err` that only ever reached a `tracing::debug!` — which is to say the reason
+/// a sweep did nothing was, until now, visible to nobody but whoever was tailing
+/// the daemon log at the time.
+async fn sweep_pass(state: &Arc<AppState>, pool: &Pool<Sqlite>) -> Pass {
+    // Unreachable from the interval loop, which checks the same flag in `spawn`
+    // before calling at all; this is the gate for a MANUAL pass. `Err` so the
+    // person who pressed the button is told why nothing happened.
+    if !strix::is_enabled() {
+        let reason = format!("the Guard is off ({}=false)", strix::STRIX_ENABLED_KEY);
+        return Pass::skipped(reason.clone()).returning(Err(reason));
+    }
+
     // Sovereign mode is enforced and audited at the scan itself; this cheap
     // early return only avoids pointless preflight and database work.
     if permagent::sovereignty::global_sovereign_mode() {
@@ -143,13 +209,8 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
             target: "permagentd::strix",
             "sweep skipped: sovereign mode is on and the scanner reaches a cloud model"
         );
-        return Ok(());
+        return Pass::skipped("sovereign mode is on and the scanner reaches a cloud model");
     }
-    let pool = state
-        .session_manager()
-        .pool_clone()
-        .await
-        .map_err(|e| e.to_string())?;
 
     // Dependency preflight — refuse loudly, once per condition. Before this,
     // a missing scanner or stopped Docker surfaced only as a per-project
@@ -165,35 +226,31 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
         }
         Err(failure) => {
             let prev = config.get_param::<String>(PREFLIGHT_BRIEFED_KEY).ok();
-            if report_preflight_failure(&pool, prev.as_deref(), &failure).await {
+            if report_preflight_failure(pool, prev.as_deref(), &failure).await {
                 let _ = config.set_param(PREFLIGHT_BRIEFED_KEY, failure.clone());
             }
-            return Err(format!("preflight failed: {failure}"));
+            // A skip in the record — the sweep correctly declined rather than
+            // pretend-scanning — and still an `Err` to the loop, whose debug
+            // line has always read "sweep skipped: preflight failed: …".
+            let reason = preflight_skip_reason(&failure);
+            return Pass::skipped(reason.clone()).returning(Err(reason));
         }
     }
 
-    let projects = projects::list_projects(&pool, Some("active")).await?;
+    let projects = match projects::list_projects(pool, Some("active")).await {
+        Ok(projects) => projects,
+        // Not a skip: the sweep could not read its own worklist.
+        Err(e) => return Pass::failed(None, e),
+    };
 
     let roots: Vec<PathBuf> = projects
         .iter()
         .filter_map(|p| p.root_path.as_ref().map(PathBuf::from))
         .collect();
-    if roots.is_empty() {
-        return Ok(());
-    }
 
-    // ONE project per sweep, rotating least-recently-scanned first (ruling
-    // 2026-08-06): a whole-fleet pass four times a day was the wrong shape —
-    // one focused scan per interval spreads cost evenly and gives each
-    // project a fresh report on a predictable cycle. A never-scanned project
-    // sorts first (empty stamp).
-    let mut candidates: Vec<&Project> = projects
-        .iter()
-        .filter(|p| p.id != PERSONAL_PROJECT_ID && p.root_path.is_some())
-        .collect();
-    candidates.sort_by_key(|p| last_scan_stamp(p));
-    let Some(project) = candidates.first().copied() else {
-        return Ok(());
+    let project = match choose_target(&projects) {
+        Ok(project) => project,
+        Err(reason) => return Pass::skipped(reason),
     };
     let root = project.root_path.clone().unwrap_or_default();
 
@@ -209,8 +266,11 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
                 "refused out-of-scope scan target: {refusal:?}"
             );
             // Stamp anyway so an unresolvable root cannot pin the rotation.
-            let _ = stamp_last_scan(&pool, project).await;
-            return Ok(());
+            let _ = stamp_last_scan(pool, project).await;
+            return Pass::skipped(format!(
+                "refused out-of-scope scan target for {}: {refusal:?}",
+                project.name
+            ));
         }
     };
 
@@ -239,20 +299,23 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
         );
         // Stamp anyway, for the same reason an unresolvable root does: a
         // refused project must not pin the rotation.
-        if let Err(e) = stamp_last_scan(&pool, project).await {
+        if let Err(e) = stamp_last_scan(pool, project).await {
             tracing::warn!(target: "permagentd::strix", "last-scan stamp failed: {e}");
         }
-        return Ok(());
+        return Pass::skipped(format!("scan refused for {}: {reason}", project.name));
     }
 
     announce("working");
     let outcome = scan_project(&target).await;
     // The rotation advances on every attempt — success, clean, or error —
     // so one broken project can never starve the rest of the cycle.
-    if let Err(e) = stamp_last_scan(&pool, project).await {
+    if let Err(e) = stamp_last_scan(pool, project).await {
         tracing::warn!(target: "permagentd::strix", "last-scan stamp failed: {e}");
     }
-    match outcome {
+    // `examined` is 1 on every arm below and that is the honest number: the
+    // rotation scans ONE project per sweep, so one project is what this pass
+    // looked at — not the size of the fleet it is working through.
+    let pass = match outcome {
         Ok(findings) if findings.is_empty() => {
             tracing::info!(
                 target: "permagentd::strix",
@@ -260,15 +323,20 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
                 "clean — no findings"
             );
             announce("available");
+            // The row this whole table was built for: a real scan of a real
+            // project that correctly found nothing. Silence on the Overview,
+            // evidence in the record.
+            Pass::completed(Some(1), None)
         }
         Ok(findings) => {
-            match record_findings(&pool, project, findings).await {
+            let scanned = findings.len();
+            let produced = match record_findings(pool, project, findings).await {
                 Ok(fresh) => {
                     // The deliverable: a security report note on the project,
                     // findings plus an ordered fix plan. Notes index into the
                     // Brain, so "ask Henry to read the Guard's report and
                     // dispatch a fix goal" works with no extra plumbing.
-                    let current: Vec<Finding> = current_findings(&pool, &project.id).await;
+                    let current: Vec<Finding> = current_findings(pool, &project.id).await;
                     let body = security_report_markdown(&project.name, &current, &fresh);
                     let title = format!(
                         "Security report — {} — {}",
@@ -276,7 +344,7 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
                         chrono::Utc::now().format("%Y-%m-%d")
                     );
                     if let Err(e) = permagent::project_notes::create_note_indexed(
-                        &pool,
+                        pool,
                         state.brain.as_ref(),
                         &project.id,
                         Some(&title),
@@ -290,15 +358,23 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
                             "report note not saved: {e}"
                         );
                     }
-                    brief_new_findings(&pool, project, &fresh).await;
+                    brief_new_findings(pool, project, &fresh).await;
+                    findings_produced_line(&project.name, scanned, fresh.len())
                 }
-                Err(e) => tracing::warn!(
-                    target: "permagentd::strix",
-                    project = %project.name,
-                    "findings not recorded: {e}"
-                ),
-            }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "permagentd::strix",
+                        project = %project.name,
+                        "findings not recorded: {e}"
+                    );
+                    // The scanner found things; the checklist did not change.
+                    // Claiming a produced result here would send a reader to a
+                    // page that has nothing new on it.
+                    None
+                }
+            };
             announce("available");
+            Pass::completed(Some(1), produced)
         }
         Err(e) => {
             // A missing scanner is a stated fact, not a silent skip.
@@ -308,14 +384,61 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
                 "scan did not run: {e}"
             );
             announce("error");
+            // The record says failed; the loop still returns `Ok(())`, exactly
+            // as it always has — the rotation advanced, so one broken project
+            // is not a broken sweep and must not read as one in the log.
+            Pass::failed(Some(1), format!("scan did not run: {e}")).returning(Ok(()))
         }
-    }
+    };
     tracing::info!(
         target: "permagentd::strix",
         project = %project.name,
         "sweep complete — next sweep takes the next least-recently-scanned project"
     );
-    Ok(())
+    pass
+}
+
+/// Pick the project this sweep scans, or say why there is nothing to scan.
+///
+/// Pure over the project list, deliberately: both refusals used to be a bare
+/// `return Ok(())`, which is the exact silence the run record exists to end —
+/// "no project has a root path on disk" and "the Guard swept and found nothing"
+/// are different facts about someone's fleet, and until now they looked the
+/// same from outside. Keeping the choice pure is also what makes those two
+/// reasons testable without a daemon, a database, or a scanner.
+fn choose_target(projects: &[Project]) -> Result<&Project, String> {
+    if !projects.iter().any(|p| p.root_path.is_some()) {
+        return Err("no active project has a root path on disk to scan".to_string());
+    }
+    // ONE project per sweep, rotating least-recently-scanned first (ruling
+    // 2026-08-06): a whole-fleet pass four times a day was the wrong shape —
+    // one focused scan per interval spreads cost evenly and gives each
+    // project a fresh report on a predictable cycle. A never-scanned project
+    // sorts first (empty stamp).
+    let mut candidates: Vec<&Project> = projects
+        .iter()
+        .filter(|p| p.id != PERSONAL_PROJECT_ID && p.root_path.is_some())
+        .collect();
+    candidates.sort_by_key(|p| last_scan_stamp(p));
+    candidates.first().copied().ok_or_else(|| {
+        "the only active project with a root path is the default Personal bucket, which the \
+         Guard does not scan"
+            .to_string()
+    })
+}
+
+/// The one-line `produced` summary for a sweep that found something.
+///
+/// `None` when nothing reached the checklist: `produced` means "this pass made
+/// something you can go and read", so a sweep whose write failed produced
+/// nothing however many findings the scanner handed back.
+fn findings_produced_line(project: &str, scanned: usize, fresh: usize) -> Option<String> {
+    if scanned == 0 {
+        return None;
+    }
+    Some(format!(
+        "{scanned} finding(s) on the {project} checklist, {fresh} new this scan"
+    ))
 }
 
 /// True only when NO active project carries a last-scan stamp — the Guard has
@@ -577,6 +700,15 @@ async fn preflight() -> Result<(), String> {
 /// failure briefs again; a preflight that recovers clears the stamp so a
 /// future breakage is news again.
 const PREFLIGHT_BRIEFED_KEY: &str = "strix_preflight_briefed";
+
+/// The skip reason a failed preflight is recorded under.
+///
+/// One function so the row and the loop's debug line cannot drift apart: both
+/// read the same sentence, and the wording is pinned by a test rather than by
+/// whoever last edited the sweep.
+fn preflight_skip_reason(failure: &str) -> String {
+    format!("preflight failed: {failure}")
+}
 
 /// Pure dedupe gate for the preflight briefing.
 fn preflight_should_brief(previously_briefed: Option<&str>, failure: &str) -> bool {
@@ -1117,5 +1249,287 @@ mod tests {
             result.unwrap_err().contains("sovereign mode"),
             "the scan must end naming the sovereignty flip, not the timeout"
         );
+    }
+
+    // ── Run recording ─────────────────────────────────────────────────────
+    //
+    // COVERED here: the two skip reasons `choose_target` produces, the
+    // preflight skip wording, the `produced` line, and the fact that each of
+    // those actually lands in an `agent_runs` row under this agent's id with
+    // the trigger it was given.
+    //
+    // NOT covered: `sweep_pass` end-to-end. It needs an `AppState`, a live
+    // provider, a `strix` binary and a running Docker daemon, and its preflight
+    // alone probes Docker with a fifteen-second timeout — a test of it would
+    // assert the environment, not the code. The seams below are the parts that
+    // decide what a run row says; the wrapper above them is a straight-line
+    // `record_pass` call with no branches.
+
+    use crate::test_support::project_fixture;
+    use permagent::agent_runs::{recent_for_agent, Outcome};
+
+    async fn runs_pool() -> sqlx::Pool<sqlx::Sqlite> {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        permagent::session::spectral_schema::apply_agent_runs_schema(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    fn started() -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::from_timestamp(1_760_000_000, 0).unwrap()
+    }
+
+    /// Metadata for a project the Guard has already scanned, keyed off the
+    /// production constant so a rename cannot leave this test passing against
+    /// a key nothing writes.
+    fn scanned_at(stamp: &str) -> serde_json::Value {
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            LAST_SCAN_KEY.to_string(),
+            serde_json::Value::String(stamp.to_string()),
+        );
+        serde_json::Value::Object(meta)
+    }
+
+    /// The whole point of the run record: a sweep that scanned a project and
+    /// correctly found nothing writes NOTHING anywhere else in the system, so
+    /// without this row it is indistinguishable from a Guard that never ran.
+    #[tokio::test]
+    async fn a_clean_sweep_still_writes_one_ok_run_row() {
+        let pool = runs_pool().await;
+        let pass = Pass::completed(Some(1), None);
+        let _ = record_pass(
+            &pool,
+            strix::STRIX_FEATURE_ID,
+            Trigger::Interval,
+            started(),
+            &pass.outcome,
+        )
+        .await;
+
+        let runs = recent_for_agent(&pool, strix::STRIX_FEATURE_ID, 10)
+            .await
+            .unwrap();
+        assert_eq!(runs.len(), 1, "exactly one row per pass");
+        assert_eq!(runs[0].outcome, Outcome::Ok);
+        assert_eq!(
+            runs[0].examined,
+            Some(1),
+            "the rotation scans one project per sweep, and that is what it examined"
+        );
+        assert_eq!(
+            runs[0].produced, None,
+            "a clean scan produced nothing and must not claim otherwise"
+        );
+    }
+
+    /// A fleet with no project root on disk is not a Guard that is broken and
+    /// not a Guard that found nothing — it is a Guard with nothing to point at,
+    /// and the row has to be able to say which.
+    #[test]
+    fn a_fleet_with_no_project_root_says_so_rather_than_going_quiet() {
+        let projects = vec![project_fixture("p1", "Notes", None, serde_json::json!({}))];
+        let reason = choose_target(&projects).unwrap_err();
+        assert_eq!(reason, "no active project has a root path on disk to scan");
+    }
+
+    /// The default bucket is not a project the Guard scans, so a fleet that
+    /// contains only it is a skip with its own distinct reason.
+    #[test]
+    fn the_personal_bucket_alone_is_not_a_scan_target() {
+        let projects = vec![project_fixture(
+            PERSONAL_PROJECT_ID,
+            "Personal",
+            Some("/tmp/personal"),
+            serde_json::json!({}),
+        )];
+        let reason = choose_target(&projects).unwrap_err();
+        assert!(
+            reason.contains("Personal bucket"),
+            "the reason must name what was excluded: {reason}"
+        );
+    }
+
+    /// The rotation itself, pinned: least-recently-scanned first, a
+    /// never-scanned project ahead of every scanned one.
+    #[test]
+    fn the_least_recently_scanned_project_goes_next() {
+        let projects = vec![
+            project_fixture(
+                "a",
+                "Alpha",
+                Some("/tmp/a"),
+                scanned_at("2026-08-10T00:00:00Z"),
+            ),
+            project_fixture("b", "Beta", Some("/tmp/b"), serde_json::json!({})),
+            project_fixture(
+                "c",
+                "Gamma",
+                Some("/tmp/c"),
+                scanned_at("2026-08-01T00:00:00Z"),
+            ),
+        ];
+        assert_eq!(
+            choose_target(&projects).unwrap().id,
+            "b",
+            "never scanned goes first"
+        );
+
+        let projects = vec![
+            project_fixture(
+                "a",
+                "Alpha",
+                Some("/tmp/a"),
+                scanned_at("2026-08-10T00:00:00Z"),
+            ),
+            project_fixture(
+                "c",
+                "Gamma",
+                Some("/tmp/c"),
+                scanned_at("2026-08-01T00:00:00Z"),
+            ),
+        ];
+        assert_eq!(choose_target(&projects).unwrap().id, "c");
+    }
+
+    /// A skip row is only worth having if it carries the reason the sweep
+    /// actually had — so the reason is taken from the production helper, not
+    /// retyped in the test.
+    #[tokio::test]
+    async fn a_skipped_sweep_records_the_reason_the_sweep_actually_had() {
+        let pool = runs_pool().await;
+        let projects = vec![project_fixture("p1", "Notes", None, serde_json::json!({}))];
+        let reason = choose_target(&projects).unwrap_err();
+        let _ = record_pass(
+            &pool,
+            strix::STRIX_FEATURE_ID,
+            Trigger::Interval,
+            started(),
+            &Pass::skipped(reason.clone()).outcome,
+        )
+        .await;
+
+        let runs = recent_for_agent(&pool, strix::STRIX_FEATURE_ID, 10)
+            .await
+            .unwrap();
+        assert_eq!(runs[0].outcome, Outcome::Skipped);
+        assert_eq!(runs[0].reason.as_deref(), Some(reason.as_str()));
+    }
+
+    /// The preflight skip is the most actionable row this agent can write, and
+    /// it must reach the record intact rather than being flattened to "skipped".
+    #[tokio::test]
+    async fn a_preflight_failure_records_a_skip_and_still_returns_err_to_the_loop() {
+        let pool = runs_pool().await;
+        let reason = preflight_skip_reason(
+            "the `strix` scanner is not installed (fix: `pipx install strix-agent`)",
+        );
+        let pass = Pass::skipped(reason.clone()).returning(Err(reason.clone()));
+        assert!(
+            pass.result.is_err(),
+            "the loop's debug line has always read 'sweep skipped: preflight failed: …'"
+        );
+        let _ = record_pass(
+            &pool,
+            strix::STRIX_FEATURE_ID,
+            Trigger::Interval,
+            started(),
+            &pass.outcome,
+        )
+        .await;
+
+        let runs = recent_for_agent(&pool, strix::STRIX_FEATURE_ID, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            runs[0].outcome,
+            Outcome::Skipped,
+            "declining to scan without a scanner is correct behaviour, not a failure"
+        );
+        assert!(runs[0].reason.as_deref().unwrap().contains("pipx install"));
+    }
+
+    /// A scan that broke is a failed pass in the record even though the sweep
+    /// goes on to return `Ok(())` — the rotation advanced, so the loop is fine
+    /// and the project is not.
+    #[tokio::test]
+    async fn a_scan_that_did_not_run_is_recorded_as_failed_not_skipped() {
+        let pool = runs_pool().await;
+        let pass = Pass::failed(Some(1), "scan did not run: scanner exited 1: no such image")
+            .returning(Ok(()));
+        assert!(
+            pass.result.is_ok(),
+            "one broken project is not a broken sweep"
+        );
+        let _ = record_pass(
+            &pool,
+            strix::STRIX_FEATURE_ID,
+            Trigger::Interval,
+            started(),
+            &pass.outcome,
+        )
+        .await;
+
+        let runs = recent_for_agent(&pool, strix::STRIX_FEATURE_ID, 10)
+            .await
+            .unwrap();
+        assert_eq!(runs[0].outcome, Outcome::Failed);
+        assert_eq!(runs[0].examined, Some(1), "how far it got is diagnostic");
+        assert!(runs[0]
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("scanner exited 1"));
+    }
+
+    /// `produced` is a claim that something exists to go and read. A sweep
+    /// whose checklist write failed made no such thing.
+    #[test]
+    fn produced_is_claimed_only_when_something_reached_the_checklist() {
+        assert_eq!(findings_produced_line("Atlas", 0, 0), None);
+        let line = findings_produced_line("Atlas", 3, 1).unwrap();
+        assert!(line.contains("Atlas"), "name the project: {line}");
+        assert!(
+            line.contains('3') && line.contains('1'),
+            "both counts: {line}"
+        );
+    }
+
+    /// A manual run and a scheduled one land in the same history, each
+    /// labelled for what it was. (`run_pass_now` binds `Trigger::Manual` and
+    /// `spawn` binds `Trigger::Interval` in one line each; what is testable
+    /// without an `AppState` is that the trigger handed to `record_pass`
+    /// survives the round trip, which is what those two lines depend on.)
+    #[tokio::test]
+    async fn a_manual_pass_is_recorded_as_manual_beside_the_scheduled_ones() {
+        let pool = runs_pool().await;
+        let _ = record_pass(
+            &pool,
+            strix::STRIX_FEATURE_ID,
+            Trigger::Interval,
+            started(),
+            &Pass::completed(Some(1), None).outcome,
+        )
+        .await;
+        let _ = record_pass(
+            &pool,
+            strix::STRIX_FEATURE_ID,
+            Trigger::Manual,
+            started() + chrono::Duration::seconds(30),
+            &Pass::completed(Some(1), None).outcome,
+        )
+        .await;
+
+        let runs = recent_for_agent(&pool, strix::STRIX_FEATURE_ID, 10)
+            .await
+            .unwrap();
+        assert_eq!(runs.len(), 2, "one history, not two");
+        assert_eq!(runs[0].trigger, Trigger::Manual);
+        assert_eq!(runs[1].trigger, Trigger::Interval);
     }
 }

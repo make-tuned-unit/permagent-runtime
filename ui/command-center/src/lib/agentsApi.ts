@@ -26,6 +26,60 @@ export interface AgentGateWire {
   enabled: boolean;
 }
 
+/**
+ * Whether this agent can be asked a question, or told to run a pass, RIGHT NOW.
+ * Two states only, and the unavailable one carries the daemon's own reason —
+ * a control the user cannot use must be able to say why, in the runtime's
+ * words, rather than vanish or sit there looking hopeful.
+ *
+ * Named `AgentCapability` because `Capability` in this file is already the
+ * platform-extension row; these are unrelated concepts on the same surface.
+ */
+export type AgentCapability =
+  | { status: 'available' }
+  | { status: 'unavailable'; reason: string };
+
+/** A daemon older than this app serialises no `ask` / `run_now` at all. */
+export const CAPABILITY_NOT_REPORTED =
+  'this daemon does not report whether it can do this';
+
+/** Present, but not in a shape this app can read — not the same as absent. */
+export const CAPABILITY_UNREADABLE =
+  'this daemon reported this capability in a shape this app cannot read';
+
+/**
+ * The sibling of `readAgentGate` (components/settings/agentsPanel.ts), and for
+ * the same reason: the declared type above is a claim about a daemon we have
+ * not spoken to yet, so it cannot be the check. A missing or malformed field
+ * reads as UNAVAILABLE with a reason — never as available, because the whole
+ * point of these two flags is that a control which cannot work says so instead
+ * of failing when it is pressed.
+ *
+ * It lives here rather than beside `readAgentGate` because it validates a wire
+ * field declared in this file, and the two must never drift apart.
+ */
+export function readAgentCapability(
+  row: unknown,
+  field: 'ask' | 'run_now',
+): AgentCapability {
+  if (typeof row !== 'object' || row === null) {
+    return { status: 'unavailable', reason: CAPABILITY_NOT_REPORTED };
+  }
+  const cap = (row as Record<string, unknown>)[field];
+  if (cap === undefined || cap === null) {
+    return { status: 'unavailable', reason: CAPABILITY_NOT_REPORTED };
+  }
+  if (typeof cap !== 'object') {
+    return { status: 'unavailable', reason: CAPABILITY_UNREADABLE };
+  }
+  const { status, reason } = cap as { status?: unknown; reason?: unknown };
+  if (status === 'available') return { status: 'available' };
+  if (status === 'unavailable' && typeof reason === 'string' && reason.length > 0) {
+    return { status: 'unavailable', reason };
+  }
+  return { status: 'unavailable', reason: CAPABILITY_UNREADABLE };
+}
+
 export interface BackgroundWorker {
   id: string;
   display_name: string;
@@ -35,6 +89,10 @@ export interface BackgroundWorker {
   live_state: LiveState;
   dispatchable: boolean;
   gate: AgentGateWire | null;
+  /** ALWAYS serialised by a daemon that knows about it — read via
+   *  `readAgentCapability`, never trusted from this type. */
+  ask: AgentCapability;
+  run_now: AgentCapability;
 }
 
 export type Availability =
@@ -73,6 +131,9 @@ export interface DispatchPersona {
   grants_enforced: boolean;
   secrets: Secrets;
   gate: AgentGateWire | null;
+  /** Same contract as on a worker — see `readAgentCapability`. */
+  ask: AgentCapability;
+  run_now: AgentCapability;
 }
 
 /** One declared secret. `impact`/`unlocks` are serialised only for platform
@@ -168,11 +229,89 @@ export interface ScheduledJobItem {
   consecutive_failures: number;
 }
 
+/** How a pass was started. `manual` is the one a person pressed. */
+export type RunTrigger = 'interval' | 'manual';
+
+/**
+ * `skipped` is the agent WORKING AS DESIGNED — nothing was due, or a
+ * precondition said not this pass. It is not a failure and must never be
+ * rendered as one; `failed` is the only outcome that went wrong.
+ */
+export type RunOutcome = 'ok' | 'skipped' | 'failed';
+
+export interface AgentRun {
+  id: string;
+  agent_id: string;
+  trigger: RunTrigger;
+  outcome: RunOutcome;
+  started_at: string;
+  finished_at: string;
+  /** null = this pass does not count items at all. NOT zero — rendering it as
+   *  0 would claim the agent looked at nothing, which is a different fact. */
+  examined: number | null;
+  /** null = produced nothing, which is the normal result of a healthy sweep. */
+  produced: string | null;
+  /** Why it skipped, or how it failed. null when neither applies. */
+  reason: string | null;
+}
+
+/**
+ * Three outcomes that must stay apart on screen:
+ *   ok            — runs were recorded (the list may still be empty)
+ *   not_recorded  — this agent's code records no runs AT ALL, so an empty list
+ *                   would be a lie about the agent rather than about the data
+ *   unavailable   — the record could not be READ
+ */
+export type RunsSection =
+  | { status: 'ok'; items: AgentRun[]; truncated: boolean }
+  | { status: 'not_recorded'; reason: string }
+  | { status: 'unavailable'; reason: string };
+
+export interface BriefingItem {
+  id: string;
+  from_agent: string;
+  kind: string;
+  severity: 'info' | 'attention' | 'action_required';
+  summary: string;
+  detail: string | null;
+  ref_kind: string | null;
+  ref_id: string | null;
+  created_at: string;
+  acknowledged_at: string | null;
+}
+
 export interface WorkReview {
+  /** First in the type as it is first on screen: the direct answer to "did it
+   *  actually do the thing". */
+  runs: RunsSection;
+  briefings: ListSection<BriefingItem>;
   activity: ActivitySection;
   goals: ListSection<GoalItem>;
   spend: ListSection<SpendItem>;
   scheduled_jobs: ListSection<ScheduledJobItem>;
+}
+
+/**
+ * What the tools of an ask turn ACTUALLY were — named for what happened, not
+ * for what was intended. Narrowing can only ever REMOVE, so `granted` and
+ * `applied` differ exactly when a declared grant was globally disabled and
+ * silently produced nothing.
+ *
+ * A tagged union, and it stays one: flattening it to a string would lose the
+ * distinction between "carried everyone's tools" and "carried its own", which
+ * is the fact that makes an ask answer attributable at all.
+ */
+export type AppliedToolScope =
+  | { mode: 'inherit_global'; extensions: string[] }
+  | { mode: 'explicit'; granted: string[]; applied: string[] };
+
+/** What the agent answered, and under whose identity and tool scope. */
+export interface AskAnswer {
+  answer: string;
+  display_name: string;
+  /** false = answered WITHOUT this agent's persona applied. */
+  persona_applied: boolean;
+  tool_scope: AppliedToolScope;
 }
 
 export interface SecretWriteResponse {
@@ -191,6 +330,30 @@ export function fetchAgentDetail(id: string): Promise<AgentDetail> {
 export function fetchAgentWork(id: string, limit?: number): Promise<WorkReview> {
   const q = limit !== undefined ? `?limit=${encodeURIComponent(String(limit))}` : '';
   return apiFetch<WorkReview>(`/api/agents/${encodeURIComponent(id)}/work${q}`);
+}
+
+/**
+ * Ask THIS agent a question, under its own persona and tool scope. Request /
+ * response — the answer arrives whole, there is no token stream to watch.
+ */
+export function askAgent(id: string, question: string): Promise<AskAnswer> {
+  return apiFetch<AskAnswer>(`/api/agents/${encodeURIComponent(id)}/ask`, {
+    method: 'POST',
+    body: JSON.stringify({ question }),
+  });
+}
+
+/**
+ * Run one pass NOW and return the run it recorded.
+ *
+ * Request / response: this resolves when the pass has FINISHED and the runtime
+ * has written its row — there is no progress stream behind it, so nothing built
+ * on this may be labelled "live" or "streaming".
+ */
+export function runAgentNow(id: string): Promise<{ run: AgentRun }> {
+  return apiFetch<{ run: AgentRun }>(`/api/agents/${encodeURIComponent(id)}/run`, {
+    method: 'POST',
+  });
 }
 
 /** null = inherit global; [] = grant nothing; [k,…] = narrowed. */
