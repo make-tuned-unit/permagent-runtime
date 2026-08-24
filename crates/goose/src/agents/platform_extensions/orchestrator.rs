@@ -1231,7 +1231,7 @@ pub(crate) async fn dispatch_goal_fn(
             );
             // Resolve the worker's workflow role → its model (#730 wiring): the
             // hand-CONFIGURED mapping wins; otherwise the recommender-DERIVED
-            // best-fit map (Jesse's 2026-08-18 ruling — the cheapest model the
+            // best-fit map (ruling 2026-08-18 — the cheapest model the
             // user actually has that clears the role's floor, local or cloud);
             // otherwise None ⇒ the engine clones the parent session model. Never
             // a baked-in vendor default: the derived map is built only from

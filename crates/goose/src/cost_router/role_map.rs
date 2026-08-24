@@ -89,8 +89,8 @@ pub fn resolve_role_model(
     Some(RoleModel { provider, model })
 }
 
-/// Pure: resolve a role's model with the DEFAULT-ON derived fallback (Jesse's
-/// 2026-08-18 ruling): the hand-configured mapping ([`resolve_role_model`]) wins;
+/// Pure: resolve a role's model with the DEFAULT-ON derived fallback (ruling
+/// 2026-08-18): the hand-configured mapping ([`resolve_role_model`]) wins;
 /// otherwise the recommender-derived best-fit entry ([`super::derived`]) — the
 /// cheapest model the user actually has that clears the role's floor; otherwise
 /// `None` ⇒ the session model. Returns WHERE the pick came from so the routing

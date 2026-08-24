@@ -1,7 +1,7 @@
 //! The DERIVED role→model map — the router's default when the user has not
 //! hand-configured a role ([`super::role_map`]).
 //!
-//! ## The ruling (Jesse, 2026-08-18)
+//! ## The ruling (2026-08-18)
 //!
 //! *"The router should route to the model that is best for the job, whether
 //! local or cloud, while being very cost conscious."* When no per-role model is

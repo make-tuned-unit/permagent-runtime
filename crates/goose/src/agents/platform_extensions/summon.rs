@@ -1333,7 +1333,7 @@ impl SummonClient {
         // The objective role→model layer (#730 wiring). If the delegate carries a
         // worker persona with a workflow role, route to that role's model — the
         // hand-CONFIGURED mapping first, else the recommender-DERIVED best-fit
-        // pick (Jesse's 2026-08-18 ruling: the cheapest model the user actually
+        // pick (ruling 2026-08-18: the cheapest model the user actually
         // has that clears the role's floor, local or cloud) — slotted after an
         // explicit param / recipe setting, before the GOOSE_SUBAGENT_* fallback.
         // Neither ⇒ `None` ⇒ fall through to the current single-model behaviour
@@ -2071,7 +2071,7 @@ mod tests {
         );
     }
 
-    /// The DERIVED default at the role step (Jesse's 2026-08-18 ruling), asserted
+    /// The DERIVED default at the role step (ruling 2026-08-18), asserted
     /// on PROVENANCE rather than a vendor name: with NO available providers the
     /// derived map is empty and the role step yields nothing — the fallthrough
     /// is still the session model; with available providers the derived pick is
