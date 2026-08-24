@@ -12,14 +12,12 @@ import { ENV } from '../../shared/palette';
 import { InstancedProp, type InstanceTransform } from '../../shared/instancing';
 
 // ── Shared materials (module singletons — one program each) ──
-const marble = new THREE.MeshStandardMaterial({ color: ENV.marble, roughness: 0.4, metalness: 0.05 });
-const marbleShell = new THREE.MeshStandardMaterial({
+const marble = new THREE.MeshLambertMaterial({ color: ENV.marble });
+const marbleShell = new THREE.MeshLambertMaterial({
   color: ENV.marble,
-  roughness: 0.4,
-  metalness: 0.05,
   side: THREE.DoubleSide,
 });
-const veinMarble = new THREE.MeshStandardMaterial({ color: ENV.marbleVein, roughness: 0.35, metalness: 0.18 });
+const veinMarble = new THREE.MeshLambertMaterial({ color: ENV.marbleVein });
 const cyanLine = new THREE.MeshBasicMaterial({
   color: COLORS.neonCyan,
   transparent: true,

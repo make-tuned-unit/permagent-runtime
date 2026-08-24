@@ -391,7 +391,22 @@ export function getDensity(): UIDensity { return _get('permagent-density', 'defa
 export function setDensity(v: UIDensity) { _set('permagent-density', v); }
 
 // Reduce motion
-export function getReduceMotion(): boolean { return _get('permagent-reduce-motion', 'false') === 'true'; }
+// Three states, not two. An explicit choice in settings always wins — that is
+// the whole point of having the setting. But when nobody has chosen, the
+// honest default is the one the person already gave their operating system:
+// someone who turned on Reduce Motion in macOS has answered this question
+// once and should not have to answer it again per app. The World reads this in
+// eighteen places, so this is also what makes the 3D scene calm for them.
+export function getReduceMotion(): boolean {
+  const stored = _get('permagent-reduce-motion', '');
+  if (stored === 'true') return true;
+  if (stored === 'false') return false;
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
+}
 export function setReduceMotion(v: boolean) { _set('permagent-reduce-motion', String(v)); }
 
 export function onThemeChange(fn: () => void) { _listeners.add(fn); return () => { _listeners.delete(fn); }; }

@@ -146,7 +146,7 @@ function Staircase() {
             {/* Nosing strip on the leading edge — carved-step read. */}
             <mesh position={[0, 0.055, 0.31]}>
               <boxGeometry args={[stepWidth, 0.05, 0.05]} />
-              <meshStandardMaterial color="#6d7482" roughness={0.5} metalness={0.1} />
+              <meshLambertMaterial color="#6d7482" />
             </mesh>
           </group>
         );

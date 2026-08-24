@@ -22,12 +22,10 @@ import { InstancedProp, type InstanceTransform } from '../../shared/instancing';
 import { unitCylinder16 } from '../../props/geometries';
 import { getWorldSignals } from '../../atmosphere/worldSignals';
 
-const nodeMat = new THREE.MeshStandardMaterial({
+const nodeMat = new THREE.MeshLambertMaterial({
   color: ENV.deepVoid,
   emissive: ENV.neonCyan,
   emissiveIntensity: 0.7,
-  roughness: 0.5,
-  metalness: 0,
 });
 
 // Two rings of engraved nodes set flush into the floor.
@@ -53,12 +51,10 @@ function InlayNodes() {
 }
 
 // The omphalos — the reactive seal at the rotunda center.
-const omphalosMat = new THREE.MeshStandardMaterial({
+const omphalosMat = new THREE.MeshLambertMaterial({
   color: ENV.deepVoid,
   emissive: ENV.neonCyan,
   emissiveIntensity: 0.6,
-  roughness: 0.4,
-  metalness: 0,
 });
 
 function Omphalos({ reduceMotion }: { reduceMotion: boolean }) {
@@ -76,7 +72,7 @@ function Omphalos({ reduceMotion }: { reduceMotion: boolean }) {
     }
 
     if (ringRef.current) {
-      const mat = ringRef.current.material as THREE.MeshStandardMaterial;
+      const mat = ringRef.current.material as THREE.MeshLambertMaterial;
       // Steady base + real recall/ingest flow. reduceMotion: base only.
       const breath = reduceMotion ? 0 : 0.25 * Math.sin(performance.now() * 0.0009);
       mat.emissiveIntensity = 0.55 + s.flow * 1.1 + breath;

@@ -387,9 +387,10 @@ export function StargatePortal({ position = [0, 0, 0] as [number, number, number
         <GateParticles />
         <ElectricalArcs />
 
-        {/* Scene lighting from the event horizon */}
-        <pointLight color={HORIZON_COLOR} intensity={1.2} distance={8} decay={2} />
-        <pointLight color={HORIZON_COLOR} intensity={0.4} distance={12} decay={2} position-z={2} />
+        {/* The event horizon is a shader surface and the chevrons are
+            emissive: the gate glows by itself. These two pointLights spilled
+            that glow onto the ramp and the surrounding stone, which is the
+            least of what makes the gate read, and cost it scene-wide. */}
       </group>
 
       {/* Base pedestal — the gate sits on a raised platform */}
@@ -400,11 +401,10 @@ export function StargatePortal({ position = [0, 0, 0] as [number, number, number
       {/* Pedestal trim ring */}
       <mesh position-y={0.31}>
         <torusGeometry args={[1.8, 0.04, 6, 32]} />
-        <meshStandardMaterial
+        <meshLambertMaterial
           color={HORIZON_COLOR}
           emissive={HORIZON_COLOR}
           emissiveIntensity={0.8}
-          roughness={0.2}
         />
       </mesh>
       {/* Ramp / steps leading up */}

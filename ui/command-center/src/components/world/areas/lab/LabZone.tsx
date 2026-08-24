@@ -48,7 +48,9 @@ function ExperimentOrrery() {
         <mesh material={orbMat}>
           <sphereGeometry args={[0.4, 16, 16]} />
         </mesh>
-        <pointLight color={ENV.neonCyan} intensity={0.4} distance={6} decay={2} />
+        {/* The orb above is the accent. A 6-unit pointLight to light the
+            dark stone around it costs every lit fragment in the scene a loop
+            iteration to brighten a few square metres nobody looks at. */}
       </group>
     </group>
   );

@@ -8,7 +8,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Html } from '@react-three/drei';
 import * as THREE from 'three';
+import { getReduceMotion } from '../../../styles/tokens';
 import { ENV, type AgentHudState } from '../shared/palette';
+import { getAgentRuntimeStates } from '../shared/agentStatus';
 import type { AgentIdentity } from './roster';
 import { getMotion } from './motion';
 import { createAgentRig } from './rig';
@@ -23,9 +25,28 @@ import {
   resolveVisual,
   type PoseKey,
 } from './poses';
+import { getIdPhase } from './idPhase';
+import {
+  swayZ,
+  tendingHaul,
+  tendingSpineLean,
+  headNod,
+  breathingScale,
+  blinkEnvelope,
+  resolveLookYaw,
+  resolveLookPitch,
+} from './idleLife';
 import { publishHenryPosition } from './henryPresence';
 import { advanceMining, resolveTablet } from './librarianMining';
 import { getDissolve } from '../areas/forum/agoraArc';
+
+/** Head bone's rest-pose height above root (rig.ts BONE_BIND.head) — used only
+ * as an approximation for the look-at target math below, not for rendering. */
+const HEAD_HEIGHT = 1.78;
+/** Look-at damping rate — matches the codebase's existing MathUtils.damp
+ * lambdas (atmosphere/ColonnadeLanterns use 0.8-4); a head turn reads as more
+ * alert than a light level fade, so it sits at the fast end of that range. */
+const LOOK_DAMP = 6;
 
 const LABEL_ON_DIST = 18;
 const LABEL_OFF_DIST = 20; // hysteresis so the label doesn't strobe at the boundary
@@ -65,6 +86,10 @@ interface AgentCharacterProps {
   identity: AgentIdentity;
   hudState: AgentHudState;
   hovered: boolean;
+  /** Whichever agent id is currently hovered scene-wide (or null) — drives
+   *  look-at (bible §4): an agent notices attention paid to it or to a
+   *  neighbor. Not the same as `hovered`, which is only this agent's own flag. */
+  hoveredAgentId: string | null;
   onPointerOver: () => void;
   onPointerOut: () => void;
   onClick: () => void;
@@ -74,12 +99,23 @@ export function AgentCharacterV2({
   identity,
   hudState,
   hovered,
+  hoveredAgentId,
   onPointerOver,
   onPointerOut,
   onClick,
 }: AgentCharacterProps) {
   const groupRef = useRef<THREE.Group>(null);
   const [labelOn, setLabelOn] = useState(false);
+  // Stable per-agent phase (idPhase.ts) — the fix for seven agents breathing/
+  // swaying/blinking in lockstep off the one shared r3f clock. Derived from the
+  // id, which never changes for a mounted character, so this is safe to memoize.
+  const phase = useMemo(() => getIdPhase(identity.id), [identity.id]);
+  // Read once per mount, same pattern as every other reduceMotion consumer in
+  // world/ (PetitionBasin, Horologium, TourMode, ...) — a live toggle mid-session
+  // is a reload away, which matches how the setting is surfaced elsewhere.
+  const reduceMotion = useMemo(() => getReduceMotion(), []);
+  // Damped look-at state (yaw/pitch), persisted across frames outside React.
+  const look = useRef({ yaw: 0, pitch: 0 });
 
   const rig = useMemo(
     () =>
@@ -127,6 +163,8 @@ export function AgentCharacterV2({
   hudRef.current = hudState;
   const hoveredRef = useRef(hovered);
   hoveredRef.current = hovered;
+  const hoveredAgentIdRef = useRef(hoveredAgentId);
+  hoveredAgentIdRef.current = hoveredAgentId;
 
   useFrame((r3f, rawDt) => {
     const g = groupRef.current;
@@ -137,6 +175,9 @@ export function AgentCharacterV2({
     const hud = hudRef.current;
     const tr = trans.current;
     const bones = rig.bones;
+    // Camera position — read once per frame, reused by both the look-at block
+    // below and the label-distance check further down.
+    const cam = r3f.camera.position;
 
     // ── Position + heading from the motion store ──
     g.position.set(m.x, m.y, m.z);
@@ -200,12 +241,22 @@ export function AgentCharacterV2({
       quats.visorFrom + (visTarget.visorIntensity - quats.visorFrom) * ce;
 
     // Error visor: 2Hz flicker for 3s, then steady dim (bible §4).
-    if (colorKey === 'error' && tr.errorStart >= 0) {
+    const errorFlickerActive =
+      colorKey === 'error' && tr.errorStart >= 0 && t - tr.errorStart < ERROR_FLICKER_S;
+    if (errorFlickerActive) {
       const since = t - tr.errorStart;
-      if (since < ERROR_FLICKER_S) {
-        rig.visorMat.emissiveIntensity =
-          Math.sin(since * Math.PI * 2 * ERROR_FLICKER_HZ) > 0 ? 1.8 : 0.12;
-      }
+      rig.visorMat.emissiveIntensity =
+        Math.sin(since * Math.PI * 2 * ERROR_FLICKER_HZ) > 0 ? 1.8 : 0.12;
+    }
+
+    // ── Blink (bible §4/§8) ── A short dip in the visor's own emissiveIntensity,
+    // MULTIPLYING whatever the state channel above just set — never an absolute
+    // value, never a hue change, so it can never fight the state colour law.
+    // Skipped during the deliberate 2Hz error flicker just above: that's already
+    // a faster, un-ignorable pulse, and stacking a second one on top would read
+    // as a glitch rather than two systems cooperating.
+    if (!errorFlickerActive) {
+      rig.visorMat.emissiveIntensity *= blinkEnvelope(t, phase, reduceMotion);
     }
 
     // ── Ambient motion (layered on top of the blended pose) ──
@@ -220,19 +271,91 @@ export function AgentCharacterV2({
       g.rotation.z = 0;
     } else if (pose === 'tending') {
       // Unhurried haul/set sway (bible §4): a slow stoop-and-place cadence on the arms,
-      // gentler and slower than the walk swing — never busy, never amber.
-      g.rotation.z = Math.sin(t * 1.2) * 0.02;
-      const haul = Math.sin(t * 1.1) * 0.18;
+      // gentler and slower than the walk swing — never busy, never amber. Phase-shifted
+      // (idPhase.ts) so seven tending agents don't haul in lockstep; zeroed under
+      // reduced motion (idleLife.ts) rather than just held at its current value, so
+      // toggling the setting mid-tend snaps cleanly to the neutral pose.
+      g.rotation.z = swayZ(t, phase, reduceMotion, 1.2, 0.02);
+      const haul = tendingHaul(t, phase, reduceMotion);
       bones.armL.rotateX(haul);
       bones.armR.rotateX(haul);
-      bones.spine.rotateX(Math.max(0, Math.sin(t * 1.1)) * 0.06);
+      bones.spine.rotateX(tendingSpineLean(t, phase, reduceMotion));
     } else {
-      // Slow ambient sway (idle weight shift).
-      g.rotation.z = Math.sin(t * 2) * 0.015;
+      // Slow ambient sway (idle weight shift) — same phase-shift/reduced-motion
+      // treatment as the tending branch above.
+      g.rotation.z = swayZ(t, phase, reduceMotion, 2, 0.015);
       if (pose === 'seatedWork' || pose === 'standWork') {
         // Small periodic head nods while engaged.
-        bones.head.rotateX(0.05 * Math.sin(t * 2.6) * Math.max(0, Math.sin(t * 0.45)));
+        bones.head.rotateX(headNod(t, phase, reduceMotion));
       }
+    }
+
+    // ── Breathing (bible §4: "subtle ... you notice it only when it stops") ──
+    // A small vertical scale on the spine bone (the torso proxy in this rig —
+    // there's no separate chest bone). Own phase AND own rate per agent
+    // (idleLife.ts), so it reads as seven people, not one loop offset in time.
+    bones.spine.scale.y = breathingScale(t, phase, reduceMotion);
+
+    // ── Look-at (bible §4 + honesty law) ──
+    // Priority: if THIS agent is the one being hovered, it looks back at the
+    // camera (eye contact); else if a DIFFERENT agent is hovered, this agent
+    // notices and glances at them; else it glances at whichever peer is
+    // genuinely working — sourced from agentStatus's clamped state, so a sim
+    // agent (never 'working') can never be invented as something to look at;
+    // else neutral (no look-at offset — the pose's own head orientation stands).
+    // Damped, not snapped (THREE.MathUtils.damp, same style used across
+    // atmosphere/), and yaw/pitch are hard-clamped in idleLife.ts so a head
+    // never spins past what a person's actually can (bible §4: "~60° before
+    // their body follows").
+    const headWorldY = m.y + bones.root.position.y + HEAD_HEIGHT;
+    let lookDX = 0;
+    let lookDY = 0;
+    let lookDZ = 0;
+    let hasLookTarget = false;
+    const hoveredId = hoveredAgentIdRef.current;
+    if (hoveredId === identity.id) {
+      lookDX = cam.x - m.x;
+      lookDY = cam.y - headWorldY;
+      lookDZ = cam.z - m.z;
+      hasLookTarget = true;
+    } else if (hoveredId) {
+      const hoveredM = getMotion(hoveredId);
+      if (hoveredM) {
+        lookDX = hoveredM.x - m.x;
+        lookDY = hoveredM.y + HEAD_HEIGHT - headWorldY;
+        lookDZ = hoveredM.z - m.z;
+        hasLookTarget = true;
+      }
+    } else {
+      const runtimeStates = getAgentRuntimeStates();
+      for (let i = 0; i < runtimeStates.length; i++) {
+        if (runtimeStates[i].id !== identity.id && runtimeStates[i].hudState === 'working') {
+          const workerM = getMotion(runtimeStates[i].id);
+          if (workerM) {
+            lookDX = workerM.x - m.x;
+            lookDY = workerM.y + HEAD_HEIGHT - headWorldY;
+            lookDZ = workerM.z - m.z;
+            hasLookTarget = true;
+          }
+          break;
+        }
+      }
+    }
+    let desiredYaw = 0;
+    let desiredPitch = 0;
+    if (!reduceMotion && hasLookTarget) {
+      desiredYaw = resolveLookYaw(lookDX, lookDZ, g.rotation.y);
+      desiredPitch = resolveLookPitch(lookDY, Math.hypot(lookDX, lookDZ));
+    }
+    look.current.yaw = reduceMotion
+      ? 0
+      : THREE.MathUtils.damp(look.current.yaw, desiredYaw, LOOK_DAMP, dt);
+    look.current.pitch = reduceMotion
+      ? 0
+      : THREE.MathUtils.damp(look.current.pitch, desiredPitch, LOOK_DAMP, dt);
+    if (!reduceMotion) {
+      bones.head.rotateY(look.current.yaw);
+      bones.head.rotateX(look.current.pitch);
     }
 
     // ── Per-agent specials ──
@@ -254,7 +377,7 @@ export function AgentCharacterV2({
       const pl = rig.presenceLight;
       if (pl) {
         const settle = m.walking ? 0.35 : 1;
-        const pulse = 1 + 0.08 * Math.sin(t * 1.4);
+        const pulse = reduceMotion ? 1 : 1 + 0.08 * Math.sin(t * 1.4 + phase);
         pl.scale.setScalar((0.7 + 0.3 * settle) * pulse);
         (pl.material as THREE.MeshBasicMaterial).opacity = (m.walking ? 0.09 : 0.18) * pulse;
       }
@@ -291,11 +414,12 @@ export function AgentCharacterV2({
     }
 
     // Feet aura: breathing when available; steady otherwise; slight lift on hover.
-    const breathe = hud === 'available' ? 1 + 0.18 * Math.sin(t * 1.8) : 1;
+    // Phase-shifted and reduced-motion-neutral like the rest of this file's idle life.
+    const breathe =
+      hud === 'available' && !reduceMotion ? 1 + 0.18 * Math.sin(t * 1.8 + phase) : 1;
     bones.aura.scale.setScalar(hoveredRef.current ? breathe * 1.15 : breathe);
 
     // ── Always-on small label within 18u of camera (discrete state change) ──
-    const cam = r3f.camera.position;
     const dx = cam.x - m.x;
     const dy = cam.y - m.y;
     const dz = cam.z - m.z;

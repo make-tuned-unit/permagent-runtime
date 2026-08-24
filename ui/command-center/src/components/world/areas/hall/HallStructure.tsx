@@ -63,10 +63,8 @@ function makeFloorTexture(): THREE.CanvasTexture {
 function RotundaFloor() {
   const floorMaterial = useMemo(() => {
     const map = makeFloorTexture();
-    return new THREE.MeshStandardMaterial({
+    return new THREE.MeshLambertMaterial({
       map,
-      roughness: 0.62,
-      metalness: 0.04,
       polygonOffset: true,
       polygonOffsetFactor: 1,
       polygonOffsetUnits: 1,
@@ -80,10 +78,12 @@ function RotundaFloor() {
         <circleGeometry args={[ROTUNDA_RADIUS, 64]} />
         <primitive object={floorMaterial} attach="material" />
       </mesh>
-      {/* Warm bounce from the shelf glow above — before this the amber lived
-          only in the library band and the ground floor sat flat and cold. */}
-      <pointLight position={[6, 4.5, 2]} color="#ffc48a" intensity={0.55} distance={22} decay={2} />
-      <pointLight position={[-5, 4.5, -4]} color="#ffb87a" intensity={0.4} distance={20} decay={2} />
+      {/* The warm bounce off the shelf glow above used to be two 20-unit
+          pointLights standing right here. It is now one hemisphereLight in
+          atmosphere/Atmosphere.tsx: a bounce from above is exactly what a
+          hemisphere light is for, it covers the whole rotunda instead of two
+          spots, and a forward renderer charges for it once rather than twice
+          per fragment on every lit surface in the scene. */}
       {/* Circuit mandala glow lines */}
       <FloorCircuits />
     </group>
@@ -184,10 +184,10 @@ function Columns() {
   const bodyMat = useMemo(() => {
     const map = makeStoneTexture('#aeb4c0', 12);
     map.repeat.set(1, 2.5);
-    return new THREE.MeshStandardMaterial({ map, roughness: 0.55, metalness: 0.05 });
+    return new THREE.MeshLambertMaterial({ map });
   }, []);
   const trimMat = useMemo(
-    () => new THREE.MeshStandardMaterial({ map: makeStoneTexture('#b6bcc8'), roughness: 0.35, metalness: 0.08 }),
+    () => new THREE.MeshLambertMaterial({ map: makeStoneTexture('#b6bcc8') }),
     []
   );
 
@@ -242,7 +242,7 @@ function Dome() {
   const shellMat = useMemo(() => {
     const map = makeStoneTexture('#a8aebb');
     map.repeat.set(6, 3);
-    return new THREE.MeshStandardMaterial({ map, roughness: 0.5, side: THREE.BackSide });
+    return new THREE.MeshLambertMaterial({ map, side: THREE.BackSide });
   }, []);
   return (
     <group>
@@ -254,7 +254,7 @@ function Dome() {
       {/* Oculus ring */}
       <mesh position-y={DOME_HEIGHT + ROTUNDA_RADIUS * 0.97} rotation-x={Math.PI / 2}>
         <ringGeometry args={[2, 3, 32]} />
-        <meshStandardMaterial color={COLORS.marbleVeining} roughness={0.3} metalness={0.2} />
+        <meshLambertMaterial color={COLORS.marbleVeining} />
       </mesh>
     </group>
   );
@@ -311,11 +311,11 @@ function StationPedestal({
   const isPortal = station.iconType === 'portal';
   const pedestalHeight = isPortal ? 2 : 1.5;
   const stoneMat = useMemo(
-    () => new THREE.MeshStandardMaterial({ map: makeStoneTexture('#aeb4c0', 6), roughness: 0.4, metalness: 0.1 }),
+    () => new THREE.MeshLambertMaterial({ map: makeStoneTexture('#aeb4c0', 6) }),
     []
   );
   const plinthMat = useMemo(
-    () => new THREE.MeshStandardMaterial({ map: makeStoneTexture('#8e94a2'), roughness: 0.35, metalness: 0.15 }),
+    () => new THREE.MeshLambertMaterial({ map: makeStoneTexture('#8e94a2') }),
     []
   );
 

@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { Bloom, EffectComposer, Noise } from '@react-three/postprocessing';
-import { BlendFunction, KernelSize } from 'postprocessing';
+import { BlendFunction } from 'postprocessing';
 
 // W4-owned (bible §7/§8). Bloom is the FIRST cut if the frame budget fails;
 // Noise is cheap and stays. The dev-only toggles below exist so perf evidence
@@ -58,11 +58,28 @@ export function WorldPostProcessing() {
 
   return (
     <EffectComposer multisampling={0}>
+      {/* mipmapBlur instead of the old kernelSize={KernelSize.LARGE}.
+          KernelSize.LARGE is a wide gaussian convolved at full resolution — a
+          lot of texture taps per pixel on a scene that is already fill-rate
+          bound. mipmapBlur builds the same halo out of a mip chain instead:
+          each level is a quarter of the pixels of the one above it, so the
+          whole blur costs a fraction of one full-resolution pass. postprocessing
+          marks kernelSize deprecated in favour of exactly this.
+
+          `levels={6}` rather than the default 8 caps how far the glow spreads —
+          at 8 the halo reaches across the rotunda and the engraved-circuitry
+          read the bible asks for (§1: light is engraved INTO the stone, never
+          free-floating) starts to dissolve into a general wash. `radius` and
+          `intensity` are tuned to land on the same brightness the old kernel
+          gave; the threshold and smoothing are untouched, so exactly the same
+          pixels bloom as before. */}
       <Bloom
-        intensity={0.8}
+        mipmapBlur
+        intensity={1.0}
+        radius={0.7}
+        levels={6}
         luminanceThreshold={0.4}
         luminanceSmoothing={0.4}
-        kernelSize={KernelSize.LARGE}
       />
       <Noise premultiply blendFunction={BlendFunction.ADD} opacity={0.12} />
     </EffectComposer>

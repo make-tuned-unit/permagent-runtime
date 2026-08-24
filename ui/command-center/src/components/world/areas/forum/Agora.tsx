@@ -77,11 +77,11 @@ function Horizon({ reduceMotion }: { reduceMotion: boolean }) {
 // NOT mesh peers, so they are honestly present even offline. They are the two
 // brightest, richest glyphs (BrainScene self-node language), distinguished from
 // the instanced swarm. Henry's ignites as he is absorbed (dissolve → 1).
-const selfMat = new THREE.MeshStandardMaterial({
-  color: '#B8E8FF', emissive: ENV.neonCyan, emissiveIntensity: 1.2, roughness: 0.15, metalness: 0.2,
+const selfMat = new THREE.MeshLambertMaterial({
+  color: '#B8E8FF', emissive: ENV.neonCyan, emissiveIntensity: 1.2,
 });
-const henryMat = new THREE.MeshStandardMaterial({
-  color: '#FFF4D8', emissive: AGENT_TRIM.henry, emissiveIntensity: 1.0, roughness: 0.15, metalness: 0.2,
+const henryMat = new THREE.MeshLambertMaterial({
+  color: '#FFF4D8', emissive: AGENT_TRIM.henry, emissiveIntensity: 1.0,
 });
 
 function ThresholdGlyphs({ reduceMotion }: { reduceMotion: boolean }) {
@@ -95,12 +95,12 @@ function ThresholdGlyphs({ reduceMotion }: { reduceMotion: boolean }) {
     if (selfRef.current && !reduceMotion) {
       selfRef.current.rotation.y += dt * 0.4;
       selfRef.current.rotation.x += dt * 0.15;
-      (selfRef.current.material as THREE.MeshStandardMaterial).emissiveIntensity = 1.1 + 0.15 * Math.sin(t * 2);
+      (selfRef.current.material as THREE.MeshLambertMaterial).emissiveIntensity = 1.1 + 0.15 * Math.sin(t * 2);
     }
     if (henryRef.current) {
       if (!reduceMotion) henryRef.current.rotation.y += dt * 0.5;
       // Henry ignites as he is absorbed: dim at home, full in the mesh.
-      (henryRef.current.material as THREE.MeshStandardMaterial).emissiveIntensity = 0.5 + 1.4 * diss;
+      (henryRef.current.material as THREE.MeshLambertMaterial).emissiveIntensity = 0.5 + 1.4 * diss;
       const s = 0.7 + 0.5 * diss;
       henryRef.current.scale.setScalar(s);
     }
@@ -127,7 +127,9 @@ function ThresholdGlyphs({ reduceMotion }: { reduceMotion: boolean }) {
         <ringGeometry args={[0.5, 0.62, 40]} />
         <meshBasicMaterial color={AGENT_TRIM.henry} transparent opacity={0} depthWrite={false} blending={THREE.AdditiveBlending} toneMapped={false} />
       </mesh>
-      <pointLight position={[0, 0.5, 0]} color={ENV.horizonBlue} intensity={0.8} distance={14} decay={2} />
+      {/* The glyphs and the ripple are emissive and additive — they carry
+          the Agora's blue on their own. The pointLight that used to sit here
+          only lit the floor under them. */}
     </group>
   );
 }
