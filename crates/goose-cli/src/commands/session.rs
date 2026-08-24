@@ -164,9 +164,9 @@ pub async fn handle_session_list(
     }
 
     if ascending {
-        sessions.sort_by(|a, b| a.updated_at.cmp(&b.updated_at));
+        sessions.sort_by_key(|s| s.updated_at);
     } else {
-        sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        sessions.sort_by_key(|s| std::cmp::Reverse(s.updated_at));
     }
 
     if let Some(n) = limit {
