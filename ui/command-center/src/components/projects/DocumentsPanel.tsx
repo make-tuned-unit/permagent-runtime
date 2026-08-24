@@ -15,6 +15,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { FiFile, FiTrash2, FiUploadCloud } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
+import { projectMemoryPreview } from '../brain/brainMemoryFocus';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Panel } from './Panel';
@@ -39,6 +40,7 @@ export function DocumentsPanel({ project }: { project: Project }) {
   // #629 multi-client liveness: bumped by `project_changed` on /events, so an
   // upload/delete from another device refetches this list.
   const projectsRev = useCommandCenter(s => s.projectsRev);
+  const focusBrainMemory = useCommandCenter(s => s.focusBrainMemory);
 
   const load = useCallback(async () => {
     const generation = ++loadGeneration.current;
@@ -64,13 +66,26 @@ export function DocumentsPanel({ project }: { project: Project }) {
     try {
       await api.uploadProjectDocuments(project.id, files);
       await load();
+      try {
+        const mems = await api.listProjectMemories(project.id);
+        const hit = mems[0];
+        if (hit) {
+          focusBrainMemory({
+            id: hit.id,
+            key: hit.key,
+            preview: projectMemoryPreview(hit),
+          });
+        }
+      } catch {
+        /* indexing is best-effort; the file row already landed */
+      }
     } catch (e) {
       const err = e as Error;
       setError(`Upload failed: ${err.message || 'request failed'}`);
     } finally {
       setBusy(false);
     }
-  }, [project.id, load]);
+  }, [project.id, load, focusBrainMemory]);
 
   const remove = async (doc: ProjectDocument) => {
     setError(null);
@@ -137,7 +152,7 @@ export function DocumentsPanel({ project }: { project: Project }) {
           }}
         >
           <FiUploadCloud size={14} />
-          {docs.length === 0 ? 'Drop files here or click to upload' : 'Add more'}
+          {docs.length === 0 ? 'Drop files here — they become searchable in Brain' : 'Add more'}
         </div>
 
         {error && (

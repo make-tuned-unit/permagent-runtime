@@ -86,6 +86,25 @@ pub(crate) fn apply_media_capture(webview: &tauri::webview::PlatformWebview) {
     }
 }
 
+/// Trackpad haptic on a successful People save. No-op off macOS.
+/// Pattern 0 = generic; time 1 = now.
+#[tauri::command]
+fn haptic_success() {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        use objc2::msg_send;
+        use objc2::runtime::{AnyClass, AnyObject};
+        let Some(cls) = AnyClass::get(c"NSHapticFeedbackManager") else {
+            return;
+        };
+        let performer: *mut AnyObject = msg_send![cls, defaultPerformer];
+        if performer.is_null() {
+            return;
+        }
+        let _: () = msg_send![performer, performFeedbackPattern: 0u64, performanceTime: 1u64];
+    }
+}
+
 /// Tauri command: enable media capture on the calling webview window.
 /// Called from JS on mount (ChatApp.tsx) for dynamically-created windows.
 #[tauri::command]
@@ -348,6 +367,7 @@ fn main() {
             daemon::get_daemon_token,
             activity::emit_activity,
             enable_media_capture_cmd,
+            haptic_success,
             raise_chat_above_main,
         ])
         .setup(|app| {

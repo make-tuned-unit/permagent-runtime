@@ -141,7 +141,7 @@ async function renderBrain() {
 }
 
 function searchInput(): HTMLInputElement {
-  const input = container.querySelector('input[placeholder*="search the shape"]');
+  const input = container.querySelector('input[placeholder*="try a name or project"]');
   expect(input).toBeTruthy();
   return input as HTMLInputElement;
 }

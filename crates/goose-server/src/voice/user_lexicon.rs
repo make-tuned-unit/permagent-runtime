@@ -72,6 +72,15 @@ pub fn all() -> HashMap<String, PronunciationEntry> {
     with_entries(Clone::clone)
 }
 
+/// True when this word was taught and will be spoken from the store.
+pub fn known(word: &str) -> bool {
+    let word = word.trim().to_lowercase();
+    if word.is_empty() {
+        return false;
+    }
+    with_entries(|entries| entries.contains_key(&word))
+}
+
 /// The lexicon every synthesis call should carry. Empty lexicon → None so
 /// backends skip the override pass entirely.
 pub fn current() -> Option<PronunciationLexicon> {

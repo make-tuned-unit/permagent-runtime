@@ -196,16 +196,38 @@ pub async fn inject_recall(
     match brain.recall_cascade(user_query, &recognition_ctx).await {
         Ok(result) => {
             let top_hits = filter_recall_hits(&result.merged_hits);
-            let count = top_hits.len();
-            let prefix = if top_hits.is_empty() {
-                None
+            let (prefix, injected_ids) = if top_hits.is_empty() {
+                (None, Vec::new())
             } else {
-                let mut prefix = String::from("Relevant memories from past context:\n");
-                for hit in &top_hits {
-                    prefix.push_str(&format!("- {}\n", hit.content));
+                let sources: Vec<permagent::context_layers::AssembleSource<'_>> = top_hits
+                    .iter()
+                    .map(|hit| permagent::context_layers::AssembleSource {
+                        key: hit.key.as_str(),
+                        abstract_text: hit.description.as_deref(),
+                        content: hit.content.as_str(),
+                        score: hit.signal_score,
+                    })
+                    .collect();
+                let layered = permagent::context_layers::assemble(
+                    &sources,
+                    permagent::context_layers::AssembleBudget::REPLY,
+                );
+                // `assemble` may omit budget-excluded hits. Receipts and
+                // recognition must describe what actually reached the prompt,
+                // not the larger pre-budget candidate set.
+                let injected_ids = top_hits
+                    .iter()
+                    .take(layered.len())
+                    .map(|hit| hit.id.clone())
+                    .collect();
+                let rendered = permagent::context_layers::render_prompt(&layered);
+                if rendered.is_empty() {
+                    (None, Vec::new())
+                } else {
+                    (Some(rendered), injected_ids)
                 }
-                Some(prefix)
             };
+            let count = injected_ids.len();
             drop(top_hits);
 
             // Recognition instrumentation: persist the recall event + its WHOLE
@@ -222,11 +244,12 @@ pub async fn inject_recall(
                 // Move the already-filtered hit content into the detached turn
                 // handle: citation tracking adds no content clone or overlap scan
                 // to the reply hot path.
+                let injected_ids: std::collections::HashSet<String> =
+                    injected_ids.into_iter().collect();
                 let injected = result
                     .merged_hits
                     .into_iter()
-                    .filter(|hit| hit.signal_score >= RECALL_SCORE_FLOOR)
-                    .take(RECALL_TOP_K)
+                    .filter(|hit| injected_ids.contains(&hit.id))
                     .map(|hit| permagent::recognition::InjectedMemory {
                         id: hit.id,
                         content: hit.content,

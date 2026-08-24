@@ -23,9 +23,12 @@ enum VoiceAudioRoute {
         ]
     }
 
-    /// `.videoChat` is speaker+mic. `.voiceChat` ducks TTS and used to win
-    /// the receiver; `.default` plus forced speaker plus AEC muted the mic.
-    static let sessionMode: AVAudioSession.Mode = .videoChat
+    /// `.default` plus route-aware AEC. `.voiceChat` ducks TTS and used to
+    /// win the receiver. `.videoChat` turns on *session*-level AEC, which
+    /// muted the near-end mic on speaker AND dropped Bluetooth HFP — the
+    /// 2026-08-21 rebuild that switched to it connected to /voice but never
+    /// sent a recording start (hub: three sockets, zero `Recording started`).
+    static let sessionMode: AVAudioSession.Mode = .default
 
     enum OutputOverride: Equatable {
         /// Built-in loudspeaker (speakerphone).
@@ -59,6 +62,12 @@ enum VoiceAudioRoute {
     /// MicPipe is built for one input format; voice processing also re-formats
     /// the node. Either change without a graph rebuild drops every subsequent
     /// tap buffer (rms 0 — "Listening" again).
+    ///
+    /// A live rate of 0 is the session still settling after setCategory /
+    /// speaker override — NOT a real format change. Tearing the graph down
+    /// in that window is how a working tap became a dead one: startAudio
+    /// then threw unusableInputFormat, the error was swallowed, and the orb
+    /// stayed on LISTENING with no mic.
     static func mustRebuildGraph(
         voiceProcessing: Bool,
         wantVoiceProcessing: Bool,
@@ -67,16 +76,27 @@ enum VoiceAudioRoute {
         liveSampleRate: Double,
         liveChannels: UInt32
     ) -> Bool {
-        voiceProcessing != wantVoiceProcessing
+        guard liveSampleRate > 0, liveChannels > 0 else { return false }
+        return voiceProcessing != wantVoiceProcessing
             || captureSampleRate != liveSampleRate
             || captureChannels != liveChannels
     }
 
     /// Speakerphone runs without AEC, so TTS from the same speaker looks like
-    /// speech. Ignore barge-in while playback is actually coming out.
+    /// speech. Ignore barge-in only when the mic is NOT clearly louder than
+    /// playback — a blanket ignore while he talks made him uninterruptible.
+    /// Best practice (2026 duplex agents): stop immediately on a real barge,
+    /// never on his own echo. Headphones keep AEC and never ignore.
     static let speakerPlaybackBargeFloor: Float = 0.05
 
-    static func ignoreBargeIn(speakerphone: Bool, playbackRms: Float) -> Bool {
-        speakerphone && playbackRms > speakerPlaybackBargeFloor
+    static func ignoreBargeIn(
+        speakerphone: Bool,
+        playbackRms: Float,
+        micRms: Float = 0
+    ) -> Bool {
+        guard speakerphone else { return false }
+        guard playbackRms > speakerPlaybackBargeFloor else { return false }
+        let floor = max(speakerPlaybackBargeFloor, playbackRms * 1.75)
+        return micRms <= floor
     }
 }

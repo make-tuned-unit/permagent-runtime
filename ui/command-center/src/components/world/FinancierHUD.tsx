@@ -57,9 +57,10 @@ export function FinancierHUD({ visible, onClose }: FinancierHUDProps) {
     <HudShell visible={visible} onClose={onClose} title="THE FINANCIER" statusPill={statusPill}>
       <div style={{ padding: '4px 14px 8px' }}>
         <span style={{ fontSize: 11, color: '#9CA3AF', lineHeight: 1.5 }}>
-          Market research for the numbers you already care about — live quotes,
-          a watchlist, notes, and positions you already took. It reports; it
-          never sizes a trade and cannot place an order.
+          Owns the Finance tab. The Orchestrator can see the board and
+          queries this desk for prices, the ledger, and Polybot. The Watcher
+          delivers overbought holding alerts. Keys stay in the keychain;
+          it never sizes a trade itself.
         </span>
       </div>
 
@@ -67,13 +68,14 @@ export function FinancierHUD({ visible, onClose }: FinancierHUDProps) {
         <Bullet>Live quotes on the watchlist (fetched at read time, never stored)</Bullet>
         <Bullet>Research notes, optionally tied to a ticker</Bullet>
         <Bullet>A record of positions you say you already took</Bullet>
+        <Bullet>Overbought signs on open lots — the Watcher notifies</Bullet>
         <Bullet>Optional: your own stock scanner, if it is running</Bullet>
       </Section>
 
       <Section title="THE LEASH" trimColor={COLORS.neonAmber}>
         <div style={{ fontSize: 11, color: '#D1D5DB', lineHeight: 1.5 }}>
-          No buy, no sell, no size. The Finance tab is a ledger of observations
-          and of trades already made — not a brokerage.
+          No size advice. Permagent does not hold CLOB keys. Starting Polybot
+          lets that bot trade on Polymarket.
         </div>
       </Section>
 

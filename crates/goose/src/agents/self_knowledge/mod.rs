@@ -1709,6 +1709,10 @@ mod tests {
             brief.contains("supervised approval"),
             "orchestrator brief must mention supervised approval"
         );
+        assert!(
+            brief.contains("The Financier"),
+            "orchestrator brief must say money questions go to The Financier"
+        );
     }
 
     #[test]
@@ -1866,6 +1870,34 @@ mod tests {
         assert!(
             brief.contains("different-model reviewer adversarially checks the diff"),
             "the coding-harness self-knowledge must describe the independent reviewer gate"
+        );
+        assert!(
+            brief.contains("held and given a plan"),
+            "the coding-harness self-knowledge must describe the premature-done hold"
+        );
+        assert!(
+            brief.contains("goose tool transcripts"),
+            "the cost optimizer must name transcript signals as corroboration, not a swap"
+        );
+        assert!(
+            brief.contains("never swap the interactive main-loop model"),
+            "the cost optimizer must keep the main-loop model swap forbidden"
+        );
+
+        let brain = find_descriptor("brain").expect("brain must be discoverable");
+        assert!(
+            brain.what_it_does.contains("layered")
+                || brain.what_it_does.contains("abstracts first"),
+            "brain self-knowledge must teach progressive layers"
+        );
+        let inbox = find_descriptor("downloads_inbox").expect("downloads inbox");
+        assert!(
+            inbox.what_it_does.contains("searchable Brain"),
+            "inbox self-knowledge must say dropped files become searchable memory"
+        );
+        assert!(
+            !inbox.teaching.is_empty(),
+            "inbox must carry a teaching step that opens Inbox"
         );
     }
 

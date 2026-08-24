@@ -101,7 +101,8 @@ const MIN_ALPHA_RUN: usize = 2;
 /// Returns `None` when nothing speakable remains — the caller skips synthesis
 /// entirely rather than voicing leftover punctuation.
 pub fn speakable(text: &str) -> Option<String> {
-    let stripped = MD_EMPHASIS.replace_all(text, "");
+    let folded = crate::voice::speech_normalize::for_speech(text);
+    let stripped = MD_EMPHASIS.replace_all(&folded, "");
     let stripped = MD_ITALIC.replace_all(&stripped, "$1");
     let stripped = MD_HEADING.replace_all(&stripped, "");
     let stripped = MD_BULLET.replace_all(&stripped, "");
@@ -237,6 +238,26 @@ mod tests {
         let out = speakable("So here are some directions I'd explore: **One:").unwrap();
         assert!(!out.contains('*'), "asterisks survived: {out}");
         assert!(out.contains("One:"));
+    }
+
+    #[test]
+    fn folds_curly_apostrophes_in_contractions() {
+        let out = speakable("He should\u{2019}ve gone.").unwrap();
+        assert!(
+            out.contains("should've"),
+            "curly apostrophe survived: {out}"
+        );
+        assert!(!out.contains('\u{2019}'));
+    }
+
+    #[test]
+    fn last_night_equals_and_caps_hyphens_are_not_spoken() {
+        let out = speakable("Elspeth = EL-speth, Prideine = PRID-ayn.").unwrap();
+        assert!(!out.contains('='), "equals survived: {out}");
+        assert!(!out.contains("EL-"), "caps hyphen survived: {out}");
+        assert!(out.contains("Elspeth,"));
+        assert!(out.contains("EL speth"));
+        assert!(out.contains("PRID ayn"));
     }
 
     #[test]

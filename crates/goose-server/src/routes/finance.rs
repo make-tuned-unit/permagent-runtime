@@ -3,12 +3,14 @@
 //! `GET /api/finance` is Polybot status, holdings with live marks, Picker
 //! picks run through a Yahoo + financialdatasets + loop-engineering gate,
 //! household spend, and research notes. Quotes are never persisted.
-//! Nothing here places an order.
+//! Polybot start/pause/scan drive the user's bot; that bot can place orders.
+//! Keys stay in the keychain.
 
 use crate::state::AppState;
 use axum::{
     extract::{DefaultBodyLimit, Multipart, Path, State},
     http::StatusCode,
+    response::{IntoResponse, Response},
     routing::{delete, get, patch, post},
     Json, Router,
 };
@@ -19,9 +21,26 @@ use permagent::market_data::{self, FundamentalsError, Quote};
 use permagent::overbought::{self, OverboughtReading};
 use permagent::pick_loop::{self, LoopGate};
 use permagent::picker::{self, TradeEntry, TradeRow};
+use permagent::polybot;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// Plain-text `(StatusCode, String)` became "Unknown error" in the tab —
+/// `apiFetch` only reads JSON `{ message }`. Same shape as growth_actions.
+struct ApiError(StatusCode, String);
+
+impl From<(StatusCode, String)> for ApiError {
+    fn from((status, message): (StatusCode, String)) -> Self {
+        ApiError(status, message)
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (self.0, Json(serde_json::json!({ "message": self.1 }))).into_response()
+    }
+}
 
 const MAX_QUOTES: usize = 20;
 const MAX_PICKS: usize = 15;
@@ -47,6 +66,9 @@ pub fn routes(state: Arc<AppState>) -> Router {
         )
         .route("/api/finance/picker/start", post(start_picker))
         .route("/api/finance/picker/scan", post(scan_picker))
+        .route("/api/finance/polybot/start", post(start_polybot))
+        .route("/api/finance/polybot/pause", post(pause_polybot))
+        .route("/api/finance/polybot/scan", post(scan_polybot))
         .route("/api/finance/picker/trades", post(record_picker_trade))
         .route(
             "/api/finance/picker/trades/{id}/close",
@@ -242,12 +264,12 @@ fn rsi_threshold() -> f64 {
         .unwrap_or(DEFAULT_RSI_THRESHOLD)
 }
 
-async fn pool(state: &AppState) -> Result<sqlx::Pool<sqlx::Sqlite>, (StatusCode, String)> {
+async fn pool(state: &AppState) -> Result<sqlx::Pool<sqlx::Sqlite>, ApiError> {
     state
         .session_manager()
         .pool_clone()
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into())
 }
 
 async fn quote_map(symbols: &[String]) -> HashMap<String, Result<QuoteView, String>> {
@@ -272,9 +294,7 @@ async fn quote_map(symbols: &[String]) -> HashMap<String, Result<QuoteView, Stri
     out
 }
 
-async fn get_board(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<FinanceBoard>, (StatusCode, String)> {
+async fn get_board(State(state): State<Arc<AppState>>) -> Result<Json<FinanceBoard>, ApiError> {
     let pool = pool(&state).await?;
     let items = finance_ledger::list_watchlist(&pool)
         .await
@@ -646,7 +666,7 @@ struct WatchlistBody {
 async fn add_watchlist(
     State(state): State<Arc<AppState>>,
     Json(body): Json<WatchlistBody>,
-) -> Result<Json<finance_ledger::WatchlistItem>, (StatusCode, String)> {
+) -> Result<Json<finance_ledger::WatchlistItem>, ApiError> {
     let pool = pool(&state).await?;
     finance_ledger::add_watchlist(
         &pool,
@@ -656,13 +676,13 @@ async fn add_watchlist(
     )
     .await
     .map(Json)
-    .map_err(|e| (StatusCode::BAD_REQUEST, e))
+    .map_err(|e| (StatusCode::BAD_REQUEST, e).into())
 }
 
 async fn remove_watchlist(
     State(state): State<Arc<AppState>>,
     Path(symbol): Path<String>,
-) -> Result<StatusCode, (StatusCode, String)> {
+) -> Result<StatusCode, ApiError> {
     let pool = pool(&state).await?;
     let gone = finance_ledger::remove_watchlist(&pool, &symbol)
         .await
@@ -673,7 +693,8 @@ async fn remove_watchlist(
         Err((
             StatusCode::NOT_FOUND,
             format!("{symbol} is not on the watchlist"),
-        ))
+        )
+            .into())
     }
 }
 
@@ -688,21 +709,21 @@ struct NoteBody {
 async fn add_note(
     State(state): State<Arc<AppState>>,
     Json(body): Json<NoteBody>,
-) -> Result<Json<finance_ledger::FinanceNote>, (StatusCode, String)> {
+) -> Result<Json<finance_ledger::FinanceNote>, ApiError> {
     let pool = pool(&state).await?;
     let title = body.title.as_deref().unwrap_or("");
     let text = body.body.as_deref().unwrap_or("");
     finance_ledger::add_note(&pool, title, text, body.symbol.as_deref())
         .await
         .map(Json)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))
+        .map_err(|e| (StatusCode::BAD_REQUEST, e).into())
 }
 
 async fn update_note(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(body): Json<NoteBody>,
-) -> Result<Json<finance_ledger::FinanceNote>, (StatusCode, String)> {
+) -> Result<Json<finance_ledger::FinanceNote>, ApiError> {
     let pool = pool(&state).await?;
     let symbol = if body.symbol.is_some() {
         Some(body.symbol.as_deref())
@@ -718,13 +739,13 @@ async fn update_note(
     )
     .await
     .map(Json)
-    .map_err(|e| (StatusCode::BAD_REQUEST, e))
+    .map_err(|e| (StatusCode::BAD_REQUEST, e).into())
 }
 
 async fn delete_note(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Result<StatusCode, (StatusCode, String)> {
+) -> Result<StatusCode, ApiError> {
     let pool = pool(&state).await?;
     let gone = finance_ledger::delete_note(&pool, &id)
         .await
@@ -732,7 +753,7 @@ async fn delete_note(
     if gone {
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err((StatusCode::NOT_FOUND, "no note with that id".into()))
+        Err((StatusCode::NOT_FOUND, "no note with that id".into()).into())
     }
 }
 
@@ -752,7 +773,7 @@ struct PositionBody {
 async fn add_position(
     State(state): State<Arc<AppState>>,
     Json(body): Json<PositionBody>,
-) -> Result<Json<finance_ledger::Position>, (StatusCode, String)> {
+) -> Result<Json<finance_ledger::Position>, ApiError> {
     let pool = pool(&state).await?;
     finance_ledger::add_position(
         &pool,
@@ -769,7 +790,7 @@ async fn add_position(
     )
     .await
     .map(Json)
-    .map_err(|e| (StatusCode::BAD_REQUEST, e))
+    .map_err(|e| (StatusCode::BAD_REQUEST, e).into())
 }
 
 #[derive(Debug, Deserialize)]
@@ -783,12 +804,12 @@ async fn close_position(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(body): Json<CloseBody>,
-) -> Result<Json<finance_ledger::Position>, (StatusCode, String)> {
+) -> Result<Json<finance_ledger::Position>, ApiError> {
     let pool = pool(&state).await?;
     finance_ledger::close_position(&pool, &id, &body.exit_date, body.exit_price)
         .await
         .map(Json)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))
+        .map_err(|e| (StatusCode::BAD_REQUEST, e).into())
 }
 
 #[derive(Debug, Serialize)]
@@ -797,14 +818,14 @@ struct PickerAction {
     detail: String,
 }
 
-async fn start_picker() -> Result<Json<PickerAction>, (StatusCode, String)> {
+async fn start_picker() -> Result<Json<PickerAction>, ApiError> {
     picker::ensure_running()
         .await
         .map(|detail| Json(PickerAction { detail }))
-        .map_err(|e| (StatusCode::BAD_GATEWAY, e))
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e).into())
 }
 
-async fn scan_picker() -> Result<Json<PickerAction>, (StatusCode, String)> {
+async fn scan_picker() -> Result<Json<PickerAction>, ApiError> {
     let s = picker::status().await;
     if !s.reachable {
         return Err((
@@ -813,7 +834,8 @@ async fn scan_picker() -> Result<Json<PickerAction>, (StatusCode, String)> {
                 "the scanner is not running at {} — start it from this tab first",
                 s.base_url
             ),
-        ));
+        )
+            .into());
     }
     if s.scan_in_progress {
         return Ok(Json(PickerAction {
@@ -823,7 +845,27 @@ async fn scan_picker() -> Result<Json<PickerAction>, (StatusCode, String)> {
     picker::start_scan()
         .await
         .map(|detail| Json(PickerAction { detail }))
-        .map_err(|e| (StatusCode::BAD_GATEWAY, e))
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e).into())
+}
+
+async fn start_polybot() -> Result<Json<PickerAction>, ApiError> {
+    polybot::start()
+        .await
+        .map(|detail| Json(PickerAction { detail }))
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e).into())
+}
+
+async fn pause_polybot() -> Result<Json<PickerAction>, ApiError> {
+    polybot::pause()
+        .map(|detail| Json(PickerAction { detail }))
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e).into())
+}
+
+async fn scan_polybot() -> Result<Json<PickerAction>, ApiError> {
+    polybot::request_scan()
+        .await
+        .map(|detail| Json(PickerAction { detail }))
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e).into())
 }
 
 #[derive(Debug, Deserialize)]
@@ -888,7 +930,7 @@ struct RecordedTrade {
 fn recorded(
     local: Option<finance_ledger::Position>,
     picker: Result<serde_json::Value, String>,
-) -> Result<Json<RecordedTrade>, (StatusCode, String)> {
+) -> Result<Json<RecordedTrade>, ApiError> {
     match picker {
         Ok(v) => Ok(Json(RecordedTrade {
             local,
@@ -900,7 +942,7 @@ fn recorded(
             picker: None,
             picker_error: Some(e),
         })),
-        Err(e) => Err((StatusCode::BAD_GATEWAY, e)),
+        Err(e) => Err((StatusCode::BAD_GATEWAY, e).into()),
     }
 }
 
@@ -938,10 +980,10 @@ async fn existing_trade(pool: &sqlx::Pool<sqlx::Sqlite>, id: &str) -> Option<Tra
 async fn record_picker_trade(
     State(state): State<Arc<AppState>>,
     Json(body): Json<TradeBody>,
-) -> Result<Json<RecordedTrade>, (StatusCode, String)> {
+) -> Result<Json<RecordedTrade>, ApiError> {
     let trade = body.entry();
     if trade.ticker.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "ticker is required".into()));
+        return Err((StatusCode::BAD_REQUEST, "ticker is required".into()).into());
     }
     match picker::record_trade(&trade).await {
         Ok(v) => Ok(Json(RecordedTrade {
@@ -963,10 +1005,10 @@ async fn update_picker_trade(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(body): Json<TradeBody>,
-) -> Result<Json<RecordedTrade>, (StatusCode, String)> {
+) -> Result<Json<RecordedTrade>, ApiError> {
     let trade = body.entry();
     if trade.ticker.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "ticker is required".into()));
+        return Err((StatusCode::BAD_REQUEST, "ticker is required".into()).into());
     }
     let picker_saved = picker::update_trade(&id, &trade).await;
     let pool = pool(&state).await.ok();
@@ -984,7 +1026,7 @@ async fn close_picker_trade(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(body): Json<CloseBody>,
-) -> Result<Json<RecordedTrade>, (StatusCode, String)> {
+) -> Result<Json<RecordedTrade>, ApiError> {
     let pool = pool(&state).await.ok();
     let existing = if let Some(pool) = pool.as_ref() {
         existing_trade(pool, &id).await
@@ -1007,7 +1049,7 @@ async fn update_local_position(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(body): Json<PositionBody>,
-) -> Result<Json<finance_ledger::Position>, (StatusCode, String)> {
+) -> Result<Json<finance_ledger::Position>, ApiError> {
     let pool = pool(&state).await?;
     finance_ledger::update_position(
         &pool,
@@ -1025,13 +1067,13 @@ async fn update_local_position(
     )
     .await
     .map(Json)
-    .map_err(|e| (StatusCode::BAD_REQUEST, e))
+    .map_err(|e| (StatusCode::BAD_REQUEST, e).into())
 }
 
 async fn delete_picker_trade(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Result<StatusCode, (StatusCode, String)> {
+) -> Result<StatusCode, ApiError> {
     let picker_err = picker::delete_trade(&id).await.err();
     let pool = pool(&state).await?;
     let local_gone = finance_ledger::delete_position(&pool, &id)
@@ -1043,13 +1085,14 @@ async fn delete_picker_trade(
     Err((
         StatusCode::BAD_GATEWAY,
         picker_err.unwrap_or_else(|| "no trade with that id".into()),
-    ))
+    )
+        .into())
 }
 
 async fn delete_position(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Result<StatusCode, (StatusCode, String)> {
+) -> Result<StatusCode, ApiError> {
     let pool = pool(&state).await?;
     let gone = finance_ledger::delete_position(&pool, &id)
         .await
@@ -1057,7 +1100,7 @@ async fn delete_position(
     if gone {
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err((StatusCode::NOT_FOUND, "no position with that id".into()))
+        Err((StatusCode::NOT_FOUND, "no position with that id".into()).into())
     }
 }
 
@@ -1073,10 +1116,10 @@ struct IngestResult {
 async fn ingest_statement(
     State(state): State<Arc<AppState>>,
     mut multipart: Multipart,
-) -> Result<Json<IngestResult>, (StatusCode, String)> {
+) -> Result<Json<IngestResult>, ApiError> {
     let pool = pool(&state).await?;
     let Ok(Some(field)) = multipart.next_field().await else {
-        return Err((StatusCode::BAD_REQUEST, "no file".into()));
+        return Err((StatusCode::BAD_REQUEST, "no file".into()).into());
     };
     let filename = field
         .file_name()
@@ -1091,7 +1134,7 @@ async fn ingest_statement(
         .await
         .map_err(|_| (StatusCode::BAD_REQUEST, "could not read the file".into()))?;
     if data.len() > MAX_FILE_SIZE {
-        return Err((StatusCode::PAYLOAD_TOO_LARGE, "file too large".into()));
+        return Err((StatusCode::PAYLOAD_TOO_LARGE, "file too large".into()).into());
     }
 
     let lower = filename.to_lowercase();
@@ -1138,7 +1181,7 @@ async fn recategorize(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(body): Json<RecatBody>,
-) -> Result<StatusCode, (StatusCode, String)> {
+) -> Result<StatusCode, ApiError> {
     let pool = pool(&state).await?;
     let ok = finance_ledger::recategorize(&pool, &id, &body.category)
         .await
@@ -1146,6 +1189,6 @@ async fn recategorize(
     if ok {
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err((StatusCode::NOT_FOUND, "no transaction with that id".into()))
+        Err((StatusCode::NOT_FOUND, "no transaction with that id".into()).into())
     }
 }

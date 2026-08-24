@@ -24,6 +24,8 @@ export interface RouteInboxResponse {
   document_id: string | null;
   /** social_post card id (scheduler). */
   card_id: string | null;
+  /** Brain memory key after a brain ingest. */
+  memory_key?: string | null;
 }
 
 /** project + scheduler routes land on a project; brain does not. */

@@ -46,9 +46,12 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
         display_name: "Reader",
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
         what_it_does:
-            "Intercepts dropped files and ingests them locally — OCR for images, text extraction for PDFs and documents",
+            "Intercepts dropped files and ingests them locally — OCR for images, text extraction for PDFs and documents. \
+             A statement or 10-K dropped on chat is how the Financier gets household rows and filings; \
+             there is no ask_reader tool — the drop is the call",
         why_it_matters:
-            "You can discuss a file the user dropped without them pasting its contents, and ingestion costs no model tokens",
+            "You can discuss a file the user dropped without them pasting its contents, and ingestion costs no model tokens. \
+             The Financier recategorizes the household rows after a statement lands",
         state_source: crate::agents::self_knowledge::StateSource::Static,
         // Reader is Static (no live brief state), so its lesson confirms BY PROXY
         // via MemoryRecallable — the Reader writes ingested text to the Brain.
@@ -109,7 +112,9 @@ pub struct Digest {
     /// True when OCR found too little / too low-confidence text to be worth
     /// ingesting — the caller should pass the image to the agent to *see*.
     pub is_visual: bool,
-    /// Stable content-hash key the full text is stored under (`reader:file:{sha256}`).
+    /// Stable memory key. Content-hash (`reader:file:{sha256}`) for anonymous
+    /// drops; path-stable (`doc:{project}:{rel}`) when ingested from a project
+    /// tree or the Downloads inbox.
     pub memory_key: String,
     /// True when this exact file was already ingested (skipped OCR + write).
     pub already_ingested: bool,
@@ -184,6 +189,20 @@ async fn already_ingested_digest(key: &str, filename: &str) -> Option<Digest> {
 /// Summarize extracted text, write the full text to the Brain under `key`, and
 /// build the compact digest. Shared tail of the image and document paths.
 async fn finalize_text_ingest(key: String, full_text: String, filename: &str) -> Digest {
+    finalize_text_ingest_with_identity(key, full_text, filename, filename).await
+}
+
+/// Shared write tail with an explicit durable document identity.
+///
+/// Anonymous drops retain the historical filename identity. Project-tree
+/// ingestion passes its `doc:{project}:{normalized-relative-path}` key instead,
+/// so two projects may each own `README.md` without one retiring the other.
+async fn finalize_text_ingest_with_identity(
+    key: String,
+    full_text: String,
+    filename: &str,
+    doc_identity: &str,
+) -> Digest {
     let summary = summarize(&full_text).await;
 
     if let Some(brain) = get_global_brain() {
@@ -210,7 +229,7 @@ async fn finalize_text_ingest(key: String, full_text: String, filename: &str) ->
         // already replaced. We track the last content-key per document identity
         // (the dropped filename) and hard-delete the superseded memory via
         // `Brain::forget` on re-ingest.
-        retire_prior_version(&brain, filename, &key).await;
+        retire_prior_version(&brain, doc_identity, &key).await;
     } else {
         tracing::warn!("reader: Brain not ready; digest returned but full text not persisted");
     }
@@ -415,6 +434,174 @@ pub async fn ingest_document(bytes: &[u8], filename: &str, mime: &str) -> anyhow
     }
 
     Ok(finalize_text_ingest(key, full_text, filename).await)
+}
+
+/// Text-like extensions a tree walk will ingest. No embeddings — Reader + Brain.
+pub fn is_ingestible_path(path: &std::path::Path) -> bool {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("md" | "txt" | "markdown" | "rst") => true,
+        _ => false,
+    }
+}
+
+const SKIP_DIR: &[&str] = &[
+    ".git",
+    "node_modules",
+    "target",
+    "dist",
+    ".next",
+    "vendor",
+    ".venv",
+];
+const MAX_TREE_FILES: usize = 48;
+
+/// Walk `root` for ingestible files (files only, nested). Skips build/VCS dirs.
+pub fn list_ingestible(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        if out.len() >= MAX_TREE_FILES {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for ent in entries.flatten() {
+            if out.len() >= MAX_TREE_FILES {
+                break;
+            }
+            let p = ent.path();
+            if p.is_dir() {
+                let skip = p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| SKIP_DIR.contains(&n));
+                if !skip {
+                    walk(&p, out);
+                }
+            } else if is_ingestible_path(&p) {
+                out.push(p);
+            }
+        }
+    }
+    if root.is_file() && is_ingestible_path(root) {
+        out.push(root.to_path_buf());
+    } else if root.is_dir() {
+        walk(root, &mut out);
+    }
+    out.sort();
+    out
+}
+
+/// Ingest every text file under `root` through the existing Reader write path
+/// (content-hash keys). Prefer [`ingest_tree_for_project`] when a project id is
+/// known so recall keys stay path-stable.
+pub async fn ingest_tree(root: &std::path::Path) -> anyhow::Result<Vec<Digest>> {
+    let mut digests = Vec::new();
+    for path in list_ingestible(root) {
+        let bytes = tokio::fs::read(&path).await?;
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("doc.txt");
+        let mime = if name.ends_with(".md") {
+            "text/markdown"
+        } else {
+            "text/plain"
+        };
+        match ingest_document(&bytes, name, mime).await {
+            Ok(d) => digests.push(d),
+            Err(e) => tracing::warn!(path = %path.display(), error = %e, "tree ingest skipped"),
+        }
+    }
+    Ok(digests)
+}
+
+/// Path-stable Brain key: `doc:{project}:{relative/path}`. No embeddings, no
+/// `viking://` URIs — the same remember/recall path as every other memory.
+pub fn doc_memory_key(project_id: &str, rel: &str) -> String {
+    let normalized = rel.replace('\\', "/");
+    let mut parts: Vec<&str> = Vec::new();
+    for part in normalized.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            _ => parts.push(part),
+        }
+    }
+    let rel = parts.join("/");
+    format!("doc:{project_id}:{rel}")
+}
+
+/// Ingest bytes under an explicit key (path-stable `doc:` keys for project /
+/// inbox files). Idempotent on that key via the existing Brain write.
+pub async fn ingest_bytes_as(
+    key: String,
+    bytes: &[u8],
+    filename: &str,
+    mime: &str,
+) -> anyhow::Result<Digest> {
+    let full_text = extract_document_text(bytes, filename, mime).await?;
+    if full_text.trim().is_empty() {
+        anyhow::bail!("no extractable text in {filename} (mime={mime})");
+    }
+
+    // A project document's key names its durable identity, not one immutable
+    // content version. Identical re-indexes still skip summarization/write, but
+    // edited content must replace the old memory instead of hitting Spectral's
+    // stable-key `WriteOutcome::NoOp` forever.
+    if let Some(brain) = get_global_brain() {
+        if let Some(existing) = brain.get_memory_by_key(&key).await? {
+            if existing.content == full_text {
+                return already_ingested_digest(&key, filename)
+                    .await
+                    .ok_or_else(|| anyhow::anyhow!("existing memory disappeared during ingest"));
+            }
+            brain.forget(&key).await.map_err(|e| {
+                anyhow::anyhow!("could not replace prior content for {filename}: {e}")
+            })?;
+        }
+    }
+
+    let identity = key.clone();
+    Ok(finalize_text_ingest_with_identity(key, full_text, filename, &identity).await)
+}
+
+/// Ingest every text file under `root` keyed as `doc:{project}:{rel}`.
+pub async fn ingest_tree_for_project(
+    project_id: &str,
+    root: &std::path::Path,
+) -> anyhow::Result<Vec<Digest>> {
+    let mut digests = Vec::new();
+    for path in list_ingestible(root) {
+        let bytes = tokio::fs::read(&path).await?;
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("doc.txt");
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(path.as_path())
+            .to_string_lossy()
+            .replace('\\', "/");
+        let key = doc_memory_key(project_id, &rel);
+        let mime = if name.ends_with(".md") {
+            "text/markdown"
+        } else {
+            "text/plain"
+        };
+        match ingest_bytes_as(key, &bytes, name, mime).await {
+            Ok(d) => digests.push(d),
+            Err(e) => tracing::warn!(path = %path.display(), error = %e, "tree ingest skipped"),
+        }
+    }
+    Ok(digests)
 }
 
 /// Cap on plain-text/code ingestion, mirroring the PDF text cap
@@ -957,5 +1144,122 @@ mod tests {
             .await
             .expect("readable PDF must extract");
         assert!(text.contains("Wealthie"));
+    }
+
+    #[test]
+    fn list_ingestible_finds_markdown_not_binaries() {
+        let dir = std::env::temp_dir().join(format!("pm-ingest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("readme.md"), "# hi").unwrap();
+        std::fs::write(dir.join("sub").join("note.txt"), "n").unwrap();
+        std::fs::write(dir.join("photo.png"), [0u8; 8]).unwrap();
+        let found = list_ingestible(&dir);
+        let names: Vec<_> = found
+            .iter()
+            .filter_map(|p| p.file_name()?.to_str())
+            .collect();
+        assert!(names.contains(&"readme.md"));
+        assert!(names.contains(&"note.txt"));
+        assert!(!names.iter().any(|n| n.ends_with(".png")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tree_contents_assemble_abstract_then_full() {
+        let dir = std::env::temp_dir().join(format!("pm-assemble-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let body = "Clerk is the auth provider. ".repeat(40);
+        std::fs::write(dir.join("auth.md"), format!("# Auth\n\n{body}")).unwrap();
+        let paths = list_ingestible(&dir);
+        let files: Vec<(String, String)> = paths
+            .iter()
+            .map(|p| {
+                (
+                    p.file_name().unwrap().to_string_lossy().into_owned(),
+                    std::fs::read_to_string(p).unwrap(),
+                )
+            })
+            .collect();
+        let sources: Vec<crate::context_layers::AssembleSource<'_>> = files
+            .iter()
+            .map(|(k, c)| crate::context_layers::AssembleSource {
+                key: k,
+                abstract_text: Some("FACTS: Clerk for auth."),
+                content: c,
+                score: 1.0,
+            })
+            .collect();
+        let tight = crate::context_layers::assemble(
+            &sources,
+            crate::context_layers::AssembleBudget { tokens: 16 },
+        );
+        assert_eq!(
+            tight[0].layer,
+            crate::context_layers::ContextLayer::Abstract
+        );
+        let wide = crate::context_layers::assemble(
+            &sources,
+            crate::context_layers::AssembleBudget::SEARCH,
+        );
+        assert_eq!(wide[0].layer, crate::context_layers::ContextLayer::Full);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn doc_memory_key_is_path_stable_not_viking() {
+        let k = doc_memory_key("proj-1", "notes/readme.md");
+        assert_eq!(k, "doc:proj-1:notes/readme.md");
+        assert!(!k.contains("viking://"));
+        assert!(!k.contains("openviking"));
+        assert!(!k.starts_with("reader:file:"));
+        let nested = doc_memory_key("inbox", "../secret.txt");
+        assert_eq!(nested, "doc:inbox:secret.txt");
+    }
+
+    #[test]
+    fn doc_memory_key_scopes_identity_and_normalizes_relative_paths() {
+        assert_eq!(
+            doc_memory_key("project-a", "./notes\\drafts/../README.md"),
+            "doc:project-a:notes/README.md"
+        );
+        assert_ne!(
+            doc_memory_key("project-a", "README.md"),
+            doc_memory_key("project-b", "README.md"),
+            "the same relative filename in two projects must be distinct"
+        );
+    }
+
+    #[test]
+    fn doc_index_project_identities_never_replace_each_other() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let a_identity = doc_memory_key("project-a", "README.md");
+        let b_identity = doc_memory_key("project-b", "README.md");
+
+        assert_eq!(
+            doc_index::swap_content_key_on_conn(&conn, &a_identity, &a_identity).unwrap(),
+            None
+        );
+        assert_eq!(
+            doc_index::swap_content_key_on_conn(&conn, &b_identity, &b_identity).unwrap(),
+            None,
+            "project B's README must not retire project A's README"
+        );
+    }
+
+    #[test]
+    fn tree_rel_keys_are_doc_namespaced() {
+        let dir = std::env::temp_dir().join(format!("pm-dockey-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("notes")).unwrap();
+        std::fs::write(dir.join("notes").join("a.md"), "# a").unwrap();
+        for p in list_ingestible(&dir) {
+            let rel = p.strip_prefix(&dir).unwrap().to_string_lossy();
+            let k = doc_memory_key("p1", &rel);
+            assert!(k.starts_with("doc:p1:"), "{k}");
+            assert!(!k.contains("viking://"));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

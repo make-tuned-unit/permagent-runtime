@@ -258,7 +258,7 @@ export function BrainList({
 
         {showMemories && !displayLoading && !displayError && displayMemories.length === 0 && (
           <div style={{ padding: 40, textAlign: 'center', fontFamily: font.body, fontSize: 13, color: colors.textMuted }}>
-            {isSearch ? `No memories match "${searchQuery}"` : 'No memories yet.'}
+            {isSearch ? `No memories match "${searchQuery}" — try a name or project.` : 'No memories yet.'}
           </div>
         )}
 
@@ -333,6 +333,12 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, marginRight: 12,
         }}>
           {highlightText(title, highlightTerms, colors)}
+          {memory.layer && (
+            <span style={{
+              marginLeft: 8, fontFamily: font.mono, fontSize: 10, fontWeight: 500,
+              color: colors.textDim, textTransform: 'uppercase', letterSpacing: '0.06em',
+            }}>{memory.layer}</span>
+          )}
         </div>
         <span style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, flexShrink: 0 }}>
           {formatDate(memory.timestamp)}

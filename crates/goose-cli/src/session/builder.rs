@@ -1,15 +1,15 @@
 use crate::cli::StreamableHttpOptions;
 
-use super::output;
 use super::CliSession;
+use super::output;
 use console::style;
 use permagent::agents::{Agent, Container, ExtensionError};
 use permagent::config::resolve_extensions_for_new_session;
-use permagent::config::{get_all_extensions, Config, ExtensionConfig, GooseMode};
+use permagent::config::{Config, ExtensionConfig, GooseMode, get_all_extensions};
 use permagent::providers::create;
 use permagent::recipe::Recipe;
-use permagent::session::session_manager::SessionType;
 use permagent::session::EnabledExtensionsState;
+use permagent::session::session_manager::SessionType;
 use rustyline::EditMode;
 use std::collections::BTreeSet;
 use std::process;

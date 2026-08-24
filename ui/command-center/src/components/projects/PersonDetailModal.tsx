@@ -36,6 +36,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { FiBookOpen, FiCalendar, FiCheck, FiCheckSquare, FiExternalLink, FiFileText, FiPlus, FiTrash2, FiX } from 'react-icons/fi';
 import { apiFetch } from '../../lib/api';
+import { hapticSuccess } from '../../lib/haptic';
 import { useCommandCenter } from '../../lib/store';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
 import { ease, font, radius } from '../../styles/tokens';
@@ -422,6 +423,7 @@ export function PersonDetailModal({
       patchPersonDetail(next);
       // Decoupled panel has no people event stream yet — nudge it to refetch.
       bumpPeople();
+      hapticSuccess();
       return true;
     } catch (e) {
       // Roll the optimistic view back and keep the draft so nothing is lost.

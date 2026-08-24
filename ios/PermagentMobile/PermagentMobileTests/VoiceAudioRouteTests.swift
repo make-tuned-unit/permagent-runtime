@@ -38,12 +38,12 @@ final class VoiceAudioRouteTests: XCTestCase {
         }
     }
 
-    func testSessionModeIsVideoChatNotACallMode() {
-        XCTAssertEqual(VoiceAudioRoute.sessionMode, .videoChat)
+    func testSessionModeIsDefaultNotACallMode() {
+        XCTAssertEqual(VoiceAudioRoute.sessionMode, .default)
         XCTAssertNotEqual(VoiceAudioRoute.sessionMode, .voiceChat,
                           ".voiceChat ducks TTS and used to win the receiver")
-        XCTAssertNotEqual(VoiceAudioRoute.sessionMode, .default,
-                          ".default plus forced speaker plus AEC muted the built-in mic")
+        XCTAssertNotEqual(VoiceAudioRoute.sessionMode, .videoChat,
+                          ".videoChat session AEC muted the mic on the 2026-08-21 rebuild")
     }
 
     // ── THE SPEAKERPHONE REGRESSION ─────────────────────────────────────────
@@ -139,18 +139,41 @@ final class VoiceAudioRouteTests: XCTestCase {
         ))
     }
 
+    /// THE TODAY REGRESSION: setCategory/speaker override posts a route
+    /// change while the input is still 0 Hz. Rebuilding then threw, the
+    /// error was swallowed, and both speaker and headphones sat on LISTENING.
+    func testSettlingZeroRateDoesNotTearDownAWorkingGraph() {
+        XCTAssertFalse(VoiceAudioRoute.mustRebuildGraph(
+            voiceProcessing: false, wantVoiceProcessing: false,
+            captureSampleRate: 48_000, captureChannels: 1,
+            liveSampleRate: 0, liveChannels: 0
+        ), "a settling 0 Hz route must not rebuild — that kills the tap")
+        XCTAssertFalse(VoiceAudioRoute.mustRebuildGraph(
+            voiceProcessing: true, wantVoiceProcessing: false,
+            captureSampleRate: 48_000, captureChannels: 1,
+            liveSampleRate: 0, liveChannels: 1
+        ), "VP flip while the session is still 0 Hz must wait, not teardown")
+    }
+
     // ── Barge-in vs speaker TTS ─────────────────────────────────────────────
 
-    func testSpeakerphoneIgnoresBargeWhileTtsIsPlaying() {
-        XCTAssertTrue(VoiceAudioRoute.ignoreBargeIn(speakerphone: true, playbackRms: 0.2))
+    func testSpeakerphoneIgnoresEchoButAllowsALouderInterrupt() {
+        XCTAssertTrue(
+            VoiceAudioRoute.ignoreBargeIn(speakerphone: true, playbackRms: 0.2, micRms: 0.08),
+            "his own voice in the room must not cut him off"
+        )
         XCTAssertFalse(
-            VoiceAudioRoute.ignoreBargeIn(speakerphone: true, playbackRms: 0),
+            VoiceAudioRoute.ignoreBargeIn(speakerphone: true, playbackRms: 0.2, micRms: 0.45),
+            "a real barge-in (user louder than playback) must interrupt"
+        )
+        XCTAssertFalse(
+            VoiceAudioRoute.ignoreBargeIn(speakerphone: true, playbackRms: 0, micRms: 0.08),
             "silence after TTS must not lock out a real interrupt"
         )
     }
 
     func testHeadphonesNeverIgnoreBargeBecauseOfSpeakerPlayback() {
-        XCTAssertFalse(VoiceAudioRoute.ignoreBargeIn(speakerphone: false, playbackRms: 0.9))
+        XCTAssertFalse(VoiceAudioRoute.ignoreBargeIn(speakerphone: false, playbackRms: 0.9, micRms: 0.03))
     }
 
     func testSpeakerphonePolicySelectsSpeakerphoneVAD() {

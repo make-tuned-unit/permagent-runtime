@@ -11,15 +11,7 @@ struct WatchHomeView: View {
         NavigationStack {
             ZStack {
                 ChatSurface.bg.ignoresSafeArea()
-                VStack(spacing: 10) {
-                    MobiusView(size: 72, glow: 0.85)
-                        .padding(.top, 4)
-
-                    Text(relay.paired ? relay.agentName : "Permagent")
-                        .font(.brandHeadline)
-                        .foregroundStyle(ChatSurface.text)
-                        .lineLimit(1)
-
+                VStack(spacing: 8) {
                     if let notice = relay.notice, !relay.paired {
                         Text(notice)
                             .font(.brandCaption)
@@ -28,17 +20,24 @@ struct WatchHomeView: View {
                             .padding(.horizontal, 8)
                     }
 
-                    HStack(spacing: 10) {
-                        watchButton(title: "Chat", systemImage: "bubble.left.fill") {
-                            dest = .chat
-                        }
-                        watchButton(title: "Note", systemImage: "mic.fill") {
-                            dest = .note
-                        }
+                    watchButton(
+                        title: "Chat",
+                        subtitle: relay.agentName,
+                        systemImage: "bubble.left.and.bubble.right.fill",
+                        accent: ChatSurface.spark
+                    ) {
+                        dest = .chat
                     }
-                    .padding(.top, 4)
+                    watchButton(
+                        title: "Dictate",
+                        subtitle: "Voice note",
+                        systemImage: "mic.fill",
+                        accent: ChatSurface.ember
+                    ) {
+                        dest = .note
+                    }
                 }
-                .padding(.horizontal, 8)
+                .padding(.horizontal, 4)
             }
             .navigationDestination(item: $dest) { d in
                 switch d {
@@ -59,20 +58,58 @@ struct WatchHomeView: View {
         route.showWatchChat = false
     }
 
-    private func watchButton(title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+    private func watchButton(
+        title: String,
+        subtitle: String,
+        systemImage: String,
+        accent: Color,
+        action: @escaping () -> Void
+    ) -> some View {
         Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 16, weight: .semibold))
-                Text(title)
-                    .font(.brandCaption)
+            HStack(spacing: 10) {
+                ZStack {
+                    Circle()
+                        .fill(accent.opacity(0.16))
+                    Image(systemName: systemImage)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(accent)
+                }
+                .frame(width: 42, height: 42)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .font(.brandHeadline)
+                        .foregroundStyle(ChatSurface.text)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                    Text(subtitle)
+                        .font(.system(size: 11, weight: .regular))
+                        .foregroundStyle(ChatSurface.muted)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 0)
             }
-            .foregroundStyle(ChatSurface.onSpark)
-            .frame(maxWidth: .infinity, minHeight: 52)
-            .background(ChatSurface.ribbon, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, minHeight: 66)
+            .background(ChatSurface.raised, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(accent.opacity(0.22), lineWidth: 1)
+            }
         }
-        .buttonStyle(.plain)
-        .disabled(!relay.paired && dest == nil)
+        .buttonStyle(WatchActionButtonStyle())
+        .disabled(!relay.paired)
+        .opacity(relay.paired ? 1 : 0.45)
+    }
+}
+
+private struct WatchActionButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .opacity(configuration.isPressed ? 0.78 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 
@@ -93,6 +130,7 @@ struct WatchChatView: View {
                     level: orbLevel,
                     speaking: false,
                     thinking: relay.chatThinking || (relay.chatBusy && !recorder.isRecording),
+                    listening: recorder.isRecording,
                     enabled: recorder.isRecording
                 ) { if recorder.isRecording { recorder.stop() } }
 
@@ -194,22 +232,29 @@ struct WatchNoteView: View {
             ChatSurface.bg.ignoresSafeArea()
             ScrollView {
                 VStack(spacing: 8) {
-                    WatchOrbButton(
-                        level: recorder.isRecording ? Double(recorder.level) : (relay.noteBusy ? 0.2 : 0),
-                        speaking: false,
-                        thinking: relay.noteBusy,
-                        enabled: recorder.isRecording
-                    ) { if recorder.isRecording { recorder.stop() } }
-
                     if recorder.isRecording {
+                        DictationWaveform(level: Double(recorder.level))
+                            .frame(height: 46)
+
                         Text(timeLabel)
-                            .font(.brandHeadline)
-                            .foregroundStyle(ChatSurface.spark)
+                            .font(.system(size: 24, weight: .semibold, design: .rounded))
+                            .foregroundStyle(ChatSurface.text)
                             .monospacedDigit()
-                        Text("Listening…")
-                            .font(.brandCaption)
-                            .foregroundStyle(ChatSurface.muted)
+
+                        Button {
+                            recorder.stop()
+                        } label: {
+                            Label("Finish", systemImage: "stop.fill")
+                                .font(.brandHeadline)
+                                .foregroundStyle(ChatSurface.onSpark)
+                                .frame(maxWidth: .infinity, minHeight: 44)
+                                .background(ChatSurface.spark, in: Capsule())
+                        }
+                        .buttonStyle(WatchActionButtonStyle())
+                        .accessibilityLabel("Finish dictating")
                     } else if relay.noteBusy {
+                        ProgressView()
+                            .tint(ChatSurface.spark)
                         Text(relay.noteTranscript.isEmpty ? "Transcribing…" : "Saving…")
                             .font(.brandCaption)
                             .foregroundStyle(ChatSurface.muted)
@@ -260,7 +305,7 @@ struct WatchNoteView: View {
                 .padding(.horizontal, 4)
             }
         }
-        .navigationTitle("Note")
+        .navigationTitle("Dictate")
         .onAppear {
             active = true
             armRecorder()
@@ -314,17 +359,43 @@ struct WatchNoteView: View {
     }
 }
 
+/// A recorder meter, deliberately not an Orb: Notes is one-way dictation.
+private struct DictationWaveform: View {
+    var level: Double
+
+    private let weights: [Double] = [0.42, 0.72, 1, 0.78, 0.5]
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 6) {
+            ForEach(Array(weights.enumerated()), id: \.offset) { index, weight in
+                Capsule()
+                    .fill(index == 2 ? ChatSurface.spark : ChatSurface.spark.opacity(0.62))
+                    .frame(width: 5, height: barHeight(weight))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .animation(.easeOut(duration: 0.12), value: level)
+        .accessibilityHidden(true)
+    }
+
+    private func barHeight(_ weight: Double) -> CGFloat {
+        let live = max(0.12, min(1, level * 3.4))
+        return 8 + (34 * live * weight)
+    }
+}
+
 /// The conversation orb as the only control: tap to stop a live turn.
 private struct WatchOrbButton: View {
     var level: Double
     var speaking: Bool
     var thinking: Bool
+    var listening: Bool = false
     var enabled: Bool
     var action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            VoiceOrbView(level: level, speaking: speaking, thinking: thinking)
+            VoiceOrbView(level: level, speaking: speaking, thinking: thinking, listening: listening)
                 .frame(width: 96, height: 96)
         }
         .buttonStyle(.plain)

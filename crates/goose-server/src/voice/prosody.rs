@@ -21,8 +21,10 @@ pub fn speed_from_punctuation(text: &str) -> f32 {
         1.08
     } else if trimmed.ends_with('?') {
         0.95
+    } else if trimmed.ends_with('…') || trimmed.ends_with("...") {
+        0.90
     } else {
-        0.98
+        0.96
     }
 }
 
@@ -34,6 +36,8 @@ fn speed_for_tag(tag: &str) -> Option<f32> {
         "calm" => 0.92,
         "gentle" | "soft" => 0.88,
         "serious" => 0.94,
+        "thoughtful" => 0.90,
+        "playful" => 1.06,
         _ => return None,
     })
 }
@@ -47,9 +51,10 @@ pub struct ProsodyPlan {
 
 /// Strip delivery tags, turn `[pause]` into a Kokoro ellipsis beat, pick speed.
 pub fn plan(text: &str) -> ProsodyPlan {
+    let folded = crate::voice::speech_normalize::fold_apostrophes(text);
     let mut speed: Option<f32> = None;
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
+    let mut out = String::with_capacity(folded.len());
+    let mut rest = folded.as_str();
 
     while let Some(open) = rest.find('[') {
         // `get` rather than byte-indexing: these offsets come from `find` so
@@ -66,7 +71,9 @@ pub fn plan(text: &str) -> ProsodyPlan {
                 let key = inner.to_ascii_lowercase();
                 rest = after.get(close + 1..).unwrap_or("");
                 if key == "pause" && !out.ends_with('.') && !out.ends_with('…') {
-                    out.push_str("... ");
+                    // A longer beat than a single ellipsis — Kokoro treats
+                    // stacked dots as a held breath, which is the human pause.
+                    out.push_str("... ... ");
                 } else {
                     speed = speed.or_else(|| speed_for_tag(&key));
                 }
@@ -112,8 +119,8 @@ mod tests {
     #[test]
     fn pause_becomes_an_ellipsis_kokoro_already_honours() {
         let p = plan("Wait[pause]there it is.");
-        assert_eq!(p.speech, "Wait... there it is.");
-        assert_eq!(p.speed, 0.98);
+        assert_eq!(p.speech, "Wait... ... there it is.");
+        assert_eq!(p.speed, 0.96);
     }
 
     #[test]
@@ -133,7 +140,8 @@ mod tests {
     fn punctuation_drives_speed_when_no_tag() {
         assert_eq!(plan("Yes!").speed, 1.08);
         assert_eq!(plan("Really?").speed, 0.95);
-        assert_eq!(plan("Okay.").speed, 0.98);
+        assert_eq!(plan("Okay.").speed, 0.96);
+        assert_eq!(plan("Hmm...").speed, 0.90);
     }
 
     #[test]
@@ -146,6 +154,12 @@ mod tests {
     #[test]
     fn empty_after_tags_is_empty_speech() {
         let p = plan("[excited][pause]");
-        assert_eq!(p.speech, "...");
+        assert_eq!(p.speech, "... ...");
+    }
+
+    #[test]
+    fn thoughtful_and_playful_have_human_speeds() {
+        assert_eq!(plan("[thoughtful] Maybe later.").speed, 0.90);
+        assert_eq!(plan("[playful] You bet.").speed, 1.06);
     }
 }

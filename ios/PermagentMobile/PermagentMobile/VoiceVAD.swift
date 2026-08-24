@@ -41,27 +41,33 @@ struct VoiceVAD {
         /// capture runs in `.voiceChat` mode, whose echo cancellation removes
         /// the speaker signal — and two consecutive frames are still required.
         var barge: Float = 0.03
-        /// Trailing silence that completes a LONG turn. Far wider than the
-        /// web's 900 ms on purpose: phone dictation pauses mid-thought — to
-        /// find a word, to check a screen — for well over a second without
-        /// meaning "your turn". Ending a dictation early costs a whole
-        /// re-ask, so long turns stay biased toward letting the user finish.
-        var silenceMs: Double = 1_800
+        /// Trailing silence that completes a LONG turn. Wider than the web's
+        /// 900 ms so a mid-thought dictation pause (~1.2 s) still survives,
+        /// but tighter than the old 1.8 s — last night a finished utterance
+        /// sat in Listening for a second too long after the speaker stopped.
+        var silenceMs: Double = 1_400
         /// Trailing silence that completes a QUICK turn — one whose VOICED
         /// duration so far is under `quickTurnSpeechMs`. Short conversational
         /// asks ("what's on my board?") are almost always complete when the
-        /// speaker stops, and the flat 1.8 s window was pure added lag on
-        /// every one of them (reported 2026-08-06: "still a bit of lag").
-        /// The discriminator is voiced duration, not turn duration, so a
-        /// dictation's FIRST natural pause (which arrives after several
-        /// seconds of speech) still gets the wide window.
-        var quickSilenceMs: Double = 1_100
+        /// speaker stops. 2026-08-21: the 1.1 s window still felt late;
+        /// 800 ms hands over without cutting a breath.
+        var quickSilenceMs: Double = 800
         /// Voiced duration below which a turn counts as quick.
         var quickTurnSpeechMs: Double = 3_500
         /// Hard cap on one listening turn: a full minute.
         var maxTurnMs: Double = 60_000
         /// Consecutive over-`barge` frames required before interrupting.
         var bargeFrames: Int = 2
+        /// Consecutive over-`onset` frames required to open a turn. A single
+        /// room-noise spike last night auto-opened ~1.5 s recordings that
+        /// came back as empty STT ("No speech detected").
+        var onsetFrames: Int = 2
+        /// Accumulated frames above keepalive before the turn is "real speech".
+        /// Below this, trailing silence uses `abortSilenceMs` so a hiss pop
+        /// does not sit in Listening for the full quick window.
+        var minCommitMs: Double = 350
+        /// Trailing silence that aborts an uncommitted (noise-only) turn.
+        var abortSilenceMs: Double = 650
 
         init() {}
     }
@@ -77,6 +83,9 @@ struct VoiceVAD {
     private var lastVoice: TimeInterval = 0
     private var turnStart: TimeInterval = 0
     private var bargeStreak = 0
+    private var onsetStreak = 0
+    private var lastStep: TimeInterval = 0
+    private var voicedAccumMs: Double = 0
 
     init(config: Config = Config()) {
         self.config = config
@@ -93,8 +102,11 @@ struct VoiceVAD {
     mutating func noteTurnBegan(at now: TimeInterval) {
         turnStart = now
         lastVoice = now
+        lastStep = now
         heardSpeech = false
         bargeStreak = 0
+        onsetStreak = 0
+        voicedAccumMs = 0
     }
 
     /// Clear per-turn state when a turn ends for any reason outside `step`
@@ -102,6 +114,8 @@ struct VoiceVAD {
     mutating func noteTurnEnded() {
         heardSpeech = false
         bargeStreak = 0
+        onsetStreak = 0
+        voicedAccumMs = 0
     }
 
     // ── Route-aware presets ─────────────────────────────────────────────────
@@ -146,7 +160,13 @@ struct VoiceVAD {
     /// bleed does not cut the agent off.
     static var speakerphoneConfig: Config {
         var c = builtInMicConfig
-        c.barge = 0.08
+        c.barge = 0.055
+        c.bargeFrames = 3
+        // Room hiss on speakerphone last night sat at ~0.0032 — exactly the
+        // built-in keepalive — and held Listening for 30–40 s (e.g. start
+        // 23:47:10 → STT 23:47:51). Soft speech is ~0.008–0.010; 0.0055
+        // lets speech refresh lastVoice and lets hiss fall through as silence.
+        c.keepalive = 0.0055
         return c
     }
 
@@ -157,28 +177,47 @@ struct VoiceVAD {
         case .ready:
             bargeStreak = 0
             if rms > config.onset {
-                heardSpeech = true
-                lastVoice = now
-                turnStart = now
-                return .beginTurn
+                onsetStreak += 1
+                if onsetStreak >= config.onsetFrames {
+                    onsetStreak = 0
+                    heardSpeech = true
+                    lastVoice = now
+                    turnStart = now
+                    lastStep = now
+                    voicedAccumMs = 0
+                    return .beginTurn
+                }
+            } else {
+                onsetStreak = 0
             }
         case .listening:
+            let frameMs = lastStep > 0 ? (now - lastStep) * 1_000 : 85
+            lastStep = now
             if rms > config.keepalive {
                 heardSpeech = true
                 lastVoice = now
+                voicedAccumMs += frameMs
             }
             let silentMs = (now - lastVoice) * 1_000
             let turnMs = (now - turnStart) * 1_000
             // Adaptive endpoint: a quick ask hands over fast; a dictation
             // keeps the patient window. Voiced duration (onset → last voice)
             // is the discriminator so the current silence never counts
-            // against the classification.
+            // against the classification. Uncommitted (noise-only) turns
+            // abort faster so empty STT never sits in Listening.
             let voicedMs = (lastVoice - turnStart) * 1_000
-            let window = voicedMs < config.quickTurnSpeechMs
-                ? config.quickSilenceMs
-                : config.silenceMs
+            let committed = voicedAccumMs >= config.minCommitMs
+            let window: Double
+            if !committed {
+                window = config.abortSilenceMs
+            } else if voicedMs < config.quickTurnSpeechMs {
+                window = config.quickSilenceMs
+            } else {
+                window = config.silenceMs
+            }
             if (heardSpeech && silentMs > window) || turnMs > config.maxTurnMs {
                 heardSpeech = false
+                onsetStreak = 0
                 return .endTurn
             }
         case .speaking, .thinking:

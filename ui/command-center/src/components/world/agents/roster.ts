@@ -29,10 +29,12 @@ export const MEZZ_Y = 10.15;
 export const ROSTER: AgentIdentity[] = [
   {
     id: 'henry',
-    // `id` is a stable KEY, not a label. The display name is overwritten
-    // from `/api/agent/identity` by stateSources on the first poll; this is
-    // only what shows before that lands, so it must not assert a name the
-    // user did not choose.
+    // Orchestrator: sees every desk (Finance included) and queries specialists
+    // — The Financier for money, the Reader for a dropped file. `id` is a
+    // stable KEY, not a label. The display name is overwritten from
+    // `/api/agent/identity` by stateSources on the first poll; this is only
+    // what shows before that lands, so it must not assert a name the user
+    // did not choose.
     name: 'Agent',
     role: 'orchestrator',
     trimColor: AGENT_TRIM.henry,
@@ -68,7 +70,8 @@ export const ROSTER: AgentIdentity[] = [
   },
   {
     // The Watcher (Echo, #672) — the daemon's proactive worker: watches the
-    // Brain + project news and surfaces at most one nudge a day. It has no live
+    // Brain + project news (at most one nudge a day) and, with the Financier,
+    // delivers overbought sell signals on open holdings. It has no live
     // status endpoint yet, so its presence is sim-ambient (the §4 clamp holds it
     // to idle/available — it can never fake work). Its REAL moment is the
     // proactive_nudge event: the vigil beacon flares and it walks the nudge to
@@ -116,8 +119,10 @@ export const ROSTER: AgentIdentity[] = [
     weathering: 0.3,
   },
   {
-    // The Financier — market research and the Finance tab ledger. Reports
-    // numbers; never sizes a position and cannot place an order. Tools announce
+    // The Financier — owns the Finance tab (quotes, ledger, household, scanner,
+    // Polybot, tomorrow's pick). Scores overbought open lots; the Watcher
+    // delivers those nudges. Opus judges the 15:30 ET close scan.
+    // Reports numbers; never sizes a position. Tools announce
     // on the `financier` id, so working pose is a real wire, not sim-ambient.
     // Home sits opposite the Guard, on the far -x/+z quadrant.
     id: 'financier',

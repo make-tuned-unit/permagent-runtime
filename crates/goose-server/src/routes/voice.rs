@@ -706,6 +706,11 @@ enum ServerMessage {
     Clipboard { text: String },
     #[serde(rename = "error")]
     Error { message: String },
+    /// Empty or too-short capture — return to ready with no toast.
+    /// Last night (20260821_14) every `transcript: ""` flashed
+    /// "No speech detected — try again" on the orb.
+    #[serde(rename = "idle")]
+    Idle,
     #[serde(rename = "ready")]
     Ready,
     /// Wake-listening state after a `wake_start`/`wake_stop`. `phrase` is the
@@ -724,6 +729,12 @@ enum ServerMessage {
     /// audio is coming for this turn.
     #[serde(rename = "stopped")]
     Stopped,
+    /// Show this word on the Orb. Never spoken — the user reads it and says it.
+    #[serde(rename = "teach")]
+    Teach { word: String },
+    /// The word was stored (or skipped). Clear the Orb placement.
+    #[serde(rename = "taught")]
+    Taught { word: String },
 }
 
 /// RAII cleanup for navigation interception: guarantees the session's entry is
@@ -916,13 +927,8 @@ async fn handle_voice_socket(
                                 audio_buffer.len(), audio_duration_s
                             );
                             audio_buffer.clear();
-                            // Tell the client the exchange is done so it returns to 'ready'
-                            // (without this, the client hangs in 'processing' forever).
-                            let _ = socket
-                                .send(send_json(&ServerMessage::Error {
-                                    message: "Recording too short — hold longer to speak".into(),
-                                }))
-                                .await;
+                            // Silent return to ready — a too-short tap is not an error.
+                            let _ = socket.send(send_json(&ServerMessage::Idle)).await;
                             continue;
                         }
 
@@ -964,12 +970,10 @@ async fn handle_voice_socket(
                         );
 
                         if transcript.is_empty() {
-                            // Tell the client so it returns to 'ready'
-                            let _ = socket
-                                .send(send_json(&ServerMessage::Error {
-                                    message: "No speech detected — try again".into(),
-                                }))
-                                .await;
+                            // 20260821_14: empty STT after real speech (and after
+                            // auto-started noise turns) flashed "No speech detected".
+                            // Return to ready with no toast.
+                            let _ = socket.send(send_json(&ServerMessage::Idle)).await;
                             continue;
                         }
 
@@ -987,6 +991,109 @@ async fn handle_voice_socket(
                             .is_err()
                         {
                             return;
+                        }
+
+                        // Unspoken leftover from a spoken-budget cut. "Continue."
+                        // last night started a cold agent turn and lost the story.
+                        let remainder_key = session_id.as_deref().unwrap_or("voice-anon");
+
+                        // Listen-once: we asked how a name is said. This turn
+                        // is the pronunciation, not a new story beat.
+                        if permagent::events::voice_pronounce::peek(remainder_key).is_some() {
+                            let resume = handle_pronunciation_listen(
+                                &state,
+                                tts.clone(),
+                                &mut socket,
+                                remainder_key,
+                                &transcript,
+                                cancelled.clone(),
+                                origin.client,
+                            )
+                            .await;
+                            if let Some(held) = resume {
+                                if socket
+                                    .send(send_json(&ServerMessage::ReplyStart))
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                                let reply_ctx = VoiceReplyCtx {
+                                    state: &state,
+                                    transcript: &held,
+                                    session_id: session_id.as_deref(),
+                                    tts: &tts,
+                                    pipeline_start,
+                                    stt_ms,
+                                    cancelled: cancelled.clone(),
+                                    wake: wake.as_ref(),
+                                    sample_rate: client_sample_rate,
+                                    origin: &origin,
+                                };
+                                if let Err(e) = stream_reply_with_tts(&reply_ctx, &mut socket).await
+                                {
+                                    let _ = socket
+                                        .send(send_json(&ServerMessage::Error {
+                                            message: format!("Voice reply failed: {}", e),
+                                        }))
+                                        .await;
+                                }
+                            }
+                            continue;
+                        }
+
+                        // User just said a name speech cannot say. Stop and ask
+                        // — do not start the story and spell it.
+                        if let Some(word) = first_unknown_name(tts.as_ref(), &transcript) {
+                            tracing::info!(
+                                target: "permagentd::voice",
+                                word = %word,
+                                "unknown name — asking how to say it before the reply"
+                            );
+                            permagent::events::voice_pronounce::begin(
+                                remainder_key,
+                                &word,
+                                Some(transcript.clone()),
+                            );
+                            let shown = permagent::events::voice_pronounce::display_form(
+                                &transcript,
+                                &word,
+                            );
+                            let _ = socket
+                                .send(send_json(&ServerMessage::Teach { word: shown }))
+                                .await;
+                            let _ = speak_canned_reply(
+                                &state,
+                                tts.clone(),
+                                &mut socket,
+                                permagent::events::voice_pronounce::ASK_FIRST,
+                                cancelled.clone(),
+                            )
+                            .await;
+                            continue;
+                        }
+
+                        if permagent::events::voice_remainder::is_continue_cue(&transcript) {
+                            if let Some(rest) =
+                                permagent::events::voice_remainder::take(remainder_key)
+                            {
+                                tracing::info!(
+                                    target: "permagentd::voice",
+                                    "continue cue — speaking leftover ({} chars), not a new agent turn",
+                                    rest.len()
+                                );
+                                speak_remainder(
+                                    &state,
+                                    tts.clone(),
+                                    &mut socket,
+                                    remainder_key,
+                                    &rest,
+                                    cancelled.clone(),
+                                    origin.client,
+                                )
+                                .await;
+                                continue;
+                            }
                         }
 
                         // Spoken yes/no while a decision is waiting: settle it
@@ -1060,6 +1167,9 @@ async fn handle_voice_socket(
                             sample_rate: client_sample_rate,
                             origin: &origin,
                         };
+                        // A new ask replaces any leftover — only a continue cue
+                        // (handled above) is allowed to replay it.
+                        permagent::events::voice_remainder::clear(remainder_key);
                         let stream_result = stream_reply_with_tts(&reply_ctx, &mut socket).await;
 
                         if let Err(e) = stream_result {
@@ -1357,18 +1467,27 @@ async fn stream_reply_with_tts(
             "The user is speaking to you by voice. Reply in natural conversational speech: \
              short sentences, contractions, concise and direct. No markdown, no bullet points, \
              no numbered lists, no code blocks. Keep replies brief — 1-3 sentences for simple \
-             questions. Speak as you would in a real conversation — with feeling, not a flat \
-             reading: let a reaction through, ask a question when it fits. \
+             questions. For a story or a longer ask, keep going — do not stop at three \
+             sentences to ask if they want more. Never say 'do you want me to continue', \
+             'shall I go on', or any mid-reply continue offer; if there is more, say it. \
+             Speak as you would in a real conversation — with feeling, not a flat \
+             reading: let a reaction through, vary the length of sentences, take a breath. \
+             USE CONTRACTIONS the way people do: I'm, don't, should've, would've, it's, I'll, haven't. \
+             Never expand those into 'I am' / 'should have' — the voice can say them. \
+             Finish the sentence you are on. Do not trail off mid-clause. \
+             Never write '=' or letter-spell a name (no 'EL-speth', no 'E-L-S-P-E-T-H'). Say the name. \
              The voice takes its rhythm from punctuation, not from stage directions. \
              Write the way people talk: a comma for a breath, an em dash for a turn, \
              an ellipsis (...) when you are thinking, a question mark when you actually \
              want an answer, an exclamation only when you mean the energy. Prefer two \
              short sentences over one long one — long lines flatten. \
              You may prefix a sentence with ONE delivery tag: [warm] [excited] [calm] \
-             [gentle] [serious]. Insert [pause] for a beat. Never say the tag names or the \
-             brackets aloud; most sentences need no tag. \
-             NEVER spell a word letter by letter. If you are unsure how a name will sound, \
-             ask, or call save_pronunciation with a real-English-word respelling, then say it. \
+             [gentle] [serious] [thoughtful] [playful]. Insert [pause] for a beat. Never \
+             say the tag names or the brackets aloud; most sentences need no tag. \
+             NEVER spell a word letter by letter. If you do not already know how a name \
+             will sound, STOP. Say you will place it on the Orb and listen. Do not say \
+             the word. Then call save_pronunciation with the word and what they said — \
+             one time, then it is saved forever. Do not guess a respelling and keep going. \
              Verbalize outcomes, not interface mechanics: don't read out UI labels, button names, \
              menu paths, file paths, URLs, or settings keys, and don't narrate the individual \
              steps you take to do something. Say what happened or what the user should do in plain \
@@ -1451,6 +1570,8 @@ async fn stream_reply_with_tts(
     let max_spoken = max_spoken_sentences();
     let spoken_cue = permagent::events::voice_origin::budget_notice(ctx.origin.client);
     let mut budget_notice_spoken = false;
+    let mut leftover = String::new();
+    let mut pronounce_hold = false;
     let mut total_tts_ms: u128 = 0;
     let mut first_audio_sent = false;
     let mut first_token_logged = false;
@@ -1488,18 +1609,49 @@ async fn stream_reply_with_tts(
 
         if inflight.is_none() {
             if let Some((speech, speed)) = queue.pop_front() {
-                let preview = speech.clone();
-                inflight = Some((
-                    spawn_synth(
-                        tts.clone(),
-                        speech,
-                        voice_id.clone(),
-                        speed,
-                        cancelled.clone(),
-                    ),
-                    std::time::Instant::now(),
-                    preview,
-                ));
+                // Never spell an unknown name. Stop this reply, ask, listen.
+                if let Some(word) = first_unknown_name(tts.as_ref(), &speech) {
+                    tracing::info!(
+                        target: "permagentd::voice",
+                        word = %word,
+                        "unknown name in reply — stopping to ask"
+                    );
+                    permagent::events::voice_remainder::append_sentence(&mut leftover, &speech);
+                    while let Some((rest, _)) = queue.pop_front() {
+                        permagent::events::voice_remainder::append_sentence(&mut leftover, &rest);
+                    }
+                    permagent::events::voice_pronounce::begin(&sid, &word, None);
+                    pronounce_hold = true;
+                    let shown = permagent::events::voice_pronounce::display_form(&speech, &word);
+                    let _ = socket
+                        .send(send_json(&ServerMessage::Teach { word: shown }))
+                        .await;
+                    let ask = permagent::events::voice_pronounce::ASK_FIRST.to_string();
+                    inflight = Some((
+                        spawn_synth(
+                            tts.clone(),
+                            ask.clone(),
+                            voice_id.clone(),
+                            1.0,
+                            cancelled.clone(),
+                        ),
+                        std::time::Instant::now(),
+                        ask,
+                    ));
+                } else {
+                    let preview = speech.clone();
+                    inflight = Some((
+                        spawn_synth(
+                            tts.clone(),
+                            speech,
+                            voice_id.clone(),
+                            speed,
+                            cancelled.clone(),
+                        ),
+                        std::time::Instant::now(),
+                        preview,
+                    ));
+                }
             } else if stream_ended {
                 break;
             }
@@ -1571,14 +1723,23 @@ async fn stream_reply_with_tts(
                 match event {
                     None => {
                         stream_ended = true;
-                        enqueue_remainder(
-                            &mut text_buf,
-                            &mut queue,
-                            &mut sentence_num,
-                            max_spoken,
-                            &mut budget_notice_spoken,
-                            spoken_cue,
-                        );
+                        if pronounce_hold {
+                            permagent::events::voice_remainder::append_sentence(
+                                &mut leftover,
+                                &text_buf,
+                            );
+                            text_buf.clear();
+                        } else {
+                            enqueue_remainder(
+                                &mut text_buf,
+                                &mut queue,
+                                &mut sentence_num,
+                                max_spoken,
+                                &mut budget_notice_spoken,
+                                spoken_cue,
+                                &mut leftover,
+                            );
+                        }
                     }
                     Some(Ok(AgentEvent::Message(msg)))
                         if msg.role == rmcp::model::Role::Assistant =>
@@ -1595,15 +1756,24 @@ async fn stream_reply_with_tts(
                                 }
                                 text_buf.push_str(&text_content.text);
                                 full_reply.push_str(&text_content.text);
-                                enqueue_ready_sentences(
-                                    &mut text_buf,
-                                    &mut queue,
-                                    &mut sentence_num,
-                                    max_spoken,
-                                    &mut budget_notice_spoken,
-                                    spoken_cue,
-                                    first_chunk,
-                                );
+                                if pronounce_hold {
+                                    permagent::events::voice_remainder::append_sentence(
+                                        &mut leftover,
+                                        &text_buf,
+                                    );
+                                    text_buf.clear();
+                                } else {
+                                    enqueue_ready_sentences(
+                                        &mut text_buf,
+                                        &mut queue,
+                                        &mut sentence_num,
+                                        max_spoken,
+                                        &mut budget_notice_spoken,
+                                        spoken_cue,
+                                        first_chunk,
+                                        &mut leftover,
+                                    );
+                                }
                             }
                         }
                     }
@@ -1628,7 +1798,17 @@ async fn stream_reply_with_tts(
             "spoken stop ended the turn after {} sentences",
             sentence_num
         );
+        permagent::events::voice_remainder::clear(&sid);
         let _ = socket.send(send_json(&ServerMessage::Stopped)).await;
+    } else if leftover.trim().is_empty() {
+        permagent::events::voice_remainder::clear(&sid);
+    } else {
+        tracing::info!(
+            target: "permagentd::voice",
+            "stashing unspoken leftover ({} chars) for continue",
+            leftover.len()
+        );
+        permagent::events::voice_remainder::stash(&sid, leftover);
     }
 
     // Any capture that raced the last loop turn. Then unregister so the
@@ -1764,6 +1944,129 @@ async fn pick_spoken_decision(state: &Arc<AppState>, session_id: Option<&str>) -
     None
 }
 
+fn first_unknown_name(tts: &dyn crate::voice::TextToSpeech, text: &str) -> Option<String> {
+    let oov = tts.unresolved_words(text);
+    let word = permagent::events::voice_pronounce::first_teachable(&oov)?;
+    if crate::voice::user_lexicon::known(&word) {
+        return None;
+    }
+    Some(word)
+}
+
+fn try_save_heard(
+    tts: &dyn crate::voice::TextToSpeech,
+    word: &str,
+    transcript: &str,
+) -> Option<String> {
+    for sounds_like in permagent::events::voice_pronounce::save_candidates(word, transcript) {
+        let Ok(ipa) = tts.phonemize_text(&sounds_like) else {
+            continue;
+        };
+        if crate::voice::user_lexicon::save(
+            word,
+            crate::voice::user_lexicon::PronunciationEntry {
+                ipa,
+                sounds_like: sounds_like.clone(),
+            },
+        )
+        .is_err()
+        {
+            continue;
+        }
+        crate::voice::oov_log::forget(word);
+        tracing::info!(
+            target: "permagentd::voice",
+            word = %word,
+            %sounds_like,
+            "pronunciation saved from listen"
+        );
+        return Some(sounds_like);
+    }
+    None
+}
+
+/// Consume a listen turn. Returns a held user request to resume, if any.
+async fn handle_pronunciation_listen(
+    state: &Arc<AppState>,
+    tts: Arc<dyn crate::voice::TextToSpeech>,
+    socket: &mut WebSocket,
+    session_id: &str,
+    transcript: &str,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    client: permagent::events::voice_origin::VoiceClient,
+) -> Option<String> {
+    let pending = permagent::events::voice_pronounce::take(session_id)?;
+
+    if permagent::events::voice_pronounce::is_skip_cue(transcript) {
+        let _ = socket
+            .send(send_json(&ServerMessage::Taught {
+                word: permagent::events::voice_pronounce::display_word(&pending.word),
+            }))
+            .await;
+        let _ = speak_canned_reply(
+            state,
+            tts.clone(),
+            socket,
+            permagent::events::voice_pronounce::SKIPPED,
+            cancelled.clone(),
+        )
+        .await;
+        if let Some(rest) = permagent::events::voice_remainder::take(session_id) {
+            speak_remainder(state, tts, socket, session_id, &rest, cancelled, client).await;
+            return None;
+        }
+        return pending.held_transcript;
+    }
+
+    if try_save_heard(tts.as_ref(), &pending.word, transcript).is_some() {
+        let shown = permagent::events::voice_pronounce::display_word(&pending.word);
+        let _ = socket
+            .send(send_json(&ServerMessage::Taught { word: shown }))
+            .await;
+        let said = permagent::events::voice_pronounce::saved_confirmation(&pending.word);
+        let _ = speak_canned_reply(state, tts.clone(), socket, &said, cancelled.clone()).await;
+        if let Some(rest) = permagent::events::voice_remainder::take(session_id) {
+            speak_remainder(state, tts, socket, session_id, &rest, cancelled, client).await;
+            return None;
+        }
+        if let Some(held) = pending.held_transcript {
+            if let Some(next) = first_unknown_name(tts.as_ref(), &held) {
+                permagent::events::voice_pronounce::begin(session_id, &next, Some(held.clone()));
+                let shown = permagent::events::voice_pronounce::display_form(&held, &next);
+                let _ = socket
+                    .send(send_json(&ServerMessage::Teach { word: shown }))
+                    .await;
+                let _ = speak_canned_reply(
+                    state,
+                    tts,
+                    socket,
+                    permagent::events::voice_pronounce::ASK_FIRST,
+                    cancelled,
+                )
+                .await;
+                return None;
+            }
+            return Some(held);
+        }
+        return None;
+    }
+
+    let shown = permagent::events::voice_pronounce::display_word(&pending.word);
+    permagent::events::voice_pronounce::begin(session_id, &pending.word, pending.held_transcript);
+    let _ = socket
+        .send(send_json(&ServerMessage::Teach { word: shown }))
+        .await;
+    let _ = speak_canned_reply(
+        state,
+        tts,
+        socket,
+        permagent::events::voice_pronounce::ASK_AGAIN,
+        cancelled,
+    )
+    .await;
+    None
+}
+
 async fn speak_canned_reply(
     state: &Arc<AppState>,
     tts: Arc<dyn crate::voice::TextToSpeech>,
@@ -1833,6 +2136,7 @@ fn push_spoken(
     max_spoken: u32,
     budget_notice_spoken: &mut bool,
     spoken_cue: &'static str,
+    leftover: &mut String,
 ) {
     let Some((speech, speed)) = prepare_spoken(sentence) else {
         tracing::debug!(
@@ -1847,15 +2151,29 @@ fn push_spoken(
             *budget_notice_spoken = true;
             tracing::info!(
                 target: "permagentd::voice",
-                "spoken budget reached ({} sentences) — remaining reply is text-only",
+                "spoken budget reached ({} sentences) — remaining reply is leftover for continue",
                 max_spoken
             );
             queue.push_back((spoken_cue.to_string(), 1.0));
         }
+        permagent::events::voice_remainder::append_sentence(leftover, &speech);
         return;
     }
-    *sentence_num += 1;
+    // Clause chunks (comma, dash) stream for first-audio, but they are not
+    // sentences. Counting them as the budget cut him mid-thought last night.
+    // Only a .!? close consumes a spoken-sentence slot — he finishes the
+    // sentence unless the user barges in.
+    if closes_a_sentence(&speech) {
+        *sentence_num += 1;
+    }
     queue.push_back((speech, speed));
+}
+
+fn closes_a_sentence(text: &str) -> bool {
+    matches!(
+        text.trim().chars().rev().find(|c| !c.is_whitespace()),
+        Some('.' | '!' | '?')
+    )
 }
 
 fn enqueue_ready_sentences(
@@ -1866,6 +2184,7 @@ fn enqueue_ready_sentences(
     budget_notice_spoken: &mut bool,
     spoken_cue: &'static str,
     first_chunk: bool,
+    leftover: &mut String,
 ) {
     let mut aggressive = first_chunk;
     while let Some((end_inclusive, next_start)) = find_speakable_boundary(text_buf, aggressive) {
@@ -1885,6 +2204,7 @@ fn enqueue_ready_sentences(
             max_spoken,
             budget_notice_spoken,
             spoken_cue,
+            leftover,
         );
         aggressive = false;
     }
@@ -1897,6 +2217,7 @@ fn enqueue_remainder(
     max_spoken: u32,
     budget_notice_spoken: &mut bool,
     spoken_cue: &'static str,
+    leftover: &mut String,
 ) {
     let remainder = text_buf.trim().to_string();
     text_buf.clear();
@@ -1910,7 +2231,104 @@ fn enqueue_remainder(
         max_spoken,
         budget_notice_spoken,
         spoken_cue,
+        leftover,
     );
+}
+
+/// Replay leftover prose on a continue cue — no new agent turn.
+async fn speak_remainder(
+    state: &Arc<AppState>,
+    tts: Arc<dyn crate::voice::TextToSpeech>,
+    socket: &mut WebSocket,
+    session_id: &str,
+    leftover: &str,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    client: permagent::events::voice_origin::VoiceClient,
+) {
+    if socket
+        .send(send_json(&ServerMessage::ReplyStart))
+        .await
+        .is_err()
+    {
+        permagent::events::voice_remainder::stash(session_id, leftover.to_string());
+        return;
+    }
+
+    let voice_id = state.persona.read().await.voice_id.clone();
+    let spoken_cue = permagent::events::voice_origin::budget_notice(client);
+    let max_spoken = max_spoken_sentences();
+    let mut queue: std::collections::VecDeque<(String, f32)> = std::collections::VecDeque::new();
+    let mut sentence_num = 0u32;
+    let mut budget_notice_spoken = false;
+    let mut still_left = String::new();
+    let mut text_buf = leftover.to_string();
+    enqueue_ready_sentences(
+        &mut text_buf,
+        &mut queue,
+        &mut sentence_num,
+        max_spoken,
+        &mut budget_notice_spoken,
+        spoken_cue,
+        true,
+        &mut still_left,
+    );
+    enqueue_remainder(
+        &mut text_buf,
+        &mut queue,
+        &mut sentence_num,
+        max_spoken,
+        &mut budget_notice_spoken,
+        spoken_cue,
+        &mut still_left,
+    );
+
+    let mut spoken_text = String::new();
+    while let Some((speech, speed)) = queue.pop_front() {
+        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            permagent::events::voice_remainder::stash(session_id, leftover.to_string());
+            return;
+        }
+        if speech != spoken_cue {
+            if !spoken_text.is_empty() {
+                spoken_text.push(' ');
+            }
+            spoken_text.push_str(&speech);
+        }
+        match spawn_synth(
+            tts.clone(),
+            speech,
+            voice_id.clone(),
+            speed,
+            cancelled.clone(),
+        )
+        .await
+        {
+            Ok(Ok(audio)) => {
+                let bytes: Vec<u8> = audio.samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+                if socket.send(Message::Binary(bytes.into())).await.is_err() {
+                    permagent::events::voice_remainder::stash(session_id, leftover.to_string());
+                    return;
+                }
+            }
+            Ok(Err(e)) => tracing::warn!(target: "permagentd::voice", "remainder TTS failed: {e}"),
+            Err(e) => tracing::warn!(target: "permagentd::voice", "remainder TTS panicked: {e}"),
+        }
+    }
+
+    if still_left.trim().is_empty() {
+        permagent::events::voice_remainder::clear(session_id);
+    } else {
+        permagent::events::voice_remainder::stash(session_id, still_left);
+    }
+
+    let _ = socket
+        .send(send_json(&ServerMessage::ReplyText { text: spoken_text }))
+        .await;
+    let _ = socket
+        .send(send_json(&ServerMessage::ReplyEnd {
+            sample_rate: tts.sample_rate(),
+        }))
+        .await;
 }
 
 /// Find the earliest speakable boundary in the buffer.
@@ -2024,6 +2442,149 @@ mod tests {
     fn prepare_spoken_questions_run_slower_not_faster() {
         let (_, speed) = prepare_spoken("Ready?").unwrap();
         assert_eq!(speed, 0.95);
+    }
+
+    #[test]
+    fn teach_frame_places_the_word_and_never_spells() {
+        let teach = serde_json::to_value(ServerMessage::Teach {
+            word: "Elspeth".into(),
+        })
+        .unwrap();
+        assert_eq!(teach["type"], "teach");
+        assert_eq!(teach["word"], "Elspeth");
+        let taught = serde_json::to_value(ServerMessage::Taught {
+            word: "Elspeth".into(),
+        })
+        .unwrap();
+        assert_eq!(taught["type"], "taught");
+    }
+
+    /// 20260821_14: empty STT must serialize as `idle`, never the toast string.
+    #[test]
+    fn empty_turn_is_idle_not_an_error_toast() {
+        let idle = serde_json::to_value(ServerMessage::Idle).unwrap();
+        assert_eq!(idle["type"], "idle");
+        assert!(idle.get("message").is_none());
+        let err = serde_json::to_value(ServerMessage::Error {
+            message: "No speech detected — try again".into(),
+        })
+        .unwrap();
+        assert_ne!(
+            idle["type"], err["type"],
+            "empty STT must not reuse the error frame"
+        );
+    }
+
+    /// Last night: eight spoken sentences, leftover dropped, Continue lost.
+    #[test]
+    fn spoken_budget_stashes_unspoken_sentences() {
+        let mut queue = std::collections::VecDeque::new();
+        let mut n = 0u32;
+        let mut cue = false;
+        let mut leftover = String::new();
+        for i in 1..=12 {
+            push_spoken(
+                &format!("Sentence number {i} of the Rowan story."),
+                &mut queue,
+                &mut n,
+                8,
+                &mut cue,
+                "There's more when you want it.",
+                &mut leftover,
+            );
+        }
+        assert_eq!(n, 8);
+        assert!(cue);
+        assert!(
+            leftover.contains("Sentence number 9"),
+            "leftover lost sentence 9: {leftover}"
+        );
+        assert!(leftover.contains("Sentence number 12"));
+        assert!(
+            !leftover.contains("Sentence number 8"),
+            "spoken sentence leaked into leftover: {leftover}"
+        );
+        let spoken: Vec<_> = queue.iter().map(|(s, _)| s.as_str()).collect();
+        assert!(spoken.iter().any(|s| s.contains("There's more")));
+        assert!(!spoken.iter().any(|s| s.contains("Sentence number 9")));
+    }
+
+    #[test]
+    fn clauses_do_not_consume_the_spoken_budget() {
+        let mut queue = std::collections::VecDeque::new();
+        let mut n = 0u32;
+        let mut cue = false;
+        let mut leftover = String::new();
+        push_spoken(
+            "Once upon a time, ",
+            &mut queue,
+            &mut n,
+            1,
+            &mut cue,
+            "There's more when you want it.",
+            &mut leftover,
+        );
+        push_spoken(
+            "there was a girl called Elspeth.",
+            &mut queue,
+            &mut n,
+            1,
+            &mut cue,
+            "There's more when you want it.",
+            &mut leftover,
+        );
+        assert_eq!(n, 1, "only the period should consume the budget");
+        assert!(!cue, "finishing one sentence must not cut him mid-thought");
+        assert!(queue.iter().any(|(s, _)| s.contains("Once upon a time")));
+        assert!(queue.iter().any(|(s, _)| s.contains("Elspeth")));
+    }
+
+    #[test]
+    fn closes_a_sentence_is_period_question_or_bang() {
+        assert!(closes_a_sentence("Hello."));
+        assert!(closes_a_sentence("Ready?"));
+        assert!(closes_a_sentence("Go!"));
+        assert!(!closes_a_sentence("Once upon a time,"));
+        assert!(!closes_a_sentence("a long clause —"));
+    }
+
+    #[test]
+    fn continue_cue_takes_the_stashed_leftover() {
+        let sid = "voice-budget-continue-1";
+        permagent::events::voice_remainder::clear(sid);
+        permagent::events::voice_remainder::stash(
+            sid,
+            "He pulled the cloak tighter and kept walking toward the ridge.".into(),
+        );
+        assert!(permagent::events::voice_remainder::is_continue_cue(
+            "Continue."
+        ));
+        let rest = permagent::events::voice_remainder::take(sid).expect("leftover");
+        assert!(rest.contains("cloak"));
+        assert!(
+            permagent::events::voice_remainder::take(sid).is_none(),
+            "a second Continue must not invent a new leftover"
+        );
+        permagent::events::voice_remainder::clear(sid);
+    }
+
+    #[test]
+    fn last_night_stt_fragments_are_not_a_teach_ask() {
+        // 23:44: "Princess L Spith" produced spith/spyth — not a name to teach.
+        assert!(permagent::events::voice_pronounce::first_teachable(&[
+            "spith".into(),
+            "spyth".into(),
+            "peth".into(),
+        ])
+        .is_none());
+        assert_eq!(
+            permagent::events::voice_pronounce::first_teachable(&[
+                "elspeth".into(),
+                "speth".into(),
+            ])
+            .as_deref(),
+            Some("elspeth")
+        );
     }
 
     /// The pinned Kokoro asset URLs must satisfy the DownloadManager's strict

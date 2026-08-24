@@ -1066,6 +1066,12 @@ impl SessionStorage {
                     if version < 47 {
                         spectral_schema::migrate_v46_to_v47(&self.pool).await?;
                     }
+                    // v46 tables were stamped at 11:55 today then vanished
+                    // (version 46/47 present, finance_watchlist gone). The
+                    // Finance tab 500'd "Unknown error" because the version
+                    // gate never re-ran. Same every-boot pattern as briefings.
+                    spectral_schema::apply_finance_ledger_schema(&self.pool).await?;
+                    spectral_schema::apply_finance_spend_schema(&self.pool).await?;
                     // Version-independent safety net for recognition columns.
                     // The always-on v23 above can stamp schema_version past the
                     // cfg-gated `version < 22` migration, leaving a feature-off DB

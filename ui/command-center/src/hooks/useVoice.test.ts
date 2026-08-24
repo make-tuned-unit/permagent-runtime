@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   isVoiceWedged,
   isInterruptibleState,
+  isTransientVoiceIdle,
   routeWakeEvent,
   VOICE_WATCHDOG_MS,
   type VoiceState,
@@ -95,5 +96,18 @@ describe('routeWakeEvent (wake-word / spoken-stop routing)', () => {
       expect(routeWakeEvent('mystery', state)).toBe('ignore');
       expect(routeWakeEvent('', state)).toBe('ignore');
     }
+  });
+});
+
+describe('isTransientVoiceIdle (20260821_14 empty STT flash)', () => {
+  it('treats last night\'s empty-STT toasts as idle, not errors', () => {
+    expect(isTransientVoiceIdle('No speech detected — try again')).toBe(true);
+    expect(isTransientVoiceIdle('Recording too short — hold longer to speak')).toBe(true);
+  });
+
+  it('leaves real faults visible', () => {
+    expect(isTransientVoiceIdle('STT failed: model missing')).toBe(false);
+    expect(isTransientVoiceIdle('Voice reply failed: timeout')).toBe(false);
+    expect(isTransientVoiceIdle(null)).toBe(false);
   });
 });

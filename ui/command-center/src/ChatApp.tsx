@@ -226,6 +226,7 @@ function ChatWindowVoiceOrb() {
         getMicAnalyser={noAnalyser}
         mirrorLevel={live.level}
         onExit={requestVoiceEnd}
+        teachWord={live.teachWord}
       />
     </div>
   );

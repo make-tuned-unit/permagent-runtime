@@ -512,6 +512,8 @@ interface CommandCenterStore {
     exit: () => void;
     /** When the wake gate is armed: the phrase to say (e.g. `Say "Hey Henry"`). */
     wakeHint: string | null;
+    /** Word placed on the Orb for a listen-once pronunciation. */
+    teachWord: string | null;
   } | null;
   setVoiceConversation: (conv: CommandCenterStore['voiceConversation']) => void;
 

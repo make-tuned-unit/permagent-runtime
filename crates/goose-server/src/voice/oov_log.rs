@@ -122,11 +122,12 @@ pub fn coaching_prompt() -> Option<String> {
     }
     let words: Vec<&str> = items.iter().take(8).map(|(w, _)| w.as_str()).collect();
     Some(format!(
-        "The speech engine recently had to guess these words: {}. \
-         NEVER spell them letter by letter. If you are about to say one and you \
-         know a real-English-word respelling, you MUST call save_pronunciation \
-         in this turn before you speak. If you do not, ask how it is said — \
-         do not guess out loud.",
+        "The speech engine does not know these words: {}. \
+         STOP. Never spell them. The Orb will show the word; you say you are \
+         placing it there and listening. The next thing they say is the \
+         pronunciation — you MUST call save_pronunciation in that same \
+         turn with the word and what they said. Guessing a respelling and \
+         keeping talking saves nothing. Once it is stored it is correct forever.",
         words.join(", ")
     ))
 }
@@ -151,6 +152,10 @@ mod coaching_tests {
         let prompt = coaching_prompt().expect("non-empty queue must coach");
         assert!(prompt.contains("kuzu"));
         assert!(prompt.to_lowercase().contains("save_pronunciation"));
+        assert!(
+            prompt.to_lowercase().contains("stop") && prompt.to_lowercase().contains("listen"),
+            "coaching must tell the model to stop and listen, not guess: {prompt}"
+        );
         *SEEN.write().unwrap_or_else(PoisonError::into_inner) = None;
     }
 }

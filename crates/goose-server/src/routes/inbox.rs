@@ -107,6 +107,9 @@ struct RouteResponse {
     document_id: Option<String>,
     /// social_post card id — set for `scheduler`.
     card_id: Option<String>,
+    /// Brain memory key — set for `brain` when the Reader stored text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    memory_key: Option<String>,
 }
 
 /// Load the routed file's bytes from the inbox directory. `disk_path` is
@@ -188,7 +191,9 @@ async fn route_inbox_handler(
     let destination = req.destination.trim().to_lowercase();
     let content_type = file.content_type.clone().unwrap_or_default();
 
-    let (new_status, project_stamp, summary, document_id, card_id) = match destination.as_str() {
+    let (new_status, project_stamp, summary, document_id, card_id, memory_key) = match destination
+        .as_str()
+    {
         "brain" => {
             let data = read_inbox_bytes(&file).await?;
             // Mirror the Reader ingest route's image-vs-document decision.
@@ -204,7 +209,12 @@ async fn route_inbox_handler(
                     format!("The Reader could not read {}: {e}", file.filename),
                 )
             })?;
-            ("ingested", None, Some(digest.summary), None, None)
+            let key = if digest.is_visual {
+                None
+            } else {
+                Some(digest.memory_key)
+            };
+            ("ingested", None, Some(digest.summary), None, None, key)
         }
         "project" => {
             let project =
@@ -216,7 +226,7 @@ async fn route_inbox_handler(
                 .unwrap_or_else(|| "application/octet-stream".to_string());
             let doc = save_project_document(&state, &pool, &project, &file.filename, &mime, &data)
                 .await?;
-            ("routed", Some(project.id), None, Some(doc.id), None)
+            ("routed", Some(project.id), None, Some(doc.id), None, None)
         }
         "scheduler" => {
             let project =
@@ -268,7 +278,7 @@ async fn route_inbox_handler(
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
             grow_media::enqueue_after_create(pool.clone(), project.id.clone(), card.id.clone());
-            ("routed", Some(project.id), None, None, Some(card.id))
+            ("routed", Some(project.id), None, None, Some(card.id), None)
         }
         other => {
             return Err((
@@ -300,6 +310,7 @@ async fn route_inbox_handler(
         summary,
         document_id,
         card_id,
+        memory_key,
     }))
 }
 

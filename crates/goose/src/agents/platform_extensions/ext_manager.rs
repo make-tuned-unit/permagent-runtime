@@ -373,7 +373,8 @@ impl ExtensionManagerClient {
             Tool::new(
                 SEARCH_MEMORY_TOOL_NAME.to_string(),
                 "Search your long-term memory (Brain) for information about a topic. \
-                 Returns the most relevant memories matching the query. Use this when you \
+                 Returns the most relevant memories matching the query, layered by budget \
+                 (abstract, then overview, then full). Use this when you \
                  need to recall facts, events, preferences, or context that you've learned \
                  from past conversations and observations. The query should be a natural \
                  language phrase describing what you're looking for."
@@ -593,13 +594,32 @@ async fn handle_search_memory(
                 ))]);
             }
 
-            let mut output = format!("Found {} memories matching \"{}\":\n\n", hits.len(), query);
-            for (i, hit) in hits.iter().take(5).enumerate() {
+            let sources: Vec<crate::context_layers::AssembleSource<'_>> = hits
+                .iter()
+                .take(8)
+                .map(|hit| crate::context_layers::AssembleSource {
+                    key: hit.key.as_str(),
+                    abstract_text: hit.description.as_deref(),
+                    content: hit.content.as_str(),
+                    score: hit.signal_score,
+                })
+                .collect();
+            let layered = crate::context_layers::assemble(
+                &sources,
+                crate::context_layers::AssembleBudget::SEARCH,
+            );
+            let mut output = format!(
+                "Found {} memories matching \"{}\":\n\n",
+                layered.len(),
+                query
+            );
+            for (i, hit) in layered.iter().enumerate() {
                 output.push_str(&format!(
-                    "{}. [score: {:.2}] {}\n",
+                    "{}. [{}] [score: {:.2}] {}\n",
                     i + 1,
-                    hit.signal_score,
-                    &hit.content
+                    hit.layer.as_str(),
+                    hit.score,
+                    hit.text
                 ));
             }
 

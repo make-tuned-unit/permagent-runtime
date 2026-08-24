@@ -59,6 +59,7 @@ type RowResult = { ok: boolean; text: string };
 export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
   const { gradient, colors } = useThemeHook();
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
+  const focusBrainMemory = useCommandCenter(s => s.focusBrainMemory);
   const [files, setFiles] = useState<InboxFile[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[] | null>(null);
@@ -118,13 +119,19 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
       setFiles(fs => (fs ?? []).map(f => (f.id === file.id ? resp.file : f)));
       setResults(r => ({ ...r, [file.id]: { ok: true, text: describeRouteResult(resp, projectName) } }));
       setPick(null);
+      if (destination === 'brain' && resp.memory_key) {
+        focusBrainMemory({
+          key: resp.memory_key,
+          preview: resp.summary ? { text: resp.summary, description: file.filename } : null,
+        });
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setResults(r => ({ ...r, [file.id]: { ok: false, text: `Could not route ${file.filename}: ${msg}` } }));
     } finally {
       setBusyId(null);
     }
-  }, [projects]);
+  }, [projects, focusBrainMemory]);
 
   const openPicker = useCallback((file: InboxFile, destination: 'project' | 'scheduler') => {
     ensureProjects();
@@ -176,7 +183,7 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
           <div style={{ color: colors.textDim, fontSize: 13 }}>Loading inbox…</div>
         ) : files.length === 0 ? (
           <div style={{ color: colors.textMuted, fontSize: 13, padding: '24px 0' }}>
-            {error ?? 'Your inbox is empty. Download a file in the in-app browser and it will appear here.'}
+            {error ?? 'Your inbox is empty. Download a file in the in-app browser — send it to Brain and it becomes searchable memory.'}
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>

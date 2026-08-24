@@ -1656,6 +1656,7 @@ pub async fn reindex_project_code(
     // Tree-sitter parsing is CPU-bound (rayon) — never run it on the async
     // executor. Build the map off-thread. `max_depth = 0` = the whole tree
     // (WalkBuilder still skips .gitignore'd artifacts like node_modules/target).
+    let notes_root = root.clone();
     let map = tokio::task::spawn_blocking(move || analyze::build_code_map(&root, 0))
         .await
         .map_err(|e| {
@@ -1663,8 +1664,47 @@ pub async fn reindex_project_code(
             CodeIndexError::ParsePanic(e.to_string())
         })?;
 
+    // Markdown/text project knowledge is useful even when tree-sitter finds no
+    // source language. Run this before the NoSourceFiles decision so a notes-only
+    // project still gets durable, project-scoped Brain memories.
+    let text_digests = match reader::ingest_tree_for_project(&project.id, &notes_root).await {
+        Ok(digests) => digests,
+        Err(e) => {
+            tracing::warn!(project = %project.id, error = %e, "tree ingest of project notes failed");
+            Vec::new()
+        }
+    };
+
+    for digest in &text_digests {
+        if digest.is_visual {
+            continue;
+        }
+        if let Ok(Some(mem)) = brain.get_memory_by_key(&digest.memory_key).await {
+            if let Err(e) = project_association::associate_memory(pool, &project.id, &mem.id).await
+            {
+                tracing::warn!(
+                    project = %project.id,
+                    key = %digest.memory_key,
+                    error = %e,
+                    "tree ingest association failed"
+                );
+            }
+        }
+    }
+
     if map.files == 0 {
-        return Err(CodeIndexError::NoSourceFiles);
+        let Some(first) = text_digests.first() else {
+            return Err(CodeIndexError::NoSourceFiles);
+        };
+        tracing::info!(
+            project = %project.id,
+            files = text_digests.len(),
+            "project text indexed into brain (no parseable source files)"
+        );
+        return Ok(CodeIndexOutcome {
+            files: text_digests.len(),
+            memory_key: first.memory_key.clone(),
+        });
     }
 
     let memory_key = code_map_memory_key(&project.id);
@@ -2283,6 +2323,147 @@ mod tests {
             code_map_memory_key("abc-123"),
             code_map_memory_key("abc-123")
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn project_reindex_scopes_same_named_files_and_replaces_edits() {
+        let test_root = crate::test_support::test_root();
+        let state = AppState::new(true).await.unwrap();
+        let pool = state.session_manager().pool_clone().await.unwrap();
+        let brain = state.brain.as_ref().expect("test Brain");
+
+        let root_a = test_root.join(format!("project-reader-a-{}", uuid::Uuid::new_v4()));
+        let root_b = test_root.join(format!("project-reader-b-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root_a).unwrap();
+        std::fs::create_dir_all(&root_b).unwrap();
+        std::fs::write(root_a.join("README.md"), "Project A original knowledge").unwrap();
+        std::fs::write(root_b.join("README.md"), "Project B independent knowledge").unwrap();
+
+        let project_a = projects::create_project(
+            &pool,
+            projects::CreateProject {
+                name: format!("Reader scope A {}", uuid::Uuid::new_v4()),
+                root_path: Some(root_a.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let project_b = projects::create_project(
+            &pool,
+            projects::CreateProject {
+                name: format!("Reader scope B {}", uuid::Uuid::new_v4()),
+                root_path: Some(root_b.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let first_a = reindex_project_code(&pool, brain, &project_a)
+            .await
+            .unwrap();
+        let first_b = reindex_project_code(&pool, brain, &project_b)
+            .await
+            .unwrap();
+        let key_a = reader::doc_memory_key(&project_a.id, "README.md");
+        let key_b = reader::doc_memory_key(&project_b.id, "README.md");
+        assert_eq!(first_a.memory_key, key_a);
+        assert_eq!(first_b.memory_key, key_b);
+        assert_ne!(key_a, key_b);
+        assert_eq!(
+            brain
+                .get_memory_by_key(&key_a)
+                .await
+                .unwrap()
+                .unwrap()
+                .content,
+            "Project A original knowledge"
+        );
+        assert_eq!(
+            brain
+                .get_memory_by_key(&key_b)
+                .await
+                .unwrap()
+                .unwrap()
+                .content,
+            "Project B independent knowledge"
+        );
+
+        std::fs::write(root_a.join("README.md"), "Project A edited replacement").unwrap();
+        let edited = reindex_project_code(&pool, brain, &project_a)
+            .await
+            .unwrap();
+        assert_eq!(edited.memory_key, key_a, "path identity remains stable");
+        assert_eq!(
+            brain
+                .get_memory_by_key(&key_a)
+                .await
+                .unwrap()
+                .unwrap()
+                .content,
+            "Project A edited replacement",
+            "edited content replaces the prior stable-key memory"
+        );
+        assert_eq!(
+            brain
+                .get_memory_by_key(&key_b)
+                .await
+                .unwrap()
+                .unwrap()
+                .content,
+            "Project B independent knowledge",
+            "editing project A must not retire project B's same-named file"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn note_only_project_reindex_succeeds_before_no_source_files() {
+        let test_root = crate::test_support::test_root();
+        let state = AppState::new(true).await.unwrap();
+        let pool = state.session_manager().pool_clone().await.unwrap();
+        let brain = state.brain.as_ref().expect("test Brain");
+        let root = test_root.join(format!("project-notes-only-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("notes")).unwrap();
+        std::fs::write(
+            root.join("notes").join("plan.md"),
+            "A durable planning note with no source code in this project.",
+        )
+        .unwrap();
+        let project = projects::create_project(
+            &pool,
+            projects::CreateProject {
+                name: format!("Notes only {}", uuid::Uuid::new_v4()),
+                root_path: Some(root.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let outcome = reindex_project_code(&pool, brain, &project)
+            .await
+            .expect("a text-only project is meaningfully indexable");
+        let key = reader::doc_memory_key(&project.id, "notes/plan.md");
+        assert_eq!(outcome.files, 1);
+        assert_eq!(outcome.memory_key, key);
+        assert_eq!(
+            brain
+                .get_memory_by_key(&key)
+                .await
+                .unwrap()
+                .unwrap()
+                .content,
+            "A durable planning note with no source code in this project."
+        );
+        let associations =
+            project_association::list_project_memory_associations(&pool, &project.id)
+                .await
+                .unwrap();
+        let memory_id = brain.get_memory_by_key(&key).await.unwrap().unwrap().id;
+        assert!(associations.iter().any(|a| a.memory_id == memory_id));
     }
 
     #[tokio::test(flavor = "multi_thread")]
