@@ -2,7 +2,9 @@
 //
 // The Watcher (Echo, #672) is the daemon's proactive worker: at most once a
 // day it surfaces the single most useful thing — a dormant Brain thread or
-// fresh project news — as a `proactive_nudge` on /events. It has no live
+// fresh project news — as a `proactive_nudge` on /events. Holding overbought
+// signals (kind sell_signal) arrive the same way, scored by the Financier,
+// and do not consume that once-a-day budget. It has no live
 // status endpoint yet (documented gap), so in the world it lives as ambient
 // sim life (idle/available under the §4 clamp — it can never fake work). But
 // the nudge itself IS a real event, and when one arrives live:

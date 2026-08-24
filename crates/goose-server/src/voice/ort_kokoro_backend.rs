@@ -224,6 +224,25 @@ fn technical_lexicon() -> PronunciationLexicon {
         ("kuzu", "kˈuːzuː"),
         ("neon", "nˈiːɒn"),
         ("proptech", "prˈɒptɛk"), // resolves by split too; pinned for demos
+        // Story names (2026-08-21 iPhone): misaki spells these letter-by-letter
+        // and save_pronunciation refused "peth"/"taran" as invented syllables.
+        ("elspeth", "ˈɛlspɛθ"),
+        ("princess elspeth", "prˈɪnsɛs ˈɛlspɛθ"),
+        ("taran", "tˈærən"),
+        ("taran the pigkeeper", "tˈærən ðə pˈɪɡkiːpə"),
+        ("pigkeeper", "pˈɪɡkiːpə"),
+        ("barty", "bˈɑːti"),
+        ("barty the troll", "bˈɑːti ðə tɹˈɒl"),
+        ("prydain", "prˈɪdaɪn"),
+        ("prideine", "prˈɪdaɪn"),
+        ("kingdom of prydain", "kˈɪŋdəm əv prˈɪdaɪn"),
+        ("kingdom of prideine", "kˈɪŋdəm əv prˈɪdaɪn"),
+        // Contractions: ASCII keys. Curly apostrophes are folded before lookup.
+        ("should've", "ʃˈʊdəv"),
+        ("would've", "wˈʊdəv"),
+        ("could've", "kˈʊdəv"),
+        ("might've", "mˈaɪtəv"),
+        ("must've", "mˈʌstəv"),
         // Acronyms, spelled out letter-by-letter.
         ("api", "ˌeɪpˌiːˈaɪ"),
         ("url", "jˌuːˌɑːrˈɛl"),
@@ -255,10 +274,23 @@ enum Segment {
     Text(String),
 }
 
+/// A refused syllable should name a swap that would save, not just the reject.
+/// Last night the user tried `speth` / `ayn` eight times and got no alternative.
+fn suggest_respell_part(part: &str) -> Option<&'static str> {
+    Some(match part.trim().to_ascii_lowercase().as_str() {
+        "jent" => "'gent'",
+        "per" => "'purr'",
+        "speth" | "peth" => "'seth' or 'else peth'",
+        "ayn" => "'ine' or 'in'",
+        "prid" => "'pride'",
+        _ => return None,
+    })
+}
+
 /// Lowercase a token with leading/trailing ASCII punctuation stripped, for
 /// case- and punctuation-insensitive lexicon matching.
 fn match_key(token: &str) -> String {
-    token
+    crate::voice::speech_normalize::fold_apostrophes(token)
         .trim_matches(|c: char| c.is_ascii_punctuation())
         .to_lowercase()
 }
@@ -358,9 +390,10 @@ fn phonemize(
     sentence: &str,
     lexicon: &PronunciationLexicon,
 ) -> anyhow::Result<(String, Vec<String>)> {
+    let sentence = crate::voice::speech_normalize::fold_apostrophes(sentence);
     let mut out = String::new();
     let mut unresolved: Vec<String> = Vec::new();
-    for seg in plan_segments(sentence, lexicon) {
+    for seg in plan_segments(&sentence, lexicon) {
         if !out.is_empty() {
             out.push(' ');
         }
@@ -582,9 +615,13 @@ impl TextToSpeech for OrtKokoroTts {
             // only alternative to recording it here is discovering it live.
             if !unresolved.is_empty() {
                 crate::voice::oov_log::record(&unresolved);
+                if let Some(word) = permagent::events::voice_pronounce::first_teachable(&unresolved)
+                {
+                    anyhow::bail!("refuse_spell:{word} — never letter-spell; place it on the Orb");
+                }
                 tracing::info!(
                     target: "permagentd::voice",
-                    "PRONUNCIATION unresolved (spelled out): {}",
+                    "PRONUNCIATION unresolved (not teachable): {}",
                     unresolved.join(", ")
                 );
             }
@@ -691,7 +728,20 @@ impl TextToSpeech for OrtKokoroTts {
             .g2p
             .lock()
             .map_err(|e| anyhow::anyhow!("G2P lock: {}", e))?;
-        let (phonemes, unresolved) = phonemize(&g2p, text, &PronunciationLexicon::default())?;
+        // Hyphens are how people respell names ("EL-speth"). The schema used
+        // to forbid them; they are spaces to G2P. Name syllables (peth, taran)
+        // overlay so a save is not refused for a real name.
+        let text = crate::voice::speech_normalize::fold_apostrophes(text).replace('-', " ");
+        let mut overlay = PronunciationLexicon::default();
+        for part in text.split_whitespace() {
+            let key = part
+                .trim_matches(|c: char| c.is_ascii_punctuation())
+                .to_ascii_lowercase();
+            if let Some(ipa) = crate::voice::name_syllables::ipa_for(&key) {
+                overlay.entries.insert(key, ipa.to_string());
+            }
+        }
+        let (phonemes, unresolved) = phonemize(&g2p, &text, &overlay)?;
         let phonemes = phonemes.trim().to_string();
         if phonemes.is_empty() {
             anyhow::bail!("'{text}' produced no phonemes — try a different respelling");
@@ -703,10 +753,20 @@ impl TextToSpeech for OrtKokoroTts {
         // save reported success. Reject with the offending part named, so the
         // caller can pick a real word ("gent" for "jent") and try again.
         if !unresolved.is_empty() {
+            let hints: Vec<String> = unresolved
+                .iter()
+                .filter_map(|part| suggest_respell_part(part).map(|s| format!("'{part}' → {s}")))
+                .collect();
+            let hint = if hints.is_empty() {
+                "Respell using REAL English words — e.g. 'gent' not 'jent', \
+                 'purr' not 'per' — each of which is spoken as written"
+                    .to_string()
+            } else {
+                format!("Try {}.", hints.join("; "))
+            };
             anyhow::bail!(
                 "the respelling '{text}' contains {} that speech cannot pronounce and would \
-                 spell out letter by letter: {}. Respell using REAL English words — e.g. \
-                 'gent' not 'jent', 'purr' not 'per' — each of which is spoken as written",
+                 spell out letter by letter: {}. {hint}",
                 if unresolved.len() == 1 {
                     "a part"
                 } else {
@@ -730,7 +790,12 @@ impl TextToSpeech for OrtKokoroTts {
         let Ok(g2p) = self.g2p.lock() else {
             return Vec::new();
         };
-        phonemize(&g2p, text, &self.lexicon)
+        // User overlay must win here too — a taught word is not unknown.
+        let lex = effective_lexicon(
+            &self.lexicon,
+            crate::voice::user_lexicon::current().as_ref(),
+        );
+        phonemize(&g2p, text, &lex)
             .map(|(_, unresolved)| unresolved)
             .unwrap_or_default()
     }
@@ -876,6 +941,17 @@ mod tests {
         assert!(
             good.is_empty(),
             "a respelling of real words must resolve cleanly: {good:?}"
+        );
+    }
+
+    #[test]
+    fn a_refused_syllable_names_a_swap_that_would_save() {
+        assert_eq!(suggest_respell_part("speth"), Some("'seth' or 'else peth'"));
+        assert_eq!(suggest_respell_part("ayn"), Some("'ine' or 'in'"));
+        assert_eq!(suggest_respell_part("jent"), Some("'gent'"));
+        assert!(
+            suggest_respell_part("zzqxwv").is_none(),
+            "unknown junk gets the generic hint, not a fake swap"
         );
     }
 
@@ -1071,6 +1147,61 @@ mod tests {
         for name in ["permagentd", "spectral", "kinrows"] {
             assert!(lex.get(name).is_some(), "'{name}' must resolve");
         }
+    }
+
+    #[test]
+    fn last_night_story_names_are_spoken_not_spelled() {
+        let lex = technical_lexicon();
+        for name in [
+            "elspeth",
+            "princess elspeth",
+            "taran",
+            "taran the pigkeeper",
+            "barty",
+            "barty the troll",
+            "prydain",
+            "prideine",
+        ] {
+            let ipa = lex
+                .get(name)
+                .unwrap_or_else(|| panic!("{name} must be seeded"));
+            assert!(
+                !ipa.chars()
+                    .all(|c| c.is_ascii_uppercase() || c == ' ' || c == 'ː'),
+                "{name} looks letter-spelled: {ipa}"
+            );
+        }
+        let segs = plan_segments(
+            "Princess Elspeth met Taran the Pigkeeper and Barty the Troll.",
+            &lex,
+        );
+        let overrides = segs
+            .iter()
+            .filter(|s| matches!(s, Segment::Override(_)))
+            .count();
+        assert!(
+            overrides >= 3,
+            "all three story names must hit the lexicon: {segs:?}"
+        );
+    }
+
+    #[test]
+    fn curly_shouldve_hits_the_contraction_lexicon() {
+        let lex = technical_lexicon();
+        let g2p = real_g2p();
+        let (ipa, unresolved) = phonemize(&g2p, "He should\u{2019}ve stayed.", &lex).unwrap();
+        assert!(
+            unresolved.is_empty(),
+            "should've must not be spelled: {unresolved:?}"
+        );
+        assert!(
+            lex.get("should've").is_some(),
+            "ASCII should've must be in the lexicon"
+        );
+        assert!(
+            ipa.contains('ʃ') || ipa.contains("ʃ"),
+            "should've must sound like SHOULD, not 've-ray': {ipa}"
+        );
     }
 
     #[test]

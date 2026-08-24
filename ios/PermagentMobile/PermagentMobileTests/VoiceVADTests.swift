@@ -29,11 +29,35 @@ final class VoiceVADTests: XCTestCase {
         return nil
     }
 
-    /// Speech onset from ready opens a turn.
+    /// Open a turn the way the live machine does: two consecutive onset frames.
+    @discardableResult
+    private func beginTurn(
+        _ vad: inout VoiceVAD,
+        rms: Float = 0.03,
+        at now: inout TimeInterval
+    ) -> VoiceVAD.Action {
+        XCTAssertEqual(vad.step(rms: rms, phase: .ready, now: now), .none,
+                       "first onset frame must not open a turn")
+        now += dt
+        let action = vad.step(rms: rms, phase: .ready, now: now)
+        XCTAssertEqual(action, .beginTurn, "second onset frame must open the turn")
+        return action
+    }
+
+    /// Speech onset from ready opens a turn — but only after two frames.
     func testOnsetBeginsTurn() {
         var vad = VoiceVAD()
         XCTAssertEqual(vad.step(rms: 0.001, phase: .ready, now: 100), .none)
-        XCTAssertEqual(vad.step(rms: 0.02, phase: .ready, now: 100.085), .beginTurn)
+        XCTAssertEqual(vad.step(rms: 0.02, phase: .ready, now: 100.085), .none)
+        XCTAssertEqual(vad.step(rms: 0.02, phase: .ready, now: 100.170), .beginTurn)
+    }
+
+    /// A single room-noise spike must not open a turn (20260821_14 empty STT).
+    func testSingleOnsetSpikeDoesNotBeginTurn() {
+        var vad = VoiceVAD()
+        XCTAssertEqual(vad.step(rms: 0.02, phase: .ready, now: 1), .none)
+        XCTAssertEqual(vad.step(rms: 0.001, phase: .ready, now: 1.085), .none)
+        XCTAssertEqual(vad.step(rms: 0.02, phase: .ready, now: 1.17), .none)
     }
 
     /// THE REGRESSION: soft-but-real speech (RMS 0.008 — under the old 0.010
@@ -44,7 +68,7 @@ final class VoiceVADTests: XCTestCase {
     func testSoftSpeechIsNotCutAsSilence() {
         var vad = VoiceVAD()
         var now: TimeInterval = 1_000
-        XCTAssertEqual(vad.step(rms: 0.02, phase: .ready, now: now), .beginTurn)
+        beginTurn(&vad, rms: 0.02, at: &now)
         let cut = run(&vad, rms: 0.008, phase: .listening, duration: 20, from: &now)
         XCTAssertNil(cut, "soft speech was treated as silence and ended the turn at +\(cut?.at ?? 0)s")
     }
@@ -55,7 +79,7 @@ final class VoiceVADTests: XCTestCase {
     func testContinuousSpeechListensForFullMinuteThenCaps() {
         var vad = VoiceVAD()
         var now: TimeInterval = 5_000
-        XCTAssertEqual(vad.step(rms: 0.03, phase: .ready, now: now), .beginTurn)
+        beginTurn(&vad, rms: 0.03, at: &now)
         guard let end = run(&vad, rms: 0.03, phase: .listening, duration: 70, from: &now) else {
             return XCTFail("the 60 s turn cap never fired")
         }
@@ -70,7 +94,7 @@ final class VoiceVADTests: XCTestCase {
     func testNaturalPausesDoNotEndTheTurn() {
         var vad = VoiceVAD()
         var now: TimeInterval = 9_000
-        XCTAssertEqual(vad.step(rms: 0.03, phase: .ready, now: now), .beginTurn)
+        beginTurn(&vad, rms: 0.03, at: &now)
         var elapsed: TimeInterval = 0
         while elapsed < 55 {
             if let hit = run(&vad, rms: 0.03, phase: .listening, duration: 4, from: &now) {
@@ -91,14 +115,14 @@ final class VoiceVADTests: XCTestCase {
     func testQuickAskEndsOnTheTightWindow() {
         var vad = VoiceVAD()
         var now: TimeInterval = 2_000
-        XCTAssertEqual(vad.step(rms: 0.03, phase: .ready, now: now), .beginTurn)
+        beginTurn(&vad, rms: 0.03, at: &now)
         XCTAssertNil(run(&vad, rms: 0.03, phase: .listening, duration: 2, from: &now))
         guard let end = run(&vad, rms: 0.0005, phase: .listening, duration: 5, from: &now) else {
             return XCTFail("trailing silence never ended the turn")
         }
         XCTAssertEqual(end.action, .endTurn)
-        XCTAssertGreaterThan(end.at, 0.9)
-        XCTAssertLessThan(end.at, 1.4, "quick-ask endpoint drifted — lag is back")
+        XCTAssertGreaterThan(end.at, 0.65)
+        XCTAssertLessThan(end.at, 1.05, "quick-ask endpoint drifted — lag is back")
     }
 
     /// A LONG turn (dictation-length voiced duration) keeps the patient
@@ -107,14 +131,14 @@ final class VoiceVADTests: XCTestCase {
     func testLongTurnKeepsThePatientWindow() {
         var vad = VoiceVAD()
         var now: TimeInterval = 2_000
-        XCTAssertEqual(vad.step(rms: 0.03, phase: .ready, now: now), .beginTurn)
+        beginTurn(&vad, rms: 0.03, at: &now)
         XCTAssertNil(run(&vad, rms: 0.03, phase: .listening, duration: 5, from: &now))
         guard let end = run(&vad, rms: 0.0005, phase: .listening, duration: 5, from: &now) else {
             return XCTFail("trailing silence never ended the turn")
         }
         XCTAssertEqual(end.action, .endTurn)
-        XCTAssertGreaterThan(end.at, 1.6, "a long turn ended on the quick window — dictation pauses would cut again")
-        XCTAssertLessThan(end.at, 2.0, "silence window drifted — turn-taking would feel sluggish")
+        XCTAssertGreaterThan(end.at, 1.2, "a long turn ended on the quick window — dictation pauses would cut again")
+        XCTAssertLessThan(end.at, 1.65, "silence window drifted — turn-taking would feel sluggish")
     }
 
     /// A push-to-talk turn stamps its own clocks. Before the fix it inherited
@@ -124,7 +148,7 @@ final class VoiceVADTests: XCTestCase {
         var vad = VoiceVAD()
         var now: TimeInterval = 0
         // A full hands-free turn, long ago.
-        XCTAssertEqual(vad.step(rms: 0.03, phase: .ready, now: now), .beginTurn)
+        beginTurn(&vad, rms: 0.03, at: &now)
         XCTAssertNil(run(&vad, rms: 0.03, phase: .listening, duration: 2, from: &now))
         XCTAssertNotNil(run(&vad, rms: 0.0005, phase: .listening, duration: 5, from: &now))
         vad.noteTurnEnded()
@@ -184,7 +208,8 @@ final class VoiceVADTests: XCTestCase {
         XCTAssertEqual(headset.step(rms: 0.010, phase: .ready, now: 1), .none,
                        "headset calibration unexpectedly loosened")
         var builtIn = VoiceVAD(config: VoiceVAD.builtInMicConfig)
-        XCTAssertEqual(builtIn.step(rms: 0.010, phase: .ready, now: 1), .beginTurn,
+        XCTAssertEqual(builtIn.step(rms: 0.010, phase: .ready, now: 1), .none)
+        XCTAssertEqual(builtIn.step(rms: 0.010, phase: .ready, now: 1.085), .beginTurn,
                        "the bare iPhone mic must hear ordinary speech")
     }
 
@@ -240,14 +265,17 @@ final class VoiceVADTests: XCTestCase {
     /// barge at that level is correct; speakerphone barge is raised.
     func testSpeakerphoneHearsQuietSpeechButNotTtsBleed() {
         var onset = VoiceVAD(config: VoiceVAD.speakerphoneConfig)
-        XCTAssertEqual(onset.step(rms: 0.010, phase: .ready, now: 1), .beginTurn,
+        XCTAssertEqual(onset.step(rms: 0.010, phase: .ready, now: 1), .none)
+        XCTAssertEqual(onset.step(rms: 0.010, phase: .ready, now: 1.085), .beginTurn,
                        "speakerphone must hear the same quiet speech as the built-in preset")
         var bleed = VoiceVAD(config: VoiceVAD.speakerphoneConfig)
         XCTAssertEqual(bleed.step(rms: 0.035, phase: .speaking, now: 1), .none)
         XCTAssertEqual(bleed.step(rms: 0.035, phase: .speaking, now: 1.085), .none,
                        "speaker TTS bleed barged in — interrupting himself")
         XCTAssertEqual(bleed.step(rms: 0.09, phase: .speaking, now: 2), .none)
-        XCTAssertEqual(bleed.step(rms: 0.09, phase: .speaking, now: 2.085), .interrupt)
+        XCTAssertEqual(bleed.step(rms: 0.09, phase: .speaking, now: 2.085), .none,
+                       "speakerphone barge needs three frames so echo cannot cut him")
+        XCTAssertEqual(bleed.step(rms: 0.09, phase: .speaking, now: 2.17), .interrupt)
     }
 
     /// The built-in preset preserves the calibrated ratios: keepalive at
@@ -257,5 +285,34 @@ final class VoiceVADTests: XCTestCase {
         let c = VoiceVAD.builtInMicConfig
         XCTAssertEqual(c.keepalive / c.onset, 0.4, accuracy: 0.01)
         XCTAssertEqual(c.barge / c.onset, 2.0, accuracy: 0.01)
+    }
+
+    /// 20260821_14 23:47:10 → 23:47:51: speakerphone room hiss (~0.0032)
+    /// sat on the built-in keepalive and held Listening for ~41 s after
+    /// the user stopped. Hiss must now read as silence.
+    func testSpeakerphoneRoomHissDoesNotHoldTheTurn() {
+        var vad = VoiceVAD(config: VoiceVAD.speakerphoneConfig)
+        var now: TimeInterval = 23_470
+        beginTurn(&vad, rms: 0.012, at: &now)
+        XCTAssertNil(run(&vad, rms: 0.012, phase: .listening, duration: 1.2, from: &now),
+                     "real speech ended the turn early")
+        guard let end = run(&vad, rms: 0.0035, phase: .listening, duration: 8, from: &now) else {
+            return XCTFail("room hiss held the turn — the 41s Listening hang is back")
+        }
+        XCTAssertEqual(end.action, .endTurn)
+        XCTAssertLessThan(end.at, 1.2, "hiss-held endpoint at +\(end.at)s — Listening hang is back")
+    }
+
+    /// A noise-only open (two onset frames, then silence) must abort before
+    /// the full quick window — those were the 1.5–2 s empty-STT flashes.
+    func testUncommittedNoiseTurnAbortsQuickly() {
+        var vad = VoiceVAD()
+        var now: TimeInterval = 100
+        beginTurn(&vad, rms: 0.02, at: &now)
+        guard let end = run(&vad, rms: 0.0005, phase: .listening, duration: 3, from: &now) else {
+            return XCTFail("noise-only turn never ended")
+        }
+        XCTAssertEqual(end.action, .endTurn)
+        XCTAssertLessThan(end.at, 0.85, "uncommitted abort drifted to +\(end.at)s")
     }
 }

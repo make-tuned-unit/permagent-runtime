@@ -2,6 +2,7 @@ import { useCommandCenter } from '../../lib/store';
 import { useTheme } from '../../styles/useTheme';
 import { font } from '../../styles/tokens';
 import { formatCostMeter } from '../../lib/costMeter';
+import { useLiveGoals } from '../../lib/useLiveGoals';
 
 /**
  * Always-on Build statusline: `$0.42 · 47k↑ 12k↓ · cache saved $0.28 · 31% ctx · <model>`.
@@ -16,7 +17,10 @@ import { formatCostMeter } from '../../lib/costMeter';
 export function CostStatusline() {
   const { colors } = useTheme();
   const liveTokens = useCommandCenter((s) => s.liveTokens);
+  const { goals } = useLiveGoals();
   const meter = formatCostMeter(liveTokens);
+  const routeNote = goals.find(g => g.routing_note || g.hold_note);
+  const note = routeNote?.hold_note || routeNote?.routing_note;
 
   return (
     <div
@@ -65,6 +69,14 @@ export function CostStatusline() {
           </span>
         );
       })}
+      {note && (
+        <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+          <span style={{ color: colors.textDim, margin: '0 7px' }} aria-hidden="true">
+            ·
+          </span>
+          <span style={{ color: colors.textMuted }}>{note}</span>
+        </span>
+      )}
     </div>
   );
 }

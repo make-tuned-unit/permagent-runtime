@@ -387,10 +387,11 @@ pub const CODING_HARNESS_FEATURE: crate::agents::self_knowledge::FeatureDescript
              refuses any edit that would introduce a syntax error, a token-efficient structured \
              search, the analyze code-structure tool, and a ranked-tags repo-map auto-loaded into \
              its context for cheap orientation, and it verifies its own work by building and \
-             running tests; on a substantive change, once its own tests pass an independent, \
-             different-model reviewer adversarially checks the diff — for correctness, security, \
-             spec-fit, and test-integrity — before it calls the work done, all under \
-             runaway-loop safety and a live cost meter always on",
+             running tests; a mechanical worker that claims done before verify is held and \
+             given a plan rather than marked complete. On a substantive change, once its own \
+             tests pass an independent, different-model reviewer adversarially checks the \
+             diff — for correctness, security, spec-fit, and test-integrity — before it \
+             calls the work done, all under runaway-loop safety and a live cost meter always on",
         why_it_matters:
             "It is the answer when the user says 'build this with the Permagent harness': you \
              launch it from the Build tab and it codes with your own loop, keeping the expensive \
@@ -408,7 +409,9 @@ pub const CODING_HARNESS_FEATURE: crate::agents::self_knowledge::FeatureDescript
                        project's chip — 'Permagent', beside Claude and Codex. Explain that unlike \
                        those two (which drive external CLIs), this one runs Permagent's own \
                        coding loop locally, provider-agnostic and cost-optimized, and opens in \
-                       the same project-aware terminal so they can watch and take over.",
+                       the same project-aware terminal so they can watch and take over. It will \
+                       not declare done before verify — a mechanical worker that claims done \
+                       is held and given a plan.",
                 open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
                     tab: "Build",
                     section: None,

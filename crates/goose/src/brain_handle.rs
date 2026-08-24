@@ -27,14 +27,14 @@ pub const BRAIN_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
         display_name: "Brain",
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
         what_it_does:
-            "Your persistent memory — durable facts, conversations, and ingested content that survive across every session. The graph draws real connection lines between entities — person-to-project working relationships included",
+            "Your persistent memory — durable facts, conversations, and ingested content that survive across every session. Recall is layered: abstracts first, then overview, then full text, so a tight token budget still surfaces the right hit. The graph draws real connection lines between entities — person-to-project working relationships included",
         why_it_matters:
-            "It is what makes you continuous rather than a fresh chatbot each time; recall it before assuming you do not know something",
+            "It is what makes you continuous rather than a fresh chatbot each time; recall it before assuming you do not know something. When they ask what you remember, open Brain and search — chips show how deep a hit was loaded",
         state_source: crate::agents::self_knowledge::StateSource::Static,
         teaching: &[
             crate::agents::self_knowledge::TeachingStep {
                 title: "Open your Brain",
-                body: "Show them where their memories live — this is the heart of what makes you persistent.",
+                body: "Show them where their memories live — this is the heart of what makes you persistent. Search is on the Brain tab; try a name or project. Hits load as abstract, overview, or full depending on budget.",
                 open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
                     tab: "Brain",
                     section: None,

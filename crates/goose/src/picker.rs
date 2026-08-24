@@ -111,22 +111,35 @@ pub async fn status() -> PickerStatus {
     };
     match c.get(format!("{base}/api/status")).send().await {
         Ok(resp) if resp.status().is_success() => {
-            out.reachable = true;
             if let Ok(v) = resp.json::<serde_json::Value>().await {
-                out.scan_in_progress = v
-                    .get("scan_in_progress")
-                    .and_then(|b| b.as_bool())
-                    .unwrap_or(false);
-                out.scan_date = v
-                    .get("scan_date")
-                    .or_else(|| v.get("last_scan"))
-                    .and_then(|s| s.as_str())
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string);
-                out.results = v
-                    .get("total_results")
-                    .or_else(|| v.get("results"))
-                    .and_then(|n| n.as_u64());
+                if looks_like_picker(&v) {
+                    out.reachable = true;
+                    out.scan_in_progress = v
+                        .get("scan_in_progress")
+                        .and_then(|b| b.as_bool())
+                        .unwrap_or(false);
+                    out.scan_date = v
+                        .get("scan_date")
+                        .or_else(|| v.get("last_scan"))
+                        .and_then(|s| s.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string);
+                    out.results = v
+                        .get("total_results")
+                        .or_else(|| v.get("results"))
+                        .and_then(|n| n.as_u64());
+                } else {
+                    out.detail = Some(format!(
+                        "{base} answered, but it is not the stock scanner \
+                         (Librarian llama-server also defaults to :8080). \
+                         Stop that process or set picker_url to the scanner."
+                    ));
+                }
+            } else {
+                out.detail = Some(format!(
+                    "{base} answered, but the body is not scanner JSON — \
+                     something else is bound to that port"
+                ));
             }
         }
         Ok(resp) => {
@@ -141,6 +154,22 @@ pub async fn status() -> PickerStatus {
         }
     }
     out
+}
+
+/// True for the Flask scanner's `/api/status` body. llama-server on the same
+/// port speaks a different JSON (`{"status":"ok"}` on `/health`) and must not
+/// be treated as a live scanner — that is how a down Picker looked "up".
+pub fn looks_like_picker(v: &serde_json::Value) -> bool {
+    if v.get("scan_in_progress")
+        .and_then(|b| b.as_bool())
+        .is_some()
+    {
+        return true;
+    }
+    matches!(
+        v.get("status").and_then(|s| s.as_str()),
+        Some("running" | "idle" | "complete" | "ready")
+    )
 }
 
 /// Pull a picks array out of a scanner body. Live Picker serves `/api/results`
@@ -582,31 +611,68 @@ pub async fn trades() -> Result<Vec<serde_json::Value>, String> {
 /// our own child would tie its life to ours, which is exactly wrong for a
 /// service the user runs independently.
 pub async fn ensure_running() -> Result<String, String> {
-    if status().await.reachable {
+    let already = status().await;
+    if already.reachable {
         return Ok("the scanner was already running".into());
+    }
+    if already.detail.as_deref().is_some_and(|d| {
+        d.contains("not the stock scanner") || d.contains("something else is bound")
+    }) {
+        return Err(already.detail.unwrap_or_else(|| {
+            format!(
+                "{} is occupied by something that is not the scanner",
+                base_url()
+            )
+        }));
     }
     if !cfg!(target_os = "macos") {
         return Err("starting the scanner is wired for launchd (macOS) only".into());
     }
     let root = picker_root().ok_or_else(|| {
-        "no Picker checkout at ~/dev/Picker/pre_surge_scanner — nothing to start".to_string()
+        format!(
+            "no Picker checkout found (looked for Picker/pre_surge_scanner under {}). \
+             Set picker_root, or start it with: python csv_web_server.py",
+            crate::config::dev_roots::dev_roots()
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
     })?;
-    let plist_src = root.join("com.picker.stockscanner.plist");
-    if !plist_src.is_file() {
+    let script = root.join("csv_web_server.py");
+    if !script.is_file() {
         return Err(format!(
-            "no launchd job at {} — start the scanner manually",
-            plist_src.display()
+            "Picker checkout at {} has no csv_web_server.py — nothing to start",
+            root.display()
         ));
     }
+    let python = ensure_python_with_flask(&root).await?;
+
     let home = dirs::home_dir().ok_or("no home directory")?;
     let agents = home.join("Library/LaunchAgents");
     tokio::fs::create_dir_all(&agents)
         .await
         .map_err(|e| e.to_string())?;
     let plist_dst = agents.join("com.picker.stockscanner.plist");
-    tokio::fs::copy(&plist_src, &plist_dst)
-        .await
-        .map_err(|e| format!("could not install the launch agent: {e}"))?;
+    let plist_src = root.join("com.picker.stockscanner.plist");
+    // The checkout has never shipped a plist (observed 2026-08-22: Start
+    // scanner 502'd in 3ms with "no launchd job"). Write one that points at
+    // the Flask entrypoint so launchd can Keep the process across daemon
+    // restarts — the original reason this is not a child of permagentd.
+    if plist_src.is_file() {
+        tokio::fs::copy(&plist_src, &plist_dst)
+            .await
+            .map_err(|e| format!("could not install the launch agent: {e}"))?;
+    } else {
+        let logs = root.join("logs");
+        tokio::fs::create_dir_all(&logs)
+            .await
+            .map_err(|e| e.to_string())?;
+        let body = launch_plist_body(&python, &script, &root, &logs);
+        tokio::fs::write(&plist_dst, body)
+            .await
+            .map_err(|e| format!("could not write the launch agent: {e}"))?;
+    }
 
     // `id -u` rather than a libc call: this path is macOS-only and shelling
     // out keeps the module free of a platform-gated dependency for one number.
@@ -629,11 +695,138 @@ pub async fn ensure_running() -> Result<String, String> {
     )
     .await?;
 
+    // Bind is not instant. Wait long enough that a successful start is
+    // visible on the next poll, and a failed start returns the real reason.
+    for _ in 0..8 {
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        if status().await.reachable {
+            return Ok(format!(
+                "scanner is up at {} (launchd {})",
+                base_url(),
+                plist_dst.display()
+            ));
+        }
+    }
     Ok(format!(
-        "asked launchd to start the scanner ({}). It takes a few seconds to bind {}.",
+        "asked launchd to start the scanner ({}). It takes a few seconds to bind {}. \
+         If it stays down, Flask may have failed — see {}/logs/launchd.err.log",
         plist_dst.display(),
-        base_url()
+        base_url(),
+        root.display()
     ))
+}
+
+fn launch_plist_body(
+    python: &std::path::Path,
+    script: &std::path::Path,
+    workdir: &std::path::Path,
+    logs: &std::path::Path,
+) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.picker.stockscanner</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{}</string>
+    <string>{}</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>{}</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>{}</string>
+  <key>StandardErrorPath</key>
+  <string>{}</string>
+</dict>
+</plist>
+"#,
+        python.display(),
+        script.display(),
+        workdir.display(),
+        logs.join("launchd.out.log").display(),
+        logs.join("launchd.err.log").display(),
+    )
+}
+
+/// Packages the scanner process actually imports. The checkout's
+/// `requirements.txt` also lists `sqlite3` (stdlib) and `ta-lib` (needs a
+/// C library) — those are not needed to bind the Flask server.
+const PICKER_RUNTIME_PACKAGES: &[&str] = &[
+    "flask",
+    "jinja2",
+    "loguru",
+    "pandas",
+    "numpy",
+    "yfinance",
+    "requests",
+    "beautifulsoup4",
+    "lxml",
+    "pydantic",
+    "python-dotenv",
+];
+
+async fn ensure_python_with_flask(root: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    if let Some(py) = python_with_flask(root).await {
+        return Ok(py);
+    }
+    let venv = root.join(".venv");
+    crate::python_runtime::ensure_venv(&venv).await?;
+    crate::python_runtime::pip_install(&venv, PICKER_RUNTIME_PACKAGES).await?;
+    python_with_flask(root).await.ok_or_else(|| {
+        format!(
+            "installed Picker deps into {} but Flask still does not import",
+            venv.display()
+        )
+    })
+}
+
+async fn python_with_flask(root: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut candidates = vec![
+        root.join(".venv/bin/python"),
+        root.join(".venv/bin/python3"),
+        root.join("venv/bin/python"),
+        root.join("venv/bin/python3"),
+    ];
+    if let Ok(p) = which_python().await {
+        candidates.push(p);
+    }
+    for py in candidates {
+        if !py.is_file() {
+            continue;
+        }
+        if python_imports_flask(&py).await {
+            return Some(py);
+        }
+    }
+    None
+}
+
+async fn which_python() -> Result<std::path::PathBuf, String> {
+    let out = run("which", &["python3"]).await?;
+    let p = std::path::PathBuf::from(out);
+    if p.is_file() {
+        Ok(p)
+    } else {
+        Err("python3 not on PATH".into())
+    }
+}
+
+async fn python_imports_flask(python: &std::path::Path) -> bool {
+    tokio::process::Command::new(python)
+        .args(["-c", "import flask"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 async fn run(bin: &str, args: &[&str]) -> Result<String, String> {
@@ -799,6 +992,29 @@ mod tests {
     async fn delete_trade_refuses_an_empty_id() {
         let err = delete_trade("").await.expect_err("empty id");
         assert!(err.contains("id"), "got {err}");
+    }
+
+    #[test]
+    fn llama_server_health_is_not_the_scanner() {
+        assert!(!looks_like_picker(&serde_json::json!({"status": "ok"})));
+        assert!(looks_like_picker(
+            &serde_json::json!({"scan_in_progress": false, "last_scan": ""})
+        ));
+        assert!(looks_like_picker(&serde_json::json!({"status": "idle"})));
+    }
+
+    #[test]
+    fn generated_plist_points_at_the_flask_entrypoint() {
+        let body = launch_plist_body(
+            std::path::Path::new("/opt/homebrew/bin/python3"),
+            std::path::Path::new("/tmp/Picker/pre_surge_scanner/csv_web_server.py"),
+            std::path::Path::new("/tmp/Picker/pre_surge_scanner"),
+            std::path::Path::new("/tmp/Picker/pre_surge_scanner/logs"),
+        );
+        assert!(body.contains("com.picker.stockscanner"));
+        assert!(body.contains("csv_web_server.py"));
+        assert!(body.contains("/opt/homebrew/bin/python3"));
+        assert!(body.contains("WorkingDirectory"));
     }
 
     #[test]

@@ -356,9 +356,9 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 why_it_matters:
                     "THE RULE: never spell a word out loud. If you are unsure how a name will \
                      sound — or the user winces at your pronunciation — stop and ask them to \
-                     say it. Teaching you a pronunciation REQUIRES a save_pronunciation call in \
-                     that same turn: pass the word and a sounds-like respelling made of real \
-                     English words (never IPA — the engine derives the phonemes itself). \
+                     say it, then listen. Teaching you a pronunciation REQUIRES a save_pronunciation call in \
+                     that same turn: pass the word and what they said (a sounds-like of real \
+                     English words, never IPA — the engine derives the phonemes itself). \
                      Answering that you will remember it, without the call, stores nothing. \
                      Then read back what the tool confirms and say it aloud. Saved once, \
                      spoken right forever.",
@@ -554,7 +554,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 unprefixed_tools: false,
                 hidden: false,
                 why_it_matters:
-                    "Run multi-agent work — dispatch goals, track roadmaps, and steer other sessions when one agent is not enough — escalating decisions to the user for approval rather than acting unsupervised.",
+                    "Run multi-agent work — dispatch goals, track roadmaps, and steer other sessions when one agent is not enough — escalating decisions to the user for approval rather than acting unsupervised. You see the Finance tab; you query The Financier for prices, the ledger, sell signals, and Polybot. You do not invent a number or dispatch a coding worker for a money question.",
                 required_secrets: &[],
                 teaching: &[
                     crate::agents::self_knowledge::TeachingStep {
@@ -731,17 +731,44 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: finance::EXTENSION_NAME,
                 display_name: "Finance",
                 description:
-                    "Market research and the Finance tab ledger. research_ticker reads live prices, day and 52-week ranges and volume for any symbol with no key. company_fundamentals retrieves financial statements from financialdatasets.ai with an optional key; everything else works without it. finance_board reads the Finance tab; finance_watchlist_add / finance_watchlist_remove, finance_note_add / finance_note_update / finance_note_delete, and finance_position_add / finance_position_close / finance_position_delete write it. If the user runs their own stock scanner, picker_status/picker_start/picker_scan/picker_top_picks drive it and record_trade/list_trades keep their trade history. holding_sell_signals reports overbought sell signals on open lots. Reports numbers; never sizes a position and cannot place an order",
+                    "Market research and the Finance tab ledger. research_ticker reads live prices, day and 52-week ranges and volume for any symbol with no key. company_fundamentals retrieves financial statements from financialdatasets.ai with an optional key; everything else works without it. finance_board reads the Finance tab including tomorrow's pick (or an honest none) from the 15:30 ET close scan; finance_watchlist_add / finance_watchlist_remove, finance_note_add / finance_note_update / finance_note_delete, finance_position_add / finance_position_close / finance_position_delete, finance_transaction_recategorize, and finance_rsi_threshold write it. If the user runs their own stock scanner, picker_status/picker_start/picker_scan/picker_top_picks drive it and record_trade/list_trades keep their trade history. holding_sell_signals reports overbought sell signals on open lots; the Watcher delivers those. polybot_status/polybot_start/polybot_pause/polybot_scan operate the user's Polybot. Reports numbers; never sizes a position. Cannot place an order except by starting that bot",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
                 why_it_matters:
-                    "Ground any claim about a price in a real, timestamped number instead of memory — and, for a user who runs their own picking algorithm, run it and keep the record their performance is measured against.",
-                required_secrets: &[RequiredSecretDef {
-                    key: crate::market_data::FUNDAMENTALS_KEY,
-                    impact: SecretImpact::Degraded,
-                    unlocks: "Retrieves company income, balance-sheet, and cash-flow fundamentals from financialdatasets.ai.",
-                }],
+                    "Ground any claim about a price in a real, timestamped number instead of memory — and, for a user who runs their own picking algorithm or Polybot, run it and keep the record their performance is measured against.",
+                required_secrets: &[
+                    RequiredSecretDef {
+                        key: crate::market_data::FUNDAMENTALS_KEY,
+                        impact: SecretImpact::Degraded,
+                        unlocks: "Retrieves company income, balance-sheet, and cash-flow fundamentals from financialdatasets.ai.",
+                    },
+                    RequiredSecretDef {
+                        key: "POLYMARKET_API_KEY",
+                        impact: SecretImpact::Degraded,
+                        unlocks: "Lets the user's Polybot authenticate to Polymarket. Entered on the Finance tab or Settings → Search & tools; stored in the keychain.",
+                    },
+                    RequiredSecretDef {
+                        key: "POLYMARKET_API_SECRET",
+                        impact: SecretImpact::Degraded,
+                        unlocks: "Polymarket API secret for Polybot. Keychain only.",
+                    },
+                    RequiredSecretDef {
+                        key: "POLYMARKET_API_PASSPHRASE",
+                        impact: SecretImpact::Degraded,
+                        unlocks: "Polymarket API passphrase for Polybot. Keychain only.",
+                    },
+                    RequiredSecretDef {
+                        key: "POLYMARKET_WALLET_PRIVATE_KEY",
+                        impact: SecretImpact::Degraded,
+                        unlocks: "Wallet key Polybot signs orders with. Keychain only — never paste it in chat.",
+                    },
+                    RequiredSecretDef {
+                        key: "POLYMARKET_FUNDER_ADDRESS",
+                        impact: SecretImpact::Degraded,
+                        unlocks: "Polymarket funder / proxy wallet address Polybot trades through.",
+                    },
+                ],
                 teaching: &[],
                 client_factory: |ctx| Box::new(finance::FinanceClient::new(ctx).unwrap()),
             },
@@ -1019,6 +1046,9 @@ mod required_secret_tests {
         assert!(financier.required_secrets.iter().any(|secret| {
             secret.key == crate::market_data::FUNDAMENTALS_KEY
                 && secret.impact == SecretImpact::Degraded
+        }));
+        assert!(financier.required_secrets.iter().any(|secret| {
+            secret.key == "POLYMARKET_API_KEY" && secret.impact == SecretImpact::Degraded
         }));
     }
 }

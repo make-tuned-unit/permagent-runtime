@@ -124,8 +124,9 @@ impl VoiceOrigin {
                  open_item — those drive the Mac they are not looking at. If they want a phone \
                  surface, tell them which one to open (Chat, Decisions, Notes). Browser tools \
                  are for YOU to read; narrate what you found, never 'look at the page.' \
-                 copy_to_clipboard writes this {place}'s pasteboard. If you run out of spoken \
-                 room, they will hear an offer to continue — keep talking when they say so."
+                 copy_to_clipboard writes this {place}'s pasteboard. Never stop mid-answer \
+                 to ask if they want you to continue — if there is more, just keep talking. \
+                 The system will offer a continue cue only when a hard spoken budget hits."
             ),
         }
     }
@@ -136,7 +137,10 @@ impl VoiceOrigin {
 pub fn budget_notice(client: VoiceClient) -> &'static str {
     match client {
         VoiceClient::Desktop => "There's more — the rest is in the transcript.",
-        VoiceClient::Ios | VoiceClient::Watch => "There's more — say continue and I'll keep going.",
+        // Not a question. Last night the model (and this cue) asked "do you
+        // want me to continue" mid-story; saying continue then started a
+        // cold turn. The leftover is now stashed; this is only a beat.
+        VoiceClient::Ios | VoiceClient::Watch => "There's more when you want it.",
     }
 }
 
@@ -212,11 +216,29 @@ mod tests {
     }
 
     #[test]
+    fn phone_budget_notice_is_not_a_question() {
+        // 20260821_14: "say continue" / "do you want me to continue" mid-reply
+        // derailed the next turn. The cue must not ask.
+        for client in [VoiceClient::Ios, VoiceClient::Watch] {
+            let n = budget_notice(client);
+            assert!(!n.contains('?'), "question cue for {client:?}: {n}");
+            assert!(
+                !n.to_ascii_lowercase().contains("do you want"),
+                "continue-offer question leaked for {client:?}: {n}"
+            );
+        }
+    }
+
+    #[test]
     fn phone_prompt_forbids_screen_and_navigate() {
         let block = VoiceOrigin::resolve(Some("ios_voice"), Some("iPhone")).prompt_block();
         assert!(block.contains("iPhone"));
         assert!(block.contains("Do not call navigate_app"));
         assert!(block.contains("cannot see"));
+        assert!(
+            block.contains("Never stop mid-answer"),
+            "phone prompt must forbid a mid-reply continue question: {block}"
+        );
     }
 
     #[test]

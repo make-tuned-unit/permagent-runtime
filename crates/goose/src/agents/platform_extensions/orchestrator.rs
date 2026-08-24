@@ -40,6 +40,21 @@ use tokio_util::sync::CancellationToken;
 
 pub static EXTENSION_NAME: &str = "orchestrator";
 
+/// How this desk treats money. Calling The Financier's tools *is* the query —
+/// there is no separate `ask_financier` RPC, and a coding worker is the wrong
+/// hands.
+pub(crate) const FINANCE_PEER_RULE: &str = "\
+PEERS — THE FINANCIER: You have full visibility of the Finance tab \
+(observe_app finance, or the finance glance on observe_app overview; \
+navigate_app Finance). You do not own that desk. For a price, a holding, \
+a sell signal, tomorrow's pick, the ledger, household categories, the scanner, or Polybot — \
+call The Financier's tools (research_ticker, finance_board, \
+holding_sell_signals, finance_rsi_threshold, \
+finance_transaction_recategorize, picker_*, polybot_*). Never answer a \
+price or a P&L from memory. Never dispatch a goal worker for a money \
+question. A dropped statement is the Reader; then query The Financier to \
+recategorize.";
+
 struct CancelTokenGuard {
     manager: Arc<AgentManager>,
     session_id: String,
@@ -420,7 +435,9 @@ impl OrchestratorClient {
                  - No active push notifications yet: needs-attention goals surface in chat \
                  context, but there is no mobile ping or desktop notification outside the app\n\
                  - Board state is injected into context on keyword triggers and every 5 turns, \
-                 not continuously — for the freshest state, use goal_status or list_sessions",
+                 not continuously — for the freshest state, use goal_status or list_sessions\n\n"
+                    .to_string()
+                    + FINANCE_PEER_RULE,
             );
 
         let client = Self {
@@ -1267,7 +1284,7 @@ pub(crate) async fn dispatch_goal_fn(
                     model_override = Some(rm);
                 }
                 let seed = crate::cost_router::GoalEscalationState::seed(Some(assessment.tier));
-                if let Err(e) = persist_escalation_state(&pool, card_id, &seed).await {
+                if let Err(e) = persist_escalation_state(&pool, card_id, &seed, None).await {
                     tracing::warn!(
                         target: "permagentd::brain",
                         card_id,
@@ -2278,8 +2295,29 @@ impl OrchestratorClient {
                     card.title, current_state, new_state, session_id
                 ))]))
             }
-            // The remaining tier-0 lifecycle steps ARE bare transitions.
-            GoalAction::Ready | GoalAction::Review => {
+            GoalAction::Ready => {
+                goal_transition::advance_goal_checked(
+                    &pool,
+                    &card_id,
+                    action,
+                    decisions::ACTOR_SYSTEM,
+                    None,
+                    TransitionEffects::default(),
+                )
+                .await
+                .map_err(String::from)?;
+
+                self.invalidate_kanban_cache().await;
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Goal '{}' advanced: {} → {} (action: {})",
+                    card.title, current_state, new_state, action
+                ))]))
+            }
+            GoalAction::Review => {
+                if let Some(held) = maybe_hold_review(&pool, &card).await? {
+                    self.invalidate_kanban_cache().await;
+                    return Ok(CallToolResult::success(vec![Content::text(held)]));
+                }
                 goal_transition::advance_goal_checked(
                     &pool,
                     &card_id,
@@ -4532,6 +4570,14 @@ pub async fn handle_goal_completion(
                 "completed_at".to_string(),
                 serde_json::json!(chrono::Utc::now().to_rfc3339()),
             );
+            if let Some(held) = maybe_hold_review(pool, &card).await? {
+                tracing::info!(
+                    target: "permagentd::brain",
+                    goal = %card.title,
+                    "held premature done — requeued to Ready: {held}"
+                );
+                return Ok(());
+            }
             goal_transition::advance_goal_checked(
                 pool,
                 card_id,
@@ -5152,6 +5198,7 @@ async fn persist_escalation_state(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     card_id: &str,
     state: &crate::cost_router::GoalEscalationState,
+    snapshot: Option<crate::cost_router::RoutingSnapshot>,
 ) -> Result<(), String> {
     let card = cards::get_card(pool, card_id)
         .await?
@@ -5161,6 +5208,9 @@ async fn persist_escalation_state(
         crate::cost_router::ESCALATION_METADATA_KEY.to_string(),
         state.to_metadata_value(),
     );
+    if let Some(snap) = snapshot {
+        snap.write_into(&mut meta);
+    }
     let meta_str =
         serde_json::to_string(&serde_json::Value::Object(meta)).map_err(|e| e.to_string())?;
     sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
@@ -5170,6 +5220,256 @@ async fn persist_escalation_state(
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+async fn persist_card_meta(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    mut write: impl FnMut(&mut serde_json::Map<String, serde_json::Value>),
+) -> Result<(), String> {
+    let card = cards::get_card(pool, card_id)
+        .await?
+        .ok_or_else(|| format!("Card '{card_id}' not found"))?;
+    let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
+    write(&mut meta);
+    let meta_str =
+        serde_json::to_string(&serde_json::Value::Object(meta)).map_err(|e| e.to_string())?;
+    sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+        .bind(&meta_str)
+        .bind(card_id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+async fn load_session_signals(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    session_id: &str,
+) -> crate::cost_router::ToolTranscriptSignals {
+    use crate::conversation::message::{Message, MessageContent};
+    use rmcp::model::Role;
+
+    let rows: Vec<String> = match sqlx::query_scalar::<_, String>(
+        "SELECT content_json FROM messages WHERE session_id = ? ORDER BY created_timestamp, id",
+    )
+    .bind(session_id)
+    .fetch_all(pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => return crate::cost_router::ToolTranscriptSignals::default(),
+    };
+    let mut messages = Vec::new();
+    for json in rows {
+        let Ok(content) = serde_json::from_str::<Vec<MessageContent>>(&json) else {
+            continue;
+        };
+        messages.push(Message::new(Role::Assistant, 0, content));
+    }
+    crate::cost_router::extract_tool_signals_from_messages(&messages)
+}
+
+fn is_verify_tool_name(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name == "verify"
+        || name.ends_with("__verify")
+        || name.starts_with("verify_")
+        || name.contains("__verify_")
+}
+
+/// True only when a verify-named tool request has a paired, successful tool
+/// response. Plain prose, an unpaired request, an RPC error, and a
+/// `CallToolResult` carrying `is_error=true` are all non-evidence.
+fn messages_have_successful_verify(
+    messages: &[crate::conversation::message::MessageContent],
+) -> bool {
+    use crate::conversation::message::MessageContent;
+    use std::collections::HashSet;
+
+    let mut pending = HashSet::new();
+    for content in messages {
+        match content {
+            MessageContent::ToolRequest(request) => {
+                if request
+                    .tool_call
+                    .as_ref()
+                    .is_ok_and(|call| is_verify_tool_name(call.name.as_ref()))
+                {
+                    pending.insert(request.id.as_str());
+                }
+            }
+            MessageContent::ToolResponse(response) if pending.remove(response.id.as_str()) => {
+                if response
+                    .tool_result
+                    .as_ref()
+                    .is_ok_and(|result| result.is_error != Some(true))
+                {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+async fn session_had_successful_verify(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    session_id: Option<&str>,
+) -> bool {
+    let Some(sid) = session_id else {
+        return false;
+    };
+    let Ok(rows) = sqlx::query_scalar::<_, String>(
+        "SELECT content_json FROM messages WHERE session_id = ? ORDER BY created_timestamp, id",
+    )
+    .bind(sid)
+    .fetch_all(pool)
+    .await
+    else {
+        return false;
+    };
+    let contents: Vec<crate::conversation::message::MessageContent> = rows
+        .iter()
+        .filter_map(|json| {
+            serde_json::from_str::<Vec<crate::conversation::message::MessageContent>>(json).ok()
+        })
+        .flatten()
+        .collect();
+    messages_have_successful_verify(&contents)
+}
+
+/// Hold a premature InProgress → Review. `None` means allow the transition.
+async fn maybe_hold_review(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+) -> Result<Option<String>, String> {
+    let meta = card.metadata_json.as_object().cloned().unwrap_or_default();
+    let role = meta
+        .get("workflow_role")
+        .and_then(|v| v.as_str())
+        .and_then(crate::cost_router::WorkflowRole::from_tag)
+        .unwrap_or(crate::cost_router::WorkflowRole::Mechanical);
+    let session_id = meta.get("worker_session_id").and_then(|v| v.as_str());
+    let live = if let Some(sid) = session_id {
+        load_session_signals(pool, sid).await
+    } else {
+        crate::cost_router::ToolTranscriptSignals::default()
+    };
+    let verify_ran = session_had_successful_verify(pool, session_id).await;
+    let signals = if live.is_quiet() {
+        crate::cost_router::RoutingSnapshot::from_metadata(&meta)
+            .map(|s| s.signals)
+            .unwrap_or_default()
+    } else {
+        live
+    };
+    let prior = crate::cost_router::HoldState::from_metadata(&meta).count;
+
+    match crate::cost_router::decide_hold(role, verify_ran, &signals, prior) {
+        crate::cost_router::HoldOutcome::Allow => Ok(None),
+        crate::cost_router::HoldOutcome::Hold {
+            inject_plan,
+            hold_count,
+        } => {
+            persist_card_meta(pool, &card.id, |m| {
+                crate::cost_router::HoldState {
+                    count: hold_count,
+                    last_plan: Some(inject_plan.clone()),
+                }
+                .write_into(m);
+                crate::cost_router::RoutingSnapshot::from_signals(
+                    &signals,
+                    Some("held — still verifying"),
+                )
+                .write_into(m);
+            })
+            .await?;
+            // The completing worker is already gone on the tracker path. Move
+            // the card back to Ready with the SAME attempt count so the normal
+            // dispatcher owns the retry. `requeue_goal` writes `last_error`,
+            // which dispatch_brief carries into the next worker's prompt; the
+            // structured HoldState above is the durable hold receipt.
+            let attempt = current_attempt_count(&card.metadata_json);
+            crate::goal_transition::requeue_goal(
+                pool,
+                &card.id,
+                crate::decisions::ACTOR_SYSTEM,
+                attempt,
+                &inject_plan,
+            )
+            .await
+            .map_err(String::from)?;
+            if let Some(kill) = take_goal_worker(&card.id) {
+                kill.kill();
+            }
+            Ok(Some(format!(
+                "Held and requeued — do not treat this as done.\n\n{inject_plan}"
+            )))
+        }
+        crate::cost_router::HoldOutcome::Park { reason } => {
+            persist_card_meta(pool, &card.id, |m| {
+                crate::cost_router::RoutingSnapshot::from_signals(&signals, Some(&reason))
+                    .write_into(m);
+            })
+            .await?;
+            if decisions::find_open_decision_for_goal(pool, &card.id, "unblock")
+                .await?
+                .is_none()
+            {
+                let headline = format!(
+                    "\"{}\" was held repeatedly and needs your direction",
+                    card.title
+                );
+                let headline: String = headline
+                    .chars()
+                    .take(decisions::MAX_HEADLINE_CHARS)
+                    .collect();
+                let payload = serde_json::to_value(decisions::UnblockPayload {
+                    reason: decisions::UnblockReason::Stuck,
+                    spent: None,
+                    cap: None,
+                })
+                .map_err(|e| e.to_string())?;
+                if let Err(error) = create_decision_with_retry(
+                    pool,
+                    decisions::NewDecision {
+                        kind: "unblock".to_string(),
+                        goal_id: Some(card.id.clone()),
+                        project_id: Some(card.project_id.clone()),
+                        headline: Some(headline),
+                        detail: Some(reason.clone()),
+                        payload,
+                        ..Default::default()
+                    },
+                )
+                .await
+                {
+                    tracing::error!(
+                        target: "permagentd::brain",
+                        goal_id = %card.id,
+                        "Repeatedly held goal could not create its unblock decision: {error}"
+                    );
+                    record_decision_create_failure(pool, &card.id, "unblock", &error).await;
+                }
+            }
+            crate::goal_transition::park_goal(
+                pool,
+                &card.id,
+                crate::decisions::ACTOR_SYSTEM,
+                &reason,
+            )
+            .await
+            .map_err(String::from)?;
+            if let Some(kill) = take_goal_worker(&card.id) {
+                kill.kill();
+            }
+            Ok(Some(format!(
+                "Parked to the Decision Inbox: {reason}. The goal is not done."
+            )))
+        }
+    }
 }
 
 /// Capture the current worker's uncommitted diff (`git diff HEAD` in the goal's
@@ -5255,6 +5555,23 @@ pub async fn escalate_verify_fix_loop(
     let verdict = crate::cost_router::budget_verdict(task_spent, spent, &budget_cfg);
     let max_escalations = crate::cost_router::load_max_escalations();
 
+    let signals = {
+        let live = load_session_signals(pool, session_id).await;
+        if live.is_quiet() {
+            crate::cost_router::extract_tool_signals(&[crate::cost_router::ToolTurn {
+                name: "verify",
+                result: verify_failure.unwrap_or(evidence),
+            }])
+        } else {
+            live
+        }
+    };
+    let consecutive = crate::cost_router::corroborating_consecutive(
+        consecutive,
+        &signals,
+        crate::cost_router::VERIFY_ESCALATE_AT,
+    );
+
     let outcome = crate::cost_router::decide_escalation(
         state.current_tier,
         state.escalations_used,
@@ -5304,7 +5621,11 @@ pub async fn escalate_verify_fix_loop(
                 new_escalations_used,
                 handoff,
             );
-            persist_escalation_state(pool, &card_id, &new_state).await?;
+            let snap = crate::cost_router::RoutingSnapshot::from_signals(
+                &signals,
+                Some("climbed after verify kept failing"),
+            );
+            persist_escalation_state(pool, &card_id, &new_state, Some(snap)).await?;
 
             // R3: ambient, non-blocking cost-transparency note (never an interrupt).
             crate::events::activity::emit_activity(crate::events::activity::goal_escalated(
@@ -5785,6 +6106,19 @@ async fn try_complete_dead_worker_from_worktree(
 mod tests {
     use super::*;
 
+    #[test]
+    fn orchestrator_queries_the_financier_instead_of_inventing_prices() {
+        assert!(FINANCE_PEER_RULE.contains("THE FINANCIER"));
+        assert!(FINANCE_PEER_RULE.contains("observe_app"));
+        assert!(FINANCE_PEER_RULE.contains("research_ticker"));
+        assert!(FINANCE_PEER_RULE.contains("tomorrow's pick"));
+        assert!(FINANCE_PEER_RULE.contains("Never dispatch a goal worker for a money"));
+        assert!(
+            !FINANCE_PEER_RULE.contains("ask_financier"),
+            "there is no ask_financier tool — calling Financier tools is the query"
+        );
+    }
+
     // ── inherited_sub_session_mode (re-enable-gate epic part B) ─────────────
 
     #[test]
@@ -6250,8 +6584,149 @@ mod tests {
         .unwrap()
     }
 
-    /// Stamp a goal card with the running worker's session id (what dispatch
-    /// records), so the runaway-loop escalation can map session → goal.
+    async fn append_tool_message(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        session_id: &str,
+        role: &str,
+        content: crate::conversation::message::MessageContent,
+    ) {
+        let content_json = serde_json::to_string(&vec![content]).unwrap();
+        sqlx::query(
+            "INSERT INTO messages (message_id, session_id, role, content_json, created_timestamp) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(session_id)
+        .bind(role)
+        .bind(content_json)
+        .bind(chrono::Utc::now().timestamp())
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn stamp_verify_exchange(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        card_id: &str,
+        successful: bool,
+    ) {
+        use crate::conversation::message::MessageContent;
+        use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
+
+        let session_id = format!("verify-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, '/tmp')")
+            .bind(&session_id)
+            .execute(pool)
+            .await
+            .unwrap();
+        stamp_worker_session(pool, card_id, &session_id).await;
+        let call_id = format!("call-{}", uuid::Uuid::new_v4());
+        append_tool_message(
+            pool,
+            &session_id,
+            "assistant",
+            MessageContent::tool_request(
+                &call_id,
+                Ok(CallToolRequestParams::new("developer__verify")),
+            ),
+        )
+        .await;
+        let result = if successful {
+            CallToolResult::success(vec![Content::text("all checks passed")])
+        } else {
+            CallToolResult::error(vec![Content::text("checks failed")])
+        };
+        append_tool_message(
+            pool,
+            &session_id,
+            "user",
+            MessageContent::tool_response(&call_id, Ok(result)),
+        )
+        .await;
+    }
+
+    async fn stamp_successful_verify(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str) {
+        stamp_verify_exchange(pool, card_id, true).await;
+    }
+
+    fn verify_exchange(successful: bool) -> Vec<crate::conversation::message::MessageContent> {
+        use crate::conversation::message::MessageContent;
+        use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
+
+        let result = if successful {
+            CallToolResult::success(vec![Content::text("all checks passed")])
+        } else {
+            CallToolResult::error(vec![Content::text("checks failed")])
+        };
+        vec![
+            MessageContent::tool_request(
+                "verify-call",
+                Ok(CallToolRequestParams::new("developer__verify")),
+            ),
+            MessageContent::tool_response("verify-call", Ok(result)),
+        ]
+    }
+
+    #[test]
+    fn prose_containing_verify_is_not_verification_evidence() {
+        let contents = vec![crate::conversation::message::MessageContent::text(
+            "I will verify this later",
+        )];
+        assert!(!messages_have_successful_verify(&contents));
+    }
+
+    #[test]
+    fn failed_verify_response_is_not_verification_evidence() {
+        assert!(!messages_have_successful_verify(&verify_exchange(false)));
+    }
+
+    #[test]
+    fn paired_successful_verify_response_is_verification_evidence() {
+        assert!(messages_have_successful_verify(&verify_exchange(true)));
+    }
+
+    #[tokio::test]
+    async fn failed_verify_exchange_requeues_instead_of_reviewing() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_verify_exchange(&pool, &card.id, false).await;
+
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
+            .await
+            .unwrap();
+        let after = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &after.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(col.state_binding.as_deref(), Some("ready"));
+    }
+
+    #[tokio::test]
+    async fn successful_verify_from_prior_worker_session_is_not_reused() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_successful_verify(&pool, &card.id).await;
+
+        let current_session = format!("current-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, '/tmp')")
+            .bind(&current_session)
+            .execute(&pool)
+            .await
+            .unwrap();
+        stamp_worker_session(&pool, &card.id, &current_session).await;
+
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
+            .await
+            .unwrap();
+        let after = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &after.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(col.state_binding.as_deref(), Some("ready"));
+    }
+
     async fn stamp_worker_session(
         pool: &sqlx::Pool<sqlx::Sqlite>,
         card_id: &str,
@@ -6451,6 +6926,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn verify_loop_corroborated_signals_fire_below_raw_threshold() {
+        // One verify fail plus hard-failure evidence must corroborate up to
+        // VERIFY_ESCALATE_AT so the existing park/swap path can fire — signals
+        // never authorize a climb alone (consecutive=0 still no-ops).
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_worker_session(&pool, &card.id, "sess-verify").await;
+
+        escalate_verify_fix_loop(
+            &pool,
+            "sess-verify",
+            1,
+            "quiet notes",
+            Some("FAILED tests/foo.rs: assertion failed"),
+        )
+        .await
+        .unwrap();
+
+        let after = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &after.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("failed"),
+            "corroborated verify fail must take the live escalate path"
+        );
+        assert_eq!(open_unblock_count(&pool, &card.id).await, 1);
+    }
+
+    #[tokio::test]
     async fn verify_loop_noop_for_unknown_session() {
         let pool = test_pool().await;
         let _card = setup_goal_in_state(&pool, "in_progress", 1).await;
@@ -6474,7 +6981,7 @@ mod tests {
             1,
             "prior diff + verify failure".to_string(),
         );
-        persist_escalation_state(&pool, &card.id, &state)
+        persist_escalation_state(&pool, &card.id, &state, None)
             .await
             .unwrap();
 
@@ -6499,6 +7006,7 @@ mod tests {
     async fn completion_success_moves_to_review() {
         let pool = test_pool().await;
         let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_successful_verify(&pool, &card.id).await;
 
         handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
             .await
@@ -6515,6 +7023,99 @@ mod tests {
             Some("review")
         );
         assert!(updated.metadata_json.get("completed_at").is_some());
+    }
+
+    #[tokio::test]
+    async fn completion_without_verify_requeues_with_plan_and_preserves_attempt() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
+            .await
+            .unwrap();
+
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("ready"),
+            "ownerless held work must return to the dispatcher"
+        );
+        assert_eq!(updated.metadata_json["attempt_count"], 1);
+        assert!(
+            updated.metadata_json.get("hold_done").is_some(),
+            "hold state must persist on the card"
+        );
+        let plan = updated.metadata_json["hold_done"]["last_plan"]
+            .as_str()
+            .expect("held plan");
+        assert_eq!(updated.metadata_json["last_error"], plan);
+        let project = crate::projects::get_project(&pool, &card.project_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let retry = crate::agents::platform_extensions::dispatch_brief::retry_context_block(
+            &updated, &project,
+        )
+        .expect("ready retry carries hold plan");
+        assert!(retry.contains(plan));
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &card.id, "approve_review")
+                .await
+                .unwrap()
+                .is_none(),
+            "held work must not toast a review decision"
+        );
+    }
+
+    async fn force_goal_in_progress(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str) {
+        let card = cards::get_card(pool, card_id).await.unwrap().unwrap();
+        let col = cards::get_goal_column(pool, &card.project_id, "in_progress")
+            .await
+            .unwrap()
+            .unwrap();
+        sqlx::query(
+            "UPDATE cards SET column_id = ?, metadata_json = json_set(metadata_json, '$.goal_state', 'in_progress') WHERE id = ?",
+        )
+        .bind(col.id)
+        .bind(card_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn repeated_premature_done_parks_after_max_holds() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+
+        for expected_count in 1..=crate::cost_router::MAX_HOLDS {
+            handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
+                .await
+                .unwrap();
+            let held = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+            assert_eq!(
+                held.metadata_json[crate::cost_router::HOLD_METADATA_KEY]["count"],
+                expected_count
+            );
+            assert_eq!(held.metadata_json["attempt_count"], 1);
+            force_goal_in_progress(&pool, &card.id).await;
+        }
+
+        handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
+            .await
+            .unwrap();
+        let parked = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert_eq!(parked.metadata_json["needs_human_attention"], true);
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 
     /// Layer 1: when the tracker has persisted `dispatch_evidence`, the
@@ -6548,6 +7149,7 @@ mod tests {
         )
         .await
         .unwrap();
+        stamp_successful_verify(&pool, &card.id).await;
 
         handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
             .await
@@ -6599,6 +7201,7 @@ mod tests {
     async fn completion_success_without_evidence_uses_base_detail() {
         let pool = test_pool().await;
         let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_successful_verify(&pool, &card.id).await;
 
         handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
             .await
@@ -6643,6 +7246,7 @@ mod tests {
 
         // Success path fires it after the Review move.
         let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_successful_verify(&pool, &card.id).await;
         handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
             .await
             .unwrap();
@@ -6988,6 +7592,7 @@ mod tests {
     async fn completion_success_creates_approve_review_decision() {
         let pool = test_pool().await;
         let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        stamp_successful_verify(&pool, &card.id).await;
 
         handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
             .await
@@ -7014,6 +7619,7 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+        stamp_successful_verify(&pool, &card.id).await;
 
         handle_goal_completion(&pool, &card.id, &card.project_id, Ok(()))
             .await
@@ -7431,6 +8037,25 @@ mod tests {
         )
         .await
         .unwrap();
+
+        // Recovery may trust only the same typed evidence as the live
+        // completion path. The session is absent from the in-process manager
+        // (therefore dead) but its persisted verify exchange remains auditable.
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, ?)")
+            .bind(session_id)
+            .bind(repo.to_string_lossy().as_ref())
+            .execute(&pool)
+            .await
+            .unwrap();
+        for (index, content) in verify_exchange(true).into_iter().enumerate() {
+            append_tool_message(
+                &pool,
+                session_id,
+                if index == 0 { "assistant" } else { "user" },
+                content,
+            )
+            .await;
+        }
 
         // Dead session (no manager) — but committed work exists → route to Review.
         resume_single_goal(&pool, &None, &card.id, &project.id)

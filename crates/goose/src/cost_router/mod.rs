@@ -41,13 +41,16 @@ pub mod budget;
 pub mod cache;
 pub mod cheap;
 pub mod escalation;
+pub mod hold_done;
 pub mod knowledge;
 pub mod mesh;
 pub mod packs;
 pub mod recommend;
 pub mod review_gate;
 pub mod role_map;
+pub mod snapshot;
 pub mod tier;
+pub mod tool_signals;
 
 pub use assess::{assess_goal, Assessment};
 pub use best_of_n::{
@@ -72,6 +75,7 @@ pub use escalation::{
     tier_for_workflow_role, workflow_role_for_tier, EscalationOutcome, GoalEscalationState,
     ParkReason, ESCALATION_METADATA_KEY, MAX_ESCALATIONS_DEFAULT,
 };
+pub use hold_done::{decide_hold, HoldOutcome, HoldState, HOLD_METADATA_KEY, MAX_HOLDS};
 pub use knowledge::{lookup as lookup_model_knowledge, ModelKnowledge, KNOWN_MODELS};
 pub use mesh::{
     gate as mesh_gate, MeshGateInputs, MeshIneligible, MeshRoute, MeshWorkload, PoolHealth,
@@ -94,9 +98,14 @@ pub use role_map::{
     cache_guard_should_warn, clear_role_model, configured as configured_role_models, derive_role,
     mappings_to_persist, resolve_role_model, role_model, set_role_model, RoleModel,
 };
+pub use snapshot::{RoutingSnapshot, ROUTING_SNAPSHOT_KEY};
 pub use tier::{
     classify, minimum_tier, next_after, Attempt, Next, TaskClass, TaskSignals, Tier,
     VerifyEscalation, VerifyEscalationAction, VERIFY_ESCALATE_AT,
+};
+pub use tool_signals::{
+    corroborates_verify_climb, corroborating_consecutive, extract as extract_tool_signals,
+    extract_from_messages as extract_tool_signals_from_messages, ToolTranscriptSignals, ToolTurn,
 };
 
 /// Self-knowledge descriptor for the **cost optimizer** (#714/#717/#720) — the
@@ -127,8 +136,10 @@ pub const COST_OPTIMIZER_FEATURE: crate::agents::self_knowledge::FeatureDescript
              by the wording of the goal's own title and description, which can only route it \
              cheaper. Simple work starts cheap; a \
              verify failure climbs the configured escalation ladder carrying the prior \
-             attempt's diff, and the user can pin a tier explicitly with metadata.tier on the \
-             goal. Worker selection ranks by real marginal cost (local free, then flat-rate \
+             attempt's diff — harness tool transcripts (severity, spinning) corroborate a climb \
+             but never swap the interactive main-loop model on their own — and the user can \
+             pin a tier explicitly with metadata.tier on the goal. The routing snapshot on \
+             each goal card and the Build cost meter is the receipt. Worker selection ranks by real marginal cost (local free, then flat-rate \
              subscription CLIs, then metered APIs) and goal_advance's worker parameter pins a \
              named worker outright — a pin is honoured or refused loudly, never silently \
              rerouted. A live cost meter is always on — a cache-aware, single-source running \

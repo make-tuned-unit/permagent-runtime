@@ -226,9 +226,20 @@ targets:
     type: bundle.unit-test
     platform: iOS
     sources:
+      # EVERY file under test must be listed HERE. This target deliberately
+      # does not depend on the app target, so a new test file is picked up by
+      # the PermagentMobileTests glob above while its SUBJECT is not — and the
+      # build fails with "cannot find X in scope" in CI only. The committed
+      # .xcodeproj is not the check: CI runs `xcodegen generate` first, so a
+      # pbxproj that already references the file (as Xcode writes it locally)
+      # is regenerated away. This list is the source of truth.
       - path: PermagentMobileTests
       - path: PermagentMobile/VoiceVAD.swift
       - path: PermagentMobile/VoiceAudioRoute.swift
+      # The orb's motion targets and the silent-idle classifier — both
+      # Foundation-only, so they belong here rather than in a UI test.
+      - path: PermagentMobile/VoiceIdle.swift
+      - path: PermagentMobile/VoiceOrbDrive.swift
       - path: PermagentMobile/VoiceClipboard.swift
       - path: PermagentMobile/ChatStream.swift
       # The meeting recorder's durable queue. Foundation-only on purpose, so

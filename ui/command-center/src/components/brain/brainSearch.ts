@@ -10,6 +10,8 @@ export interface BrainSearchResult {
   score: number;
   timestamp: string;
   session_id?: string | null;
+  layer?: string | null;
+  why?: string | null;
 }
 
 export interface BrainSearchResponse {
@@ -33,6 +35,8 @@ export function searchResultToGraphMemory(result: BrainSearchResult): GraphMemor
     age: ageFromTimestamp(result.timestamp),
     weight: Math.min(1, Math.max(0, result.score)),
     timestamp: result.timestamp,
+    layer: result.layer ?? null,
+    why: result.why ?? null,
   };
 }
 

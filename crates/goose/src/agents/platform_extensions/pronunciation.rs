@@ -71,11 +71,9 @@ impl PronunciationClient {
             )
         })?;
         if !resp.status().is_success() {
-            return Err(format!(
-                "NOT SAVED — pronunciation save rejected: {}. Tell the user the word was not \
-                 learned; do not claim it was.",
-                resp.status()
-            ));
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(rejected_save_message(status.as_u16(), &body));
         }
         // Read the confirmation back off the store's own response rather than
         // echoing the request. The point of the read-back is that the model can
@@ -107,6 +105,37 @@ impl PronunciationClient {
     }
 }
 
+/// The 400 body is the only guidance the user (and the model) get. Swallowing
+/// it — we used to return just `400 Bad Request` — is why last night's eight
+/// refused saves (`speth`, `ayn`) produced retries with no hint of what would
+/// work.
+fn rejected_save_message(status: u16, body: &str) -> String {
+    let detail = {
+        let trimmed = body.trim();
+        if trimmed.is_empty() {
+            format!("HTTP {status}")
+        } else {
+            // Axum ErrorResponse is often `{"error":"..."}` — unwrap so the
+            // model reads the phoneme sentence, not a JSON blob.
+            serde_json::from_str::<serde_json::Value>(trimmed)
+                .ok()
+                .and_then(|v| {
+                    v.get("error")
+                        .or_else(|| v.get("message"))
+                        .and_then(|m| m.as_str())
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or_else(|| trimmed.to_string())
+        }
+    };
+    format!(
+        "NOT SAVED — pronunciation save rejected ({status}): {detail}. \
+         Tell the user the exact part that failed and a respelling made of \
+         ordinary English words that sound the same (e.g. 'else peth' not \
+         'el speth', 'pride in' not 'pride ayn'). Do not claim it was learned."
+    )
+}
+
 impl PronunciationClient {
     pub(crate) fn get_tools() -> Vec<Tool> {
         // No `ipa` parameter, deliberately. It used to be required, and it could
@@ -126,7 +155,7 @@ impl PronunciationClient {
                 },
                 "sounds_like": {
                     "type": "string",
-                    "description": "The word respelled as REAL ENGLISH WORDS separated by spaces. Every part must be a word that exists, because the speech engine looks each one up — an invented syllable gets spelled out letter by letter and the save is refused. Good: 'prop tech', 'co working', 'per ma gent', 'ess cue light'. Bad: invented syllables ('jent', 'ment'), IPA symbols, hyphens, or capitals for stress ('PER-ma-jent'). If a save is refused, swap the offending part for a real word that sounds the same."
+                    "description": "The word or name respelled so speech can say it. Prefer REAL English words separated by spaces or hyphens: 'prop tech', 'else peth' (Elspeth), 'tear un' (Taran), 'bar tea' (Barty). Hyphens are fine. Invented junk ('jent') is still refused. Never IPA. If a save is refused, swap the offending part for a real word or a name syllable that sounds the same."
                 }
             },
             "required": ["word", "sounds_like"]
@@ -136,18 +165,18 @@ impl PronunciationClient {
         vec![Tool::new(
             "save_pronunciation".to_string(),
             "Save how a word is pronounced so speech says it correctly forever. CALLING THIS IS \
-             REQUIRED, NOT OPTIONAL: the moment the user tells you how a word is said, corrects \
-             your pronunciation, or winces at it, you MUST call this tool in that same turn, \
-             before you write your reply. Replying \"I'll remember that\" without calling it \
-             saves NOTHING — the correction dies with the turn and the user has to teach you the \
-             same word again, which is exactly what a promise-only answer feels like to them. A \
-             pronunciation is only learned once this tool returns. THE RULE: never spell a word \
-             out letter by letter. If you are unsure how a name will sound, ask how it is said, \
-             respell it using REAL English words, save it here, then READ BACK the respelling \
-             this tool confirms and say the word aloud so the user hears that it stuck. Give \
-             `sounds_like` only — never IPA; the speech engine derives the phonemes itself. A \
-             refused save means one of your parts is not a real word: swap it for one that \
-             sounds the same and retry."
+             REQUIRED, NOT OPTIONAL: the moment the user says the name, tells you how a word \
+             is said, corrects your pronunciation, or winces at it, you MUST call this tool in \
+             that same turn, before you write your reply. If you do not know a name, STOP and \
+             ask them to say it, then listen — their next words are sounds_like. Replying \
+             \"I'll remember that\" without calling it saves NOTHING — the correction dies \
+             with the turn and the user has to teach you the same word again, which is exactly \
+             what a promise-only answer feels like to them. A pronunciation is only learned \
+             once this tool returns. THE RULE: never spell a word out letter by letter. Give \
+             `sounds_like` only — never IPA; the speech engine derives the phonemes itself. \
+             Then READ BACK the respelling this tool confirms and say the word aloud so they \
+             hear that it stuck. A refused save means one of your parts is not a real word: \
+             swap it for one that sounds the same and retry."
                 .to_string(),
             schema,
         )]
@@ -313,6 +342,26 @@ mod tests {
     /// to save "word + sounds-like + IPA" long after the `ipa` parameter was
     /// deliberately removed, because authoring IPA you cannot hear is not
     /// something a model can be right about. No surface may ask for it again.
+    #[test]
+    fn a_refused_save_forwards_the_phoneme_reason_not_just_the_status() {
+        let msg = rejected_save_message(
+            400,
+            r#"{"error":"the respelling 'el speth' contains a part that speech cannot pronounce and would spell out letter by letter: speth"}"#,
+        );
+        assert!(
+            msg.contains("speth"),
+            "the offending syllable must reach the model: {msg}"
+        );
+        assert!(
+            msg.contains("else peth"),
+            "a worked example of what would save must be in the error: {msg}"
+        );
+        assert!(
+            msg.contains("NOT SAVED"),
+            "must still forbid claiming the word was learned: {msg}"
+        );
+    }
+
     #[test]
     fn no_guidance_surface_asks_for_ipa() {
         let schema_has_ipa = PronunciationClient::get_tools()[0]

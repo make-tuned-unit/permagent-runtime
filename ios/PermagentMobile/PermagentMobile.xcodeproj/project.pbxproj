@@ -18,11 +18,6 @@
 		0CD59DA1B934C4B413721DE0 /* WatchHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 204239DAF319855936001BD3 /* WatchHomeView.swift */; };
 		0D26764FC37DAB074436E259 /* mobius_40.webp in Resources */ = {isa = PBXBuildFile; fileRef = 97D9644DF105F1726FC52DEA /* mobius_40.webp */; };
 		0D8A364D8FC9A0D197FD6F88 /* VoiceOrbView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FEED3E5A9B281991FABC481 /* VoiceOrbView.swift */; };
-		A011C0DE00000000B01D0001 /* AppRoute.swift in Sources */ = {isa = PBXBuildFile; fileRef = A011C0DE00000000A00E0001 /* AppRoute.swift */; };
-		A011C0DE00000000B01D0002 /* TalkToAgentIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A011C0DE00000000A00E0002 /* TalkToAgentIntent.swift */; };
-		A011C0DE00000000C02C0001 /* AppRoute.swift in Sources */ = {isa = PBXBuildFile; fileRef = A011C0DE00000000A00E0001 /* AppRoute.swift */; };
-		A011C0DE00000000C02C0002 /* TalkToAgentIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A011C0DE00000000A00E0002 /* TalkToAgentIntent.swift */; };
-		B73C63B88616B56F42522D85 /* VoiceOrbView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FEED3E5A9B281991FABC481 /* VoiceOrbView.swift */; };
 		0DC331DC4C098CF8959D7545 /* JetBrainsMono-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = D10A4D843A64C8C92883D729 /* JetBrainsMono-Regular.ttf */; };
 		0F77D5464AEDEBB583942494 /* JetBrainsMono-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = D10A4D843A64C8C92883D729 /* JetBrainsMono-Regular.ttf */; };
 		11FCF69481F74733BC03E04D /* AgentIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF0D5D72E70CE12B1E837D71 /* AgentIdentity.swift */; };
@@ -34,6 +29,7 @@
 		153EEEC9ED7721E03EDBDB9C /* mobius_54.webp in Resources */ = {isa = PBXBuildFile; fileRef = 966500083B24ACE71ABBD8AD /* mobius_54.webp */; };
 		18C8550473BEAB1056D2D2CD /* mobius_66.webp in Resources */ = {isa = PBXBuildFile; fileRef = 5241FED37E727F70D96EF7AA /* mobius_66.webp */; };
 		1A656D43C34F0C4D96FB2174 /* Inter-OFL.txt in Resources */ = {isa = PBXBuildFile; fileRef = D047DD5EB0226F5C108BE2DD /* Inter-OFL.txt */; };
+		1F2037FA1C179A80A8304D95 /* TalkToAgentIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7163912C0C1992977ED3F8F /* TalkToAgentIntent.swift */; };
 		1F8650FB75C6D229EB6027C9 /* JetBrainsMono-OFL.txt in Resources */ = {isa = PBXBuildFile; fileRef = DA47FF553E92344005395D59 /* JetBrainsMono-OFL.txt */; };
 		21DB5E476BEF8CF743019643 /* WatchBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCB035E6A98D76903318959E /* WatchBridge.swift */; };
 		233E3331E251FC62C9167DBD /* mobius_65.webp in Resources */ = {isa = PBXBuildFile; fileRef = 6BA8E11A706A9BB0AA4D27D7 /* mobius_65.webp */; };
@@ -46,6 +42,7 @@
 		26FF42BE3E2686B1334C0478 /* mobius_64.webp in Resources */ = {isa = PBXBuildFile; fileRef = E07480822E8FEE2A898A2605 /* mobius_64.webp */; };
 		270A3871444AA1ED4CAE4E76 /* mobius_16.webp in Resources */ = {isa = PBXBuildFile; fileRef = F887F06D6DA8665F0CAE25AE /* mobius_16.webp */; };
 		272F3B99FC8FC6FFCE13ADDE /* mobius_67.webp in Resources */ = {isa = PBXBuildFile; fileRef = 820E69821F1CA3B0E87C82F3 /* mobius_67.webp */; };
+		284FF0EF52A98B32100A84D0 /* VoiceIdle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66F5167580C5CEA1594823BA /* VoiceIdle.swift */; };
 		28CE6A7BEE444F49E5CA455F /* mobius_22.webp in Resources */ = {isa = PBXBuildFile; fileRef = D71679DA3104CF09ED329EC9 /* mobius_22.webp */; };
 		2975B6383D5433EFA00F72F4 /* mobius_64.webp in Resources */ = {isa = PBXBuildFile; fileRef = E07480822E8FEE2A898A2605 /* mobius_64.webp */; };
 		2A27216ACE50A0E8643D2282 /* mobius_25.webp in Resources */ = {isa = PBXBuildFile; fileRef = E4595A217F1BC6673A61434F /* mobius_25.webp */; };
@@ -63,6 +60,7 @@
 		3BC8C5AC70FB3597D2221D26 /* mobius_69.webp in Resources */ = {isa = PBXBuildFile; fileRef = B6F0018258AE31DA3C2066AA /* mobius_69.webp */; };
 		3CC859A492AA97052054CD19 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E26A800CF1D4790CE5DA10 /* Theme.swift */; };
 		42A1D64914A2EEC2AC65F0DC /* FeaturesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A05A9CB2151AAE411F5FA801 /* FeaturesView.swift */; };
+		47E629C4A7618203D07E41BB /* VoiceIdleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3912E993F9E11DE9579D5DA2 /* VoiceIdleTests.swift */; };
 		48309068ADD469D36F4A11F6 /* WatchRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7EF886D29687F28A5C42F89 /* WatchRelay.swift */; };
 		4904E55910E1289BBA612900 /* mobius_61.webp in Resources */ = {isa = PBXBuildFile; fileRef = A2929017C0AB57BB453FE479 /* mobius_61.webp */; };
 		4A97D4B90394BE305751C889 /* mobius_28.webp in Resources */ = {isa = PBXBuildFile; fileRef = F2E74815A78063D762CFA02A /* mobius_28.webp */; };
@@ -81,6 +79,7 @@
 		5B30E073BB2ECAB6E33164B1 /* AgentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0EDD200AC9AB1D53EB3754 /* AgentsView.swift */; };
 		5C4EA5781B7412D7C742223F /* mobius_29.webp in Resources */ = {isa = PBXBuildFile; fileRef = F6C7E6718CD9980470FB3A90 /* mobius_29.webp */; };
 		5DACE5C30A67AB589D464C2F /* mobius_25.webp in Resources */ = {isa = PBXBuildFile; fileRef = E4595A217F1BC6673A61434F /* mobius_25.webp */; };
+		5F2DAB5D6FE78F46B8ECF68D /* VoiceIdle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66F5167580C5CEA1594823BA /* VoiceIdle.swift */; };
 		5FFC587EE2879794404CD491 /* JetBrainsMono-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = D0BB820907A45AEF52B8EF66 /* JetBrainsMono-Medium.ttf */; };
 		63D52A107191E394A678E0E9 /* mobius_33.webp in Resources */ = {isa = PBXBuildFile; fileRef = A344629E2ADF70E9DAC9675C /* mobius_33.webp */; };
 		64C3A4C5C1BCD9D5690F823C /* mobius_46.webp in Resources */ = {isa = PBXBuildFile; fileRef = 8371B38D78B810EDE35E0120 /* mobius_46.webp */; };
@@ -92,12 +91,17 @@
 		6805EE14D524EECC61DD0FD8 /* mobius_15.webp in Resources */ = {isa = PBXBuildFile; fileRef = CEC021DE8FB3CC7E8C84F947 /* mobius_15.webp */; };
 		684E0A1BD2C5EECEDF9A4390 /* Manrope-ExtraBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = C5EE1883E26DB1BBB2207242 /* Manrope-ExtraBold.ttf */; };
 		68CFB9F85D6A2268E307238D /* mobius_13.webp in Resources */ = {isa = PBXBuildFile; fileRef = 3D71A28310BFC06A57F5C545 /* mobius_13.webp */; };
+		6A3BB4A07F35C86B6D1A61EE /* VoiceAudioRoute.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE48F560CD9EF78FE2426709 /* VoiceAudioRoute.swift */; };
 		6A99352AA4544CCCE87F62AC /* mobius_30.webp in Resources */ = {isa = PBXBuildFile; fileRef = F69A3E36CE477B9F8F117D5E /* mobius_30.webp */; };
 		6B8EEC13095E9F2F6C02965A /* mobius_62.webp in Resources */ = {isa = PBXBuildFile; fileRef = D5FC5C685CBD279DABF0DF1D /* mobius_62.webp */; };
 		7252CEB45C5C6557601BB12A /* mobius_31.webp in Resources */ = {isa = PBXBuildFile; fileRef = A50E726E7A7F3E738039E437 /* mobius_31.webp */; };
 		74121FE658DFF52EFD481487 /* MobiusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E42505E2B61F537431E47F2D /* MobiusView.swift */; };
+		741BE5AD00A14F1204CF1E7E /* AppRoute.swift in Sources */ = {isa = PBXBuildFile; fileRef = A177DAA80FF4D08BDDF21F17 /* AppRoute.swift */; };
 		74B9A7058C0A3750BD79AB6F /* mobius_49.webp in Resources */ = {isa = PBXBuildFile; fileRef = F8C47FA510F5D3DD93D73CC3 /* mobius_49.webp */; };
 		7725245CC5115181ABD8F970 /* Inter-OFL.txt in Resources */ = {isa = PBXBuildFile; fileRef = D047DD5EB0226F5C108BE2DD /* Inter-OFL.txt */; };
+		785B62280BF3739F07F72D01 /* AppRoute.swift in Sources */ = {isa = PBXBuildFile; fileRef = A177DAA80FF4D08BDDF21F17 /* AppRoute.swift */; };
+		7899B4D912822426A2C06F81 /* TalkToAgentIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7163912C0C1992977ED3F8F /* TalkToAgentIntent.swift */; };
+		791E1E2AB1B5FBA04B9907AB /* VoiceOrbDriveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06F195489181E31E2D30538D /* VoiceOrbDriveTests.swift */; };
 		796E8BC7637EBA4F5FF38E1B /* mobius_15.webp in Resources */ = {isa = PBXBuildFile; fileRef = CEC021DE8FB3CC7E8C84F947 /* mobius_15.webp */; };
 		79EF67298C7F75AB03541663 /* mobius_70.webp in Resources */ = {isa = PBXBuildFile; fileRef = F4403DC20C2D5999DD1B1673 /* mobius_70.webp */; };
 		7AF0CE0C73670546A69A658E /* mobius_45.webp in Resources */ = {isa = PBXBuildFile; fileRef = 5834485AF6815A993EAB8246 /* mobius_45.webp */; };
@@ -115,6 +119,7 @@
 		801487591ADCB3D63F3864A1 /* mobius_35.webp in Resources */ = {isa = PBXBuildFile; fileRef = 952108923C1510E5569EDF9A /* mobius_35.webp */; };
 		80B15C16D322544301287066 /* MobiusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E42505E2B61F537431E47F2D /* MobiusView.swift */; };
 		831E82FFAA0BC3E001164146 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8694CAB5B48EE233EE1B6617 /* APIClient.swift */; };
+		838BFE5C475130AF1DC78876 /* VoiceOrbDrive.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1155CC652ABB7AE0FF3AE807 /* VoiceOrbDrive.swift */; };
 		84D0B916B79467B77415AE31 /* mobius_10.webp in Resources */ = {isa = PBXBuildFile; fileRef = F82C05C7BEEFCC8963722708 /* mobius_10.webp */; };
 		84EB796AE9D82CB9F6D54188 /* mobius_72.webp in Resources */ = {isa = PBXBuildFile; fileRef = F83E5EC31CC02070F9A63CAC /* mobius_72.webp */; };
 		876785D1618F76B9F5A8681D /* mobius_74.webp in Resources */ = {isa = PBXBuildFile; fileRef = 92F5A8A5633ED54576A243D3 /* mobius_74.webp */; };
@@ -157,6 +162,7 @@
 		A57887BA28EE1E3391A419BC /* mobius_04.webp in Resources */ = {isa = PBXBuildFile; fileRef = 141797575D3BC8ECCADD6937 /* mobius_04.webp */; };
 		A76ADFD15BD70C0153E1CEA8 /* mobius_58.webp in Resources */ = {isa = PBXBuildFile; fileRef = 79BB7C24CB5A54725466E6A0 /* mobius_58.webp */; };
 		A84040B16F38E216D33963BE /* Manrope-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 55192CC5445F1262DDA99454 /* Manrope-Bold.ttf */; };
+		A8D51BBFC267E33C888276AE /* VoiceAudioRouteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 957EDF882E6F3C9CAECC8537 /* VoiceAudioRouteTests.swift */; };
 		A8F5B573CA79A423EF3D89FD /* mobius_22.webp in Resources */ = {isa = PBXBuildFile; fileRef = D71679DA3104CF09ED329EC9 /* mobius_22.webp */; };
 		A8FDA686C165C53309E3F1A1 /* mobius_41.webp in Resources */ = {isa = PBXBuildFile; fileRef = C52D8A69FE2C8DF32AC11D60 /* mobius_41.webp */; };
 		A9AA44DD7E6A07B6BE6EC50D /* mobius_37.webp in Resources */ = {isa = PBXBuildFile; fileRef = 9194A1942B76D48DFDDC4F52 /* mobius_37.webp */; };
@@ -169,12 +175,10 @@
 		AEC2A0E2E93851490589AB8B /* mobius_41.webp in Resources */ = {isa = PBXBuildFile; fileRef = C52D8A69FE2C8DF32AC11D60 /* mobius_41.webp */; };
 		AFB6BB1F697DACA503E884C3 /* mobius_59.webp in Resources */ = {isa = PBXBuildFile; fileRef = 17E73AFCDABF4A8BEEE0B1D6 /* mobius_59.webp */; };
 		B0570476C958B90117299FA2 /* Manrope-ExtraBold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = C5EE1883E26DB1BBB2207242 /* Manrope-ExtraBold.ttf */; };
+		B1CDE4D73FB929D4F62EF448 /* VoiceAudioRoute.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE48F560CD9EF78FE2426709 /* VoiceAudioRoute.swift */; };
 		B30CFC17F4FE411C9F494552 /* mobius_43.webp in Resources */ = {isa = PBXBuildFile; fileRef = EE1056C318BBC7C0F5755D94 /* mobius_43.webp */; };
 		B4549FC45562D1ACB58CB061 /* mobius_11.webp in Resources */ = {isa = PBXBuildFile; fileRef = 79B624DD50B28C932A809D4D /* mobius_11.webp */; };
 		B579F2361368D7C62FF7B48F /* VoiceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4BD3E1B6A179219E2AC1FDD /* VoiceView.swift */; };
-		A011C0DE00000000E01D0002 /* VoiceAudioRoute.swift in Sources */ = {isa = PBXBuildFile; fileRef = A011C0DE00000000E01D0001 /* VoiceAudioRoute.swift */; };
-		A011C0DE00000000E01D0003 /* VoiceAudioRoute.swift in Sources */ = {isa = PBXBuildFile; fileRef = A011C0DE00000000E01D0001 /* VoiceAudioRoute.swift */; };
-		A011C0DE00000000E01D0005 /* VoiceAudioRouteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A011C0DE00000000E01D0004 /* VoiceAudioRouteTests.swift */; };
 		B5C6E18DF7EBBB4E22DA6345 /* mobius_31.webp in Resources */ = {isa = PBXBuildFile; fileRef = A50E726E7A7F3E738039E437 /* mobius_31.webp */; };
 		B6DD907A727FE746A2750E11 /* mobius_71.webp in Resources */ = {isa = PBXBuildFile; fileRef = 9DB85BFD1C09686A08BB5040 /* mobius_71.webp */; };
 		B73C63B88616B56F42522D85 /* VoiceOrbView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FEED3E5A9B281991FABC481 /* VoiceOrbView.swift */; };
@@ -222,6 +226,7 @@
 		E2F92C125DDE2D99E40123D8 /* VoiceVAD.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EEE1C8D68C52C00634826E5 /* VoiceVAD.swift */; };
 		E446300D7BCEB7C17695ACA6 /* MeetingQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = E02F592311BD44E2348A4ED1 /* MeetingQueue.swift */; };
 		E48B5CE5408A4D1FBA88858E /* mobius_08.webp in Resources */ = {isa = PBXBuildFile; fileRef = 0884AF18F290B54074BF357F /* mobius_08.webp */; };
+		E63EF38154D13A324D2319DC /* VoiceOrbDrive.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1155CC652ABB7AE0FF3AE807 /* VoiceOrbDrive.swift */; };
 		E73B2BD17DB2CE2B88B627B0 /* mobius_32.webp in Resources */ = {isa = PBXBuildFile; fileRef = DFD325F2AFCC1504F4FADE8C /* mobius_32.webp */; };
 		E7443621280D39788C3B75AA /* ControlHub.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4002AFFA392F4F378F587763 /* ControlHub.swift */; };
 		E9884C316E6EB09C40430A4B /* mobius_18.webp in Resources */ = {isa = PBXBuildFile; fileRef = 5A4C5B0C5522D3A318BD30E3 /* mobius_18.webp */; };
@@ -273,16 +278,16 @@
 		01AACB1FBD851BA34EE1ED9D /* mobius_19.webp */ = {isa = PBXFileReference; path = mobius_19.webp; sourceTree = "<group>"; };
 		032DBBA07506A4CB030698CA /* mobius_23.webp */ = {isa = PBXFileReference; path = mobius_23.webp; sourceTree = "<group>"; };
 		03ECD1FBD23E34DDAA6C60F4 /* VoiceVADTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceVADTests.swift; sourceTree = "<group>"; };
-		A011C0DE00000000E01D0001 /* VoiceAudioRoute.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceAudioRoute.swift; sourceTree = "<group>"; };
-		A011C0DE00000000E01D0004 /* VoiceAudioRouteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceAudioRouteTests.swift; sourceTree = "<group>"; };
 		04BE8368A38BE1F127F616DA /* mobius_14.webp */ = {isa = PBXFileReference; path = mobius_14.webp; sourceTree = "<group>"; };
 		04E26A800CF1D4790CE5DA10 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		06F195489181E31E2D30538D /* VoiceOrbDriveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceOrbDriveTests.swift; sourceTree = "<group>"; };
 		0789D585C4E32C8367B4D9DF /* mobius_56.webp */ = {isa = PBXFileReference; path = mobius_56.webp; sourceTree = "<group>"; };
 		0884AF18F290B54074BF357F /* mobius_08.webp */ = {isa = PBXFileReference; path = mobius_08.webp; sourceTree = "<group>"; };
 		0C853FA9D10A529C2BEA5227 /* mobius_02.webp */ = {isa = PBXFileReference; path = mobius_02.webp; sourceTree = "<group>"; };
 		0DD0AD8534C3A6D7F82199B9 /* mobius_50.webp */ = {isa = PBXFileReference; path = mobius_50.webp; sourceTree = "<group>"; };
 		0DEC784721DA7508FFE6FC29 /* PermagentTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = PermagentTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		0E09A773F32ADCF97CFBED6B /* mobius_17.webp */ = {isa = PBXFileReference; path = mobius_17.webp; sourceTree = "<group>"; };
+		1155CC652ABB7AE0FF3AE807 /* VoiceOrbDrive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceOrbDrive.swift; sourceTree = "<group>"; };
 		141797575D3BC8ECCADD6937 /* mobius_04.webp */ = {isa = PBXFileReference; path = mobius_04.webp; sourceTree = "<group>"; };
 		17D3D97237141205A82BEB96 /* PermagentWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PermagentWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		17E73AFCDABF4A8BEEE0B1D6 /* mobius_59.webp */ = {isa = PBXFileReference; path = mobius_59.webp; sourceTree = "<group>"; };
@@ -295,6 +300,7 @@
 		27F090C554069B3A53A77509 /* Permagent.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = Permagent.icon; sourceTree = "<group>"; };
 		2D057DD50738AF82B6EEFAFB /* mobius_34.webp */ = {isa = PBXFileReference; path = mobius_34.webp; sourceTree = "<group>"; };
 		37120DC59C45803562C55A0A /* Inter-SemiBold.otf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Inter-SemiBold.otf"; sourceTree = "<group>"; };
+		3912E993F9E11DE9579D5DA2 /* VoiceIdleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceIdleTests.swift; sourceTree = "<group>"; };
 		3D71A28310BFC06A57F5C545 /* mobius_13.webp */ = {isa = PBXFileReference; path = mobius_13.webp; sourceTree = "<group>"; };
 		4002AFFA392F4F378F587763 /* ControlHub.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ControlHub.swift; sourceTree = "<group>"; };
 		423261D9233DB68AF1B0BFDE /* Manrope-SemiBold.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Manrope-SemiBold.ttf"; sourceTree = "<group>"; };
@@ -311,6 +317,7 @@
 		5C5D3CA6758746FEBE0E7816 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		5F08F07F303B94889E794863 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
 		62C3A4C5A4A0A00406133931 /* MeetingCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingCapture.swift; sourceTree = "<group>"; };
+		66F5167580C5CEA1594823BA /* VoiceIdle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceIdle.swift; sourceTree = "<group>"; };
 		6BA8E11A706A9BB0AA4D27D7 /* mobius_65.webp */ = {isa = PBXFileReference; path = mobius_65.webp; sourceTree = "<group>"; };
 		6F04A0A4A5E3D5490ADCF447 /* SchedulesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SchedulesView.swift; sourceTree = "<group>"; };
 		6FEED3E5A9B281991FABC481 /* VoiceOrbView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceOrbView.swift; sourceTree = "<group>"; };
@@ -330,6 +337,7 @@
 		9194A1942B76D48DFDDC4F52 /* mobius_37.webp */ = {isa = PBXFileReference; path = mobius_37.webp; sourceTree = "<group>"; };
 		92F5A8A5633ED54576A243D3 /* mobius_74.webp */ = {isa = PBXFileReference; path = mobius_74.webp; sourceTree = "<group>"; };
 		952108923C1510E5569EDF9A /* mobius_35.webp */ = {isa = PBXFileReference; path = mobius_35.webp; sourceTree = "<group>"; };
+		957EDF882E6F3C9CAECC8537 /* VoiceAudioRouteTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceAudioRouteTests.swift; sourceTree = "<group>"; };
 		95E428CEB4EA1BD8981C54ED /* mobius_47.webp */ = {isa = PBXFileReference; path = mobius_47.webp; sourceTree = "<group>"; };
 		966500083B24ACE71ABBD8AD /* mobius_54.webp */ = {isa = PBXFileReference; path = mobius_54.webp; sourceTree = "<group>"; };
 		96E3CD59C334F2231416D963 /* mobius_52.webp */ = {isa = PBXFileReference; path = mobius_52.webp; sourceTree = "<group>"; };
@@ -342,6 +350,7 @@
 		9DB85BFD1C09686A08BB5040 /* mobius_71.webp */ = {isa = PBXFileReference; path = mobius_71.webp; sourceTree = "<group>"; };
 		A05A9CB2151AAE411F5FA801 /* FeaturesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeaturesView.swift; sourceTree = "<group>"; };
 		A1562D9A5A48D2C6D7E5DE38 /* mobius_55.webp */ = {isa = PBXFileReference; path = mobius_55.webp; sourceTree = "<group>"; };
+		A177DAA80FF4D08BDDF21F17 /* AppRoute.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRoute.swift; sourceTree = "<group>"; };
 		A2929017C0AB57BB453FE479 /* mobius_61.webp */ = {isa = PBXFileReference; path = mobius_61.webp; sourceTree = "<group>"; };
 		A344629E2ADF70E9DAC9675C /* mobius_33.webp */ = {isa = PBXFileReference; path = mobius_33.webp; sourceTree = "<group>"; };
 		A50E726E7A7F3E738039E437 /* mobius_31.webp */ = {isa = PBXFileReference; path = mobius_31.webp; sourceTree = "<group>"; };
@@ -350,6 +359,7 @@
 		ACF042D26EBA2B8AA3FC72E1 /* mobius_26.webp */ = {isa = PBXFileReference; path = mobius_26.webp; sourceTree = "<group>"; };
 		B5407AD47762AA65113F31F1 /* VoiceClipboardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceClipboardTests.swift; sourceTree = "<group>"; };
 		B6F0018258AE31DA3C2066AA /* mobius_69.webp */ = {isa = PBXFileReference; path = mobius_69.webp; sourceTree = "<group>"; };
+		B7163912C0C1992977ED3F8F /* TalkToAgentIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TalkToAgentIntent.swift; sourceTree = "<group>"; };
 		B727F49FD18B9C50E728D994 /* mobius_07.webp */ = {isa = PBXFileReference; path = mobius_07.webp; sourceTree = "<group>"; };
 		BF0D5D72E70CE12B1E837D71 /* AgentIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentIdentity.swift; sourceTree = "<group>"; };
 		C32B302BDEB6B73D2B6E807F /* MeetingQueueTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingQueueTests.swift; sourceTree = "<group>"; };
@@ -361,6 +371,7 @@
 		C7B80C27B4E2ECC150070E7B /* TodosView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TodosView.swift; sourceTree = "<group>"; };
 		CC8E4CBB923FAD453492F9C1 /* mobius_21.webp */ = {isa = PBXFileReference; path = mobius_21.webp; sourceTree = "<group>"; };
 		CC9B6164EBAB50D9736F3C32 /* WatchRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchRecorder.swift; sourceTree = "<group>"; };
+		CE48F560CD9EF78FE2426709 /* VoiceAudioRoute.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceAudioRoute.swift; sourceTree = "<group>"; };
 		CEAB4D45CE7CAF7281A46AE0 /* ChatStreamTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatStreamTests.swift; sourceTree = "<group>"; };
 		CEC021DE8FB3CC7E8C84F947 /* mobius_15.webp */ = {isa = PBXFileReference; path = mobius_15.webp; sourceTree = "<group>"; };
 		D020F778D098308E570DE67A /* mobius_51.webp */ = {isa = PBXFileReference; path = mobius_51.webp; sourceTree = "<group>"; };
@@ -404,8 +415,6 @@
 		FBB0FEA26280A6E401A0396B /* mobius_06.webp */ = {isa = PBXFileReference; path = mobius_06.webp; sourceTree = "<group>"; };
 		FC49B12939BF081C69BFE0E1 /* Views.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views.swift; sourceTree = "<group>"; };
 		FCB035E6A98D76903318959E /* WatchBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchBridge.swift; sourceTree = "<group>"; };
-		A011C0DE00000000A00E0001 /* AppRoute.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRoute.swift; sourceTree = "<group>"; };
-		A011C0DE00000000A00E0002 /* TalkToAgentIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TalkToAgentIntent.swift; sourceTree = "<group>"; };
 		FD217B47A0E95ABD4739B494 /* mobius_01.webp */ = {isa = PBXFileReference; path = mobius_01.webp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -508,9 +517,11 @@
 			children = (
 				CEAB4D45CE7CAF7281A46AE0 /* ChatStreamTests.swift */,
 				C32B302BDEB6B73D2B6E807F /* MeetingQueueTests.swift */,
+				957EDF882E6F3C9CAECC8537 /* VoiceAudioRouteTests.swift */,
 				B5407AD47762AA65113F31F1 /* VoiceClipboardTests.swift */,
+				3912E993F9E11DE9579D5DA2 /* VoiceIdleTests.swift */,
+				06F195489181E31E2D30538D /* VoiceOrbDriveTests.swift */,
 				03ECD1FBD23E34DDAA6C60F4 /* VoiceVADTests.swift */,
-				A011C0DE00000000E01D0004 /* VoiceAudioRouteTests.swift */,
 				D46B905B07E656000B2C7C2D /* WatchBridgeTests.swift */,
 			);
 			path = PermagentMobileTests;
@@ -546,10 +557,12 @@
 				04E26A800CF1D4790CE5DA10 /* Theme.swift */,
 				C7B80C27B4E2ECC150070E7B /* TodosView.swift */,
 				FC49B12939BF081C69BFE0E1 /* Views.swift */,
+				CE48F560CD9EF78FE2426709 /* VoiceAudioRoute.swift */,
 				19DCB4DF670238B7E8AA2B61 /* VoiceClipboard.swift */,
+				66F5167580C5CEA1594823BA /* VoiceIdle.swift */,
+				1155CC652ABB7AE0FF3AE807 /* VoiceOrbDrive.swift */,
 				6FEED3E5A9B281991FABC481 /* VoiceOrbView.swift */,
 				1EEE1C8D68C52C00634826E5 /* VoiceVAD.swift */,
-				A011C0DE00000000E01D0001 /* VoiceAudioRoute.swift */,
 				C4BD3E1B6A179219E2AC1FDD /* VoiceView.swift */,
 				A36A8EB49E49D7487ABB25A9 /* Fonts */,
 				4775D8B42E1952BE602D3725 /* MobiusFrames */,
@@ -592,8 +605,8 @@
 		C03FCC2D55E9F0F400D6C90E /* Shared */ = {
 			isa = PBXGroup;
 			children = (
-				A011C0DE00000000A00E0001 /* AppRoute.swift */,
-				A011C0DE00000000A00E0002 /* TalkToAgentIntent.swift */,
+				A177DAA80FF4D08BDDF21F17 /* AppRoute.swift */,
+				B7163912C0C1992977ED3F8F /* TalkToAgentIntent.swift */,
 				FCB035E6A98D76903318959E /* WatchBridge.swift */,
 			);
 			path = Shared;
@@ -912,13 +925,13 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				785B62280BF3739F07F72D01 /* AppRoute.swift in Sources */,
 				80B15C16D322544301287066 /* MobiusView.swift in Sources */,
 				C443E4C76B83445AB7AA24AA /* PermagentWatchApp.swift in Sources */,
+				7899B4D912822426A2C06F81 /* TalkToAgentIntent.swift in Sources */,
 				3CC859A492AA97052054CD19 /* Theme.swift in Sources */,
 				B73C63B88616B56F42522D85 /* VoiceOrbView.swift in Sources */,
 				CDFB23A9541D83A8A0056AD7 /* WatchBridge.swift in Sources */,
-				A011C0DE00000000C02C0001 /* AppRoute.swift in Sources */,
-				A011C0DE00000000C02C0002 /* TalkToAgentIntent.swift in Sources */,
 				0CD59DA1B934C4B413721DE0 /* WatchHomeView.swift in Sources */,
 				EA0F7D166D8AFDA7F33836F9 /* WatchRecorder.swift in Sources */,
 				48309068ADD469D36F4A11F6 /* WatchRelay.swift in Sources */,
@@ -932,6 +945,7 @@
 				831E82FFAA0BC3E001164146 /* APIClient.swift in Sources */,
 				11FCF69481F74733BC03E04D /* AgentIdentity.swift in Sources */,
 				5B30E073BB2ECAB6E33164B1 /* AgentsView.swift in Sources */,
+				741BE5AD00A14F1204CF1E7E /* AppRoute.swift in Sources */,
 				A308C9F7DEC7CC68DE4380BB /* ChatHistorySheet.swift in Sources */,
 				237D5E5B42F6A7DC3D25EF53 /* ChatStream.swift in Sources */,
 				E7443621280D39788C3B75AA /* ControlHub.swift in Sources */,
@@ -950,17 +964,18 @@
 				FF4CA05E39094AB9DAD35A01 /* PronunciationView.swift in Sources */,
 				9535CCB0091E9B276307213D /* SchedulesView.swift in Sources */,
 				F2CBA915EC484D57BF570E30 /* SplashView.swift in Sources */,
+				1F2037FA1C179A80A8304D95 /* TalkToAgentIntent.swift in Sources */,
 				389CCEEEE3C95E4B8E3A0D3F /* Theme.swift in Sources */,
 				7CF0821B363A714765825661 /* TodosView.swift in Sources */,
 				EFB9D44B159846261786C6DF /* Views.swift in Sources */,
+				B1CDE4D73FB929D4F62EF448 /* VoiceAudioRoute.swift in Sources */,
 				C16E1291A3A014C6363EA243 /* VoiceClipboard.swift in Sources */,
+				284FF0EF52A98B32100A84D0 /* VoiceIdle.swift in Sources */,
+				E63EF38154D13A324D2319DC /* VoiceOrbDrive.swift in Sources */,
 				0D8A364D8FC9A0D197FD6F88 /* VoiceOrbView.swift in Sources */,
 				E2F92C125DDE2D99E40123D8 /* VoiceVAD.swift in Sources */,
-				A011C0DE00000000E01D0002 /* VoiceAudioRoute.swift in Sources */,
 				B579F2361368D7C62FF7B48F /* VoiceView.swift in Sources */,
 				21DB5E476BEF8CF743019643 /* WatchBridge.swift in Sources */,
-				A011C0DE00000000B01D0001 /* AppRoute.swift in Sources */,
-				A011C0DE00000000B01D0002 /* TalkToAgentIntent.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -972,12 +987,16 @@
 				04ACE51338886772B88EDA45 /* ChatStreamTests.swift in Sources */,
 				88F99B5A0BE069F15BECBB00 /* MeetingQueue.swift in Sources */,
 				541565E03C8E5DC34D3D2663 /* MeetingQueueTests.swift in Sources */,
+				6A3BB4A07F35C86B6D1A61EE /* VoiceAudioRoute.swift in Sources */,
+				A8D51BBFC267E33C888276AE /* VoiceAudioRouteTests.swift in Sources */,
 				ED7266FCD98B69F29431DA6B /* VoiceClipboard.swift in Sources */,
 				93C7D9F017AF04E12EEA0804 /* VoiceClipboardTests.swift in Sources */,
+				5F2DAB5D6FE78F46B8ECF68D /* VoiceIdle.swift in Sources */,
+				47E629C4A7618203D07E41BB /* VoiceIdleTests.swift in Sources */,
+				838BFE5C475130AF1DC78876 /* VoiceOrbDrive.swift in Sources */,
+				791E1E2AB1B5FBA04B9907AB /* VoiceOrbDriveTests.swift in Sources */,
 				C338F7F7A94CC26220AFFC51 /* VoiceVAD.swift in Sources */,
-				A011C0DE00000000E01D0003 /* VoiceAudioRoute.swift in Sources */,
 				B83B0931CB251E62924D6795 /* VoiceVADTests.swift in Sources */,
-				A011C0DE00000000E01D0005 /* VoiceAudioRouteTests.swift in Sources */,
 				7B0242C0AD14EC68FFF3F517 /* WatchBridge.swift in Sources */,
 				BC2E71DB39275716A3A4F6FA /* WatchBridgeTests.swift in Sources */,
 			);

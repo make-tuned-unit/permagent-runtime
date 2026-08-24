@@ -21,6 +21,11 @@ describe('safePhotoUrl', () => {
     expect(safePhotoUrl('https://cdn.example.com/ada.jpg')).toBe('https://cdn.example.com/ada.jpg');
     expect(safePhotoUrl('javascript:alert(1)')).toBeNull();
   });
+
+  it('keeps a Wikimedia commons headshot (Claudia Chender)', () => {
+    const url = 'https://upload.wikimedia.org/wikipedia/commons/4/41/CLAUDIA-LEADERSHOOT-WEB-10-HeadshotCropped.png';
+    expect(safePhotoUrl(`${url}?utm_source=en.wikipedia.org`)).toBe(`${url}?utm_source=en.wikipedia.org`);
+  });
 });
 
 describe('PersonFace', () => {

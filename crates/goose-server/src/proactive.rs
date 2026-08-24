@@ -12,6 +12,9 @@
 //!     you're actively working on (Google News over the entity's name).
 //!   - **dormant-thread** — an entity you wove through many memories, then went
 //!     quiet on while newer memories piled up elsewhere.
+//!   - **sell-signal** — the Financier scored an OPEN holding as overbought
+//!     (RSI-14 vs the user's bar, plus stochastic / stretch / Bollinger /
+//!     52-week high). Daily-per-symbol; does not consume the taste budget.
 //!
 //! The pick is not a heuristic: the candidates go to the model (the "Watcher"
 //! reasoning), which judges relevance honestly — for news, only if the headline
@@ -100,6 +103,22 @@ pub fn spawn(state: Arc<AppState>) {
         loop {
             ticker.tick().await;
 
+            // Holdings RSI is the Financier's fact, delivered by the Watcher.
+            // It does not consume the once-a-day taste budget, ignores quiet
+            // hours, and runs even when the Brain is down.
+            if let Ok(pool) = state.session_manager().pool_clone().await {
+                match permagent::overbought::notify_open_lots(&pool).await {
+                    Ok(sent) => {
+                        for message in &sent {
+                            tracing::info!(target: "permagentd::echo", kind = "sell_signal", "{message}");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!(target: "permagentd::echo", "holdings RSI sweep skipped: {e}");
+                    }
+                }
+            }
+
             // Once-a-day budget.
             let now = Utc::now();
             let last_delivered = budget
@@ -116,6 +135,7 @@ pub fn spawn(state: Arc<AppState>) {
             if !(8u32..22).contains(&hour) {
                 continue;
             }
+
             if state.brain.is_none() {
                 continue;
             }

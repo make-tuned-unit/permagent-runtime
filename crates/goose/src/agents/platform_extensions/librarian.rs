@@ -7,6 +7,7 @@
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
 use crate::agents::platform_extensions::get_global_brain;
+use crate::agents::platform_extensions::librarian_state;
 use crate::agents::tool_execution::ToolCallContext;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -480,10 +481,23 @@ async fn describe_one_with_context(
             description = Some(parsed);
             break;
         }
-
-        if attempt == 1 {
+        if let Some(salvaged) = salvage_structured_description(&raw) {
             tracing::warn!(
                 memory_id = %memory_id,
+                attempt = attempt,
+                "Structured output incomplete; salvaged index fields instead of storing raw"
+            );
+            quality = DescriptionQuality::Fallback;
+            description = Some(salvaged);
+            break;
+        }
+
+        if attempt == 1 {
+            let snippet: String = raw.chars().take(500).collect();
+            tracing::warn!(
+                memory_id = %memory_id,
+                reason = %structured_parse_failure(&raw),
+                snippet = %snippet,
                 "Structured output still malformed after retry, storing raw"
             );
             quality = DescriptionQuality::Fallback;
@@ -1077,31 +1091,54 @@ fn mask_opaque_ids(content: &str) -> String {
 /// Parse the three-field structural output into a single description string.
 /// Returns None if the output doesn't contain all required fields.
 pub fn parse_structured_description(raw: &str) -> Option<String> {
-    let mut facts = None;
-    let mut terms = None;
-    let mut categories = None;
+    let (facts, terms, categories) = extract_labeled_fields(raw);
+    assemble_description(facts?, terms.as_deref()?, categories.as_deref()?)
+}
 
-    for line in raw.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("FACTS:") {
-            facts = Some(rest.trim().to_string());
-        } else if let Some(rest) = trimmed.strip_prefix("TERMS:") {
-            terms = Some(rest.trim().to_string());
-        } else if let Some(rest) = trimmed.strip_prefix("CATEGORIES:") {
-            categories = Some(rest.trim().to_string());
+/// Last-ditch index from a near-miss: FACTS present but TERMS/CATEGORIES thin
+/// or the 7b fallback emitted JSON / one-line labels. Better than storing the
+/// raw model dump (2026-08-22: ~12 memories became unsearchable that way).
+fn salvage_structured_description(raw: &str) -> Option<String> {
+    let (facts, terms, categories) = extract_labeled_fields(raw);
+    let facts = facts.or_else(|| first_usable_sentence(raw))?;
+    if facts.chars().count() < 12 {
+        return None;
+    }
+    let mut terms = clean_index_list(&terms.unwrap_or_default(), MAX_TERMS);
+    if terms.len() < MIN_TERMS {
+        for word in facts.split(|c: char| !c.is_alphanumeric() && c != '-') {
+            let word = word.trim();
+            if word.chars().count() < 4 {
+                continue;
+            }
+            if SALVAGE_STOPWORDS
+                .iter()
+                .any(|s| word.eq_ignore_ascii_case(s))
+            {
+                continue;
+            }
+            let key = word.to_lowercase();
+            if terms.iter().any(|t| t.eq_ignore_ascii_case(&key)) {
+                continue;
+            }
+            terms.push(word.to_string());
+            if terms.len() == MIN_TERMS {
+                break;
+            }
         }
     }
-
-    let facts = facts?;
-    let terms = clean_index_list(&terms?, MAX_TERMS);
-    let categories = clean_index_list(&categories?, MAX_CATEGORIES);
-
-    // Validate minimum counts AFTER cleaning — a list padded with duplicates or
-    // bare numbers has fewer usable terms than it appears to.
+    let mut categories = clean_index_list(&categories.unwrap_or_default(), MAX_CATEGORIES);
+    for extra in ["notes", "memory"] {
+        if categories.len() >= MIN_CATEGORIES {
+            break;
+        }
+        if !categories.iter().any(|c| c.eq_ignore_ascii_case(extra)) {
+            categories.push(extra.to_string());
+        }
+    }
     if terms.len() < MIN_TERMS || categories.len() < MIN_CATEGORIES {
         return None;
     }
-
     Some(format!(
         "{} Related terms: {}. Categories: {}.",
         facts,
@@ -1109,6 +1146,158 @@ pub fn parse_structured_description(raw: &str) -> Option<String> {
         categories.join(", ")
     ))
 }
+
+fn structured_parse_failure(raw: &str) -> &'static str {
+    let (facts, terms, categories) = extract_labeled_fields(raw);
+    if facts.is_none() {
+        return "missing_facts";
+    }
+    let term_n = clean_index_list(&terms.unwrap_or_default(), MAX_TERMS).len();
+    let cat_n = clean_index_list(&categories.unwrap_or_default(), MAX_CATEGORIES).len();
+    if term_n < MIN_TERMS {
+        return "too_few_terms";
+    }
+    if cat_n < MIN_CATEGORIES {
+        return "too_few_categories";
+    }
+    "unparseable"
+}
+
+fn assemble_description(facts: String, terms: &str, categories: &str) -> Option<String> {
+    let terms = clean_index_list(terms, MAX_TERMS);
+    let categories = clean_index_list(categories, MAX_CATEGORIES);
+    if terms.len() < MIN_TERMS || categories.len() < MIN_CATEGORIES {
+        return None;
+    }
+    Some(format!(
+        "{} Related terms: {}. Categories: {}.",
+        facts,
+        terms.join(", "),
+        categories.join(", ")
+    ))
+}
+
+fn strip_code_fences(raw: &str) -> &str {
+    let t = raw.trim();
+    let t = t
+        .strip_prefix("```json")
+        .or_else(|| t.strip_prefix("```JSON"))
+        .or_else(|| t.strip_prefix("```"))
+        .unwrap_or(t);
+    t.strip_suffix("```").unwrap_or(t).trim()
+}
+
+fn json_field_as_list(value: &serde_json::Value) -> Option<String> {
+    if let Some(s) = value.as_str() {
+        let s = s.trim();
+        if s.is_empty() {
+            return None;
+        }
+        return Some(s.to_string());
+    }
+    if let Some(arr) = value.as_array() {
+        let parts: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
+        if parts.is_empty() {
+            return None;
+        }
+        return Some(parts.join(", "));
+    }
+    None
+}
+
+fn try_json_fields(raw: &str) -> Option<(String, String, String)> {
+    let parsed: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let obj = parsed.as_object()?;
+    let get = |keys: &[&str]| -> Option<String> {
+        for key in keys {
+            if let Some(value) = obj.get(*key) {
+                if let Some(s) = json_field_as_list(value) {
+                    return Some(s);
+                }
+            }
+        }
+        None
+    };
+    Some((
+        get(&["FACTS", "facts", "Facts"])?,
+        get(&["TERMS", "terms", "Terms"])?,
+        get(&["CATEGORIES", "categories", "Categories"])?,
+    ))
+}
+
+fn field_after_label(hay: &str, label: &str, next_labels: &[&str]) -> Option<String> {
+    let lower = hay.to_ascii_lowercase();
+    let needle = format!("{}:", label.to_ascii_lowercase());
+    let start = lower.find(&needle)?;
+    let value_start = start + needle.len();
+    let mut end = hay.len();
+    for next in next_labels {
+        let n = format!("{}:", next.to_ascii_lowercase());
+        if let Some(pos) = lower.get(value_start..).and_then(|t| t.find(&n)) {
+            end = end.min(value_start + pos);
+        }
+    }
+    // `lower` is an ASCII-only lowercasing of `hay`, so it is byte-for-byte
+    // the same length and every offset found in one is a char boundary in the
+    // other. `get` says that rather than assuming it: a malformed slice yields
+    // no field instead of panicking on a model's stray multibyte output.
+    let value = hay
+        .get(value_start..end)
+        .unwrap_or("")
+        .trim()
+        .trim_matches('*')
+        .trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+/// Pull FACTS / TERMS / CATEGORIES out of line-prefixed prose, one-liners,
+/// markdown emphasis, fences, or a JSON object (the shapes qwen2.5:7b emits
+/// when it ignores the three-line contract).
+fn extract_labeled_fields(raw: &str) -> (Option<String>, Option<String>, Option<String>) {
+    let stripped = strip_code_fences(raw);
+    if let Some((facts, terms, categories)) = try_json_fields(stripped) {
+        return (Some(facts), Some(terms), Some(categories));
+    }
+    if let Some(start) = stripped.find('{') {
+        if let Some(end) = stripped.rfind('}') {
+            if end > start {
+                if let Some((facts, terms, categories)) =
+                    stripped.get(start..=end).and_then(try_json_fields)
+                {
+                    return (Some(facts), Some(terms), Some(categories));
+                }
+            }
+        }
+    }
+    (
+        field_after_label(stripped, "facts", &["terms", "categories"]),
+        field_after_label(stripped, "terms", &["categories", "facts"]),
+        field_after_label(stripped, "categories", &["facts", "terms"]),
+    )
+}
+
+fn first_usable_sentence(raw: &str) -> Option<String> {
+    for line in strip_code_fences(raw).lines() {
+        let line = line.trim().trim_start_matches(['#', '*', '-', '`']).trim();
+        if line.is_empty() || line.starts_with('{') {
+            continue;
+        }
+        if line.chars().count() >= 12 {
+            return Some(line.trim_end_matches('.').to_string() + ".");
+        }
+    }
+    None
+}
+
+const SALVAGE_STOPWORDS: &[&str] = &[
+    "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "with", "is", "was", "were",
+    "this", "that", "from", "via", "into", "over", "under", "their", "them", "they", "have", "has",
+    "had", "been",
+];
 
 /// Upper bounds, enforced here rather than merely requested in the prompt.
 ///
@@ -1135,8 +1324,8 @@ const MIN_CATEGORIES: usize = 2;
 fn clean_index_list(raw: &str, cap: usize) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
-    for item in raw.split(',') {
-        let item = item.trim().trim_matches(|c: char| c == '.' || c == '"');
+    for item in raw.split([',', ';', '\n']) {
+        let item = item.trim().trim_matches(['.', '"']);
         if item.is_empty() {
             continue;
         }
@@ -1185,6 +1374,17 @@ pub(crate) async fn call_ollama_streaming_pooled(
     // ordinary Ollama path with the default model rather than fail the pass:
     // a slightly worse description tonight beats no description.
     if let Some(endpoint) = crate::config::librarian_endpoint() {
+        if librarian_state::dedicated_endpoint_is_skipped(&endpoint) {
+            return call_local_backends(
+                system,
+                prompt,
+                DEFAULT_MODEL,
+                emit_events,
+                memory_key,
+                session_id,
+            )
+            .await;
+        }
         let backend = crate::config::librarian_backend();
         let attempt = if backend == "ollama" {
             call_ollama_streaming(
@@ -1211,15 +1411,21 @@ pub(crate) async fn call_ollama_streaming_pooled(
         };
         match attempt {
             Ok(text) => {
+                librarian_state::note_dedicated_endpoint_ok(&endpoint);
                 // Which engine actually produced this description, per memory.
                 // Within one nightly window the Librarian can legitimately move
-                // between engines — the dedicated endpoint is re-checked on
-                // EVERY call, so a split that comes up at 03:20 starts serving
-                // immediately — and the configured `model` label does not
-                // change when that happens. Without this line a night's
-                // descriptions are an unlabelled mixture of two models, which
-                // is invisible in the product and quietly fatal to any later
-                // comparison between them.
+                // between engines — a remote split that comes up at 03:20
+                // starts serving on the next memory — and the configured
+                // `model` label does not change when that happens. Without this
+                // line a night's descriptions are an unlabelled mixture of two
+                // models, which is invisible in the product and quietly fatal
+                // to any later comparison between them.
+                //
+                // Loopback is the exception: a refused connection on this
+                // machine cannot recover mid-pass. After a few identical
+                // connect failures the circuit trips, we alert once, and the
+                // rest of the window skips the probe (2026-08-22: 259
+                // re-dials of 127.0.0.1:8080 over 88 minutes).
                 tracing::info!(
                     target: "permagent::librarian",
                     memory_key = %memory_key,
@@ -1231,13 +1437,34 @@ pub(crate) async fn call_ollama_streaming_pooled(
                 return Ok(text);
             }
             Err(err) if is_endpoint_down(&err) => {
-                tracing::warn!(
-                    endpoint = %endpoint,
-                    backend = %backend,
-                    error = %err,
-                    fallback_model = DEFAULT_MODEL,
-                    "Librarian endpoint unreachable; falling back to the Ollama pool with the default model"
-                );
+                if is_loopback_connect_failure(&endpoint, &err) {
+                    if librarian_state::note_dedicated_loopback_connect_fail(&endpoint) {
+                        tracing::error!(
+                            target: "permagent::librarian",
+                            endpoint = %endpoint,
+                            backend = %backend,
+                            error = %err,
+                            fallback_model = DEFAULT_MODEL,
+                            "Librarian loopback endpoint is down — not retrying this pass; falling back to the local pool"
+                        );
+                        crate::events::emit(crate::events::integration_error(
+                            "librarian",
+                            &format!(
+                                "Dedicated endpoint {endpoint} refused on loopback. \
+                                 Start llama-server or unset PERMAGENT_LIBRARIAN_ENDPOINT. \
+                                 This pass continues on {DEFAULT_MODEL}."
+                            ),
+                        ));
+                    }
+                } else {
+                    tracing::warn!(
+                        endpoint = %endpoint,
+                        backend = %backend,
+                        error = %err,
+                        fallback_model = DEFAULT_MODEL,
+                        "Librarian endpoint unreachable; falling back to the Ollama pool with the default model"
+                    );
+                }
                 // The configured model belongs to the dedicated endpoint; the
                 // Ollama fallback needs a model Ollama actually has.
                 return call_local_backends(
@@ -1382,6 +1609,17 @@ fn is_endpoint_down(err: &str) -> bool {
         || err.contains("stream error")
         || err.contains("terminated prematurely")
         || err.contains("Stream interrupted")
+}
+
+/// A refused / unsent request to a loopback dedicated endpoint. Remote hosts
+/// can come back mid-window; nothing on this machine starts listening because
+/// we waited. The 2026-08-22 storm was this message, 259 times:
+/// `llama-server unreachable: error sending request for url (http://127.0.0.1:8080/v1/chat/completions)`.
+fn is_loopback_connect_failure(endpoint: &str, err: &str) -> bool {
+    crate::mesh::endpoint_is_loopback(endpoint)
+        && (err.contains("unreachable")
+            || err.contains("connection refused")
+            || err.contains("error sending request"))
 }
 
 async fn call_ollama_streaming_pooled_inner(
@@ -2164,6 +2402,66 @@ CATEGORIES: team meeting, project planning, engineering"#;
         assert!(!is_endpoint_down(
             "Malformed SSE from llama-server: expected value"
         ));
+    }
+
+    #[test]
+    fn loopback_connect_failure_is_terminal_shape() {
+        assert!(is_loopback_connect_failure(
+            "http://127.0.0.1:8080",
+            "llama-server unreachable: error sending request for url (http://127.0.0.1:8080/v1/chat/completions)"
+        ));
+        assert!(is_loopback_connect_failure(
+            "http://localhost:8080",
+            "llama-server unreachable: connection refused"
+        ));
+        // A remote split can come back — do not trip the loopback circuit.
+        assert!(!is_loopback_connect_failure(
+            "http://100.74.232.95:8080",
+            "llama-server unreachable: error sending request"
+        ));
+        // Something is listening; a 5xx is not a connect failure.
+        assert!(!is_loopback_connect_failure(
+            "http://127.0.0.1:8080",
+            "llama-server error (500): Compute error."
+        ));
+    }
+
+    #[test]
+    fn loopback_circuit_trips_after_three_connect_fails_and_alerts_once() {
+        let mut budget = librarian_state::LoopbackFailBudget::default();
+        assert!(!budget.is_tripped());
+        assert!(!budget.note_fail());
+        assert!(!budget.note_fail());
+        assert!(budget.note_fail(), "third fail trips and is the one alert");
+        assert!(budget.is_tripped());
+        assert!(!budget.note_fail(), "further fails must not re-alert");
+    }
+
+    #[test]
+    fn json_and_one_line_librarian_output_parses() {
+        let json = r#"{"FACTS":"The user migrated their brain between two Macs.","TERMS":["migrated","Permagent","brain","Mac"],"CATEGORIES":["technology","data"]}"#;
+        let out = parse_structured_description(json).expect("json three-field output");
+        assert!(out.contains("migrated their brain"));
+        assert!(out.contains("Related terms:"));
+
+        let one_line = "FACTS: Browser navigated to Gmail in a tab. TERMS: navigate, navigation, navigated, browser CATEGORIES: web browsing, email";
+        let out = parse_structured_description(one_line).expect("one-line labels");
+        assert!(out.starts_with("Browser navigated"));
+        assert!(out.contains("navigate, navigation"));
+    }
+
+    #[test]
+    fn salvage_keeps_a_searchable_index_instead_of_raw_dump() {
+        let thin = "FACTS: The user asked about Tailscale pairing on the new Mac mini.\nTERMS: Tailscale\nCATEGORIES: networking";
+        assert!(
+            parse_structured_description(thin).is_none(),
+            "strict parse must still reject a thin index"
+        );
+        let out = salvage_structured_description(thin).expect("salvage pads terms from facts");
+        assert!(out.contains("Tailscale pairing"));
+        assert!(out.contains("Related terms:"));
+        assert!(out.contains("Categories:"));
+        assert_eq!(structured_parse_failure(thin), "too_few_terms");
     }
 
     use crate::session::SessionManager;

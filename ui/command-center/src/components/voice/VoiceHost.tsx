@@ -41,6 +41,7 @@ export function VoiceHost() {
     handsFree,
     setHandsFree,
     wakeWord,
+    teachWord,
   } = useVoice({ sessionId: chatSessionId ?? undefined });
 
   useEffect(() => {
@@ -69,6 +70,8 @@ export function VoiceHost() {
   handsFreeRef.current = handsFree;
   const stateRef = useRef(state);
   stateRef.current = state;
+  const teachWordRef = useRef(teachWord);
+  teachWordRef.current = teachWord;
 
   // ── Live feed for mirror orbs (~150ms heartbeat while hands-free) ──
   useEffect(() => {
@@ -90,7 +93,7 @@ export function VoiceHost() {
         level = (sum / n / 255) * 1.2;
       }
       smoothed = smoothed + (level - smoothed) * (level > smoothed ? 0.6 : 0.25);
-      publishLiveConversation(s, smoothed);
+      publishLiveConversation(s, smoothed, teachWordRef.current);
     }, 150);
     return () => {
       clearInterval(id);
@@ -161,9 +164,10 @@ export function VoiceHost() {
         wakeWord.active && wakeWord.gated && wakeWord.phrase
           ? `Say "${wakeWord.phrase}"`
           : null,
+      teachWord,
     });
     return () => setVoiceConversation(null);
-  }, [handsFree, state, getAnalyser, getMicAnalyser, setHandsFree, deactivate, setVoiceConversation, wakeWord]);
+  }, [handsFree, state, getAnalyser, getMicAnalyser, setHandsFree, deactivate, setVoiceConversation, wakeWord, teachWord]);
 
   return null;
 }

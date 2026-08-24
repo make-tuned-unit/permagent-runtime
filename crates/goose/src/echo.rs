@@ -20,22 +20,21 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
         category: crate::agents::self_knowledge::FeatureCategory::Worker,
         what_it_does:
             "A gentle background worker that watches for the single most useful thing to surface — \
-             a dormant thread in the Brain (an entity woven through many memories, then gone quiet \
-             while newer memories piled up elsewhere) or fresh news about a project the user is \
-             actively working on — and reaches out at most once a day. It arrives as an in-app and \
-             desktop notification, and (opt-in) a phone push. It only ever surfaces; it never acts, \
-             and it stays silent when nothing clears the bar. Separately, once or twice a day \
-             per project, it composes a short project insight from REAL per-project signals only \
-             (never invented) onto the project overview — and briefs you about it, so you can \
-             mention it without the user opening the panel",
+             a dormant thread in the Brain, fresh news about a project the user is actively working \
+             on, or — with the Financier — an overbought sell signal on an OPEN holding (RSI-14 vs \
+             the user's threshold, plus stochastic / stretch / Bollinger / 52-week high). News and \
+             dormant threads reach out at most once a day. Holding signals are daily-per-symbol and \
+             do not consume that taste budget: the Financier scores the lots, the Watcher delivers \
+             the notification to the Finance tab. It only ever surfaces; it never acts, never sizes \
+             a position, and stays silent when nothing clears the bar. Separately, once or twice a \
+             day per project, it composes a short project insight from REAL per-project signals \
+             only (never invented) onto the project overview",
         why_it_matters:
             "It is how the agent keeps the user on track without being asked — resurfacing \
-             forgotten threads and catching news around their projects, the proactive presence a \
-             permanent agent with a memory is uniquely able to offer. Because it reports to you \
-             as well as to the panel, its observations reach the user through you rather than \
-             waiting to be found. Gentle and rare by \
-             construction: one nudge a day at most, quiet hours, deduped by subject and story, and \
-             phone push stays off until the user opts in",
+             forgotten threads, catching news around their projects, and (with the Financier) \
+             flagging a holding that looks overbought. Holding alerts are a signal, not an order. \
+             News/dormant nudges stay gentle: one a day at most, quiet hours, deduped. Phone \
+             push stays off until the user opts in",
         // Workers are Queryable by contract; the Watcher has no live status to
         // merge yet, so it renders with no `_(now: …)_` suffix (worker_live_state
         // returns None for it) — same as the Scheduler with no jobs.

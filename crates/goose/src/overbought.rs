@@ -171,28 +171,20 @@ fn bollinger(closes: &[f64], n: usize, k: f64) -> Option<(f64, f64)> {
     Some((mid - k * sd, mid + k * sd))
 }
 
-/// Open lots the user already holds, Picker history first. Never a pick list.
+/// Open lots the user already holds. Union of Picker history and the Finance
+/// tab ledger, deduped. Never a pick list, never a watchlist.
 pub async fn open_symbols(pool: &sqlx::Pool<sqlx::Sqlite>) -> Result<Vec<String>, String> {
-    let picker_trades = picker::trades().await.ok().map(|raw| {
-        raw.iter()
-            .filter_map(picker::parse_trade_row)
-            .collect::<Vec<_>>()
-    });
     let mut out = Vec::new();
-    match picker_trades {
-        Some(trades) if !trades.is_empty() => {
-            for t in trades {
-                if t.exit_date.is_none() && !out.iter().any(|s| s == &t.ticker) {
-                    out.push(t.ticker);
-                }
+    if let Ok(raw) = picker::trades().await {
+        for t in raw.iter().filter_map(picker::parse_trade_row) {
+            if t.exit_date.is_none() && !out.iter().any(|s| s == &t.ticker) {
+                out.push(t.ticker);
             }
         }
-        _ => {
-            for p in finance_ledger::list_positions(pool).await? {
-                if p.exit_date.is_none() && !out.iter().any(|s| s == &p.symbol) {
-                    out.push(p.symbol);
-                }
-            }
+    }
+    for p in finance_ledger::list_positions(pool).await? {
+        if p.exit_date.is_none() && !out.iter().any(|s| s == &p.symbol) {
+            out.push(p.symbol);
         }
     }
     Ok(out)
@@ -246,10 +238,56 @@ pub async fn assess_open_lots(
     Ok(out)
 }
 
+/// The Watcher delivers these; the Financier computes them. Daily-per-symbol
+/// dedup lives in `finance_rsi_alerts`. A signal is never an order.
+pub async fn notify_open_lots(pool: &sqlx::Pool<sqlx::Sqlite>) -> Result<Vec<String>, String> {
+    let threshold = rsi_threshold();
+    let lots = assess_open_lots(pool, threshold).await?;
+    let day = chrono::Utc::now()
+        .date_naive()
+        .format("%Y-%m-%d")
+        .to_string();
+    let mut sent = Vec::new();
+    for lot in lots {
+        if !lot.reading.signal {
+            continue;
+        }
+        if crate::finance_ledger::rsi_alert_seen_today(pool, &lot.symbol, &day).await? {
+            continue;
+        }
+        let rsi = lot.reading.rsi.unwrap_or(0.0);
+        crate::finance_ledger::record_rsi_alert(pool, &lot.symbol, &day, rsi, threshold).await?;
+        let message = lot.reading.summary(&lot.symbol);
+        crate::events::emit(crate::events::proactive_nudge(
+            "sell_signal",
+            &lot.symbol,
+            &message,
+            1,
+            &chrono::Utc::now().to_rfc3339(),
+            None,
+            None,
+        ));
+        sent.push(message);
+    }
+    Ok(sent)
+}
+
 pub fn rsi_threshold() -> f64 {
     crate::config::Config::global()
         .get_param::<f64>(crate::finance_ledger::RSI_THRESHOLD_KEY)
         .unwrap_or(DEFAULT_RSI_THRESHOLD)
+}
+
+/// The Financier's write on the same key the tab reads. Clamped so a typo
+/// cannot silence every signal or fire on every print.
+pub fn set_rsi_threshold(value: f64) -> Result<f64, String> {
+    if !value.is_finite() || !(50.0..=90.0).contains(&value) {
+        return Err("RSI threshold must be a number between 50 and 90".into());
+    }
+    crate::config::Config::global()
+        .set_param(crate::finance_ledger::RSI_THRESHOLD_KEY, value)
+        .map_err(|e| e.to_string())?;
+    Ok(value)
 }
 
 /// Copy the Financier reads aloud. Distinguishes "could not ask" from "asked
@@ -305,6 +343,25 @@ mod tests {
         assert!(r.summary("SHOP").contains("not an order"));
     }
 
+    #[tokio::test]
+    async fn no_open_lots_means_no_alerts() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::session::spectral_schema::init_spectral_db(&pool)
+            .await
+            .unwrap();
+        crate::session::spectral_schema::apply_finance_ledger_schema(&pool)
+            .await
+            .unwrap();
+        crate::session::spectral_schema::apply_finance_spend_schema(&pool)
+            .await
+            .unwrap();
+        let sent = notify_open_lots(&pool).await.unwrap();
+        assert!(sent.is_empty());
+    }
+
     #[test]
     fn a_choppy_series_is_not_a_sell_signal() {
         let closes: Vec<f64> = (0..40)
@@ -348,5 +405,12 @@ mod tests {
         let r = assess(&[10.0, 11.0], None, 74.0);
         assert!(r.rsi.is_none());
         assert!(!r.signal);
+    }
+
+    #[test]
+    fn rsi_threshold_write_refuses_a_typo() {
+        assert!(set_rsi_threshold(f64::NAN).is_err());
+        assert!(set_rsi_threshold(12.0).is_err());
+        assert!(set_rsi_threshold(99.0).is_err());
     }
 }
