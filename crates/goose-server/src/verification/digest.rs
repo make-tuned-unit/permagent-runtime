@@ -57,6 +57,11 @@ pub struct DigestCheck {
     pub status: CheckStatus,
     /// Raw output excerpt, ≤2KiB (detail layer).
     pub output_excerpt: String,
+    /// Why this check was judged gameable, when it was. A check with a lint
+    /// line did not count toward the verdict — the reader needs to know that
+    /// as plainly as they see the status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -276,12 +281,14 @@ pub fn assemble_digest(
         .iter()
         .map(|r| DigestCheck {
             check_type: r.check_type.clone(),
-            summary: checks
-                .get(r.check_index)
-                .map(|c| c.summary())
+            summary: r
+                .summary
+                .clone()
+                .or_else(|| checks.get(r.check_index).map(|c| c.summary()))
                 .unwrap_or_else(|| r.check_type.clone()),
             status: r.status,
             output_excerpt: excerpt_for(r),
+            lint: r.lint.clone(),
         })
         .collect();
 
@@ -377,6 +384,8 @@ mod tests {
                 ..Default::default()
             },
             truncated: false,
+            summary: None,
+            lint: None,
         }
     }
 

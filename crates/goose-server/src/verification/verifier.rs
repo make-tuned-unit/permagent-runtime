@@ -327,9 +327,10 @@ pub fn build_user_prompt(
         check_results
             .iter()
             .map(|r| {
-                let summary = check_summaries
-                    .get(r.check_index)
-                    .map(String::as_str)
+                let summary = r
+                    .summary
+                    .as_deref()
+                    .or_else(|| check_summaries.get(r.check_index).map(String::as_str))
                     .unwrap_or("");
                 let status = match r.status {
                     CheckStatus::Pass => "pass",
@@ -343,10 +344,21 @@ pub fn build_user_prompt(
                     .or_else(|| r.evidence.exit_code.map(|c| format!("exit {}", c)))
                     .or_else(|| r.evidence.http_status.map(|s| format!("status {}", s)))
                     .unwrap_or_default();
-                format!(
+                let mut row = format!(
                     "[{}] {} {} -> {} ({})",
                     r.check_index, r.check_type, summary, status, detail
-                )
+                );
+                // A linted check is shown, and shown as inadmissible. Hiding it
+                // would let the model infer support from a row it must not
+                // count; leaving it unmarked would let it count the row.
+                if let Some(l) = r.lint.as_deref() {
+                    row.push_str(&format!(
+                        "\n    NOT EVIDENCE — this check is gameable and does not \
+                         support any grade: {}",
+                        l
+                    ));
+                }
+                row
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -788,6 +800,8 @@ mod tests {
             duration_ms: 1,
             evidence: CheckEvidence::default(),
             truncated: false,
+            summary: None,
+            lint: None,
         }
     }
 

@@ -3574,7 +3574,10 @@ pub static GOAL_REVIEW_HOOK: std::sync::OnceLock<GoalReviewHook> = std::sync::On
 /// prose/content-flavored work has no build to run — seeding one would
 /// false-fail correct work. Content goals get their publish-sequence +
 /// live-check default with #457.
-const NON_CODE_GOAL_TYPES: &[&str] = &["prose", "content", "writing", "docs", "research"];
+/// Also read by the daemon's verification pipeline, which skips the standing
+/// placeholder scan for these types for the same reason: there is no
+/// implementation here to stub out.
+pub const NON_CODE_GOAL_TYPES: &[&str] = &["prose", "content", "writing", "docs", "research"];
 
 /// Default timeout for the seeded build check (checks.rs clamps to 600s max).
 const DEFAULT_BUILD_CHECK_TIMEOUT_SECS: u64 = 600;
