@@ -330,7 +330,7 @@ export function BrainView() {
                 openSearchResult(searchResults[0]);
               }
             }}
-            placeholder="search the shape of what we've built..."
+            placeholder="try a name or project…"
             style={{
               width: '100%', fontFamily: font.body, fontSize: 13, color: colors.text,
               background: theme === 'silver' ? 'rgba(255,255,255,0.92)' : 'rgba(20,28,48,0.65)', backdropFilter: 'blur(12px)',
@@ -487,6 +487,14 @@ export function BrainView() {
                 color: colors.cyan, textTransform: 'uppercase', letterSpacing: '0.1em',
               }}>
                 {selected.kind === 'memory' ? 'MEMORY' : (selected.data as GraphEntity)?.type?.toUpperCase() || selected.kind.toUpperCase()}
+                {selected.kind === 'memory' && (selected.data as GraphMemory)?.layer && (
+                  <span style={{
+                    fontFamily: font.mono, fontSize: 10, fontWeight: 500,
+                    color: colors.textMuted, letterSpacing: '0.06em',
+                    border: `1px solid ${colors.border}`, borderRadius: 999, padding: '1px 7px',
+                    textTransform: 'uppercase',
+                  }}>{(selected.data as GraphMemory).layer}</span>
+                )}
               </span>
               {selected.kind === 'memory' && selected.preview && (
                 <span
@@ -619,6 +627,16 @@ export function BrainView() {
                     }}>
                       {mem.text}
                     </p>
+                    {mem.why && (
+                      <details>
+                        <summary style={{
+                          fontFamily: font.body, fontSize: 11, color: colors.textDim, cursor: 'pointer',
+                        }}>Why this?</summary>
+                        <p style={{ fontFamily: font.mono, fontSize: 11, color: colors.textMuted, margin: '6px 0 0' }}>
+                          {mem.why}
+                        </p>
+                      </details>
+                    )}
                     {mem.ent.length > 0 && (
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                         {mem.ent.map(id => {

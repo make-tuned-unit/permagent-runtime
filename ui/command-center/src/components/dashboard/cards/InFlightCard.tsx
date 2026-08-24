@@ -70,9 +70,17 @@ const GoalCard = memo(function GoalCard({ goal }: { goal: ActiveGoal }) {
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           }}>{goal.title}</div>
           <div style={{ fontFamily: font.mono, fontSize: 11, color: colors.cyan }}>
-            {STATE_LABEL[goal.state] ?? goal.state}
+            {goal.hold_note ? 'Held' : (STATE_LABEL[goal.state] ?? goal.state)}
             {goal.assigned_to ? ` · ${goal.assigned_to}` : ''}
           </div>
+          {(goal.hold_note || goal.routing_note) && (
+            <div style={{
+              fontFamily: font.body, fontSize: 11, color: colors.textMuted,
+              marginTop: 6, lineHeight: 1.4,
+            }}>
+              {goal.hold_note || goal.routing_note}
+            </div>
+          )}
         </div>
       </div>
     </div>

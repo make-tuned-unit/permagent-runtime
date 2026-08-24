@@ -1292,6 +1292,11 @@ pub struct ActiveGoal {
     pub assigned_to: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// Human routing/hold line from metadata. Hidden when empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_note: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold_note: Option<String>,
 }
 
 /// All goals Henry is actively working — the single source of truth for the
@@ -1305,7 +1310,7 @@ pub async fn list_active_goals(pool: &Pool<Sqlite>) -> Result<Vec<ActiveGoal>, S
     let placeholders = vec!["?"; GoalState::ACTIVE_BINDINGS.len()].join(", ");
     let sql = format!(
         "SELECT c.id, c.title, c.project_id, bc.state_binding, c.assigned_to, \
-                c.created_at, c.updated_at \
+                c.created_at, c.updated_at, c.metadata_json \
          FROM cards c JOIN board_columns bc ON c.column_id = bc.id \
          WHERE c.card_type = 'goal' AND c.archived_at IS NULL \
            AND bc.state_binding IN ({}) \
@@ -1318,20 +1323,37 @@ pub async fn list_active_goals(pool: &Pool<Sqlite>) -> Result<Vec<ActiveGoal>, S
         q = q.bind(*b);
     }
     let rows = q.fetch_all(pool).await.map_err(|e| e.to_string())?;
-    Ok(rows
-        .into_iter()
-        .map(|r| ActiveGoal {
-            id: r.get("id"),
-            title: r.get("title"),
-            project_id: r.get("project_id"),
-            state: r
-                .get::<Option<String>, _>("state_binding")
-                .unwrap_or_default(),
-            assigned_to: r.get("assigned_to"),
-            created_at: r.get("created_at"),
-            updated_at: r.get("updated_at"),
-        })
-        .collect())
+    Ok(rows.into_iter().map(|r| active_goal_from_row(&r)).collect())
+}
+
+fn active_goal_from_row(r: &sqlx::sqlite::SqliteRow) -> ActiveGoal {
+    let meta: Option<String> = r.get("metadata_json");
+    let meta: serde_json::Value = meta
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(serde_json::Value::Null);
+    let obj = meta.as_object();
+    let routing_note = obj
+        .and_then(crate::cost_router::RoutingSnapshot::from_metadata)
+        .map(|s| s.note)
+        .filter(|n| !n.is_empty());
+    let hold_note = obj
+        .and_then(|m| m.get(crate::cost_router::HOLD_METADATA_KEY))
+        .and_then(|v| v.get("last_plan"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    ActiveGoal {
+        id: r.get("id"),
+        title: r.get("title"),
+        project_id: r.get("project_id"),
+        state: r
+            .get::<Option<String>, _>("state_binding")
+            .unwrap_or_default(),
+        assigned_to: r.get("assigned_to"),
+        created_at: r.get("created_at"),
+        updated_at: r.get("updated_at"),
+        routing_note,
+        hold_note,
+    }
 }
 
 /// All non-archived goals attributed to one worker, across projects and in
@@ -1345,7 +1367,7 @@ pub async fn list_goals_for_worker(
 ) -> Result<Vec<ActiveGoal>, String> {
     let rows = sqlx::query(
         "SELECT c.id, c.title, c.project_id, bc.state_binding, c.assigned_to, \
-                c.created_at, c.updated_at \
+                c.created_at, c.updated_at, c.metadata_json \
          FROM cards c JOIN board_columns bc ON c.column_id = bc.id \
          WHERE c.card_type = 'goal' AND c.archived_at IS NULL \
            AND (c.assigned_to = ? OR json_extract(c.metadata_json, '$.worker_key') = ?) \
@@ -1357,20 +1379,7 @@ pub async fn list_goals_for_worker(
     .fetch_all(pool)
     .await
     .map_err(|e| e.to_string())?;
-    Ok(rows
-        .into_iter()
-        .map(|r| ActiveGoal {
-            id: r.get("id"),
-            title: r.get("title"),
-            project_id: r.get("project_id"),
-            state: r
-                .get::<Option<String>, _>("state_binding")
-                .unwrap_or_default(),
-            assigned_to: r.get("assigned_to"),
-            created_at: r.get("created_at"),
-            updated_at: r.get("updated_at"),
-        })
-        .collect())
+    Ok(rows.into_iter().map(|r| active_goal_from_row(&r)).collect())
 }
 
 #[derive(Debug, Default)]

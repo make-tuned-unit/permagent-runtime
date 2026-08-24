@@ -52,6 +52,13 @@ pub async fn associate_person(
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
+    // Announced HERE so the REST route and the `associate_person_with_project`
+    // tool cannot disagree: the People panel refetches only on a bus frame.
+    crate::events::emit(crate::events::person_changed(
+        project_id,
+        entity_uuid,
+        "associated",
+    ));
     Ok(())
 }
 
@@ -67,7 +74,15 @@ pub async fn disassociate_person(
         .execute(pool)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(result.rows_affected() > 0)
+    let removed = result.rows_affected() > 0;
+    if removed {
+        crate::events::emit(crate::events::person_changed(
+            project_id,
+            entity_uuid,
+            "disassociated",
+        ));
+    }
+    Ok(removed)
 }
 
 /// List the people associated with a project, newest association first. Joins
@@ -309,6 +324,55 @@ mod tests {
         .await
         .unwrap()
         .id
+    }
+
+    /// AUDIT (N3, "the agent must drive the app"): the People panel refetches
+    /// ONLY on a `person_changed` bus frame — it has no poll backstop the way
+    /// goals and decisions do. So an association written without announcing it
+    /// is invisible in every open window until the user reloads. The REST route
+    /// used to emit and the `associate_person_with_project` tool did not; the
+    /// emit now lives on the writer, and this pins it there.
+    ///
+    /// The bus is a process-global, so this drains rather than assuming its
+    /// frame is the only one in flight.
+    fn next_change_for(
+        rx: &mut tokio::sync::broadcast::Receiver<crate::events::PermagentEvent>,
+        entity_uuid: &str,
+    ) -> Option<crate::events::PermagentEvent> {
+        while let Ok(event) = rx.try_recv() {
+            if event.event_type == crate::events::PermagentEventType::PersonChanged
+                && event.payload["entity_uuid"] == entity_uuid
+            {
+                return Some(event);
+            }
+        }
+        None
+    }
+
+    #[tokio::test]
+    async fn associating_and_disassociating_announce_on_the_event_bus() {
+        let pool = test_pool().await;
+        let project = a_project(&pool, "Bus").await;
+        let person = a_person(&pool, "rowan", "Rowan").await;
+
+        let mut rx = crate::events::subscribe();
+        associate_person(&pool, &project, &person, Some("owner"))
+            .await
+            .unwrap();
+        let event = next_change_for(&mut rx, &person).expect("associate must announce itself");
+        assert_eq!(event.payload["change"], "associated");
+        assert_eq!(event.payload["project_id"], project);
+
+        assert!(disassociate_person(&pool, &project, &person).await.unwrap());
+        let event = next_change_for(&mut rx, &person).expect("disassociate must announce itself");
+        assert_eq!(event.payload["change"], "disassociated");
+
+        // A delete that removed nothing changed nothing — no frame.
+        assert!(!disassociate_person(&pool, &project, &person).await.unwrap());
+        assert!(
+            next_change_for(&mut rx, &person).is_none(),
+            "a no-op delete must not wake every client"
+        );
     }
 
     async fn a_person(pool: &Pool<Sqlite>, slug: &str, name: &str) -> String {

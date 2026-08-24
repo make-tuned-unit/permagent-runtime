@@ -36,6 +36,15 @@ pub struct BrainSearchResult {
     pub timestamp: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// Progressive load: abstract | overview | full. Omitted on chat FTS hits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layer: Option<String>,
+    /// Quiet “why this?” — lexical score + layer. Never a vector distance.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// Stable memory key — used to deepen Abstract/Overview to Full.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -85,6 +94,9 @@ async fn query_fts(
                 score: 0.7,
                 timestamp: msg.timestamp,
                 session_id: Some(session_result.session_id.clone()),
+                layer: None,
+                why: None,
+                key: None,
             });
         }
     }
@@ -105,35 +117,48 @@ async fn query_spectral(
     };
 
     let recall_result = brain.recall(query, spectral::Visibility::Private).await?;
-
-    let mut results = Vec::new();
-    for (i, hit) in recall_result.memory_hits.into_iter().enumerate() {
-        // Spectral doesn't expose timestamps on recall hits.
-        // Use Utc::now() as a placeholder; filter by score floor instead.
-        let ts = Utc::now();
-
-        // Apply date filter if provided (best-effort — Spectral lacks native date support)
-        if let Some(ref s) = since {
-            if ts < *s {
-                continue;
-            }
+    let ts = Utc::now();
+    if let Some(ref s) = since {
+        if ts < *s {
+            return Ok(Vec::new());
         }
-        if let Some(ref u) = until {
-            if ts > *u {
-                continue;
-            }
+    }
+    if let Some(ref u) = until {
+        if ts > *u {
+            return Ok(Vec::new());
         }
+    }
 
-        let preview = truncate_preview(&hit.content, 200);
-        results.push(BrainSearchResult {
+    let sources: Vec<permagent::context_layers::AssembleSource<'_>> = recall_result
+        .memory_hits
+        .iter()
+        .map(|hit| permagent::context_layers::AssembleSource {
+            key: hit.key.as_str(),
+            abstract_text: hit.description.as_deref(),
+            content: hit.content.as_str(),
+            score: hit.signal_score,
+        })
+        .collect();
+    let layered = permagent::context_layers::assemble(
+        &sources,
+        permagent::context_layers::AssembleBudget::SEARCH,
+    );
+
+    let results = layered
+        .into_iter()
+        .enumerate()
+        .map(|(i, hit)| BrainSearchResult {
             source: "memory".to_string(),
             id: format!("spectral:{}", i),
-            preview,
-            score: hit.signal_score,
+            preview: truncate_preview(&hit.text, 200),
+            score: hit.score,
             timestamp: ts,
             session_id: None,
-        });
-    }
+            layer: Some(hit.layer.as_str().to_string()),
+            why: Some(hit.why),
+            key: Some(hit.key),
+        })
+        .collect();
     Ok(results)
 }
 
@@ -265,6 +290,10 @@ struct GraphMemory {
     age: f64,
     weight: f64,
     timestamp: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    layer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    why: Option<String>,
 }
 
 /// An entity→entity edge (graph triple) between two emitted entities —
@@ -519,6 +548,8 @@ async fn brain_graph(
                         age,
                         weight: signal_score.clamp(0.0, 1.0),
                         timestamp,
+                        layer: None,
+                        why: None,
                     });
                 }
             }
@@ -556,6 +587,8 @@ async fn brain_graph(
                         age,
                         weight: hit.signal_score.clamp(0.0, 1.0),
                         timestamp,
+                        layer: None,
+                        why: None,
                     });
                 }
                 memories
@@ -679,6 +712,8 @@ async fn brain_graph(
             }
         }
     }
+
+    apply_assemble_layers(&mut memories);
 
     Ok(Json(GraphResponse {
         self_node,
@@ -868,6 +903,7 @@ fn query_browse_memories(
     let mut memories: Vec<GraphMemory> = rows.filter_map(|r| r.ok()).collect();
     let has_more = memories.len() > limit;
     memories.truncate(limit);
+    apply_assemble_layers(&mut memories);
 
     Ok(MemoriesResponse {
         memories,
@@ -939,6 +975,7 @@ fn query_fts_memories(
     let mut memories: Vec<GraphMemory> = rows.filter_map(|r| r.ok()).collect();
     let has_more = memories.len() > limit;
     memories.truncate(limit);
+    apply_assemble_layers(&mut memories);
 
     Ok(MemoriesResponse {
         memories,
@@ -982,7 +1019,102 @@ fn row_to_graph_memory(
         age,
         weight: signal_score.clamp(0.0, 1.0),
         timestamp,
+        layer: None,
+        why: None,
     })
+}
+
+/// Stamp Abstract/Overview/Full on graph/list rows so the side panel can deepen.
+fn apply_assemble_layers(memories: &mut [GraphMemory]) {
+    if memories.is_empty() {
+        return;
+    }
+    let keys: Vec<String> = memories
+        .iter()
+        .map(|m| m.key.clone().unwrap_or_else(|| m.id.clone()))
+        .collect();
+    let abstracts: Vec<Option<String>> = memories.iter().map(|m| m.description.clone()).collect();
+    let contents: Vec<String> = memories.iter().map(|m| m.text.clone()).collect();
+    let scores: Vec<f64> = memories.iter().map(|m| m.weight).collect();
+    let sources: Vec<permagent::context_layers::AssembleSource<'_>> = keys
+        .iter()
+        .zip(abstracts.iter())
+        .zip(contents.iter())
+        .zip(scores.iter())
+        .map(
+            |(((k, a), c), s)| permagent::context_layers::AssembleSource {
+                key: k,
+                abstract_text: a.as_deref(),
+                content: c,
+                score: *s,
+            },
+        )
+        .collect();
+    let layered = permagent::context_layers::assemble(
+        &sources,
+        permagent::context_layers::AssembleBudget::SEARCH,
+    );
+    let by_key: std::collections::HashMap<String, permagent::context_layers::LayeredHit> =
+        layered.into_iter().map(|h| (h.key.clone(), h)).collect();
+    for (mem, key) in memories.iter_mut().zip(keys.iter()) {
+        if let Some(hit) = by_key.get(key) {
+            mem.text = hit.text.clone();
+            mem.layer = Some(hit.layer.as_str().to_string());
+            mem.why = Some(hit.why.clone());
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct MemoryByKeyQuery {
+    key: String,
+}
+
+/// GET /api/brain/memory?key= — Full text for a side-panel deepen.
+async fn brain_memory_by_key(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<MemoryByKeyQuery>,
+) -> Result<Json<GraphMemory>, crate::routes::errors::ErrorResponse> {
+    let key = params.key.trim();
+    if key.is_empty() {
+        return Err(crate::routes::errors::ErrorResponse::bad_request(
+            "key is required",
+        ));
+    }
+    let brain = state.brain.as_ref().ok_or_else(|| {
+        crate::routes::errors::ErrorResponse::service_unavailable("Brain is not ready")
+    })?;
+    let mem = brain
+        .get_memory_by_key(key)
+        .await
+        .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?
+        .ok_or_else(|| crate::routes::errors::ErrorResponse::not_found("memory not found"))?;
+    let now = Utc::now();
+    let max_age_secs: f64 = 90.0 * 24.0 * 3600.0;
+    let age = mem
+        .created_at
+        .as_deref()
+        .and_then(|s| {
+            s.parse::<DateTime<Utc>>().ok().or_else(|| {
+                chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                    .ok()
+                    .map(|dt| dt.and_utc())
+            })
+        })
+        .map(|ts| ((now - ts).num_seconds().max(0) as f64 / max_age_secs).clamp(0.0, 1.0))
+        .unwrap_or(0.5);
+    Ok(Json(GraphMemory {
+        id: mem.id,
+        key: Some(mem.key),
+        text: mem.content,
+        description: mem.description,
+        ent: Vec::new(),
+        age,
+        weight: mem.signal_score.clamp(0.0, 1.0),
+        timestamp: mem.created_at.unwrap_or_else(|| now.to_rfc3339()),
+        layer: Some("full".to_string()),
+        why: Some("requested full text".to_string()),
+    }))
 }
 
 pub fn routes(state: Arc<AppState>) -> Router {
@@ -990,6 +1122,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/api/brain/search", get(brain_search))
         .route("/api/brain/graph", get(brain_graph))
         .route("/api/brain/memories", get(brain_memories))
+        .route("/api/brain/memory", get(brain_memory_by_key))
         .with_state(state)
 }
 

@@ -819,14 +819,10 @@ async fn create_person_handler(
 
     overlay_graph_attributes(state.brain.as_ref(), vec![&mut person]).await;
 
-    // #629: peopleRev is client-local, so every other open client (and the phone)
-    // only learns about this person via the bus. No project scope here — the
-    // directory is global; livenessSync dispatches on event type, not payload.
-    permagent::events::emit(permagent::events::person_changed(
-        "",
-        &person.entity_uuid,
-        "created",
-    ));
+    // `people_create::create_person` emits `person_changed(.., "created")` —
+    // the one create path announces itself, so the Henry `create_person` tool
+    // and the Librarian extraction reach open clients the same way this route
+    // does. Do not re-emit here.
 
     let status = if created {
         StatusCode::CREATED

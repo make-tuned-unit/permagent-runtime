@@ -169,15 +169,31 @@ impl ContextBuilder {
                 ..Default::default()
             };
             match brain.recall_cascade(&q, &recognition_ctx, &cascade_config) {
-                Ok(result) => result
-                    .merged_hits
-                    .into_iter()
-                    .map(|hit| RecalledMemory {
-                        content: hit.content,
-                        signal_score: hit.signal_score,
-                        source: hit.source,
-                    })
-                    .collect(),
+                Ok(result) => {
+                    let sources: Vec<crate::context_layers::AssembleSource<'_>> = result
+                        .merged_hits
+                        .iter()
+                        .map(|hit| crate::context_layers::AssembleSource {
+                            key: hit.key.as_str(),
+                            abstract_text: hit.description.as_deref(),
+                            content: hit.content.as_str(),
+                            score: hit.signal_score,
+                        })
+                        .collect();
+                    let layered = crate::context_layers::assemble(
+                        &sources,
+                        crate::context_layers::AssembleBudget::AMBIENT,
+                    );
+                    layered
+                        .into_iter()
+                        .map(|hit| RecalledMemory {
+                            content: hit.text,
+                            signal_score: hit.score,
+                            source: Some(hit.layer.as_str().to_string()),
+                            layer: hit.layer,
+                        })
+                        .collect()
+                }
                 Err(e) => {
                     tracing::warn!(
                         target: "permagent::activity::context_builder",
@@ -261,6 +277,8 @@ pub struct RecalledMemory {
     pub content: String,
     pub signal_score: f64,
     pub source: Option<String>,
+    #[serde(default)]
+    pub layer: crate::context_layers::ContextLayer,
 }
 
 /// Render a Digest into the `<ambient_context>` system prompt block.
@@ -353,7 +371,8 @@ pub fn render_ambient_context(digest: &Digest) -> String {
         let mut lines = vec!["Recalled memories relevant to this query:".to_string()];
         for mem in &digest.recalled_memories {
             lines.push(format!(
-                "- \"{}\" (score: {:.2})",
+                "- [{}] \"{}\" (score: {:.2})",
+                mem.layer.as_str(),
                 mem.content.chars().take(200).collect::<String>(),
                 mem.signal_score
             ));

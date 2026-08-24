@@ -27,6 +27,8 @@ export interface ActiveGoal {
   assigned_to: string | null;
   created_at: string;
   updated_at: string;
+  routing_note?: string | null;
+  hold_note?: string | null;
 }
 
 interface ActiveGoalsResponse {
@@ -45,7 +47,8 @@ function sameGoals(a: ActiveGoal[], b: ActiveGoal[]): boolean {
   return a.every((g, i) => {
     const o = b[i];
     return g.id === o.id && g.state === o.state && g.title === o.title
-      && g.assigned_to === o.assigned_to && g.updated_at === o.updated_at;
+      && g.assigned_to === o.assigned_to && g.updated_at === o.updated_at
+      && g.routing_note === o.routing_note && g.hold_note === o.hold_note;
   });
 }
 

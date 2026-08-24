@@ -578,13 +578,9 @@ async fn associate_person_handler(
             ),
         }
     }
-    // #629: cross-client bump for the People panel — peopleRev is client-local,
-    // so the second desktop only learns about this association via the bus.
-    events::emit(events::person_changed(
-        &project.id,
-        &req.entity_uuid,
-        "associated",
-    ));
+    // The `person_changed(.., "associated")` frame is emitted by
+    // `project_association::associate_person` itself, so the agent tool path
+    // announces it too. Do not re-emit here.
     Ok(StatusCode::CREATED)
 }
 
@@ -616,8 +612,8 @@ async fn disassociate_person_handler(
     if !removed {
         return Err((StatusCode::NOT_FOUND, "Association not found".to_string()));
     }
-    // #629 liveness: broadcast so other connected clients refresh the people panel.
-    events::emit(events::person_changed(&id, &entity_uuid, "disassociated"));
+    // `disassociate_person` emits the `person_changed(.., "disassociated")`
+    // frame itself — one writer, one announcement.
 
     // #595: best-effort works_on residue cleanup. Read-only identity
     // resolution (never creates nodes on a delete path), then a scoped
@@ -1656,6 +1652,7 @@ pub async fn reindex_project_code(
     // Tree-sitter parsing is CPU-bound (rayon) — never run it on the async
     // executor. Build the map off-thread. `max_depth = 0` = the whole tree
     // (WalkBuilder still skips .gitignore'd artifacts like node_modules/target).
+    let notes_root = root.clone();
     let map = tokio::task::spawn_blocking(move || analyze::build_code_map(&root, 0))
         .await
         .map_err(|e| {
@@ -1663,8 +1660,47 @@ pub async fn reindex_project_code(
             CodeIndexError::ParsePanic(e.to_string())
         })?;
 
+    // Markdown/text project knowledge is useful even when tree-sitter finds no
+    // source language. Run this before the NoSourceFiles decision so a notes-only
+    // project still gets durable, project-scoped Brain memories.
+    let text_digests = match reader::ingest_tree_for_project(&project.id, &notes_root).await {
+        Ok(digests) => digests,
+        Err(e) => {
+            tracing::warn!(project = %project.id, error = %e, "tree ingest of project notes failed");
+            Vec::new()
+        }
+    };
+
+    for digest in &text_digests {
+        if digest.is_visual {
+            continue;
+        }
+        if let Ok(Some(mem)) = brain.get_memory_by_key(&digest.memory_key).await {
+            if let Err(e) = project_association::associate_memory(pool, &project.id, &mem.id).await
+            {
+                tracing::warn!(
+                    project = %project.id,
+                    key = %digest.memory_key,
+                    error = %e,
+                    "tree ingest association failed"
+                );
+            }
+        }
+    }
+
     if map.files == 0 {
-        return Err(CodeIndexError::NoSourceFiles);
+        let Some(first) = text_digests.first() else {
+            return Err(CodeIndexError::NoSourceFiles);
+        };
+        tracing::info!(
+            project = %project.id,
+            files = text_digests.len(),
+            "project text indexed into brain (no parseable source files)"
+        );
+        return Ok(CodeIndexOutcome {
+            files: text_digests.len(),
+            memory_key: first.memory_key.clone(),
+        });
     }
 
     let memory_key = code_map_memory_key(&project.id);
@@ -2284,6 +2320,18 @@ mod tests {
             code_map_memory_key("abc-123")
         );
     }
+
+    // `project_reindex_scopes_same_named_files_and_replaces_edits` and
+    // `note_only_project_reindex_succeeds_before_no_source_files` do NOT live
+    // here. Both need a real Brain, and `state.brain` is always `None` in this
+    // lib-test binary: `test_support::test_root` creates brain_dir but never
+    // writes `ontology.toml`, and `AppState::new` mounts a Brain only when both
+    // exist. That is deliberate — hundreds of tests in this binary are written
+    // against a brainless AppState — so the two reindex tests live in their own
+    // integration binaries, which own their process-wide PERMAGENT_PATH_ROOT
+    // and write the ontology:
+    //   tests/project_reindex_scoping.rs
+    //   tests/project_reindex_notes_only.rs
 
     #[tokio::test(flavor = "multi_thread")]
     #[serial]

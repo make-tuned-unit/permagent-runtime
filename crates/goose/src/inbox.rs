@@ -27,11 +27,21 @@ pub const INBOX_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
         display_name: "Downloads inbox",
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
         what_it_does:
-            "A Permagent-owned intake folder — files you download in the in-app browser land here (on disk under ~/.permagent/inbox/, with a row in your database) instead of disappearing into Finder",
+            "A Permagent-owned intake folder — files you download in the in-app browser land here (on disk under ~/.permagent/inbox/, with a row in your database) instead of disappearing into Finder. Text and markdown you drop on a project become searchable Brain memories",
         why_it_matters:
-            "It is the hub for getting files into Permagent; once a download lands here you can surface, ingest, or route it without a Finder round-trip",
+            "It is the hub for getting files into Permagent; once a download lands here you can surface, ingest, or route it without a Finder round-trip. Open Inbox or Projects, then Brain, to prove a file is recallable",
         state_source: crate::agents::self_knowledge::StateSource::Static,
-        teaching: &[],
+        teaching: &[
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Open Inbox",
+                body: "Show them the Downloads inbox — files land here, and project documents become searchable memory in Brain.",
+                open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                    tab: "Inbox",
+                    section: None,
+                }),
+                confirm: None,
+            },
+        ],
     };
 
 // ── Data types ─────────────────────────────────────────────────────────────

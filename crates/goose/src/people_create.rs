@@ -63,5 +63,19 @@ pub async fn create_person(
         source = source.as_str(),
         "Runtime person created (provenance + graph node + directory row)"
     );
+
+    // Publish HERE, not in the callers. `peopleRev` is client-local and the
+    // People surfaces have no poll backstop (unlike goals/decisions), so a
+    // person that reaches the database without reaching the bus is invisible
+    // in every open window — including the one that asked for it — until the
+    // user reloads. The REST route used to emit and the `create_person` tool
+    // did not, which is exactly how an agent-created person read as a no-op.
+    // This is the one create path, so this is the one place that announces it.
+    crate::events::emit(crate::events::person_changed(
+        "",
+        &person.entity_uuid,
+        "created",
+    ));
+
     Ok(person)
 }

@@ -306,6 +306,19 @@ pub fn worker_live_state_for(
         } else {
             "off (initiative_enabled=false)".to_string()
         }),
+        // ALWAYS described (`hides_from_brief == false`), so the brief must say
+        // whether the sweep is actually running. Without this arm the Steward
+        // rendered its full editorial prose — "sweeping repositories", "files
+        // merged-branch deletions as approvals" — with no state line at all,
+        // and an agent reading that reports a switched-OFF feature as active.
+        // `gated_and_always_described_workers_report_their_off_state` pins it.
+        id if id == GIT_STEWARD_FEATURE_ID => Some(if flags.steward_scan_enabled {
+            "git-health sweep on — merged-branch and worktree cleanups file as Decision-Inbox approvals"
+                .to_string()
+        } else {
+            "git-health sweep off (steward_scan_enabled=false) — CI and dirty-tree briefings only, no cleanup proposals"
+                .to_string()
+        }),
         "strix" => Some(if flags.strix_enabled {
             "on — security sweeps every 24h; a missed Docker/strix preflight is a skip, not a clean scan".to_string()
         } else {
@@ -923,6 +936,64 @@ mod tests {
             assert!(
                 WORKER_DESCRIPTORS.iter().any(|d| d.id == id),
                 "{id} names no worker descriptor"
+            );
+        }
+    }
+
+    /// AUDIT BLOCKER (N2/d): an explicitly DISABLED feature must never read as
+    /// active.
+    ///
+    /// A gate with `hides_from_brief == false` keeps its worker in the brief
+    /// whether the switch is on or off — that is deliberate, because the user
+    /// has to be able to learn the feature exists in order to switch it on. The
+    /// cost of that choice is that the worker's editorial prose ("sweeping
+    /// repositories", "watching for repeated commands") is the ONLY thing the
+    /// agent sees unless a live-state line contradicts it. The Git Steward
+    /// shipped in exactly that state: always described, no state arm, so a
+    /// switched-off sweep read as a running one.
+    ///
+    /// So: every always-described gate MUST produce a live-state line, that
+    /// line must differ between on and off, and the off line must name the key
+    /// the user needs to flip. Hidden-when-off gates are exempt — absence is
+    /// already an honest report.
+    #[test]
+    fn gated_and_always_described_workers_report_their_off_state() {
+        for d in WORKER_DESCRIPTORS {
+            let Some(gate) = worker_gate(d.id) else {
+                continue;
+            };
+            if gate.hides_from_brief {
+                continue;
+            }
+            assert_eq!(
+                d.state_source,
+                StateSource::Queryable,
+                "{} is always described and gated, so it must be Queryable to \
+                 carry an on/off state line",
+                d.id
+            );
+            let off =
+                worker_live_state_for(d, None, FeatureFlags::default()).unwrap_or_else(|| {
+                    panic!(
+                        "{} is always described but reports no live state — a user \
+                     who switched {} off would still read it as active",
+                        d.id, gate.key
+                    )
+                });
+            let on = worker_live_state_for(d, None, all_flags_on())
+                .unwrap_or_else(|| panic!("{} reports no live state with its gate on", d.id));
+            assert_ne!(
+                off, on,
+                "{}'s live state does not change with {} — it is not reporting \
+                 the switch at all",
+                d.id, gate.key
+            );
+            assert!(
+                off.contains(gate.key),
+                "{}'s off-state line ({off:?}) must name {} so the user knows \
+                 which switch to flip",
+                d.id,
+                gate.key
             );
         }
     }
@@ -1709,6 +1780,10 @@ mod tests {
             brief.contains("supervised approval"),
             "orchestrator brief must mention supervised approval"
         );
+        assert!(
+            brief.contains("The Financier"),
+            "orchestrator brief must say money questions go to The Financier"
+        );
     }
 
     #[test]
@@ -1866,6 +1941,34 @@ mod tests {
         assert!(
             brief.contains("different-model reviewer adversarially checks the diff"),
             "the coding-harness self-knowledge must describe the independent reviewer gate"
+        );
+        assert!(
+            brief.contains("held and given a plan"),
+            "the coding-harness self-knowledge must describe the premature-done hold"
+        );
+        assert!(
+            brief.contains("harness tool transcripts"),
+            "the cost optimizer must name transcript signals as corroboration, not a swap"
+        );
+        assert!(
+            brief.contains("never swap the interactive main-loop model"),
+            "the cost optimizer must keep the main-loop model swap forbidden"
+        );
+
+        let brain = find_descriptor("brain").expect("brain must be discoverable");
+        assert!(
+            brain.what_it_does.contains("layered")
+                || brain.what_it_does.contains("abstracts first"),
+            "brain self-knowledge must teach progressive layers"
+        );
+        let inbox = find_descriptor("downloads_inbox").expect("downloads inbox");
+        assert!(
+            inbox.what_it_does.contains("searchable Brain"),
+            "inbox self-knowledge must say dropped files become searchable memory"
+        );
+        assert!(
+            !inbox.teaching.is_empty(),
+            "inbox must carry a teaching step that opens Inbox"
         );
     }
 
