@@ -3,6 +3,7 @@
 PROVIDER_CONFIG="
 openrouter -> google/gemini-2.5-pro|anthropic/claude-sonnet-4.5|qwen/qwen3-coder:exacto|z-ai/glm-4.6:exacto|nvidia/nemotron-3-nano-30b-a3b
 xai -> grok-3
+zai -> glm-4.7
 openai -> gpt-4o|gpt-4o-mini|gpt-3.5-turbo|gpt-5
 anthropic -> claude-sonnet-4-5-20250929|claude-opus-4-5-20251101
 google -> gemini-2.5-pro|gemini-2.5-flash|gemini-3-pro-preview|gemini-3-flash-preview
@@ -60,6 +61,7 @@ is_provider_available() {
   case "$1" in
     openrouter)      has_env OPENROUTER_API_KEY ;;
     xai)             has_env XAI_API_KEY ;;
+    zai)             has_env ZAI_API_KEY ;;
     openai)          has_env OPENAI_API_KEY ;;
     anthropic)       has_env ANTHROPIC_API_KEY ;;
     google)          has_env GOOGLE_API_KEY ;;

@@ -240,6 +240,24 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     tier: "standard",
   },
   {
+    id: "zai",
+    displayName: "Z.AI",
+    category: "model",
+    description: "GLM models",
+    setupMethod: "single_api_key",
+    envVar: "ZAI_API_KEY",
+    fields: [
+      {
+        key: "ZAI_API_KEY",
+        label: "API Key",
+        secret: true,
+        required: true,
+        placeholder: "Paste your API key",
+      },
+    ],
+    tier: "standard",
+  },
+  {
     id: "azure",
     displayName: "Azure OpenAI",
     category: "model",

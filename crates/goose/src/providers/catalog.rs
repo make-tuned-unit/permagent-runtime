@@ -215,28 +215,40 @@ pub fn get_provider_template(provider_id: &str) -> Option<ProviderTemplate> {
 mod tests {
     use super::*;
 
+    /// `zai` used to be catalog-only (an "add a custom provider" entry). It is now
+    /// a NATIVE provider (`providers/zai.rs`, registered in `init.rs`), so
+    /// `get_providers_by_format` deliberately filters it out — offering a
+    /// built-in provider as a custom one would create two ways to configure the
+    /// same thing. The template lookup is NOT filtered and still resolves, which
+    /// is what the custom-provider flow for the Coding Plan endpoint relies on.
     #[tokio::test]
-    async fn test_zai_provider() {
+    async fn zai_is_native_and_therefore_not_in_the_custom_catalog() {
+        let native = super::super::init::providers()
+            .await
+            .into_iter()
+            .map(|(m, _)| m.name)
+            .collect::<std::collections::HashSet<_>>();
+        assert!(
+            native.contains("zai"),
+            "zai must be registered as a native provider"
+        );
+
         let openai_providers = get_providers_by_format(ProviderFormat::OpenAI).await;
-        let zai = openai_providers.iter().find(|p| p.id == "zai");
-        assert!(zai.is_some(), "z.ai should be in catalog");
+        assert!(
+            !openai_providers.iter().any(|p| p.id == "zai"),
+            "a native provider must not also be offered as a custom-catalog entry"
+        );
 
-        let zai = zai.unwrap();
-        println!("Z.AI: {} models", zai.model_count);
-        assert!(zai.model_count > 0, "z.ai should have models");
+        // The separate Coding Plan endpoint is not a native provider, so it stays
+        // in the catalog for operators who buy that plan.
+        assert!(
+            openai_providers.iter().any(|p| p.id == "zai-coding-plan"),
+            "zai-coding-plan should remain in the catalog"
+        );
 
-        let template = get_provider_template("zai");
-        assert!(template.is_some(), "z.ai should have a template");
-
-        let template = template.unwrap();
-        println!("Z.AI template: {} models", template.models.len());
-        for model in template.models.iter().take(3) {
-            println!(
-                "  - {} ({}K context)",
-                model.name,
-                model.context_limit / 1000
-            );
-        }
+        // Templates are keyed off the bundled provider metadata, not the catalog
+        // filter, so the zai template still resolves with its models.
+        let template = get_provider_template("zai").expect("z.ai should have a template");
         assert!(
             !template.models.is_empty(),
             "z.ai template should have models"
