@@ -430,10 +430,8 @@ impl MarkdownBuffer {
                 }
             }
             "]" => {}
-            ")" => {
-                if state.in_link_url {
-                    state.in_link_url = false;
-                }
+            ")" if state.in_link_url => {
+                state.in_link_url = false;
             }
             _ => {}
         }

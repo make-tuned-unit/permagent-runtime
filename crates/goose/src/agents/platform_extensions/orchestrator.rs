@@ -1711,7 +1711,7 @@ impl OrchestratorClient {
         };
 
         // Most recent first
-        sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        sessions.sort_by_key(|s| std::cmp::Reverse(s.updated_at));
         let total = sessions.len();
         sessions.truncate(limit);
 
@@ -5341,14 +5341,14 @@ fn messages_have_successful_verify(
                     pending.insert(request.id.as_str());
                 }
             }
-            MessageContent::ToolResponse(response) if pending.remove(response.id.as_str()) => {
-                if response
-                    .tool_result
-                    .as_ref()
-                    .is_ok_and(|result| result.is_error != Some(true))
-                {
-                    return true;
-                }
+            MessageContent::ToolResponse(response)
+                if pending.remove(response.id.as_str())
+                    && response
+                        .tool_result
+                        .as_ref()
+                        .is_ok_and(|result| result.is_error != Some(true)) =>
+            {
+                return true;
             }
             _ => {}
         }

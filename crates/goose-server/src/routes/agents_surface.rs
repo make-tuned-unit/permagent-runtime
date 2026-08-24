@@ -780,7 +780,8 @@ async fn work(
             } else {
                 let placeholders = vec!["?"; goal_ids.len()].join(",");
                 let sql = format!("SELECT COALESCE(SUM(cost_usd), 0.0) AS total, COUNT(*) AS calls, COALESCE(SUM(CASE WHEN is_estimated = 1 THEN 1 ELSE 0 END), 0) AS estimated FROM cost_ledger WHERE goal_id IN ({placeholders})");
-                let mut q = sqlx::query(&sql);
+                // `sql` interpolates only "?" placeholders (count = goal_ids.len()).
+                let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
                 for goal_id in &goal_ids {
                     q = q.bind(goal_id);
                 }

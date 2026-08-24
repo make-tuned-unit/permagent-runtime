@@ -27,7 +27,7 @@ pub mod analytics_drain;
 pub mod app_catalog;
 pub mod auth;
 pub mod automation;
-pub mod backup;
+pub use permagent::backup;
 pub mod brain_ops;
 pub mod configuration;
 pub mod device_registry;

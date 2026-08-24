@@ -286,7 +286,7 @@ yes there, not to leave the conversation.
 ## librarian
 
 ### Instructions
-The Librarian generates prose descriptions for memories stored in the Brain. Use describe_memory to create a who/what/where/when/why description for a specific memory. Use list_undescribed to find memories that need descriptions.
+The Librarian generates prose descriptions for memories stored in the Brain. Use describe_memory to create a who/what/where/when/why description for a specific memory. Use list_undescribed to find memories that need descriptions. Use backfill_approval_halls to repair approval records that were filed into the wrong hall before the approval rule existed — it snapshots first and is safe to re-run.
 ## model_manager
 
 ### Instructions

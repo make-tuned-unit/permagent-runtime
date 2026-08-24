@@ -33,7 +33,7 @@ pub fn handle_project_default() -> Result<()> {
     }
 
     // Sort projects by last_accessed (newest first)
-    projects.sort_by(|a, b| b.last_accessed.cmp(&a.last_accessed));
+    projects.sort_by_key(|p| std::cmp::Reverse(p.last_accessed));
 
     // Get the most recent project
     let project = &projects[0];
@@ -172,7 +172,7 @@ pub fn handle_projects_interactive() -> Result<()> {
     }
 
     // Sort projects by last_accessed (newest first)
-    projects.sort_by(|a, b| b.last_accessed.cmp(&a.last_accessed));
+    projects.sort_by_key(|p| std::cmp::Reverse(p.last_accessed));
 
     // Format project paths for display
     let project_choices: Vec<(String, String)> = projects

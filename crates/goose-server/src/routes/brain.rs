@@ -1,7 +1,7 @@
 use crate::state::AppState;
 use axum::{
     extract::{Query, State},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use chrono::{DateTime, Utc};
@@ -1117,12 +1117,45 @@ async fn brain_memory_by_key(
     }))
 }
 
+/// One-shot repair: move approval records misfiled into the `event` hall into
+/// `fact`.
+///
+/// See [`permagent::hall_backfill`] for what this does and why. Snapshots all
+/// three brain databases before it writes anything, and is safe to re-run — a
+/// second call selects zero rows.
+///
+/// The response carries the before/after `COUNT(*)` verbatim. A non-zero
+/// `after` means the repair did not reach every row; the ids are in `missed`
+/// and `errors`. Do not read `repaired` as success on its own.
+#[utoipa::path(post, path = "/api/brain/backfill-approval-halls",
+    responses(
+        (status = 200, description = "Approval records moved from the event hall to fact; before/after counts and per-row failures"),
+        (status = 503, description = "Brain is not ready"),
+    )
+)]
+async fn backfill_approval_halls(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<permagent::hall_backfill::HallBackfillReport>, crate::routes::errors::ErrorResponse>
+{
+    let brain = state.brain.as_ref().ok_or_else(|| {
+        crate::routes::errors::ErrorResponse::service_unavailable("Brain is not ready")
+    })?;
+    let report = permagent::hall_backfill::run_on_default_paths(brain)
+        .await
+        .map_err(crate::routes::errors::ErrorResponse::internal)?;
+    Ok(Json(report))
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/brain/search", get(brain_search))
         .route("/api/brain/graph", get(brain_graph))
         .route("/api/brain/memories", get(brain_memories))
         .route("/api/brain/memory", get(brain_memory_by_key))
+        .route(
+            "/api/brain/backfill-approval-halls",
+            post(backfill_approval_halls),
+        )
         .with_state(state)
 }
 

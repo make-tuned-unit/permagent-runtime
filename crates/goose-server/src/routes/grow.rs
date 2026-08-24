@@ -186,8 +186,8 @@ fn levers(s: &GrowthSignals) -> Vec<Lever> {
     // builder gap is shipping in silence. Evidence is the shipped count; score
     // is how well your posts cover what you've shipped (posts as a % of
     // shipped, capped at 100).
-    if s.shipped > 0 {
-        let score = (s.posts.saturating_mul(100) / s.shipped).min(100);
+    if let Some(score) = s.posts.saturating_mul(100).checked_div(s.shipped) {
+        let score = score.min(100);
         out.push(Lever {
             key: "announce",
             evidence_count: s.shipped,

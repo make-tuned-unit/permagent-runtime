@@ -627,7 +627,8 @@ pub async fn list_cards(
 
     sql.push_str(" ORDER BY column_id, position ASC");
 
-    let mut query = sqlx::query(&sql);
+    // `sql` only appends fixed literal fragments above; caller values are bound.
+    let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
     for b in &binds {
         query = query.bind(b);
     }
@@ -1126,7 +1127,9 @@ pub async fn list_due_cards(pool: &Pool<Sqlite>) -> Result<Vec<DueCard>, String>
         dismissed = DUE_DISMISSED_KEY,
         terminal = placeholders,
     );
-    let mut q = sqlx::query(&sql);
+    // `sql` interpolates only the const keys above and "?" placeholders
+    // (count = TERMINAL_COLUMN_NAMES.len()) — no external data in the SQL text.
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
     for name in TERMINAL_COLUMN_NAMES {
         q = q.bind(*name);
     }
@@ -1318,7 +1321,8 @@ pub async fn list_active_goals(pool: &Pool<Sqlite>) -> Result<Vec<ActiveGoal>, S
          ORDER BY c.updated_at DESC",
         placeholders
     );
-    let mut q = sqlx::query(&sql);
+    // `sql` interpolates only "?" placeholders (count = ACTIVE_BINDINGS.len()).
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
     for b in GoalState::ACTIVE_BINDINGS {
         q = q.bind(*b);
     }

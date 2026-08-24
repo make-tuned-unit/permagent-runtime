@@ -596,6 +596,33 @@ impl SafeBrain {
             .map_err(Into::into)
     }
 
+    /// Set the **hall** on an existing memory, re-hashing the constellation
+    /// fingerprints it participates in so TACT tier-1 routes on the new hall
+    /// (Spectral R40, #298).
+    ///
+    /// Returns `Ok(false)` for an unknown id — a miss, not an error. Callers
+    /// that are correcting a known row MUST treat `false` as a failure to
+    /// apply and report it, rather than folding it into a success count: a
+    /// silent miss is how a backfill reports "done" over rows it never
+    /// touched.
+    ///
+    /// `hall` must be one of the default vocabulary — `fact`, `preference`,
+    /// `discovery`, `advice`, `rule`, `event`. Spectral does not validate it,
+    /// so an unrecognised value is stored verbatim and will simply never match
+    /// a hall rule.
+    ///
+    /// Descriptions never feed recognition, and neither does this: the hall is
+    /// a routing axis over content that is already stored.
+    pub async fn set_hall(&self, id: &str, hall: &str) -> anyhow::Result<bool> {
+        let brain = self.inner.clone();
+        let id = id.to_string();
+        let hall = hall.to_string();
+        tokio::task::spawn_blocking(move || brain.set_hall(&id, &hall))
+            .await
+            .map_err(|e| anyhow::anyhow!("brain task panicked: set_hall: {e}"))?
+            .map_err(Into::into)
+    }
+
     /// Create (or idempotently return) a **person** node in the graph, returning
     /// its bare 64-hex `EntityId` — the people-bridge key.
     ///
@@ -975,12 +1002,14 @@ impl SafeBrain {
     /// a predicate admits several domains, or where predicate-derived inference
     /// would pick the wrong type.
     ///
-    /// **Provenance is not carried yet.** Spectral is adding
-    /// `assert_typed_from(memory_id, …)`, which threads the memory a triple was
-    /// extracted from into the write itself. When that pin lands, switch this
-    /// wrapper over to it and take the memory id as a parameter. Do NOT grow a
-    /// provenance side-table here in the meantime: an unsourced triple is the
-    /// accepted interim state; a second source of truth for provenance is not.
+    /// **This overload carries no provenance.** Use
+    /// [`assert_typed_from`](Self::assert_typed_from) instead wherever the
+    /// source memory is known — it threads the memory a triple was extracted
+    /// from into the write itself, which is what the Librarian RELATIONS pass
+    /// (R43) needs. This bare form remains for the case where a triple has no
+    /// single source memory. Do NOT grow a provenance side-table alongside
+    /// either one: a second source of truth for provenance is not an
+    /// improvement on an unsourced triple.
     ///
     /// No production caller yet, by design — this is the write seam the
     /// Librarian RELATIONS extraction pass (R43) will call, landed ahead of it
@@ -1009,6 +1038,61 @@ impl SafeBrain {
         .await
         .map_err(|e| anyhow::anyhow!("brain task panicked: assert_typed: {e}"))?
         .map_err(Into::into)
+    }
+
+    /// [`assert_typed`](Self::assert_typed), with the source memory threaded
+    /// into the write (Spectral R43a, #299).
+    ///
+    /// `memory_id` is the memory the triple was extracted FROM. Spectral
+    /// records it as the triple's provenance, so
+    /// [`triples_from_memory`](Self::triples_from_memory) can later answer
+    /// "what did we derive from this?" — and so a retracted memory's triples
+    /// can be found rather than orphaned.
+    ///
+    /// Prefer this over `assert_typed` whenever the source is known. No
+    /// production caller yet, by design: this is the write seam the Librarian
+    /// RELATIONS extraction pass (R43) will call, landed ahead of it so that
+    /// work starts against a reviewed async boundary.
+    pub async fn assert_typed_from(
+        &self,
+        memory_id: String,
+        subject: (String, String),
+        predicate: String,
+        object: (String, String),
+        confidence: f64,
+        visibility: spectral::Visibility,
+    ) -> anyhow::Result<spectral::AssertResult> {
+        let brain = self.inner.clone();
+        tokio::task::spawn_blocking(move || {
+            let (subject_type, subject_mention) = subject;
+            let (object_type, object_mention) = object;
+            brain.assert_typed_from(
+                &memory_id,
+                (&subject_type, &subject_mention),
+                &predicate,
+                (&object_type, &object_mention),
+                confidence,
+                visibility,
+            )
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("brain task panicked: assert_typed_from: {e}"))?
+        .map_err(Into::into)
+    }
+
+    /// The live triples whose provenance names `memory_id` as their source
+    /// (Spectral R43a, #299) — the read side of
+    /// [`assert_typed_from`](Self::assert_typed_from).
+    pub async fn triples_from_memory(
+        &self,
+        memory_id: &str,
+    ) -> anyhow::Result<Vec<spectral::graph::graph_store::Triple>> {
+        let brain = self.inner.clone();
+        let memory_id = memory_id.to_string();
+        tokio::task::spawn_blocking(move || brain.triples_from_memory(&memory_id))
+            .await
+            .map_err(|e| anyhow::anyhow!("brain task panicked: triples_from_memory: {e}"))?
+            .map_err(Into::into)
     }
 
     /// List all graph triples touching a person whose other endpoint is also a

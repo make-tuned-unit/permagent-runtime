@@ -166,7 +166,12 @@ impl DbTarget {
         }
     }
 
-    pub(crate) fn label(&self) -> &str {
+    /// Human-facing `"<subdir>/<file>"` label for this database.
+    ///
+    /// `pub` rather than `pub(crate)`: this module moved from the daemon crate
+    /// into the library, and `permagent-daemon`'s backup routes render this
+    /// label in their responses.
+    pub fn label(&self) -> &str {
         match self {
             DbTarget::Brain => "brain/memory.db",
             DbTarget::BrainGraph => "brain/graph.sqlite",
@@ -517,7 +522,7 @@ fn list_snapshots_in_dir(dir: &Path, prefix: &str) -> Vec<SnapshotEntry> {
         .collect();
 
     // Newest first.
-    snapshots.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    snapshots.sort_by_key(|s| std::cmp::Reverse(s.timestamp));
     snapshots
 }
 
@@ -545,7 +550,7 @@ fn is_stale(snapshots: &[SnapshotEntry], now: DateTime<Utc>) -> bool {
 /// backup directory keeps everything it has. Bands never delete a snapshot they
 /// could not replace.
 pub fn select_retained(mut entries: Vec<SnapshotEntry>, now: DateTime<Utc>) -> Vec<SnapshotEntry> {
-    entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    entries.sort_by_key(|e| std::cmp::Reverse(e.timestamp));
 
     let mut keep: Vec<SnapshotEntry> = Vec::new();
     for (band_index, min_age) in RETENTION_BANDS.iter().enumerate() {
@@ -567,7 +572,7 @@ pub fn select_retained(mut entries: Vec<SnapshotEntry>, now: DateTime<Utc>) -> V
         }
     }
 
-    keep.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    keep.sort_by_key(|e| std::cmp::Reverse(e.timestamp));
     keep
 }
 
@@ -609,24 +614,24 @@ pub async fn backup_scheduler_loop() {
     loop {
         interval.tick().await;
 
-        let base = permagent::config::paths::Paths::data_dir();
+        let base = crate::config::paths::Paths::data_dir();
         let backup_root = base.join("backups");
 
         for (source, target) in [
             (
-                permagent::config::paths::Paths::brain_dir().join("memory.db"),
+                crate::config::paths::Paths::brain_dir().join("memory.db"),
                 DbTarget::Brain,
             ),
             (
-                permagent::config::paths::Paths::brain_dir().join("graph.sqlite"),
+                crate::config::paths::Paths::brain_dir().join("graph.sqlite"),
                 DbTarget::BrainGraph,
             ),
             (
-                permagent::config::paths::Paths::brain_dir().join("recognition.db"),
+                crate::config::paths::Paths::brain_dir().join("recognition.db"),
                 DbTarget::BrainRecognition,
             ),
             (
-                permagent::config::paths::Paths::spectral_db(),
+                crate::config::paths::Paths::spectral_db(),
                 DbTarget::Spectral,
             ),
         ] {

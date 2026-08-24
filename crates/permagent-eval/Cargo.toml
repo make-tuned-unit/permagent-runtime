@@ -28,7 +28,7 @@ serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 # Same declaration as `permagent` and `permagent-daemon` so the already-locked,
 # already-compiled crate is reused (no new packages, guaranteed to link).
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

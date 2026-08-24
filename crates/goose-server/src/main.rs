@@ -3,7 +3,7 @@ mod analytics;
 mod analytics_drain;
 mod app_catalog;
 mod automation;
-mod backup;
+pub(crate) use permagent::backup;
 mod brain_ops;
 mod commands;
 mod concierge;

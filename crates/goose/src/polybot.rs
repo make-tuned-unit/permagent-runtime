@@ -612,7 +612,7 @@ fn materialize_runtime_env(root: &Path) -> Result<PathBuf, String> {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let mut lines = Vec::new();
-    for key in all_secret_names().chain(["ANTHROPIC_API_KEY", "SLACK_WEBHOOK_URL"].into_iter()) {
+    for key in all_secret_names().chain(["ANTHROPIC_API_KEY", "SLACK_WEBHOOK_URL"]) {
         if let Some(value) = secret_value(key) {
             if value.contains('\n') || value.contains('\r') {
                 return Err(format!("{key} contains a newline and cannot be written"));

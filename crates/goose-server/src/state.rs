@@ -270,13 +270,20 @@ impl AppState {
                 // ALWAYS pass the rule set, even when it is empty.
                 //
                 // Spectral resolves `config.wing_rules.unwrap_or_else(
-                // default_wing_rule_strings)`, so *not calling this* does not
-                // mean "no rules" — it means Spectral's FIXTURE rules
-                // (alice/apollo/acme/polaris/vega/…), whose patterns are as
-                // broad as `apollo|polymarket|strategy|weather|prediction|
-                // wager|trade`. Those capture real production writes: 118 live
-                // memories sit in fixture wings today, and Spectral observed a
-                // new one landing in `acme` mid-afternoon on 2026-08-04.
+                // default_wing_rule_strings)`. Historically that default was
+                // Spectral's FIXTURE rules (alice/apollo/acme/polaris/vega/…),
+                // whose patterns were as broad as `apollo|polymarket|strategy|
+                // weather|prediction|wager|trade`, so *not calling this* meant
+                // classifying with demo data. Those captured real production
+                // writes: 118 live memories sat in fixture wings, and Spectral
+                // observed a new one landing in `acme` on 2026-08-04.
+                //
+                // As of pin 7025328 Spectral ships NO default wing rules, so
+                // the fixture fallback no longer exists on either side. This
+                // call stays unconditional anyway: it is the half of the
+                // guarantee we own, it costs nothing, and it keeps the
+                // behaviour independent of what a future pin decides to
+                // default to. `wing_fixture_fallthrough.rs` pins both halves.
                 //
                 // The trap used to be that `spectral-recognition` was not a
                 // default feature, so in the SHIPPING build `project_wing_rules`

@@ -122,10 +122,10 @@ pub async fn list_entries(
     pool: &Pool<Sqlite>,
     project_id: &str,
 ) -> Result<Vec<StackEntry>, String> {
-    let rows = sqlx::query(&format!(
+    let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {SELECT_COLS} FROM project_stack_entries WHERE project_id = ? \
          ORDER BY category ASC, service_name COLLATE NOCASE ASC, id ASC"
-    ))
+    )))
     .bind(project_id)
     .fetch_all(pool)
     .await
@@ -140,9 +140,9 @@ pub async fn get_entry(
     project_id: &str,
     entry_id: &str,
 ) -> Result<Option<StackEntry>, String> {
-    let row = sqlx::query(&format!(
+    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {SELECT_COLS} FROM project_stack_entries WHERE id = ? AND project_id = ?"
-    ))
+    )))
     .bind(entry_id)
     .bind(project_id)
     .fetch_optional(pool)

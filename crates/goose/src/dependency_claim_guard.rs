@@ -197,14 +197,6 @@ const CLAIMS: &[Claim] = &[
     },
     Claim {
         file: "crates/goose/src/brain_handle.rs",
-        quote: "when that pin lands",
-        reason: "assert_typed_from(memory_id, …) — triple provenance threaded through the \
-                 write — is genuinely absent at the pin; assert_typed carries no source \
-                 memory, and an unsourced triple is the accepted interim state.",
-        probe: Probe::SpectralSymbolAbsent(&["assert_typed_from"]),
-    },
-    Claim {
-        file: "crates/goose/src/brain_handle.rs",
         quote: "deferred delivery write lands upstream",
         reason: "Brain::turn commits its delivery record synchronously. That is a performance \
                  property of code that IS present, not a missing symbol, so there is nothing \

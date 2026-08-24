@@ -228,7 +228,8 @@ pub async fn acknowledge(pool: &Pool<Sqlite>, ids: &[String]) -> Result<u64> {
         "UPDATE agent_briefings SET acknowledged_at = ?
           WHERE acknowledged_at IS NULL AND id IN ({placeholders})"
     );
-    let mut q = sqlx::query(&sql).bind(now);
+    // `sql` interpolates only "?" placeholders (count = ids.len()); values are bound.
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(now);
     for id in ids {
         q = q.bind(id);
     }

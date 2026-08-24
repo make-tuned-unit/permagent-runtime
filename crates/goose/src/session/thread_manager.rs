@@ -123,7 +123,7 @@ impl ThreadManager {
     pub async fn get_thread(&self, id: &str) -> Result<Thread> {
         let pool = self.storage.pool().await?;
         let sql = format!("{} WHERE t.id = ?", THREAD_SELECT);
-        let row = sqlx::query_as::<_, ThreadRow>(&sql)
+        let row = sqlx::query_as::<_, ThreadRow>(sqlx::AssertSqlSafe(sql))
             .bind(id)
             .fetch_one(pool)
             .await?;
@@ -154,7 +154,8 @@ impl ThreadManager {
                 "UPDATE threads SET {}, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 sets.join(", ")
             );
-            let mut q = sqlx::query(&sql);
+            // `sets` is only fixed column-name literals pushed above; values bound below.
+            let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
             if let Some(ref n) = name {
                 q = q.bind(n);
                 q = q.bind(user_set_name.unwrap_or(true));
@@ -179,7 +180,9 @@ impl ThreadManager {
                 THREAD_SELECT
             )
         };
-        let rows = sqlx::query_as::<_, ThreadRow>(&sql).fetch_all(pool).await?;
+        let rows = sqlx::query_as::<_, ThreadRow>(sqlx::AssertSqlSafe(sql))
+            .fetch_all(pool)
+            .await?;
 
         rows.into_iter().map(thread_from_row).collect()
     }

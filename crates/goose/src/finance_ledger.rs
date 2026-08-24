@@ -676,7 +676,7 @@ pub async fn spend_forecast(pool: &Pool<Sqlite>) -> Result<SpendForecast, String
             count,
         })
         .collect();
-    recurring.sort_by(|a, b| b.count.cmp(&a.count));
+    recurring.sort_by_key(|r| std::cmp::Reverse(r.count));
     recurring.truncate(12);
 
     Ok(SpendForecast {

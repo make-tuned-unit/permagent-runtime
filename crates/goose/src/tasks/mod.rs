@@ -765,7 +765,8 @@ mod tests {
                 "INSERT INTO tasks (id, user_id, description, tool_used, argument_shape_hash, status, completed_at) \
                  VALUES (?, 'default', 'list documents', 'navigate_app', 'shape-window', 'completed', {completed_at})"
             );
-            sqlx::query(&statement)
+            // `completed_at` comes only from the fixed literal array above.
+            sqlx::query(sqlx::AssertSqlSafe(statement))
                 .bind(Uuid::now_v7().to_string())
                 .execute(&pool)
                 .await

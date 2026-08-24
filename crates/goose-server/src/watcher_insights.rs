@@ -120,7 +120,8 @@ async fn gather_signals(pool: &Pool<Sqlite>, project_id: &str) -> (Vec<String>, 
         let pool = pool.clone();
         let pid = project_id.to_string();
         async move {
-            sqlx::query_scalar::<_, i64>(&sql)
+            // Every call site below passes a fixed string literal into `count`.
+            sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql))
                 .bind(&pid)
                 .fetch_one(&pool)
                 .await

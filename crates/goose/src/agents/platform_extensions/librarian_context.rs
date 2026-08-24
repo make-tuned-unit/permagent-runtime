@@ -287,7 +287,9 @@ async fn fetch_projects(
     }
     sql.push_str(") ORDER BY c.updated_at DESC LIMIT ?");
 
-    let mut q = sqlx::query(&sql);
+    // `sql` only repeats a fixed "LOWER(...) LIKE ? OR ..." fragment per term
+    // count; the term text itself is always bound, never interpolated.
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
     for term in terms {
         let pattern = format!("%{}%", term);
         q = q.bind(pattern.clone()).bind(pattern);
@@ -332,7 +334,8 @@ async fn fetch_decisions(
     }
     sql.push_str(") ORDER BY resolved_at DESC LIMIT ?");
 
-    let mut q = sqlx::query(&sql);
+    // Same shape as fetch_projects above: only fixed LIKE fragments in `sql`.
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
     for term in terms {
         let pattern = format!("%{}%", term);
         q = q.bind(pattern.clone()).bind(pattern);

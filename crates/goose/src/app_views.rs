@@ -107,7 +107,7 @@ async fn ranked_analytics_counts(
           LIMIT {}",
         limit.saturating_add(1)
     );
-    let rows = sqlx::query_as::<_, (String, i64)>(&rows_sql)
+    let rows = sqlx::query_as::<_, (String, i64)>(sqlx::AssertSqlSafe(rows_sql))
         .bind(project_id)
         .bind(&since)
         .fetch_all(pool)
@@ -118,7 +118,7 @@ async fn ranked_analytics_counts(
            FROM analytics_events
           WHERE project_id = ?1{extra_filter}{filter}"
     );
-    let total = sqlx::query_scalar::<_, i64>(&total_sql)
+    let total = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(total_sql))
         .bind(project_id)
         .bind(&since)
         .fetch_one(pool)
@@ -165,7 +165,7 @@ pub async fn analytics_summary(
            FROM analytics_events
           WHERE project_id = ?1{filter}"
     );
-    let row = sqlx::query(&headline_sql)
+    let row = sqlx::query(sqlx::AssertSqlSafe(headline_sql))
         .bind(project_id)
         .bind(&since)
         .fetch_one(pool)
@@ -238,7 +238,7 @@ pub async fn analytics_summary(
           GROUP BY date(created_at)
           ORDER BY date(created_at)"
     );
-    let daily = sqlx::query(&daily_sql)
+    let daily = sqlx::query(sqlx::AssertSqlSafe(daily_sql))
         .bind(project_id)
         .bind(&since)
         .fetch_all(pool)

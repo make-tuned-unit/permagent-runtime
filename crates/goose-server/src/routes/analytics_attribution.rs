@@ -41,12 +41,16 @@ pub async fn rollup_traffic_sources(
     let bot_filter = if include_bots { "" } else { " AND is_bot = 0" };
 
     // 1) Explicit session_attribution events — first per session wins.
-    let attr_rows = sqlx::query_as::<_, (Option<String>, Option<String>, i64)>(&format!(
-        "SELECT session_id, properties, id FROM analytics_events
+    let attr_rows = sqlx::query_as::<_, (Option<String>, Option<String>, i64)>(
+        // `SESSION_ATTRIBUTION_EVENT` is a const and `bot_filter` is one of two
+        // hardcoded literals; every value is bound below.
+        sqlx::AssertSqlSafe(format!(
+            "SELECT session_id, properties, id FROM analytics_events
          WHERE project_id = ?1 AND kind = 'event' AND name = '{SESSION_ATTRIBUTION_EVENT}'
            AND created_at >= datetime('now', ?2){bot_filter}
          ORDER BY id ASC"
-    ))
+        )),
+    )
     .bind(project_id)
     .bind(since)
     .fetch_all(pool)
@@ -72,17 +76,18 @@ pub async fn rollup_traffic_sources(
     }
 
     // 2) First pageview referrer per session — fill gaps only.
-    let pv_rows = sqlx::query_as::<_, (Option<String>, Option<String>, i64)>(&format!(
-        "SELECT session_id, referrer, id FROM analytics_events
+    let pv_rows =
+        sqlx::query_as::<_, (Option<String>, Option<String>, i64)>(sqlx::AssertSqlSafe(format!(
+            "SELECT session_id, referrer, id FROM analytics_events
          WHERE project_id = ?1 AND kind = 'pageview'
            AND created_at >= datetime('now', ?2){bot_filter}
          ORDER BY id ASC"
-    ))
-    .bind(project_id)
-    .bind(since)
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default();
+        )))
+        .bind(project_id)
+        .bind(since)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
 
     let mut session_counted: HashMap<String, bool> = HashMap::new();
     let mut counts: HashMap<String, i64> = HashMap::new();
@@ -134,16 +139,17 @@ pub async fn rollup_traffic_sources(
 
     // Explicit answer_engine_visit events — first-class AEO even without a
     // matching session_attribution medium.
-    let aeo_event_rows = sqlx::query_as::<_, (Option<String>, Option<String>)>(&format!(
-        "SELECT session_id, properties FROM analytics_events
+    let aeo_event_rows =
+        sqlx::query_as::<_, (Option<String>, Option<String>)>(sqlx::AssertSqlSafe(format!(
+            "SELECT session_id, properties FROM analytics_events
          WHERE project_id = ?1 AND kind = 'event' AND name = '{ANSWER_ENGINE_VISIT_EVENT}'
            AND created_at >= datetime('now', ?2){bot_filter}"
-    ))
-    .bind(project_id)
-    .bind(since)
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default();
+        )))
+        .bind(project_id)
+        .bind(since)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
 
     for (i, (session_id, properties)) in aeo_event_rows.iter().enumerate() {
         if let Some(sid) = session_id.as_deref().filter(|s| !s.is_empty()) {
