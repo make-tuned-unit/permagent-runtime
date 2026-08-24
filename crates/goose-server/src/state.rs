@@ -222,23 +222,33 @@ impl AppState {
                     return None;
                 }
 
-                // ── Pre-migration backup: brain/memory.db ──
-                // Must run before Brain::builder().build() which triggers Spectral
-                // auto-migration.
+                // ── Pre-migration backups: Spectral's three brain databases ──
+                // Must run before Brain::builder().build() triggers Spectral
+                // auto-migration. recognition.db is WAL today and memory.db
+                // already was; graph.sqlite remains rollback-journal at the
+                // pinned revision, but a future pin makes its first open migrate
+                // it to WAL, further reason to snapshot before build().
                 {
-                    let source = brain_dir.join("memory.db");
                     let backup_root = permagent::config::paths::Paths::data_dir().join("backups");
-                    if let Err(e) = crate::backup::snapshot_if_stale(
-                        &source,
-                        &backup_root,
-                        crate::backup::DbTarget::Brain,
-                        crate::backup::SnapshotMode::Fast,
-                    ) {
-                        tracing::error!(
-                            target: "permagentd::backup",
-                            error = %e,
-                            "Startup backup of brain/memory.db failed (non-fatal)"
-                        );
+                    for (filename, target) in [
+                        ("memory.db", crate::backup::DbTarget::Brain),
+                        ("graph.sqlite", crate::backup::DbTarget::BrainGraph),
+                        ("recognition.db", crate::backup::DbTarget::BrainRecognition),
+                    ] {
+                        let source = brain_dir.join(filename);
+                        if let Err(e) = crate::backup::snapshot_if_stale(
+                            &source,
+                            &backup_root,
+                            target,
+                            crate::backup::SnapshotMode::Fast,
+                        ) {
+                            tracing::error!(
+                                target: "permagentd::backup",
+                                error = %e,
+                                db = %filename,
+                                "Startup backup of brain database failed (non-fatal)"
+                            );
+                        }
                     }
                 }
 
