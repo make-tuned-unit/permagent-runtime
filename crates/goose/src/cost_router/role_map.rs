@@ -6,9 +6,12 @@
 //! ## The load-bearing guarantee (the standing hard rule)
 //!
 //! There is **NO baked-in default here**. When a role has no configured mapping,
-//! [`resolve_role_model`] returns `None`, and the dispatch path
+//! [`resolve_role_model`] returns `None`. The dispatch path
 //! ([`crate::agents::platform_extensions::summon`]'s `resolve_provider` and the
-//! goal engine) falls through to the CURRENT single-model behaviour — the
+//! goal engine) then consults the recommender-DERIVED best-fit map
+//! ([`super::derived`], built only from models the user actually has — see
+//! [`resolve_role_model_or_derived`]) and, when that has no floor-clearing entry
+//! for the role either, falls through to the CURRENT single-model behaviour — the
 //! parent/session model. The tiered-pack defaults in [`super::packs`]
 //! (`ModelPacks::default()` — Opus/Sonnet/Haiku/Ollama) are the cost-router's
 //! internal escalation ladder (and a named preset the user may explicitly apply);
@@ -39,6 +42,7 @@
 //! Pure core (`resolve_role_model`, `derive_role`) plus a thin IO wrapper over
 //! `Config` — mirroring [`super::budget`] and [`super::cheap`].
 
+use super::derived::{DerivedRoleMap, RoleSource};
 use super::recommend::{RoleRecommendation, WorkflowRole};
 
 // ── Config-key namespace (distinct from PERMAGENT_PACK_* — the tier packs) ────
@@ -83,6 +87,27 @@ pub fn resolve_role_model(
     let provider = non_empty(provider_key(role))?;
     let model = non_empty(model_key(role))?;
     Some(RoleModel { provider, model })
+}
+
+/// Pure: resolve a role's model with the DEFAULT-ON derived fallback (ruling
+/// 2026-08-18): the hand-configured mapping ([`resolve_role_model`]) wins;
+/// otherwise the recommender-derived best-fit entry ([`super::derived`]) — the
+/// cheapest model the user actually has that clears the role's floor; otherwise
+/// `None` ⇒ the session model. Returns WHERE the pick came from so the routing
+/// receipt can say "configured" vs "derived (floor met, family estimate)".
+/// [`resolve_role_model`] itself is unchanged — it remains the hand-config
+/// resolver and its no-baked-default contract stands.
+pub fn resolve_role_model_or_derived(
+    role: WorkflowRole,
+    read: impl Fn(&str) -> Option<String>,
+    derived: &DerivedRoleMap,
+) -> Option<(RoleModel, RoleSource)> {
+    if let Some(rm) = resolve_role_model(role, read) {
+        return Some((rm, RoleSource::Configured));
+    }
+    derived
+        .get(role)
+        .map(|(rm, _)| (rm.clone(), RoleSource::Derived))
 }
 
 /// Pure: derive the workflow role a unit of work plays from a worker's declared
@@ -157,6 +182,17 @@ pub fn role_model(role: WorkflowRole) -> Option<RoleModel> {
     resolve_role_model(role, |k| cfg.get_param::<String>(k).ok())
 }
 
+/// Live [`resolve_role_model_or_derived`] against the global config and a
+/// derived map the caller obtained once per dispatch
+/// ([`super::derived::derived_role_map`]).
+pub fn role_model_or_derived(
+    role: WorkflowRole,
+    derived: &DerivedRoleMap,
+) -> Option<(RoleModel, RoleSource)> {
+    let cfg = crate::config::Config::global();
+    resolve_role_model_or_derived(role, |k| cfg.get_param::<String>(k).ok(), derived)
+}
+
 /// Persist a role's provider+model to config (`permagent packs set` / `apply`).
 pub fn set_role_model(
     role: WorkflowRole,
@@ -166,6 +202,7 @@ pub fn set_role_model(
     let cfg = crate::config::Config::global();
     cfg.set_param(&provider_key(role), provider.to_string())?;
     cfg.set_param(&model_key(role), model.to_string())?;
+    super::derived::invalidate_derived_role_map();
     Ok(())
 }
 
@@ -175,6 +212,7 @@ pub fn clear_role_model(role: WorkflowRole) -> Result<(), crate::config::ConfigE
     let cfg = crate::config::Config::global();
     cfg.delete(&provider_key(role))?;
     cfg.delete(&model_key(role))?;
+    super::derived::invalidate_derived_role_map();
     Ok(())
 }
 

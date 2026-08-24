@@ -487,6 +487,54 @@ mod tests {
         );
     }
 
+    /// Sibling of the two no-default tests above: when the resolver is the
+    /// DERIVED best-fit map (built only from models the user actually has —
+    /// here two OpenAI models the recommender ranks apart) and it names a
+    /// stronger model for the next tier, the decision SWAPS to it. The
+    /// pure contract is unchanged: `decide_escalation` only ever sees a
+    /// resolver; the derived map is a resolver whose picks are the user's own
+    /// models, never the packs.rs defaults.
+    #[test]
+    fn next_tier_derived_from_available_models_swaps() {
+        use crate::cost_router::derived::derive_role_map;
+        use crate::cost_router::recommend::AvailableModel;
+        let derived = derive_role_map(&[
+            AvailableModel::new("openai", "gpt-5.6"),
+            AvailableModel::new("openai", "gpt-5.6-mini"),
+        ]);
+        let resolve_derived = |tier: Tier| {
+            derived
+                .get(workflow_role_for_tier(tier))
+                .map(|(rm, _)| rm.clone())
+        };
+        let frontier = resolve_derived(Tier::Frontier)
+            .expect("two floor-clearing OpenAI models derive an ORCHESTRATE (frontier) pick");
+        let out = decide_escalation(
+            Some(Tier::CheapCloud),
+            0,
+            2,
+            VERIFY_ESCALATE_AT,
+            resolve_derived,
+            budget_ok(),
+        );
+        assert_eq!(
+            out,
+            EscalationOutcome::Swap {
+                to_tier: Tier::Frontier,
+                model: frontier.clone(),
+                new_escalations_used: 1,
+            }
+        );
+        // Provenance, not a vendor name: the swapped-to model is one the user has.
+        assert_eq!(frontier.provider, "openai");
+        assert!(frontier.model.starts_with("gpt-5.6"));
+        // And the pack default is NOT what got swapped to (the user does not have it).
+        let pack_default = crate::cost_router::packs::ModelPacks::default().hard;
+        assert!(
+            !(frontier.provider == pack_default.provider && frontier.model == pack_default.model)
+        );
+    }
+
     // ── Guardrail 2: per-goal max-escalations cap ────────────────────────────
 
     #[test]

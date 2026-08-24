@@ -206,6 +206,13 @@ pub async fn upsert_config(
     let config = Config::global();
     config.set(&query.key, &query.value, query.is_secret)?;
 
+    // A provider key, session model, Ollama host or per-role mapping changes
+    // what the cost router can derive — drop its cached derived role map so the
+    // next dispatch re-derives (otherwise the TTL applies).
+    if permagent::cost_router::config_key_affects_derived_map(&query.key, query.is_secret) {
+        permagent::cost_router::invalidate_derived_role_map();
+    }
+
     // First-run Brain seeding (#298): the moment onboarding completes, seed
     // welcome/orientation memories daemon-internally. Idempotent and fire-and-
     // forget — no new public brain-write surface, no blocking of the config write.
@@ -235,6 +242,9 @@ pub async fn remove_config(
         config.delete_secret(&query.key)?;
     } else {
         config.delete(&query.key)?;
+    }
+    if permagent::cost_router::config_key_affects_derived_map(&query.key, query.is_secret) {
+        permagent::cost_router::invalidate_derived_role_map();
     }
 
     Ok(Json(format!("Removed key {}", query.key)))
