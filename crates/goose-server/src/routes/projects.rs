@@ -25,6 +25,7 @@
 //!   PATCH  /api/projects/:id/stack/:entry_id     — Edit a stack entry (double-Option clears for identity/dashboardUrl)
 //!   DELETE /api/projects/:id/stack/:entry_id     — Remove a stack entry
 //!   GET    /api/projects/:id/intel               — Cited ecosystem/competitive intelligence
+//!   GET    /api/projects/:id/market              — Market series, forecasts, and their methods
 //!   DELETE /api/projects/:id/intel/:item_id       — Dismiss an intelligence item
 //!
 //! The stack endpoints are REFERENCE-ONLY (#512): they carry the service +
@@ -201,6 +202,123 @@ async fn list_project_intel_handler(
         }
     }
     Ok(Json(response))
+}
+
+/// One row of the Market card: what the series is, how much of it exists, and
+/// either a forecast carrying the method that produced it, or the reason there
+/// is not one. Never both, and never neither.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectMarketRow {
+    #[serde(flatten)]
+    summary: permagent::forecaster::store::SeriesSummary,
+    /// The tail of the series, for the sparkline. Capped, so a three-year daily
+    /// series does not ship a thousand floats to draw sixty pixels.
+    history: Vec<f64>,
+    forecast: Option<permagent::forecaster::forecast::Forecast>,
+    refusal: Option<permagent::forecaster::forecast::Refusal>,
+    /// Direction as a sentence, derived here so the card and the brief cannot
+    /// disagree about the same numbers.
+    direction: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectMarketResponse {
+    rows: Vec<ProjectMarketRow>,
+    /// True when nothing is bound at all — which is NOT the same as a flat
+    /// market. The nonprofit and community projects have no real market signal,
+    /// and the card says so rather than drawing a line through zero.
+    no_series_bound: bool,
+    generated_at: String,
+}
+
+const MARKET_SPARKLINE_POINTS: usize = 90;
+
+/// Direction from the numbers only: no cause, no advice.
+fn describe_market_direction(history: &[f64], point: &[f64]) -> Option<String> {
+    let last = *history.last()?;
+    let end = *point.last()?;
+    if !last.is_finite() || !end.is_finite() || last.abs() < f64::EPSILON {
+        return None;
+    }
+    let pct = (end - last) / last.abs() * 100.0;
+    if pct.abs() < 2.0 {
+        return Some(format!("flat over the next {}", plural_steps(point.len())));
+    }
+    Some(format!(
+        "{} {:.0}% over the next {}",
+        if pct > 0.0 { "up" } else { "down" },
+        pct.abs(),
+        plural_steps(point.len())
+    ))
+}
+
+fn plural_steps(n: usize) -> String {
+    if n == 1 {
+        "step".to_string()
+    } else {
+        format!("{n} steps")
+    }
+}
+
+/// The Market card's data. Every row carries its own verdict, so a series that
+/// cannot be forecast renders its reason rather than an empty chart.
+async fn project_market_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<ProjectMarketResponse>, StatusCode> {
+    use permagent::forecaster::{forecast, store};
+
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let project = projects::get_project_by_id_or_slug(&pool, &id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let now = chrono::Utc::now();
+    let summaries = store::summarize(&pool, Some(&project.id), now)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut rows = Vec::with_capacity(summaries.len());
+    for summary in summaries {
+        let points = store::load_points(&pool, &summary.series_id)
+            .await
+            .unwrap_or_default();
+        let history: Vec<f64> = points
+            .iter()
+            .rev()
+            .take(MARKET_SPARKLINE_POINTS)
+            .rev()
+            .map(|p| p.value)
+            .collect();
+        let (forecast, refusal) =
+            match forecast::forecast_series(&pool, &summary.series_id, None, now).await {
+                Ok(f) => (Some(f), None),
+                Err(r) => (None, Some(r)),
+            };
+        let direction = forecast
+            .as_ref()
+            .and_then(|f| describe_market_direction(&history, &f.point));
+        rows.push(ProjectMarketRow {
+            summary,
+            history,
+            forecast,
+            refusal,
+            direction,
+        });
+    }
+
+    Ok(Json(ProjectMarketResponse {
+        no_series_bound: rows.is_empty(),
+        rows,
+        generated_at: now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+    }))
 }
 
 async fn delete_project_intel_handler(
@@ -2278,6 +2396,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
             axum::routing::put(set_verification_approval_handler),
         )
         .route("/api/projects/{id}/intel", get(list_project_intel_handler))
+        .route("/api/projects/{id}/market", get(project_market_handler))
         .route(
             "/api/projects/{id}/intel/{item_id}",
             delete(delete_project_intel_handler),

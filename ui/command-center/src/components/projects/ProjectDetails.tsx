@@ -4,6 +4,7 @@ import { ActivityPanel } from './ActivityPanel';
 import { CodeIndexPanel } from './CodeIndexPanel';
 import { DocumentsPanel } from './DocumentsPanel';
 import { EcosystemPanel } from './EcosystemPanel';
+import { MarketPanel } from './MarketPanel';
 import { LinksPanel } from './ProjectOverview';
 import { MemoriesPanel } from './MemoriesPanel';
 import { NotesPanel } from './NotesPanel';
@@ -54,6 +55,9 @@ export function ProjectDetails({ project, onProjectUpdated }: {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
           <PeoplePanel project={project} />
           <EcosystemPanel project={project} />
+          {/* Directly beneath Ecosystem, because they are one concept: every
+              market series hangs off a row that panel already shows. */}
+          <MarketPanel project={project} />
           <LinksPanel project={project} onProjectUpdated={onProjectUpdated} title="Resources" />
         </div>
       </div>
