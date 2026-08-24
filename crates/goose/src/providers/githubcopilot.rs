@@ -315,7 +315,7 @@ impl GithubCopilotProvider {
             .client
             .get(&self.urls.copilot_token_url)
             .headers(self.get_github_headers())
-            .header(http::header::AUTHORIZATION, format!("bearer {}", &token))
+            .header(http::header::AUTHORIZATION, format!("bearer {}", token))
             .send()
             .await?
             .error_for_status()?

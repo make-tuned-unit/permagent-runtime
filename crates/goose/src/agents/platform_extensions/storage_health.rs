@@ -77,7 +77,7 @@ impl StorageHealthClient {
         )];
 
         let mut sorted_categories: Vec<_> = result.categories.iter().collect();
-        sorted_categories.sort_by(|a, b| b.1.total_bytes.cmp(&a.1.total_bytes));
+        sorted_categories.sort_by_key(|(_, stats)| std::cmp::Reverse(stats.total_bytes));
 
         for (cat, stats) in &sorted_categories {
             let label = category_label(cat);

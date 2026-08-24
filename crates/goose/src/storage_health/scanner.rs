@@ -144,7 +144,7 @@ pub fn scan_dev_caches(counter: &mut u32) -> Vec<ScanFinding> {
         counter,
     ));
     dedup_findings_by_path(&mut findings);
-    findings.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+    findings.sort_by_key(|f| std::cmp::Reverse(f.size_bytes));
     findings
 }
 
@@ -221,7 +221,7 @@ fn scan_dev_caches_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> {
     }
 
     // Sort largest first
-    findings.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+    findings.sort_by_key(|f| std::cmp::Reverse(f.size_bytes));
     findings
 }
 
@@ -398,7 +398,7 @@ fn scan_app_caches_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> {
         }
     }
 
-    findings.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+    findings.sort_by_key(|f| std::cmp::Reverse(f.size_bytes));
     findings
 }
 
@@ -439,7 +439,7 @@ fn scan_xcode_derived_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> {
         }
     }
 
-    findings.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+    findings.sort_by_key(|f| std::cmp::Reverse(f.size_bytes));
     findings
 }
 
@@ -497,7 +497,7 @@ fn scan_stale_downloads_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> {
         }
     }
 
-    findings.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+    findings.sort_by_key(|f| std::cmp::Reverse(f.size_bytes));
     findings
 }
 
@@ -556,7 +556,7 @@ fn scan_large_user_files_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> 
         }
     }
 
-    findings.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+    findings.sort_by_key(|f| std::cmp::Reverse(f.size_bytes));
     findings
 }
 

@@ -161,7 +161,7 @@ impl CodeExecutionClient {
                     .clone()
                     .map(|n| format!("{n}__"))
                     .unwrap_or_default(),
-                &cfg.name
+                cfg.name
             );
             let callback = create_tool_callback(session_id.to_string(), full_name, manager.clone());
             registry
@@ -509,7 +509,7 @@ impl McpClientTrait for CodeExecutionClient {
                 let sandbox_only: Vec<_> = functions
                     .iter()
                     .filter(|f| !crate::agents::extension_manager::is_first_class_extension(&f.namespace))
-                    .map(|f| format!("{}.{}", &f.namespace, &f.name))
+                    .map(|f| format!("{}.{}", f.namespace, f.name))
                     .collect();
                 let mut msg = String::new();
                 if !sandbox_only.is_empty() {

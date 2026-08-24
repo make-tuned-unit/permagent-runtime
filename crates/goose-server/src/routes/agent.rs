@@ -644,7 +644,7 @@ async fn update_agent_provider(
         .map_err(|e| {
             (
                 StatusCode::BAD_REQUEST,
-                format!("Failed to create {} provider: {}", &payload.provider, e),
+                format!("Failed to create {} provider: {}", payload.provider, e),
             )
         })?;
 

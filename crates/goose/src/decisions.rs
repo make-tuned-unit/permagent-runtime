@@ -1743,12 +1743,10 @@ async fn answer_decision_inner(
             }
         }
         // approve-with-edits carries the revised draft in input_text.
-        "edit" => {
-            if answer.input_text.as_deref().unwrap_or("").is_empty() {
-                return Err(AnswerError::Invalid(
-                    "answer 'edit' requires input_text (the revised draft)".to_string(),
-                ));
-            }
+        "edit" if answer.input_text.as_deref().unwrap_or("").is_empty() => {
+            return Err(AnswerError::Invalid(
+                "answer 'edit' requires input_text (the revised draft)".to_string(),
+            ));
         }
         _ => {}
     }

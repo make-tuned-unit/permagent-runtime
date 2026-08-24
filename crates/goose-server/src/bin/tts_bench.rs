@@ -274,7 +274,7 @@ fn print_row(sentence: &str, rtfs: &[(u128, f32, f32)]) {
     let max_rtf = rtfs.iter().map(|r| r.2).fold(0.0f32, f32::max);
     println!(
         "{:<50} {:>8} {:>7.3}x {:>7.3}x {:>7.3}x",
-        &sentence.chars().take(50).collect::<String>(),
+        sentence.chars().take(50).collect::<String>(),
         avg_ms,
         avg_rtf,
         min_rtf,

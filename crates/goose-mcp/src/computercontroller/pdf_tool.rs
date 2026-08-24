@@ -75,11 +75,11 @@ fn extract_page_text_raw(doc: &Document, page_id: ObjectId) -> String {
                                                                 last_was_text = false;
                                                             }
                                                         }
-                                                        Object::Real(offset) => {
-                                                            if *offset < -100.0 {
-                                                                text.push(' ');
-                                                                last_was_text = false;
-                                                            }
+                                                        Object::Real(offset)
+                                                            if *offset < -100.0 =>
+                                                        {
+                                                            text.push(' ');
+                                                            last_was_text = false;
                                                         }
                                                         _ => {}
                                                     }

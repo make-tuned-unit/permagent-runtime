@@ -758,6 +758,13 @@ impl ExtensionManager {
             .then_some(entry)
     }
 
+    // `ExtensionError` is a public, widely-matched-on error type (it wraps
+    // `ClientInitializeError` from rmcp), so boxing its large variant to
+    // satisfy `result_large_err` would ripple into every caller that
+    // constructs or matches it. This closure's `Err` is never held or
+    // propagated beyond the immediate `if let Err` below, so the size cost
+    // is negligible here.
+    #[allow(clippy::result_large_err)]
     fn store_tool_schema_cache(
         &self,
         extension_name: &str,

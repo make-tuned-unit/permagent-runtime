@@ -522,7 +522,7 @@ fn list_snapshots_in_dir(dir: &Path, prefix: &str) -> Vec<SnapshotEntry> {
         .collect();
 
     // Newest first.
-    snapshots.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    snapshots.sort_by_key(|s| std::cmp::Reverse(s.timestamp));
     snapshots
 }
 
@@ -550,7 +550,7 @@ fn is_stale(snapshots: &[SnapshotEntry], now: DateTime<Utc>) -> bool {
 /// backup directory keeps everything it has. Bands never delete a snapshot they
 /// could not replace.
 pub fn select_retained(mut entries: Vec<SnapshotEntry>, now: DateTime<Utc>) -> Vec<SnapshotEntry> {
-    entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    entries.sort_by_key(|e| std::cmp::Reverse(e.timestamp));
 
     let mut keep: Vec<SnapshotEntry> = Vec::new();
     for (band_index, min_age) in RETENTION_BANDS.iter().enumerate() {
@@ -572,7 +572,7 @@ pub fn select_retained(mut entries: Vec<SnapshotEntry>, now: DateTime<Utc>) -> V
         }
     }
 
-    keep.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    keep.sort_by_key(|e| std::cmp::Reverse(e.timestamp));
     keep
 }
 
