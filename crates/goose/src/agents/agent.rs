@@ -271,6 +271,10 @@ pub struct Agent {
 
     pub(super) retry_manager: RetryManager,
     pub(super) tool_inspection_manager: ToolInspectionManager,
+    /// Hooks consulted at the one point the reply loop decides a turn is over.
+    /// The `ToolInspector` chain covers "before a tool runs"; this covers
+    /// "the model thinks it is finished" — see `crate::after_turn`.
+    pub(super) after_turn_manager: crate::after_turn::AfterTurnManager,
     container: Mutex<Option<Container>>,
     /// mtime of the config file at the last extension sync. Lets the
     /// resident-agent path answer "anything new?" with a `stat` instead of a
@@ -397,6 +401,7 @@ impl Agent {
             tool_result_tx: tool_tx,
             tool_result_rx: Arc::new(Mutex::new(tool_rx)),
             retry_manager: RetryManager::new(),
+            after_turn_manager: Self::create_after_turn_manager(),
             tool_inspection_manager: Self::create_tool_inspection_manager(
                 permission_manager,
                 provider.clone(),
@@ -408,6 +413,17 @@ impl Agent {
     }
 
     /// Create a tool inspection manager with default inspectors
+    /// The after-turn chain. `PrematureDoneGuard` is the first hook: it refuses
+    /// to let a turn that CHANGED CODE end without a passing verify, reusing
+    /// `cost_router::decide_hold` — the same pure decision goal dispatch makes.
+    /// Safe on ordinary conversation because the guard only consults that
+    /// decision when the session actually wrote something.
+    fn create_after_turn_manager() -> crate::after_turn::AfterTurnManager {
+        let mut manager = crate::after_turn::AfterTurnManager::new();
+        manager.add_hook(Box::new(crate::after_turn::PrematureDoneGuard::new()));
+        manager
+    }
+
     fn create_tool_inspection_manager(
         permission_manager: Arc<PermissionManager>,
         provider: SharedProvider,
@@ -1746,6 +1762,10 @@ impl Agent {
             // that parses (the same shape as `compaction_attempts` at the
             // provider round-trip and the S5 monologue counter below).
             let mut consecutive_parse_failure_turns = 0u32;
+            // How many times the after-turn chain has already refused to let
+            // THIS reply finish. Bounds the re-entry: a hook that keeps saying
+            // "not yet" is eventually told to stop and hand over.
+            let mut after_turn_holds: u8 = 0;
 
             loop {
                 if is_token_cancelled(&cancel_token) {
@@ -2503,6 +2523,43 @@ impl Agent {
                     session_manager.add_message(&session_config.id, msg).await?;
                 }
                 conversation.extend(messages_to_add);
+
+                // ── After-turn hooks (deepagents `after_agent`, which can jump
+                // back to the model). This is the ONE place the reply loop
+                // decides a turn is over, so it is the only place a guard has
+                // to attach to. `Continue` re-enters the model loop with an
+                // injected instruction instead of finishing — the interactive
+                // twin of `HoldOutcome::Hold { inject_plan }`, which until now
+                // only ever fired on a goal card's InProgress → Review edge.
+                if exit_chat && !self.after_turn_manager.is_empty() {
+                    let action = self
+                        .after_turn_manager
+                        .after_turn(&crate::after_turn::AfterTurnContext {
+                            session_id: &session_config.id,
+                            messages: conversation.messages(),
+                            prior_holds: after_turn_holds,
+                        })
+                        .await;
+                    match action {
+                        crate::after_turn::AfterTurnAction::Allow => {}
+                        crate::after_turn::AfterTurnAction::Continue { inject } => {
+                            after_turn_holds = after_turn_holds.saturating_add(1);
+                            exit_chat = false;
+                            let message = Message::user().with_text(inject);
+                            session_manager.add_message(&session_config.id, &message).await?;
+                            conversation.push(message.clone());
+                            yield AgentEvent::Message(message);
+                        }
+                        crate::after_turn::AfterTurnAction::Park { reason } => {
+                            // The turn still ends — but never silently. The
+                            // user is told what was refused and why.
+                            let message = Message::assistant().with_text(reason);
+                            persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                            yield AgentEvent::Message(message);
+                        }
+                    }
+                }
+
                 if exit_chat {
                     break;
                 }

@@ -5273,7 +5273,10 @@ async fn load_session_signals(
     crate::cost_router::extract_tool_signals_from_messages(&messages)
 }
 
-fn is_verify_tool_name(name: &str) -> bool {
+/// Public because the session-level after-turn guard
+/// (`crate::after_turn::PrematureDoneGuard`) asks the same question of a live
+/// conversation, and "what counts as a verify" must have exactly one answer.
+pub fn is_verify_tool_name(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
     name == "verify"
         || name.ends_with("__verify")
