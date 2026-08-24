@@ -13,6 +13,7 @@ import {
 import { ProvidersSection } from './ProvidersSection';
 import { DevRootsSection } from './DevRootsSection';
 import { SearchToolsSection } from './SearchToolsSection';
+import { PolybotKeys } from '../finance/PolybotKeys';
 import { usePersona } from './useSettings';
 import { resolveSettingsSection } from './sections';
 import { trustEnvOverrideNotice } from './autonomy';
@@ -940,7 +941,7 @@ export function ModelsPanel({ goto }: PanelProps) {
       {/* ── The Watcher proactive nudges ─────────────────────────── */}
       <Section
         title="Proactive nudges (The Watcher)"
-        sub="The Watcher reaches out at most about once a day with the ONE thing genuinely worth your attention — news grounded in your active projects, or a memory thread that went quiet. Teach it here: topics you want followed, and subjects it should never raise again. Changes apply at its next check — no restart needed."
+        sub="The Watcher reaches out at most about once a day with the ONE thing genuinely worth your attention — news grounded in your active projects, or a memory thread that went quiet. Separately, it delivers the Financier's overbought sell signals on stocks you already hold (daily per symbol; does not use that taste budget). Teach it here: topics you want followed, and subjects it should never raise again. Changes apply at its next check — no restart needed."
       >
         {watcherError && (
           <div style={{ fontSize: 12, color: colors.danger, padding: '4px 0 8px' }}>{watcherError}</div>
@@ -992,9 +993,12 @@ function KeysPanel() {
 function SearchPanel() {
   return (
     <div>
-      <H1 sub="Web search and other service tools. Add a key, and your agent can search the web. Keys are encrypted in your system keychain and never leave your device.">Search &amp; tools</H1>
+      <H1 sub="Web search, Polybot, and other service tools. Add a key, and it is encrypted in your system keychain — it never leaves your device.">Search &amp; tools</H1>
       <Section title="Search providers">
         <SearchToolsSection />
+      </Section>
+      <Section title="Polybot" sub="Polymarket credentials for the user's prediction-market bot. The Finance tab Start button reads these from the keychain.">
+        <PolybotKeys />
       </Section>
     </div>
   );

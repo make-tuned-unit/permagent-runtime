@@ -1,19 +1,24 @@
 /**
- * Finance — money board. Polybot status, holdings with live P&L, Picker
- * picks run through Yahoo + a loop-engineering gate, overbought sell
- * signals on open holdings, household spend, then the research ledger. Research, not a
- * brokerage: nothing here places an order. The Picker ranker never sees
- * holdings or bank balances.
+ * Finance — money board.
+ *
+ * Layout follows two systems, not a third generic dashboard:
+ *   Stripe Dashboard — one hero figure per account, tabular numerals, the
+ *   as-of clock next to the number so a stale snapshot cannot be read as live.
+ *   Linear — charcoal cards, hairline borders, accent only on status and the
+ *   one action that starts the scanner.
+ * Tokens stay Permagent (Manrope/Inter, #00D5FF, radius.md). Research ledger
+ * plus process control for the user's Polybot. Keys stay in the keychain.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties, FormEvent, ReactNode } from 'react';
-import { font, type } from '../../styles/tokens';
+import { font, radius, tabularNums, type } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/tokens';
 import { apiFetch, uploadFinanceStatement } from '../../lib/api';
 import { ViewHeader } from '../common/ViewHeader';
 import { navigateToTool } from '../../lib/store';
+import { PolybotKeys } from './PolybotKeys';
 
 interface Quote {
   symbol: string;
@@ -73,12 +78,20 @@ interface PickerStatus {
 interface PolybotStatus {
   found: boolean;
   root?: string | null;
+  running?: boolean;
+  pid?: number | null;
   paused: boolean;
+  credentialsReady?: boolean;
+  credentialsPath?: string | null;
+  scanRequested?: boolean;
+  quietHours?: boolean;
   currentBalance?: number | null;
   realizedPnl?: number | null;
   openExposure?: number | null;
   tradeCount?: number | null;
   lastUpdated?: string | null;
+  asOf?: string | null;
+  staleDays?: number | null;
   stale: boolean;
   detail?: string | null;
 }
@@ -300,10 +313,17 @@ const CATEGORIES = [
   'uncategorized',
 ] as const;
 
-function fmtPrice(n: number | null | undefined, currency?: string | null): string {
+function fmtMoney(n: number | null | undefined, currency = 'USD'): string {
   if (n == null || Number.isNaN(n)) return '—';
-  const c = currency && currency.length === 3 ? currency : '';
-  return `${c ? `${c} ` : ''}${n.toFixed(2)}`;
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: 'currency',
+      currency: currency.length === 3 ? currency : 'USD',
+      maximumFractionDigits: 2,
+    }).format(n);
+  } catch {
+    return n.toFixed(2);
+  }
 }
 
 function fmtPct(n: number | null | undefined): string {
@@ -312,17 +332,24 @@ function fmtPct(n: number | null | undefined): string {
   return `${sign}${n.toFixed(2)}%`;
 }
 
-function fmtSigned(n: number | null | undefined): string {
+function fmtSigned(n: number | null | undefined, currency = 'USD'): string {
   if (n == null || Number.isNaN(n)) return '—';
-  const sign = n > 0 ? '+' : '';
-  return `${sign}${n.toFixed(2)}`;
+  const abs = fmtMoney(Math.abs(n), currency);
+  if (n < 0) return `−${abs}`;
+  if (n > 0) return `+${abs}`;
+  return abs;
 }
 
 function fmtWhen(iso: string | null | undefined): string {
   if (!iso) return '—';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function toneFor(n: number | null | undefined, colors: ThemeColors): string {
+  if (n == null || Number.isNaN(n) || n === 0) return colors.text;
+  return n < 0 ? colors.danger : colors.success;
 }
 
 export function FinanceView() {
@@ -365,48 +392,66 @@ export function FinanceView() {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', fontFamily: font.body, color: colors.text }}>
       <ViewHeader
         title="Finance"
-        subtitle="Money board — Polybot, holdings, validated picks, household. Research, not advice."
+        subtitle="Research board — Polybot keys live in the keychain; the bot can trade"
         actions={
           <button type="button" onClick={() => { void load(); }} style={ghostBtn(colors)}>
             Refresh
           </button>
         }
       />
-      <div style={{ flex: 1, overflow: 'auto', padding: '20px 24px 40px', display: 'flex', flexDirection: 'column', gap: 28 }}>
+      <div style={{ flex: 1, overflow: 'auto', padding: '20px 24px 48px' }}>
         {error && (
-          <div style={{ ...type.micro, color: colors.danger }}>{error}</div>
+          <div style={{
+            ...type.small,
+            color: colors.danger,
+            background: warnFill(colors.danger),
+            border: `1px solid ${warnFill(colors.danger, 0.35)}`,
+            borderRadius: radius.md,
+            padding: '10px 14px',
+            marginBottom: 16,
+          }}
+          >
+            {error}
+          </div>
         )}
         {!board && !error && (
-          <div style={{ ...type.micro, color: colors.textMuted }}>Loading the money board…</div>
+          <div style={{ ...type.small, color: colors.textMuted }}>Loading…</div>
         )}
         {board && (
-          <>
-            <PolybotSection polybot={board.polybot} colors={colors} />
-            <HoldingsSection
-              holdings={board.holdings}
-              rsiThreshold={board.rsiThreshold}
-              picker={board.picker}
-              colors={colors}
-              busy={busy}
-              mutate={mutate}
-              draft={draft}
-              setDraft={setDraft}
-              onRecorded={(hint) => { if (hint) setError(hint); }}
-            />
-            <TomorrowSection pick={board.dailyPick ?? null} colors={colors} />
-            <SellSignalsSection signals={board.sellSignals} threshold={board.rsiThreshold} colors={colors} />
-            <PicksSection
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 20, maxWidth: 1120 }}>
+            <SummaryStrip
               board={board}
               colors={colors}
               busy={busy}
               mutate={mutate}
-              onPrefill={(next) => {
-                setDraft(next);
-                requestAnimationFrame(() => {
-                  document.getElementById('finance-holdings-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                });
-              }}
             />
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16 }}>
+              <HoldingsSection
+                holdings={board.holdings}
+                rsiThreshold={board.rsiThreshold}
+                picker={board.picker}
+                colors={colors}
+                busy={busy}
+                mutate={mutate}
+                draft={draft}
+                setDraft={setDraft}
+                onRecorded={(hint) => { if (hint) setError(hint); }}
+              />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                <TomorrowSection pick={board.dailyPick ?? null} colors={colors} />
+                <SellSignalsSection signals={board.sellSignals} threshold={board.rsiThreshold} colors={colors} />
+                <PicksSection
+                  board={board}
+                  colors={colors}
+                  onPrefill={(next) => {
+                    setDraft(next);
+                    requestAnimationFrame(() => {
+                      document.getElementById('finance-holdings-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    });
+                  }}
+                />
+              </div>
+            </div>
             <HouseholdSection
               household={board.household}
               colors={colors}
@@ -414,76 +459,151 @@ export function FinanceView() {
               mutate={mutate}
               setError={setError}
             />
-            <WatchlistSection board={board} colors={colors} busy={busy} mutate={mutate} />
-            <NotesSection board={board} colors={colors} busy={busy} mutate={mutate} />
-          </>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16 }}>
+              <WatchlistSection board={board} colors={colors} busy={busy} mutate={mutate} />
+              <NotesSection board={board} colors={colors} busy={busy} mutate={mutate} />
+            </div>
+          </div>
         )}
       </div>
     </div>
   );
 }
 
-function PolybotSection({ polybot, colors }: { polybot: PolybotStatus; colors: ThemeColors }) {
-  const status = !polybot.found
-    ? 'not found'
-    : polybot.paused
-      ? 'paused'
-      : polybot.stale
-        ? 'stale'
-        : 'live file';
-  return (
-    <section>
-      <SectionTitle colors={colors}>Polybot</SectionTitle>
-      <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: 8 }}>
-        <Stat colors={colors} label="Status" value={status} />
-        <Stat colors={colors} label="Balance" value={fmtPrice(polybot.currentBalance)} />
-        <Stat
-          colors={colors}
-          label="Realized P&L"
-          value={fmtSigned(polybot.realizedPnl)}
-          tone={polybot.realizedPnl != null && polybot.realizedPnl < 0 ? 'neg' : undefined}
-        />
-        <Stat colors={colors} label="Open exposure" value={fmtPrice(polybot.openExposure)} />
-        <Stat colors={colors} label="Trades" value={polybot.tradeCount != null ? String(polybot.tradeCount) : '—'} />
-      </div>
-      <p style={{ ...type.micro, color: colors.textMuted, margin: 0 }}>
-        Read from {polybot.root ? `${polybot.root}/logs/bankroll.json` : 'logs/bankroll.json'}. No CLOB. No vault keys.
-        {polybot.lastUpdated ? ` Snapshot ${fmtWhen(polybot.lastUpdated)}.` : ''}
-        {polybot.detail ? ` ${polybot.detail}` : ''}
-      </p>
-    </section>
-  );
-}
-
-function Stat({
-  colors, label, value, tone,
+function SummaryStrip({
+  board, colors, busy, mutate,
 }: {
+  board: FinanceBoard;
   colors: ThemeColors;
-  label: string;
-  value: string;
-  tone?: 'neg';
+  busy: boolean;
+  mutate: (fn: () => Promise<unknown>) => Promise<void>;
 }) {
+  const p = board.polybot;
+  const asOf = p.asOf || p.lastUpdated;
   return (
-    <div>
-      <div style={{ ...type.micro, color: colors.textMuted, letterSpacing: '0.06em', textTransform: 'uppercase' }}>{label}</div>
-      <div style={{ ...type.body, color: tone === 'neg' ? colors.danger : colors.text, fontWeight: 600 }}>{value}</div>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12 }}>
+      <Card colors={colors} warn={p.stale}>
+        <Eyebrow colors={colors}>Polybot</Eyebrow>
+        <Hero
+          colors={colors}
+          value={fmtMoney(p.currentBalance)}
+          tone={p.stale ? colors.warning : colors.text}
+        />
+        <div style={{ ...type.caption, color: colors.textMuted, marginTop: 6 }}>
+          {p.stale
+            ? `As of ${fmtWhen(asOf)}${p.staleDays != null ? ` · ${p.staleDays}d stale` : ''}`
+            : p.paused
+              ? 'Paused · live file'
+              : `Live file · ${fmtWhen(asOf)}`}
+        </div>
+        <div style={{ display: 'flex', gap: 16, marginTop: 12, flexWrap: 'wrap' }}>
+          <Mini colors={colors} label="Realized" value={fmtSigned(p.realizedPnl)} tone={toneFor(p.realizedPnl, colors)} />
+          <Mini colors={colors} label="Open" value={fmtMoney(p.openExposure)} />
+          <Mini colors={colors} label="Trades" value={p.tradeCount != null ? String(p.tradeCount) : '—'} />
+        </div>
+        <div style={{ ...type.caption, color: colors.textMuted, marginTop: 8 }}>
+          {p.running ? `Running${p.pid != null ? ` · pid ${p.pid}` : ''}` : 'Process down'}
+          {p.paused ? ' · paused' : ''}
+          {p.credentialsReady ? ' · keys in keychain' : ' · keys missing'}
+        </div>
+        {p.detail && (
+          <p style={{ ...type.caption, color: p.stale ? colors.warning : colors.textMuted, margin: '10px 0 0' }}>
+            {p.detail}
+          </p>
+        )}
+        <div style={{ marginTop: 14 }}>
+          <PolybotControls polybot={p} colors={colors} busy={busy} mutate={mutate} />
+        </div>
+      </Card>
+
+      <Card colors={colors}>
+        <Eyebrow colors={colors}>Holdings</Eyebrow>
+        <Hero colors={colors} value={fmtSigned(board.holdings.netPnl)} tone={toneFor(board.holdings.netPnl, colors)} />
+        <div style={{ ...type.caption, color: colors.textMuted, marginTop: 6 }}>
+          Net P&amp;L · {board.holdings.openCount} open
+          {' · '}
+          {board.holdings.source === 'picker' ? 'Picker journal' : 'local ledger'}
+        </div>
+        <div style={{ display: 'flex', gap: 16, marginTop: 12, flexWrap: 'wrap' }}>
+          <Mini colors={colors} label="Unrealized" value={fmtSigned(board.holdings.netUnrealized)} tone={toneFor(board.holdings.netUnrealized, colors)} />
+          <Mini colors={colors} label="Realized" value={fmtSigned(board.holdings.netRealized)} tone={toneFor(board.holdings.netRealized, colors)} />
+        </div>
+      </Card>
+
+      <Card colors={colors} warn={!board.picker.reachable}>
+        <Eyebrow colors={colors}>Scanner</Eyebrow>
+        <Hero
+          colors={colors}
+          value={board.picker.reachable ? (board.picker.scanInProgress ? 'Scanning' : 'Up') : 'Down'}
+          tone={board.picker.reachable ? colors.success : colors.warning}
+        />
+        <div style={{ ...type.caption, color: colors.textMuted, marginTop: 6 }}>
+          {board.picker.reachable
+            ? `${board.picker.results != null ? `${board.picker.results} ranked` : 'ready'}${board.picker.scanDate ? ` · ${board.picker.scanDate}` : ''}`
+            : board.picker.detail || 'not running at 127.0.0.1:8080'}
+        </div>
+        <div style={{ marginTop: 14 }}>
+          <PickerControls picker={board.picker} colors={colors} busy={busy} mutate={mutate} />
+        </div>
+      </Card>
     </div>
   );
 }
 
-function Field({
-  colors, label, children, wide,
+function PolybotControls({
+  polybot, colors, busy, mutate,
 }: {
+  polybot: PolybotStatus;
   colors: ThemeColors;
-  label: string;
-  children: ReactNode;
-  wide?: boolean;
+  busy: boolean;
+  mutate: (fn: () => Promise<unknown>) => Promise<void>;
 }) {
+  const [showKeys, setShowKeys] = useState(!polybot.credentialsReady);
   return (
-    <label style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: wide ? 220 : 120, flex: wide ? 1 : undefined }}>
-      <span style={{ ...type.micro, color: colors.textMuted, letterSpacing: '0.06em', textTransform: 'uppercase' }}>{label}</span>
-      {children}
-    </label>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <button
+          type="button"
+          disabled={busy || (Boolean(polybot.running) && !polybot.paused)}
+          onClick={() => void mutate(() =>
+            apiFetch('/api/finance/polybot/start', { method: 'POST', headers: { 'Content-Type': 'application/json' } }),
+          )}
+          style={polybot.running && !polybot.paused ? ghostBtn(colors) : primaryBtn(colors)}
+        >
+          {polybot.running && !polybot.paused ? 'Running' : polybot.paused ? 'Resume' : 'Start'}
+        </button>
+        <button
+          type="button"
+          disabled={busy || !polybot.running || polybot.paused}
+          onClick={() => void mutate(() =>
+            apiFetch('/api/finance/polybot/pause', { method: 'POST', headers: { 'Content-Type': 'application/json' } }),
+          )}
+          style={ghostBtn(colors)}
+        >
+          Pause
+        </button>
+        <button
+          type="button"
+          disabled={busy || polybot.paused || polybot.scanRequested}
+          onClick={() => void mutate(() =>
+            apiFetch('/api/finance/polybot/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' } }),
+          )}
+          style={ghostBtn(colors)}
+        >
+          {polybot.scanRequested ? 'Scan queued…' : 'Scan now'}
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowKeys((v) => !v)}
+          style={ghostBtn(colors)}
+        >
+          {showKeys ? 'Hide keys' : 'Keys'}
+        </button>
+      </div>
+      {showKeys && (
+        <PolybotKeys compact onChanged={() => void mutate(async () => undefined)} />
+      )}
+    </div>
   );
 }
 
@@ -503,9 +623,9 @@ function PickerControls({
         onClick={() => void mutate(() =>
           apiFetch('/api/finance/picker/start', { method: 'POST', headers: { 'Content-Type': 'application/json' } }),
         )}
-        style={ghostBtn(colors)}
+        style={picker.reachable ? ghostBtn(colors) : primaryBtn(colors)}
       >
-        {picker.reachable ? 'Scanner running' : 'Start scanner'}
+        {picker.reachable ? 'Running' : 'Start scanner'}
       </button>
       <button
         type="button"
@@ -534,7 +654,8 @@ function HoldingsSection({
   setDraft: (d: TradeDraft) => void;
   onRecorded: (hint: string | null) => void;
 }) {
-  const [filter, setFilter] = useState<'open' | 'all'>('all');
+  const [filter, setFilter] = useState<'open' | 'all'>('open');
+  const [showForm, setShowForm] = useState(false);
   const editing = Boolean(draft.editingId);
   const rows = holdings.rows.filter((r) => filter === 'all' || !r.exitDate);
 
@@ -554,6 +675,7 @@ function HoldingsSection({
         body: JSON.stringify(payload),
       });
       setDraft(emptyDraft());
+      setShowForm(false);
       onRecorded(
         res.pickerError
           ? `Saved on this tab. Scanner history was not updated (${res.pickerError}).`
@@ -564,93 +686,93 @@ function HoldingsSection({
 
   const onEdit = (row: HoldingRow) => {
     setDraft(draftFromRow(row));
+    setShowForm(true);
     requestAnimationFrame(() => {
       document.getElementById('finance-holdings-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     });
   };
 
   return (
-    <section>
-      <SectionTitle colors={colors}>Holdings</SectionTitle>
-      <p style={{ ...type.micro, color: colors.textMuted, margin: '0 0 12px' }}>
-        Net P&amp;L {fmtSigned(holdings.netPnl)}
-        {' · '}unrealized {fmtSigned(holdings.netUnrealized)}
-        {' · '}realized {fmtSigned(holdings.netRealized)}
-        {' · '}{holdings.openCount} open
-        {' · '}source {holdings.source === 'picker' ? 'Picker trade history' : 'local ledger overlay'}.
-        Enter, edit, and close lots here — this is the Picker trade journal. Does not buy or sell, and never feeds the ranker.
-        {!picker.reachable ? ' Scanner is down: lots land on this tab until you start it.' : ''}
-      </p>
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14, alignItems: 'center' }}>
-        <PickerControls picker={picker} colors={colors} busy={busy} mutate={mutate} />
-        <span style={{ ...type.micro, color: colors.textMuted }}>
-          {picker.reachable
-            ? `${picker.baseUrl}${picker.scanInProgress ? ' — scan running' : picker.scanDate ? ` — last scan ${picker.scanDate}` : ''}${picker.results != null ? ` · ${picker.results} ranked` : ''}`
-            : picker.detail || 'scanner not reachable'}
-        </span>
+    <Card colors={colors}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, marginBottom: 12 }}>
+        <SectionTitle colors={colors}>Lots</SectionTitle>
+        <button
+          type="button"
+          onClick={() => { setShowForm((s) => !s); if (editing) setDraft(emptyDraft()); }}
+          style={ghostBtn(colors)}
+        >
+          {showForm || editing ? 'Hide form' : 'Record a trade'}
+        </button>
       </div>
-      <form
-        id="finance-holdings-form"
-        onSubmit={onSubmit}
-        style={{
-          border: `1px solid ${colors.border}`,
-          borderRadius: 6,
-          padding: 14,
-          marginBottom: 16,
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 10,
-        }}
-      >
-        <div style={{ ...type.micro, color: colors.textMuted, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
-          {editing ? 'Edit trade' : 'Record a trade already made'}
-        </div>
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-          <Field colors={colors} label="Ticker">
-            <input value={draft.ticker} onChange={(e) => setDraft({ ...draft, ticker: e.target.value })} placeholder="SHOP.TO" style={inputStyle(colors)} required />
-          </Field>
-          <Field colors={colors} label="Company">
-            <input value={draft.company} onChange={(e) => setDraft({ ...draft, company: e.target.value })} placeholder="defaults to ticker" style={inputStyle(colors)} />
-          </Field>
-          <Field colors={colors} label="Entry date">
-            <input value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })} placeholder="YYYY-MM-DD" style={inputStyle(colors)} required />
-          </Field>
-          <Field colors={colors} label="Entry price">
-            <input value={draft.price} onChange={(e) => setDraft({ ...draft, price: e.target.value })} placeholder="0.00" style={inputStyle(colors)} required />
-          </Field>
-          <Field colors={colors} label="Shares">
-            <input value={draft.shares} onChange={(e) => setDraft({ ...draft, shares: e.target.value })} placeholder="0" style={inputStyle(colors)} required />
-          </Field>
-        </div>
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-          <Field colors={colors} label="Exit date (optional)">
-            <input value={draft.exitDate} onChange={(e) => setDraft({ ...draft, exitDate: e.target.value })} placeholder="YYYY-MM-DD" style={inputStyle(colors)} />
-          </Field>
-          <Field colors={colors} label="Exit price (optional)">
-            <input value={draft.exitPrice} onChange={(e) => setDraft({ ...draft, exitPrice: e.target.value })} placeholder="0.00" style={inputStyle(colors)} />
-          </Field>
-          <Field colors={colors} label="Notes" wide>
-            <input value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} placeholder="Why you took it — not an order" style={{ ...inputStyle(colors), minWidth: 220 }} />
-          </Field>
-        </div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button type="submit" disabled={busy} style={ghostBtn(colors)}>
-            {editing ? 'Save trade' : 'Record trade'}
-          </button>
-          {editing && (
-            <button type="button" disabled={busy} onClick={() => setDraft(emptyDraft())} style={ghostBtn(colors)}>
-              Cancel
+      <p style={{ ...type.caption, color: colors.textMuted, margin: '0 0 12px' }}>
+        Journal of trades already made. Does not buy or sell
+        {!picker.reachable ? ' — scanner is down, lots stay on this tab.' : '.'}
+      </p>
+      {(showForm || editing) && (
+        <form
+          id="finance-holdings-form"
+          onSubmit={onSubmit}
+          style={{
+            border: `1px solid ${colors.border}`,
+            borderRadius: radius.sm,
+            padding: 12,
+            marginBottom: 14,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10,
+            background: colors.bgDeeper,
+          }}
+        >
+          <div style={{ ...type.label, color: colors.textMuted }}>
+            {editing ? 'Edit trade' : 'Record a trade already made'}
+          </div>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <Field colors={colors} label="Ticker">
+              <input value={draft.ticker} onChange={(e) => setDraft({ ...draft, ticker: e.target.value })} placeholder="SHOP.TO" style={inputStyle(colors)} required />
+            </Field>
+            <Field colors={colors} label="Company">
+              <input value={draft.company} onChange={(e) => setDraft({ ...draft, company: e.target.value })} placeholder="defaults to ticker" style={inputStyle(colors)} />
+            </Field>
+            <Field colors={colors} label="Entry date">
+              <input value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })} placeholder="YYYY-MM-DD" style={inputStyle(colors)} required />
+            </Field>
+            <Field colors={colors} label="Entry price">
+              <input value={draft.price} onChange={(e) => setDraft({ ...draft, price: e.target.value })} placeholder="0.00" style={inputStyle(colors)} required />
+            </Field>
+            <Field colors={colors} label="Shares">
+              <input value={draft.shares} onChange={(e) => setDraft({ ...draft, shares: e.target.value })} placeholder="0" style={inputStyle(colors)} required />
+            </Field>
+          </div>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <Field colors={colors} label="Exit date">
+              <input value={draft.exitDate} onChange={(e) => setDraft({ ...draft, exitDate: e.target.value })} placeholder="YYYY-MM-DD" style={inputStyle(colors)} />
+            </Field>
+            <Field colors={colors} label="Exit price">
+              <input value={draft.exitPrice} onChange={(e) => setDraft({ ...draft, exitPrice: e.target.value })} placeholder="0.00" style={inputStyle(colors)} />
+            </Field>
+            <Field colors={colors} label="Notes" wide>
+              <input value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} placeholder="Why you took it" style={{ ...inputStyle(colors), minWidth: 220 }} />
+            </Field>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button type="submit" disabled={busy} style={primaryBtn(colors)}>
+              {editing ? 'Save trade' : 'Record trade'}
             </button>
-          )}
-        </div>
-      </form>
+            {editing && (
+              <button type="button" disabled={busy} onClick={() => { setDraft(emptyDraft()); setShowForm(false); }} style={ghostBtn(colors)}>
+                Cancel
+              </button>
+            )}
+          </div>
+        </form>
+      )}
       {holdings.rows.length === 0 ? (
-        <p style={{ ...type.micro, color: colors.textMuted, margin: 0 }}>
-          No lots yet. Record a trade you already made above — you do not need to open Picker.
+        <p style={{ ...type.small, color: colors.textMuted, margin: 0 }}>
+          No lots yet. Record a trade you already made.
         </p>
       ) : (
         <>
-          <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+          <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
             <button type="button" onClick={() => setFilter('open')} style={filter === 'open' ? ghostBtnOn(colors) : ghostBtn(colors)}>
               Open ({holdings.openCount})
             </button>
@@ -658,16 +780,14 @@ function HoldingsSection({
               All ({holdings.rows.length})
             </button>
           </div>
-          <table style={tableStyle(colors)}>
+          <table style={tableStyle()}>
             <thead>
               <tr>
                 <th style={th(colors)}>Symbol</th>
-                <th style={th(colors)}>Shares</th>
-                <th style={th(colors)}>Entry</th>
-                <th style={th(colors)}>Mark</th>
-                <th style={th(colors)}>P&amp;L</th>
-                <th style={th(colors)}>RSI-14</th>
-                <th style={th(colors)}>Notes</th>
+                <th style={{ ...th(colors), textAlign: 'right' }}>Shares</th>
+                <th style={{ ...th(colors), textAlign: 'right' }}>Mark</th>
+                <th style={{ ...th(colors), textAlign: 'right' }}>P&amp;L</th>
+                <th style={{ ...th(colors), textAlign: 'right' }}>RSI</th>
                 <th style={th(colors)} />
               </tr>
             </thead>
@@ -677,35 +797,32 @@ function HoldingsSection({
                 const rsiHot = Boolean(p.sellSignal) || (!closed && p.rsi != null && p.rsi >= rsiThreshold);
                 const pnl = closed ? p.realized : p.unrealized;
                 return (
-                  <tr key={p.id} style={closed ? { opacity: 0.65 } : undefined}>
+                  <tr key={p.id} style={closed ? { opacity: 0.55 } : undefined}>
                     <td style={td(colors)}>
                       <div style={{ fontWeight: 600 }}>{p.symbol}</div>
-                      <div style={{ ...type.micro, color: colors.textMuted }}>{p.companyName || (closed ? 'closed' : 'open')}</div>
+                      <div style={{ ...type.caption, color: colors.textMuted }}>
+                        {closed ? `${p.entryDate} → ${p.exitDate}` : p.entryDate}
+                      </div>
                     </td>
-                    <td style={td(colors)}>{p.shares}</td>
-                    <td style={td(colors)}>{p.entryDate} · {fmtPrice(p.entryPrice)}</td>
-                    <td style={td(colors)}>
+                    <td style={{ ...td(colors), textAlign: 'right', ...tabularNums }}>{p.shares}</td>
+                    <td style={{ ...td(colors), textAlign: 'right', ...tabularNums }}>
                       {p.quoteError ? (
                         <span style={{ color: colors.textMuted }}>{p.quoteError}</span>
                       ) : closed ? (
-                        `${p.exitDate} · ${fmtPrice(p.exitPrice)}`
+                        fmtMoney(p.exitPrice)
                       ) : (
-                        fmtPrice(p.last, p.quote?.currency)
+                        fmtMoney(p.last, p.quote?.currency ?? undefined)
                       )}
                     </td>
-                    <td style={{ ...td(colors), color: (pnl ?? 0) < 0 ? colors.danger : colors.text }}>
+                    <td style={{ ...td(colors), textAlign: 'right', ...tabularNums, color: toneFor(pnl, colors), fontWeight: 600 }}>
                       {fmtSigned(pnl)}
                       {!closed && p.unrealizedPct != null ? (
-                        <div style={{ ...type.micro, color: colors.textMuted }}>{fmtPct(p.unrealizedPct)}</div>
+                        <div style={{ ...type.caption, color: colors.textMuted, fontWeight: 400 }}>{fmtPct(p.unrealizedPct)}</div>
                       ) : null}
                     </td>
-                    <td style={{ ...td(colors), color: rsiHot ? colors.danger : colors.text }}>
+                    <td style={{ ...td(colors), textAlign: 'right', ...tabularNums, color: rsiHot ? colors.danger : colors.text }}>
                       {p.rsi != null ? p.rsi.toFixed(1) : '—'}
-                      {p.sellSignal ? (
-                        <div style={{ ...type.micro, color: colors.danger }}>sell signal</div>
-                      ) : null}
                     </td>
-                    <td style={{ ...td(colors), ...type.micro, color: colors.textMuted }}>{p.notes || '—'}</td>
                     <td style={td(colors)}>
                       <LotActions
                         row={p}
@@ -722,7 +839,7 @@ function HoldingsSection({
           </table>
         </>
       )}
-    </section>
+    </Card>
   );
 }
 
@@ -735,6 +852,7 @@ function LotActions({
   mutate: (fn: () => Promise<unknown>) => Promise<void>;
   onEdit: () => void;
 }) {
+  const [closing, setClosing] = useState(false);
   const [exitDate, setExitDate] = useState(todayIso());
   const [exitPrice, setExitPrice] = useState(row.last != null ? String(row.last) : '');
   const pickerSourced = row.source === 'picker';
@@ -746,11 +864,24 @@ function LotActions({
     : `/api/finance/positions/${encodeURIComponent(row.id)}`;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-start' }}>
-      <button type="button" disabled={busy} onClick={onEdit} style={ghostBtn(colors)}>
-        Edit
-      </button>
-      {!row.exitDate && (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <button type="button" disabled={busy} onClick={onEdit} style={ghostBtn(colors)}>Edit</button>
+        {!row.exitDate && (
+          <button type="button" disabled={busy} onClick={() => setClosing((c) => !c)} style={ghostBtn(colors)}>
+            Close
+          </button>
+        )}
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void mutate(() => apiFetch(deletePath, { method: 'DELETE' }))}
+          style={ghostBtn(colors)}
+        >
+          Remove
+        </button>
+      </div>
+      {closing && !row.exitDate && (
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -758,32 +889,20 @@ function LotActions({
               apiFetch(closePath, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  exitDate,
-                  exitPrice: Number(exitPrice),
-                }),
+                body: JSON.stringify({ exitDate, exitPrice: Number(exitPrice) }),
               }),
             );
           }}
-          style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}
+          style={{ display: 'flex', gap: 6 }}
         >
-          <input value={exitDate} onChange={(e) => setExitDate(e.target.value)} placeholder="Exit YYYY-MM-DD" style={{ ...inputStyle(colors), minWidth: 110 }} required />
-          <input value={exitPrice} onChange={(e) => setExitPrice(e.target.value)} placeholder="Exit price" style={{ ...inputStyle(colors), minWidth: 90 }} required />
-          <button type="submit" disabled={busy} style={ghostBtn(colors)}>Close</button>
+          <input value={exitDate} onChange={(e) => setExitDate(e.target.value)} style={{ ...inputStyle(colors), minWidth: 110 }} required />
+          <input value={exitPrice} onChange={(e) => setExitPrice(e.target.value)} style={{ ...inputStyle(colors), minWidth: 80 }} required />
+          <button type="submit" disabled={busy} style={primaryBtn(colors)}>Mark closed</button>
         </form>
       )}
-      <button
-        type="button"
-        disabled={busy}
-        onClick={() => void mutate(() => apiFetch(deletePath, { method: 'DELETE' }))}
-        style={ghostBtn(colors)}
-      >
-        Remove
-      </button>
     </div>
   );
 }
-
 
 function TomorrowSection({
   pick, colors,
@@ -793,33 +912,33 @@ function TomorrowSection({
 }) {
   const ticker = pick?.ticker?.trim() || null;
   return (
-    <section>
+    <Card colors={colors}>
       <SectionTitle colors={colors}>Tomorrow</SectionTitle>
-      <p style={{ ...type.micro, color: colors.textMuted, margin: '0 0 8px' }}>
+      <p style={{ ...type.caption, color: colors.textMuted, margin: '0 0 8px' }}>
         15:30 ET close scan · Opus on names that cleared the loop gate. A
         hypothesis, not an order. None is valid.
       </p>
       {!pick && (
-        <p style={{ ...type.micro, color: colors.textMuted, margin: 0 }}>
+        <p style={{ ...type.small, color: colors.textMuted, margin: 0 }}>
           No close judgment yet. The scanner runs at 15:30 ET on trading days.
         </p>
       )}
       {pick && !ticker && (
-        <p style={{ ...type.micro, color: colors.textMuted, margin: 0 }}>{pick.why}</p>
+        <p style={{ ...type.small, color: colors.textMuted, margin: 0 }}>{pick.why}</p>
       )}
       {pick && ticker && (
         <article>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
             <strong style={{ ...type.heading }}>{ticker}</strong>
             {pick.companyName && (
-              <span style={{ ...type.micro, color: colors.textMuted }}>{pick.companyName}</span>
+              <span style={{ ...type.caption, color: colors.textMuted }}>{pick.companyName}</span>
             )}
             <span style={{ ...type.micro, color: colors.textMuted }}>{pick.day}</span>
           </div>
-          <p style={{ ...type.body, color: colors.text, margin: '8px 0 0' }}>{pick.why}</p>
+          <p style={{ ...type.small, color: colors.text, margin: '8px 0 0' }}>{pick.why}</p>
         </article>
       )}
-    </section>
+    </Card>
   );
 }
 
@@ -831,70 +950,58 @@ function SellSignalsSection({
   colors: ThemeColors;
 }) {
   return (
-    <section>
-      <SectionTitle colors={colors}>Sell signals</SectionTitle>
-      <p style={{ ...type.micro, color: colors.textMuted, margin: '0 0 8px' }}>
-        Open holdings only. RSI-14 ≥ {threshold}, or two of: stochastic %K ≥ 80, 8% above the 20-day average, upper Bollinger band, within 2% of the 52-week high. A signal, not an order — nothing here sells.
+    <Card colors={colors} warn={signals.length > 0}>
+      <SectionTitle colors={colors}>Overbought</SectionTitle>
+      <p style={{ ...type.caption, color: colors.textMuted, margin: '0 0 8px' }}>
+        Open lots · RSI-14 ≥ {threshold} or two heat signs. The Watcher notifies
+        when a lot you hold looks hot. A signal, not an order.
       </p>
       {signals.length === 0 ? (
-        <p style={{ ...type.micro, color: colors.textMuted, margin: 0 }}>
-          No open holding is showing overbought signs.
-        </p>
+        <p style={{ ...type.small, color: colors.textMuted, margin: 0 }}>None right now.</p>
       ) : (
-        <ul style={{ margin: 0, paddingLeft: 18 }}>
+        <ul style={{ margin: 0, paddingLeft: 16 }}>
           {signals.map((a) => (
-            <li key={a.symbol} style={{ ...type.body, color: colors.danger, marginBottom: 8 }}>
+            <li key={a.symbol} style={{ ...type.small, color: colors.danger, marginBottom: 8 }}>
               <div>{a.summary}</div>
               {a.signs.length > 0 && (
-                <div style={{ ...type.micro, color: colors.textMuted }}>{a.signs.join(' · ')}</div>
+                <div style={{ ...type.caption, color: colors.textMuted }}>{a.signs.join(' · ')}</div>
               )}
             </li>
           ))}
         </ul>
       )}
-    </section>
+    </Card>
   );
 }
 
 function PicksSection({
-  board, colors, busy, mutate, onPrefill,
+  board, colors, onPrefill,
 }: {
   board: FinanceBoard;
   colors: ThemeColors;
-  busy: boolean;
-  mutate: (fn: () => Promise<unknown>) => Promise<void>;
   onPrefill: (draft: TradeDraft) => void;
 }) {
-  const picker = board.picker;
   return (
-    <section>
-      <SectionTitle colors={colors}>Validated picks</SectionTitle>
-      <p style={{ ...type.micro, color: colors.textMuted, margin: '0 0 12px' }}>
-        {picker.reachable
-          ? `Scanner up at ${picker.baseUrl}${picker.scanInProgress ? ' — a scan is running' : picker.scanDate ? ` — last scan ${picker.scanDate}` : ''}${picker.results != null ? ` · ${picker.results} ranked` : ''}.`
-          : `Scanner not reachable${picker.detail ? ` (${picker.detail})` : ''}.`}
-        {' '}Yahoo quote + 1y daily closes. Loop gate (ICIR / half-life / out-of-sample) on the first eight. financialdatasets snapshot when the key is set. Ranker input is scan data only — holdings and bank balances never go in. Prefill lot fills the holdings form for a trade you already made; it does not place an order.
-      </p>
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12, alignItems: 'center' }}>
-        <PickerControls picker={picker} colors={colors} busy={busy} mutate={mutate} />
-        <button
-          type="button"
-          onClick={() => navigateToTool('world')}
-          style={ghostBtn(colors)}
-        >
-          Open The Financier in World
+    <Card colors={colors}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
+        <SectionTitle colors={colors}>Picks</SectionTitle>
+        <button type="button" onClick={() => navigateToTool('world')} style={ghostBtn(colors)}>
+          Financier
         </button>
       </div>
+      <p style={{ ...type.caption, color: colors.textMuted, margin: '0 0 12px' }}>
+        Yahoo + loop gate on the first eight. Ranker never sees holdings or bankroll.
+      </p>
       {board.picks.length === 0 ? (
-        <p style={{ ...type.micro, color: colors.textMuted, margin: 0 }}>No picks this cycle.</p>
+        <p style={{ ...type.small, color: colors.textMuted, margin: 0 }}>No picks this cycle.</p>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {board.picks.map((p) => (
             <PickCard key={p.ticker} pick={p} colors={colors} onPrefill={onPrefill} />
           ))}
         </div>
       )}
-    </section>
+    </Card>
   );
 }
 
@@ -909,19 +1016,17 @@ function PickCard({
   const yahoo = pick.quote?.price ?? null;
   const mark = yahoo ?? pick.pickerPrice ?? null;
   return (
-    <article style={{ border: `1px solid ${colors.border}`, padding: '12px 14px', borderRadius: 6 }}>
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'baseline' }}>
-        <strong>{pick.ticker}</strong>
-        {pick.companyName && <span style={{ ...type.micro, color: colors.textMuted }}>{pick.companyName}</span>}
-        {pick.tier && <span style={{ ...type.micro, color: colors.textMuted }}>{pick.tier}</span>}
-        {pick.rank != null && <span style={{ ...type.micro, color: colors.textMuted }}>#{pick.rank}</span>}
+    <article style={{ border: `1px solid ${colors.border}`, padding: '10px 12px', borderRadius: radius.sm }}>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
+        <strong style={{ ...type.heading }}>{pick.ticker}</strong>
+        {pick.companyName && <span style={{ ...type.caption, color: colors.textMuted }}>{pick.companyName}</span>}
         {loop && (
-          <span style={{ ...type.micro, color: loop.passed ? colors.cyan : colors.danger, fontWeight: 600 }}>
+          <span style={{ ...type.micro, color: loop.passed ? colors.success : colors.danger, fontWeight: 600 }}>
             {loop.passed ? 'loop pass' : 'loop kill'}
           </span>
         )}
         {pick.priceMismatch && (
-          <span style={{ ...type.micro, color: colors.danger }}>price mismatch (&gt;2%)</span>
+          <span style={{ ...type.micro, color: colors.danger }}>price ≠ Yahoo</span>
         )}
         <button
           type="button"
@@ -939,33 +1044,23 @@ function PickCard({
           })}
           style={{ ...ghostBtn(colors), marginLeft: 'auto' }}
         >
-          Prefill lot
+          Prefill
         </button>
       </div>
-      <div style={{ ...type.micro, color: colors.textMuted, marginTop: 6, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
-        <span>Scanner {fmtPrice(pick.pickerPrice)}</span>
-        <span>Yahoo {pick.quoteError ? pick.quoteError : fmtPrice(yahoo, pick.quote?.currency)}</span>
+      <div style={{ ...type.caption, color: colors.textMuted, marginTop: 6, display: 'flex', gap: 12, flexWrap: 'wrap', ...tabularNums }}>
+        <span>Scan {fmtMoney(pick.pickerPrice)}</span>
+        <span>Yahoo {pick.quoteError ? pick.quoteError : fmtMoney(yahoo, pick.quote?.currency ?? undefined)}</span>
         <span>RSI {pick.pickerRsi != null ? pick.pickerRsi.toFixed(1) : '—'}</span>
         {pick.score != null && <span>Score {pick.score.toFixed(1)}</span>}
-        {pick.confidence != null && <span>Confidence {fmtNum(pick.confidence)}</span>}
-        {pick.buyWindow && <span>Buy window {pick.buyWindow}</span>}
       </div>
       {pick.reason && (
-        <p style={{ ...type.micro, color: colors.textMuted, margin: '6px 0 0' }}>{pick.reason}</p>
+        <p style={{ ...type.caption, color: colors.textMuted, margin: '6px 0 0' }}>{pick.reason}</p>
       )}
       {loop && (
-        <p style={{ ...type.micro, color: colors.textMuted, margin: '6px 0 0' }}>
-          ICIR {fmtNum(loop.icir)} · half-life {loop.halfLifeDays != null ? `${loop.halfLifeDays.toFixed(1)}d` : '—'} · OOS {fmtNum(loop.oosIcir)}
+        <p style={{ ...type.caption, color: colors.textMuted, margin: '4px 0 0' }}>
+          ICIR {fmtNum(loop.icir)} · half-life {loop.halfLifeDays != null ? `${loop.halfLifeDays.toFixed(1)}d` : '—'}
           {loop.kills.length > 0 ? ` · ${loop.kills.join('; ')}` : ''}
         </p>
-      )}
-      {pick.fundamentals.summary && (
-        <p style={{ ...type.micro, color: colors.textMuted, margin: '6px 0 0', whiteSpace: 'pre-wrap' }}>
-          {pick.fundamentals.summary}
-        </p>
-      )}
-      {!pick.fundamentals.summary && pick.fundamentals.error && (
-        <p style={{ ...type.micro, color: colors.textMuted, margin: '6px 0 0' }}>{pick.fundamentals.error}</p>
       )}
     </article>
   );
@@ -996,9 +1091,7 @@ function HouseholdSection({
     void mutate(async () => {
       try {
         const res = await uploadFinanceStatement(file);
-        setHint(
-          `Imported ${res.inserted} of ${res.parsed} lines from ${res.sourceFile}${res.ocrUsed ? ' (OCR)' : ''}.`,
-        );
+        setHint(`Imported ${res.inserted} of ${res.parsed} lines from ${res.sourceFile}${res.ocrUsed ? ' (OCR)' : ''}.`);
         setError(null);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -1009,11 +1102,14 @@ function HouseholdSection({
   };
 
   return (
-    <section>
-      <SectionTitle colors={colors}>Household spend</SectionTitle>
-      <p style={{ ...type.micro, color: colors.textMuted, margin: '0 0 12px' }}>
-        CSV/OFX/QFX first. PDF or screenshot uses OCR. Same-period CSV wins. Trailing run-rate, not a model.
-      </p>
+    <Card colors={colors}>
+      <SectionTitle colors={colors}>Household</SectionTitle>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, margin: '12px 0 16px' }}>
+        <Mini colors={colors} label="30-day run-rate" value={fmtMoney(household.forecast.runRate30d)} large />
+        <Mini colors={colors} label="90-day run-rate" value={fmtMoney(household.forecast.runRate90d)} large />
+        <Mini colors={colors} label="Spent (window)" value={fmtMoney(household.forecast.spend90d)} large />
+        <Mini colors={colors} label="Days" value={String(household.forecast.daysUsed)} large />
+      </div>
       <div
         onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
         onDragLeave={() => setDragOver(false)}
@@ -1024,14 +1120,15 @@ function HouseholdSection({
         }}
         style={{
           border: `1px dashed ${dragOver ? colors.cyan : colors.border}`,
-          borderRadius: 6,
-          padding: '16px 14px',
+          borderRadius: radius.sm,
+          padding: '12px 14px',
           marginBottom: 14,
         }}
       >
-        <p style={{ ...type.body, margin: '0 0 8px' }}>
-          Drop a bank or card export here (CSV, OFX, QFX, or a PDF/screenshot).
-        </p>
+        <span style={{ ...type.small, color: colors.textMuted }}>
+          Drop a CSV, OFX, QFX, or a PDF/screenshot
+        </span>
+        {' '}
         <button type="button" disabled={busy} style={ghostBtn(colors)} onClick={() => fileRef.current?.click()}>
           Choose file
         </button>
@@ -1045,43 +1142,35 @@ function HouseholdSection({
             e.target.value = '';
           }}
         />
-        {hint && <p style={{ ...type.micro, color: colors.textMuted, margin: '8px 0 0' }}>{hint}</p>}
+        {hint && <p style={{ ...type.caption, color: colors.textMuted, margin: '8px 0 0' }}>{hint}</p>}
       </div>
-      <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: 8 }}>
-        <Stat colors={colors} label="30-day run-rate" value={fmtPrice(household.forecast.runRate30d)} />
-        <Stat colors={colors} label="90-day run-rate" value={fmtPrice(household.forecast.runRate90d)} />
-        <Stat colors={colors} label="Spent (window)" value={fmtPrice(household.forecast.spend90d)} />
-        <Stat colors={colors} label="Days in window" value={String(household.forecast.daysUsed)} />
-      </div>
-      <p style={{ ...type.micro, color: colors.textMuted, margin: '0 0 12px' }}>{household.forecast.method}</p>
       {household.forecast.byCategory.length > 0 && (
-        <ul style={{ margin: '0 0 12px', paddingLeft: 18 }}>
-          {household.forecast.byCategory.map((c) => (
-            <li key={c.category} style={type.micro}>
-              {c.category} · {fmtPrice(c.amount)} / window
-            </li>
+        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 12 }}>
+          {household.forecast.byCategory.slice(0, 6).map((c) => (
+            <Mini key={c.category} colors={colors} label={c.category} value={fmtMoney(c.amount)} />
           ))}
-        </ul>
+        </div>
       )}
       {household.recent.length === 0 ? (
-        <p style={{ ...type.micro, color: colors.textMuted, margin: 0 }}>No imported transactions yet.</p>
+        <p style={{ ...type.small, color: colors.textMuted, margin: 0 }}>No imported transactions yet.</p>
       ) : (
-        <table style={tableStyle(colors)}>
+        <table style={tableStyle()}>
           <thead>
             <tr>
               <th style={th(colors)}>Date</th>
               <th style={th(colors)}>Payee</th>
-              <th style={th(colors)}>Amount</th>
+              <th style={{ ...th(colors), textAlign: 'right' }}>Amount</th>
               <th style={th(colors)}>Category</th>
-              <th style={th(colors)}>Source</th>
             </tr>
           </thead>
           <tbody>
             {household.recent.map((t) => (
               <tr key={t.id}>
-                <td style={td(colors)}>{t.date}</td>
+                <td style={{ ...td(colors), ...tabularNums, color: colors.textMuted }}>{t.date}</td>
                 <td style={td(colors)}>{t.payee}</td>
-                <td style={{ ...td(colors), color: t.amount < 0 ? colors.danger : colors.text }}>{fmtSigned(t.amount)}</td>
+                <td style={{ ...td(colors), textAlign: 'right', ...tabularNums, color: toneFor(t.amount, colors) }}>
+                  {fmtSigned(t.amount)}
+                </td>
                 <td style={td(colors)}>
                   <select
                     value={t.category}
@@ -1100,13 +1189,12 @@ function HouseholdSection({
                     ))}
                   </select>
                 </td>
-                <td style={{ ...td(colors), ...type.micro, color: colors.textMuted }}>{t.sourceFile || '—'}</td>
               </tr>
             ))}
           </tbody>
         </table>
       )}
-    </section>
+    </Card>
   );
 }
 
@@ -1137,56 +1225,44 @@ function WatchlistSection({
   };
 
   return (
-    <section>
+    <Card colors={colors}>
       <SectionTitle colors={colors}>Watchlist</SectionTitle>
       {board.watchlist.length === 0 && (
-        <p style={{ ...type.micro, color: colors.textMuted, margin: '0 0 12px' }}>
-          Empty. Add a ticker, or ask The Financier to put one on the board.
+        <p style={{ ...type.small, color: colors.textMuted, margin: '0 0 12px' }}>
+          Empty. Add a ticker.
         </p>
       )}
       {board.watchlist.length > 0 && (
-        <table style={tableStyle(colors)}>
+        <table style={tableStyle()}>
           <thead>
             <tr>
               <th style={th(colors)}>Symbol</th>
-              <th style={th(colors)}>Price</th>
-              <th style={th(colors)}>Day</th>
-              <th style={th(colors)}>52-week</th>
+              <th style={{ ...th(colors), textAlign: 'right' }}>Price</th>
               <th style={th(colors)} />
             </tr>
           </thead>
           <tbody>
             {board.watchlist.map((row) => {
               const q = row.quote;
-              const up = (q?.change ?? 0) > 0;
-              const down = (q?.change ?? 0) < 0;
               return (
                 <tr key={row.id}>
                   <td style={td(colors)}>
                     <div style={{ fontWeight: 600 }}>{row.symbol}</div>
-                    <div style={{ ...type.micro, color: colors.textMuted }}>
-                      {row.label || q?.name || (q?.marketClosed ? 'previous close' : '')}
-                    </div>
+                    <div style={{ ...type.caption, color: colors.textMuted }}>{row.label || q?.name || ''}</div>
                   </td>
-                  <td style={td(colors)}>
+                  <td style={{ ...td(colors), textAlign: 'right', ...tabularNums }}>
                     {row.quoteError ? (
                       <span style={{ color: colors.textMuted }}>{row.quoteError}</span>
                     ) : (
                       <>
-                        <div>{fmtPrice(q?.price, q?.currency)}</div>
-                        <div style={{ ...type.micro, color: up ? colors.cyan : down ? colors.danger : colors.textMuted }}>
+                        <div>{fmtMoney(q?.price, q?.currency ?? undefined)}</div>
+                        <div style={{ ...type.caption, color: toneFor(q?.change ?? null, colors) }}>
                           {fmtPct(q?.changePercent)}
                         </div>
                       </>
                     )}
                   </td>
-                  <td style={td(colors)}>
-                    {q ? `${fmtPrice(q.dayLow)} – ${fmtPrice(q.dayHigh)}` : '—'}
-                  </td>
-                  <td style={td(colors)}>
-                    {q ? `${fmtPrice(q.fiftyTwoWeekLow)} – ${fmtPrice(q.fiftyTwoWeekHigh)}` : '—'}
-                  </td>
-                  <td style={td(colors)}>
+                  <td style={{ ...td(colors), textAlign: 'right' }}>
                     <button
                       type="button"
                       disabled={busy}
@@ -1206,10 +1282,10 @@ function WatchlistSection({
       )}
       <form onSubmit={onAdd} style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
         <input value={symbol} onChange={(e) => setSymbol(e.target.value)} placeholder="AAPL" style={inputStyle(colors)} />
-        <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Name (optional)" style={inputStyle(colors)} />
+        <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Name" style={inputStyle(colors)} />
         <button type="submit" disabled={busy || !symbol.trim()} style={ghostBtn(colors)}>Add</button>
       </form>
-    </section>
+    </Card>
   );
 }
 
@@ -1240,17 +1316,15 @@ function NotesSection({
   };
 
   return (
-    <section>
+    <Card colors={colors}>
       <SectionTitle colors={colors}>Notes</SectionTitle>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {board.notes.map((n) => (
-          <div key={n.id} style={{ border: `1px solid ${colors.border}`, padding: '12px 14px', borderRadius: 6 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'baseline' }}>
+          <div key={n.id} style={{ borderBottom: `1px solid ${colors.border}`, paddingBottom: 10 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
               <div>
                 <span style={{ fontWeight: 600 }}>{n.title}</span>
-                {n.symbol && (
-                  <span style={{ ...type.micro, color: colors.textMuted, marginLeft: 8 }}>{n.symbol}</span>
-                )}
+                {n.symbol && <span style={{ ...type.caption, color: colors.textMuted, marginLeft: 8 }}>{n.symbol}</span>}
               </div>
               <button
                 type="button"
@@ -1263,35 +1337,118 @@ function NotesSection({
                 Delete
               </button>
             </div>
-            <p style={{ ...type.body, margin: '8px 0 0', whiteSpace: 'pre-wrap' }}>{n.body}</p>
+            <p style={{ ...type.small, margin: '6px 0 0', whiteSpace: 'pre-wrap', color: colors.textMuted }}>{n.body}</p>
           </div>
         ))}
       </div>
       <form onSubmit={onAdd} style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title" style={inputStyle(colors)} required />
-          <input value={symbol} onChange={(e) => setSymbol(e.target.value)} placeholder="Ticker (optional)" style={inputStyle(colors)} />
+          <input value={symbol} onChange={(e) => setSymbol(e.target.value)} placeholder="Ticker" style={inputStyle(colors)} />
         </div>
-        <textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder="Observation, sourced number, or question — not a recommendation." style={{ ...inputStyle(colors), minHeight: 72 }} required />
+        <textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder="Observation — not a recommendation" style={{ ...inputStyle(colors), minHeight: 64 }} required />
         <button type="submit" disabled={busy} style={{ ...ghostBtn(colors), alignSelf: 'flex-start' }}>Add note</button>
       </form>
+    </Card>
+  );
+}
+
+function Card({
+  children, colors, warn,
+}: {
+  children: ReactNode;
+  colors: ThemeColors;
+  warn?: boolean;
+}) {
+  return (
+    <section style={{
+      background: colors.surface,
+      border: `1px solid ${warn ? warnFill(colors.warning, 0.45) : colors.border}`,
+      borderRadius: radius.md,
+      padding: '16px 18px',
+      boxShadow: colors.cardShadow,
+    }}
+    >
+      {children}
     </section>
+  );
+}
+
+function Hero({ colors, value, tone }: { colors: ThemeColors; value: string; tone?: string }) {
+  return (
+    <div style={{
+      ...type.title,
+      ...tabularNums,
+      color: tone ?? colors.text,
+      letterSpacing: '-0.02em',
+      marginTop: 4,
+    }}
+    >
+      {value}
+    </div>
+  );
+}
+
+function Mini({
+  colors, label, value, tone, large,
+}: {
+  colors: ThemeColors;
+  label: string;
+  value: string;
+  tone?: string;
+  large?: boolean;
+}) {
+  return (
+    <div>
+      <div style={{ ...type.label, color: colors.textMuted }}>{label}</div>
+      <div style={{ ...(large ? type.heading : type.body), ...tabularNums, color: tone ?? colors.text, marginTop: 2 }}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function Eyebrow({ children, colors }: { children: string; colors: ThemeColors }) {
+  return <div style={{ ...type.label, color: colors.textMuted }}>{children}</div>;
+}
+
+function Field({
+  colors, label, children, wide,
+}: {
+  colors: ThemeColors;
+  label: string;
+  children: ReactNode;
+  wide?: boolean;
+}) {
+  return (
+    <label style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: wide ? 220 : 110, flex: wide ? 1 : undefined }}>
+      <span style={{ ...type.label, color: colors.textMuted }}>{label}</span>
+      {children}
+    </label>
   );
 }
 
 function SectionTitle({ children, colors }: { children: string; colors: ThemeColors }) {
   return (
-    <h2 style={{ ...type.micro, letterSpacing: '0.08em', textTransform: 'uppercase', color: colors.textMuted, margin: '0 0 10px' }}>
-      {children}
-    </h2>
+    <h2 style={{ ...type.heading, color: colors.text, margin: 0 }}>{children}</h2>
   );
 }
 
-function tableStyle(_colors: ThemeColors): CSSProperties {
+function warnFill(hex: string, a = 0.12): string {
+  if (hex.startsWith('rgba')) return hex;
+  const h = hex.replace('#', '');
+  const n = parseInt(h.length === 3 ? h.split('').map((c) => c + c).join('') : h, 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+function tableStyle(): CSSProperties {
   return { width: '100%', borderCollapse: 'collapse', fontFamily: font.body };
 }
 function th(colors: ThemeColors): CSSProperties {
-  return { ...type.micro, textAlign: 'left', color: colors.textMuted, padding: '6px 10px 6px 0', borderBottom: `1px solid ${colors.border}`, fontWeight: 600 };
+  return { ...type.label, textAlign: 'left', color: colors.textMuted, padding: '6px 10px 8px 0', borderBottom: `1px solid ${colors.border}` };
 }
 function td(colors: ThemeColors): CSSProperties {
   return { ...type.body, padding: '10px 10px 10px 0', borderBottom: `1px solid ${colors.border}`, verticalAlign: 'top' };
@@ -1299,13 +1456,13 @@ function td(colors: ThemeColors): CSSProperties {
 function inputStyle(colors: ThemeColors): CSSProperties {
   return {
     ...type.body,
-    background: colors.bg,
+    background: colors.inputBg,
     color: colors.text,
     border: `1px solid ${colors.border}`,
-    borderRadius: 4,
+    borderRadius: radius.sm,
     padding: '6px 10px',
     fontFamily: font.body,
-    minWidth: 120,
+    minWidth: 100,
   };
 }
 function ghostBtn(colors: ThemeColors): CSSProperties {
@@ -1314,16 +1471,25 @@ function ghostBtn(colors: ThemeColors): CSSProperties {
     background: 'transparent',
     color: colors.text,
     border: `1px solid ${colors.border}`,
-    borderRadius: 4,
+    borderRadius: radius.sm,
     padding: '6px 10px',
     cursor: 'pointer',
     fontFamily: font.body,
   };
 }
 function ghostBtnOn(colors: ThemeColors): CSSProperties {
+  return { ...ghostBtn(colors), borderColor: colors.cyan, color: colors.cyan };
+}
+function primaryBtn(colors: ThemeColors): CSSProperties {
   return {
-    ...ghostBtn(colors),
-    borderColor: colors.cyan,
-    color: colors.cyan,
+    ...type.micro,
+    background: colors.cyan,
+    color: colors.textOnCyan,
+    border: 'none',
+    borderRadius: radius.sm,
+    padding: '7px 12px',
+    cursor: 'pointer',
+    fontFamily: font.body,
+    fontWeight: 600,
   };
 }

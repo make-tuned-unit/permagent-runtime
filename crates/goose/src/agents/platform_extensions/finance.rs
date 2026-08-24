@@ -18,12 +18,11 @@
 //!
 //! ## The boundary that matters
 //!
-//! The model **researches and reports**. It does not size positions, it does
-//! not place orders, and it has no path to either — no tool here can move
-//! money. The one WRITE is `record_trade`, which appends to the user's history
-//! of trades they already made; that record is what every hit-rate and
-//! backtest number is computed from, so it is validated field by field before
-//! it is sent and nothing about it is inferred.
+//! The model **researches and reports**. It does not size positions. It has
+//! no CLOB client of its own. `polybot_*` starts or pauses the user's
+//! Polybot, which can place Polymarket orders; those keys live in the
+//! keychain and never enter chat. The one WRITE on the stock side is
+//! `record_trade`, which appends a trade the user already made.
 //!
 //! ## Honesty
 //!
@@ -107,6 +106,23 @@ struct NoteUpdateParams {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct IdParams {
     id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct RecategorizeParams {
+    /// Transaction id from finance_board household rows.
+    id: String,
+    /// One of housing, groceries, transport, utilities, dining, health,
+    /// subscriptions, income, transfer, uncategorized.
+    category: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct RsiThresholdParams {
+    /// RSI-14 bar for overbought sell signals on open lots. Omit to read
+    /// the current value. Typical range 70–80; default 74.
+    #[serde(default)]
+    value: Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -222,7 +238,33 @@ impl FinanceClient {
                  picker_start brings it up. picker_scan takes many minutes. record_trade \
                  appends a trade the USER says they made, on the Finance tab and (when \
                  reachable) in their scanner history.\n\n\
-                 You never size a position and you cannot place an order.",
+                 polybot_status / polybot_start / polybot_pause / polybot_scan operate the \
+                 user's Polybot process (launchd + PAUSED + a scan trigger). That bot can \
+                 place Polymarket orders. You never hold its keys — they live in the \
+                 keychain, entered on the Finance tab or Settings → Search & tools. If \
+                 credentials are missing, tell the user to add them there; do not ask \
+                 them to paste keys in chat.\n\n\
+                 You own the Finance tab end to end — the same rows the user sees. \
+                 Call finance_board before changing anything. For a filing, article, \
+                 or statement the user dropped on chat, the Reader already ingested \
+                 it: recall the digest rather than asking them to paste. For a public \
+                 URL, read_webpage. For household categories after a statement lands, \
+                 finance_transaction_recategorize. The Watcher delivers overbought \
+                 alerts on OPEN holdings (holding_sell_signals is how you score them); \
+                 those notifications open this tab. finance_rsi_threshold reads or \
+                 sets the RSI bar.\n\n\
+                 Every cash-equity trading day at 15:30 America/New_York the Picker \
+                 close scan runs. After it finishes, you reason about the surviving \
+                 names with Opus and present at most one pick for tomorrow plus a \
+                 paragraph on why. If nothing clears — empty survivors, invented \
+                 ticker, Opus unavailable — there is no pick. Do not invent one. \
+                 finance_board shows the latest judgment. A pick is a hypothesis, \
+                 not an order and not a size.\n\n\
+                 The Orchestrator (the main session) can see this tab and will query you. \
+                 Answer with your tools — do not send them to look it up themselves. \
+                 You own the numbers.\n\n\
+                 You never size a position yourself. You cannot place an order except by \
+                 starting the user's Polybot, which can.",
             );
         Ok(Self { info, context })
     }
@@ -329,6 +371,28 @@ impl FinanceClient {
 
     async fn handle_start(&self) -> std::result::Result<CallToolResult, String> {
         let msg = crate::picker::ensure_running().await?;
+        Ok(CallToolResult::success(vec![Content::text(msg)]))
+    }
+
+    async fn handle_polybot_status(&self) -> std::result::Result<CallToolResult, String> {
+        let s = crate::polybot::status();
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&s).unwrap_or_else(|_| format!("{s:?}")),
+        )]))
+    }
+
+    async fn handle_polybot_start(&self) -> std::result::Result<CallToolResult, String> {
+        let msg = crate::polybot::start().await?;
+        Ok(CallToolResult::success(vec![Content::text(msg)]))
+    }
+
+    async fn handle_polybot_pause(&self) -> std::result::Result<CallToolResult, String> {
+        let msg = crate::polybot::pause()?;
+        Ok(CallToolResult::success(vec![Content::text(msg)]))
+    }
+
+    async fn handle_polybot_scan(&self) -> std::result::Result<CallToolResult, String> {
+        let msg = crate::polybot::request_scan().await?;
         Ok(CallToolResult::success(vec![Content::text(msg)]))
     }
 
@@ -478,12 +542,23 @@ impl FinanceClient {
         let watchlist = crate::finance_ledger::list_watchlist(&pool).await?;
         let notes = crate::finance_ledger::list_notes(&pool).await?;
         let positions = crate::finance_ledger::list_positions(&pool).await?;
+        let polybot = crate::polybot::status();
+        let picker = crate::picker::status().await;
+        let threshold = crate::overbought::rsi_threshold();
+        let lots = crate::overbought::assess_open_lots(&pool, threshold)
+            .await
+            .unwrap_or_default();
+        let sell = crate::overbought::describe_open_lots(&lots);
+        let household = crate::finance_ledger::spend_forecast(&pool).await.ok();
+        let txns = crate::finance_ledger::list_transactions(&pool, 20)
+            .await
+            .unwrap_or_default();
         let daily = crate::financier_close::latest(&pool).await.ok().flatten();
         let daily_line = match daily.as_ref() {
             Some(p) => match p.ticker.as_deref() {
                 Some(t) => format!(
-                    "Tomorrow's pick ({}, {} candidate(s)): {} — {}",
-                    p.day, p.candidate_count, t, p.why
+                    "Tomorrow's pick ({}, {} candidate(s), {:?}): {} — {}",
+                    p.day, p.candidate_count, p.model, t, p.why
                 ),
                 None => format!(
                     "No pick for {} ({} candidate(s)): {}",
@@ -495,14 +570,37 @@ impl FinanceClient {
             }
         };
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Finance tab ledger.\n\nTomorrow (Opus on gated survivors; none is valid):\n{}\n\nWatchlist ({}):\n{}\n\nNotes ({}):\n{}\n\nPositions ({}):\n{}\n\nThis is the ledger, not live prices — research_ticker for a quote, holding_sell_signals for overbought sell signals on open lots.",
+            "Finance tab ledger (same board the user sees).\n\n\
+             Polybot:\n{}\n\n\
+             Scanner: reachable={} scan_in_progress={} results={:?} detail={:?}\n\n\
+             Tomorrow (Opus on gated survivors; none is valid):\n{}\n\n\
+             Overbought sell signals (RSI bar {:.0}) — the Watcher notifies on these:\n{}\n\n\
+             Watchlist ({}):\n{}\n\nNotes ({}):\n{}\n\nPositions ({}):\n{}\n\n\
+             Household: {} recent txn(s). Forecast: {}\n{}\n\n\
+             Live prices: research_ticker. Recategorize: finance_transaction_recategorize. \
+             Keys are never in this payload.",
+            serde_json::to_string_pretty(&polybot).unwrap_or_default(),
+            picker.reachable,
+            picker.scan_in_progress,
+            picker.results,
+            picker.detail,
             daily_line,
+            threshold,
+            sell,
             watchlist.len(),
             serde_json::to_string_pretty(&watchlist).unwrap_or_default(),
             notes.len(),
             serde_json::to_string_pretty(&notes).unwrap_or_default(),
             positions.len(),
             serde_json::to_string_pretty(&positions).unwrap_or_default(),
+            txns.len(),
+            household
+                .map(|f| format!(
+                    "90d spend {:.2}, 30d run-rate {:.2} ({})",
+                    f.spend_90d, f.run_rate_30d, f.method
+                ))
+                .unwrap_or_else(|| "unavailable".into()),
+            serde_json::to_string_pretty(&txns).unwrap_or_default(),
         ))]))
     }
 
@@ -636,9 +734,55 @@ impl FinanceClient {
         let pool = self.pool().await?;
         let pos =
             crate::finance_ledger::close_position(&pool, &p.id, &p.exit_date, p.exit_price).await?;
+        let picker = match crate::picker::close_trade(&p.id, &p.exit_date, p.exit_price, None).await
+        {
+            Ok(_) => " Scanner history closed too.".to_string(),
+            Err(e) => format!(" Scanner history not updated ({e})."),
+        };
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Closed {} on the Finance tab at {} on {}.",
-            pos.symbol, p.exit_price, p.exit_date
+            "Closed {} on the Finance tab at {} on {}.{}",
+            pos.symbol, p.exit_price, p.exit_date, picker
+        ))]))
+    }
+
+    async fn handle_recategorize(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> std::result::Result<CallToolResult, String> {
+        let args = arguments.ok_or("finance_transaction_recategorize needs id and category")?;
+        let p: RecategorizeParams = serde_json::from_value(serde_json::Value::Object(args))
+            .map_err(|e| format!("could not read the recategorize request: {e}"))?;
+        let pool = self.pool().await?;
+        let ok = crate::finance_ledger::recategorize(&pool, &p.id, &p.category).await?;
+        Ok(CallToolResult::success(vec![Content::text(if ok {
+            format!(
+                "Household transaction {} is now {}.",
+                p.id,
+                p.category.trim().to_lowercase()
+            )
+        } else {
+            format!("No household transaction {}.", p.id)
+        })]))
+    }
+
+    async fn handle_rsi_threshold(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> std::result::Result<CallToolResult, String> {
+        let value = match arguments {
+            Some(args) if !args.is_empty() => {
+                let p: RsiThresholdParams = serde_json::from_value(serde_json::Value::Object(args))
+                    .map_err(|e| format!("could not read the RSI threshold: {e}"))?;
+                p.value
+            }
+            _ => None,
+        };
+        let threshold = match value {
+            Some(v) => crate::overbought::set_rsi_threshold(v)?,
+            None => crate::overbought::rsi_threshold(),
+        };
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Overbought RSI-14 bar is {threshold:.0}. The Watcher uses this on OPEN holdings only. A signal is not an order."
         ))]))
     }
 
@@ -688,9 +832,11 @@ impl FinanceClient {
             ),
             Tool::new(
                 "finance_board".to_string(),
-                "Read the Finance tab ledger: watchlist, research notes, and recorded \
-                 positions. Call this before adding or changing anything so you edit the \
-                 live board. This is the ledger, not live prices — research_ticker for a quote."
+                "Read the Finance tab the user sees: Polybot, scanner status, tomorrow's \
+                 pick (or an honest none) from the 15:30 ET close scan, overbought \
+                 sell signals on open lots, watchlist, notes, positions, and recent \
+                 household transactions (ids for finance_transaction_recategorize). Call \
+                 this before changing anything. Live prices: research_ticker."
                     .to_string(),
                 schema::<NoParams>(),
             ),
@@ -745,6 +891,23 @@ impl FinanceClient {
                 schema::<IdParams>(),
             ),
             Tool::new(
+                "finance_transaction_recategorize".to_string(),
+                "Set the category on a household transaction from finance_board. Categories: \
+                 housing, groceries, transport, utilities, dining, health, subscriptions, \
+                 income, transfer, uncategorized. After the Reader ingests a statement, \
+                 this is how you tidy the rows. Does not move money."
+                    .to_string(),
+                schema::<RecategorizeParams>(),
+            ),
+            Tool::new(
+                "finance_rsi_threshold".to_string(),
+                "Read or set the RSI-14 bar the Watcher and holding_sell_signals use on \
+                 OPEN holdings (default 74, allowed 50–90). Omit value to read. A signal \
+                 is not an order."
+                    .to_string(),
+                schema::<RsiThresholdParams>(),
+            ),
+            Tool::new(
                 "picker_status".to_string(),
                 "Whether the user's stock scanner is running, whether a scan is in flight, \
                  and how fresh its results are. Call this FIRST — the scanner is often down, \
@@ -764,6 +927,39 @@ impl FinanceClient {
                 "Ask the scanner to run a fresh scan over the stock universe. Returns as \
                  soon as the scan is accepted — a full scan takes many minutes, so poll \
                  picker_status rather than waiting. Refuses if a scan is already running."
+                    .to_string(),
+                schema::<NoParams>(),
+            ),
+            Tool::new(
+                "polybot_status".to_string(),
+                "Whether the user's Polybot is found, running, paused, and whether \
+                 Polymarket keys are in the keychain. Call this FIRST — a May bankroll \
+                 with the process down is not a live wallet. Never ask the user to paste \
+                 keys here; if credentials_ready is false, send them to the Finance tab \
+                 or Settings → Search & tools."
+                    .to_string(),
+                schema::<NoParams>(),
+            ),
+            Tool::new(
+                "polybot_start".to_string(),
+                "Clear the PAUSED kill switch and start the user's Polybot through \
+                 launchd. The bot can then place Polymarket orders. Refuses if the \
+                 keychain is missing required keys — do not invent a workaround."
+                    .to_string(),
+                schema::<NoParams>(),
+            ),
+            Tool::new(
+                "polybot_pause".to_string(),
+                "Set Polybot's PAUSED kill switch so it stops opening new positions \
+                 and the running process exits."
+                    .to_string(),
+                schema::<NoParams>(),
+            ),
+            Tool::new(
+                "polybot_scan".to_string(),
+                "Ask a running Polybot for a full scan cycle now. Starts the bot if \
+                 it is down. Refuses while paused. A cycle can take 10–15 minutes — \
+                 poll polybot_status rather than starting another."
                     .to_string(),
                 schema::<NoParams>(),
             ),
@@ -841,9 +1037,15 @@ impl McpClientTrait for FinanceClient {
             "finance_position_add" => self.handle_position_add(arguments).await,
             "finance_position_close" => self.handle_position_close(arguments).await,
             "finance_position_delete" => self.handle_position_delete(arguments).await,
+            "finance_transaction_recategorize" => self.handle_recategorize(arguments).await,
+            "finance_rsi_threshold" => self.handle_rsi_threshold(arguments).await,
             "picker_status" => self.handle_status().await,
             "picker_start" => self.handle_start().await,
             "picker_scan" => self.handle_scan().await,
+            "polybot_status" => self.handle_polybot_status().await,
+            "polybot_start" => self.handle_polybot_start().await,
+            "polybot_pause" => self.handle_polybot_pause().await,
+            "polybot_scan" => self.handle_polybot_scan().await,
             "picker_top_picks" => self.handle_top_picks().await,
             "record_trade" => self.handle_record_trade(arguments).await,
             "list_trades" => self.handle_trades().await,
@@ -875,21 +1077,28 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
         what_it_does:
             "The agent that owns market research and the Finance money board. It reads live \
              quotes (research_ticker, no key) and optional company fundamentals, and it \
-             writes the Finance tab: a watchlist, research notes, and recorded \
-             positions (finance_board, finance_watchlist_add / finance_watchlist_remove, \
-             finance_note_add / finance_note_update / finance_note_delete, \
-             finance_position_add / finance_position_close / finance_position_delete). If \
-             the user runs their own stock scanner, picker_status / picker_start / \
-             picker_scan / picker_top_picks drive it and record_trade / list_trades keep \
-             that history. holding_sell_signals reports overbought sell signals on open \
-             lots (RSI, stochastic, 20-day stretch, Bollinger, 52-week high) without \
-             feeding holdings into the ranker. Picker picks are gated on the tab by Yahoo \
-             plus a loop-engineering check. Reports timestamped numbers; never sizes \
-             a position and cannot place an order",
-        why_it_matters:
-            "A price stated from memory is months stale. The Financier grounds every number \
-             in a fetch, and the Finance tab is the durable place those numbers, Polybot \
-             status, validated picks, and the user's own trades live",
+             writes the Finance tab: a watchlist, research notes, recorded positions, \
+             household categories, and the RSI bar (finance_board, finance_watchlist_add / \
+             finance_watchlist_remove, finance_note_add / finance_note_update / \
+             finance_note_delete, finance_position_add / finance_position_close / \
+             finance_position_delete, finance_transaction_recategorize, \
+             finance_rsi_threshold). For a dropped statement or 10-K, the Reader already \
+             ingested it — recall the digest. For a public URL, read_webpage. If the user \
+             runs their own stock scanner, picker_status / picker_start / picker_scan / \
+             picker_top_picks drive it and record_trade / list_trades keep that history. \
+             holding_sell_signals reports overbought sell signals on open lots (RSI, \
+             stochastic, 20-day stretch, Bollinger, 52-week high) without feeding holdings \
+             into the ranker; the Watcher delivers those as notifications. Each trading \
+             day at 15:30 ET the Picker close scan runs; Opus then names at most one \
+             surviving pick for tomorrow, or none — never invent a ticker. Picker picks \
+             are gated on the tab by Yahoo plus a loop-engineering check. polybot_status \
+             / polybot_start / polybot_pause / polybot_scan operate the user's Polybot. \
+             Reports timestamped numbers; never sizes a position. Cannot place an order \
+             except by starting that bot",
+        why_it_matters: "A price stated from memory is months stale. The Orchestrator queries you \
+             rather than inventing a number. You ground every figure in a fetch, and \
+             the Finance tab is the durable place those numbers, Polybot status, \
+             tomorrow's pick (or an honest none), and the user's own trades live",
         state_source: crate::agents::self_knowledge::StateSource::Queryable,
         teaching: &[],
     };
@@ -901,15 +1110,21 @@ pub const FINANCE_TAB_FEATURE: crate::agents::self_knowledge::FeatureDescriptor 
         display_name: "Finance tab",
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
         what_it_does: "The Financier's money board: Polybot status, holdings with live P&L, \
-             Picker picks gated by Yahoo plus a loop-engineering check, overbought sell \
+             Picker picks gated by Yahoo plus a loop-engineering check, tomorrow's pick \
+             from the 15:30 ET close scan (Opus judges gated survivors; none is valid \
+             and is never invented), overbought sell \
              signals on open holdings (RSI-14, stochastic, 20-day stretch, Bollinger, \
-             52-week high), household spend from dropped statements, a watchlist with live \
-             quotes, research notes, and a trade journal. Start the scanner, run a scan, \
-             and record, edit, or close trades on this tab — you do not have to open Picker \
-             to enter trade data. The Financier writes the same rows through its tools. \
-             Quotes are fetched at read time and never stored. This is a research ledger, \
-             not a brokerage — nothing here places an order or sizes a position",
-        why_it_matters: "It is where Polybot, holdings, validated picks, and household spend \
+             52-week high — the Watcher notifies when a lot you already hold looks hot), \
+             household spend from dropped statements (the Reader ingests the file; the \
+             Financier recategorizes), a watchlist with live quotes, research notes, and \
+             a trade journal. Start the scanner, run a scan, and record, edit, or close \
+             trades on this tab — you do not have to open Picker to enter trade data. \
+             The Financier writes the same rows through its tools. Quotes are fetched at \
+             read time and never stored. Start, pause, or scan Polybot from this tab; \
+             its keys live in the keychain. This tab does not size a position. Polybot, \
+             once started, can place Polymarket orders",
+        why_it_matters:
+            "It is where Polybot, holdings, tomorrow's pick (or none), and household spend \
              live so they can be inspected without asking chat to recite them",
         state_source: crate::agents::self_knowledge::StateSource::Static,
         teaching: &[crate::agents::self_knowledge::TeachingStep {
@@ -957,6 +1172,13 @@ mod tests {
         }
         assert!(names.contains(&"record_trade".to_string()));
         assert!(names.contains(&"holding_sell_signals".to_string()));
+        assert!(names.contains(&"polybot_status".to_string()));
+        assert!(names.contains(&"polybot_start".to_string()));
+        assert!(names.contains(&"polybot_pause".to_string()));
+        assert!(names.contains(&"polybot_scan".to_string()));
+        assert!(names.contains(&"finance_transaction_recategorize".to_string()));
+        assert!(names.contains(&"finance_rsi_threshold".to_string()));
+        assert!(names.contains(&"finance_board".to_string()));
     }
 
     #[test]

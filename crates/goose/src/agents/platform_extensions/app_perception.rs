@@ -171,8 +171,10 @@ pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescript
              `grow` returns the growth actions YOU recommended for a project, what you predicted \
              each would move, and how the 7/14/28-day sweep judged it — you have no memory of \
              those recommendations, so read them rather than saying you do not know. `finance` is \
-             the Finance tab ledger: watchlist, research notes, recorded positions, and household \
-             spend — not live quotes (research_ticker) and not an order. `people` is \
+             the Finance tab ledger: watchlist, research notes, recorded positions, household \
+             spend, scanner status, the RSI bar, and tomorrow's pick (or none) — not live quotes (research_ticker) and \
+             not an order. The Orchestrator sees this tab; The Financier owns writes and \
+             live quotes. The Watcher notifies on overbought open lots. `people` is \
              the CRM directory: names, roles, companies, last contact, quiet contacts, follow-ups, and recent meetings — \
              never emails or phone numbers. `brain` is \
              memory counts, recall health, and librarian schedule/phase — never memory contents. \
@@ -672,6 +674,10 @@ impl AppPerceptionClient {
         let note_total = notes.len();
         let pos_total = positions.len();
         let txn_total = txns.len();
+        let rsi_threshold = crate::overbought::rsi_threshold();
+        let forecast = crate::finance_ledger::spend_forecast(pool).await.ok();
+        let picker = crate::picker::status().await;
+        let daily_pick = crate::financier_close::latest(pool).await.ok().flatten();
 
         let watch_items = watchlist
             .iter()
@@ -721,6 +727,19 @@ impl AppPerceptionClient {
         let data = json!({
             "open_positions": open,
             "closed_positions": closed,
+            "rsi_threshold": rsi_threshold,
+            "scanner_reachable": picker.reachable,
+            "scanner_scan_in_progress": picker.scan_in_progress,
+            "daily_pick": daily_pick.as_ref().map(|p| json!({
+                "day": p.day,
+                "ticker": p.ticker,
+                "why": safe_text(&p.why, 400),
+            })),
+            "household_forecast": forecast.as_ref().map(|f| json!({
+                "spend_90d": f.spend_90d,
+                "run_rate_30d": f.run_rate_30d,
+                "method": f.method,
+            })),
             "watchlist": ranked(watch_items, watch_total),
             "notes": ranked(note_items, note_total),
             "positions": ranked(pos_items, pos_total),
@@ -1985,6 +2004,40 @@ impl AppPerceptionClient {
                 .map(|v| v.max(0) as usize)
                 .map_err(|e| e.to_string()),
         );
+        let finance_view = match (
+            crate::finance_ledger::list_positions(pool).await,
+            crate::finance_ledger::list_watchlist(pool).await,
+            crate::finance_ledger::list_transactions(pool, 80).await,
+        ) {
+            (Ok(positions), Ok(watchlist), Ok(txns)) => {
+                let open = positions.iter().filter(|p| p.exit_date.is_none()).count();
+                let empty = positions.is_empty() && watchlist.is_empty() && txns.is_empty();
+                json!({
+                    "status": if empty { "empty" } else { "available" },
+                    "open_positions": open,
+                    "watchlist": watchlist.len(),
+                    "household": txns.len(),
+                    "rsi_threshold": crate::overbought::rsi_threshold(),
+                    "desk": "The Financier",
+                    "live_quotes": "query The Financier — do not invent",
+                    "tomorrow_pick": "query The Financier — do not invent",
+                })
+            }
+            (pos, watch, txns) => {
+                partial = true;
+                let reason = pos
+                    .err()
+                    .or_else(|| watch.err())
+                    .or_else(|| txns.err())
+                    .unwrap_or_else(|| "could not read finance ledger".into());
+                json!({
+                    "status": "unavailable",
+                    "reason": safe_text(&reason, 200),
+                    "desk": "The Financier",
+                })
+            }
+        };
+
         let spend_view = match spend {
             Ok(rows) if rows.is_empty() => {
                 json!({"status": "empty", "measured": false, "running_total_usd": null})
@@ -2014,7 +2067,8 @@ impl AppPerceptionClient {
                 "active_goals": goals_view,
                 "sessions": sessions_view,
                 "unread_briefings": briefings_view,
-                "spend": spend_view
+                "spend": spend_view,
+                "finance": finance_view
             }
         })
     }
@@ -2101,8 +2155,9 @@ impl AppPerceptionClient {
              grow | finance | inbox | decision_inbox | skills | automate | trace | brain | build | \
              world | settings | overview. `inbox` is the Downloads intake folder (files from \
              the in-app browser); `decision_inbox` is what is waiting on the user's approval. \
-             `finance` is the Finance tab ledger (watchlist, notes, positions, household spend — \
-             not live quotes and not an order). \
+             `finance` is the Finance tab ledger (watchlist, notes, positions, household spend, \
+             scanner status, RSI bar, tomorrow's pick or none — not live quotes and not an order). `overview` includes a \
+             finance glance (counts only); live prices, tomorrow's pick, and writes go through The Financier. \
              `people` is the CRM directory (names, roles, companies, last contact, recent \
              meetings — never emails or phone numbers). To open a person in the app, \
              navigate_app to the People tab with state: { \"person\": \"<display name>\" }. \
@@ -2291,6 +2346,37 @@ mod tests {
         assert_eq!(payload["data"]["watchlist"]["items"][0]["symbol"], "SHOP");
         let encoded = payload.to_string();
         assert!(!encoded.contains("place an order"));
+    }
+
+    #[tokio::test]
+    async fn observe_overview_includes_a_finance_glance_for_the_orchestrator() {
+        let dir = tempfile::tempdir().unwrap();
+        let client = test_client(dir.path().to_path_buf());
+        let pool = memory_pool().await;
+        let missing = client.observe_overview(&pool).await;
+        assert_eq!(missing["data"]["finance"]["status"], "unavailable");
+        assert_eq!(missing["data"]["finance"]["desk"], "The Financier");
+
+        crate::session::spectral_schema::apply_finance_ledger_schema(&pool)
+            .await
+            .unwrap();
+        crate::session::spectral_schema::apply_finance_spend_schema(&pool)
+            .await
+            .unwrap();
+        crate::finance_ledger::add_watchlist(&pool, "SHOP", None, None)
+            .await
+            .unwrap();
+        let glance = client.observe_overview(&pool).await;
+        assert_eq!(glance["data"]["finance"]["status"], "available");
+        assert_eq!(glance["data"]["finance"]["watchlist"], 1);
+        assert_eq!(glance["data"]["finance"]["desk"], "The Financier");
+        assert!(
+            glance["data"]["finance"]["live_quotes"]
+                .as_str()
+                .unwrap()
+                .contains("Financier"),
+            "{glance}"
+        );
     }
 
     #[tokio::test]

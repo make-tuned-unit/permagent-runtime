@@ -49,15 +49,17 @@ export function WatcherHUD({ visible, onClose }: WatcherHUDProps) {
     <HudShell visible={visible} onClose={onClose} title="THE WATCHER" statusPill={statusPill}>
       <div style={{ padding: '4px 14px 8px' }}>
         <span style={{ fontSize: 11, color: '#9CA3AF', lineHeight: 1.5 }}>
-          The proactive worker — watches dormant Brain threads and fresh project
-          news, and surfaces at most one thing a day. Quiet by design.
+          The proactive worker — dormant Brain threads, project news, and (with
+          the Financier) overbought sell signals on stocks you already hold.
+          News is at most one a day. Holding alerts are daily per symbol.
         </span>
       </div>
 
       <Section title="WATCHES" trimColor={WATCHER_TRIM}>
         <Bullet>Dormant Brain threads worth returning to</Bullet>
         <Bullet>Fresh news on projects you're building</Bullet>
-        <Bullet>At most one nudge per day — never a feed</Bullet>
+        <Bullet>Overbought open holdings — Financier scores, Watcher delivers</Bullet>
+        <Bullet>News/dormant: at most one a day. Holdings: once per symbol per day</Bullet>
       </Section>
 
       <Section title="LAST NUDGE" trimColor={COLORS.neonAmber}>

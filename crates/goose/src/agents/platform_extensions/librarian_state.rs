@@ -6,7 +6,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use std::sync::{Arc, LazyLock, RwLock};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
 
 // ── Public state types ──────────────────────────────────────────────
 
@@ -92,6 +92,7 @@ pub fn get_state() -> LibrarianRuntimeState {
 
 /// Transition to warming phase at batch start.
 pub fn set_warming(total_memories: usize, described: usize) {
+    reset_dedicated_endpoint_gate();
     let mut state = LIBRARIAN_STATE.write().unwrap();
     state.phase = LibrarianPhase::Warming;
     state.current_task = "Warming model — loading qwen2.5:3b into memory".to_string();
@@ -204,4 +205,99 @@ pub fn set_idle() {
     state.current_task = "Idle — waiting for next scheduled window".to_string();
     state.current_memory = None;
     state.error_message = None;
+}
+
+// ── Dedicated-endpoint circuit (loopback connect storms) ─────────────
+//
+// Observed 2026-08-22: PERMAGENT_LIBRARIAN_ENDPOINT=http://127.0.0.1:8080
+// with nothing listening produced 259 identical "llama-server unreachable"
+// warnings over 88 minutes. Each memory re-probed loopback, failed, and
+// silently fell back to qwen2.5:7b. A refused connection on this machine
+// cannot recover mid-pass — nothing starts a service that is not running.
+// Trip after a handful of loopback connect failures, alert once, skip the
+// rest of the pass. A new nightly window (`set_warming`) resets so tomorrow
+// gets another three probes if the operator brought the split up.
+
+const LOOPBACK_CONNECT_FAILS_BEFORE_TRIP: u32 = 3;
+
+#[derive(Default)]
+pub(crate) struct LoopbackFailBudget {
+    fails: u32,
+    tripped: bool,
+}
+
+impl LoopbackFailBudget {
+    /// Returns `true` the moment this fail trips the circuit (alert once).
+    pub(crate) fn note_fail(&mut self) -> bool {
+        if self.tripped {
+            return false;
+        }
+        self.fails = self.fails.saturating_add(1);
+        if self.fails < LOOPBACK_CONNECT_FAILS_BEFORE_TRIP {
+            return false;
+        }
+        self.tripped = true;
+        true
+    }
+
+    pub(crate) fn is_tripped(&self) -> bool {
+        self.tripped
+    }
+}
+
+#[derive(Default)]
+struct DedicatedEndpointGate {
+    endpoint: String,
+    budget: LoopbackFailBudget,
+}
+
+static DEDICATED_GATE: LazyLock<Mutex<DedicatedEndpointGate>> =
+    LazyLock::new(|| Mutex::new(DedicatedEndpointGate::default()));
+
+/// True once a loopback dedicated endpoint has been marked down for this pass.
+pub fn dedicated_endpoint_is_skipped(endpoint: &str) -> bool {
+    let gate = DEDICATED_GATE.lock().unwrap();
+    gate.budget.is_tripped() && gate.endpoint == endpoint
+}
+
+/// Record a connect failure to a loopback dedicated endpoint.
+///
+/// Returns `true` the moment the circuit trips (caller should alert once).
+/// Non-loopback or non-connect failures do not increment — a remote split
+/// can come up mid-window, and a 5xx means something is listening.
+pub fn note_dedicated_loopback_connect_fail(endpoint: &str) -> bool {
+    let mut gate = DEDICATED_GATE.lock().unwrap();
+    if gate.endpoint != endpoint {
+        *gate = DedicatedEndpointGate {
+            endpoint: endpoint.to_string(),
+            ..DedicatedEndpointGate::default()
+        };
+    }
+    let just_tripped = gate.budget.note_fail();
+    drop(gate);
+    if !just_tripped {
+        return false;
+    }
+    // Keep the batch running on the fallback — this is not a fatal Librarian
+    // failure, just a dead local sidecar. Surface it once on the HUD.
+    let mut state = LIBRARIAN_STATE.write().unwrap();
+    state.error_message = Some(format!(
+        "Dedicated endpoint {endpoint} is down on loopback — \
+         not retrying this pass (nothing is listening)"
+    ));
+    true
+}
+
+/// A successful dedicated-endpoint call clears the storm counter.
+pub fn note_dedicated_endpoint_ok(endpoint: &str) {
+    let mut gate = DEDICATED_GATE.lock().unwrap();
+    *gate = DedicatedEndpointGate {
+        endpoint: endpoint.to_string(),
+        ..DedicatedEndpointGate::default()
+    };
+}
+
+/// New nightly window: three probes again, in case the split came up overnight.
+pub fn reset_dedicated_endpoint_gate() {
+    *DEDICATED_GATE.lock().unwrap() = DedicatedEndpointGate::default();
 }
