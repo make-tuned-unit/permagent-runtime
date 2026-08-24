@@ -89,6 +89,65 @@ pub fn maybe_get_canonical_model(provider: &str, model: &str) -> Option<Canonica
     Some(found)
 }
 
+/// The most expensive price the registry knows for this provider — the rate an
+/// UNPRICED model is billed at so it still counts against the spend cap.
+///
+/// ## Why the worst case, and not zero
+///
+/// Before 2026-08-24, a chargeable call whose model had no price recorded
+/// `cost_usd = 0.0` with `is_estimated = 1`, and nothing downstream read that
+/// flag. The budget ceilings in [`crate::cost_router::budget`] therefore summed
+/// 211 real calls as $0.00 and could never fire. Adding a price for each newly
+/// selectable model closes today's hole; it does not close tomorrow's, because
+/// the generated table always lags what is selectable.
+///
+/// So an unknown price must fail CLOSED. Billing it at the priciest model the
+/// provider is known to offer means an unmeasurable call can only ever cause the
+/// cap to fire EARLY, never late. Firing early is a question the user can
+/// answer; a ceiling that silently never fires is not.
+///
+/// `None` only when the registry knows nothing priced for this provider at all
+/// — see [`worst_case_pricing`], which then widens to the whole registry.
+pub fn provider_worst_case_pricing(provider: &str) -> Option<Pricing> {
+    let registry = CanonicalModelRegistry::bundled().ok()?;
+    let registry_provider = map_provider_name(provider);
+    worst_of(
+        registry
+            .get_all_models_for_provider(registry_provider)
+            .into_iter()
+            .map(|m| m.cost),
+    )
+}
+
+/// The rate to bill an unpriced chargeable call at: the provider's own worst
+/// case, else the worst case anywhere in the registry.
+///
+/// The second fallback matters for a wrapper provider id the registry has never
+/// heard of (`custom_deepseek` was exactly this). Falling back to "the most
+/// expensive model we know of anywhere" is deliberately pessimistic: it is the
+/// only assumption that cannot let real spend slip under a ceiling.
+pub fn worst_case_pricing(provider: &str) -> Option<Pricing> {
+    if let Some(p) = provider_worst_case_pricing(provider) {
+        return Some(p);
+    }
+    let registry = CanonicalModelRegistry::bundled().ok()?;
+    worst_of(registry.all_models().into_iter().map(|m| m.cost))
+}
+
+/// Pick the priciest `Pricing` from an iterator, ranked by output rate then
+/// input rate (output dominates real spend). Rows with no input OR no output
+/// price are skipped — an unpriced row cannot be a worst case.
+fn worst_of(pricings: impl Iterator<Item = Pricing>) -> Option<Pricing> {
+    pricings
+        .filter(|p| p.input.is_some() && p.output.is_some())
+        .max_by(|a, b| {
+            let key = |p: &Pricing| (p.output.unwrap_or(0.0), p.input.unwrap_or(0.0));
+            let (ao, ai) = key(a);
+            let (bo, bi) = key(b);
+            ao.total_cmp(&bo).then(ai.total_cmp(&bi))
+        })
+}
+
 /// Resolve a price for a provider/model pair even when the generated registry
 /// has no ROW for it at all — the case that wrote 211 zero-cost ledger entries
 /// on 2026-08-24. Falls back to the hand-maintained published table keyed by the

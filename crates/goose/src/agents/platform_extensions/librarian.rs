@@ -1165,16 +1165,23 @@ fn salvage_structured_description(raw: &str) -> Option<String> {
 const MALFORMED_OUTPUT_LOG_LIMIT: usize = 2048;
 
 /// Truncate on a CHARACTER boundary, never a byte one: the raw output is
-/// model-generated text and slicing mid-codepoint would panic.
+/// model-generated text, and a byte slice through a multi-byte codepoint would
+/// panic on the very output we are trying to diagnose.
+///
+/// Built by taking characters rather than slicing, so the boundary is correct
+/// by construction — there is no index to get wrong.
 fn truncate_for_log(raw: &str, limit: usize) -> String {
     if raw.len() <= limit {
         return raw.to_string();
     }
-    let mut end = limit;
-    while end > 0 && !raw.is_char_boundary(end) {
-        end -= 1;
+    let mut kept = String::with_capacity(limit + 1);
+    for ch in raw.chars() {
+        if kept.len() + ch.len_utf8() > limit {
+            break;
+        }
+        kept.push(ch);
     }
-    format!("{}…[truncated, {} bytes total]", &raw[..end], raw.len())
+    format!("{kept}…[truncated, {} bytes total]", raw.len())
 }
 
 /// The raw model output behind a parse failure, at DEBUG so it costs nothing in
@@ -2542,34 +2549,45 @@ mod index_quality_tests {
         }
     }
 
-    /// The rate the health review asked for: salvaged and unsalvageable
-    /// failures both count, and only the unsalvageable ones count twice over.
+    /// The rate the health review asked for: salvaged and unsalvageable failures
+    /// both count, and only the unsalvageable ones count in the second figure.
+    ///
+    /// Asserted as a DELTA, and deliberately without `set_warming`. The counters
+    /// live on the process-wide `LibrarianRuntimeState` alongside
+    /// `lifetime_stats`, which is rendered into the system prompt and
+    /// snapshot-asserted by `agents::prompt_manager`. An earlier version of this
+    /// test called `set_warming(10, 0)` to zero the counters and moved
+    /// `lifetime_stats.pending` to 10 as a side effect — which raced the full
+    /// suite and broke four unrelated prompt snapshots with
+    /// "0 described, 10 pending". Reading a baseline costs nothing and cannot
+    /// perturb anything else.
     #[test]
     #[serial_test::serial(librarian_global_state)]
     fn parse_failures_are_counted_for_the_health_review() {
         use crate::agents::platform_extensions::librarian_state;
 
-        librarian_state::set_warming(10, 0);
-        let stats = librarian_state::get_state().session_stats;
-        assert_eq!(stats.parse_failures_this_session, 0);
-        assert_eq!(stats.unsalvageable_parse_failures_this_session, 0);
+        let before = librarian_state::get_state().session_stats;
 
-        assert_eq!(librarian_state::record_parse_failure(true), 1);
-        assert_eq!(librarian_state::record_parse_failure(false), 2);
-        assert_eq!(librarian_state::record_parse_failure(true), 3);
-
-        let stats = librarian_state::get_state().session_stats;
-        assert_eq!(stats.parse_failures_this_session, 3);
+        let after_first = librarian_state::record_parse_failure(true);
+        let after_second = librarian_state::record_parse_failure(false);
+        let after_third = librarian_state::record_parse_failure(true);
         assert_eq!(
-            stats.unsalvageable_parse_failures_this_session, 1,
-            "only the failure that stored a raw dump is unsalvageable"
+            (after_second, after_third),
+            (after_first + 1, after_first + 2),
+            "the returned running count must advance by one per failure"
         );
 
-        // A new window starts the rate over.
-        librarian_state::set_warming(10, 0);
-        let stats = librarian_state::get_state().session_stats;
-        assert_eq!(stats.parse_failures_this_session, 0);
-        librarian_state::set_idle();
+        let after = librarian_state::get_state().session_stats;
+        assert_eq!(
+            after.parse_failures_this_session,
+            before.parse_failures_this_session + 3,
+            "every parse failure counts, salvaged or not"
+        );
+        assert_eq!(
+            after.unsalvageable_parse_failures_this_session,
+            before.unsalvageable_parse_failures_this_session + 1,
+            "only the failure that stored a raw dump is unsalvageable"
+        );
     }
 
     #[test]

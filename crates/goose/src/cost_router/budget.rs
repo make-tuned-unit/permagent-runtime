@@ -181,8 +181,9 @@ pub struct BudgetVerdict {
     pub spent: f64,
     /// The threshold that scope crossed (0.0 when `band == Ok`).
     pub crossed: f64,
-    /// Chargeable calls in scope whose model had no price. `spent` is a
-    /// FLOOR whenever this is non-zero.
+    /// Chargeable calls in scope whose model had no published price. Their
+    /// dollars ARE in `spent`, billed at the provider's worst known rate, so
+    /// `spent` is an upper bound — not the pre-2026-08-24 silent floor.
     pub unpriced_calls: u32,
 }
 
@@ -218,19 +219,30 @@ fn band_for(spent: f64, ceilings: BudgetCeilings) -> (BudgetBand, f64) {
 /// fires exactly AT the gate ceiling.
 ///
 /// Spend is a plain `f64` (the caller already has it: `task` spend and the
-/// session's `accumulated_cost_usd`). Unpriced chargeable calls contribute $0
-/// to that figure — `spent` is then a FLOOR; pass their count via
-/// [`budget_verdict_with_unpriced`] so an otherwise-Ok band lifts to Soft
-/// (visible, never a Gate/Hard stop).
+/// session's `accumulated_cost_usd`). Unpriced chargeable calls are billed at
+/// the provider's worst known rate before they reach this figure, so `spent` is
+/// an upper bound rather than the old silent floor; pass their count via
+/// [`budget_verdict_with_unpriced`] so the user is told which part is estimated.
 pub fn budget_verdict(task_spent: f64, session_spent: f64, cfg: &BudgetConfig) -> BudgetVerdict {
     budget_verdict_with_unpriced(task_spent, session_spent, 0, cfg)
 }
 
 /// Like [`budget_verdict`], plus the count of chargeable calls whose model had
-/// no published price. Unpriced calls never fabricate a Gate or Hard stop; they
-/// only lift an `Ok` band to `Soft` (non-blocking alert) so unmeasurable spend
-/// is visible instead of reading as a confident $0.00. When they lift, `crossed`
-/// stays 0.0 and the scope is `Task`.
+/// no published price.
+///
+/// As of 2026-08-24 those calls are no longer invisible to the ceilings:
+/// `agents::reply_parts` bills an unpriced chargeable call at the provider's
+/// most expensive known rate (see
+/// [`crate::providers::canonical::worst_case_pricing`]), so their dollars are
+/// ALREADY inside `task_spent` / `session_spent` and drive the bands like any
+/// other spend. That is the fail-closed half: unmeasurable spend can make the
+/// cap fire early, never late.
+///
+/// `unpriced_calls` remains for honesty, not for arithmetic. It still lifts an
+/// otherwise-`Ok` band to `Soft` so the user is told that some of the figure is
+/// an upper-bound estimate rather than a measured cost — the one thing a dollar
+/// amount alone cannot say. When it lifts, `crossed` stays 0.0 and the scope is
+/// `Task`.
 pub fn budget_verdict_with_unpriced(
     task_spent: f64,
     session_spent: f64,

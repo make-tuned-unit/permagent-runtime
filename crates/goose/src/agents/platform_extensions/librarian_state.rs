@@ -107,7 +107,6 @@ pub fn get_state() -> LibrarianRuntimeState {
 
 /// Transition to warming phase at batch start.
 pub fn set_warming(total_memories: usize, described: usize) {
-    reset_dedicated_endpoint_gate();
     let mut state = LIBRARIAN_STATE.write().unwrap();
     state.phase = LibrarianPhase::Warming;
     state.current_task = "Warming model — loading qwen2.5:3b into memory".to_string();
@@ -252,8 +251,10 @@ pub fn set_idle() {
 // silently fell back to qwen2.5:7b. A refused connection on this machine
 // cannot recover mid-pass — nothing starts a service that is not running.
 // Trip after a handful of loopback connect failures, alert once, skip the
-// rest of the pass. A new nightly window (`set_warming`) resets so tomorrow
-// gets another three probes if the operator brought the split up.
+// rest of the pass. A new nightly window resets the circuit (the daemon's
+// window orchestration calls `reset_dedicated_endpoint_gate` before its
+// readiness probe) so tomorrow gets a fresh look if the operator brought the
+// split up.
 
 const LOOPBACK_CONNECT_FAILS_BEFORE_TRIP: u32 = 3;
 
@@ -334,9 +335,26 @@ pub fn note_dedicated_endpoint_ok(endpoint: &str) {
     };
 }
 
-/// New nightly window: three probes again, in case the split came up overnight.
+/// New nightly window: probe the dedicated endpoint again, in case the split
+/// came up since last night, and clear the "endpoint is down" banner from the
+/// last one.
+///
+/// Called by the daemon's window orchestration (`routes::librarian::scheduling`)
+/// immediately before the readiness probe, NOT from [`set_warming`]. Keeping it
+/// out of the state setter is what lets this module's tests exercise the circuit
+/// without touching `lifetime_stats` — which is rendered into the system prompt
+/// and snapshot-asserted by `agents::prompt_manager`, so a test that moved it
+/// broke four unrelated snapshots.
 pub fn reset_dedicated_endpoint_gate() {
     *DEDICATED_GATE.lock().unwrap() = DedicatedEndpointGate::default();
+    let mut state = LIBRARIAN_STATE.write().unwrap();
+    if state
+        .error_message
+        .as_deref()
+        .is_some_and(|m| m.contains("Dedicated endpoint"))
+    {
+        state.error_message = None;
+    }
 }
 
 /// Trip the circuit outright, without spending the fail budget one memory at a
@@ -435,21 +453,25 @@ mod dedicated_endpoint_gate_tests {
     }
 
     /// A new nightly window gets a fresh probe: the operator may have brought
-    /// the split up during the day.
+    /// the split up during the day. It also clears yesterday's banner, so the
+    /// HUD does not keep reporting an endpoint that is up again.
     #[test]
     #[serial_test::serial(librarian_global_state)]
     fn a_new_window_resets_the_gate() {
         reset_dedicated_endpoint_gate();
         mark_dedicated_endpoint_down(EP);
         assert!(dedicated_endpoint_is_skipped(EP));
+        assert!(get_state().error_message.is_some());
 
-        set_warming(10, 0);
+        reset_dedicated_endpoint_gate();
         assert!(
             !dedicated_endpoint_is_skipped(EP),
-            "set_warming starts a new window and must clear the trip"
+            "a new window must clear the trip"
         );
-        reset_dedicated_endpoint_gate();
-        set_idle();
+        assert!(
+            get_state().error_message.is_none(),
+            "a new window must clear the endpoint-down banner"
+        );
     }
 
     /// A success clears the storm counter, so an endpoint that flaps once does
