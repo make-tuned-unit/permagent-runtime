@@ -1353,6 +1353,31 @@ impl SummonClient {
             },
             None => None,
         };
+
+        // The review gate's cross-vendor routing sits HERE for the `reviewer`
+        // persona: `reviewer_dispatch` composes `reviewer_routing` with the
+        // author's (session) pair. It slots the SAME REVIEW-role model the block
+        // above resolved — hand-configured first, else the derived best fit —
+        // (neither ⇒ `None` ⇒ the review inherits the session model exactly as
+        // before), so the (provider, model) outcome and its provenance are
+        // unchanged — what it adds is the diversity warning, logged below on the
+        // channel the target reconciliation already uses.
+        let review_dispatch = (role == Some(crate::cost_router::WorkflowRole::Review)).then(|| {
+            crate::cost_router::reviewer_dispatch(
+                session.provider_name.as_deref(),
+                session.model_config.as_ref().map(|m| m.model_name.as_str()),
+                role_model.as_ref().map(|(rm, _)| rm.clone()),
+            )
+        });
+        let role_model = match &review_dispatch {
+            // `reviewer_dispatch` passes a configured/derived pick through
+            // unchanged and yields `None` for none, so the source travels with it.
+            Some(dispatch) => dispatch
+                .role_model
+                .clone()
+                .and_then(|rm| role_model.as_ref().map(|(_, source)| (rm, *source))),
+            None => role_model,
+        };
         if let (Some(r), Some((rm, source))) = (role, role_model.as_ref()) {
             tracing::debug!(
                 target: "permagentd::brain",
@@ -1399,6 +1424,28 @@ impl SummonClient {
         )?;
         if let Some(warning) = &target.warning {
             tracing::warn!(target: "permagentd::brain", "{}", warning);
+        }
+        // The review gate's diversity warning — only when the review is really
+        // going where the warning says: no explicit param/recipe override named
+        // the reviewer's provider or model (an operator's deliberate call is not
+        // second-guessed), and the reconciled target is what the warning
+        // describes — the inherited session model for the unset fallback, the
+        // configured provider for the same-family notice.
+        if let Some(warning) = review_dispatch.as_ref().and_then(|d| d.warning.as_deref()) {
+            let explicit_override = params.provider.is_some()
+                || params.model.is_some()
+                || recipe_provider.is_some()
+                || recipe
+                    .settings
+                    .as_ref()
+                    .is_some_and(|s| s.goose_model.is_some());
+            let target_matches = match &role_model {
+                None => matches!(target.model, SubagentModel::InheritSession),
+                Some(rm) => rm.provider == target.provider,
+            };
+            if !explicit_override && target_matches {
+                tracing::warn!(target: "permagentd::brain", "review gate: {}", warning);
+            }
         }
         let provider_name = target.provider.clone();
 

@@ -101,9 +101,9 @@ pub use recommend::{
 };
 pub use review_gate::{
     build_review_prompt, classify_path, gate_decision, parse_review, review_required,
-    reviewer_routing, FileClass, GateDecision, ReviewFinding, ReviewLens, ReviewOutcome,
-    ReviewTrigger, ReviewerRouting, Verdict as ReviewVerdict, REVIEWER_DIVERSITY_WARNING,
-    REVIEWER_EXTENSIONS, REVIEW_ESCALATE_AT, REVIEW_SYSTEM_PROMPT,
+    reviewer_dispatch, reviewer_routing, FileClass, GateDecision, ReviewFinding, ReviewLens,
+    ReviewOutcome, ReviewTrigger, ReviewerDispatch, ReviewerRouting, Verdict as ReviewVerdict,
+    REVIEWER_DIVERSITY_WARNING, REVIEWER_EXTENSIONS, REVIEW_ESCALATE_AT, REVIEW_SYSTEM_PROMPT,
 };
 pub use role_map::{
     cache_guard_should_warn, clear_role_model, configured as configured_role_models, derive_role,
