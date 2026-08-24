@@ -78,6 +78,22 @@ async fn run_once(state: &AppState) {
     for error in &report.errors {
         tracing::warn!(target: "permagentd::forecaster", "collection error: {error}");
     }
+
+    // Forecast whatever is now long enough. Separate from collection so a
+    // failing collector cannot stop an existing series being forecast, and a
+    // down model host cannot stop collection.
+    let remote_cfg = permagent::forecaster::remote::RemoteConfig::load();
+    let f = forecast_due(&pool, &remote_cfg, chrono::Utc::now()).await;
+    if f.forecast > 0 || !f.errors.is_empty() {
+        tracing::info!(
+            target: "permagentd::forecaster",
+            forecast = f.forecast,
+            refused = f.refused,
+            model_host = f.model_host_used,
+            methods = ?f.method_mix,
+            "market forecasting pass"
+        );
+    }
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -183,6 +199,159 @@ pub async fn collect_due(
         }
     }
     report
+}
+
+/// The weekly forecasting pass: score every forecastable series, offer TimesFM
+/// as a candidate where the host is up, and record the winner with its method.
+///
+/// The model runs on another machine. If it is unreachable, hung, or not
+/// installed, every series here is served by the Rust baseline and **labelled**
+/// as the baseline — it is never run locally instead. That is the whole point
+/// of putting it on the M1: a degraded model host must degrade honestly, not
+/// migrate its load onto the machine the decision exists to protect.
+pub async fn forecast_due(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    remote_cfg: &permagent::forecaster::remote::RemoteConfig,
+    now: chrono::DateTime<chrono::Utc>,
+) -> ForecastReport {
+    use permagent::forecaster::{backtest, forecast, remote, store};
+
+    let mut report = ForecastReport::default();
+    let series = match store::active_series(pool).await {
+        Ok(s) => s,
+        Err(e) => {
+            report.errors.push(format!("read registry: {e}"));
+            return report;
+        }
+    };
+
+    // Gather the forecastable series and their values first, so the remote call
+    // is ONE batch rather than one round trip per series.
+    let mut work: Vec<(permagent::forecaster::Series, Vec<f64>, usize)> = Vec::new();
+    for s in series {
+        let points = store::load_points(pool, &s.id).await.unwrap_or_default();
+        if !matches!(
+            store::verdict_for(&s, points.len(), now),
+            store::Verdict::Forecastable
+        ) {
+            report.refused += 1;
+            continue;
+        }
+        let horizon = s.cadence.default_horizon();
+        work.push((s, points.into_iter().map(|p| p.value).collect(), horizon));
+    }
+    if work.is_empty() {
+        return report;
+    }
+
+    // One request per fold per series, plus one for the final forecast. The
+    // fold origins come from `backtest::fold_origins`, so the model is scored
+    // on exactly the folds the local methods are.
+    let mut reqs = Vec::new();
+    for (s, y, horizon) in &work {
+        let m = s.cadence.seasonal_period();
+        let min_train = forecast::min_train_for(y.len(), *horizon, m);
+        for (i, origin) in backtest::fold_origins(y.len(), *horizon, min_train)
+            .into_iter()
+            .enumerate()
+        {
+            reqs.push(remote::SeriesRequest {
+                series_id: format!("{}#fold{i}", s.id),
+                values: y[..origin].iter().map(|v| *v as f32).collect(),
+                horizon: *horizon,
+            });
+        }
+        reqs.push(remote::SeriesRequest {
+            series_id: format!("{}#final", s.id),
+            values: y.iter().map(|v| *v as f32).collect(),
+            horizon: *horizon,
+        });
+    }
+
+    let remote_answers = match remote::forecast_batch(remote_cfg, &reqs).await {
+        Ok(v) => {
+            report.model_host_used = true;
+            v.into_iter()
+                .map(|f| (f.series_id.clone(), f))
+                .collect::<std::collections::HashMap<_, _>>()
+        }
+        Err(e) => {
+            // Ordinary and loggable, never an error path: the baseline serves.
+            tracing::info!(
+                target: "permagentd::forecaster",
+                "TimesFM host not serving ({e}); every forecast this pass is the labelled baseline"
+            );
+            report.model_host_detail = Some(e.to_string());
+            Default::default()
+        }
+    };
+
+    for (s, y, horizon) in &work {
+        let m = s.cadence.seasonal_period();
+        let min_train = forecast::min_train_for(y.len(), *horizon, m);
+        let origins = backtest::fold_origins(y.len(), *horizon, min_train);
+        let candidate = remote_answers
+            .get(&format!("{}#final", s.id))
+            .and_then(|final_f| {
+                let mut folds = Vec::with_capacity(origins.len());
+                for i in 0..origins.len() {
+                    folds.push(
+                        remote_answers
+                            .get(&format!("{}#fold{i}", s.id))?
+                            .point
+                            .clone(),
+                    );
+                }
+                Some(forecast::RemoteCandidate {
+                    fold_forecasts: folds,
+                    final_forecast: final_f.point.clone(),
+                    final_p10: final_f.p10.clone(),
+                    final_p90: final_f.p90.clone(),
+                })
+            });
+        let non_negative = s.source_kind != permagent::forecaster::SourceKind::EquityClose;
+        match forecast::choose_and_forecast_with(
+            &s.id,
+            y,
+            *horizon,
+            s.cadence,
+            non_negative,
+            now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            candidate,
+        ) {
+            Ok(f) => {
+                *report
+                    .method_mix
+                    .entry(f.method.as_str().to_string())
+                    .or_insert(0) += 1;
+                if let Err(e) = forecast::record(pool, &f).await {
+                    report.errors.push(format!("{}: {e}", s.label));
+                } else {
+                    report.forecast += 1;
+                }
+            }
+            Err(refusal) => {
+                report.refused += 1;
+                tracing::debug!(
+                    target: "permagentd::forecaster",
+                    "{}: {refusal}", s.label
+                );
+            }
+        }
+    }
+    report
+}
+
+#[derive(Debug, Default, PartialEq)]
+pub struct ForecastReport {
+    pub forecast: usize,
+    pub refused: usize,
+    /// Whether the model host actually answered this pass. A week of baselines
+    /// with this false is a degraded week, not a week of agreement.
+    pub model_host_used: bool,
+    pub model_host_detail: Option<String>,
+    pub method_mix: std::collections::BTreeMap<String, usize>,
+    pub errors: Vec<String>,
 }
 
 #[cfg(test)]

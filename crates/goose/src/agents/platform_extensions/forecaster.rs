@@ -29,7 +29,9 @@
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
 use crate::agents::tool_execution::ToolCallContext;
+use crate::forecaster::forecast;
 use crate::forecaster::store::{self, Verdict};
+use crate::forecaster::{brief, remote};
 use crate::forecaster::{Cadence, Knobs, SourceKind};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -46,7 +48,7 @@ use tokio_util::sync::CancellationToken;
 /// `find_descriptor` resolves worker > surface > guard > platform — so a
 /// collision would silently shadow one descriptor and serve the wrong lesson.
 /// `finance` / `financier` splits the same way for the same reason: the
-/// extension is the module, the id is the character.
+/// extension is the module, the id below is the character.
 pub static EXTENSION_NAME: &str = "forecast";
 
 /// The roster id the world view and the activity journal key on. Distinct from
@@ -56,9 +58,26 @@ pub const AGENT_ID: &str = "forecaster";
 pub const AGENT_NAME: &str = "The Forecaster";
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct NoParams {}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct SeriesParams {
     /// Project id, slug or name. Omit to list every bound series.
     project: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct ForecastParams {
+    /// The series id, from forecaster_series.
+    series_id: String,
+    /// Steps ahead. Omit for one week at the series' own cadence.
+    horizon: Option<u32>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct BriefParams {
+    /// Project id, slug or name.
+    project: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -130,6 +149,32 @@ pub fn describe_verdict(s: &store::SeriesSummary) -> String {
         line.push_str(&format!(" [last error: {err}]"));
     }
     line
+}
+
+/// A forecast as prose, with its method attached to it rather than mentioned
+/// somewhere nearby. The two travel together or the number is unreadable.
+pub fn describe_forecast(f: &forecast::Forecast) -> String {
+    let last = f.point.last().copied().unwrap_or(f64::NAN);
+    let lo = f.p10.last().copied().unwrap_or(f64::NAN);
+    let hi = f.p90.last().copied().unwrap_or(f64::NAN);
+    let mut out = format!(
+        "{} steps ahead: {last:.0} (80% range {lo:.0} to {hi:.0}).\nMethod: {} — {}",
+        f.horizon,
+        f.method.as_str(),
+        f.method_label,
+    );
+    if let Some(mase) = f.mase_vs_baseline {
+        out.push_str(&format!(
+            "\nBacktest: MASE {mase:.3} vs seasonal naive over {} folds, winning {}.",
+            f.folds, f.fold_wins
+        ));
+    }
+    out.push_str(&format!("\nWhy this method: {}", f.selection));
+    out.push_str(
+        "\nThese are other people's public numbers. They say where a category is heading, not \
+         why it moved and not what to do about it.",
+    );
+    out
 }
 
 impl ForecasterClient {
@@ -268,6 +313,158 @@ impl ForecasterClient {
         ))]))
     }
 
+    /// A forecast, or the reason there isn't one. Never both, never neither.
+    async fn handle_forecast(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> std::result::Result<CallToolResult, String> {
+        let params: ForecastParams =
+            serde_json::from_value(serde_json::Value::Object(arguments.unwrap_or_default()))
+                .map_err(|e| e.to_string())?;
+        let pool = self.pool().await?;
+        let horizon = params.horizon.map(|h| h as usize);
+        match forecast::forecast_series(&pool, &params.series_id, horizon, chrono::Utc::now()).await
+        {
+            Ok(f) => {
+                // Persisted so the Market card and the brief read the same
+                // numbers this answer just gave.
+                if let Err(e) = forecast::record(&pool, &f).await {
+                    tracing::warn!(target: "permagent::forecaster", "could not record forecast: {e}");
+                }
+                Ok(CallToolResult::success(vec![Content::text(
+                    describe_forecast(&f),
+                )]))
+            }
+            // A refusal is a successful answer to the question asked. It is not
+            // an error, and rendering it as one would push the model toward
+            // retrying rather than reporting.
+            Err(refusal) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "No forecast for {}: {refusal}. Do not describe a direction for this series.",
+                params.series_id
+            ))])),
+        }
+    }
+
+    /// Is the TimesFM host actually able to forecast right now?
+    ///
+    /// A degraded model host is a surface, not a log line: a week of
+    /// baseline-only forecasts must be distinguishable from a week in which the
+    /// model agreed with the baseline.
+    async fn handle_health(&self) -> std::result::Result<CallToolResult, String> {
+        let cfg = remote::RemoteConfig::load();
+        let h = remote::health(&cfg).await;
+        let body = if h.ready() {
+            format!(
+                "The TimesFM host ({}) is ready: venv and script present, weights {}.\n\
+                 Forecasts may be served by the model where it clears the backtest gate.",
+                h.target,
+                if h.weights_present {
+                    "cached"
+                } else {
+                    "not yet downloaded"
+                }
+            )
+        } else {
+            format!(
+                "The TimesFM host ({}) is NOT serving: {}.\n\
+                 Forecasts fall back to the Rust baseline and are labelled as the baseline. \
+                 This is a degraded state, not an error — say so rather than presenting the \
+                 week's baselines as model agreement. Nothing runs on the local machine \
+                 instead.",
+                h.target, h.detail
+            )
+        };
+        Ok(CallToolResult::success(vec![Content::text(body)]))
+    }
+
+    /// The weekly synthesis, on demand.
+    async fn handle_brief(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> std::result::Result<CallToolResult, String> {
+        let params: BriefParams =
+            serde_json::from_value(serde_json::Value::Object(arguments.unwrap_or_default()))
+                .map_err(|e| e.to_string())?;
+        let pool = self.pool().await?;
+        let project = self.resolve_project(&pool, &params.project).await?;
+        let now = chrono::Utc::now();
+        let summaries = store::summarize(&pool, Some(&project.id), now).await?;
+        if summaries.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "No market series are bound for {}, so there is no market brief. That is not a \
+                 flat market — it is an unwatched one.",
+                project.name
+            ))]));
+        }
+        let mut rows = Vec::with_capacity(summaries.len());
+        for summary in summaries {
+            let f = forecast::forecast_series(&pool, &summary.series_id, None, now)
+                .await
+                .ok();
+            rows.push((summary, f));
+        }
+        let (input, grounded) = brief::compose(&project.name, &rows);
+        let mix = brief::method_mix(&rows);
+
+        // The table is the answer; the prose is a convenience over it. So the
+        // table is returned whether or not a model was reachable.
+        let mut body = format!("Market brief for {}\n\n{input}\n", project.name);
+        body.push_str(&format!(
+            "Methods that produced these numbers: {}\n",
+            mix.iter()
+                .map(|(k, v)| format!("{k} x{v}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        match self.synthesize(&input, &grounded).await {
+            Some((prose, engine)) => {
+                body.push_str(&format!("\nSummary ({engine}): {prose}"));
+            }
+            None => body.push_str(
+                "\nNo prose summary this time — read the table above. A summary that could not \
+                 be generated is not a summary of nothing.",
+            ),
+        }
+        Ok(CallToolResult::success(vec![Content::text(body)]))
+    }
+
+    /// Best-fit, cost-conscious: the on-device model when the input fits its
+    /// probed window, and nothing at all rather than prose that fails the
+    /// no-causal-claim check.
+    async fn synthesize(&self, input: &str, grounded: &[f64]) -> Option<(String, String)> {
+        use crate::providers::apple_fm;
+
+        // The window is a runtime property of the running model, not a
+        // constant — it changes with the OS.
+        let fits = apple_fm::context_size()
+            .await
+            .is_some_and(|limit| input.len() / 4 + 400 < limit);
+        if !fits {
+            return None;
+        }
+        let text = apple_fm::generate(brief::SYSTEM_PROMPT, input, 400, 0.2, |_| {})
+            .await
+            .ok()?;
+        match brief::validate(&text, grounded) {
+            Ok(()) => Some((text, "apple_foundation_models".to_string())),
+            Err(violations) => {
+                // A brief that broke the rule is discarded, not repaired. The
+                // table is still returned, so the user loses prose and not
+                // information.
+                tracing::info!(
+                    target: "permagent::forecaster",
+                    violations = %violations
+                        .iter()
+                        .map(|v| v.to_string())
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                    "discarded a market brief that outran its numbers"
+                );
+                None
+            }
+        }
+    }
+
     /// The full, static tool inventory. Extracted from `list_tools` so the
     /// self-knowledge completeness guard derives its inventory from the REAL
     /// list — add a tool here and CI fails until the registry `description`
@@ -296,6 +493,39 @@ impl ForecasterClient {
                  be one of the known set; an unrecognised one is refused rather than guessed."
                     .to_string(),
                 schema::<BindParams>(),
+            ),
+            Tool::new(
+                "forecaster_forecast".to_string(),
+                "Forecast one bound series and report the point estimate, the 80% interval, and \
+                 the METHOD that produced them. The method label is mandatory and always \
+                 accurate: a forecast served by the seasonal-naive baseline says so, and you \
+                 must repeat that when you report it. Below the minimum history, or with a \
+                 stale collector, this REFUSES and gives the reason instead of a number — \
+                 report the refusal, never a direction. Says where a series is heading; never \
+                 why, and never what to do."
+                    .to_string(),
+                schema::<ForecastParams>(),
+            ),
+            Tool::new(
+                "forecaster_brief".to_string(),
+                "The week's market direction for one project, as a table of every bound series \
+                 with its forecast and method, plus a short summary when one can be generated \
+                 honestly. The summary restates direction, magnitude, interval and method only \
+                 — it never says why anything moved and never recommends an action, and neither \
+                 should you when you relay it. If no summary comes back, read the table; that \
+                 is the answer, not a failure."
+                    .to_string(),
+                schema::<BriefParams>(),
+            ),
+            Tool::new(
+                "forecaster_health".to_string(),
+                "Whether the TimesFM host (a separate Mac, reached over SSH) can actually serve \
+                 forecasts right now. Call this when the user asks why forecasts are all \
+                 baselines: a host that is down means every forecast is the Rust baseline and \
+                 labelled as one, which is a DEGRADED state and not the model agreeing with the \
+                 baseline. Nothing ever runs the model on the local machine instead."
+                    .to_string(),
+                schema::<NoParams>(),
             ),
         ]
     }
@@ -327,6 +557,9 @@ impl McpClientTrait for ForecasterClient {
         let result = match name {
             "forecaster_series" => self.handle_series(arguments).await,
             "forecaster_bind" => self.handle_bind(arguments).await,
+            "forecaster_forecast" => self.handle_forecast(arguments).await,
+            "forecaster_brief" => self.handle_brief(arguments).await,
+            "forecaster_health" => self.handle_health().await,
             _ => Err(format!("Unknown tool: {}", name)),
         };
         announce("available");
@@ -343,6 +576,65 @@ impl McpClientTrait for ForecasterClient {
         Some(&self.info)
     }
 }
+
+/// The Forecaster as a peer character — where the market around each project is
+/// going, and how much of that we can honestly say.
+pub const SELF_KNOWLEDGE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
+    crate::agents::self_knowledge::FeatureDescriptor {
+        id: "forecaster",
+        display_name: "The Forecaster",
+        category: crate::agents::self_knowledge::FeatureCategory::Worker,
+        what_it_does:
+            "The agent that watches where the market around each project is going, using \
+             other people's public numbers — competitor package downloads, category \
+             Wikipedia pageviews, Hacker News mentions — attached to the competitor and \
+             adjacent rows the user already approved on a project's Ecosystem panel. \
+             forecaster_series lists every bound series with its real point count, its span \
+             and a verdict; forecaster_bind proposes a new one and never activates it; \
+             forecaster_forecast returns a point estimate, an 80% interval and the method \
+             that produced them, or refuses with a reason; forecaster_brief is the week's \
+             summary for one project; forecaster_health says whether the separate machine \
+             that runs the forecasting model is reachable. Every forecast carries its \
+             method, and a method is used only where it beat the seasonal-naive baseline \
+             on a rolling-origin backtest. Says where a category is heading; never why it \
+             moved, and never what to do about it",
+        why_it_matters:
+            "A direction noticed late is a direction missed. This watches the numbers around \
+             each project continuously and, just as importantly, says plainly when a series \
+             is too short, too stale or unbound to support a claim — so a trend that was \
+             never there is never presented as one",
+        state_source: crate::agents::self_knowledge::StateSource::Queryable,
+        teaching: &[
+            crate::agents::self_knowledge::TeachingStep {
+                title: "See what is actually being watched",
+                body: "Call forecaster_series for the project. It reports every bound series \
+                       with its real point count and a verdict — forecastable, too short (and \
+                       by how much), collector stale, or awaiting approval. An empty list \
+                       means nothing is bound, which is not the same as a flat market.",
+                open_surface: None,
+                confirm: None,
+            },
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Bind a competitor's numbers",
+                body: "Call forecaster_bind with the project, a source (npm downloads, \
+                       crates.io downloads, Wikipedia pageviews, Hacker News mentions) and the \
+                       subject to watch — ideally one already approved on the Ecosystem panel. \
+                       This only proposes it; say so. Collection starts after the user \
+                       approves it.",
+                open_surface: None,
+                confirm: None,
+            },
+            crate::agents::self_knowledge::TeachingStep {
+                title: "Report a direction with its method",
+                body: "Call forecaster_forecast and repeat the method label with the number. \
+                       If it came from the seasonal-naive baseline, say that it is a baseline \
+                       and not a model. If the tool refuses, report the refusal — never \
+                       describe a direction for a series it would not forecast.",
+                open_surface: None,
+                confirm: None,
+            },
+        ],
+    };
 
 #[cfg(test)]
 mod tests {
@@ -416,7 +708,7 @@ mod tests {
     #[test]
     fn every_tool_is_described_well_enough_to_be_called_correctly() {
         let tools = ForecasterClient::get_tools();
-        assert_eq!(tools.len(), 2);
+        assert_eq!(tools.len(), 5);
         for t in &tools {
             assert!(
                 t.description.as_ref().map(|d| d.len()).unwrap_or(0) > 120,
@@ -428,6 +720,48 @@ mod tests {
         let bind = tools.iter().find(|t| t.name == "forecaster_bind").unwrap();
         let desc = bind.description.as_ref().unwrap();
         assert!(desc.contains("PROPOSES"), "{desc}");
+    }
+
+    /// The number and its provenance travel together, or the number is
+    /// unreadable. This is the whole reason `method` is not an Option.
+    #[test]
+    fn the_method_label_travels_with_the_number() {
+        let f = forecast::Forecast {
+            series_id: "s1".into(),
+            made_at: "2026-08-24T00:00:00.000Z".into(),
+            horizon: 7,
+            point: vec![100.0; 7],
+            p10: vec![90.0; 7],
+            p90: vec![110.0; 7],
+            method: forecast::Method::SeasonalNaive,
+            method_label: forecast::Method::SeasonalNaive.label().to_string(),
+            mase_vs_baseline: Some(1.0),
+            folds: 8,
+            fold_wins: 0,
+            selection: "ETS did not clear the gate".into(),
+        };
+        let text = describe_forecast(&f);
+        assert!(text.contains("seasonal_naive"), "{text}");
+        assert!(text.contains("not a model"), "{text}");
+        assert!(text.contains("8 folds"), "{text}");
+        // And it never volunteers a cause or a course of action.
+        let lower = text.to_ascii_lowercase();
+        assert!(!lower.contains("because"), "{text}");
+        assert!(!lower.contains("recommend"), "{text}");
+    }
+
+    /// A refusal must be reachable from the tool description, or the model will
+    /// treat an absent number as a tool failure and retry.
+    #[test]
+    fn the_forecast_tool_says_it_refuses() {
+        let tools = ForecasterClient::get_tools();
+        let f = tools
+            .iter()
+            .find(|t| t.name == "forecaster_forecast")
+            .expect("forecaster_forecast is registered");
+        let desc = f.description.as_ref().unwrap();
+        assert!(desc.contains("REFUSES"), "{desc}");
+        assert!(desc.contains("METHOD"), "{desc}");
     }
 
     /// Nothing here may reach for a series the user has not approved.

@@ -162,6 +162,7 @@ pub static WORKER_DESCRIPTORS: &[FeatureDescriptor] = &[
     // brief stays byte-for-byte identical.
     crate::strix::SELF_KNOWLEDGE_FEATURE,
     crate::agents::platform_extensions::finance::SELF_KNOWLEDGE_FEATURE,
+    crate::agents::platform_extensions::forecaster::SELF_KNOWLEDGE_FEATURE,
 ];
 
 /// The Git Steward's worker-descriptor id. The descriptor itself spells the id
@@ -1116,6 +1117,7 @@ mod tests {
         // Same render-gated contract, on the `strix_enabled` config key.
         "strix",
         "financier",
+        "forecaster",
     ];
     /// Every known surface id must have exactly one descriptor.
     const KNOWN_SURFACE_IDS: &[&str] = &[

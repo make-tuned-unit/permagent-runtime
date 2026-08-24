@@ -27,8 +27,10 @@
 
 pub mod backtest;
 pub mod baseline;
+pub mod brief;
 pub mod collect;
 pub mod forecast;
+pub mod remote;
 pub mod series;
 pub mod store;
 

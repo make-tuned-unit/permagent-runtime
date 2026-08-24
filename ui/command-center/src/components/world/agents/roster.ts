@@ -134,6 +134,21 @@ export const ROSTER: AgentIdentity[] = [
     home: { x: -8.2, y: 0, z: 5.0 },
     weathering: 0.2,
   },
+  {
+    // The Forecaster — where the market around each project is going, from
+    // other people's public numbers. Tools announce on the `forecaster` id, so
+    // the working pose is a real wire and not sim-ambient, exactly as the
+    // Financier's is. Home mirrors the Financier across +x: the two read the
+    // same kind of number, one at read time and one over time.
+    id: 'forecaster',
+    name: 'The Forecaster',
+    role: 'agent',
+    trimColor: AGENT_TRIM.forecaster,
+    isHenry: false,
+    mezzanineLocked: false,
+    home: { x: 8.2, y: 0, z: 5.0 },
+    weathering: 0.15,
+  },
 ];
 
 export function getIdentity(id: string): AgentIdentity | undefined {
