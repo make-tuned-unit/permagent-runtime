@@ -18,8 +18,10 @@
 //! - Zero cloud tokens at runtime: the only network call is to the hardcoded
 //!   loopback Ollama base URL.
 
+pub mod check_lint;
 pub mod checks;
 pub mod digest;
+pub mod placeholder_scan;
 pub mod verifier;
 
 use serde::{Deserialize, Serialize};
@@ -64,6 +66,12 @@ pub struct VerificationRecord {
     /// (verifier.json `panel_models`). Empty for single-model reviews.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub panel: Vec<verifier::PanelVerdict>,
+    /// Ledger-level findings from [`check_lint`] that belong to no single check
+    /// (an existence-only ledger; an acceptance criterion that names an
+    /// activity rather than an outcome). Advisory: recorded and shown, never a
+    /// verdict on its own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub check_lint_notes: Vec<String>,
     pub started_at: String,
     pub finished_at: String,
     pub evidence_digest: EvidenceDigest,
@@ -271,6 +279,63 @@ pub async fn run_for_goal_with_cfg(
         .and_then(|v| v.as_str())
         .unwrap_or("(none provided)")
         .to_string();
+    // ── 2b. Gameable-check lint ──
+    // A check that could not have failed is not evidence. Stamp the reason onto
+    // the result so it travels into the digest and the verifier's prompt; the
+    // clamp in `aggregate_record` then refuses to let it stand as support.
+    let mut check_results = check_results;
+    let lint_report = check_lint::lint(&declared_checks, &acceptance_criteria);
+    for r in check_results.iter_mut() {
+        if let Some(line) = lint_report.for_check(r.check_index) {
+            tracing::warn!(
+                target: "permagentd::verification",
+                goal_id = %goal_id,
+                check_index = r.check_index,
+                "gameable completion check — it will not count as verification \
+                 evidence: {}",
+                line
+            );
+            r.lint = Some(line);
+        }
+    }
+    for note in &lint_report.notes {
+        tracing::warn!(
+            target: "permagentd::verification",
+            goal_id = %goal_id,
+            "completion-check lint: {}",
+            note
+        );
+    }
+
+    // ── 2c. Standing placeholder scan over the goal's own added lines ──
+    // The one claim this pipeline can make that nothing else does: no stubs
+    // were left behind in what this goal wrote. Skipped for goal types with no
+    // code to stub (the same list dispatch uses to decide a goal has no build).
+    // Nothing to scan when the diff is empty or unprovable — an extra vacuous
+    // Pass row there would inflate the check counts the digest reports.
+    let scan_dir = working_dir.as_deref().filter(|_| {
+        placeholder_scan_applies(&meta)
+            && git_analysis.degraded_note.is_none()
+            && git_analysis.diff_summary.files_changed > 0
+    });
+    let scan_result = match scan_dir {
+        Some(wd) => {
+            placeholder_scan::run(wd, &git_analysis.diff_range_args, declared_checks.len()).await
+        }
+        None => None,
+    };
+    if let Some(res) = scan_result {
+        if res.status != CheckStatus::Pass {
+            tracing::warn!(
+                target: "permagentd::verification",
+                goal_id = %goal_id,
+                "{}",
+                res.evidence.message.as_deref().unwrap_or("placeholders found")
+            );
+        }
+        check_results.push(res);
+    }
+
     let check_summaries: Vec<String> = declared_checks.iter().map(|c| c.summary()).collect();
 
     let user_prompt = verifier::build_user_prompt(
@@ -319,6 +384,7 @@ pub async fn run_for_goal_with_cfg(
         &started_at,
     );
     record.panel = panel_verdicts;
+    record.check_lint_notes = lint_report.notes;
 
     // ── 5. ONE atomic metadata write: only `dispatch_evidence.verdict` (#466) ──
     write_verification(pool, goal_id, &record).await?;
@@ -522,6 +588,20 @@ async fn henry_approve_after_pass(pool: &Pool<Sqlite>, goal_id: &str, record: &V
     }
 }
 
+/// Whether the standing placeholder scan applies to this goal.
+///
+/// Reuses dispatch's own non-code list (`orchestrator::NON_CODE_GOAL_TYPES`):
+/// a prose/docs/research goal has no implementation to stub out, and scanning
+/// one would only false-fail writing that legitimately discusses `todo!()`.
+fn placeholder_scan_applies(meta: &serde_json::Map<String, serde_json::Value>) -> bool {
+    match meta.get("goal_type").and_then(|v| v.as_str()) {
+        Some(t) => {
+            !permagent::agents::platform_extensions::orchestrator::NON_CODE_GOAL_TYPES.contains(&t)
+        }
+        None => true,
+    }
+}
+
 fn error_result(index: usize, check_type: &str, message: &str) -> CheckResult {
     CheckResult {
         check_index: index,
@@ -534,6 +614,8 @@ fn error_result(index: usize, check_type: &str, message: &str) -> CheckResult {
             ..Default::default()
         },
         truncated: false,
+        summary: None,
+        lint: None,
     }
 }
 
@@ -596,8 +678,27 @@ fn aggregate_record(
     };
 
     // Deterministic clamps: the model can never upgrade machine findings.
+    //
+    // A LINTED check is withheld from the evidence, not counted against it: the
+    // work may well be correct — it is the *check* that proves nothing. So when
+    // every check on a goal was linted (an `echo ok` ledger, an existence-only
+    // ledger), the checks half of the rubric is UNCERTAIN, not Pass: there is
+    // no machine evidence either way, and a human decides. A goal that declared
+    // no checks at all keeps its long-standing vacuous Pass — this rule is
+    // about checks that were declared and turned out to be worthless.
+    // Only DECLARED checks are judged here. The synthesized placeholder scan
+    // is machine evidence by construction — it is not something a worker can
+    // author, so it can neither be linted nor rescue a ledger of linted ones.
+    let mut declared_results = check_results
+        .iter()
+        .filter(|r| r.check_index < declared_checks.len())
+        .peekable();
+    let all_checks_linted =
+        declared_results.peek().is_some() && declared_results.all(|r| r.lint.is_some());
     let checks_clamp = if any_check_not_pass {
         Grade::Fail
+    } else if all_checks_linted {
+        Grade::Uncertain
     } else {
         Grade::Pass
     };
@@ -695,6 +796,7 @@ fn aggregate_record(
         model: vr.model.clone(),
         degraded_reason,
         panel: Vec::new(),
+        check_lint_notes: Vec::new(),
         started_at: started_at.to_string(),
         finished_at,
         evidence_digest,
@@ -829,6 +931,13 @@ pub struct GitAnalysis {
     /// are unavailable; fail when out-of-path changes exist; else pass.
     pub path_discipline: Grade,
     pub degraded_note: Option<String>,
+    /// The resolved `git diff` RANGE this analysis was taken over — `[base,
+    /// head]` for a head-recorded goal, `[baseline]` for the legacy
+    /// working-tree diff. Empty when the diff degraded.
+    ///
+    /// Carried so a follow-up pass (the placeholder scan) can re-read exactly
+    /// the same range instead of re-deriving it and risking a different answer.
+    pub diff_range_args: Vec<String>,
 }
 
 fn uncertain_analysis(note: &str) -> GitAnalysis {
@@ -838,6 +947,7 @@ fn uncertain_analysis(note: &str) -> GitAnalysis {
         out_of_path_files: Vec::new(),
         path_discipline: Grade::Uncertain,
         degraded_note: Some(note.to_string()),
+        diff_range_args: Vec::new(),
     }
 }
 
@@ -946,7 +1056,7 @@ pub async fn analyze_diff(
     // A head WITHOUT a work_base means the capture hook did not fire. We do NOT
     // silently fall back to the stale dispatch baseline (the silent-wrongness that
     // is this whole bug class) — we record Uncertain and surface it loudly.
-    let (names, numstat, porcelain, effective_baseline) = match head_commit {
+    let (names, numstat, porcelain, effective_baseline, diff_range_args) = match head_commit {
         Some(head) => {
             let Some(base) = work_base else {
                 tracing::error!(
@@ -1024,7 +1134,13 @@ pub async fn analyze_diff(
                 mechanism = "hook",
                 "verifier diff anchored to work_base..head (durable range)"
             );
-            (names, numstat, String::new(), base.to_string())
+            (
+                names,
+                numstat,
+                String::new(),
+                base.to_string(),
+                vec![base.to_string(), head.to_string()],
+            )
         }
         None => {
             // Committed + uncommitted tracked changes since the dispatch baseline
@@ -1048,7 +1164,13 @@ pub async fn analyze_diff(
                 "verifier diff anchored to dispatch baseline (no durable head recorded \
                  — legacy working-tree diff)"
             );
-            (names, numstat, porcelain, baseline.to_string())
+            (
+                names,
+                numstat,
+                porcelain,
+                baseline.to_string(),
+                vec![baseline.to_string()],
+            )
         }
     };
 
@@ -1145,6 +1267,7 @@ pub async fn analyze_diff(
             degraded_note: Some(
                 "no declared_paths on goal — path discipline unverifiable".to_string(),
             ),
+            diff_range_args,
         };
     }
 
@@ -1182,6 +1305,7 @@ pub async fn analyze_diff(
         out_of_path_files: out_of_path,
         path_discipline,
         degraded_note: None,
+        diff_range_args,
     }
 }
 
@@ -1475,11 +1599,21 @@ mod tests {
 
         assert_eq!(record.status, VerdictStatus::Pass);
         assert_eq!(record.version, 1);
-        assert_eq!(record.check_results.len(), 3);
+        // 3 declared + the standing placeholder scan, which is appended to
+        // every code goal with a non-empty diff.
+        assert_eq!(record.check_results.len(), 4);
+        assert_eq!(
+            record.check_results[3].check_type,
+            placeholder_scan::CHECK_TYPE
+        );
         assert!(record
             .check_results
             .iter()
             .all(|r| r.status == CheckStatus::Pass));
+        // `cmd: "true"` is tautological and is marked as such — but one
+        // substantive check in the ledger keeps the checks grade a Pass.
+        assert!(record.check_results[0].lint.is_some());
+        assert_eq!(record.rubric.checks_support, Grade::Pass);
         assert_eq!(record.rubric.path_discipline, Grade::Pass);
         assert!(record.out_of_path_files.is_empty());
         assert_eq!(record.rationale, "Everything checks out.");
@@ -1504,7 +1638,7 @@ mod tests {
             .evidence_digest
             .checks_summary
             .one_line
-            .contains("All 3 automated checks passed"));
+            .contains("All 4 automated checks passed"));
         assert!(parsed
             .evidence_digest
             .verifier_summary
@@ -1785,7 +1919,7 @@ mod tests {
                 "declared_paths": ["src/**"],
                 "goal_type": "chore",
                 "completion_checks": [
-                    {"type": "command_exit_zero", "cmd": "true", "timeout_secs": 30}
+                    {"type": "command_exit_zero", "cmd": "grep -q 'pub fn b' src/lib.rs", "timeout_secs": 30}
                 ],
             }),
         )
@@ -1931,7 +2065,7 @@ mod tests {
                 "declared_paths": ["src/**"],
                 "auto_approve": true,
                 "completion_checks": [
-                    {"type": "command_exit_zero", "cmd": "true", "timeout_secs": 30}
+                    {"type": "command_exit_zero", "cmd": "grep -q 'pub fn b' src/lib.rs", "timeout_secs": 30}
                 ],
             }),
         )
@@ -1994,7 +2128,7 @@ mod tests {
                 "declared_paths": ["src/**"],
                 "goal_type": "chore",
                 "completion_checks": [
-                    {"type": "command_exit_zero", "cmd": "true", "timeout_secs": 30}
+                    {"type": "command_exit_zero", "cmd": "grep -q 'pub fn b' src/lib.rs", "timeout_secs": 30}
                 ],
             }),
         )
@@ -2785,6 +2919,242 @@ mod tests {
         assert_eq!(record.check_results[0].status, CheckStatus::Error);
         // Error never counts as pass; clamps the verdict.
         assert_eq!(record.status, VerdictStatus::Fail);
+    }
+
+    // ── Standing placeholder scan (wired end-to-end) ────────────────────────
+
+    /// The scan's reason for existing: a goal whose own diff leaves `todo!()`
+    /// behind cannot verify, even with a passing build check and a PASSing
+    /// model.
+    #[tokio::test]
+    async fn a_goal_that_adds_a_stub_fails_verification() {
+        let repo = tempfile::tempdir().unwrap();
+        let baseline = init_repo(repo.path());
+        std::fs::write(
+            repo.path().join("src/lib.rs"),
+            "pub fn a() {}\npub fn b() { todo!(\"later\") }\n",
+        )
+        .unwrap();
+
+        let pool = test_pool().await;
+        let card = make_goal(
+            &pool,
+            repo.path().to_str().unwrap(),
+            serde_json::json!({
+                "baseline_commit": baseline,
+                "declared_paths": ["src/**"],
+                "completion_checks": [
+                    {"type": "command_exit_zero", "cmd": "grep -q 'pub fn b' src/lib.rs", "timeout_secs": 30}
+                ]
+            }),
+        )
+        .await;
+
+        let (base_url, _h) = spawn_mock_ollama(MockMode::Respond(GOOD_PASS.to_string())).await;
+        let record = run_for_goal_with(&pool, &card.id, &base_url).await.unwrap();
+
+        let scan = record
+            .check_results
+            .iter()
+            .find(|r| r.check_type == placeholder_scan::CHECK_TYPE)
+            .expect("the placeholder scan must have run");
+        assert_eq!(scan.status, CheckStatus::Fail);
+        assert!(scan
+            .evidence
+            .matches
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|m| m.contains("todo!()")));
+        assert_eq!(record.status, VerdictStatus::Fail);
+    }
+
+    /// Negative control: clean work, and a TODO the goal added to a DOC file,
+    /// both leave the scan passing. A false-fail here would condemn correct
+    /// work, which is the failure mode this pipeline guards hardest against.
+    #[tokio::test]
+    async fn clean_work_and_doc_todos_do_not_trip_the_scan() {
+        let repo = tempfile::tempdir().unwrap();
+        let baseline = init_repo(repo.path());
+        std::fs::write(
+            repo.path().join("src/lib.rs"),
+            "pub fn a() {}\npub fn b() -> u32 { 2 }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            repo.path().join("README.md"),
+            "readme\n- TODO(#123): later\n",
+        )
+        .unwrap();
+
+        let pool = test_pool().await;
+        let card = make_goal(
+            &pool,
+            repo.path().to_str().unwrap(),
+            serde_json::json!({
+                "baseline_commit": baseline,
+                "declared_paths": ["**"],
+                "completion_checks": [
+                    {"type": "command_exit_zero", "cmd": "grep -q 'pub fn b' src/lib.rs", "timeout_secs": 30}
+                ]
+            }),
+        )
+        .await;
+
+        let (base_url, _h) = spawn_mock_ollama(MockMode::Respond(GOOD_PASS.to_string())).await;
+        let record = run_for_goal_with(&pool, &card.id, &base_url).await.unwrap();
+
+        let scan = record
+            .check_results
+            .iter()
+            .find(|r| r.check_type == placeholder_scan::CHECK_TYPE)
+            .expect("the placeholder scan must have run");
+        assert_eq!(scan.status, CheckStatus::Pass, "{:?}", scan.evidence);
+        assert_eq!(record.status, VerdictStatus::Pass);
+    }
+
+    /// A prose/docs goal has no implementation to stub — the scan must not run
+    /// at all, or writing that legitimately discusses `todo!()` would fail.
+    #[tokio::test]
+    async fn the_scan_is_skipped_for_non_code_goal_types() {
+        let repo = tempfile::tempdir().unwrap();
+        let baseline = init_repo(repo.path());
+        std::fs::write(repo.path().join("src/lib.rs"), "pub fn a() { todo!() }\n").unwrap();
+
+        let pool = test_pool().await;
+        let card = make_goal(
+            &pool,
+            repo.path().to_str().unwrap(),
+            serde_json::json!({
+                "baseline_commit": baseline,
+                "declared_paths": ["**"],
+                "goal_type": "research",
+            }),
+        )
+        .await;
+
+        let (base_url, _h) = spawn_mock_ollama(MockMode::Respond(GOOD_PASS.to_string())).await;
+        let record = run_for_goal_with(&pool, &card.id, &base_url).await.unwrap();
+        assert!(record
+            .check_results
+            .iter()
+            .all(|r| r.check_type != placeholder_scan::CHECK_TYPE));
+    }
+
+    // ── Gameable-check lint (wired end-to-end) ──────────────────────────────
+
+    /// A ledger whose only check is `echo ok` is not evidence. The check still
+    /// runs and still passes — but it is marked inadmissible and the verdict
+    /// cannot be a Pass on the strength of it.
+    #[tokio::test]
+    async fn a_gameable_check_is_marked_and_withheld_from_the_verdict() {
+        let repo = tempfile::tempdir().unwrap();
+        let baseline = init_repo(repo.path());
+        std::fs::write(
+            repo.path().join("src/lib.rs"),
+            "pub fn a() {}\npub fn b() {}\n",
+        )
+        .unwrap();
+
+        let pool = test_pool().await;
+        let card = make_goal(
+            &pool,
+            repo.path().to_str().unwrap(),
+            serde_json::json!({
+                "baseline_commit": baseline,
+                "declared_paths": ["**"],
+                "completion_checks": [
+                    {"type": "command_exit_zero", "cmd": "echo ok", "expect": "ok"}
+                ]
+            }),
+        )
+        .await;
+
+        let (base_url, _h) = spawn_mock_ollama(MockMode::Respond(GOOD_PASS.to_string())).await;
+        let record = run_for_goal_with(&pool, &card.id, &base_url).await.unwrap();
+
+        let declared = &record.check_results[0];
+        assert_eq!(declared.status, CheckStatus::Pass);
+        let lint = declared.lint.as_deref().expect("must be linted");
+        assert!(lint.contains("tautological_command"), "lint was {lint:?}");
+        assert_eq!(record.rubric.checks_support, Grade::Uncertain);
+        assert_ne!(record.status, VerdictStatus::Pass);
+        // …and the reason travels into the digest the operator reads.
+        let dc = record
+            .evidence_digest
+            .checks
+            .iter()
+            .find(|c| c.lint.is_some())
+            .expect("digest must carry the lint reason");
+        assert!(dc.lint.as_deref().unwrap().contains("cannot fail"));
+    }
+
+    /// The two command rules are independent: a REAL command is never flagged
+    /// tautological, even when its `expect` token is separately too weak.
+    #[tokio::test]
+    async fn weak_expect_and_tautological_rules_are_independent() {
+        let repo = tempfile::tempdir().unwrap();
+        let baseline = init_repo(repo.path());
+        std::fs::write(
+            repo.path().join("src/lib.rs"),
+            "pub fn a() {}\npub fn b() {}\n",
+        )
+        .unwrap();
+
+        let pool = test_pool().await;
+        let card = make_goal(
+            &pool,
+            repo.path().to_str().unwrap(),
+            serde_json::json!({
+                "baseline_commit": baseline,
+                "declared_paths": ["**"],
+                "completion_checks": [
+                    {"type": "command_exit_zero", "cmd": "grep -c 'pub fn b' src/lib.rs",
+                     "expect": "1", "timeout_secs": 30}
+                ]
+            }),
+        )
+        .await;
+
+        let (base_url, _h) = spawn_mock_ollama(MockMode::Respond(GOOD_PASS.to_string())).await;
+        let record = run_for_goal_with(&pool, &card.id, &base_url).await.unwrap();
+        // `expect: "1"` IS a weak token, so this check is linted for THAT and
+        // not for its command — proving the two rules are independent.
+        let lint = record.check_results[0].lint.as_deref().unwrap_or("");
+        assert!(lint.contains("weak_expect"), "lint was {lint:?}");
+        assert!(!lint.contains("tautological"), "lint was {lint:?}");
+    }
+
+    /// An acceptance criterion that names an activity is recorded as a ledger
+    /// note — advisory, never a verdict on its own.
+    #[tokio::test]
+    async fn activity_titled_criteria_are_recorded_as_notes() {
+        let repo = tempfile::tempdir().unwrap();
+        let baseline = init_repo(repo.path());
+        std::fs::write(
+            repo.path().join("src/lib.rs"),
+            "pub fn a() {}\npub fn b() {}\n",
+        )
+        .unwrap();
+
+        let pool = test_pool().await;
+        let card = make_goal(
+            &pool,
+            repo.path().to_str().unwrap(),
+            serde_json::json!({
+                "baseline_commit": baseline,
+                "declared_paths": ["**"],
+                "acceptance_criteria": ["Refactor the session builder"],
+            }),
+        )
+        .await;
+
+        let (base_url, _h) = spawn_mock_ollama(MockMode::Respond(GOOD_PASS.to_string())).await;
+        let record = run_for_goal_with(&pool, &card.id, &base_url).await.unwrap();
+        assert_eq!(record.check_lint_notes.len(), 1);
+        assert!(record.check_lint_notes[0].contains("names an activity"));
+        // Advisory only: with no checks declared, nothing was downgraded.
+        assert_eq!(record.status, VerdictStatus::Pass);
     }
 
     #[tokio::test]

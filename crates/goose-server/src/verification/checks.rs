@@ -29,11 +29,27 @@ fn default_timeout_secs() -> u64 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CompletionCheck {
-    /// Run a shell command in the goal working_dir; pass iff exit code 0.
+    /// Run a shell command in the goal working_dir; pass iff exit code 0 **and**
+    /// — when `expect` is set — the expected token is present in the captured
+    /// output.
+    ///
+    /// Exit 0 alone is not proof. A command can exit 0 having done nothing
+    /// (`echo ok`), having skipped the work it was supposed to do (a test
+    /// runner that matched zero tests), or having printed the very failure it
+    /// was meant to catch. `expect` is the assertion half: a plain substring,
+    /// or a regex when the value is wrapped in slashes (`/\d+ passed/`).
+    /// Matched against combined stdout+stderr (each capped at
+    /// [`MAX_TAIL_BYTES`]).
+    ///
+    /// Optional so every card written before this field existed still parses
+    /// under `deny_unknown_fields`; an `expect`-less check behaves exactly as
+    /// it always did.
     CommandExitZero {
         cmd: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expect: Option<String>,
         #[serde(default = "default_timeout_secs")]
         timeout_secs: u64,
     },
@@ -66,6 +82,11 @@ impl CompletionCheck {
     /// Short human-readable summary of what this check does (for the digest).
     pub fn summary(&self) -> String {
         match self {
+            CompletionCheck::CommandExitZero {
+                cmd,
+                expect: Some(e),
+                ..
+            } => format!("command exits 0 and output matches {}: `{}`", e, cmd),
             CompletionCheck::CommandExitZero { cmd, .. } => format!("command exits 0: `{}`", cmd),
             CompletionCheck::HttpAssert {
                 method,
@@ -103,6 +124,12 @@ pub struct CheckEvidence {
     pub body_excerpt: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub matches: Option<Vec<String>>,
+    /// For a `command_exit_zero` carrying an `expect`: whether the expected
+    /// token was found. `None` when no `expect` was declared. This is what
+    /// lets the digest say *which half* failed — the exit code or the
+    /// assertion — instead of a bare "the check failed".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect_matched: Option<bool>,
     /// Error/explanation message (set on `error`, and on some `fail`s).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
@@ -119,6 +146,16 @@ pub struct CheckResult {
     pub duration_ms: u64,
     pub evidence: CheckEvidence,
     pub truncated: bool,
+    /// Human-readable summary for a result with no entry in the declared-check
+    /// list (the synthesized placeholder scan). `None` for declared checks —
+    /// their summary comes from `CompletionCheck::summary()`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// Set when [`super::check_lint`] judged this check *gameable*. A linted
+    /// check does not count as verification evidence, and this string is the
+    /// reason, carried into the digest and the verifier's prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lint: Option<String>,
 }
 
 impl CheckResult {
@@ -134,6 +171,8 @@ impl CheckResult {
                 ..Default::default()
             },
             truncated: false,
+            summary: None,
+            lint: None,
         }
     }
 }
@@ -257,8 +296,18 @@ async fn run_one(index: usize, check: &CompletionCheck, working_dir: &Path) -> C
         CompletionCheck::CommandExitZero {
             cmd,
             cwd,
+            expect,
             timeout_secs,
-        } => run_command_check(cmd, cwd.as_deref(), *timeout_secs, working_dir).await,
+        } => {
+            run_command_check(
+                cmd,
+                cwd.as_deref(),
+                expect.as_deref(),
+                *timeout_secs,
+                working_dir,
+            )
+            .await
+        }
         CompletionCheck::HttpAssert {
             method,
             base_url,
@@ -290,6 +339,8 @@ async fn run_one(index: usize, check: &CompletionCheck, working_dir: &Path) -> C
             duration_ms: start.elapsed().as_millis() as u64,
             evidence,
             truncated,
+            summary: None,
+            lint: None,
         },
         Err(message) => {
             let mut r = CheckResult::error(index, check_type, started_at, message);
@@ -322,9 +373,71 @@ fn check_path() -> String {
     parts.join(":")
 }
 
+/// **The single seam where a model-authored completion check reaches the OS.**
+///
+/// Every `command_exit_zero` check — hand-authored on a card, or compiled from
+/// a goal's acceptance criteria by `orchestrator::checks_from_acceptance` —
+/// executes here and nowhere else. Everything an approval decision would need
+/// is already resolved and in scope at this one point: the literal command,
+/// the canonical CWD, the shell, the PATH, and the timeout.
+///
+/// A user-consent gate (unlazy hash-binds approval to exactly this tuple)
+/// belongs at the top of this function as a single early `Err(...)` return; no
+/// other code path has to change for one to exist. Deliberately left un-gated
+/// here — whether model-authored shell needs consent before running is an open
+/// product decision, not something this seam should presume.
+async fn execute_check_shell(
+    cmd: &str,
+    dir: &Path,
+    timeout_secs: u64,
+) -> Result<std::process::Output, String> {
+    let timeout = timeout_secs.clamp(1, 600);
+
+    #[cfg(windows)]
+    let (shell, flag) = ("cmd", "/C");
+    #[cfg(not(windows))]
+    let (shell, flag) = ("/bin/sh", "-c");
+
+    let fut = tokio::process::Command::new(shell)
+        .arg(flag)
+        .arg(cmd)
+        .current_dir(dir)
+        .env("PATH", check_path())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .output();
+
+    match tokio::time::timeout(Duration::from_secs(timeout), fut).await {
+        Err(_) => Err(format!("command timed out after {}s", timeout)),
+        Ok(Err(e)) => Err(format!("failed to spawn command: {}", e)),
+        Ok(Ok(o)) => Ok(o),
+    }
+}
+
+/// Evaluate an `expect` assertion against captured output.
+///
+/// `/pattern/` (slash-wrapped, at least one character between) is a regex;
+/// anything else is a plain substring. An unparseable regex is an `Err` — the
+/// check errors rather than silently passing on a broken assertion.
+pub fn expect_matches(expect: &str, haystack: &str) -> Result<bool, String> {
+    if let Some(inner) = expect
+        .strip_prefix('/')
+        .and_then(|s| s.strip_suffix('/'))
+        .filter(|s| !s.is_empty())
+    {
+        let re = regex::Regex::new(inner)
+            .map_err(|e| format!("invalid expect regex '/{}/': {}", inner, e))?;
+        return Ok(re.is_match(haystack));
+    }
+    Ok(haystack.contains(expect))
+}
+
 async fn run_command_check(
     cmd: &str,
     cwd: Option<&str>,
+    expect: Option<&str>,
     timeout_secs: u64,
     working_dir: &Path,
 ) -> CheckOutcome {
@@ -341,29 +454,7 @@ async fn run_command_check(
             .map_err(|e| format!("working_dir not resolvable: {}", e))?,
     };
 
-    let timeout = timeout_secs.clamp(1, 600);
-
-    #[cfg(windows)]
-    let (shell, flag) = ("cmd", "/C");
-    #[cfg(not(windows))]
-    let (shell, flag) = ("/bin/sh", "-c");
-
-    let fut = tokio::process::Command::new(shell)
-        .arg(flag)
-        .arg(cmd)
-        .current_dir(&dir)
-        .env("PATH", check_path())
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .output();
-
-    let output = match tokio::time::timeout(Duration::from_secs(timeout), fut).await {
-        Err(_) => return Err(format!("command timed out after {}s", timeout)),
-        Ok(Err(e)) => return Err(format!("failed to spawn command: {}", e)),
-        Ok(Ok(o)) => o,
-    };
+    let output = execute_check_shell(cmd, &dir, timeout_secs).await?;
 
     let (stdout_tail, out_trunc) = tail_bytes(&output.stdout, MAX_TAIL_BYTES);
     let (stderr_tail, err_trunc) = tail_bytes(&output.stderr, MAX_TAIL_BYTES);
@@ -375,8 +466,25 @@ async fn run_command_check(
     // ambiguous — SIGKILL from the OOM killer (the machine) and SIGSEGV from a
     // crashing test binary (the work) are indistinguishable from here.
     let signal_killed = exit_code.is_none();
+
+    // The assertion half. Matched over combined stdout+stderr because tools
+    // disagree about which stream carries a summary line (cargo prints its
+    // test totals to stdout, npm and rustc to stderr) — an `expect` that only
+    // watched stdout would false-fail correct work for half the ecosystem.
+    // Evaluated over the CAPTURED TAIL, so a token pushed past the 16 KiB cap
+    // by later output is (honestly) not found.
+    let expect_matched = match expect {
+        None => None,
+        Some(e) => Some(expect_matches(e, &format!("{stdout_tail}\n{stderr_tail}"))?),
+    };
+
     let status = if output.status.success() {
-        CheckStatus::Pass
+        match expect_matched {
+            // Exit 0 alone is not proof: the declared token was not in the
+            // output, so the command exiting 0 says nothing about the outcome.
+            Some(false) => CheckStatus::Fail,
+            _ => CheckStatus::Pass,
+        }
     } else if exit_code == Some(127) || exit_code == Some(126) || signal_killed {
         // Not a verdict on the diff — an Error parks the goal for human review
         // instead of condemning work that may be finished and correct:
@@ -407,16 +515,33 @@ async fn run_command_check(
             exit_code,
             stdout_tail: Some(stdout_tail),
             stderr_tail: Some(stderr_tail),
+            expect_matched,
             // With no exit code there is nothing else in the row to explain an
             // `error`, and an unexplained error is not evidence.
-            message: signal_killed.then(|| {
-                format!(
-                    "the check was terminated by {} before it could report an exit code — \
-                     this may be the machine (OOM/kill) or the check crashing, and the two \
-                     cannot be told apart here",
-                    describe_termination(&output.status)
-                )
-            }),
+            message: signal_killed
+                .then(|| {
+                    format!(
+                        "the check was terminated by {} before it could report an exit code — \
+                         this may be the machine (OOM/kill) or the check crashing, and the two \
+                         cannot be told apart here",
+                        describe_termination(&output.status)
+                    )
+                })
+                // Say WHICH HALF failed. A bare "the check failed" next to
+                // `exit 0` reads as a contradiction in the digest.
+                .or_else(|| match (expect_matched, expect) {
+                    (Some(false), Some(e)) if output.status.success() => Some(format!(
+                        "command exited 0 but its output does not match the required \
+                         expect assertion {} — exit 0 alone is not proof",
+                        e
+                    )),
+                    (Some(false), Some(e)) => Some(format!(
+                        "command failed AND its output does not match the required \
+                         expect assertion {}",
+                        e
+                    )),
+                    _ => None,
+                }),
             ..Default::default()
         },
         out_trunc || err_trunc,
@@ -686,11 +811,13 @@ mod tests {
             CompletionCheck::CommandExitZero {
                 cmd: "echo hello-stdout && echo hello-stderr 1>&2".to_string(),
                 cwd: None,
+                expect: None,
                 timeout_secs: 30,
             },
             CompletionCheck::CommandExitZero {
                 cmd: "exit 3".to_string(),
                 cwd: None,
+                expect: None,
                 timeout_secs: 30,
             },
         ];
@@ -714,12 +841,173 @@ mod tests {
         assert_eq!(results[1].evidence.exit_code, Some(3));
     }
 
+    // ── `expect`: exit 0 alone is not proof ─────────────────────────────────
+
+    /// The whole point of the field: a command that exits 0 while printing the
+    /// wrong thing must FAIL, and the row must say which half failed.
+    #[tokio::test]
+    async fn exit_zero_with_a_missed_expect_fails_and_names_the_half() {
+        let dir = tempfile::tempdir().unwrap();
+        let checks = vec![CompletionCheck::CommandExitZero {
+            cmd: "echo 0 tests were run".to_string(),
+            cwd: None,
+            expect: Some("412 passed".to_string()),
+            timeout_secs: 30,
+        }];
+        let results = run_checks(&checks, dir.path()).await;
+        assert_eq!(results[0].status, CheckStatus::Fail);
+        assert_eq!(results[0].evidence.exit_code, Some(0));
+        assert_eq!(results[0].evidence.expect_matched, Some(false));
+        let m = results[0].evidence.message.as_deref().unwrap_or_default();
+        assert!(m.contains("exited 0"), "message was {m:?}");
+        assert!(m.contains("exit 0 alone is not proof"), "message was {m:?}");
+    }
+
+    #[tokio::test]
+    async fn exit_zero_with_a_met_expect_passes() {
+        let dir = tempfile::tempdir().unwrap();
+        let checks = vec![CompletionCheck::CommandExitZero {
+            cmd: "echo 'test result: ok. 412 passed'".to_string(),
+            cwd: None,
+            expect: Some("412 passed".to_string()),
+            timeout_secs: 30,
+        }];
+        let results = run_checks(&checks, dir.path()).await;
+        assert_eq!(results[0].status, CheckStatus::Pass);
+        assert_eq!(results[0].evidence.expect_matched, Some(true));
+        assert!(results[0].evidence.message.is_none());
+    }
+
+    /// stderr counts: cargo prints test totals to stdout, npm and rustc to
+    /// stderr. An `expect` that only watched one stream would false-fail half
+    /// the ecosystem.
+    #[tokio::test]
+    async fn expect_matches_against_stderr_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let checks = vec![CompletionCheck::CommandExitZero {
+            cmd: "echo 'Compiling permagent' 1>&2".to_string(),
+            cwd: None,
+            expect: Some("Compiling permagent".to_string()),
+            timeout_secs: 30,
+        }];
+        let results = run_checks(&checks, dir.path()).await;
+        assert_eq!(results[0].status, CheckStatus::Pass);
+    }
+
+    #[tokio::test]
+    async fn expect_supports_slash_wrapped_regex() {
+        let dir = tempfile::tempdir().unwrap();
+        let checks = vec![
+            CompletionCheck::CommandExitZero {
+                cmd: "echo '412 passed; 0 failed'".to_string(),
+                cwd: None,
+                expect: Some(r"/\d+ passed; 0 failed/".to_string()),
+                timeout_secs: 30,
+            },
+            CompletionCheck::CommandExitZero {
+                cmd: "echo '412 passed; 3 failed'".to_string(),
+                cwd: None,
+                expect: Some(r"/\d+ passed; 0 failed/".to_string()),
+                timeout_secs: 30,
+            },
+        ];
+        let results = run_checks(&checks, dir.path()).await;
+        assert_eq!(results[0].status, CheckStatus::Pass);
+        assert_eq!(results[1].status, CheckStatus::Fail);
+    }
+
+    /// A broken assertion is an `error`, never a silent pass.
+    #[tokio::test]
+    async fn an_unparseable_expect_regex_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let checks = vec![CompletionCheck::CommandExitZero {
+            cmd: "echo hi".to_string(),
+            cwd: None,
+            expect: Some("/[unclosed/".to_string()),
+            timeout_secs: 30,
+        }];
+        let results = run_checks(&checks, dir.path()).await;
+        assert_eq!(results[0].status, CheckStatus::Error);
+        assert!(results[0]
+            .evidence
+            .message
+            .as_deref()
+            .unwrap()
+            .contains("invalid expect regex"));
+    }
+
+    /// Negative control: an `expect`-less check behaves EXACTLY as before —
+    /// this field must be inert for every card written before it existed.
+    #[tokio::test]
+    async fn an_expectless_check_is_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let checks = vec![CompletionCheck::CommandExitZero {
+            cmd: "echo anything at all".to_string(),
+            cwd: None,
+            expect: None,
+            timeout_secs: 30,
+        }];
+        let results = run_checks(&checks, dir.path()).await;
+        assert_eq!(results[0].status, CheckStatus::Pass);
+        assert_eq!(results[0].evidence.expect_matched, None);
+    }
+
+    /// A failing command with an unmet expect is still a fail, and says both.
+    #[tokio::test]
+    async fn nonzero_exit_with_missed_expect_reports_both_halves() {
+        let dir = tempfile::tempdir().unwrap();
+        let checks = vec![CompletionCheck::CommandExitZero {
+            cmd: "echo nope; exit 1".to_string(),
+            cwd: None,
+            expect: Some("all good".to_string()),
+            timeout_secs: 30,
+        }];
+        let results = run_checks(&checks, dir.path()).await;
+        assert_eq!(results[0].status, CheckStatus::Fail);
+        let m = results[0].evidence.message.as_deref().unwrap_or_default();
+        assert!(m.contains("command failed AND"), "message was {m:?}");
+    }
+
+    #[test]
+    fn expect_field_is_optional_on_the_wire_and_round_trips() {
+        // Pre-existing cards (no `expect`) still parse under
+        // `deny_unknown_fields`.
+        let old = parse_checks(r#"[{"type":"command_exit_zero","cmd":"cargo check"}]"#).unwrap();
+        assert!(matches!(
+            old[0],
+            CompletionCheck::CommandExitZero { expect: None, .. }
+        ));
+        let with = parse_checks(
+            r#"[{"type":"command_exit_zero","cmd":"cargo test","expect":"412 passed"}]"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            with[0],
+            CompletionCheck::CommandExitZero { expect: Some(ref e), .. } if e == "412 passed"
+        ));
+        // An absent `expect` is not serialized back out.
+        let json = serde_json::to_string(&old).unwrap();
+        assert!(!json.contains("expect"), "{json}");
+    }
+
+    #[test]
+    fn expect_matches_handles_substring_and_regex_forms() {
+        assert!(expect_matches("passed", "412 passed").unwrap());
+        assert!(!expect_matches("passed", "412 failed").unwrap());
+        assert!(expect_matches(r"/\d+ passed/", "412 passed").unwrap());
+        // A lone slash is not a regex delimiter pair.
+        assert!(expect_matches("/", "a/b").unwrap());
+        assert!(expect_matches(r"/^ok$/", "ok").unwrap());
+        assert!(expect_matches("/[bad/", "x").is_err());
+    }
+
     #[tokio::test]
     async fn exit_126_is_environment_error_not_a_fail_verdict() {
         let dir = tempfile::tempdir().unwrap();
         let checks = vec![CompletionCheck::CommandExitZero {
             cmd: "exit 126".to_string(),
             cwd: None,
+            expect: None,
             timeout_secs: 30,
         }];
         let results = run_checks(&checks, dir.path()).await;
@@ -733,6 +1021,7 @@ mod tests {
         let checks = vec![CompletionCheck::CommandExitZero {
             cmd: "exit 1".to_string(),
             cwd: None,
+            expect: None,
             timeout_secs: 30,
         }];
         let results = run_checks(&checks, dir.path()).await;
@@ -765,6 +1054,7 @@ mod tests {
             // has anyway.
             cmd: "kill -KILL $$".to_string(),
             cwd: None,
+            expect: None,
             timeout_secs: 30,
         }];
         let results = run_checks(&checks, dir.path()).await;
@@ -788,6 +1078,7 @@ mod tests {
             // report its child's 128+15.
             cmd: "sh -c 'kill -TERM $$'; rc=$?; exit $rc".to_string(),
             cwd: None,
+            expect: None,
             timeout_secs: 30,
         }];
         let results = run_checks(&checks, dir.path()).await;
@@ -801,6 +1092,7 @@ mod tests {
         let checks = vec![CompletionCheck::CommandExitZero {
             cmd: "sleep 30".to_string(),
             cwd: None,
+            expect: None,
             timeout_secs: 1,
         }];
         let results = run_checks(&checks, dir.path()).await;
@@ -820,11 +1112,13 @@ mod tests {
             CompletionCheck::CommandExitZero {
                 cmd: "true".to_string(),
                 cwd: Some("../..".to_string()),
+                expect: None,
                 timeout_secs: 10,
             },
             CompletionCheck::CommandExitZero {
                 cmd: "true".to_string(),
                 cwd: Some("/etc".to_string()),
+                expect: None,
                 timeout_secs: 10,
             },
         ];
@@ -856,6 +1150,7 @@ mod tests {
             let checks = vec![CompletionCheck::CommandExitZero {
                 cmd: "true".to_string(),
                 cwd: Some("sneaky".to_string()),
+                expect: None,
                 timeout_secs: 10,
             }];
             let results = run_checks(&checks, dir.path()).await;
@@ -929,6 +1224,7 @@ mod tests {
         let checks = vec![CompletionCheck::CommandExitZero {
             cmd: "yes x | head -c 40000".to_string(),
             cwd: None,
+            expect: None,
             timeout_secs: 30,
         }];
         let results = run_checks(&checks, dir.path()).await;
