@@ -208,7 +208,11 @@ llama-cpp-2 = { version = "0.1.151", features = ["sampler", "mtmd"], optional = 
 encoding_rs = "0.8.35"
 pastey = "0.2.3"
 shell-words = { workspace = true }
-rusqlite = { version = "0.37", features = ["bundled"] }
+# `backup` powers SQLite's online backup API in `crate::backup`, which moved
+# here from the daemon crate. Enabled HERE, not only in permagent-daemon: a
+# `cargo check --workspace` unifies features across the graph and hides the
+# omission, but `cargo clippy -p permagent` alone does not.
+rusqlite = { version = "0.37", features = ["bundled", "backup"] }
 process-wrap = { version = "9.1.0", features = ["std"] }
 pem = { version = "3", optional = true }
 pkcs1 = { version = "0.7", default-features = false, features = ["pkcs8"], optional = true }
