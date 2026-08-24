@@ -69,6 +69,21 @@ pub fn age_days(path: &Path) -> Option<u64> {
     Some(elapsed.as_secs() / 86400)
 }
 
+/// Human-readable byte size, matching the phrasing the agent tool and the UI
+/// already use ("1.2 GB", "581.4 MB"). Lives here because the classifier needs
+/// it to state a download cost inside a recommendation string.
+pub fn format_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{} B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.0} KB", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,6 +118,13 @@ mod tests {
     fn test_dir_size_empty() {
         let tmp = TempDir::new().unwrap();
         assert_eq!(dir_size(tmp.path()), 0);
+    }
+
+    #[test]
+    fn test_format_bytes() {
+        assert_eq!(format_bytes(512), "512 B");
+        assert_eq!(format_bytes(1_341_743_104), "1.2 GB");
+        assert_eq!(format_bytes(581_394_432), "554.5 MB");
     }
 
     #[test]

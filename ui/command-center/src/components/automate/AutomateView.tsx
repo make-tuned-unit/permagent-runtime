@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import type { ThemeColors } from '../../styles/useTheme';
 import { cronToEnglish } from '../../lib/schedule-format';
 import { useCommandCenter } from '../../lib/store';
 import { apiFetch } from '../../lib/api';
@@ -15,6 +16,15 @@ import {
 import { usePersona } from '../settings/useSettings';
 import { RunRoster } from './RunRoster';
 import { ViewHeader } from '../common/ViewHeader';
+import { getApiBaseUrl, loadDaemonToken } from '../../lib/api';
+import {
+  bulkEligible,
+  categoryBreakdown,
+  categoryOf,
+  CATEGORY_LABELS,
+  requiresSecondConfirm,
+  type CategoryKey,
+} from './findingCategories';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -61,7 +71,7 @@ interface SessionInfo {
   outputTokens: number | null;
 }
 
-interface Finding {
+export interface Finding {
   id: string;
   type: string;
   path: string;
@@ -72,6 +82,12 @@ interface Finding {
   actioned_at: string | null;
   size_recovered_bytes: number | null;
   error_message?: string | null;
+  // Storage-safety fix — optional, older ledgers won't have them. See
+  // findingCategories.ts for the fallback rule and the bulk-safety
+  // guarantees these fields drive.
+  category?: string | null;
+  consequence?: string | null;
+  action_source?: string | null;
 }
 
 interface ExtensionInfo {
@@ -154,6 +170,73 @@ function withAlpha(hex: string, alpha: number): string {
   const g = parseInt(h.slice(2, 4), 16);
   const b = parseInt(h.slice(4, 6), 16);
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+// Category badge color per findingCategories.CategoryKey. `colors.warning`
+// (amber) stands in for "costly but not urgent"; `review_before_removing`
+// gets no alarm color — it is not a threat, just not proven safe.
+function categoryColor(category: CategoryKey, colors: ThemeColors): string {
+  switch (category) {
+    case 'safe_to_remove': return colors.success;
+    case 'regenerable_costly': return colors.warning;
+    case 'in_use': return colors.danger;
+    case 'managed_by_macos': return colors.textMuted;
+    case 'review_before_removing': return colors.cyan;
+  }
+}
+
+// ── Bulk-action wire client (findings) ──────────────────────────────
+// A hand-rolled fetch (mirrors dashboard/decisions/client.ts's
+// `decisionsFetch`) rather than `apiFetch`, because a 409 here carries a
+// `{ error, blocked }` body the caller MUST see — apiFetch's error path
+// discards everything but `.message`/`.status`.
+
+export interface BulkActionResult {
+  finding_id: string;
+  action_taken: string;
+  size_recovered_bytes: number | null;
+  error: string | null;
+}
+
+export interface BulkActionBlocked {
+  finding_id: string;
+  category: string;
+  consequence: string | null;
+}
+
+export interface BulkActionResponse {
+  run_id: string;
+  results: BulkActionResult[];
+  blocked: BulkActionBlocked[];
+}
+
+export class BulkActionBlockedError extends Error {
+  blocked: BulkActionBlocked[];
+  constructor(message: string, blocked: BulkActionBlocked[]) {
+    super(message);
+    this.name = 'BulkActionBlockedError';
+    this.blocked = blocked;
+  }
+}
+
+async function bulkTrashFindings(runId: string, findingIds: string[]): Promise<BulkActionResponse> {
+  const token = await loadDaemonToken();
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const response = await fetch(`${getApiBaseUrl()}/automation/run/${encodeURIComponent(runId)}/bulk-action`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ action: 'trash', finding_ids: findingIds, confirmed: true, action_source: 'ui_bulk' }),
+  });
+  if (response.status === 409) {
+    const body = await response.json().catch(() => ({ error: 'Blocked', blocked: [] }));
+    throw new BulkActionBlockedError(body.error || 'Some findings cannot be bulk-removed.', body.blocked || []);
+  }
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ message: 'Unknown error' }));
+    throw new Error(error.message || error.error || `HTTP ${response.status}`);
+  }
+  return response.json();
 }
 
 // ── Detail panel types ──────────────────────────────────────────────
@@ -1087,11 +1170,13 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
     return () => { cancelled = true; };
   }, [run.id, reloadTick, refreshLifetime]);
 
-  const handleAction = async (findingId: string, action: string) => {
+  const handleAction = async (findingId: string, action: string, confirmed?: boolean) => {
     setActionInFlight(findingId);
     try {
+      const body: Record<string, unknown> = { action, run_id: run.id, action_source: 'ui_click' };
+      if (confirmed) body.confirmed = true;
       const result = await apiFetch<{ action_taken: string; timestamp: string; size_recovered_bytes?: number }>(`/automation/finding/${encodeURIComponent(findingId)}/action`, {
-        method: 'POST', body: JSON.stringify({ action, run_id: run.id }),
+        method: 'POST', body: JSON.stringify(body),
       });
       setFindings(prev => prev.map(f => f.id === findingId ? { ...f, action_taken: result.action_taken, actioned_at: result.timestamp, size_recovered_bytes: result.size_recovered_bytes ?? null } : f));
       // The persisted ledger just changed — keep the all-time total live.
@@ -1102,6 +1187,29 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
       setFindings(prev => prev.map(f => f.id === findingId ? { ...f, action_taken: 'error', actioned_at: new Date().toISOString(), error_message: msg } : f));
     }
     setActionInFlight(null);
+  };
+
+  // Bulk trash — a SINGLE call to the new endpoint (never a client-side loop
+  // of single actions, which is the exact shape of the incident this fix
+  // closes). Updates local state from `results`; blocked entries are the
+  // server's own veto and are surfaced rather than silently dropped.
+  const handleBulkAction = async (findingIds: string[]): Promise<void> => {
+    const response = await bulkTrashFindings(run.id, findingIds);
+    if (response.results.length > 0) {
+      const byId = new Map(response.results.map(r => [r.finding_id, r]));
+      setFindings(prev => prev.map(f => {
+        const r = byId.get(f.id);
+        if (!r) return f;
+        return {
+          ...f,
+          action_taken: r.action_taken,
+          actioned_at: new Date().toISOString(),
+          size_recovered_bytes: r.size_recovered_bytes,
+          error_message: r.error ?? null,
+        };
+      }));
+      void refreshLifetime();
+    }
   };
 
   const totalRecovered = sumRunRecovered(findings);
@@ -1134,7 +1242,7 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
         <div style={{ fontSize: 12, color: colors.textDim }}>Loading results...</div>
       ) : findings.length > 0 ? (
         <>
-          <FindingsPanel findings={findings} actionInFlight={actionInFlight} onAction={handleAction} totalRecovered={totalRecovered} allActioned={allActioned} lifetime={lifetime} />
+          <FindingsPanel findings={findings} actionInFlight={actionInFlight} onAction={handleAction} onBulkAction={handleBulkAction} totalRecovered={totalRecovered} allActioned={allActioned} lifetime={lifetime} />
           {reportText && <ReportToggle text={reportText} createdAt={run.createdAt} tokens={run.totalTokens} />}
         </>
       ) : reportText ? (
@@ -1303,9 +1411,10 @@ function groupFindings(findings: Finding[]): Map<string, Finding[]> {
 }
 
 function FindingsPanel({
-findings, actionInFlight, onAction, totalRecovered, allActioned, lifetime }: {
+findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, lifetime }: {
   findings: Finding[]; actionInFlight: string | null;
-  onAction: (findingId: string, action: string) => Promise<void>;
+  onAction: (findingId: string, action: string, confirmed?: boolean) => Promise<void>;
+  onBulkAction: (findingIds: string[]) => Promise<void>;
   totalRecovered: number; allActioned: boolean;
   lifetime: RecoveryTotals | null;
 }) {
@@ -1313,16 +1422,30 @@ findings, actionInFlight, onAction, totalRecovered, allActioned, lifetime }: {
   const groups = groupFindings(findings);
   const [expandedGroup, setExpandedGroup] = useState<string | null>(null);
   const [previewGroup, setPreviewGroup] = useState<string | null>(null);
+  const [includeRegenerable, setIncludeRegenerable] = useState(false);
   const [cleaning, setCleaning] = useState(false);
-  const [cleanProgress, setCleanProgress] = useState(0);
-  const [cleanTotal, setCleanTotal] = useState(0);
+  const [bulkError, setBulkError] = useState<string | null>(null);
 
-  const runCleanup = async (items: Finding[]) => {
-    const pending = items.filter(f => !f.action_taken);
-    if (pending.length === 0) return;
-    setCleaning(true); setCleanTotal(pending.length); setCleanProgress(0);
-    for (let i = 0; i < pending.length; i++) { setCleanProgress(i + 1); await onAction(pending[i].id, 'trash'); await new Promise(r => setTimeout(r, 100)); }
-    setCleaning(false); setPreviewGroup(null);
+  const closeDialog = () => { setPreviewGroup(null); setIncludeRegenerable(false); setBulkError(null); };
+
+  const confirmBulk = async (eligible: Finding[]) => {
+    if (eligible.length === 0) return;
+    setCleaning(true); setBulkError(null);
+    try {
+      await onBulkAction(eligible.map(f => f.id));
+      closeDialog();
+    } catch (err) {
+      if (err instanceof BulkActionBlockedError) {
+        // The server vetoed something the client thought was eligible (a
+        // race with a fresher scan, say) — show it rather than pretend
+        // success. The dialog stays open so blocked/excluded stay visible.
+        setBulkError(`${err.message}${err.blocked.length ? ` (${err.blocked.length} item${err.blocked.length === 1 ? '' : 's'} blocked)` : ''}`);
+      } else {
+        setBulkError(err instanceof Error ? err.message : String(err));
+      }
+    } finally {
+      setCleaning(false);
+    }
   };
 
   const totalPending = findings.filter(f => !f.action_taken).length;
@@ -1353,35 +1476,20 @@ findings, actionInFlight, onAction, totalRecovered, allActioned, lifetime }: {
           </button>
         )}
       </div>
-      {previewGroup && !cleaning && (() => {
-        const items = previewGroup === '__all__' ? findings.filter(f => !f.action_taken) : (groups.get(previewGroup) || []).filter(f => !f.action_taken);
-        const bytes = items.reduce((s, f) => s + f.size_bytes, 0);
+      {previewGroup && (() => {
+        const pool = (previewGroup === '__all__' ? findings : (groups.get(previewGroup) || [])).filter(f => !f.action_taken);
         return (
-          <div style={{ marginBottom: 16, borderRadius: radius.lg, overflow: 'hidden', border: `1px solid ${colors.borderHi}`, background: colors.bgDeeper }}>
-            <div style={{ padding: '16px 20px', borderBottom: `1px solid ${colors.border}` }}>
-              <div style={{ fontSize: 14, fontWeight: 600, fontFamily: font.display }}>Review ({items.length} items, {formatBytes(bytes)})</div>
-            </div>
-            <div style={{ maxHeight: 300, overflowY: 'auto', padding: '8px 20px' }}>
-              {items.map(f => <div key={f.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0', borderBottom: `1px solid ${colors.border}` }}>
-                <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 12, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.path.split('/').pop()}</div></div>
-                <div style={{ fontSize: 11, color: colors.textMuted, fontFamily: font.mono }}>{formatBytes(f.size_bytes)}</div>
-              </div>)}
-            </div>
-            <div style={{ padding: '12px 20px', display: 'flex', gap: 8, justifyContent: 'flex-end', borderTop: `1px solid ${colors.border}` }}>
-              <Btn label="Cancel" onClick={() => setPreviewGroup(null)} />
-              <Btn label={`Move ${items.length} to Trash`} onClick={() => runCleanup(items)} primary />
-            </div>
-          </div>
+          <BulkConfirmDialog
+            pending={pool}
+            includeRegenerable={includeRegenerable}
+            onToggleRegenerable={setIncludeRegenerable}
+            onCancel={closeDialog}
+            onConfirm={confirmBulk}
+            busy={cleaning}
+            error={bulkError}
+          />
         );
       })()}
-      {cleaning && (
-        <div style={{ marginBottom: 16, padding: '16px 20px', borderRadius: radius.lg, background: withAlpha(colors.cyan, 0.06), border: `1px solid ${colors.borderHi}` }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>Cleaning... {cleanProgress}/{cleanTotal}</div>
-          <div style={{ marginTop: 8, height: 4, borderRadius: 2, background: colors.border, overflow: 'hidden' }}>
-            <div style={{ height: '100%', borderRadius: 2, background: colors.cyan, width: `${(cleanProgress / cleanTotal) * 100}%`, transition: 'width 200ms' }} />
-          </div>
-        </div>
-      )}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {Array.from(groups.entries()).map(([groupName, items]) => {
           const pending = items.filter(f => !f.action_taken);
@@ -1407,7 +1515,7 @@ findings, actionInFlight, onAction, totalRecovered, allActioned, lifetime }: {
               </div>
               {isExpanded && (
                 <div style={{ padding: '0 20px 16px', borderTop: `1px solid ${colors.border}` }}>
-                  {items.map(f => <FindingRow key={f.id} finding={f} loading={actionInFlight === f.id} onAction={(a) => onAction(f.id, a)} />)}
+                  {items.map(f => <FindingRow key={f.id} finding={f} loading={actionInFlight === f.id} onAction={(a, confirmed) => onAction(f.id, a, confirmed)} />)}
                 </div>
               )}
             </div>
@@ -1418,23 +1526,158 @@ findings, actionInFlight, onAction, totalRecovered, allActioned, lifetime }: {
   );
 }
 
-function FindingRow({
-finding, loading, onAction }: { finding: Finding; loading: boolean; onAction: (a: string) => void }) {
+// Small inline badge for a finding's category — shown on every row so the
+// category (and not just a free-text "recommendation") is always visible.
+function CategoryBadge({ category }: { category: CategoryKey }) {
+  const { colors } = useTheme();
+  const color = categoryColor(category, colors);
+  return (
+    <span style={{ fontSize: 9, fontFamily: font.mono, padding: '1px 6px', borderRadius: radius.sm, background: withAlpha(color, 0.15), color, flexShrink: 0, whiteSpace: 'nowrap' }}>
+      {CATEGORY_LABELS[category]}
+    </span>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Bulk confirm dialog — the ONE place that decides what a bulk action does.
+// Replaces the old "Review (N items, X)" preview, which showed every
+// pending finding regardless of category and let a single click trash all
+// of them — the exact shape of the incident this fix closes. Now: the
+// eligible set is derived by bulkEligible() (safe_to_remove always,
+// regenerable_costly only opt-in), in_use/managed_by_macos are ALWAYS
+// listed as excluded with their consequence, and the total shown is the
+// total that will actually be trashed.
+// ═══════════════════════════════════════════════════════════════════════
+
+export function BulkConfirmDialog({
+pending, includeRegenerable, onToggleRegenerable, onCancel, onConfirm, busy, error }: {
+  pending: Finding[];
+  includeRegenerable: boolean;
+  onToggleRegenerable: (v: boolean) => void;
+  onCancel: () => void;
+  onConfirm: (eligible: Finding[]) => void;
+  busy: boolean;
+  error: string | null;
+}) {
+  const { colors } = useTheme();
+  const { eligible, excluded } = bulkEligible(pending, includeRegenerable);
+  const totalBytes = eligible.reduce((s, f) => s + f.size_bytes, 0);
+  const breakdown = categoryBreakdown(eligible);
+  const regenerablePending = pending.filter(f => categoryOf(f) === 'regenerable_costly');
+  const regenerableBytes = regenerablePending.reduce((s, f) => s + f.size_bytes, 0);
+
+  return (
+    <div style={{ marginBottom: 16, borderRadius: radius.lg, overflow: 'hidden', border: `1px solid ${colors.borderHi}`, background: colors.bgDeeper }}>
+      <div style={{ padding: '16px 20px', borderBottom: `1px solid ${colors.border}` }}>
+        <div style={{ fontSize: 14, fontWeight: 600, fontFamily: font.display }}>
+          Review — {eligible.length} item{eligible.length === 1 ? '' : 's'}, {formatBytes(totalBytes)} total
+        </div>
+        {breakdown.length > 0 && (
+          <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 3 }}>
+            {breakdown.map(b => (
+              <div key={b.category} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: colors.textMuted, fontFamily: font.mono }}>
+                <span style={{ color: categoryColor(b.category, colors) }}>{b.label}</span>
+                <span>{b.count} item{b.count === 1 ? '' : 's'} &middot; {formatBytes(b.bytes)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {regenerablePending.length > 0 && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={includeRegenerable}
+              onChange={e => onToggleRegenerable(e.target.checked)}
+              style={{ accentColor: colors.warning }}
+            />
+            <span style={{ fontSize: 12, color: colors.textMuted }}>
+              also remove regenerable caches (re-downloads {formatBytes(regenerableBytes)})
+            </span>
+          </label>
+        )}
+      </div>
+      {excluded.length > 0 && (
+        <div style={{ padding: '12px 20px', borderBottom: `1px solid ${colors.border}`, maxHeight: 220, overflowY: 'auto' }}>
+          <div style={{ fontSize: 10, fontFamily: font.mono, textTransform: 'uppercase', letterSpacing: '0.05em', color: colors.textDim, marginBottom: 8 }}>
+            Excluded — will not be removed
+          </div>
+          {excluded.map(f => {
+            const category = categoryOf(f);
+            return (
+              <div key={f.id} style={{ padding: '6px 0', borderTop: `1px solid ${colors.border}` }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <CategoryBadge category={category} />
+                  <span style={{ fontSize: 12, color: colors.text, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.path}</span>
+                  <span style={{ fontSize: 11, color: colors.textMuted, fontFamily: font.mono, flexShrink: 0 }}>{formatBytes(f.size_bytes)}</span>
+                </div>
+                {f.consequence && (
+                  <div style={{ fontSize: 11, color: colors.danger, marginTop: 3, marginLeft: 2 }}>{f.consequence}</div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {error && (
+        <div style={{ padding: '10px 20px', fontSize: 12, color: colors.danger, background: withAlpha(colors.danger, 0.08) }}>{error}</div>
+      )}
+      <div style={{ padding: '12px 20px', display: 'flex', gap: 8, justifyContent: 'flex-end', borderTop: `1px solid ${colors.border}` }}>
+        <Btn label="Cancel" onClick={onCancel} />
+        <Btn
+          label={busy ? 'Cleaning...' : `Move ${eligible.length} to Trash`}
+          onClick={() => onConfirm(eligible)}
+          primary
+        />
+      </div>
+    </div>
+  );
+}
+
+export function FindingRow({
+finding, loading, onAction }: { finding: Finding; loading: boolean; onAction: (a: string, confirmed?: boolean) => void }) {
   const { colors } = useTheme();
   const fileName = finding.path.split('/').pop() || finding.path;
+  const category = categoryOf(finding);
+  const needsSecondConfirm = requiresSecondConfirm(finding);
+  const [confirming, setConfirming] = useState(false);
+
   if (finding.action_taken === 'trashed') return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, background: withAlpha(colors.success, 0.05), border: `1px solid ${withAlpha(colors.success, 0.12)}` }}><span style={{ fontSize: 12, color: colors.success }}>Trashed</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</span>{finding.size_recovered_bytes != null && <span style={{ fontSize: 11, color: colors.success, fontFamily: font.mono, fontVariantNumeric: 'tabular-nums' }}>+{formatBytes(finding.size_recovered_bytes)}</span>}</div>;
-  if (finding.action_taken === 'error') return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.06), border: `1px solid ${withAlpha(colors.danger, 0.15)}` }}><span style={{ fontSize: 12, color: colors.danger, fontWeight: 600, flexShrink: 0 }}>Failed</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={finding.error_message || undefined}>{finding.error_message || fileName}</span><button onClick={() => onAction('trash')} style={{ padding: '2px 6px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.1), border: `1px solid ${withAlpha(colors.danger, 0.2)}`, color: colors.danger, fontSize: 10, cursor: 'pointer', fontFamily: font.body, flexShrink: 0 }}>Retry</button></div>;
+  if (finding.action_taken === 'error') return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.06), border: `1px solid ${withAlpha(colors.danger, 0.15)}` }}><span style={{ fontSize: 12, color: colors.danger, fontWeight: 600, flexShrink: 0 }}>Failed</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={finding.error_message || undefined}>{finding.error_message || fileName}</span><button onClick={() => onAction('trash', needsSecondConfirm || undefined)} style={{ padding: '2px 6px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.1), border: `1px solid ${withAlpha(colors.danger, 0.2)}`, color: colors.danger, fontSize: 10, cursor: 'pointer', fontFamily: font.body, flexShrink: 0 }}>Retry</button></div>;
   if (finding.action_taken) return <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderRadius: radius.sm, opacity: 0.6 }}><span style={{ fontSize: 12, color: colors.textMuted }}>Kept</span><span style={{ fontSize: 11, color: colors.textDim, flex: 1 }}>{fileName}</span></div>;
+
+  const handleTrashClick = () => {
+    if (needsSecondConfirm) { setConfirming(true); return; }
+    onAction('trash');
+  };
+
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderRadius: radius.sm, background: colors.surface, border: `1px solid ${colors.border}`, marginTop: 4 }}>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 12, fontWeight: 500, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</div>
-        <div style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono, marginTop: 2, fontVariantNumeric: 'tabular-nums' }}>{formatBytes(finding.size_bytes)}{finding.age_days != null && <> &middot; {finding.age_days}d old</>}</div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '8px 10px', borderRadius: radius.sm, background: colors.surface, border: `1px solid ${colors.border}`, marginTop: 4 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ fontSize: 12, fontWeight: 500, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</div>
+            <CategoryBadge category={category} />
+          </div>
+          <div style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono, marginTop: 2, fontVariantNumeric: 'tabular-nums' }}>{formatBytes(finding.size_bytes)}{finding.age_days != null && <> &middot; {finding.age_days}d old</>}</div>
+          {(category === 'in_use' || category === 'managed_by_macos') && finding.consequence && (
+            <div style={{ fontSize: 11, color: categoryColor(category, colors), marginTop: 3 }}>{finding.consequence}</div>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+          <button onClick={handleTrashClick} disabled={loading} style={{ padding: '3px 8px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.1), border: `1px solid ${withAlpha(colors.danger, 0.2)}`, color: colors.danger, fontSize: 10, fontWeight: 600, cursor: loading ? 'wait' : 'pointer', fontFamily: font.body }}>{loading ? '...' : 'Trash'}</button>
+          <button onClick={() => onAction('keep')} disabled={loading} style={{ padding: '3px 8px', borderRadius: radius.sm, background: colors.border, border: `1px solid ${colors.border}`, color: colors.textMuted, fontSize: 10, cursor: loading ? 'wait' : 'pointer', fontFamily: font.body }}>Keep</button>
+        </div>
       </div>
-      <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-        <button onClick={() => onAction('trash')} disabled={loading} style={{ padding: '3px 8px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.1), border: `1px solid ${withAlpha(colors.danger, 0.2)}`, color: colors.danger, fontSize: 10, fontWeight: 600, cursor: loading ? 'wait' : 'pointer', fontFamily: font.body }}>{loading ? '...' : 'Trash'}</button>
-        <button onClick={() => onAction('keep')} disabled={loading} style={{ padding: '3px 8px', borderRadius: radius.sm, background: colors.border, border: `1px solid ${colors.border}`, color: colors.textMuted, fontSize: 10, cursor: loading ? 'wait' : 'pointer', fontFamily: font.body }}>Keep</button>
-      </div>
+      {confirming && (
+        <div style={{ padding: '10px 12px', borderRadius: radius.sm, background: withAlpha(colors.danger, 0.08), border: `1px solid ${withAlpha(colors.danger, 0.25)}` }}>
+          <div style={{ fontSize: 12, color: colors.text, fontWeight: 600, marginBottom: 4 }}>Are you sure?</div>
+          {finding.consequence && <div style={{ fontSize: 12, color: colors.danger, marginBottom: 8 }}>{finding.consequence}</div>}
+          <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+            <button onClick={() => setConfirming(false)} style={{ padding: '3px 10px', borderRadius: radius.sm, background: colors.border, border: `1px solid ${colors.border}`, color: colors.textMuted, fontSize: 11, cursor: 'pointer', fontFamily: font.body }}>Cancel</button>
+            <button onClick={() => { setConfirming(false); onAction('trash', true); }} style={{ padding: '3px 10px', borderRadius: radius.sm, background: colors.danger, border: 'none', color: colors.bg, fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: font.body }}>Trash anyway</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

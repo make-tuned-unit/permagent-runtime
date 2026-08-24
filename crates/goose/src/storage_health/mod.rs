@@ -4,18 +4,28 @@
 //! commands, no agent involvement in data production. The agent narrates
 //! results; it doesn't produce them.
 
+pub mod classify;
+pub mod inuse;
 pub mod safety;
 pub mod scanner;
 pub mod size;
 
 use crate::events;
-use scanner::{CategoryStats, ScanFinding, ScanResult};
+use scanner::{CategoryStats, ScanContext, ScanFinding, ScanResult};
 use std::collections::HashMap;
+use std::sync::Arc;
 use uuid::Uuid;
 
 /// Run a full storage scan across all categories.
 /// Emits progress events on the event bus for each category.
 pub async fn run_scan() -> ScanResult {
+    run_scan_with(Arc::new(ScanContext::production())).await
+}
+
+/// Run a scan against an explicit context. The public [`run_scan`] resolves the
+/// production context (the user's in-use window, the real `lsof` probe) HERE,
+/// at the impure edge, and hands it down — no scan body reads global state.
+pub async fn run_scan_with(ctx: Arc<ScanContext>) -> ScanResult {
     let run_id = Uuid::now_v7().to_string();
     let mut all_findings: Vec<ScanFinding> = Vec::new();
     let mut categories: HashMap<String, CategoryStats> = HashMap::new();
@@ -31,11 +41,14 @@ pub async fn run_scan() -> ScanResult {
     ));
 
     // Category 1: Dev caches
-    let dev = tokio::task::spawn_blocking(move || {
-        let mut c = counter;
-        let f = scanner::scan_dev_caches(&mut c);
-        (f, c)
-    })
+    let dev = {
+        let ctx = Arc::clone(&ctx);
+        tokio::task::spawn_blocking(move || {
+            let mut c = counter;
+            let f = scanner::scan_dev_caches(&ctx, &mut c);
+            (f, c)
+        })
+    }
     .await
     .unwrap_or_default();
     counter = dev.1;
@@ -44,11 +57,14 @@ pub async fn run_scan() -> ScanResult {
     all_findings.extend(dev.0);
 
     // Category 2: App caches
-    let app = tokio::task::spawn_blocking(move || {
-        let mut c = counter;
-        let f = scanner::scan_app_caches(&mut c);
-        (f, c)
-    })
+    let app = {
+        let ctx = Arc::clone(&ctx);
+        tokio::task::spawn_blocking(move || {
+            let mut c = counter;
+            let f = scanner::scan_app_caches(&ctx, &mut c);
+            (f, c)
+        })
+    }
     .await
     .unwrap_or_default();
     counter = app.1;
@@ -57,11 +73,14 @@ pub async fn run_scan() -> ScanResult {
     all_findings.extend(app.0);
 
     // Category 3: Xcode DerivedData
-    let xcode = tokio::task::spawn_blocking(move || {
-        let mut c = counter;
-        let f = scanner::scan_xcode_derived(&mut c);
-        (f, c)
-    })
+    let xcode = {
+        let ctx = Arc::clone(&ctx);
+        tokio::task::spawn_blocking(move || {
+            let mut c = counter;
+            let f = scanner::scan_xcode_derived(&ctx, &mut c);
+            (f, c)
+        })
+    }
     .await
     .unwrap_or_default();
     counter = xcode.1;
@@ -70,11 +89,14 @@ pub async fn run_scan() -> ScanResult {
     all_findings.extend(xcode.0);
 
     // Category 4: Stale downloads
-    let stale = tokio::task::spawn_blocking(move || {
-        let mut c = counter;
-        let f = scanner::scan_stale_downloads(&mut c);
-        (f, c)
-    })
+    let stale = {
+        let ctx = Arc::clone(&ctx);
+        tokio::task::spawn_blocking(move || {
+            let mut c = counter;
+            let f = scanner::scan_stale_downloads(&ctx, &mut c);
+            (f, c)
+        })
+    }
     .await
     .unwrap_or_default();
     counter = stale.1;
@@ -83,11 +105,14 @@ pub async fn run_scan() -> ScanResult {
     all_findings.extend(stale.0);
 
     // Category 5: Large user files
-    let large = tokio::task::spawn_blocking(move || {
-        let mut c = counter;
-        let f = scanner::scan_large_user_files(&mut c);
-        (f, c)
-    })
+    let large = {
+        let ctx = Arc::clone(&ctx);
+        tokio::task::spawn_blocking(move || {
+            let mut c = counter;
+            let f = scanner::scan_large_user_files(&ctx, &mut c);
+            (f, c)
+        })
+    }
     .await
     .unwrap_or_default();
     let _ = counter; // suppress unused warning
