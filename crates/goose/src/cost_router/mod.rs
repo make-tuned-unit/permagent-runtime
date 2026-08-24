@@ -76,7 +76,10 @@ pub use escalation::{
     ParkReason, ESCALATION_METADATA_KEY, MAX_ESCALATIONS_DEFAULT,
 };
 pub use hold_done::{decide_hold, HoldOutcome, HoldState, HOLD_METADATA_KEY, MAX_HOLDS};
-pub use knowledge::{lookup as lookup_model_knowledge, ModelKnowledge, KNOWN_MODELS};
+pub use knowledge::{
+    kb_is_stale, kb_snapshot_date, lookup as lookup_model_knowledge, lookup_with_confidence,
+    LookupConfidence, ModelKnowledge, KB_SNAPSHOT_DATE, KB_SNAPSHOT_STALE_AFTER_DAYS, KNOWN_MODELS,
+};
 pub use mesh::{
     gate as mesh_gate, MeshGateInputs, MeshIneligible, MeshRoute, MeshWorkload, PoolHealth,
 };
@@ -84,9 +87,11 @@ pub use packs::{
     load_packs, packs_from, resolve as resolve_model, role_for_tier, ModelPack, ModelPacks, Role,
 };
 pub use recommend::{
-    available_from, discover_available_models, is_provider_configured, provider_key_env, recommend,
-    recommend_configured, recommend_from_available, resolve_known, AvailableModel, ProviderModels,
-    Recommendation, RoleRecommendation, WorkflowRole, EDIT_RELIABILITY_FLOOR,
+    available_from, discover_available_models, discover_available_models_async,
+    discover_ollama_models_async, is_provider_configured, provider_key_env, recommend,
+    recommend_configured, recommend_configured_async, recommend_from_available, resolve_known,
+    AvailableModel, CapabilityFloor, ProviderModels, Recommendation, RoleRecommendation,
+    WorkflowRole, EDIT_RELIABILITY_FLOOR,
 };
 pub use review_gate::{
     build_review_prompt, classify_path, gate_decision, parse_review, review_required,
@@ -120,44 +125,50 @@ pub const COST_OPTIMIZER_FEATURE: crate::agents::self_knowledge::FeatureDescript
         display_name: "Cost optimizer",
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
         what_it_does:
-            "The cost-governance system behind the coding harness: it routes each workflow role \
-             — planning/orchestration, editing, mechanical search-and-summarize, and review — to \
-             the model YOU configured for it, chosen by an objective, vendor-neutral recommender \
-             from measured diff-format reliability, orchestration strength, and price. There is \
-             no baked-in vendor default: configure a per-role mapping and each role runs on your \
-             chosen model; configure none and the harness stays on your single session model — it \
-             never silently falls back to a built-in Opus/Sonnet/Haiku pack. The interactive main \
-             loop stays on one stable model to keep its prompt cache warm, mechanical \
-             latency-tolerant sub-work is dispatched to SEPARATE cheaper-tier subagents, and a \
-             cache-heavy role routed to a non-caching provider is flagged at dispatch. Every \
-             dispatched GOAL is additionally assessed to a starting tier before any model runs: \
-             a deterministic, zero-LLM read in which the tier is raised only by structure \
-             (acceptance-criteria count, breadth), an explicit tag, or an explicit pin — never \
-             by the wording of the goal's own title and description, which can only route it \
-             cheaper. Simple work starts cheap; a \
-             verify failure climbs the configured escalation ladder carrying the prior \
-             attempt's diff — harness tool transcripts (severity, spinning) corroborate a climb \
-             but never swap the interactive main-loop model on their own — and the user can \
-             pin a tier explicitly with metadata.tier on the goal. The routing snapshot on \
-             each goal card and the Build cost meter is the receipt. Worker selection ranks by real marginal cost (local free, then flat-rate \
-             subscription CLIs, then metered APIs) and goal_advance's worker parameter pins a \
-             named worker outright — a pin is honoured or refused loudly, never silently \
-             rerouted. A live cost meter is always on — a cache-aware, single-source running \
-             total with a per-call ledger — and spend caps route any overage to the Decision \
-             Inbox for approval",
-        why_it_matters: "It is why running Permagent's own harness is cheaper per outcome than a \
-             subscription, with no surprise bills and no vendor lock-in: each piece of work runs \
-             on the cheapest model that can do it correctly, the recommender carries no bias \
-             toward the vendor whose runtime this is, and nothing routes to a model the user did \
-             not choose. When the user asks what a build will cost, worries about spend, or asks \
-             which models to use where, point them at the live meter and the objective per-role \
-             recommendation (`permagent packs recommend`), and explain that setting no mapping \
-             keeps everything on their one model. When you dispatch work of ANY kind — a blog \
-             post, a lookup, a refactor, a build from scratch — you can state with confidence \
-             HOW the path was chosen: which worker won and why (cost rank or an explicit pin), \
-             which tier the goal was assessed to and the recorded reason, and that escalation \
-             is earned by a measured verify failure rather than guessed up front. Say so \
-             plainly; the routing snapshot on each goal card is the receipt",
+            "The cost-governance system behind the coding harness. It has two halves. The \
+             RECOMMENDER is objective and vendor-neutral: from measured diff-format reliability, \
+             orchestration strength and price — including the models actually pulled into a \
+             local Ollama — it names the best fit for each workflow role (planning/orchestration, \
+             editing, mechanical search-and-summarize, review, and a free on-device tier). Each \
+             role carries a capability floor; the recommender ranks only among models that clear \
+             it, so MECHANICAL is the cheapest model that can do the job rather than the cheapest \
+             model, and it says plainly when nothing clears a floor. Its per-role suggestion is \
+             shown by `permagent packs recommend` and persisted by `permagent packs apply`. The \
+             ROUTER then dispatches DELEGATED work — subagents and goal workers — to the model \
+             configured for its role; with no per-role mapping configured, everything runs on the \
+             single session model, and there is no baked-in vendor default it silently falls back \
+             to. The interactive main loop always stays on one model to keep its prompt cache \
+             warm; latency-tolerant sub-work goes to separate subagents, and a cache-heavy role \
+             routed to a non-caching provider is flagged at dispatch. Every dispatched GOAL is \
+             assessed to a starting tier before any model runs — deterministic, zero-LLM: the \
+             tier is raised only by structure (acceptance-criteria count, breadth), an explicit \
+             tag, or an explicit pin — never by the wording of the goal's own title and \
+             description, which can only route it cheaper. Simple work starts cheap; a verify \
+             failure climbs the configured escalation ladder carrying the prior attempt's diff \
+             — harness tool transcripts (severity, spinning) corroborate a climb but never swap \
+             the interactive main-loop model on their own — and the user can pin a tier \
+             explicitly with metadata.tier on the goal. The routing snapshot on each goal card \
+             and the Build cost meter is the receipt. Worker \
+             selection ranks by real marginal cost (local free, then flat-rate subscription CLIs, \
+             then metered APIs) and goal_advance's worker parameter pins a named worker outright \
+             — a pin is honoured or refused loudly, never silently rerouted. A live cost meter is \
+             always on — a cache-aware, single-source running total with a per-call ledger — and \
+             spend caps route any overage to the Decision Inbox for approval",
+        why_it_matters:
+            "It is how running Permagent's own harness stays cheap per outcome, with no \
+             surprise bills and no vendor lock-in: the recommender picks, per role, the cheapest \
+             model that clears that role's capability floor, whether local or cloud, with no bias \
+             toward the vendor whose runtime this is; delegated work then runs on the mapping the \
+             user configured or applied from that recommendation, and nothing routes to a model \
+             the user did not choose. When the user asks what a build will cost, worries about \
+             spend, or asks which models to use where, point them at the live meter and the \
+             objective per-role recommendation (`permagent packs recommend`), and explain that \
+             setting no mapping keeps everything on their one model. When you dispatch work of \
+             ANY kind — a blog post, a lookup, a refactor, a build from scratch — you can state \
+             with confidence HOW the path was chosen: which worker won and why (cost rank or an \
+             explicit pin), which tier the goal was assessed to and the recorded reason, and that \
+             escalation is earned by a measured verify failure rather than guessed up front. Say \
+             so plainly; the routing snapshot on each goal card is the receipt",
         state_source: crate::agents::self_knowledge::StateSource::Static,
         teaching: &[
             crate::agents::self_knowledge::TeachingStep {

@@ -16,10 +16,21 @@
 //! - **EDIT** — the highest token-mass role; needs diff-format reliability.
 //!   Highest `edit_format_reliability`, cheaper breaking ties; flagged if the
 //!   best available is below the ~97% diff-format floor.
-//! - **MECHANICAL** — search/read/summarize; cheapest capable, prefer local.
+//! - **MECHANICAL** — search/read/summarize; the cheapest model that clears the
+//!   role's capability floor, preferring local at equal cost.
 //! - **REVIEW** — verify; strong, and a *different family* than EDIT for
 //!   diversity when the user has more than one.
 //! - **LOCAL** — on-device ($0, private); the best local model, if any.
+//!
+//! ## Capability floors ("best fit", not "cheapest-then-climb")
+//!
+//! Every role carries a [`CapabilityFloor`] ([`WorkflowRole::capability_floor`]).
+//! The recommender first partitions the available models into those that clear
+//! the floor and those below it, then applies the role's ranking among the
+//! floor-clearers — so MECHANICAL is "the cheapest model that can do the job",
+//! not "the cheapest model". When nothing clears, it falls back to the best
+//! available by the same rank, sets [`RoleRecommendation::floor_met`] to `false`
+//! and says so in the warnings; a caller never gets a silent under-fit.
 //!
 //! ## Cache discipline
 //!
@@ -31,14 +42,18 @@
 //! ## Purity
 //!
 //! [`recommend`] and [`available_from`] are pure. Only [`discover_available_models`]
-//! and [`recommend_configured`] touch config/registry, each a thin wrapper over
-//! the pure core (mirroring [`super::cheap`] and [`super::budget`]).
+//! / [`discover_available_models_async`] and [`recommend_configured`] /
+//! [`recommend_configured_async`] touch config/registry/network, each a thin
+//! wrapper over the pure core (mirroring [`super::cheap`] and [`super::budget`]).
+//! The async variants additionally probe the local Ollama daemon for the models
+//! actually pulled ([`discover_ollama_models_async`]); the sync ones stay
+//! network-free for pure tests and sync callers.
 
 use std::cmp::Ordering;
 
 use serde::Serialize;
 
-use super::knowledge::{lookup, ModelKnowledge};
+use super::knowledge::{lookup, lookup_with_confidence, LookupConfidence, ModelKnowledge};
 
 /// The diff-format reliability an EDIT model should clear. Below this, edits are
 /// more likely to fail to apply and need retries — the recommender still picks
@@ -126,6 +141,83 @@ impl WorkflowRole {
     pub fn is_cache_heavy(&self) -> bool {
         matches!(self, WorkflowRole::Orchestrate | WorkflowRole::Edit)
     }
+
+    /// The minimum measured capability a model must clear to be recommended for
+    /// this role without a warning. The recommender ranks ONLY among the models
+    /// that clear the floor (cheapest-that-clears for MECHANICAL, strongest for
+    /// ORCHESTRATE, …) and falls back — flagged — to the best available when
+    /// nothing does. Values are on the [`super::knowledge`] 0..1 scales.
+    pub fn capability_floor(&self) -> CapabilityFloor {
+        match self {
+            // EDIT is the highest token-mass role and its failure mode is a diff
+            // that doesn't apply: below ~97% edit-format reliability the retry
+            // tax dominates any per-token saving. No orchestration requirement —
+            // the editor is handed a decided plan.
+            WorkflowRole::Edit => CapabilityFloor {
+                edit_format_reliability_min: EDIT_RELIABILITY_FLOOR,
+                orchestration_min: 0.0,
+            },
+            // ORCHESTRATE is few tokens, high stakes: a wrong decomposition costs
+            // every downstream token. 0.80 is the SWE-bench-Verified-normalized
+            // band where the current frontier agentic models sit; below it, plans
+            // need human rescue often enough that the role should be flagged.
+            WorkflowRole::Orchestrate => CapabilityFloor {
+                edit_format_reliability_min: 0.0,
+                orchestration_min: 0.80,
+            },
+            // MECHANICAL (search / read / summarize) needs a model that follows
+            // the tool-call protocol and returns a coherent summary — the small
+            // local-coder tier, not frontier. Modest floors so a $0 on-device
+            // model can clear it, but a model that can't reliably emit a
+            // well-formed tool call or edit is excluded (it would still cost a
+            // round trip and a retry).
+            WorkflowRole::Mechanical => CapabilityFloor {
+                edit_format_reliability_min: 0.75,
+                orchestration_min: 0.45,
+            },
+            // REVIEW must read a diff and judge it — orchestration-shaped work a
+            // notch below planning; 0.75 admits strong-but-cheaper verifiers
+            // (cross-family diversity matters more here than the last few points).
+            WorkflowRole::Review => CapabilityFloor {
+                edit_format_reliability_min: 0.0,
+                orchestration_min: 0.75,
+            },
+            // LOCAL is the free/private tier: same modest bar as MECHANICAL — it
+            // is what that tier is for.
+            WorkflowRole::Local => CapabilityFloor {
+                edit_format_reliability_min: 0.75,
+                orchestration_min: 0.45,
+            },
+        }
+    }
+}
+
+/// The per-role minimum capability (see [`WorkflowRole::capability_floor`]).
+/// Both thresholds are on the knowledge-base 0..1 scales; `0.0` = no requirement
+/// on that axis.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct CapabilityFloor {
+    /// Minimum `edit_format_reliability` (aider-style diff-format reliability).
+    pub edit_format_reliability_min: f64,
+    /// Minimum `orchestration_strength` (agentic / long-horizon score).
+    pub orchestration_min: f64,
+}
+
+impl CapabilityFloor {
+    /// Whether `m` clears both thresholds.
+    pub fn clears(&self, m: &ModelKnowledge) -> bool {
+        m.edit_format_reliability >= self.edit_format_reliability_min
+            && m.orchestration_strength >= self.orchestration_min
+    }
+
+    /// Human-readable summary for warnings / surfaces.
+    pub fn describe(&self) -> String {
+        format!(
+            "diff-format ≥ {:.0}%, agentic ≥ {:.2}",
+            self.edit_format_reliability_min * 100.0,
+            self.orchestration_min
+        )
+    }
 }
 
 /// A model the user has available (from discovery, or declared by the user).
@@ -163,9 +255,13 @@ pub struct RoleRecommendation {
     pub blended_cost_per_mtok: f64,
     /// Transparent reasoning: the measured metric and the cost that drove it.
     pub reason: String,
-    /// Non-fatal flags: below the diff-format floor, non-caching cache-heavy
+    /// Non-fatal flags: below the capability floor, non-caching cache-heavy
     /// role, single-family (no REVIEW diversity), no local model, …
     pub warnings: Vec<String>,
+    /// Whether the chosen model clears the role's [`CapabilityFloor`]. `false`
+    /// means the recommender fell back to the best available and the warnings
+    /// say so — the UI/CLI can render an under-fit honestly instead of a green tick.
+    pub floor_met: bool,
 }
 
 /// The full objective recommendation over the user's configured models.
@@ -178,6 +274,11 @@ pub struct Recommendation {
     /// Configured models NOT in the knowledge base — cannot be objectively
     /// recommended until a row is added. Reported, never silently dropped.
     pub unknown_models: Vec<String>,
+    /// Considered models that resolved to their knowledge row only by FAMILY
+    /// (e.g. `ollama/qwen3-coder:30b` → the `qwen3-coder` row,
+    /// [`LookupConfidence::FamilyEstimate`]) — their scores are estimates for that
+    /// variant. Reported so a surface can label them, never silently exact.
+    pub estimated_models: Vec<String>,
 }
 
 // ── Ranking comparators (best-first: `Less` == "a ranks before b") ───────────
@@ -211,7 +312,9 @@ fn orchestrate_rank(a: &ModelKnowledge, b: &ModelKnowledge) -> Ordering {
 /// MECHANICAL: cheapest, preferring local on a cost tie, then — at still-equal
 /// cost — the MORE CAPABLE model (F3: agentic then edit-format), and only then a
 /// stable id. Without the capability tiebreak two $0 locals fell to alphabetical
-/// order, picking e.g. `qwen3` over the stronger `qwen3-coder`.
+/// order, picking e.g. `qwen3` over the stronger `qwen3-coder`. Applied among the
+/// models that clear [`WorkflowRole::Mechanical`]'s floor ([`pick`]) — i.e.
+/// "cheapest that can do it", never a below-floor bargain.
 fn mechanical_rank(a: &ModelKnowledge, b: &ModelKnowledge) -> Ordering {
     a.blended_cost_per_mtok()
         .total_cmp(&b.blended_cost_per_mtok())
@@ -264,7 +367,12 @@ fn review_rank(
         .then(id_order(a, b))
 }
 
-fn base_rec(role: WorkflowRole, m: &ModelKnowledge, reason: String) -> RoleRecommendation {
+fn base_rec(
+    role: WorkflowRole,
+    m: &ModelKnowledge,
+    floor_met: bool,
+    reason: String,
+) -> RoleRecommendation {
     let mut rec = RoleRecommendation {
         role,
         provider: m.provider.to_string(),
@@ -274,7 +382,30 @@ fn base_rec(role: WorkflowRole, m: &ModelKnowledge, reason: String) -> RoleRecom
         blended_cost_per_mtok: m.blended_cost_per_mtok(),
         reason,
         warnings: Vec::new(),
+        floor_met,
     };
+    if !floor_met {
+        let floor = role.capability_floor();
+        let consequence = match role {
+            WorkflowRole::Edit => "expect more failed-edit retries",
+            WorkflowRole::Orchestrate => "expect plans that need more human rescue",
+            WorkflowRole::Review => "expect weaker verification",
+            WorkflowRole::Mechanical | WorkflowRole::Local => {
+                "expect more malformed tool calls and retries"
+            }
+        };
+        rec.warnings.push(format!(
+            "no available model clears the {} capability floor ({}) — falling back to the best \
+             available, {} ({:.1}% diff-format, agentic {:.2}); {}; add a stronger model for this \
+             role if you can",
+            role.as_str().to_uppercase(),
+            floor.describe(),
+            m.display_name,
+            m.edit_format_reliability * 100.0,
+            m.orchestration_strength,
+            consequence
+        ));
+    }
     // Cache guard: a cache-heavy role on a non-caching provider forfeits the
     // warm-prefix saving that makes the loop cheap.
     if role.is_cache_heavy() && !m.cache_support {
@@ -288,24 +419,49 @@ fn base_rec(role: WorkflowRole, m: &ModelKnowledge, reason: String) -> RoleRecom
     rec
 }
 
+/// Choose a role's model: the best by `rank` among the candidates that clear the
+/// role's [`CapabilityFloor`]; when none does, the best by the same `rank` among
+/// all candidates with `floor_met == false` (the caller's [`base_rec`] then
+/// warns). `None` only when `candidates` is empty.
+fn pick<'a>(
+    role: WorkflowRole,
+    candidates: &[&'a ModelKnowledge],
+    mut rank: impl FnMut(&ModelKnowledge, &ModelKnowledge) -> Ordering,
+) -> Option<(&'a ModelKnowledge, bool)> {
+    let floor = role.capability_floor();
+    let clears: Vec<&'a ModelKnowledge> = candidates
+        .iter()
+        .copied()
+        .filter(|m| floor.clears(m))
+        .collect();
+    if let Some(m) = clears.iter().copied().min_by(|a, b| rank(a, b)) {
+        return Some((m, true));
+    }
+    candidates
+        .iter()
+        .copied()
+        .min_by(|a, b| rank(a, b))
+        .map(|m| (m, false))
+}
+
 /// The objective recommendation for each role over the AVAILABLE models. Pure —
 /// no config, no IO, no vendor branch. `available` is the knowledge rows for the
-/// models the user has; empty in → empty out.
+/// models the user has; empty in → empty out. Per role: rank among the models
+/// that clear the role's [`CapabilityFloor`]; fall back (flagged) to the best
+/// available when nothing does.
 pub fn recommend(available: &[ModelKnowledge]) -> Vec<RoleRecommendation> {
     if available.is_empty() {
         return Vec::new();
     }
+    let all: Vec<&ModelKnowledge> = available.iter().collect();
     let mut out = Vec::with_capacity(5);
 
-    // ORCHESTRATE — strongest orchestration. (`min_by` hands the comparator
-    // `&&ModelKnowledge`, auto-deref-coerced to the rank fns' `&ModelKnowledge`.)
-    let orch = available
-        .iter()
-        .min_by(|a, b| orchestrate_rank(a, b))
-        .unwrap();
+    // ORCHESTRATE — strongest orchestration among floor-clearers.
+    let (orch, orch_ok) = pick(WorkflowRole::Orchestrate, &all, orchestrate_rank).unwrap();
     out.push(base_rec(
         WorkflowRole::Orchestrate,
         orch,
+        orch_ok,
         format!(
             "strongest orchestration among your models (agentic score {:.2}, ${:.2}/Mtok blended)",
             orch.orchestration_strength,
@@ -313,44 +469,38 @@ pub fn recommend(available: &[ModelKnowledge]) -> Vec<RoleRecommendation> {
         ),
     ));
 
-    // EDIT — highest diff-format reliability, cheaper breaks ties.
-    let edit = available.iter().min_by(|a, b| edit_rank(a, b)).unwrap();
-    let mut edit_rec = base_rec(
+    // EDIT — highest diff-format reliability among floor-clearers, cheaper breaks
+    // ties. Below the floor the fallback warning (base_rec) says so.
+    let (edit, edit_ok) = pick(WorkflowRole::Edit, &all, edit_rank).unwrap();
+    let edit_rec = base_rec(
         WorkflowRole::Edit,
         edit,
+        edit_ok,
         format!(
             "highest edit-format reliability at lowest cost ({:.1}% diff-format, ${:.2}/Mtok blended)",
             edit.edit_format_reliability * 100.0,
             edit.blended_cost_per_mtok()
         ),
     );
-    if edit.edit_format_reliability < EDIT_RELIABILITY_FLOOR {
-        edit_rec.warnings.push(format!(
-            "best available diff-format reliability is {:.1}%, below the ~{:.0}% floor — \
-             expect more failed-edit retries; add a stronger editor if you can",
-            edit.edit_format_reliability * 100.0,
-            EDIT_RELIABILITY_FLOOR * 100.0
-        ));
-    }
     let edit_family = edit.family;
     out.push(edit_rec);
 
-    // MECHANICAL — cheapest, prefer local.
-    let mech = available
-        .iter()
-        .min_by(|a, b| mechanical_rank(a, b))
-        .unwrap();
+    // MECHANICAL — the CHEAPEST model that clears the floor, local at equal cost.
+    let (mech, mech_ok) = pick(WorkflowRole::Mechanical, &all, mechanical_rank).unwrap();
     out.push(base_rec(
         WorkflowRole::Mechanical,
         mech,
+        mech_ok,
         if mech.is_local {
             format!(
-                "cheapest capable tier — on-device {} at $0, no cloud spend for mechanical work",
+                "cheapest model that clears the mechanical floor — on-device {} at $0, no cloud \
+                 spend for mechanical work",
                 mech.display_name
             )
         } else {
             format!(
-                "cheapest capable model among your configured providers (${:.2}/Mtok blended)",
+                "cheapest model that clears the mechanical floor among your configured providers \
+                 (${:.2}/Mtok blended)",
                 mech.blended_cost_per_mtok()
             )
         },
@@ -365,14 +515,15 @@ pub fn recommend(available: &[ModelKnowledge]) -> Vec<RoleRecommendation> {
         .map(|m| m.orchestration_strength)
         .fold(f64::NEG_INFINITY, f64::max);
     let diversity_floor = best_orch - REVIEW_DIVERSITY_MAX_STRENGTH_GAP;
-    let review = available
-        .iter()
-        .min_by(|a, b| review_rank(a, b, edit_family, diversity_floor))
-        .unwrap();
+    let (review, review_ok) = pick(WorkflowRole::Review, &all, |a, b| {
+        review_rank(a, b, edit_family, diversity_floor)
+    })
+    .unwrap();
     let has_other_family = available.iter().any(|m| m.family != edit_family);
     let mut review_rec = base_rec(
         WorkflowRole::Review,
         review,
+        review_ok,
         if review.family != edit_family {
             format!(
                 "strong verifier from a DIFFERENT family than EDIT ({} vs {}) — cross-family \
@@ -408,14 +559,12 @@ pub fn recommend(available: &[ModelKnowledge]) -> Vec<RoleRecommendation> {
     out.push(review_rec);
 
     // LOCAL — the best on-device model, if any.
-    match available
-        .iter()
-        .filter(|m| m.is_local)
-        .min_by(|a, b| local_rank(a, b))
-    {
-        Some(local) => out.push(base_rec(
+    let locals: Vec<&ModelKnowledge> = all.iter().copied().filter(|m| m.is_local).collect();
+    match pick(WorkflowRole::Local, &locals, local_rank) {
+        Some((local, local_ok)) => out.push(base_rec(
             WorkflowRole::Local,
             local,
+            local_ok,
             format!(
                 "best on-device model ($0, private; {:.1}% diff-format)",
                 local.edit_format_reliability * 100.0
@@ -431,6 +580,7 @@ pub fn recommend(available: &[ModelKnowledge]) -> Vec<RoleRecommendation> {
                 blended_cost_per_mtok: 0.0,
                 reason: "no on-device model configured".to_string(),
                 warnings: Vec::new(),
+                floor_met: false,
             };
             none_rec.warnings.push(
                 "no local model configured — the free/private on-device tier is unavailable, so \
@@ -589,13 +739,11 @@ pub fn available_from(
     out
 }
 
-/// Detect locally-available Ollama models. Best-effort and SYNCHRONOUS with no
-/// network call: it surfaces the configured `GOOSE_MODEL` when the default
-/// provider is Ollama. A live `/api/tags` probe is intentionally omitted here
-/// because `discover_available_models` runs on the sync path of an async CLI
-/// command, where a blocking HTTP client would panic inside the Tokio runtime —
-/// this covers the "at least the configured GOOSE model when it's ollama" floor
-/// the recommender needs; a richer probe can slot into the same seam later.
+/// Detect locally-available Ollama models WITHOUT a network call: it surfaces the
+/// configured `GOOSE_MODEL` when the default provider is Ollama. This is the
+/// sync floor ("at least the configured model when it's ollama") used by
+/// [`discover_available_models`] on sync paths and by pure tests; the async
+/// [`discover_ollama_models_async`] adds the live `/api/tags` probe on top.
 fn discover_ollama_models() -> Vec<String> {
     let cfg = crate::config::Config::global();
     let mut models = Vec::new();
@@ -611,12 +759,112 @@ fn discover_ollama_models() -> Vec<String> {
     models
 }
 
-/// Discover the user's available models from the live configured-provider surface
-/// — declarative providers + the builtin `providers/*.rs` providers (Anthropic /
-/// OpenAI / Google / xAI, keyed; Ollama, local) — plus the
-/// `GOOSE_PROVIDER`/`GOOSE_MODEL` default. Thin IO wrapper over the pure
-/// [`discoverable_providers`] + [`available_from`].
-pub fn discover_available_models() -> Vec<AvailableModel> {
+/// How long the local Ollama probe waits before deciding "not running". Short:
+/// this runs on `permagent packs recommend` and a Settings load; a daemon that
+/// is up answers `/api/tags` in milliseconds.
+pub const OLLAMA_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The base URL the Ollama probe hits, resolved from the same `OLLAMA_HOST`
+/// setting the Ollama provider itself uses (`providers/ollama.rs`
+/// `OllamaProvider::from_env`): a bare host gets `http://` and — for localhost —
+/// the default port; a full URL is used as-is (trailing `/` stripped). Pure over
+/// the raw setting so it is testable without touching config. Note the mesh /
+/// Librarian pool uses a DIFFERENT setting (`PERMAGENT_OLLAMA_HOST`,
+/// [`crate::config::ollama_host`]) — the recommender follows the provider,
+/// because those are the models the `ollama` provider will actually serve.
+pub fn ollama_base_url(raw: Option<String>) -> String {
+    let host = raw
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| crate::providers::ollama::OLLAMA_HOST.to_string());
+    let mut base = if host.starts_with("http://") || host.starts_with("https://") {
+        host.clone()
+    } else {
+        format!("http://{host}")
+    };
+    let is_localhost = host == "localhost" || host == "127.0.0.1" || host == "::1";
+    if is_localhost {
+        base.push_str(&format!(
+            ":{}",
+            crate::providers::ollama::OLLAMA_DEFAULT_PORT
+        ));
+    }
+    base.trim_end_matches('/').to_string()
+}
+
+/// Parse the model names out of an Ollama `/api/tags` body
+/// (`{"models":[{"name":"qwen3-coder:30b",…},…]}`). Pure; malformed → empty.
+/// Names are kept AS REPORTED (with their `:tag`) because that is the id the
+/// `ollama` provider must be given; the knowledge base resolves the family via
+/// [`super::knowledge::lookup`]'s prefix fallback.
+pub fn parse_ollama_tags(body: &str) -> Vec<String> {
+    #[derive(serde::Deserialize)]
+    struct Tags {
+        #[serde(default)]
+        models: Vec<Tag>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Tag {
+        #[serde(default)]
+        name: String,
+    }
+    serde_json::from_str::<Tags>(body)
+        .map(|t| {
+            t.models
+                .into_iter()
+                .map(|m| m.name.trim().to_string())
+                .filter(|n| !n.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Detect the models the local Ollama daemon actually has pulled: a best-effort
+/// GET of `<OLLAMA_HOST>/api/tags` with a short timeout, `[]` when Ollama is not
+/// running / unreachable / answers garbage (never an error — "no local models"
+/// is a valid discovery result). The sync `GOOSE_MODEL` floor
+/// ([`discover_ollama_models`]) is merged in so the configured model appears
+/// even when the probe fails. Deduped, sorted.
+///
+/// The on-device GGUF registry (`providers/local_inference/local_model_registry`)
+/// is deliberately NOT folded in: its ids are `<hf-repo>:<quant>` under the
+/// `local` provider, and the knowledge base has no `local/*` rows, so
+/// `lookup` could never resolve them — they would only swell `unknown_models`.
+/// Add KB rows for that provider first, then extend this.
+pub async fn discover_ollama_models_async() -> Vec<String> {
+    let mut models = discover_ollama_models();
+    let raw_host = crate::config::Config::global()
+        .get_param::<String>("OLLAMA_HOST")
+        .ok();
+    let url = format!("{}/api/tags", ollama_base_url(raw_host));
+    let probed = match reqwest::Client::builder()
+        .timeout(OLLAMA_PROBE_TIMEOUT)
+        .build()
+    {
+        Ok(client) => match client.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => resp
+                .text()
+                .await
+                .map(|b| parse_ollama_tags(&b))
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        },
+        Err(_) => Vec::new(),
+    };
+    for m in probed {
+        if !models.contains(&m) {
+            models.push(m);
+        }
+    }
+    models.sort();
+    models
+}
+
+/// Shared IO core of [`discover_available_models`] /
+/// [`discover_available_models_async`]: the declarative providers + the keyed
+/// builtins + the given local Ollama models, filtered by configured keys, plus
+/// the `GOOSE_PROVIDER`/`GOOSE_MODEL` default.
+fn discover_available_models_with(ollama_models: Vec<String>) -> Vec<AvailableModel> {
     use crate::config::declarative_providers::all_declarative_provider_configs;
 
     let declarative: Vec<ProviderModels> = all_declarative_provider_configs()
@@ -628,7 +876,7 @@ pub fn discover_available_models() -> Vec<AvailableModel> {
         })
         .collect();
 
-    let providers = discoverable_providers(declarative, discover_ollama_models());
+    let providers = discoverable_providers(declarative, ollama_models);
 
     let is_key_set = |k: &str| super::cheap::is_key_configured(k);
 
@@ -642,6 +890,25 @@ pub fn discover_available_models() -> Vec<AvailableModel> {
     };
 
     available_from(&providers, &is_key_set, main)
+}
+
+/// Discover the user's available models from the live configured-provider surface
+/// — declarative providers + the builtin `providers/*.rs` providers (Anthropic /
+/// OpenAI / Google / xAI, keyed; Ollama, local) — plus the
+/// `GOOSE_PROVIDER`/`GOOSE_MODEL` default. SYNC and network-free: local Ollama
+/// models are only the configured-default floor. Prefer
+/// [`discover_available_models_async`] from an async context.
+pub fn discover_available_models() -> Vec<AvailableModel> {
+    discover_available_models_with(discover_ollama_models())
+}
+
+/// [`discover_available_models`] plus a live probe of the local Ollama daemon
+/// for the models actually pulled ([`discover_ollama_models_async`]). This is
+/// what the CLI (`permagent packs recommend`) and any Settings surface should
+/// call — otherwise a user with five Ollama models and an Anthropic key sees only
+/// the Anthropic side.
+pub async fn discover_available_models_async() -> Vec<AvailableModel> {
+    discover_available_models_with(discover_ollama_models_async().await)
 }
 
 /// Resolve available `(provider, model)` pairs to their knowledge rows,
@@ -661,10 +928,18 @@ pub fn resolve_known(available: &[AvailableModel]) -> Vec<ModelKnowledge> {
     known
 }
 
-/// The full objective recommendation over the user's configured models. IO
-/// entry point for `permagent packs recommend` and the future Build-tab UI.
+/// The full objective recommendation over the user's configured models. Sync,
+/// network-free IO entry point (no live Ollama probe) — see
+/// [`recommend_configured_async`] for the one the CLI / UI should use.
 pub fn recommend_configured() -> Recommendation {
     let available = discover_available_models();
+    recommend_from_available(&available)
+}
+
+/// [`recommend_configured`] over the async discovery (live Ollama probe). IO
+/// entry point for `permagent packs recommend` and the Settings surface.
+pub async fn recommend_configured_async() -> Recommendation {
+    let available = discover_available_models_async().await;
     recommend_from_available(&available)
 }
 
@@ -682,10 +957,21 @@ pub fn recommend_from_available(available: &[AvailableModel]) -> Recommendation 
         .filter(|a| lookup(&a.provider, &a.model).is_none())
         .map(|a| a.label())
         .collect();
+    let estimated_models: Vec<String> = available
+        .iter()
+        .filter(|a| {
+            matches!(
+                lookup_with_confidence(&a.provider, &a.model),
+                Some((_, LookupConfidence::FamilyEstimate))
+            )
+        })
+        .map(|a| a.label())
+        .collect();
     Recommendation {
         recommendations: recommend(&known),
         considered,
         unknown_models,
+        estimated_models,
     }
 }
 
@@ -887,6 +1173,133 @@ mod tests {
             "qwen3-coder",
             "at equal $0 cost MECHANICAL must tiebreak on capability, not alphabetical id"
         );
+    }
+
+    // ── Capability floors ("cheapest that clears the floor") ─────────────────
+
+    /// (a) MECHANICAL picks the cheapest model that CLEARS the floor over a
+    /// cheaper one below it — best fit, not cheapest-then-climb.
+    #[test]
+    fn mechanical_picks_cheapest_floor_clearer_over_a_cheaper_below_floor_model() {
+        let models = [
+            // Cheapest, but below the mechanical floor (edit 0.60 < 0.75).
+            m(
+                "bargain", "tiny", "bargain", 0.60, 0.30, 0.05, 0.20, false, false,
+            ),
+            // Dearer, clears the floor.
+            m(
+                "mid", "capable", "mid", 0.90, 0.60, 0.30, 1.20, false, false,
+            ),
+            // Dearest, clears the floor.
+            m("top", "frontier", "top", 0.98, 0.85, 3.0, 15.0, true, false),
+        ];
+        let recs = recommend(&models);
+        let mech = rec_for(&recs, WorkflowRole::Mechanical);
+        assert_eq!(
+            mech.model, "capable",
+            "MECHANICAL must be the cheapest model that clears the floor, not the cheapest overall"
+        );
+        assert!(mech.floor_met);
+        assert!(!mech.warnings.iter().any(|w| w.contains("capability floor")));
+    }
+
+    /// (b) A $0 local model that clears the floor wins MECHANICAL over any cloud
+    /// model — the floor admits the small local-coder tier by design.
+    #[test]
+    fn local_wins_mechanical_when_it_clears_the_floor() {
+        let models = [
+            m("top", "frontier", "top", 0.98, 0.85, 3.0, 15.0, true, false),
+            m(
+                "ollama",
+                "qwen3-coder",
+                "ollama",
+                0.86,
+                0.55,
+                0.0,
+                0.0,
+                false,
+                true,
+            ),
+        ];
+        let recs = recommend(&models);
+        let mech = rec_for(&recs, WorkflowRole::Mechanical);
+        assert_eq!(mech.provider, "ollama");
+        assert!(mech.floor_met);
+        assert!(mech.reason.contains("clears the mechanical floor"));
+        // …and the same local model does NOT win when it is below the floor:
+        // MECHANICAL goes to the cheapest floor-clearer instead.
+        let weak = [
+            m("top", "frontier", "top", 0.98, 0.85, 3.0, 15.0, true, false),
+            m(
+                "ollama", "tiny", "ollama", 0.50, 0.20, 0.0, 0.0, false, true,
+            ),
+        ];
+        let recs = recommend(&weak);
+        let mech = rec_for(&recs, WorkflowRole::Mechanical);
+        assert_eq!(mech.model, "frontier");
+        assert!(mech.floor_met);
+        // The LOCAL role still reports the only local — but flagged below floor.
+        let local = rec_for(&recs, WorkflowRole::Local);
+        assert_eq!(local.model, "tiny");
+        assert!(!local.floor_met);
+        assert!(local
+            .warnings
+            .iter()
+            .any(|w| w.contains("capability floor")));
+    }
+
+    /// (c) When NO model clears a role's floor the recommender falls back to the
+    /// best available by the role's rank, sets `floor_met = false`, and warns —
+    /// never a silent under-fit, never an empty slot.
+    #[test]
+    fn no_floor_clearer_falls_back_to_best_available_with_a_warning() {
+        let models = [
+            m("a", "weak-a", "a", 0.70, 0.40, 0.10, 0.40, false, false),
+            m("b", "weak-b", "b", 0.72, 0.42, 0.20, 0.80, false, false),
+        ];
+        let recs = recommend(&models);
+        for role in WorkflowRole::all() {
+            let r = rec_for(&recs, role);
+            if role == WorkflowRole::Local {
+                assert!(r.model.is_empty(), "no local model in this set");
+                continue;
+            }
+            assert!(!r.model.is_empty(), "{role:?} must still get a model");
+            assert!(!r.floor_met, "{role:?} must report the floor was not met");
+            assert!(
+                r.warnings
+                    .iter()
+                    .any(|w| w.contains("capability floor") && w.contains("falling back")),
+                "{role:?} must warn that the floor was not met: {:?}",
+                r.warnings
+            );
+        }
+        // The fallback still follows each role's own rank: MECHANICAL = cheapest,
+        // ORCHESTRATE = strongest, EDIT = highest diff-format.
+        assert_eq!(rec_for(&recs, WorkflowRole::Mechanical).model, "weak-a");
+        assert_eq!(rec_for(&recs, WorkflowRole::Orchestrate).model, "weak-b");
+        assert_eq!(rec_for(&recs, WorkflowRole::Edit).model, "weak-b");
+    }
+
+    /// Every role's floor is internally consistent and the KB's own local rows
+    /// clear the modest MECHANICAL/LOCAL bar (that tier exists for them).
+    #[test]
+    fn capability_floors_are_sane_and_admit_the_local_coder_tier() {
+        for role in WorkflowRole::all() {
+            let f = role.capability_floor();
+            assert!((0.0..=1.0).contains(&f.edit_format_reliability_min));
+            assert!((0.0..=1.0).contains(&f.orchestration_min));
+        }
+        assert_eq!(
+            WorkflowRole::Edit
+                .capability_floor()
+                .edit_format_reliability_min,
+            EDIT_RELIABILITY_FLOOR
+        );
+        let qwen = lookup("ollama", "qwen3-coder").unwrap();
+        assert!(WorkflowRole::Mechanical.capability_floor().clears(qwen));
+        assert!(WorkflowRole::Local.capability_floor().clears(qwen));
+        assert!(!WorkflowRole::Edit.capability_floor().clears(qwen));
     }
 
     #[test]
@@ -1093,6 +1506,11 @@ mod tests {
             edit.warnings.iter().any(|w| w.contains("floor")),
             "an EDIT pick below the diff-format floor must be flagged"
         );
+        assert!(!edit.floor_met);
+        assert!(edit
+            .warnings
+            .iter()
+            .any(|w| w.contains("failed-edit retries")));
     }
 
     #[test]
@@ -1309,6 +1727,64 @@ mod tests {
             Some("ANTHROPIC_API_KEY")
         );
         assert_eq!(provider_key_env("ollama").as_deref(), Some(""));
+    }
+
+    #[test]
+    fn ollama_base_url_mirrors_the_provider_host_resolution() {
+        assert_eq!(ollama_base_url(None), "http://localhost:11434");
+        assert_eq!(
+            ollama_base_url(Some("  ".to_string())),
+            "http://localhost:11434"
+        );
+        assert_eq!(
+            ollama_base_url(Some("127.0.0.1".to_string())),
+            "http://127.0.0.1:11434"
+        );
+        // A bare remote host: scheme added, no port assumed (matches the provider).
+        assert_eq!(
+            ollama_base_url(Some("mini.local:11434".to_string())),
+            "http://mini.local:11434"
+        );
+        // A full URL is used as-is, trailing slash stripped.
+        assert_eq!(
+            ollama_base_url(Some("http://10.0.0.5:11434/".to_string())),
+            "http://10.0.0.5:11434"
+        );
+    }
+
+    #[test]
+    fn parse_ollama_tags_keeps_reported_names_and_tolerates_garbage() {
+        let body = r#"{"models":[{"name":"qwen3-coder:30b","size":1},{"name":"qwen3:latest"},{"name":"  "}]}"#;
+        assert_eq!(
+            parse_ollama_tags(body),
+            vec!["qwen3-coder:30b".to_string(), "qwen3:latest".to_string()]
+        );
+        assert!(parse_ollama_tags("not json").is_empty());
+        assert!(parse_ollama_tags("{}").is_empty());
+    }
+
+    /// The end-to-end shape for an Ollama install: a tagged pull resolves (as a
+    /// family estimate) and is recommended, and is reported under
+    /// `estimated_models` so the surface can label the score as approximate.
+    #[test]
+    fn tagged_ollama_models_are_recommended_and_reported_as_estimates() {
+        let available = [
+            AvailableModel::new("anthropic", "claude-sonnet-5"),
+            AvailableModel::new("ollama", "qwen3-coder:30b"),
+        ];
+        let out = recommend_from_available(&available);
+        assert!(out.considered.contains(&"ollama/qwen3-coder".to_string()));
+        assert!(out.unknown_models.is_empty());
+        assert_eq!(
+            out.estimated_models,
+            vec!["ollama/qwen3-coder:30b".to_string()]
+        );
+        let mech = out
+            .recommendations
+            .iter()
+            .find(|r| r.role == WorkflowRole::Mechanical)
+            .unwrap();
+        assert_eq!(mech.provider, "ollama");
     }
 
     #[test]
