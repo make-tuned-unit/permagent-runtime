@@ -561,5 +561,5 @@ This section is re-read every turn and changes on its own. Everything above it i
 
 ## Background worker status
 - **Librarian** — 0 described, 0 pending
-- **Git Steward** — git-health sweep off (steward_scan_enabled=false) — CI and dirty-tree briefings only, no cleanup proposals
+- **Git Steward** — git-health sweep off (steward_scan_enabled=false) — no repo scans, no cleanup approvals, no repo-health or CI briefings; its scheduled recipe work is unaffected
 - **Initiative** — off (initiative_enabled=false)

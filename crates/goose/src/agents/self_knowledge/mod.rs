@@ -313,10 +313,16 @@ pub fn worker_live_state_for(
         // and an agent reading that reports a switched-OFF feature as active.
         // `gated_and_always_described_workers_report_their_off_state` pins it.
         id if id == GIT_STEWARD_FEATURE_ID => Some(if flags.steward_scan_enabled {
-            "git-health sweep on — merged-branch and worktree cleanups file as Decision-Inbox approvals"
+            "git-health sweep on — one repo per sweep; merged-branch and worktree cleanups file as Decision-Inbox approvals"
                 .to_string()
         } else {
-            "git-health sweep off (steward_scan_enabled=false) — CI and dirty-tree briefings only, no cleanup proposals"
+            // The flag gates the WHOLE sweep loop (`steward_sweep::spawn` logs
+            // "loop idle until enabled"), so nothing it produces happens —
+            // not the cleanup approvals AND not the repo-health/CI briefings.
+            // Saying "briefings only" here would be the same false claim this
+            // arm exists to remove. The Steward's own scheduled recipe is a
+            // separate thing and is unaffected.
+            "git-health sweep off (steward_scan_enabled=false) — no repo scans, no cleanup approvals, no repo-health or CI briefings; its scheduled recipe work is unaffected"
                 .to_string()
         }),
         "strix" => Some(if flags.strix_enabled {
