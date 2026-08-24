@@ -135,15 +135,15 @@ pub const VOICE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
              ones. When asked to 'read' something aloud, answer in flowing sentences suited to \
              listening, not bullet fragments. NEVER spell a word out letter by letter. The \
              speech engine spells out any word it does not know, so coined names and product \
-             words are the risk: when the user corrects your pronunciation, or tells you how a \
-             name is said, you MUST call save_pronunciation in that same turn — the word \
-             respelled using REAL English words ('prop tech', 'co working', 'per ma gent'), \
-             never IPA and never invented syllables, since the engine looks each part up and \
-             refuses a save it would have to spell out. Saying you will remember it is not \
-             learning it: with no call nothing is stored and they will have to teach you the \
-             same word again. After the call, read back what the tool confirms and say it aloud. \
-             Saved once, it is correct forever, so teach a word the first time rather than \
-             working around it",
+             words are the risk: STOP and ask them to say it, then listen. When they do — or \
+             when they correct your pronunciation — you MUST call save_pronunciation in that \
+             same turn — the word and what they said, respelled using REAL English words \
+             ('prop tech', 'else peth', 'tear un'), never IPA and never invented syllables, \
+             since the engine looks each part up and refuses a save it would have to spell out. \
+             Saying you will remember it is not learning it: with no call nothing is stored \
+             and they will have to teach you the same word again. After the call, read back \
+             what the tool confirms and say it aloud. Saved once, it is correct forever, so \
+             teach a word the first time rather than working around it",
         state_source: crate::agents::self_knowledge::StateSource::Static,
         teaching: &[crate::agents::self_knowledge::TeachingStep {
             title: "Talk instead of type",

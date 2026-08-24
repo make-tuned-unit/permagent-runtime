@@ -318,15 +318,13 @@ async function connect(): Promise<void> {
               kind?: string; message?: string; subject?: string;
               url?: string; link?: string; source_url?: string;
             };
-            // Holding overbought signals are a Finance-tab fact, not a Watcher
-            // thread. They still arrive as proactive_nudge so the tray/OS path
-            // is one, but clicking opens Finance. Copy is a sell *signal*,
-            // never an order.
+            // The Watcher delivers the Financier's holding signal. Click
+            // opens Finance. Copy is a sell *signal*, never an order.
             if (p.kind === 'rsi_heat' || p.kind === 'sell_signal') {
-              if (prefs.echo || prefs.system) {
+              if (prefs.echo) {
                 push({
                   kind: 'echo',
-                  title: p.kind === 'sell_signal' ? 'Sell signal' : 'RSI heat',
+                  title: 'The Watcher · Financier',
                   body: p.message ?? `Overbought signal on ${p.subject ?? 'a holding'}`,
                   target: 'finance',
                 });

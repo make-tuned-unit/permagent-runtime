@@ -104,6 +104,10 @@ struct VoiceOrbView: View {
     var speaking: Bool
     /// Thinking has no audio, so the orb swells on its own rather than flatlining.
     var thinking: Bool
+    /// Hands-free listening (or ready-and-armed). Must breathe even at RMS 0.
+    var listening: Bool = false
+    /// A word speech cannot say — shown on the Orb, never spoken.
+    var teachWord: String? = nil
     /// Render size. iOS conversation uses 300; Watch chat is ~88.
     var diameter: CGFloat = ORB_SIZE
 
@@ -127,16 +131,37 @@ struct VoiceOrbView: View {
         // ProMotion with ~670 fills/frame on the main actor, fighting the
         // audio pipeline. `.contentShape` keeps the parent's tap-to-interrupt
         // alive even though the Canvas itself is hit-test-disabled.
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { tl in
-            let t = tl.date.timeIntervalSinceReferenceDate
-            Canvas { ctx, size in
-                draw(ctx: &ctx, size: size, t: t)
+        ZStack {
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { tl in
+                let t = tl.date.timeIntervalSinceReferenceDate
+                Canvas { ctx, size in
+                    draw(ctx: &ctx, size: size, t: t)
+                }
+                .frame(width: diameter, height: diameter)
+                .allowsHitTesting(false)
             }
-            .frame(width: diameter, height: diameter)
-            .allowsHitTesting(false)
+            if let word = teachWord, !word.isEmpty {
+                VStack(spacing: 6) {
+                    Text(word)
+                        .font(.system(size: diameter * 0.11, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.white)
+                        .shadow(color: Color.black.opacity(0.55), radius: 8, y: 2)
+                        .minimumScaleFactor(0.5)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
+                    Text("SAY THIS")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .tracking(1.6)
+                        .foregroundStyle(Color.white.opacity(0.72))
+                }
+                .padding(.horizontal, 18)
+                .frame(maxWidth: diameter * 0.72)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Say \(word)")
+            }
         }
         .contentShape(Circle())
-        .accessibilityHidden(true)
+        .accessibilityHidden(teachWord == nil)
     }
 
     private func draw(ctx: inout GraphicsContext, size: CGSize, t: Double) {
@@ -152,21 +177,17 @@ struct VoiceOrbView: View {
         // for the rest of the session even after audio recovered.
         let level = self.level.isFinite ? min(1.5, max(0, self.level)) : 0
 
-        // Mirror-path band synthesis (see file header).
-        var tLow: Double, tMid: Double, tHigh: Double
-        if thinking {
-            let breath = 0.10 + 0.06 * (0.5 + 0.5 * sin(t * 1.6))
-            tLow = breath; tMid = breath * 0.6; tHigh = breath * 0.3
-        } else {
-            // Speaking: `level` is now the playback tap's RMS (VoiceView's
-            // player tap), i.e. the audio actually being heard — so the orb
-            // tracks his syllables rather than a synthetic idle. No breath
-            // fallback here on purpose: a self-driven animation during speech
-            // is exactly the "random animation" this replaced.
-            tLow = level
-            tMid = level * (0.7 + 0.3 * sin(t * 11))
-            tHigh = level * (0.5 + 0.5 * sin(t * 19 + 1.7))
-        }
+        // Band targets live in VoiceOrbDrive so listening/speaking life can
+        // be regression-tested. Listening breathes at RMS 0; speaking keeps
+        // a residual pulse and swells harder than the old level-only path.
+        let bands = VoiceOrbDrive.bands(
+            thinking: thinking,
+            listening: listening,
+            speaking: speaking,
+            level: level,
+            t: t
+        )
+        let tLow = bands.low, tMid = bands.mid, tHigh = bands.high
         // Fast attack, slow release — syllables land visibly, decay is graceful.
         func smooth(_ cur: Double, _ target: Double) -> Double {
             cur + (target - cur) * (target > cur ? 0.5 : 0.08)
@@ -175,13 +196,13 @@ struct VoiceOrbView: View {
         motion.low = l; motion.mid = m; motion.high = h
 
         let lvl = min(1.2, l * 0.5 + m * 0.35 + h * 0.15)
-        let ry = motion.rotY + dt * (0.2 + m * 0.9)          // mids spin it up
-        let nt = motion.noiseT + dt * (0.9 + m * 4.5 + h * 2.0) // speech churns the surface
+        let ry = motion.rotY + dt * VoiceOrbDrive.spin(mid: m, speaking: speaking)
+        let nt = motion.noiseT + dt * (0.9 + m * 4.5 + h * 2.0)
         motion.rotY = ry; motion.noiseT = nt
 
         let rotX = 0.42 + 0.06 * sin(t * 0.13)
         let cosY = cos(ry), sinY = sin(ry), cosX = cos(rotX), sinX = sin(rotX)
-        let amp = 0.045 + l * 0.34                    // lows swell the whole body
+        let amp = VoiceOrbDrive.amp(low: l, speaking: speaking)
         let W = size.width, cx = W / 2, cy = size.height / 2
         let R = W * 0.30
 

@@ -8,6 +8,8 @@ pub mod activity;
 pub mod clipboard_intercept;
 pub mod nav_intercept;
 pub mod voice_origin;
+pub mod voice_pronounce;
+pub mod voice_remainder;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -881,11 +883,12 @@ pub fn terminal_gate_cleared(
     )
 }
 
-/// Echo/Watcher (#672): the agent proactively surfaces the single most useful
-/// thing it noticed — a dormant Brain thread today, project news/analytics
-/// later. Delivered gently and rarely; the frontend's notification stream turns
-/// it into an in-app + (opt-in) OS notification. `kind` names the signal source
-/// so the UI can style/route it; the daemon owns the once-a-day budget.
+/// Echo/Watcher (#672): the agent proactively surfaces something worth
+/// interrupting for — a dormant Brain thread, project news, or (with the
+/// Financier) an overbought sell signal on an open holding. News/dormant
+/// nudges are gentle and rare; `sell_signal` is daily-per-symbol and does
+/// not consume that taste budget. `kind` names the signal source so the UI
+/// can style/route it.
 pub fn proactive_nudge(
     kind: &str,
     subject: &str,

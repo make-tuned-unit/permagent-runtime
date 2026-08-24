@@ -32,6 +32,14 @@ pub fn record(words: &[String]) {
     let mut guard = SEEN.write().unwrap_or_else(PoisonError::into_inner);
     let map = guard.get_or_insert_with(HashMap::new);
     for word in words {
+        // A contraction is never something the USER can teach: "shouldn't"
+        // reaches G2P unresolved because a typographic apostrophe split it,
+        // and the fix is `fold_apostrophes` on the way in, not a respelling.
+        // Coaching the model to ask "how do you say shouldn't?" spends a turn
+        // on our own bug and reads as broken.
+        if crate::voice::speech_normalize::looks_like_contraction(word) {
+            continue;
+        }
         if map.len() >= MAX_WORDS && !map.contains_key(word) {
             continue;
         }
@@ -122,11 +130,12 @@ pub fn coaching_prompt() -> Option<String> {
     }
     let words: Vec<&str> = items.iter().take(8).map(|(w, _)| w.as_str()).collect();
     Some(format!(
-        "The speech engine recently had to guess these words: {}. \
-         NEVER spell them letter by letter. If you are about to say one and you \
-         know a real-English-word respelling, you MUST call save_pronunciation \
-         in this turn before you speak. If you do not, ask how it is said — \
-         do not guess out loud.",
+        "The speech engine does not know these words: {}. \
+         STOP. Never spell them. The Orb will show the word; you say you are \
+         placing it there and listening. The next thing they say is the \
+         pronunciation — you MUST call save_pronunciation in that same \
+         turn with the word and what they said. Guessing a respelling and \
+         keeping talking saves nothing. Once it is stored it is correct forever.",
         words.join(", ")
     ))
 }
@@ -151,6 +160,36 @@ mod coaching_tests {
         let prompt = coaching_prompt().expect("non-empty queue must coach");
         assert!(prompt.contains("kuzu"));
         assert!(prompt.to_lowercase().contains("save_pronunciation"));
+        assert!(
+            prompt.to_lowercase().contains("stop") && prompt.to_lowercase().contains("listen"),
+            "coaching must tell the model to stop and listen, not guess: {prompt}"
+        );
+        *SEEN.write().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
+    /// A contraction that slipped past apostrophe folding is OUR bug, not a
+    /// word the user can teach. It must never reach the queue, or the coaching
+    /// prompt tells the model to stop the conversation and ask how to say
+    /// "shouldn't".
+    #[test]
+    #[serial]
+    fn contractions_never_enter_the_coaching_queue() {
+        *SEEN.write().unwrap_or_else(PoisonError::into_inner) = None;
+        record(&[
+            "shouldn't".into(),
+            "I\u{2019}m".into(),
+            "won't".into(),
+            "elspeth".into(),
+        ]);
+        let queued: Vec<String> = snapshot().into_iter().map(|(w, _)| w).collect();
+        assert_eq!(
+            queued,
+            vec!["elspeth".to_string()],
+            "only the real unknown name is teachable; contractions are folding bugs"
+        );
+        let prompt = coaching_prompt().expect("the real word still coaches");
+        assert!(!prompt.contains("shouldn't"), "{prompt}");
+        assert!(!prompt.contains("won't"), "{prompt}");
         *SEEN.write().unwrap_or_else(PoisonError::into_inner) = None;
     }
 }

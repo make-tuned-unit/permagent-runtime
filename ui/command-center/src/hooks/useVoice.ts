@@ -79,6 +79,14 @@ export function isInterruptibleState(state: VoiceState): boolean {
  * nothing to halt (the utterance "stop" while idle is not a command).
  * Extracted so the routing is unit-testable without a live socket.
  */
+/** Empty / too-short captures are not faults — last night they flashed
+ *  "No speech detected" on the orb after real speech (20260821_14). */
+export function isTransientVoiceIdle(message: string | null | undefined): boolean {
+  if (!message) return false;
+  const m = message.toLowerCase();
+  return m.includes('no speech detected') || m.includes('recording too short');
+}
+
 export function routeWakeEvent(
   kind: string,
   state: VoiceState,
@@ -131,6 +139,9 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const [state, setState] = useState<VoiceState>('idle');
   const [lastTranscript, setLastTranscript] = useState('');
   const [lastReply, setLastReply] = useState('');
+  const [teachWord, setTeachWord] = useState<string | null>(null);
+  const teachWordRef = useRef<string | null>(null);
+  teachWordRef.current = teachWord;
   const [error, setError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -249,6 +260,9 @@ export function useVoice(options: UseVoiceOptions = {}) {
           setStateAndEmit('ready');
           // Narration finished playing — release any deferred navigation now.
           flushNavIfIdle();
+          if (teachWordRef.current) {
+            startRecordingRef.current?.();
+          }
         }
       }
       return;
@@ -376,10 +390,19 @@ export function useVoice(options: UseVoiceOptions = {}) {
           case 'reply_start':
             setStateAndEmit('playing');
             break;
+          case 'teach':
+            setTeachWord(typeof msg.word === 'string' && msg.word ? msg.word : null);
+            break;
+          case 'taught':
+            setTeachWord(null);
+            break;
           case 'reply_end':
             pendingAudioRef.current = false;
             if (!playingRef.current && audioQueueRef.current.length === 0) {
               setStateAndEmit('ready');
+              if (teachWordRef.current) {
+                startRecordingRef.current?.();
+              }
             }
             // Covers a reply whose audio already drained before reply_end.
             flushNavIfIdle();
@@ -406,7 +429,19 @@ export function useVoice(options: UseVoiceOptions = {}) {
               if (!ok) console.warn('[useVoice] clipboard write failed');
             });
             break;
+          case 'idle':
+            setError(null);
+            setStateAndEmit('ready');
+            if (teachWordRef.current) {
+              startRecordingRef.current?.();
+            }
+            break;
           case 'error':
+            if (isTransientVoiceIdle(msg.message)) {
+              setError(null);
+              setStateAndEmit('ready');
+              break;
+            }
             serverErrorRef.current = msg.message ?? null;
             setError(msg.message ?? 'Unknown voice error');
             emit({ type: 'error', error: msg.message ?? 'Unknown voice error' });
@@ -414,8 +449,8 @@ export function useVoice(options: UseVoiceOptions = {}) {
             setTimeout(() => {
               if (wsRef.current?.readyState === WebSocket.OPEN) {
                 // Recovering on a live socket: also clear the error string so a
-                // transient server error (no-speech, too-short) doesn't linger
-                // as a sticky red label over the recovered "Hold to talk" state.
+                // transient server error doesn't linger as a sticky red label
+                // over the recovered "Hold to talk" state.
                 setError(null);
                 setStateAndEmit('ready');
               }
@@ -1090,6 +1125,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     state,
     lastTranscript,
     lastReply,
+    teachWord,
     error,
     activate,
     deactivate,

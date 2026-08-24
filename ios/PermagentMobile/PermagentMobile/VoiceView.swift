@@ -142,8 +142,10 @@ final class VoiceEngine: ObservableObject {
     /// Last paste-ready body from a `clipboard` frame — retappable if the
     /// automatic pasteboard write raced a switch to Notes.
     @Published private(set) var lastClipboard: String?
-    /// Transient server-side notice ("No speech detected…") — clears on recovery.
+    /// Transient server-side notice (clipboard / real faults). Empty STT is idle, not this.
     @Published private(set) var notice: String?
+    /// Word placed on the Orb for a listen-once pronunciation. Never spoken.
+    @Published private(set) var teachWord: String?
     /// Live audio level 0…1 (mic while listening, TTS pulse while speaking).
     @Published private(set) var level: Float = 0
     /// ON by default: tapping the voice icon should drop you into a
@@ -271,12 +273,21 @@ final class VoiceEngine: ObservableObject {
 
     // ── Audio graph ──────────────────────────────────────────────────────────
 
+    /// Session once, graph as needed. The 2026-08-21 rebuild called
+    /// `startAudio()` (setCategory + new engine) on every route notification.
+    /// That tore down a working tap, often while the input was still 0 Hz,
+    /// swallowed the throw, and left the orb on LISTENING with no mic —
+    /// speakerphone and headphones both, after weeks of the old path working.
     private func startAudio() throws {
+        try configureSession()
+        try buildGraph()
+    }
+
+    private func configureSession() throws {
         let session = AVAudioSession.sharedInstance()
-        // `.videoChat` is speakerphone+mic. `.voiceChat` ducks TTS like a call;
-        // `.default` plus a forced speaker override and voice-processing AEC
-        // cancelled the built-in mic (LISTENING, heard nothing) AND stole
-        // playback from headphones that were already connected.
+        // `.default` is the path that worked for weeks. `.voiceChat` ducks TTS;
+        // `.videoChat` adds session-level AEC that muted the near-end mic and
+        // dropped HFP (tonight's hub log: three sockets, zero recordings).
         let bluetoothOption: AVAudioSession.CategoryOptions
         if #available(iOS 26.0, *) {
             bluetoothOption = .allowBluetoothHFP
@@ -299,7 +310,9 @@ final class VoiceEngine: ObservableObject {
                 Task { @MainActor in self?.scheduleRouteApply() }
             }
         }
+    }
 
+    private func buildGraph() throws {
         let engine = AVAudioEngine()
 
         // ── Validate EVERY format before AVAudioEngine sees it ──────────────
@@ -378,7 +391,10 @@ final class VoiceEngine: ObservableObject {
         input.installTap(onBus: 0, bufferSize: 4096, format: inFormat) { @Sendable [weak self] buffer, _ in
             guard let self else { return }
             let (data, rms) = pipe.convert(buffer)
-            guard !data.isEmpty else { return }
+            guard !data.isEmpty else {
+                Task { @MainActor in self.noteDroppedTap() }
+                return
+            }
             Task { @MainActor in self.handleMicFrame(data, rms: rms) }
         }
         // Playback tap — the orb's TRUTH while the agent speaks. The level used
@@ -454,8 +470,12 @@ final class VoiceEngine: ObservableObject {
     private func scheduleRouteApply() {
         routeApplyTask?.cancel()
         routeApplyTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(150))
-            guard !Task.isCancelled, active else { return }
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            // `graphBuilt` is enough: the first setCategory fires a route
+            // change before `active` is set, and skipping that apply is how
+            // a 0 Hz settle used to miss the working tap.
+            guard graphBuilt || active else { return }
             applyCurrentRoute()
         }
     }
@@ -463,14 +483,25 @@ final class VoiceEngine: ObservableObject {
     /// Plug/unplug: retarget speaker vs headset, swap VAD, rebuild the graph
     /// when the input format or AEC setting has to change (MicPipe dies
     /// otherwise — it drops mismatched buffers and the orb never hears you).
+    /// Does NOT call `setCategory` again — that retriggers this path and
+    /// was tonight's capture death spiral.
     private func applyCurrentRoute() {
         applySpeakerOverride()
         applyVADConfigForCurrentRoute()
-        guard graphBuilt, let engine, !rebuildingGraph else { return }
+        guard !rebuildingGraph else { return }
+        if !graphBuilt {
+            try? buildGraph()
+            return
+        }
+        guard let engine else { return }
         let wantVP = VoiceAudioRoute.policy(
             outputPortTypes: AVAudioSession.sharedInstance().currentRoute.outputs.map(\.portType.rawValue)
         ).voiceProcessing
         let fmt = engine.inputNode.inputFormat(forBus: 0)
+        if fmt.sampleRate <= 0 || fmt.channelCount == 0 {
+            scheduleRouteApply()
+            return
+        }
         if VoiceAudioRoute.mustRebuildGraph(
             voiceProcessing: captureUsesVoiceProcessing,
             wantVoiceProcessing: wantVP,
@@ -486,13 +517,24 @@ final class VoiceEngine: ObservableObject {
     private var rebuildingGraph = false
     private var captureSampleRate: Double = 0
     private var captureChannels: AVAudioChannelCount = 0
+    /// Consecutive empty tap buffers (format mismatch). Used to surface a
+    /// dead mic instead of sitting on LISTENING forever.
+    private var droppedTapStreak = 0
 
     private func rebuildGraphPreservingPlayback() throws {
         guard !rebuildingGraph else { return }
         rebuildingGraph = true
         defer { rebuildingGraph = false }
         teardownGraph()
-        try startAudio()
+        try buildGraph()
+    }
+
+    private func noteDroppedTap() {
+        droppedTapStreak += 1
+        if droppedTapStreak == 25, state == .ready || state == .listening {
+            notice = "Microphone went quiet — recovering the route."
+            scheduleRouteApply()
+        }
     }
 
     /// Publish a playback level for the orb. Ignored unless the agent is
@@ -519,7 +561,6 @@ final class VoiceEngine: ObservableObject {
     /// immediately unless a turn is open — then it parks until the turn ends,
     /// so the endpoint clocks are never reset mid-utterance.
     private func applyVADConfigForCurrentRoute() {
-        applySpeakerOverride()
         let ports = AVAudioSession.sharedInstance().currentRoute.inputs.map(\.portType.rawValue)
         let cfg = VoiceVAD.configForRoute(
             inputPortTypes: ports,
@@ -534,6 +575,7 @@ final class VoiceEngine: ObservableObject {
     }
 
     private func handleMicFrame(_ data: Data, rms: Float) {
+        droppedTapStreak = 0
         if let cfg = pendingVADConfig, state != .listening {
             vad = VoiceVAD(config: cfg)
             pendingVADConfig = nil
@@ -572,7 +614,8 @@ final class VoiceEngine: ObservableObject {
             // mic hears. Ignore barge while playback is actually coming out.
             if VoiceAudioRoute.ignoreBargeIn(
                 speakerphone: !Self.usingExternalOutput(),
-                playbackRms: playbackRms
+                playbackRms: playbackRms,
+                micRms: rms
             ) { break }
             interrupt()
         case .none: break
@@ -743,6 +786,7 @@ final class VoiceEngine: ObservableObject {
         let text: String?
         let message: String?
         let sample_rate: Int?
+        let word: String?
     }
 
     private func handleMessage(_ message: URLSessionWebSocketTask.Message) {
@@ -753,7 +797,6 @@ final class VoiceEngine: ObservableObject {
             switch msg.type {
             case "ready":
                 state = .ready
-                if handsFree { beginTurn() }
             case "transcript":
                 notice = nil
                 transcript = msg.text ?? ""
@@ -770,13 +813,34 @@ final class VoiceEngine: ObservableObject {
                         notice = "Couldn't copy — stay in Permagent and try again"
                     }
                 }
+            case "teach":
+                if let word = msg.word, !word.isEmpty {
+                    teachWord = word
+                }
+            case "taught":
+                teachWord = nil
             case "reply_end":
                 replyEnded = true
                 if pendingBuffers == 0, state == .speaking || state == .thinking {
+                    finishSpeaking()
+                }
+            case "idle":
+                // Empty / too-short capture — back to ready, no toast.
+                notice = nil
+                if teachWord != nil {
                     state = .ready
-                    if handsFree { beginTurn() }
+                    enterListening()
+                } else if state == .thinking || state == .listening || state == .speaking {
+                    state = .ready
                 }
             case "error":
+                if VoiceIdle.isTransientEmptyTurn(msg.message) {
+                    notice = nil
+                    if state == .thinking || state == .listening || state == .speaking {
+                        state = .ready
+                    }
+                    break
+                }
                 notice = msg.message ?? "Voice error"
                 // Transient recovery on a live socket, like the web hook: return
                 // to ready after a beat so a too-short press can't wedge a turn.
@@ -844,9 +908,16 @@ final class VoiceEngine: ObservableObject {
             level = 0
             playbackRms = 0
             if replyEnded && state == .speaking {
-                state = .ready
-                if handsFree { beginTurn() }
+                finishSpeaking()
             }
+        }
+    }
+
+    /// After his line finishes: if a word is on the Orb, open the mic.
+    private func finishSpeaking() {
+        state = .ready
+        if teachWord != nil {
+            enterListening()
         }
     }
 }
@@ -949,7 +1020,11 @@ struct VoiceView: View {
                 VoiceOrbView(
                     level: Double(engine.level),
                     speaking: engine.state == .speaking,
-                    thinking: engine.state == .thinking
+                    thinking: engine.state == .thinking,
+                    listening: engine.state == .listening
+                        || (engine.state == .ready && engine.handsFree)
+                        || engine.teachWord != nil,
+                    teachWord: engine.teachWord
                 )
                     .onTapGesture { engine.interrupt() }
                     .accessibilityLabel(orbAccessibility)
@@ -1112,10 +1187,17 @@ struct VoiceView: View {
     }
 
     private var statusLine: String {
+        if engine.teachWord != nil {
+            switch engine.state {
+            case .speaking: return "PLACING A WORD ON THE ORB"
+            case .listening, .ready: return "SAY THE WORD ON THE ORB"
+            default: break
+            }
+        }
         switch engine.state {
         case .idle: return "STARTING…"
         case .connecting: return "CONNECTING…"
-        case .ready: return engine.handsFree ? "LISTENING…" : "HOLD TO TALK"
+        case .ready: return engine.handsFree ? "LISTENING FOR YOU" : "HOLD TO TALK"
         case .listening: return "LISTENING…"
         case .thinking: return "THINKING… TAP THE ORB TO CANCEL"
         case .speaking: return "SPEAKING — TAP THE ORB TO INTERRUPT"
@@ -1133,6 +1215,9 @@ struct VoiceView: View {
     }
 
     private var orbAccessibility: String {
+        if let word = engine.teachWord {
+            return "Say \(word). \(AgentIdentity.shared.nameCapitalized) is listening for the pronunciation."
+        }
         switch engine.state {
         case .speaking: return "\(AgentIdentity.shared.nameCapitalized) is speaking. Tap to interrupt."
         case .thinking: return "\(AgentIdentity.shared.nameCapitalized) is thinking. Tap to cancel."

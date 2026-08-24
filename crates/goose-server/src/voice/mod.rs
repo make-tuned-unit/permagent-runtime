@@ -9,6 +9,7 @@ pub mod bpe;
 pub mod compound;
 pub mod kws;
 pub mod loudness;
+pub mod name_syllables;
 pub mod oov_log;
 pub mod ort_kokoro_backend;
 pub mod proper_noun_corrector;
@@ -16,6 +17,7 @@ pub mod prosody;
 pub mod provider;
 pub mod sherpa_backend;
 pub mod speakable;
+pub mod speech_normalize;
 pub mod spoken_verdict;
 pub mod user_lexicon;
 

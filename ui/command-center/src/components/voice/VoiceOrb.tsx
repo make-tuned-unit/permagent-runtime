@@ -75,6 +75,7 @@ export function VoiceOrb({
   mirrorLevel,
   onExit,
   wakeHint,
+  teachWord,
 }: {
   state: string;
   getPlaybackAnalyser: () => AnalyserNode | null;
@@ -85,6 +86,8 @@ export function VoiceOrb({
   onExit: () => void;
   /** Armed wake gate: what to say to open a turn (e.g. `Say "Hey Henry"`). */
   wakeHint?: string | null;
+  /** Word placed on the Orb for a listen-once pronunciation. Never spoken. */
+  teachWord?: string | null;
 }) {
   const { colors } = useTheme();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -157,6 +160,20 @@ export function VoiceOrb({
         tLow = band(0, 7) * 1.25;
         tMid = band(7, 15) * 1.5;
         tHigh = band(15, 26) * 1.9;
+      }
+      // Listening / ready must breathe when the mic is quiet — the iOS orb
+      // went dead at RMS 0 last night. Speaking keeps a residual pulse so
+      // quiet syllables still move the sphere.
+      if (s === 'ready' || s === 'recording') {
+        const breath = 0.14 + 0.10 * (0.5 + 0.5 * Math.sin(t * 0.0022));
+        tLow = Math.max(tLow, breath);
+        tMid = Math.max(tMid, breath * 0.75);
+        tHigh = Math.max(tHigh, breath * 0.45);
+      } else if (s === 'playing') {
+        const residual = 0.10 + 0.05 * (0.5 + 0.5 * Math.sin(t * 0.0026));
+        tLow = Math.max(tLow * 1.35, residual);
+        tMid = Math.max(tMid * 1.35, residual * 0.7);
+        tHigh = Math.max(tHigh * 1.35, residual * 0.5);
       }
       // Fast attack, slow release — syllables land visibly, decay is graceful.
       const smooth = (cur: number, target: number) =>
@@ -273,15 +290,18 @@ export function VoiceOrb({
   // one ('error') looked exactly like a live, armed mic — the agent appeared to
   // be listening and simply never answering, with nothing on screen to say
   // otherwise. A stalled conversation must be visibly stalled.
-  const label = speaking
-    ? 'Speaking'
-    : thinking
-      ? 'Thinking…'
-      : state === 'error'
-        ? 'Voice error — click to exit'
-        : state === 'idle'
-          ? 'Reconnecting…'
-          : (wakeHint ?? 'Listening');
+  const teaching = Boolean(teachWord);
+  const label = teaching
+    ? (speaking ? 'Placing a word on the Orb' : 'Say the word on the Orb')
+    : speaking
+      ? 'Speaking'
+      : thinking
+        ? 'Thinking…'
+        : state === 'error'
+          ? 'Voice error — click to exit'
+          : state === 'idle'
+            ? 'Reconnecting…'
+            : (wakeHint ?? 'Listening');
 
   return (
     <div
@@ -300,11 +320,55 @@ export function VoiceOrb({
         background: `radial-gradient(ellipse at center, ${colors.surfaceHi} 0%, ${colors.bg} 75%)`,
       }}
     >
-      <canvas
-        ref={canvasRef}
-        aria-hidden
-        style={{ width: SIZE, height: SIZE, maxWidth: '90%', maxHeight: '60%' }}
-      />
+      <div style={{ position: 'relative', width: SIZE, maxWidth: '90%', maxHeight: '60%' }}>
+        <canvas
+          ref={canvasRef}
+          aria-hidden
+          style={{ width: '100%', height: 'auto', display: 'block' }}
+        />
+        {teachWord ? (
+          <div
+            aria-label={`Say ${teachWord}`}
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              pointerEvents: 'none',
+              textAlign: 'center',
+              padding: 24,
+            }}
+          >
+            <div
+              style={{
+                fontFamily: font.display,
+                fontSize: 28,
+                fontWeight: 600,
+                color: '#fff',
+                textShadow: '0 2px 18px rgba(0,0,0,0.55)',
+                lineHeight: 1.15,
+              }}
+            >
+              {teachWord}
+            </div>
+            <div
+              style={{
+                marginTop: 8,
+                fontFamily: font.body,
+                fontSize: 11,
+                fontWeight: 700,
+                letterSpacing: '0.16em',
+                textTransform: 'uppercase',
+                color: 'rgba(255,255,255,0.72)',
+              }}
+            >
+              Say this
+            </div>
+          </div>
+        ) : null}
+      </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
         <span
