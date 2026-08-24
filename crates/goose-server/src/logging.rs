@@ -133,6 +133,14 @@ fn default_env_filter() -> EnvFilter {
         // failure mode worth watching, and without the directive those lines sit
         // below the WARN floor (the #580 trap) and never appear.
         .add_directive("prompt_cache=info".parse().unwrap())
+        // Storage cleanup: the audit trail of a DESTRUCTIVE flow — every path
+        // moved to the Trash, its size, its category, and the route that did
+        // it (UI click vs bulk sweep vs API). On 2026-08-24 a bulk action
+        // trashed 133 GB including five live builds and the logs could not say
+        // by which route; without this directive those very lines would sit
+        // below the WARN floor (the #580 trap) and the answer would still be
+        // missing next time.
+        .add_directive("storage_cleanup=info".parse().unwrap())
         .add_directive(LevelFilter::WARN.into())
 }
 
