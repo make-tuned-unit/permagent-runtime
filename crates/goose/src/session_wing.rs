@@ -484,9 +484,12 @@ pub async fn load_session_project_hint(
             "could not read the session project hint — the turn stays unwinged"
         );
         None
-    })?;
+    });
 
-    let (project_id, slug, name, root_path) = row;
+    // Destructure AFTER the row option is unwrapped. `fetch_optional` already
+    // returns `Option<Row>`; applying `?` before the annotation would make sqlx
+    // infer the ROW type as `Option<...>` and ask for a `FromRow` impl on it.
+    let (project_id, slug, name, root_path) = row?;
     let project_id = project_id?;
     let slug = slug.filter(|s| !s.is_empty())?;
     let name = name.unwrap_or_else(|| slug.clone());
