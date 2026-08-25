@@ -53,12 +53,16 @@ pub const DEFAULT_VOICE_PROVIDER_ID: &str = "custom_deepseek";
 /// Model id of the measured default. See [`default_voice_model`].
 pub const DEFAULT_VOICE_MODEL_ID: &str = "deepseek-chat";
 
-/// The bench winner (2026-08-25): the one reachable candidate that does not
-/// reason at all, and it shows — a 1.34 s median time-to-first-token with a
-/// 1.60 s p90, against 2.84 s / 4.36 s for the MiniMax reasoning model the voice
-/// path used before, at comparable answer quality. It also speaks *while* calling
-/// a tool instead of going silent, which is the larger perceived-latency win.
-/// See `docs/research/VOICE_MODEL_BENCH_2026-08-25.md`.
+/// The bench winner (2026-08-25). Of five candidates measured on the real prompt
+/// and the real 124 tool schemas, it was the only one that did not emit a
+/// reasoning block on a single turn — and the only fast one. Warm: a 1.58 s
+/// median time-to-first-token with a 1.89 s p90, against 3.20 s / 4.36 s for the
+/// MiniMax reasoning model the voice path used before and 4.05 s / 11.34 s for
+/// the cheapest alternative. It also went silent on only 1 turn in 20 (others: 5
+/// to 7), speaking while it called the tool, which is the larger perceived
+/// latency win. Quality, judged blind by a model from none of their families,
+/// came out nominally ahead. See
+/// `docs/research/VOICE_MODEL_BENCH_2026-08-25.md`.
 pub fn default_voice_model() -> VoiceModel {
     VoiceModel {
         provider: DEFAULT_VOICE_PROVIDER_ID.to_string(),

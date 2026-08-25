@@ -20,89 +20,112 @@ schemas** (157 KB), lifted from a daemon request log by
 `scripts/bench/extract_voice_tools.py`, which copies `input.tools` and nothing
 else. ≈65 k input tokens per turn, the same order as the live path's ~70 k. Two
 runs per candidate: run 0 cold, run 1 with the prefix cache warm.
-**Total spend: $1.16.**
+**Total spend: $1.68** across two sessions (the second added Z.AI and Haiku once
+a stuck keychain prompt was cleared).
 
 ## Results
 
 Milliseconds. "first sentence" is time to the first speakable boundary — what TTS
 keys the first audio on. "thinks" counts turns that emitted a reasoning block.
+"quality" is one blind, shuffled, per-turn score from `openai/gpt-5.4-mini` — a
+family none of the candidates belongs to.
 
-| candidate | run | TTFT med | TTFT p90 | first sentence | total med | tool ok | cache hit | $/turn | thinks | quality |
-|---|---|---|---|---|---|---|---|---|---|---|
-| **MiniMax-M2.7** (today) | cold | 2580 | 6836 | 3064 | 2822 | 2/5 | 95 % | $0.0055 | 20/20 | **3.10** |
-| | warm | 2839 | 4363 | 3202 | 2899 | 2/5 | 100 % | $0.0046 | 20/20 | |
-| **MiniMax-M2.7-highspeed** | cold | 2450 | 5720 | 2450 | 2643 | 3/5 | 95 % | $0.0064 | 20/20 | **2.80** |
-| | warm | 2516 | 4412 | 2516 | 2628 | 2/5 | 100 % | $0.0055 | 20/20 | |
-| **deepseek-chat** | cold | 1452 | 1674 | 1652 | 1927 | 3/5 | n/a | $0.0181 \* | 0/20 | **2.95** |
-| | warm | **1339** | **1603** | **1581** | 1911 | 4/5 | n/a | $0.0181 \* | 0/20 | |
+| candidate | run | TTFT med | TTFT p90 | first sentence | total med | tool ok | silent | cache hit | $/turn | thinks | quality |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| MiniMax-M2.7 (before) | cold | 2619 | 6836 | 3124 | 2822 | 2/5 | 6/20 | 95 % | $0.0055 | 20/20 | **2.35** |
+| | warm | 3202 | 4363 | 3267 | 2899 | 2/5 | 6/20 | 100 % | $0.0046 | 20/20 | |
+| MiniMax-M2.7-highspeed | cold | 2450 | 5720 | 2450 | 2643 | 3/5 | 7/20 | 95 % | $0.0064 | 20/20 | **2.50** |
+| | warm | 2516 | 4412 | 2516 | 2628 | 2/5 | 7/20 | 100 % | $0.0055 | 20/20 | |
+| **deepseek-chat** | cold | 1515 | 1786 | 1833 | 2100 | 3/5 | 3/20 | 100 % | $0.0018 | 0/20 | **2.60** |
+| | warm | **1580** | **1885** | **1798** | 2071 | **4/5** | **1/20** | 100 % | **$0.0018** | 0/20 | |
+| Z.AI glm-4.7-flashx | cold | 3627 | 7949 | 3694 | 4367 | 4/5 | 5/20 | 100 % | $0.0009 | 20/20 | **2.15** |
+| | warm | 4050 | 11339 | 4319 | 4865 | 4/5 | 6/20 | 100 % | $0.0007 | 20/20 | |
+| Z.AI glm-4.7 | cold | 7866 | 28678 | 8217 | 8703 | 2/5 | 4/20 | 100 % | $0.0105 | 20/20 | **2.35** |
+| | warm | 6046 | 10752 | 6297 | 6364 | 4/5 | 5/20 | 100 % | $0.0074 | 20/20 | |
 
-\* An upper bound, not the real price — see "Cost" below.
+"silent" counts turns that produced a tool call and no spoken text at all — the
+user hears nothing for a whole tool round trip and cannot tell it from a crash.
 
-Three of the four intended candidates could not be measured, and are reported as
-skipped rather than quietly dropped:
+MiniMax was measured in the first session, the rest in the second; the two are
+comparable because MiniMax runs on the Anthropic format, whose usage parsing
+already read cache fields correctly. A repeat of deepseek-chat in the first
+session gave 1339 ms / 1603 ms, so read its numbers as a 1.34–1.58 s median band.
 
-- **Z.AI `glm-4.7-flashx` / `glm-4.7`** — neither `ZAI_API_KEY` nor
-  `ZHIPU_API_KEY` was present in the daemon's secret store when the bench probed
-  it. A key may exist elsewhere on the machine; re-probe when the keychain is
-  answerable.
-- **Claude Haiku 4.5** — Anthropic returns "credit balance is too low".
-- **Kimi K2.5** (already a substitute for GLM) — Moonshot account suspended.
-
-`deepseek-chat` went in instead because it is the one reachable model in the
-slate that **does not reason at all** — the cleanest test of the actual thesis.
+**Claude Haiku 4.5 still could not be measured:** the key is configured, but
+Anthropic answers every request with "credit balance is too low". It remains the
+candidate most worth revisiting — it is the only one that would not think by
+default *and* has full prompt-cache support on the path we already use. (Kimi
+K2.5 was tried in the first session and the Moonshot account is suspended.)
 
 ## What the numbers say
 
-**The tail is the story, not the median.** Both MiniMax variants answer in about
-2.5–2.8 s at the median but 4.4–6.8 s at p90; deepseek-chat's p90 is 1.60 s, only
-0.26 s above its own median. A voice assistant is judged on its worst turns, and
-a reasoning model's spread is the wait that feels unbounded.
+**One model does not think, and it is the only one that is fast.** Every other
+candidate emitted a reasoning block on all 40 of its turns, and every other
+candidate is 1.5–4× slower to the first spoken word. This is the whole finding:
+the lever is not a faster endpoint for a reasoning model, it is a model that does
+not stop to reason before saying hello.
 
-**Highspeed is the same class of thing.** `MiniMax-M2.7-highspeed` buys ~10 % of
-TTFT and costs ~20 % more per turn. It still emitted a thinking block on all 40
-turns. It is not the lever.
+**The tail is the story, not the median.** deepseek-chat's p90 sits 300 ms above
+its own median. Everything else spreads: MiniMax 4.4–6.8 s, glm-4.7-flashx up to
+11.3 s, glm-4.7 up to 28.7 s. Both Z.AI models also opened their first cold turn
+at 64–70 s — a queue or a cold start, but on a voice path that is a hang. A voice
+assistant is judged on its worst turns.
 
-**Silence is worse than slowness.** MiniMax opened with a bare tool call — no
-spoken text at all — on 6/20 (baseline) and 7/20 (highspeed) turns, including
-plain conversational ones. deepseek-chat did that once in 20, and otherwise spoke
-first ("Let me check your current projects.") *while* calling the tool. In
-production a silent opening means the user hears nothing until the tool returns
-AND a second model round-trip starts, which no median in this table includes.
+**`MiniMax-M2.7-highspeed` is the same class of thing.** ~10 % off TTFT for ~20 %
+more per turn, still thinking on every turn. It is not the lever.
 
-**Tool choice is mediocre across the board** — best 4/5, with a generic
+**The cheapest model is not the answer either.** glm-4.7-flashx costs a quarter
+of deepseek-chat and picks tools just as well (4/5), but it thinks, its median is
+2.5× worse and its p90 is 6×. At these prices the difference is fractions of a
+cent per spoken turn; latency is the scarce resource here, not money.
+
+**Silence is worse than slowness.** Every candidate opened some turns with a bare
+tool call and no spoken text — 4 to 7 turns in 20 — including plain conversational
+ones. deepseek-chat was the best at 1–3, and it typically spoke first ("Let me
+check your current projects.") *while* calling the tool. A silent opening means
+the user hears nothing until the tool returns AND a second model round-trip
+starts, which no median in this table includes. That is model-independent enough
+to fix in the prompt, and this PR does.
+
+**Tool choice is mediocre across the board** — 2/5 to 4/5, with a generic
 `observe_app` recurring where `project_list` or the inbox tool was wanted. A
 prompt/tool-surface problem, not a model choice, and unchanged by this decision.
 
-**Quality is a wash.** Blind, shuffled, per-turn rubric scoring put all three
-within 0.3 on a 0–5 scale (baseline 3.10, deepseek 2.95, highspeed 2.80).
-deepseek-chat never scored a 0; MiniMax scored 0 on 2 and 3 turns, all of them
-silent tool calls on turns that only wanted an answer. deepseek's own tic is
-meta-commentary ("That's a constraint problem, not a phone problem"), which cost
-it several 5s.
+**Quality is a wash, with the fastest model nominally ahead.** The cross-family
+judge (`openai/gpt-5.4-mini`, blind and shuffled per turn) put all five inside
+0.45 of each other on 0–5: deepseek-chat 2.60, highspeed 2.50, MiniMax-M2.7 and
+glm-4.7 2.35, glm-4.7-flashx 2.15. An earlier hand-scored pass with a different
+judge ranked MiniMax-M2.7 first by 0.15 — so treat the ordering as noise and the
+*absence of a quality cliff* as the finding. The scores are low across the board
+because the rubric punishes silent turns and written-prose formatting, which
+every candidate did.
 
-**Cost.** The $0.0181/turn for deepseek-chat is an artefact this bench uncovered
-and this PR fixes: `formats::openai::get_usage` read only the Anthropic-style
-`cache_read_input_tokens`, so DeepSeek's automatic context cache
+**Cost.** deepseek-chat's first-session figure of $0.0181/turn was an artefact
+this bench uncovered and this PR fixes: `formats::openai::get_usage` read only the
+Anthropic-style `cache_read_input_tokens`, so DeepSeek's automatic context cache
 (`prompt_cache_hit_tokens`) and OpenAI's own `prompt_tokens_details.cached_tokens`
-were both invisible — every cached turn on every OpenAI-format provider billed as
-a cold prefill. At the canonical $0.028/M cache-read rate over a ~64.8 k cached
-prefix the arithmetic gives ≈$0.002/turn, i.e. **cheaper than MiniMax**. A
-projection, not a measurement — see "Not measured".
+were both invisible and every cached turn on every OpenAI-format provider billed
+as a cold prefill. With the fix in, the same run measures **$0.0018/turn at a
+100 % cache-hit rate** — a tenth of the pre-fix number, and cheaper than the
+MiniMax model it replaces. Both Z.AI models likewise only report a cache hit at
+all because of this fix.
 
 ## Recommendation
 
-**Route voice turns to `custom_deepseek` / `deepseek-chat`.** Against the stated
-budget:
+**Route voice turns to `custom_deepseek` / `deepseek-chat`.** It wins every column
+that matters here — fastest median, by far the tightest tail, fewest silent turns,
+joint-best tool correctness, top quality score — and it is cheaper than the model
+it replaces. Against the stated budget:
 
-- *First audio ≤ 2.5 s* — approached, not reached. This bench's 1581 ms
+- *First audio ≤ 2.5 s* — approached, not reached. This bench's 1798 ms
   first-sentence plus the rest of the measured pipeline (500 ms endpointing after
   `feat/voice-endpointing-and-orb`, 116 ms STT, 142 ms pre-stream, 896 ms Kokoro)
-  is **≈3.2 s** speech-end→first-audio, against ≈4.9 s for MiniMax warm and
-  ≈10.6 s today. The last 700 ms is a first-chunk-length problem, not a model one.
-- *Tool calls correct* — 3–4/5, best of the three, and the only candidate that
-  speaks while it calls.
-- *Quality not markedly below baseline* — 2.95 vs 3.10, inside the noise of a
-  20-turn sample, with fewer catastrophic turns.
+  is **≈3.5 s** speech-end→first-audio, against ≈4.9 s for MiniMax warm and
+  ≈10.6 s today. The remainder is a first-chunk-length problem, not a model one.
+- *Tool calls correct* — 4/5 warm, joint-best, and the only candidate that
+  reliably speaks while it calls.
+- *Quality not markedly below baseline* — 2.60 vs 2.35, nominally ahead, and
+  inside the noise of a 20-turn sample either way.
 
 ## Shipped (this PR)
 
@@ -152,16 +175,12 @@ the moment MEASURED spend reaches the budget.
 
 ## Not measured
 
-- **Z.AI GLM, Claude Haiku 4.5, Kimi** — no key / no credit (table above). Haiku
-  is the one worth revisiting: it is the only candidate that would not think by
-  default *and* has full prompt-cache support on the path we already use.
-- **The honest DeepSeek price, and the automated judge.** Both are blocked the
-  same way: every API-key read now times out at 30 s against a pending macOS
-  keychain authorisation prompt only an interactive session can answer. The
-  harness supports `--judge` / `--judge-only` (a re-score costs 20 small calls);
-  the quality column here came instead from blind, shuffled, per-turn rubric
-  scoring by an Anthropic-family agent — cross-family to both MiniMax and
-  DeepSeek, but not reproducible by the harness.
+- **Claude Haiku 4.5 and Kimi K2.5** — key present, no credit; Moonshot account
+  suspended. Haiku is the one worth revisiting: the only candidate that would not
+  think by default *and* has full prompt-cache support on the path we already use.
+- **What the Z.AI cold-start spikes actually were.** 64–70 s on the first turn of
+  each Z.AI run, and 28.7 s once mid-run. Queue, cold start or rate limit — the
+  bench cannot tell, and on a voice path the distinction does not matter.
 - **Multi-turn conversations.** Every bench turn is a single user message; the
   live 7.4 s median came from turns carrying 8–16 prior ones. Every absolute
   number here is therefore optimistic — the *relative* gap is the finding.
