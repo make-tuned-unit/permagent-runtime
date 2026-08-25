@@ -119,6 +119,16 @@ pub struct ComposerState {
     pub phase: TurnPhase,
     /// Tokens this turn, if the provider has reported any yet.
     pub turn_tokens: Option<u64>,
+    /// Dollars spent THIS turn, for the same status row as `turn_tokens`.
+    ///
+    /// Tokens alone answer "how much work" but not "how much money", and the
+    /// two do not track each other: a cache-heavy turn can be tens of
+    /// thousands of tokens and fractions of a cent, and the whole reason the
+    /// Build meter was reported dead was that nobody could see the money
+    /// moving. `None` when it is not known — never `Some(0.0)` as a stand-in,
+    /// because a real free turn (a local model) and an unknown one must not
+    /// render identically.
+    pub turn_cost_usd: Option<f64>,
     /// When anything was last printed. `None` means nothing yet this turn.
     pub last_output_at: Option<Instant>,
     /// A provider wait in progress, already rendered by
@@ -588,6 +598,9 @@ fn busy_status_line(state: &ComposerState) -> String {
     if let Some(tokens) = state.turn_tokens {
         line.push_str(&format!(" · {}", format_turn_tokens(tokens)));
     }
+    if let Some(usd) = state.turn_cost_usd {
+        line.push_str(&format!(" · {}", format_turn_cost(usd)));
+    }
     line.push(')');
 
     // Silence is the thing the user cannot interpret. Name it and name the way
@@ -683,6 +696,21 @@ fn phase_text(phase: &TurnPhase) -> String {
             }
             _ => name.clone(),
         },
+    }
+}
+
+/// `$0.0032` / `$0.41` — the turn's money, beside its tokens.
+///
+/// Sub-cent amounts keep four decimals rather than rounding to `$0.00`: a turn
+/// that cost a third of a cent DID cost something, and a status row that says
+/// `$0.00` for it is the same lie the Build meter was telling all day. Mirrors
+/// `output::format_cost_line`'s `money()`, so the row and the footer never
+/// disagree about the same figure.
+fn format_turn_cost(usd: f64) -> String {
+    if usd > 0.0 && usd < 0.01 {
+        format!("${usd:.4}")
+    } else {
+        format!("${usd:.2}")
     }
 }
 
@@ -1408,6 +1436,10 @@ mod tty {
             self.state.turn_tokens = tokens;
         }
 
+        pub fn set_turn_cost(&mut self, usd: Option<f64>) {
+            self.state.turn_cost_usd = usd;
+        }
+
         /// Something was printed — restart the silence timer. Deliberately does
         /// NOT repaint: the caller is mid-output and owns the terminal.
         pub fn mark_output(&mut self) {
@@ -1541,6 +1573,11 @@ impl Composer {
     }
     pub fn set_turn_tokens(&mut self, tokens: Option<u64>) {
         self.state.turn_tokens = tokens;
+    }
+
+    /// Dollars spent this turn, for the pinned status row's cost slot.
+    pub fn set_turn_cost(&mut self, usd: Option<f64>) {
+        self.state.turn_cost_usd = usd;
     }
     pub fn mark_output(&mut self) {
         self.state.mark_output();
@@ -2003,6 +2040,54 @@ mod tests {
         assert!(status_line(&state).contains("840 tok"));
         state.turn_tokens = Some(12_400);
         assert!(status_line(&state).contains("12.4k tok"));
+    }
+
+    /// The money half of the same row. Tokens do not imply cost — a
+    /// cache-heavy turn is tens of thousands of tokens and fractions of a cent
+    /// — so the row carries both or the user is reading work as spend.
+    #[test]
+    fn cost_this_turn_sits_beside_the_tokens() {
+        let mut state = busy_state();
+        state.phase = TurnPhase::Thinking;
+        state.turn_tokens = Some(12_400);
+        state.turn_cost_usd = Some(0.41);
+        let line = status_line(&state);
+        assert!(line.contains("12.4k tok"), "{line}");
+        assert!(line.contains("$0.41"), "{line}");
+    }
+
+    /// REGRESSION. A third of a cent rendered at two decimals is `$0.00`,
+    /// which is precisely the "the meter never moves" complaint that started
+    /// this — a turn that cost something must never say it cost nothing.
+    #[test]
+    fn a_sub_cent_turn_is_not_rounded_away_to_zero() {
+        let mut state = busy_state();
+        state.phase = TurnPhase::Thinking;
+        state.turn_cost_usd = Some(0.0032);
+        let line = status_line(&state);
+        assert!(line.contains("$0.0032"), "{line}");
+        assert!(!line.contains("$0.00 "), "{line}");
+    }
+
+    /// A free turn and an unknown one must not look the same: a local model
+    /// genuinely costs $0.00, and "we have not read the ledger yet" is not a
+    /// number at all.
+    #[test]
+    fn an_unknown_cost_is_omitted_while_a_real_zero_is_shown() {
+        let mut state = busy_state();
+        state.phase = TurnPhase::Thinking;
+        state.turn_cost_usd = None;
+        assert!(
+            !status_line(&state).contains('$'),
+            "{}",
+            status_line(&state)
+        );
+        state.turn_cost_usd = Some(0.0);
+        assert!(
+            status_line(&state).contains("$0.00"),
+            "{}",
+            status_line(&state)
+        );
     }
 
     #[test]

@@ -1642,6 +1642,16 @@ interface ActionIdentity {
   /** git | content | event | self */
   verifiedBy: string | null;
   verifiedAt: string | null;
+  /** The receipt for "this shipped" — the full sha of the commit the `git`
+   *  check passed against. Present only when `verifiedBy === 'git'`; omitted
+   *  from the JSON (not sent as null) for every other strategy, so its mere
+   *  presence is itself the claim "a commit did this". */
+  verifiedCommit?: string | null;
+  /** The passing check's own sentence, verbatim, STORED rather than
+   *  recomputed on render — re-running the git check later searches
+   *  `--since=created_at` and can honestly name a different, later commit, so
+   *  redrawing this from a fresh check would silently rewrite the receipt. */
+  verifiedDetail?: string | null;
   outcomes: ActionOutcome[];
   /** The reading frozen at verification — what every window is compared
    *  against. Absent for an action that was never verified, and for one whose
@@ -1935,11 +1945,17 @@ function metricValue(metric: string, value: number): string {
  * changes, so no stale verdict can be inherited.
  */
 function ActionVerify({
-  projectId, action, colors, readOnly = false,
+  projectId, action, colors, onChanged, readOnly = false,
 }: {
   projectId: string;
   action: GrowthAction;
   colors: ThemeColors;
+  /** Refetch the board. A pass moves the card from Actions to Completed, so
+   *  the parent has to re-read rather than this component patching its own
+   *  `result` state — that was the bug: the card verified on the daemon but
+   *  visibly stayed in the suggestion list because nothing here ever told the
+   *  parent to look again. Mirrors `ActionCard`'s `move()`. */
+  onChanged: () => void;
   /**
    * The archived shelf. Every CONTROL disappears — a filed action is a record,
    * not a thing still asking to be done — but the verdict does not. Suppressing
@@ -1964,7 +1980,16 @@ function ActionVerify({
       + `${encodeURIComponent(identity.id)}/verify`,
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
     )
-      .then(setResult)
+      .then((res) => {
+        setResult(res);
+        // Verification moves the card between two lists (Actions →
+        // Completed), so a local setResult alone decorates a card that is now
+        // sitting in the wrong list — refetch tells the parent to look again.
+        // Only on an actual pass: a failed or self-attest-eligible check
+        // leaves the card exactly where it is, so there is nothing to refetch
+        // for.
+        if (res.verified) onChanged();
+      })
       // A thrown fetch becomes a rendered, honest result rather than a dead
       // button — the rule the first-party install check already follows
       // (runVerify's catch, this file). A verify control that silently does
@@ -1976,7 +2001,7 @@ function ActionVerify({
         reason: `Could not run the check: ${e instanceof Error ? e.message : String(e)}`,
       }))
       .finally(() => setBusy(false));
-  }, [projectId, identity]);
+  }, [projectId, identity, onChanged]);
 
   const rule: CSSProperties = {
     marginTop: 10, paddingTop: 8, borderTop: `1px solid ${colors.border}`,
@@ -2340,6 +2365,39 @@ function TrackingRail({ identity, colors }: { identity: ActionIdentity; colors: 
       borderRadius: radius.md, padding: 10,
       display: 'flex', flexDirection: 'column', gap: 8,
     }}>
+      {/* The receipt for "this shipped". A commit chip only when the check
+          that passed was `git` — `verifiedCommit` is omitted from the JSON
+          for every other strategy (routes/growth_actions.rs), so its absence
+          here falls back to naming the strategy itself (`verifiedByMeta`)
+          rather than rendering nothing, which would read as "we don't know
+          how this was confirmed" when the truth is "not from a commit". */}
+      {identity.verifiedBy && (
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+          {identity.verifiedCommit ? (
+            <span style={{
+              fontFamily: font.mono, fontSize: 10, color: colors.text,
+              border: `1px solid ${colors.border}`, borderRadius: radius.sm,
+              padding: '1px 6px',
+            }}>commit {identity.verifiedCommit.slice(0, 8)}</span>
+          ) : (
+            <span style={{ fontSize: 11, color: colors.textDim }}>
+              {verifiedByMeta(identity.verifiedBy).label}
+            </span>
+          )}
+          {identity.verifiedAt && (
+            <span style={{ fontSize: 11, color: colors.textDim }}>
+              verified {new Date(identity.verifiedAt).toLocaleDateString()}
+            </span>
+          )}
+        </div>
+      )}
+      {/* Stored, not recomputed — see `verifiedDetail` on `ActionIdentity`. */}
+      {identity.verifiedDetail && (
+        <span style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>
+          {identity.verifiedDetail}
+        </span>
+      )}
+
       <span style={label}>Measuring against</span>
       {identity.baseline ? (
         <span style={{ fontSize: 11, color: colors.textDim, lineHeight: 1.5 }}>
@@ -2409,10 +2467,14 @@ function ActionCard({
    *  `actions`  work still asking for a decision. Dismiss is offered whatever
    *             the status, because this is the list the user is trying to
    *             shorten and a row here with no control is the defect.
-   *  `tracking` work being measured. Archive is the exit: it files the card
-   *             away and KEEPS measuring it, which is what filing away
-   *             in-flight work has to mean. Dismiss is not offered — it would
-   *             drop a live experiment into the refused pile.
+   *  `tracking` work that shipped, shown under the board's "Completed"
+   *             heading. Archive is the exit: it files the card away and
+   *             KEEPS measuring it, which is what filing away in-flight work
+   *             has to mean. Reopen is also offered, but only while nothing
+   *             has judged it yet — the server refuses it once outcomes
+   *             exist, because reopening clears the pivot those verdicts were
+   *             measured from. Dismiss is not offered — it would drop a live
+   *             experiment into the refused pile.
    *  `shelf`    archived or dismissed. A record: no controls at all. */
   lane: ActionLane;
   /** Refetch the board. Archiving moves a card between two lists, so the
@@ -2477,6 +2539,29 @@ function ActionCard({
       .finally(() => setMoving(null));
   }, [project.id, actionId, onChanged]);
 
+  /** Sends a Completed card back to Actions with no verdict on record.
+   *
+   *  A separate route rather than `move('suggested')` because reopening isn't
+   *  a status flip: the server has to clear `verified_at`/`verified_by` (and
+   *  the commit receipt), since those are the pivot every measurement window
+   *  is read from. It reuses `move`'s error pattern — a refused reopen says
+   *  why, the same way a refused archive does — and the caller (`canReopen`
+   *  below) keeps it off any card whose outcomes already rest on that pivot,
+   *  which is also the server's own 409 guard. */
+  const reopen = useCallback(() => {
+    if (!actionId) return;
+    setMoving('reopened');
+    setMoveError(null);
+    apiFetch(
+      `/api/projects/${encodeURIComponent(project.id)}/growth-actions/`
+      + `${encodeURIComponent(actionId)}/reopen`,
+      { method: 'POST' },
+    )
+      .then(() => onChanged())
+      .catch((e) => setMoveError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setMoving(null));
+  }, [project.id, actionId, onChanged]);
+
   const sendToAgent = useCallback(() => {
     const agent = codingAgentById(agentId);
     if (!agent || !project.rootPath) return;
@@ -2501,6 +2586,13 @@ function ActionCard({
   const tint = categoryColor(action.category, colors);
   const transfer = action.transfer ?? null;
   const canArchive = !readOnly && !!identity && ARCHIVABLE.includes(identity.status);
+  /** Completed only, and only before anything has judged it. Once an outcome
+   *  exists it was measured from this action's pivot, and reopening would
+   *  clear that pivot out from under the verdict — the server refuses the
+   *  route for the same reason (409, growth_actions.rs), so a card with
+   *  outcomes offers Archive as its only exit rather than a button that would
+   *  just come back with an error every time. */
+  const canReopen = lane === 'tracking' && !!identity && identity.outcomes.length === 0;
   /** Keyed on the DURABLE ROW, not on a status allowlist and not on the prose
    *  cache.
    *
@@ -2669,6 +2761,7 @@ function ActionCard({
         projectId={project.id}
         action={action}
         colors={colors}
+        onChanged={onChanged}
         readOnly={readOnly}
       />
 
@@ -2689,6 +2782,13 @@ function ActionCard({
             disabled={!!moving}
             style={{ ...smallButton, opacity: moving ? 0.5 : 1 }}
           >{moving === 'archived' ? 'Filing…' : 'Archive'}</button>
+          {canReopen && (
+            <button
+              onClick={reopen}
+              disabled={!!moving}
+              style={{ ...smallButton, opacity: moving ? 0.5 : 1 }}
+            >{moving === 'reopened' ? 'Reopening…' : 'Reopen'}</button>
+          )}
           <span style={{ fontSize: 10, color: colors.textDim }}>
             Files it away. It keeps being measured and keeps teaching the agent.
           </span>
@@ -3020,24 +3120,28 @@ export function GrowActions({ project, colors }: { project: Project; colors: The
           ))}
         </div>
 
-        {/* Tracking — what we changed, and whether it worked.
+        {/* Completed — what we shipped, and whether it worked.
 
-            Not collapsed and not the archive: this is live work with verdicts
-            still to come, and the user asked for it precisely so a verified
-            action would leave the decision list without leaving their sight.
-            #1053 deliberately kept these rows on the active board so nothing
-            in flight could silently vanish; that guarantee is honoured by
-            MOVING them here, where every one is still rendered with its
-            evidence, its prediction, its baseline and its windows. */}
+            Not collapsed and not the archive: this is shipped work with
+            verdicts still to come, and the user asked for it precisely so a
+            verified action would leave the decision list without leaving
+            their sight. #1053 deliberately kept these rows on the active
+            board so nothing in flight could silently vanish; that guarantee
+            is honoured by MOVING them here, where every one is still
+            rendered with its evidence, its prediction, its baseline and its
+            windows. The heading says "Completed" because that is what
+            happened to the WORK — measurement continuing is a property of
+            the verdict, not a reason to still call it undone, which is why
+            the subhead carries that nuance instead of the heading. */}
         {tracking.length > 0 && (
           <section style={{ marginTop: 18 }}>
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 10 }}>
               <h3 style={{
                 fontFamily: font.mono, fontSize: 11, color: colors.textDim,
                 textTransform: 'uppercase', letterSpacing: '0.08em', margin: 0,
-              }}>Tracking ({tracking.length})</h3>
+              }}>Completed ({tracking.length})</h3>
               <span style={{ fontSize: 10, color: colors.textDim }}>
-                Changes you made, measured at {WINDOW_DAYS.join(', ')} days against the
+                Shipped — still being measured, at {WINDOW_DAYS.join(', ')} days against the
                 traffic before them.
               </span>
             </div>
