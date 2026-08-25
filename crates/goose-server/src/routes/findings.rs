@@ -861,7 +861,7 @@ fn bulk_preview(data: &FindingsFile) -> BulkPreviewResponse {
             default_selected: classify::default_selected(cat),
         })
         .collect();
-    by_category.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+    by_category.sort_by_key(|c| std::cmp::Reverse(c.bytes));
 
     let sum = |pred: fn(&str) -> bool| -> (usize, u64) {
         pending
