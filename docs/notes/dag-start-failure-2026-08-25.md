@@ -6,7 +6,6 @@ started. From `~/.permagent/spectral/permagent.db` (`messages` 15944–15965); n
 text is quoted here.
 
 ## What happened, in tool calls
-
 1. `project_list {}` → success
 2. `project_create {"name":"CivicLedger","root_path":null,"description":null,"tags":[…]}` → success
 3. `shell {"command":"mkdir -p …/civic-ledger"}` → exit 0
@@ -35,6 +34,7 @@ result. It behaved correctly and preserved the work. **Not infra:** no provider
 
 ## Fix
 
-`handle_update` now refuses an update that would change nothing, naming the field's
-real current value and that `null` clears rather than sets (`project_manager.rs`,
-`no_op_update_reason`). The tool description says the same.
+`handle_update` now refuses an update that would change nothing. The refusal names
+every field passed and the value it already held ("root_path was already null"),
+says the identical retry will not help, and explains that `null` clears rather than
+sets (`project_manager.rs`, `no_op_update_reason`). The tool description agrees.

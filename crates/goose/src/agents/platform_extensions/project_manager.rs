@@ -886,37 +886,78 @@ impl ProjectManagerClient {
     /// Both shapes reach here from a model: no settable field at all, and every
     /// settable field already holding the value asked for (which is what an
     /// explicit `null` on an already-empty `root_path` is).
+    ///
+    /// The reason NAMES every field that was passed and the value it already
+    /// holds. "Nothing changed" on its own is the part a model cannot act on —
+    /// it has no way to tell a refusal from a call that silently did nothing,
+    /// so it re-sends the same arguments until the runaway-loop guard stops it.
+    /// That is the 2026-08-25 dead end, exactly.
     fn no_op_update_reason(
         project: &projects::Project,
         input: &projects::UpdateProject,
     ) -> Option<String> {
-        let changes_a_string =
-            |asked: &Option<String>, current: &str| asked.as_ref().is_some_and(|v| v != current);
-        let changes_an_optional = |asked: &Option<Option<String>>, current: &Option<String>| {
-            asked.as_ref().is_some_and(|v| v != current)
-        };
+        let mut unchanged: Vec<String> = Vec::new();
+        let mut changes = false;
 
-        let changes = changes_a_string(&input.name, &project.name)
-            || input.slug.is_some()
-            || changes_a_string(&input.description, &project.description)
-            || changes_a_string(&input.status, &project.status)
-            || changes_an_optional(&input.root_path, &project.root_path)
-            || changes_an_optional(&input.site_url, &project.site_url)
-            || changes_an_optional(&input.repo_url, &project.repo_url)
-            || changes_a_string(&input.notes, &project.notes)
-            || input.metadata_json.is_some();
+        // Plain fields: absent means "leave alone", so only an asked-for value
+        // equal to the current one is a no-op.
+        for (asked, current, field) in [
+            (&input.name, &project.name, "name"),
+            (&input.description, &project.description, "description"),
+            (&input.status, &project.status, "status"),
+            (&input.notes, &project.notes, "notes"),
+        ] {
+            if let Some(v) = asked {
+                if v == current {
+                    unchanged.push(format!("{field} was already \"{current}\""));
+                } else {
+                    changes = true;
+                }
+            }
+        }
+
+        // Nullable fields carry an explicit JSON `null` as `Some(None)` —
+        // "clear it" — which against an already-empty field is precisely the
+        // no-op that started all this.
+        for (asked, current, field) in [
+            (&input.root_path, &project.root_path, "root_path"),
+            (&input.site_url, &project.site_url, "site_url"),
+            (&input.repo_url, &project.repo_url, "repo_url"),
+        ] {
+            if let Some(v) = asked {
+                if v == current {
+                    match current {
+                        Some(c) => unchanged.push(format!("{field} was already \"{c}\"")),
+                        None => unchanged.push(format!("{field} was already null")),
+                    }
+                } else {
+                    changes = true;
+                }
+            }
+        }
+
+        // `slug` is re-slugified on write and `metadata_json` is a full
+        // replacement, so treat either as intent to change rather than guessing
+        // at the normalised form here.
+        if input.slug.is_some() || input.metadata_json.is_some() {
+            changes = true;
+        }
 
         if changes {
             return None;
         }
 
-        let root = project
-            .root_path
-            .as_deref()
-            .map(|p| format!("\"{p}\""))
-            .unwrap_or_else(|| "not set".to_string());
+        let what = if unchanged.is_empty() {
+            "you passed no field to change".to_string()
+        } else {
+            unchanged.join("; ")
+        };
         Some(format!(
-            "project_update changed nothing on \"{}\": every field you passed already holds              that value. root_path is currently {root}. To set a field, pass it as a value —              e.g. root_path: \"/absolute/path/that/exists\" — not as null; null CLEARS a field.              Settable fields: name, slug, description, status, root_path, site_url, repo_url,              notes.",
+            "No changes to \"{}\": {what}. Nothing was written, so sending these same \
+             arguments again will not help. Pass the VALUE you want — e.g. \
+             root_path: \"/absolute/path/that/exists\" — remembering that null CLEARS a \
+             field rather than setting it. Settable: name, slug, description, status, \
+             root_path, site_url, repo_url, notes.",
             project.name
         ))
     }
@@ -3117,7 +3158,8 @@ mod tests {
     /// project whose root_path is ALREADY null changes nothing. It used to
     /// answer "Updated project" — so the model retried the identical call until
     /// the runaway-loop guard stopped it, and the DAG the user asked for was
-    /// never started. It must now say what happened.
+    /// never started. The refusal must now name the field and the value it
+    /// already held, which is the part the model can act on.
     #[test]
     fn an_update_that_changes_nothing_is_refused_not_reported_as_success() {
         let project = test_project(None);
@@ -3129,27 +3171,51 @@ mod tests {
         let reason = ProjectManagerClient::no_op_update_reason(&project, &input)
             .expect("a no-op update must be refused");
         assert!(
-            reason.contains("changed nothing"),
-            "must name the outcome: {reason}"
+            reason.contains("No changes to \"CivicLedger\""),
+            "must say plainly that nothing was written: {reason}"
         );
         assert!(
-            reason.contains("root_path is currently not set"),
-            "must state the field's real value so the model can correct itself: {reason}"
+            reason.contains("root_path was already null"),
+            "must name the field AND the value it already held: {reason}"
         );
         assert!(
             reason.contains("null CLEARS"),
             "must explain why null did not do what the model meant: {reason}"
         );
+        assert!(
+            reason.contains("again will not help"),
+            "must say the identical retry is pointless, before the guard has to: {reason}"
+        );
+    }
+
+    /// A field that IS set, asked for the value it already has, is named with
+    /// that value — not with a bare "nothing changed".
+    #[test]
+    fn a_no_op_names_every_field_that_was_passed() {
+        let project = test_project(Some("/tmp/civic"));
+        let input = projects::UpdateProject {
+            root_path: Some(Some("/tmp/civic".into())),
+            status: Some("active".into()),
+            ..Default::default()
+        };
+
+        let reason = ProjectManagerClient::no_op_update_reason(&project, &input).unwrap();
+        assert!(
+            reason.contains("root_path was already \"/tmp/civic\""),
+            "{reason}"
+        );
+        assert!(reason.contains("status was already \"active\""), "{reason}");
     }
 
     /// The bare call the model reaches for when it has no field to set.
     #[test]
     fn an_update_with_no_fields_is_refused() {
         let project = test_project(None);
-        assert!(ProjectManagerClient::no_op_update_reason(&project, &Default::default()).is_some());
+        let reason = ProjectManagerClient::no_op_update_reason(&project, &Default::default())
+            .expect("an update with no settable field must be refused");
+        assert!(reason.contains("no field to change"), "{reason}");
     }
 
-    /// A real change still goes through — this is a guard, not a lock.
     #[test]
     fn a_real_change_is_not_a_no_op() {
         let project = test_project(None);
