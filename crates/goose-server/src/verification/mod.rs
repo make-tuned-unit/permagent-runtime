@@ -4746,7 +4746,14 @@ mod tests {
             serde_json::json!({
                 "baseline_commit": baseline,
                 "declared_paths": ["src/**"],
-                "completion_checks": [{"type": "file_exists", "path": "src/lib.rs"}],
+                // Two checks on purpose: a lone existence check is an
+                // "existence-only ledger", which the check lint clamps to
+                // Uncertain — the verdict would never reach the gate, and the
+                // test would pass for the wrong reason.
+                "completion_checks": [
+                    {"type": "command_exit_zero", "cmd": "true", "timeout_secs": 30},
+                    {"type": "file_exists", "path": "src/lib.rs"}
+                ],
                 "worker_session_id": "sess-none"
             }),
             false,
@@ -4786,7 +4793,12 @@ mod tests {
                 "baseline_commit": baseline,
                 "goal_type": permagent::agents::platform_extensions::orchestrator::NON_CODE_GOAL_TYPES[0],
                 "declared_paths": ["**"],
-                "completion_checks": [{"type": "file_exists", "path": "README.md"}],
+                // As above: two checks, so the ledger is not existence-only and
+                // the verdict actually reaches the gate.
+                "completion_checks": [
+                    {"type": "command_exit_zero", "cmd": "true", "timeout_secs": 30},
+                    {"type": "file_exists", "path": "README.md"}
+                ],
                 "acceptance_criteria": ["names the three markets", "every figure is sourced"],
                 "independent_review": true,
                 "worker_session_id": "sess-none"
