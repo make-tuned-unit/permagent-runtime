@@ -440,6 +440,17 @@ impl SessionManager {
             .await
     }
 
+    /// Recent sessions for every schedule that has one, in ONE query — see
+    /// [`ScheduleSessionSummary`] and `SessionStorage::list_recent_sessions_by_schedule`.
+    pub async fn list_recent_sessions_by_schedule(
+        &self,
+        limit_per_schedule: usize,
+    ) -> Result<Vec<ScheduleSessionSummary>> {
+        self.storage
+            .list_recent_sessions_by_schedule(limit_per_schedule)
+            .await
+    }
+
     /// Lean session list (User + Scheduled) for LIST views — see
     /// [`SessionSummary`]. Use this for the HTTP `/api/sessions` list path;
     /// the heavy [`Session`] fields are served only on single-session GET.
@@ -691,6 +702,61 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Session {
     }
 }
 
+/// One schedule's run, as the Automate tab's run-history views render it.
+/// Selects only the columns `SessionDisplayInfo`
+/// (crates/goose-server/src/routes/schedule.rs) serializes — no
+/// extension_data / recipe_json / user_recipe_values_json / model_config_json
+/// blobs. See [`SessionStorage::list_recent_sessions_by_schedule`], added for
+/// the 2026-08-25 "schedule polling storm" health-review fix: the Automate
+/// tab used to fetch this same shape with one `list_sessions_by_schedule_id`
+/// SQL call per job, every poll tick (N queries). This is the batched,
+/// one-query replacement.
+#[derive(Debug, Clone)]
+pub struct ScheduleSessionSummary {
+    pub id: String,
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+    pub working_dir: PathBuf,
+    pub schedule_id: Option<String>,
+    pub message_count: usize,
+    pub total_tokens: Option<i32>,
+    pub input_tokens: Option<i32>,
+    pub output_tokens: Option<i32>,
+    pub accumulated_total_tokens: Option<i32>,
+    pub accumulated_input_tokens: Option<i32>,
+    pub accumulated_output_tokens: Option<i32>,
+}
+
+impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for ScheduleSessionSummary {
+    fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
+        use sqlx::Row;
+
+        let name: String = {
+            let name_val: String = row.try_get("name").unwrap_or_default();
+            if !name_val.is_empty() {
+                name_val
+            } else {
+                row.try_get("description").unwrap_or_default()
+            }
+        };
+
+        Ok(ScheduleSessionSummary {
+            id: row.try_get("id")?,
+            name,
+            created_at: row.try_get("created_at")?,
+            working_dir: PathBuf::from(row.try_get::<String, _>("working_dir")?),
+            schedule_id: row.try_get("schedule_id")?,
+            message_count: row.try_get::<i64, _>("message_count").unwrap_or(0) as usize,
+            total_tokens: row.try_get("total_tokens")?,
+            input_tokens: row.try_get("input_tokens")?,
+            output_tokens: row.try_get("output_tokens")?,
+            accumulated_total_tokens: row.try_get("accumulated_total_tokens")?,
+            accumulated_input_tokens: row.try_get("accumulated_input_tokens")?,
+            accumulated_output_tokens: row.try_get("accumulated_output_tokens")?,
+        })
+    }
+}
+
 /// Lean projection of a session for LIST views. Excludes the heavy JSON blobs
 /// (extension_data, recipe_json, user_recipe_values_json, model_config_json) and
 /// the conversation, which the session-list UI discards anyway. The full
@@ -737,6 +803,27 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for SessionSummary {
         })
     }
 }
+
+/// SQL for [`SessionStorage::list_sessions_by_schedule_id`] — the Automate
+/// tab's single-schedule run-history lookup. Pulled out to a const so the
+/// idempotent-index and query-plan tests below exercise the EXACT string
+/// that runs in production, not a copy that can drift. `s.schedule_id = ?`
+/// is the predicate `idx_sessions_schedule_id` (migrate_v48_to_v49) targets —
+/// before that index existed this was an unindexed scan of the whole
+/// `sessions` table on every poll (the 2026-08-25 "schedule polling storm"
+/// health review).
+const LIST_SESSIONS_BY_SCHEDULE_ID_SQL: &str = r#"
+    SELECT s.id, s.working_dir, s.name, s.description, s.user_set_name, s.session_type, s.created_at, s.updated_at, s.extension_data,
+           s.total_tokens, s.input_tokens, s.output_tokens,
+           s.accumulated_total_tokens, s.accumulated_input_tokens, s.accumulated_output_tokens,
+           s.schedule_id, s.recipe_json, s.user_recipe_values_json,
+           s.provider_name, s.model_config_json, s.goose_mode, s.thread_id,
+           (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count
+    FROM sessions s
+    WHERE s.schedule_id = ?
+    ORDER BY s.created_at DESC
+    LIMIT ?
+"#;
 
 impl SessionStorage {
     fn create_pool(path: &Path) -> Pool<Sqlite> {
@@ -1077,6 +1164,13 @@ impl SessionStorage {
                     // base-independent.
                     if version < 48 {
                         spectral_schema::migrate_v47_to_v48(&self.pool).await?;
+                    }
+                    // v49: sessions.schedule_id index — fixes the Automate
+                    // tab's schedule polling storm (an unindexed
+                    // `WHERE schedule_id = ?` full table scan). Index-only,
+                    // additive and idempotent.
+                    if version < 49 {
+                        spectral_schema::migrate_v48_to_v49(&self.pool).await?;
                     }
                     // Version-independent safety net for recognition columns.
                     // The always-on v23 above can stamp schema_version past the
@@ -1663,23 +1757,49 @@ impl SessionStorage {
         schedule_id: &str,
         limit: usize,
     ) -> Result<Vec<Session>> {
+        let pool = self.pool().await?;
+        sqlx::query_as::<_, Session>(LIST_SESSIONS_BY_SCHEDULE_ID_SQL)
+            .bind(schedule_id)
+            .bind(limit as i64)
+            .fetch_all(pool)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Recent sessions for EVERY schedule that has one, batched into a
+    /// SINGLE query via a window function — the replacement for the Automate
+    /// tab's old pattern of calling [`Self::list_sessions_by_schedule_id`]
+    /// once per job on every poll tick (N queries; the 2026-08-25 "schedule
+    /// polling storm" health review). Only the lean columns
+    /// [`ScheduleSessionSummary`] needs are selected — no recipe/model-config
+    /// JSON blobs — and `message_count` is computed only for the rows that
+    /// survive the per-schedule `LIMIT`, not the whole table. Rides
+    /// `idx_sessions_schedule_id` for the initial filter.
+    async fn list_recent_sessions_by_schedule(
+        &self,
+        limit_per_schedule: usize,
+    ) -> Result<Vec<ScheduleSessionSummary>> {
         let query = r#"
-            SELECT s.id, s.working_dir, s.name, s.description, s.user_set_name, s.session_type, s.created_at, s.updated_at, s.extension_data,
-                   s.total_tokens, s.input_tokens, s.output_tokens,
-                   s.accumulated_total_tokens, s.accumulated_input_tokens, s.accumulated_output_tokens,
-                   s.schedule_id, s.recipe_json, s.user_recipe_values_json,
-                   s.provider_name, s.model_config_json, s.goose_mode, s.thread_id,
-                   (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count
-            FROM sessions s
-            WHERE s.schedule_id = ?
-            ORDER BY s.created_at DESC
-            LIMIT ?
+            WITH ranked AS (
+                SELECT s.id, s.name, s.description, s.created_at, s.working_dir, s.schedule_id,
+                       s.total_tokens, s.input_tokens, s.output_tokens,
+                       s.accumulated_total_tokens, s.accumulated_input_tokens, s.accumulated_output_tokens,
+                       ROW_NUMBER() OVER (PARTITION BY s.schedule_id ORDER BY s.created_at DESC) AS rn
+                FROM sessions s
+                WHERE s.schedule_id IS NOT NULL
+            )
+            SELECT r.id, r.name, r.description, r.created_at, r.working_dir, r.schedule_id,
+                   r.total_tokens, r.input_tokens, r.output_tokens,
+                   r.accumulated_total_tokens, r.accumulated_input_tokens, r.accumulated_output_tokens,
+                   (SELECT COUNT(*) FROM messages m WHERE m.session_id = r.id) AS message_count
+            FROM ranked r
+            WHERE r.rn <= ?
+            ORDER BY r.schedule_id, r.created_at DESC
         "#;
 
         let pool = self.pool().await?;
-        sqlx::query_as::<_, Session>(query)
-            .bind(schedule_id)
-            .bind(limit as i64)
+        sqlx::query_as::<_, ScheduleSessionSummary>(query)
+            .bind(limit_per_schedule as i64)
             .fetch_all(pool)
             .await
             .map_err(Into::into)
@@ -2382,6 +2502,100 @@ mod tests {
         // Unknown schedule → empty.
         let none = sm.list_sessions_by_schedule_id("nope", 10).await.unwrap();
         assert!(none.is_empty());
+    }
+
+    /// `idx_sessions_schedule_id` (migrate_v48_to_v49, 2026-08-25 "schedule
+    /// polling storm" fix) must exist after a fresh init AND survive a
+    /// second migration pass against an already-migrated DB — a daemon
+    /// restart re-runs the whole `if version < N` ladder every boot (a
+    /// fresh `SessionStorage` means a fresh `initialized` OnceCell), so
+    /// every step in it must be safe to run more than once.
+    #[tokio::test]
+    async fn schedule_id_index_migration_is_idempotent() {
+        async fn index_row_count(pool: &Pool<Sqlite>) -> i64 {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_sessions_schedule_id'",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap()
+        }
+
+        let temp_dir = TempDir::new().unwrap();
+        let db_dir = temp_dir.path().to_path_buf();
+
+        // First "boot": fresh DB. `init_spectral_db` creates the index inline
+        // (see spectral_schema.rs), so it must already be there.
+        {
+            let sm = SessionManager::new(db_dir.clone());
+            let pool = sm
+                .storage()
+                .pool()
+                .await
+                .expect("fresh-DB init must succeed");
+            assert_eq!(index_row_count(pool).await, 1);
+        }
+
+        // Second "boot" against the SAME on-disk DB: a brand-new
+        // SessionStorage (a fresh `initialized` OnceCell) re-runs the entire
+        // migration ladder — including `migrate_v48_to_v49`'s
+        // `CREATE INDEX IF NOT EXISTS` — against a DB that already has
+        // everything applied. Must not error, and must not duplicate the
+        // index.
+        let sm2 = SessionManager::new(db_dir);
+        let pool2 = sm2.storage().pool().await.expect(
+            "re-running the migration ladder against an already-migrated DB must be idempotent",
+        );
+        assert_eq!(index_row_count(pool2).await, 1);
+
+        // And running the migration function itself twice, directly, back to
+        // back — the narrowest form of the idempotency requirement.
+        crate::session::spectral_schema::migrate_v48_to_v49(pool2)
+            .await
+            .expect("migrate_v48_to_v49 must be safe to run once more");
+        crate::session::spectral_schema::migrate_v48_to_v49(pool2)
+            .await
+            .expect("migrate_v48_to_v49 must be safe to run twice in a row");
+        assert_eq!(index_row_count(pool2).await, 1);
+    }
+
+    /// The query plan for `list_sessions_by_schedule_id`'s `WHERE
+    /// s.schedule_id = ?` must use `idx_sessions_schedule_id`, not a full
+    /// `sessions` table scan — the whole point of migrate_v48_to_v49 (the
+    /// 2026-08-25 "schedule polling storm" fix: this exact predicate,
+    /// unindexed, was the 1-3.7s slow-query source). Runs `EXPLAIN QUERY
+    /// PLAN` against the SAME SQL string the production code executes
+    /// (`LIST_SESSIONS_BY_SCHEDULE_ID_SQL`), so this cannot drift from what
+    /// actually ships.
+    #[tokio::test]
+    async fn list_sessions_by_schedule_id_query_plan_uses_the_index() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let pool = sm.storage().pool().await.unwrap();
+
+        // AUDIT (sqlx::AssertSqlSafe): both halves of this string are compile-time
+        // constants — a literal prefix and `LIST_SESSIONS_BY_SCHEDULE_ID_SQL`, the
+        // same `&'static str` the production path executes. No caller input reaches
+        // it; the schedule id and limit are still bound as parameters below. The
+        // format! exists only because `EXPLAIN QUERY PLAN` has to be prefixed onto
+        // the real query for this test to prove anything about the real query.
+        let plan_sql = format!("EXPLAIN QUERY PLAN {}", LIST_SESSIONS_BY_SCHEDULE_ID_SQL);
+        let rows: Vec<(i64, i64, i64, String)> = sqlx::query_as(sqlx::AssertSqlSafe(plan_sql))
+            .bind("some-schedule-id")
+            .bind(5_i64)
+            .fetch_all(pool)
+            .await
+            .unwrap();
+
+        let plan_detail: String = rows
+            .iter()
+            .map(|(_, _, _, detail)| detail.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            plan_detail.contains("idx_sessions_schedule_id"),
+            "expected the query plan to use idx_sessions_schedule_id, got: {plan_detail}"
+        );
     }
 
     #[tokio::test]

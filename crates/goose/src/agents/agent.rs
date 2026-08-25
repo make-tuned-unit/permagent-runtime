@@ -36,7 +36,9 @@ use crate::conversation::message::{
     ActionRequiredData, Message, MessageContent, ProviderMetadata, SystemNotificationType,
     ToolRequest,
 };
-use crate::conversation::{debug_conversation_fix, fix_conversation, Conversation};
+use crate::conversation::{
+    debug_conversation_fix, fix_conversation, merge_consecutive_messages, Conversation,
+};
 use crate::cost_router::cache::SystemPromptParts;
 use crate::mcp_utils::ToolResult;
 use crate::permission::permission_inspector::PermissionInspector;
@@ -346,6 +348,21 @@ where
 /// A failure to persist is warned and swallowed rather than propagated: the
 /// user still needs to see the message, and turning "we could not save the
 /// error" into a second error would replace one silence with another.
+/// Fold ONE turn's newly produced messages into an alternating sequence.
+///
+/// The provider stream can hand back several assistant messages for a single
+/// turn (reasoning item, then tool-call item). Persisting them separately puts
+/// consecutive same-role messages into the conversation, which every provider
+/// rejects and which the repair layer then has to merge on every later turn.
+///
+/// Returns the folded messages and how many merges it took (0 on a turn that
+/// was already well-formed — the common case for providers that stream a whole
+/// assistant turn as one message).
+pub(crate) fn coalesce_turn_messages(messages: Vec<Message>) -> (Vec<Message>, usize) {
+    let (merged, issues) = merge_consecutive_messages(messages);
+    (merged, issues.len())
+}
+
 async fn persist_turn_ending_message(
     session_manager: &Arc<crate::session::SessionManager>,
     session_id: &str,
@@ -2563,6 +2580,43 @@ impl Agent {
                     }
                 }
 
+                // ── Make the turn WELL-FORMED before anything is added to it ──
+                //
+                // One provider turn can arrive as SEVERAL assistant messages:
+                // any provider that emits reasoning before its tool call (this
+                // was MiniMax-M2.7) streams thinking/text in one item and the
+                // tool request in the next, and the loop above pushed each item
+                // as its own assistant row. The result is consecutive
+                // same-role assistant messages — a sequence no provider
+                // accepts, repaired downstream on every single turn.
+                //
+                // That repair is what the "merged consecutive same-role
+                // messages" warnings were: session 20260825_3 logged 22 of them
+                // in one conversation, one per tool-calling turn. MOIM was
+                // fixing this correctly and warning, correctly, that something
+                // upstream was producing it. This is that something.
+                //
+                // Fixed at the source with the SAME lossless merge MOIM relies
+                // on: consecutive same-role content is concatenated in order,
+                // nothing is dropped, and the reasoning ends up attached to the
+                // tool call it belongs to — which is also what Gemini/Kimi
+                // require to accept the next request.
+                //
+                // Runs HERE, before the tool-pair summaries are appended below:
+                // each summary stands in for one tool pair and has to remain its
+                // own message, so folding them into each other would collapse a
+                // whole batch into one.
+                let (coalesced, merges) =
+                    coalesce_turn_messages(messages_to_add.messages().clone());
+                if merges > 0 {
+                    debug!(
+                        session_id = %session_config.id,
+                        merges,
+                        "coalesced a streamed turn into alternating messages before persisting"
+                    );
+                }
+                messages_to_add = Conversation::new_unvalidated(coalesced);
+
                 if is_token_cancelled(&cancel_token) {
                     tool_pair_summarization_task.abort();
                 }
@@ -3217,6 +3271,89 @@ mod tests {
     use crate::permission::permission_confirmation::PrincipalType;
     use crate::providers::base::PermissionRouting;
     use crate::recipe::Response;
+
+    /// The exact shape session 20260825_3 persisted 22 times in one
+    /// conversation: MiniMax-M2.7 streamed its reasoning and reply text as one
+    /// assistant item and the tool call as the next, so the turn landed as two
+    /// consecutive assistant rows with the tool response after them.
+    ///
+    /// It must come back as one assistant message carrying thinking + text +
+    /// the tool request, followed by the tool response — the shape a provider
+    /// accepts, with nothing dropped.
+    #[test]
+    fn a_streamed_reasoning_then_tool_call_turn_is_persisted_as_one_message() {
+        let turn = vec![
+            Message::assistant()
+                .with_thinking("let me look that up", "sig")
+                .with_text("Good question — checking now."),
+            Message::assistant().with_tool_request(
+                "call_1",
+                Ok(rmcp::model::CallToolRequestParams::new("tavily_search")),
+            ),
+            Message::user()
+                .with_tool_response("call_1", Ok(rmcp::model::CallToolResult::success(vec![]))),
+        ];
+
+        let (folded, merges) = coalesce_turn_messages(turn);
+
+        assert_eq!(merges, 1, "the two assistant rows are one turn");
+        assert_eq!(folded.len(), 2, "assistant turn, then the tool response");
+        assert_eq!(folded[0].role, rmcp::model::Role::Assistant);
+        assert_eq!(
+            folded[0].content.len(),
+            3,
+            "thinking, text and the tool request all survive, in order"
+        );
+        assert!(matches!(folded[0].content[0], MessageContent::Thinking(_)));
+        assert!(matches!(folded[0].content[1], MessageContent::Text(_)));
+        assert!(matches!(
+            folded[0].content[2],
+            MessageContent::ToolRequest(_)
+        ));
+        assert_eq!(folded[1].role, rmcp::model::Role::User);
+
+        // Roles alternate — nothing is left for the repair layer to warn about.
+        for pair in folded.windows(2) {
+            assert_ne!(pair[0].role, pair[1].role);
+        }
+    }
+
+    /// Tool-pair summaries must NEVER be folded together.
+    ///
+    /// Each one stands in for a single tool request/response pair that has just
+    /// been marked agent-invisible, so a batch of ten is ten messages. Folding
+    /// them collapsed a whole batch into one (caught by
+    /// `test_batch_summarization_preserves_all_summaries`), which is why the
+    /// fold runs before they are appended, not over the finished list. This
+    /// pins the property the ordering exists to protect.
+    #[test]
+    fn folding_a_run_of_summaries_would_collapse_the_batch() {
+        let summaries: Vec<Message> = (0..10)
+            .map(|i| Message::assistant().with_text(format!("Summary of tool call #{i}")))
+            .collect();
+
+        let (folded, merges) = coalesce_turn_messages(summaries.clone());
+
+        assert_eq!(
+            folded.len(),
+            1,
+            "the fold WOULD collapse them — hence the ordering"
+        );
+        assert_eq!(merges, 9);
+    }
+
+    /// A provider that streams a whole turn as one message must be untouched —
+    /// the fold is a repair, not a rewrite.
+    #[test]
+    fn an_already_alternating_turn_is_left_alone() {
+        let turn = vec![
+            Message::assistant().with_text("here you go"),
+            Message::user().with_text("thanks"),
+        ];
+        let (folded, merges) = coalesce_turn_messages(turn.clone());
+        assert_eq!(merges, 0);
+        assert_eq!(folded.len(), turn.len());
+    }
 
     struct ActionRequiredProvider {
         handled: tokio::sync::Mutex<Vec<(String, PermissionConfirmation)>>,

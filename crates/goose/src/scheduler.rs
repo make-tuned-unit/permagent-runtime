@@ -73,7 +73,7 @@ use crate::providers::create;
 use crate::recipe::Recipe;
 use crate::scheduler_trait::SchedulerTrait;
 use crate::session::session_manager::SessionType;
-use crate::session::{Session, SessionManager};
+use crate::session::{ScheduleSessionSummary, Session, SessionManager};
 
 type RunningTasksMap = HashMap<String, CancellationToken>;
 type JobsMap = HashMap<String, (JobId, ScheduledJob)>;
@@ -667,6 +667,12 @@ impl Scheduler {
                     tracing::error!("Failed to persist job status: {}", e);
                 }
 
+                // A cron fire is the ONE schedule change with no HTTP route to
+                // emit from, and it is exactly what the Automate tab's run
+                // history is showing. Without this the tab would wait out its
+                // 60s backstop poll for the most interesting event it has.
+                crate::events::emit(crate::events::schedule_changed(&task_job_id, "run_started"));
+
                 let cancel_token = CancellationToken::new();
                 {
                     let mut tasks = running_tasks.lock().await;
@@ -756,6 +762,11 @@ impl Scheduler {
                     let mut tasks = running_tasks.lock().await;
                     tasks.remove(&task_job_id);
                 }
+
+                crate::events::emit(crate::events::schedule_changed(
+                    &task_job_id,
+                    "run_finished",
+                ));
 
                 // Record terminal outcome onto the job's reliability fields.
                 let (max_retries, retry_spent) = {
@@ -1349,6 +1360,20 @@ impl Scheduler {
             .collect();
 
         Ok(schedule_sessions)
+    }
+
+    /// Recent runs for every schedule that has one, batched into a single SQL
+    /// query — the Automate tab's replacement for calling [`Self::sessions`]
+    /// once per job on every poll tick. See
+    /// `SessionManager::list_recent_sessions_by_schedule`.
+    pub async fn recent_sessions_by_schedule(
+        &self,
+        limit_per_schedule: usize,
+    ) -> Result<Vec<ScheduleSessionSummary>, SchedulerError> {
+        self.session_manager
+            .list_recent_sessions_by_schedule(limit_per_schedule)
+            .await
+            .map_err(|e| SchedulerError::StorageError(io::Error::other(e)))
     }
 
     pub async fn run_now(&self, sched_id: &str) -> Result<String, SchedulerError> {
@@ -2516,6 +2541,13 @@ impl SchedulerTrait for Scheduler {
         limit: usize,
     ) -> Result<Vec<(String, Session)>, SchedulerError> {
         self.sessions(sched_id, limit).await
+    }
+
+    async fn recent_sessions_by_schedule(
+        &self,
+        limit_per_schedule: usize,
+    ) -> Result<Vec<ScheduleSessionSummary>, SchedulerError> {
+        self.recent_sessions_by_schedule(limit_per_schedule).await
     }
 
     async fn update_schedule(

@@ -923,6 +923,11 @@ pub(crate) trait BatchOps: Send + Sync {
     // mutate the process-wide singleton the self-knowledge brief renders from.
     /// A page is about to be described (`page_len` memories). Default: no-op.
     fn on_page_started(&self, _page_len: usize) {}
+    /// A batch page is about to be FETCHED. The production ops re-probe the
+    /// dedicated endpoint here — see [`reprobe_dedicated_endpoint`] for why
+    /// once per window is not enough. Default: no-op, so the pure loop and its
+    /// unit tests do no I/O.
+    async fn on_batch_start(&self) {}
     /// A single memory failed to describe (skipped). Default: no-op.
     fn on_describe_failed(&self, _error: &str) {}
     /// The batch run finished. Default: no-op.
@@ -955,6 +960,10 @@ impl BatchOps for BrainBatchOps<'_> {
 
     fn on_page_started(&self, page_len: usize) {
         super::librarian_state::set_describing(page_len);
+    }
+
+    async fn on_batch_start(&self) {
+        reprobe_dedicated_endpoint().await;
     }
 
     fn on_describe_failed(&self, error: &str) {
@@ -1030,6 +1039,10 @@ async fn run_batch_core(
             stopped_at_cap = true;
             break;
         }
+
+        // Before EVERY page, not once for the window: the endpoint that was
+        // ready at 02:00 can be gone by 02:40.
+        ops.on_batch_start().await;
 
         let ids = ops.list_undescribed_ids(config.page_size).await?;
         if ids.is_empty() {
@@ -1905,6 +1918,72 @@ pub async fn probe_dedicated_endpoint() -> bool {
         );
     }
     false
+}
+
+/// A single, cheap re-probe — ONE readiness check, no backoff ladder — run
+/// before every batch page rather than once for the whole window.
+///
+/// ## Why the window probe is not enough
+///
+/// [`probe_dedicated_endpoint`] proves the split was ready at 02:00. It cannot
+/// prove it is still ready at 02:40, and on the night of 2026-08-25 that gap is
+/// the whole story: `/Users/j/.local/llama/logs/llama-server.log` shows the
+/// server binding :8080 at 1m05s after launch and logging `cleaning up before
+/// exit` at 1m09s — it dies four seconds after the start script calls it
+/// healthy, and it did that on all five starts. A once-per-window probe sees
+/// none of it, so every memory in the page keeps dialling a server that is
+/// already gone.
+///
+/// One HTTP check per ~25 memories closes that, and it is symmetric: it writes
+/// the endpoint off the moment it stops being ready, and brings it BACK the
+/// moment it recovers — a split that finishes loading at 02:15 serves the rest
+/// of the night instead of waiting for tomorrow.
+pub async fn reprobe_dedicated_endpoint() {
+    let Some(endpoint) = crate::config::librarian_endpoint() else {
+        return;
+    };
+    // Only loopback. A remote peer can legitimately come and go mid-window and
+    // nothing on THIS machine starts listening because we waited.
+    if !crate::mesh::endpoint_is_loopback(&endpoint) {
+        return;
+    }
+    let backend = crate::config::librarian_backend();
+    let Ok(client) = reqwest::Client::builder().timeout(PROBE_TIMEOUT).build() else {
+        return;
+    };
+
+    match check_endpoint_ready(&client, &endpoint, &backend).await {
+        Readiness::Ready => {
+            if librarian_state::dedicated_endpoint_is_skipped(&endpoint) {
+                tracing::info!(
+                    target: "permagent::librarian",
+                    endpoint = %endpoint,
+                    backend = %backend,
+                    "dedicated Librarian endpoint came back mid-window — resuming on it"
+                );
+            }
+            librarian_state::note_dedicated_endpoint_ok(&endpoint);
+        }
+        // Settled for this batch. `mark_dedicated_endpoint_down` returns true
+        // only on the edge, so an endpoint that is down for a whole window
+        // still costs exactly ONE line.
+        Readiness::NotReady(why) | Readiness::Unreachable(why) => {
+            if librarian_state::mark_dedicated_endpoint_down(&endpoint) {
+                tracing::warn!(
+                    target: "permagent::librarian",
+                    endpoint = %endpoint,
+                    backend = %backend,
+                    reason = %why,
+                    fallback_model = DEFAULT_MODEL,
+                    "dedicated Librarian endpoint stopped being ready mid-window — \
+                     the rest of this pass runs on the local pool"
+                );
+            }
+        }
+        // Live, speaks JSON, just does not serve this route. Same call as the
+        // window probe makes: leave it to the per-call circuit.
+        Readiness::Inconclusive(_) => {}
+    }
 }
 
 /// Per-attempt timeout. Short enough that a dead port costs the window no
@@ -3582,6 +3661,57 @@ CATEGORIES: team meeting, project planning, engineering"#;
         fn total_describes(&self) -> usize {
             self.describe_counts.lock().unwrap().values().copied().sum()
         }
+    }
+
+    /// Counts the per-page readiness hook so the loop's cadence is assertable
+    /// without any I/O.
+    struct CountingOps {
+        inner: FakeOps,
+        batch_starts: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl BatchOps for CountingOps {
+        async fn list_undescribed_ids(&self, limit: usize) -> Result<Vec<String>, String> {
+            self.inner.list_undescribed_ids(limit).await
+        }
+
+        async fn describe(&self, id: &str) -> Result<bool, String> {
+            self.inner.describe(id).await
+        }
+
+        async fn on_batch_start(&self) {
+            self.batch_starts.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    /// The readiness hook runs before EVERY page, not once for the window.
+    /// That is the whole point of the 2026-08-25 re-probe: the split binds the
+    /// port, is declared healthy, and exits four seconds later, which a
+    /// once-per-window probe cannot see.
+    #[tokio::test]
+    async fn the_readiness_hook_runs_once_per_page() {
+        let ops = CountingOps {
+            inner: FakeOps::with_n(6),
+            batch_starts: AtomicUsize::new(0),
+        };
+        let store = MemStore::new();
+        let config = BatchConfig {
+            page_size: 2,
+            ..BatchConfig::default()
+        };
+
+        run_batch_core(&ops, config, &store).await.unwrap();
+
+        // Three full pages of two, then one more fetch that comes back empty and
+        // ends the loop — the hook runs on that one too, which is correct: it is
+        // what lets a recovered endpoint be noticed.
+        assert_eq!(
+            ops.batch_starts.load(Ordering::SeqCst),
+            4,
+            "one readiness check per page fetch"
+        );
+        assert_eq!(ops.inner.remaining(), 0);
     }
 
     #[async_trait]
