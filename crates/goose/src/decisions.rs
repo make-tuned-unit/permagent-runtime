@@ -38,6 +38,8 @@ const OUTBOX_ELIGIBLE_KINDS: &[&str] = &[
     "file_to_project",
     "automation_proposal",
     "model_upgrade",
+    "person_merge_proposal",
+    "person_delete_proposal",
 ];
 
 /// Payload marker for the review-fail → debugger-dispatch proposal (a `choice`
@@ -313,6 +315,59 @@ pub struct AutomationProposalPayload {
     /// anti-nag flywheel and plain approve/reject never read it.
     #[serde(default)]
     pub draft: Option<String>,
+}
+
+/// Payload for `kind='person_merge_proposal'` — the agent's `merge_people`
+/// tool files one of these instead of merging. Merging is destructive and
+/// irreversible from the agent's side, so a person approves it.
+///
+/// Ids, not names: the card is answered later, and a name can be renamed
+/// between the proposal and the approval. `preview` is the human-readable
+/// consequence the tool computed at file time; the effect re-derives the real
+/// numbers when it runs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PersonMergeProposalPayload {
+    /// The person who keeps their id.
+    pub survivor_uuid: String,
+    pub survivor_name: String,
+    /// The person absorbed and then deleted.
+    pub duplicate_uuid: String,
+    pub duplicate_name: String,
+    /// What the merge was expected to move, in plain language.
+    #[serde(default)]
+    pub preview: String,
+}
+
+/// Payload for `kind='person_delete_proposal'` — the agent's `delete_person`
+/// tool files one of these. Same reasoning as the merge card.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PersonDeleteProposalPayload {
+    pub entity_uuid: String,
+    pub display_name: String,
+    /// Why the agent thinks this person should go — shown on the card.
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// Reject a merge proposal that names the same person twice or has a blank id:
+/// a malformed destructive card should never sit in the inbox looking answerable.
+fn validate_person_merge_payload(p: &PersonMergeProposalPayload) -> Result<(), String> {
+    if p.survivor_uuid.trim().is_empty() || p.duplicate_uuid.trim().is_empty() {
+        return Err("person_merge_proposal requires both person ids".to_string());
+    }
+    if p.survivor_uuid.trim() == p.duplicate_uuid.trim() {
+        return Err("person_merge_proposal names the same person twice".to_string());
+    }
+    Ok(())
+}
+
+fn validate_person_delete_payload(p: &PersonDeleteProposalPayload) -> Result<(), String> {
+    if p.entity_uuid.trim().is_empty() {
+        return Err("person_delete_proposal requires an entity_uuid".to_string());
+    }
+    Ok(())
 }
 
 /// One proposed field in an `enrichment_proposal` (#495 slice 4). The
@@ -1003,6 +1058,8 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
         "session_gate",
         "capability_gap",
         "regression_proposal",
+        "person_merge_proposal",
+        "person_delete_proposal",
     ]
     .contains(&req.kind.as_str())
     {
@@ -1049,6 +1106,18 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
         "enrichment_proposal" => {
             match serde_json::from_value::<EnrichmentProposalPayload>(req.payload.clone()) {
                 Ok(p) => validate_enrichment_payload(&p),
+                Err(e) => Err(e.to_string()),
+            }
+        }
+        "person_merge_proposal" => {
+            match serde_json::from_value::<PersonMergeProposalPayload>(req.payload.clone()) {
+                Ok(p) => validate_person_merge_payload(&p),
+                Err(e) => Err(e.to_string()),
+            }
+        }
+        "person_delete_proposal" => {
+            match serde_json::from_value::<PersonDeleteProposalPayload>(req.payload.clone()) {
+                Ok(p) => validate_person_delete_payload(&p),
                 Err(e) => Err(e.to_string()),
             }
         }
@@ -1676,6 +1745,8 @@ fn answer_allowed_for_kind(kind: &str, answer: &str) -> bool {
         | "model_upgrade"
         | "tool_approval"
         | "session_gate"
+        | "person_merge_proposal"
+        | "person_delete_proposal"
         | "malformed" => matches!(answer, "approve" | "reject"),
         "unblock" => matches!(answer, "approve" | "reject" | "input"),
         "choice" => matches!(answer, "choice" | "reject"),

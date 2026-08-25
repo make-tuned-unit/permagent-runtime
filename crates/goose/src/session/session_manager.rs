@@ -1172,6 +1172,13 @@ impl SessionStorage {
                     if version < 49 {
                         spectral_schema::migrate_v48_to_v49(&self.pool).await?;
                     }
+                    // v50: person merge/delete bookkeeping — `person_aliases`
+                    // (identifiers a survivor absorbed) and `person_merge_log`
+                    // (the undo snapshot). New tables + indexes, additive and
+                    // base-independent.
+                    if version < 50 {
+                        spectral_schema::migrate_v49_to_v50(&self.pool).await?;
+                    }
                     // Version-independent safety net for recognition columns.
                     // The always-on v23 above can stamp schema_version past the
                     // cfg-gated `version < 22` migration, leaving a feature-off DB

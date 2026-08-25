@@ -726,6 +726,55 @@ pub async fn apply_decision_effect(
         ("enrichment_proposal", Some("reject")) => {
             persist_find_online_hints_on_reject(decision).await
         }
+        // Approved person merge (#1073 follow-up). The tool never merges
+        // directly — it files this card and a person approves it. Everything
+        // the merge does, and everything it deliberately keeps, lives in
+        // `people_merge`; this arm only carries the approval across.
+        ("person_merge_proposal", Some("approve")) => {
+            let payload: decisions::PersonMergeProposalPayload =
+                serde_json::from_value(decision.payload.clone()).map_err(|e| {
+                    GuardError::Invalid(format!("stored person merge payload unreadable: {e}"))
+                })?;
+            let brain = crate::agents::platform_extensions::get_global_brain();
+            let report = crate::people_merge::merge_people(
+                pool,
+                brain.as_ref(),
+                &payload.survivor_uuid,
+                &payload.duplicate_uuid,
+            )
+            .await
+            .map_err(GuardError::Db)?;
+            already_applied(format!(
+                "{} — undo with merge id {}",
+                report.summary, report.merge_id
+            ))
+        }
+        ("person_merge_proposal", Some("reject")) => {
+            already_applied("merge declined; both people are unchanged")
+        }
+        // Approved person delete. Same gate, same reasoning.
+        ("person_delete_proposal", Some("approve")) => {
+            let payload: decisions::PersonDeleteProposalPayload =
+                serde_json::from_value(decision.payload.clone()).map_err(|e| {
+                    GuardError::Invalid(format!("stored person delete payload unreadable: {e}"))
+                })?;
+            let brain = crate::agents::platform_extensions::get_global_brain();
+            let report =
+                crate::people_merge::delete_person(pool, brain.as_ref(), &payload.entity_uuid)
+                    .await
+                    .map_err(GuardError::Db)?;
+            already_applied(format!(
+                "deleted \"{}\": {} meeting(s), {} project link(s), {} graph edge(s). {}",
+                report.display_name,
+                report.meetings_deleted,
+                report.project_links_deleted,
+                report.graph_edges_deleted,
+                report.retained.join(" ")
+            ))
+        }
+        ("person_delete_proposal", Some("reject")) => {
+            already_applied("delete declined; the person is unchanged")
+        }
         ("project_intel_proposal", Some("approve")) => apply_project_intel(pool, decision).await,
         ("project_intel_proposal", Some("reject")) => {
             already_applied("project intelligence proposal declined; nothing was written")

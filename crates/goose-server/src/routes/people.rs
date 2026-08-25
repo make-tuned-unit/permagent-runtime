@@ -511,33 +511,53 @@ async fn person_activity_handler(
         .pool_clone()
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // A person merged away leaves their id behind in bookmarks and open tabs.
+    // Follow the alias to the survivor rather than 404-ing what is now their
+    // profile.
+    let uuid = match people::get_by_uuid(&pool, &uuid).await {
+        Ok(Some(_)) => uuid,
+        _ => permagent::people_merge::resolve_alias(&pool, &uuid)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+            .unwrap_or(uuid),
+    };
     let person = people::get_by_uuid(&pool, &uuid)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
         .ok_or((StatusCode::NOT_FOUND, "Person not found".into()))?;
+    // Every name this person answers to, including any a merge absorbed. This
+    // is what carries a merged-away duplicate's memories onto the survivor's
+    // timeline — Spectral has no memory re-key, so the name IS the join.
+    let names = permagent::people_merge::names_for(&pool, &person).await;
     let (note_rows, card_rows) = if person.display_name.trim().is_empty() {
         (Vec::new(), Vec::new())
     } else {
-        let needle = format!("%{}%", escape_like(&person.display_name));
-        let note_rows = sqlx::query(
-            "SELECT id, title, body, created_at FROM project_notes WHERE title LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\'",
-        )
-        .bind(&needle)
-        .bind(&needle)
-        .fetch_all(&pool)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        let card_rows = sqlx::query("SELECT id, title, description, updated_at FROM cards WHERE title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\'")
-            .bind(&needle).bind(&needle).fetch_all(&pool).await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let mut note_rows = Vec::new();
+        let mut card_rows = Vec::new();
+        for name in &names {
+            let needle = format!("%{}%", escape_like(name));
+            note_rows.extend(sqlx::query(
+                "SELECT id, title, body, created_at FROM project_notes WHERE title LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\'",
+            )
+            .bind(&needle)
+            .bind(&needle)
+            .fetch_all(&pool)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?);
+            card_rows.extend(sqlx::query("SELECT id, title, description, updated_at FROM cards WHERE title LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\'")
+                .bind(&needle).bind(&needle).fetch_all(&pool).await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?);
+        }
         (note_rows, card_rows)
     };
     let mut items: Vec<PersonActivity> = note_rows
         .into_iter()
         .filter(|r| {
-            r.get::<Option<String>, _>("title")
-                .is_some_and(|title| contains_whole_word_ci(&title, &person.display_name))
-                || contains_whole_word_ci(&r.get::<String, _>("body"), &person.display_name)
+            let title = r.get::<Option<String>, _>("title").unwrap_or_default();
+            let body = r.get::<String, _>("body");
+            names
+                .iter()
+                .any(|n| contains_whole_word_ci(&title, n) || contains_whole_word_ci(&body, n))
         })
         .map(|r| {
             let title = r
@@ -560,11 +580,12 @@ async fn person_activity_handler(
             card_rows
                 .into_iter()
                 .filter(|r| {
-                    contains_whole_word_ci(&r.get::<String, _>("title"), &person.display_name)
-                        || contains_whole_word_ci(
-                            &r.get::<String, _>("description"),
-                            &person.display_name,
-                        )
+                    let title = r.get::<String, _>("title");
+                    let description = r.get::<String, _>("description");
+                    names.iter().any(|n| {
+                        contains_whole_word_ci(&title, n)
+                            || contains_whole_word_ci(&description, n)
+                    })
                 })
                 .map(|r| PersonActivity {
                     id: format!("card-{}", r.get::<String, _>("id")),
@@ -576,7 +597,7 @@ async fn person_activity_handler(
         )
         .collect();
 
-    let display = person.display_name;
+    let display_names = names.clone();
     let memories = tokio::task::spawn_blocking(move || -> Result<Vec<PersonActivity>, String> {
         let conn = crate::brain_ops::read_only_brain_conn().map_err(|e| e.to_string())?;
         let mut stmt = conn.prepare("SELECT m.id, m.content, m.description, m.created_at, a.who FROM memories m JOIN memory_annotations a ON a.memory_id=m.id WHERE a.who IS NOT NULL").map_err(|e| e.to_string())?;
@@ -585,7 +606,11 @@ async fn person_activity_handler(
         let mut seen = std::collections::HashSet::new();
         for row in rows.flatten() {
             let refs: Vec<serde_json::Value> = serde_json::from_str(&row.4).unwrap_or_default();
-            let mentioned = refs.iter().any(|v| v.get("display_name").and_then(|v| v.as_str()).is_some_and(|n| n.eq_ignore_ascii_case(&display)));
+            let mentioned = refs.iter().any(|v| {
+                v.get("display_name")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|n| display_names.iter().any(|d| d.eq_ignore_ascii_case(n)))
+            });
             if mentioned && seen.insert(row.0.clone()) { out.push(PersonActivity { id: format!("memory-{}", row.0), kind: "memory".into(), title: row.2.unwrap_or_else(|| "Memory linked".into()), detail: row.1, timestamp: row.3.unwrap_or_default() }); }
         }
         Ok(out)
@@ -602,6 +627,10 @@ async fn person_activity_handler(
         }));
     }
     items.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    // One note can match several absorbed names; the per-name queries above
+    // would then list it twice.
+    let mut seen_ids = std::collections::HashSet::new();
+    items.retain(|i| seen_ids.insert(i.id.clone()));
     items.truncate(20);
     Ok(Json(items))
 }
@@ -972,6 +1001,187 @@ async fn import_calendar_handler(
     Ok(Json(CalendarImportResponse { imported }))
 }
 
+// ── Merge / delete (#1073 follow-up) ───────────────────────────────────────
+//
+// Every mutating route here demands an explicit `confirm: true` in the body.
+// That is deliberate belt-and-braces: the UI asks first, and the agent path
+// goes through a Decision Inbox card a person has to approve, but a
+// destructive endpoint should never be one stray fetch away from firing.
+
+#[derive(Debug, Deserialize)]
+pub struct DuplicatesQuery {
+    /// Cap on suggestions returned. Defaults to 20, hard-capped at 100.
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// `GET /api/people/duplicates` — likely duplicate pairs, best score first.
+/// Read-only; suggests, never acts.
+async fn duplicate_suggestions_handler(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<DuplicatesQuery>,
+) -> Result<Json<Vec<permagent::people_merge::DuplicateSuggestion>>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let mut rows = people::list_people(&pool, &PeopleFilter::default())
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    // Suggestions score on identity + contact details, and under Decision A the
+    // graph is authoritative for those. Overlay before scoring or an email that
+    // only exists in `entity_fields` is invisible to the matcher.
+    overlay_graph_attributes(state.brain.as_ref(), rows.iter_mut().collect()).await;
+    let limit = q.limit.unwrap_or(20).min(100);
+    Ok(Json(permagent::people_merge::suggest_duplicates(
+        &rows, limit,
+    )))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MergePreviewQuery {
+    /// The person who will be absorbed. The path id is the survivor.
+    pub duplicate_id: String,
+}
+
+/// `GET /api/people/{id}/merge-preview?duplicate_id=…` — what a merge would do.
+/// Writes nothing.
+async fn merge_preview_handler(
+    State(state): State<Arc<AppState>>,
+    Path(survivor_uuid): Path<String>,
+    Query(q): Query<MergePreviewQuery>,
+) -> Result<Json<permagent::people_merge::MergePreview>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    permagent::people_merge::preview_merge(
+        &pool,
+        state.brain.as_ref(),
+        &survivor_uuid,
+        &q.duplicate_id,
+    )
+    .await
+    .map(Json)
+    .map_err(merge_error)
+}
+
+/// A "not found" from the merge layer is a 404; everything else is the caller's
+/// fault (same person twice, already undone) and reads as a 400.
+fn merge_error(e: String) -> (StatusCode, String) {
+    let code = if e.contains("not found") || e.starts_with("No such merge") {
+        StatusCode::NOT_FOUND
+    } else {
+        StatusCode::BAD_REQUEST
+    };
+    (code, e)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MergeRequest {
+    pub duplicate_id: String,
+    /// Must be `true`. The field exists so a merge can never be the accidental
+    /// result of a mistyped URL — the caller has to say it meant this.
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+/// `POST /api/people/{id}/merge` — absorb `duplicate_id` into the path person.
+async fn merge_people_handler(
+    State(state): State<Arc<AppState>>,
+    Path(survivor_uuid): Path<String>,
+    Json(req): Json<MergeRequest>,
+) -> Result<Json<permagent::people_merge::MergeReport>, (StatusCode, String)> {
+    if !req.confirm {
+        return Err((
+            StatusCode::PRECONDITION_REQUIRED,
+            "Merging people is destructive — resend with \"confirm\": true once the user has \
+             approved the preview."
+                .to_string(),
+        ));
+    }
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    permagent::people_merge::merge_people(
+        &pool,
+        state.brain.as_ref(),
+        &survivor_uuid,
+        &req.duplicate_id,
+    )
+    .await
+    .map(Json)
+    .map_err(merge_error)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ConfirmRequest {
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+/// `DELETE /api/people/{id}` — remove a person and everything keyed on them.
+/// Body must carry `{"confirm": true}`.
+async fn delete_person_handler(
+    State(state): State<Arc<AppState>>,
+    Path(uuid): Path<String>,
+    Json(req): Json<ConfirmRequest>,
+) -> Result<Json<permagent::people_merge::DeleteReport>, (StatusCode, String)> {
+    if !req.confirm {
+        return Err((
+            StatusCode::PRECONDITION_REQUIRED,
+            "Deleting a person is destructive — resend with \"confirm\": true once the user \
+             has approved it."
+                .to_string(),
+        ));
+    }
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    permagent::people_merge::delete_person(&pool, state.brain.as_ref(), &uuid)
+        .await
+        .map(Json)
+        .map_err(merge_error)
+}
+
+/// `POST /api/people/merges/{merge_id}/undo` — put a merged-away person back.
+async fn undo_merge_handler(
+    State(state): State<Arc<AppState>>,
+    Path(merge_id): Path<String>,
+) -> Result<Json<permagent::people_merge::UndoReport>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    permagent::people_merge::undo_merge(&pool, state.brain.as_ref(), &merge_id)
+        .await
+        .map(Json)
+        .map_err(merge_error)
+}
+
+/// `GET /api/people/merges` — the merge/delete audit trail, newest first.
+async fn merge_log_handler(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<DuplicatesQuery>,
+) -> Result<Json<Vec<permagent::people_merge::MergeLogEntry>>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    permagent::people_merge::list_merge_log(&pool, q.limit.unwrap_or(20).min(100) as i64)
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route(
@@ -979,7 +1189,16 @@ pub fn routes(state: Arc<AppState>) -> Router {
             get(list_people_handler).post(create_person_handler),
         )
         .route("/api/people/directory", get(people_directory_handler))
+        .route("/api/people/duplicates", get(duplicate_suggestions_handler))
+        .route("/api/people/merges", get(merge_log_handler))
+        .route(
+            "/api/people/merges/{merge_id}/undo",
+            post(undo_merge_handler),
+        )
         .route("/api/people/calendar/import", post(import_calendar_handler))
+        .route("/api/people/{id}", delete(delete_person_handler))
+        .route("/api/people/{id}/merge", post(merge_people_handler))
+        .route("/api/people/{id}/merge-preview", get(merge_preview_handler))
         .route("/api/people/{id}/projects", get(person_projects_handler))
         .route("/api/people/{id}/fields", patch(set_person_fields_handler))
         .route(

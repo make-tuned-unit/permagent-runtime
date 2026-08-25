@@ -722,6 +722,11 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // migrate_v43_to_v44 so a fresh install can log a meeting on first boot.
     apply_person_meetings_schema(pool).await?;
 
+    // Person merge/delete bookkeeping (schema v50): absorbed-identifier aliases
+    // and the merge/delete snapshot log. Idempotent; shared with
+    // migrate_v49_to_v50.
+    apply_person_merge_schema(pool).await?;
+
     // File-intake inbox table (schema v13). Idempotent; shared with
     // migrate_v12_to_v13.
     apply_inbox_schema(pool).await?;
@@ -1681,6 +1686,97 @@ pub async fn migrate_v48_to_v49(pool: &Pool<Sqlite>) -> Result<()> {
         .execute(pool)
         .await?;
     info!("Spectral schema migrated to v49 (sessions.schedule_id index)");
+    Ok(())
+}
+
+/// People merge/delete bookkeeping (schema v50).
+///
+/// Two tables, both additive and idempotent:
+///
+/// * `person_aliases` — every identifier a *surviving* person has absorbed.
+///   Spectral has no entity re-key API (see `people_merge`), so when a
+///   duplicate is merged away its `entity_uuid`, `canonical_id`,
+///   `graph_entity_id` and `display_name` are recorded here against the
+///   survivor. That is what keeps the duplicate's Brain memories reachable:
+///   `/api/people/{id}/activity` matches memories by the person's NAME, so an
+///   absorbed name keeps finding them on the survivor's profile.
+/// * `person_merge_log` — one row per merge or delete, carrying a JSON
+///   snapshot of everything that moved. It is both the audit record and the
+///   undo source (`people_merge::undo_merge`).
+///
+/// `person_aliases.entity_uuid` cascades from `people`, so deleting a survivor
+/// later takes their absorbed aliases with them. `person_merge_log` does NOT
+/// reference `people`: it has to outlive the row it describes, which is the
+/// whole point of a snapshot.
+pub async fn apply_person_merge_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut tx = pool.begin().await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS person_aliases (
+            id           TEXT PRIMARY KEY,
+            entity_uuid  TEXT NOT NULL REFERENCES people(entity_uuid) ON DELETE CASCADE,
+            alias_kind   TEXT NOT NULL CHECK (alias_kind IN
+                            ('entity_uuid','canonical_id','graph_entity_id','display_name')),
+            alias_value  TEXT NOT NULL,
+            merge_id     TEXT,
+            created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            UNIQUE (alias_kind, alias_value)
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_person_aliases_entity ON person_aliases(entity_uuid)",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_person_aliases_merge ON person_aliases(merge_id)")
+        .execute(&mut *tx)
+        .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS person_merge_log (
+            id              TEXT PRIMARY KEY,
+            kind            TEXT NOT NULL CHECK (kind IN ('merge','delete')),
+            survivor_uuid   TEXT,
+            duplicate_uuid  TEXT NOT NULL,
+            summary         TEXT NOT NULL DEFAULT '',
+            snapshot        TEXT NOT NULL,
+            undone_at       TEXT,
+            created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_person_merge_log_created \
+         ON person_merge_log(created_at DESC)",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_person_merge_log_survivor \
+         ON person_merge_log(survivor_uuid)",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// v50: people merge/delete bookkeeping (`person_aliases` + `person_merge_log`).
+/// New tables + indexes only — additive and base-independent, so it applies
+/// cleanly over any earlier base. Fresh installs get the same tables from
+/// `init_spectral_db`, which never reaches the migration ladder.
+pub async fn migrate_v49_to_v50(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v49 -> v50 (person aliases + merge log)");
+    apply_people_schema(pool).await?;
+    apply_person_merge_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (50)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v50 (person aliases + merge log)");
     Ok(())
 }
 
