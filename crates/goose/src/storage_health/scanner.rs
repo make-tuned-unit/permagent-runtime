@@ -3,6 +3,8 @@
 //! Each scanner is a pure function that walks a set of paths and returns
 //! structured findings. No shell commands, no agent involvement.
 
+use super::classify::{self, Classification};
+use super::inuse::{InUseConfig, LsofProbe, NoProcessProbe, ProcessProbe};
 use super::safety;
 use super::size;
 use serde::{Deserialize, Serialize};
@@ -19,7 +21,96 @@ pub struct ScanFinding {
     pub path: String,
     pub size_bytes: u64,
     pub age_days: Option<u64>,
+    /// Human-facing verdict, derived from `category` — see `classify.rs`.
     pub recommendation: String,
+    /// Stable category key: one of `classify::CAT_*`. This, not the finding
+    /// *type*, is what the action path enforces on.
+    #[serde(default = "default_category")]
+    pub category: String,
+    /// One line naming what removing this costs: "5 rustc processes are
+    /// compiling here", "re-downloads 1.2 GB the next time cargo builds".
+    #[serde(default)]
+    pub consequence: Option<String>,
+}
+
+/// Ledgers written before categories existed have no `category` field. They
+/// predate the classifier, so nothing about them was verified — treat them as
+/// needing review rather than inheriting a "safe" they were never given.
+fn default_category() -> String {
+    classify::CAT_REVIEW.to_string()
+}
+
+/// Everything a scan needs beyond the filesystem: the in-use window and the
+/// process probe.
+///
+/// Constructed at the impure entry point (`storage_health::run_scan`) and
+/// passed down, so no scan body reads process-global state and every test can
+/// pin the machine's apparent liveness — see the note above `home_dir`.
+pub struct ScanContext {
+    pub in_use: InUseConfig,
+    pub probe: Box<dyn ProcessProbe>,
+}
+
+impl ScanContext {
+    /// The real machine: `lsof` and the user's configured mtime window.
+    pub fn production() -> Self {
+        Self {
+            in_use: InUseConfig::from_config(),
+            probe: Box::new(LsofProbe),
+        }
+    }
+
+    /// A machine with nothing running. Fixture files are written milliseconds
+    /// before they are scanned, so the mtime probe is disabled too — otherwise
+    /// every scanner test would report its own fixtures as live builds.
+    pub fn idle() -> Self {
+        Self {
+            in_use: InUseConfig {
+                recent_mtime_minutes: 0,
+                ..InUseConfig::default()
+            },
+            probe: Box::new(NoProcessProbe),
+        }
+    }
+
+    fn classify(&self, finding_type: &str, path: &Path, size_bytes: u64) -> Classification {
+        classify::classify(
+            finding_type,
+            path,
+            size_bytes,
+            &self.in_use,
+            self.probe.as_ref(),
+        )
+    }
+}
+
+impl Default for ScanContext {
+    fn default() -> Self {
+        Self::idle()
+    }
+}
+
+/// Build one finding, with its category and consequence already decided.
+fn make_finding(
+    ctx: &ScanContext,
+    counter: &mut u32,
+    finding_type: &str,
+    path: &Path,
+    size_bytes: u64,
+    age_days: Option<u64>,
+) -> ScanFinding {
+    let c = ctx.classify(finding_type, path, size_bytes);
+    *counter += 1;
+    ScanFinding {
+        id: format!("finding-{:03}", counter),
+        finding_type: finding_type.to_string(),
+        path: path.to_string_lossy().to_string(),
+        size_bytes,
+        age_days,
+        recommendation: c.recommendation,
+        category: c.category.to_string(),
+        consequence: c.consequence,
+    }
 }
 
 /// Summary stats for a scan category.
@@ -122,7 +213,7 @@ const DEV_CACHE_MIN_BYTES: u64 = 10_000_000;
 /// Cargo.toml — per-lane `.shared-target/<lane>` trees and Cursor sandbox
 /// `cursor-sandbox-cache/*/cargo-target` dirs. Those two layouts held >100 GB
 /// on 2026-08-21 while this scan reported a clean disk.
-pub fn scan_dev_caches(counter: &mut u32) -> Vec<ScanFinding> {
+pub fn scan_dev_caches(ctx: &ScanContext, counter: &mut u32) -> Vec<ScanFinding> {
     // Confirmed roots are resolved HERE, at the impure entry point, and never
     // inside `scan_dev_caches_in` — that function takes its root as a
     // parameter precisely so tests are hermetic (see the note above its tests
@@ -131,9 +222,9 @@ pub fn scan_dev_caches(counter: &mut u32) -> Vec<ScanFinding> {
     // they ran on.
     let confirmed = crate::config::dev_roots::dev_roots();
     let mut findings = if !confirmed.is_empty() {
-        scan_dev_caches_in_roots(&confirmed, counter)
+        scan_dev_caches_in_roots(&confirmed, ctx, counter)
     } else {
-        scan_dev_caches_in(&home_dir(), counter)
+        scan_dev_caches_in(&home_dir(), ctx, counter)
     };
     // Sidecar farms live next to worktrees and under $TMPDIR, not inside a
     // confirmed repo root. Always look — a confirmed-root-only walk is what
@@ -141,6 +232,7 @@ pub fn scan_dev_caches(counter: &mut u32) -> Vec<ScanFinding> {
     findings.extend(scan_sidecar_cargo_targets_in(
         &home_dir(),
         &std::env::temp_dir(),
+        ctx,
         counter,
     ));
     dedup_findings_by_path(&mut findings);
@@ -149,15 +241,19 @@ pub fn scan_dev_caches(counter: &mut u32) -> Vec<ScanFinding> {
 }
 
 /// Scan an explicit set of roots — the user's confirmed code directories.
-fn scan_dev_caches_in_roots(roots: &[PathBuf], counter: &mut u32) -> Vec<ScanFinding> {
+fn scan_dev_caches_in_roots(
+    roots: &[PathBuf],
+    ctx: &ScanContext,
+    counter: &mut u32,
+) -> Vec<ScanFinding> {
     let mut findings = Vec::new();
     for root in roots {
-        findings.extend(scan_dev_caches_in(root, counter));
+        findings.extend(scan_dev_caches_in(root, ctx, counter));
     }
     findings
 }
 
-fn scan_dev_caches_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> {
+fn scan_dev_caches_in(home: &Path, ctx: &ScanContext, counter: &mut u32) -> Vec<ScanFinding> {
     let mut findings = Vec::new();
     let roots = dev_scan_roots(home);
 
@@ -196,7 +292,7 @@ fn scan_dev_caches_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> {
             // a directory named `target` next to Cargo.toml — the old check
             // walked right past these.
             if name == ".shared-target" {
-                findings.extend(scan_shared_target_lanes(path, counter));
+                findings.extend(scan_shared_target_lanes(path, ctx, counter));
                 continue;
             }
 
@@ -204,7 +300,7 @@ fn scan_dev_caches_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> {
             if name == "target" {
                 if let Some(parent) = path.parent() {
                     if parent.join("Cargo.toml").exists() {
-                        push_dev_cache(&mut findings, counter, path, true);
+                        push_dev_cache(&mut findings, ctx, counter, path, true);
                     }
                 }
             }
@@ -213,7 +309,7 @@ fn scan_dev_caches_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> {
             if name == "node_modules" {
                 if let Some(parent) = path.parent() {
                     if parent.join("package.json").exists() {
-                        push_dev_cache(&mut findings, counter, path, true);
+                        push_dev_cache(&mut findings, ctx, counter, path, true);
                     }
                 }
             }
@@ -227,6 +323,7 @@ fn scan_dev_caches_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> {
 
 fn push_dev_cache(
     findings: &mut Vec<ScanFinding>,
+    ctx: &ScanContext,
     counter: &mut u32,
     path: &Path,
     check_exclude: bool,
@@ -238,16 +335,14 @@ fn push_dev_cache(
     if sz <= DEV_CACHE_MIN_BYTES {
         return;
     }
-    *counter += 1;
-    findings.push(ScanFinding {
-        id: format!("finding-{:03}", counter),
-        finding_type: "dev_cache".to_string(),
-        path: path.to_string_lossy().to_string(),
-        size_bytes: sz,
-        age_days: size::age_days(path),
-        recommendation: safety::recommendation_for("dev_cache").to_string(),
-    });
-    debug!("dev_cache: {} ({} bytes)", path.display(), sz);
+    let f = make_finding(ctx, counter, "dev_cache", path, sz, size::age_days(path));
+    debug!(
+        "dev_cache: {} ({} bytes) [{}]",
+        path.display(),
+        sz,
+        f.category
+    );
+    findings.push(f);
 }
 
 fn dedup_findings_by_path(findings: &mut Vec<ScanFinding>) {
@@ -256,7 +351,7 @@ fn dedup_findings_by_path(findings: &mut Vec<ScanFinding>) {
 }
 
 /// Report each lane under a `.shared-target` directory.
-fn scan_shared_target_lanes(dir: &Path, counter: &mut u32) -> Vec<ScanFinding> {
+fn scan_shared_target_lanes(dir: &Path, ctx: &ScanContext, counter: &mut u32) -> Vec<ScanFinding> {
     let mut findings = Vec::new();
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
@@ -265,7 +360,7 @@ fn scan_shared_target_lanes(dir: &Path, counter: &mut u32) -> Vec<ScanFinding> {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            push_dev_cache(&mut findings, counter, &path, true);
+            push_dev_cache(&mut findings, ctx, counter, &path, true);
         }
     }
     findings
@@ -273,20 +368,26 @@ fn scan_shared_target_lanes(dir: &Path, counter: &mut u32) -> Vec<ScanFinding> {
 
 /// Cargo target farms that a repo-root walk never reaches: `.shared-target`
 /// next to worktrees, and Cursor's `$TMPDIR/cursor-sandbox-cache/*/cargo-target`.
-fn scan_sidecar_cargo_targets_in(home: &Path, tmp: &Path, counter: &mut u32) -> Vec<ScanFinding> {
+fn scan_sidecar_cargo_targets_in(
+    home: &Path,
+    tmp: &Path,
+    ctx: &ScanContext,
+    counter: &mut u32,
+) -> Vec<ScanFinding> {
     let mut findings = Vec::new();
     let conventional = ["dev", "code", "src", "projects", "repos", "workspace"];
     for name in &conventional {
         for base in [home.to_path_buf(), home.join("Documents")] {
-            collect_shared_target_farms(&base.join(name), &mut findings, counter);
+            collect_shared_target_farms(&base.join(name), ctx, &mut findings, counter);
         }
     }
-    findings.extend(scan_cursor_sandbox_targets_in(tmp, counter));
+    findings.extend(scan_cursor_sandbox_targets_in(tmp, ctx, counter));
     findings
 }
 
 fn collect_shared_target_farms(
     code_root: &Path,
+    ctx: &ScanContext,
     findings: &mut Vec<ScanFinding>,
     counter: &mut u32,
 ) {
@@ -295,7 +396,7 @@ fn collect_shared_target_farms(
     }
     let direct = code_root.join(".shared-target");
     if direct.is_dir() {
-        findings.extend(scan_shared_target_lanes(&direct, counter));
+        findings.extend(scan_shared_target_lanes(&direct, ctx, counter));
     }
     let entries = match fs::read_dir(code_root) {
         Ok(e) => e,
@@ -304,7 +405,7 @@ fn collect_shared_target_farms(
     for entry in entries.flatten() {
         let shared = entry.path().join(".shared-target");
         if shared.is_dir() {
-            findings.extend(scan_shared_target_lanes(&shared, counter));
+            findings.extend(scan_shared_target_lanes(&shared, ctx, counter));
         }
     }
 }
@@ -313,7 +414,11 @@ fn collect_shared_target_farms(
 /// outside every code root, and on macOS it lives under `/var/folders`.
 /// Skip `is_excluded` — `/private/var` is otherwise blocked, and these
 /// directories are rebuildable caches, not secrets.
-fn scan_cursor_sandbox_targets_in(tmp: &Path, counter: &mut u32) -> Vec<ScanFinding> {
+fn scan_cursor_sandbox_targets_in(
+    tmp: &Path,
+    ctx: &ScanContext,
+    counter: &mut u32,
+) -> Vec<ScanFinding> {
     let mut findings = Vec::new();
     let cache = tmp.join("cursor-sandbox-cache");
     if !cache.is_dir() {
@@ -326,18 +431,18 @@ fn scan_cursor_sandbox_targets_in(tmp: &Path, counter: &mut u32) -> Vec<ScanFind
     for entry in entries.flatten() {
         let cargo_target = entry.path().join("cargo-target");
         if cargo_target.is_dir() {
-            push_dev_cache(&mut findings, counter, &cargo_target, false);
+            push_dev_cache(&mut findings, ctx, counter, &cargo_target, false);
         }
     }
     findings
 }
 
 /// Scan app cache directories: ~/Library/Caches, ~/.cache, ~/.npm, ~/.cargo/registry.
-pub fn scan_app_caches(counter: &mut u32) -> Vec<ScanFinding> {
-    scan_app_caches_in(&home_dir(), counter)
+pub fn scan_app_caches(ctx: &ScanContext, counter: &mut u32) -> Vec<ScanFinding> {
+    scan_app_caches_in(&home_dir(), ctx, counter)
 }
 
-fn scan_app_caches_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> {
+fn scan_app_caches_in(home: &Path, ctx: &ScanContext, counter: &mut u32) -> Vec<ScanFinding> {
     let cache_dirs = [
         home.join("Library/Caches"),
         home.join(".cache"),
@@ -370,30 +475,28 @@ fn scan_app_caches_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> {
                 let sz = size::dir_size(&path);
                 if sz > 50_000_000 {
                     // >50MB to be worth reporting
-                    *counter += 1;
-                    findings.push(ScanFinding {
-                        id: format!("finding-{:03}", counter),
-                        finding_type: "app_cache".to_string(),
-                        path: path.to_string_lossy().to_string(),
-                        size_bytes: sz,
-                        age_days: size::age_days(&path),
-                        recommendation: safety::recommendation_for("app_cache").to_string(),
-                    });
+                    findings.push(make_finding(
+                        ctx,
+                        counter,
+                        "app_cache",
+                        &path,
+                        sz,
+                        size::age_days(&path),
+                    ));
                 }
             }
         } else {
             // .npm, .cargo/registry — report as single entry
             let sz = size::dir_size(cache_root);
             if sz > 50_000_000 {
-                *counter += 1;
-                findings.push(ScanFinding {
-                    id: format!("finding-{:03}", counter),
-                    finding_type: "app_cache".to_string(),
-                    path: cache_root.to_string_lossy().to_string(),
-                    size_bytes: sz,
-                    age_days: size::age_days(cache_root),
-                    recommendation: safety::recommendation_for("app_cache").to_string(),
-                });
+                findings.push(make_finding(
+                    ctx,
+                    counter,
+                    "app_cache",
+                    cache_root,
+                    sz,
+                    size::age_days(cache_root),
+                ));
             }
         }
     }
@@ -403,11 +506,11 @@ fn scan_app_caches_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> {
 }
 
 /// Scan Xcode DerivedData.
-pub fn scan_xcode_derived(counter: &mut u32) -> Vec<ScanFinding> {
-    scan_xcode_derived_in(&home_dir(), counter)
+pub fn scan_xcode_derived(ctx: &ScanContext, counter: &mut u32) -> Vec<ScanFinding> {
+    scan_xcode_derived_in(&home_dir(), ctx, counter)
 }
 
-fn scan_xcode_derived_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> {
+fn scan_xcode_derived_in(home: &Path, ctx: &ScanContext, counter: &mut u32) -> Vec<ScanFinding> {
     let derived_data = home.join("Library/Developer/Xcode/DerivedData");
     let mut findings = Vec::new();
 
@@ -427,15 +530,14 @@ fn scan_xcode_derived_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> {
         }
         let sz = size::dir_size(&path);
         if sz > 50_000_000 {
-            *counter += 1;
-            findings.push(ScanFinding {
-                id: format!("finding-{:03}", counter),
-                finding_type: "build_artifact".to_string(),
-                path: path.to_string_lossy().to_string(),
-                size_bytes: sz,
-                age_days: size::age_days(&path),
-                recommendation: safety::recommendation_for("build_artifact").to_string(),
-            });
+            findings.push(make_finding(
+                ctx,
+                counter,
+                "build_artifact",
+                &path,
+                sz,
+                size::age_days(&path),
+            ));
         }
     }
 
@@ -444,11 +546,11 @@ fn scan_xcode_derived_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> {
 }
 
 /// Scan ~/Downloads for files older than 30 days and >10MB.
-pub fn scan_stale_downloads(counter: &mut u32) -> Vec<ScanFinding> {
-    scan_stale_downloads_in(&home_dir(), counter)
+pub fn scan_stale_downloads(ctx: &ScanContext, counter: &mut u32) -> Vec<ScanFinding> {
+    scan_stale_downloads_in(&home_dir(), ctx, counter)
 }
 
-fn scan_stale_downloads_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> {
+fn scan_stale_downloads_in(home: &Path, ctx: &ScanContext, counter: &mut u32) -> Vec<ScanFinding> {
     let downloads = home.join("Downloads");
     let mut findings = Vec::new();
 
@@ -485,15 +587,14 @@ fn scan_stale_downloads_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> {
         };
 
         if age >= 30 && meta.len() > 10_000_000 {
-            *counter += 1;
-            findings.push(ScanFinding {
-                id: format!("finding-{:03}", counter),
-                finding_type: "stale_file".to_string(),
-                path: path.to_string_lossy().to_string(),
-                size_bytes: meta.len(),
-                age_days: Some(age),
-                recommendation: safety::recommendation_for("stale_file").to_string(),
-            });
+            findings.push(make_finding(
+                ctx,
+                counter,
+                "stale_file",
+                path,
+                meta.len(),
+                Some(age),
+            ));
         }
     }
 
@@ -502,11 +603,11 @@ fn scan_stale_downloads_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> {
 }
 
 /// Scan ~/Downloads, ~/Desktop, ~/Documents for files >100MB.
-pub fn scan_large_user_files(counter: &mut u32) -> Vec<ScanFinding> {
-    scan_large_user_files_in(&home_dir(), counter)
+pub fn scan_large_user_files(ctx: &ScanContext, counter: &mut u32) -> Vec<ScanFinding> {
+    scan_large_user_files_in(&home_dir(), ctx, counter)
 }
 
-fn scan_large_user_files_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> {
+fn scan_large_user_files_in(home: &Path, ctx: &ScanContext, counter: &mut u32) -> Vec<ScanFinding> {
     let dirs = [
         home.join("Downloads"),
         home.join("Desktop"),
@@ -543,15 +644,14 @@ fn scan_large_user_files_in(home: &Path, counter: &mut u32) -> Vec<ScanFinding> 
             };
 
             if meta.len() > 100_000_000 {
-                *counter += 1;
-                findings.push(ScanFinding {
-                    id: format!("finding-{:03}", counter),
-                    finding_type: "large_file".to_string(),
-                    path: path.to_string_lossy().to_string(),
-                    size_bytes: meta.len(),
-                    age_days: size::age_days(path),
-                    recommendation: safety::recommendation_for("large_file").to_string(),
-                });
+                findings.push(make_finding(
+                    ctx,
+                    counter,
+                    "large_file",
+                    path,
+                    meta.len(),
+                    size::age_days(path),
+                ));
             }
         }
     }
@@ -587,8 +687,9 @@ mod tests {
         fs::write(project.join("Cargo.toml"), "[package]").unwrap();
         fs::write(project.join("target/debug/big.o"), vec![0u8; 11_000_000]).unwrap();
 
+        let ctx = ScanContext::idle();
         let mut counter = 0;
-        let findings = scan_dev_caches_in_roots(&[root.path().to_path_buf()], &mut counter);
+        let findings = scan_dev_caches_in_roots(&[root.path().to_path_buf()], &ctx, &mut counter);
         assert!(
             findings
                 .iter()
@@ -611,8 +712,9 @@ mod tests {
         let data = vec![0u8; 11_000_000];
         fs::write(project.join("target/debug/big.o"), &data).unwrap();
 
+        let ctx = ScanContext::idle();
         let mut counter = 0;
-        let findings = scan_dev_caches_in(home.path(), &mut counter);
+        let findings = scan_dev_caches_in(home.path(), &ctx, &mut counter);
         assert!(
             findings
                 .iter()
@@ -654,8 +756,9 @@ mod tests {
         fs::create_dir_all(&lane).unwrap();
         fs::write(lane.join("big.o"), vec![0u8; 11_000_000]).unwrap();
 
+        let ctx = ScanContext::idle();
         let mut counter = 0;
-        let findings = scan_dev_caches_in(home.path(), &mut counter);
+        let findings = scan_dev_caches_in(home.path(), &ctx, &mut counter);
         assert!(
             findings.iter().any(|f| f.path.contains("financier")),
             "a .shared-target lane must be found without Cargo.toml: {findings:?}"
@@ -663,9 +766,11 @@ mod tests {
 
         // Sidecar discovery must also find it when the walk root is a *repo*
         // (confirmed roots never visit the sibling worktrees directory).
+        let ctx = ScanContext::idle();
         let mut counter = 0;
         let empty_tmp = TempDir::new().unwrap();
-        let sidecar = scan_sidecar_cargo_targets_in(home.path(), empty_tmp.path(), &mut counter);
+        let sidecar =
+            scan_sidecar_cargo_targets_in(home.path(), empty_tmp.path(), &ctx, &mut counter);
         assert!(
             sidecar.iter().any(|f| f.path.contains("financier")),
             "sidecar scan must find .shared-target next to worktrees: {sidecar:?}"
@@ -684,8 +789,9 @@ mod tests {
         fs::create_dir_all(&cargo_target).unwrap();
         fs::write(cargo_target.join("big.o"), vec![0u8; 11_000_000]).unwrap();
 
+        let ctx = ScanContext::idle();
         let mut counter = 0;
-        let findings = scan_cursor_sandbox_targets_in(tmp.path(), &mut counter);
+        let findings = scan_cursor_sandbox_targets_in(tmp.path(), &ctx, &mut counter);
         assert_eq!(
             findings.len(),
             1,
@@ -705,8 +811,9 @@ mod tests {
         let data = vec![0u8; 11_000_000];
         fs::write(project.join("target/debug/big.o"), &data).unwrap();
 
+        let ctx = ScanContext::idle();
         let mut counter = 0;
-        let findings = scan_dev_caches_in(tmp.path(), &mut counter);
+        let findings = scan_dev_caches_in(tmp.path(), &ctx, &mut counter);
         assert!(!findings.is_empty(), "should find cargo target/");
         assert_eq!(findings[0].finding_type, "dev_cache");
         assert!(findings[0].path.contains("target"));
@@ -725,8 +832,9 @@ mod tests {
         let data = vec![0u8; 11_000_000];
         fs::write(project.join("target/big.o"), &data).unwrap();
 
+        let ctx = ScanContext::idle();
         let mut counter = 0;
-        let findings = scan_dev_caches_in(tmp.path(), &mut counter);
+        let findings = scan_dev_caches_in(tmp.path(), &ctx, &mut counter);
         assert_eq!(findings.len(), 1);
         assert!(findings[0].path.contains("dev"));
         assert!(findings[0].path.contains("target"));
@@ -741,8 +849,9 @@ mod tests {
         fs::write(project.join("target/big.o"), &data).unwrap();
         // No Cargo.toml
 
+        let ctx = ScanContext::idle();
         let mut counter = 0;
-        let findings = scan_dev_caches_in(tmp.path(), &mut counter);
+        let findings = scan_dev_caches_in(tmp.path(), &ctx, &mut counter);
         assert!(
             findings.is_empty(),
             "should not find target/ without Cargo.toml"
@@ -759,8 +868,9 @@ mod tests {
         let data = vec![0u8; 11_000_000];
         fs::write(downloads.join("fresh.zip"), &data).unwrap();
 
+        let ctx = ScanContext::idle();
         let mut counter = 0;
-        let findings = scan_stale_downloads_in(tmp.path(), &mut counter);
+        let findings = scan_stale_downloads_in(tmp.path(), &ctx, &mut counter);
         assert!(findings.is_empty(), "fresh file should not be flagged");
     }
 
@@ -778,8 +888,9 @@ mod tests {
         let small = vec![0u8; 50_000_000];
         fs::write(desktop.join("medium.zip"), &small).unwrap();
 
+        let ctx = ScanContext::idle();
         let mut counter = 0;
-        let findings = scan_large_user_files_in(tmp.path(), &mut counter);
+        let findings = scan_large_user_files_in(tmp.path(), &ctx, &mut counter);
         assert_eq!(findings.len(), 1);
         assert!(findings[0].path.contains("huge.iso"));
         assert!(findings[0].size_bytes >= 101_000_000);
@@ -788,11 +899,12 @@ mod tests {
     #[test]
     fn test_scan_empty_dir() {
         let tmp = TempDir::new().unwrap();
+        let ctx = ScanContext::idle();
         let mut counter = 0;
-        assert!(scan_dev_caches_in(tmp.path(), &mut counter).is_empty());
-        assert!(scan_app_caches_in(tmp.path(), &mut counter).is_empty());
-        assert!(scan_xcode_derived_in(tmp.path(), &mut counter).is_empty());
-        assert!(scan_stale_downloads_in(tmp.path(), &mut counter).is_empty());
-        assert!(scan_large_user_files_in(tmp.path(), &mut counter).is_empty());
+        assert!(scan_dev_caches_in(tmp.path(), &ctx, &mut counter).is_empty());
+        assert!(scan_app_caches_in(tmp.path(), &ctx, &mut counter).is_empty());
+        assert!(scan_xcode_derived_in(tmp.path(), &ctx, &mut counter).is_empty());
+        assert!(scan_stale_downloads_in(tmp.path(), &ctx, &mut counter).is_empty());
+        assert!(scan_large_user_files_in(tmp.path(), &ctx, &mut counter).is_empty());
     }
 }

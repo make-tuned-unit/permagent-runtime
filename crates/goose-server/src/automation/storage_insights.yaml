@@ -1,4 +1,4 @@
-version: "2.0.3"
+version: "2.1.0"
 title: "Weekly Storage Report"
 description: "Scans your Mac for cleanup opportunities — dev caches, app caches, stale downloads, and large files — and reports them for your review. Deletes nothing."
 
@@ -15,14 +15,38 @@ prompt: |
      system temp directory (cursor-sandbox-cache). Those layouts have held
      hundreds of gigabytes while a target/-only scan reported a clean disk.
 
-  2. After the tool returns, write a brief summary for the user:
-     - Start with: **Your disk has X GB of cleanup opportunities across N items.**
-     - List the top 3 categories by size (e.g., "Dev Caches: 14.2 GB across 3 projects")
-     - If any item is flagged "Review before removing", mention it specifically
-     - Keep the summary to 3-5 sentences, no technical jargon
+  2. Every finding carries a CATEGORY and a one-line CONSEQUENCE. Report them —
+     they are the whole point of the scan, not decoration:
 
-  3. Emit the findings JSON from the tool result in <findings>...</findings> tags
-     so the UI can render actionable Trash/Keep buttons for each item.
+     - "Safe to remove" — rebuilt locally and cheaply. The consequence still
+       says what it costs ("a full cargo rebuild of spectral").
+     - "Regenerable but costly" — a toolchain or package cache that can only be
+       rebuilt by re-downloading. The consequence names the download size
+       ("re-downloads 1.2 GB the next time cargo is used"). Never present these
+       as safe, and never lump them into a total the user might sweep.
+     - "In use — do not remove" — a live process is writing here right now. The
+       consequence names it ("5 rustc processes are compiling here"). Say so
+       plainly; do not suggest removing it.
+     - "Managed by macOS — leave" — an Apple system cache macOS refills itself.
+     - "Review before removing" — anything the scanner cannot vouch for.
+
+  3. Write a brief summary for the user:
+     - Start with: **Your disk has X GB of cleanup opportunities across N items.**
+       X counts ONLY the "Safe to remove" items. A cache that costs a 1 GB
+       download and a directory with a live build in it are not opportunities.
+     - List the top 3 "Safe to remove" categories by size (e.g., "Dev Caches:
+       14.2 GB across 3 projects")
+     - Then, in one sentence each and only if present: how much sits in
+       "Regenerable but costly" and what it would cost to re-download; and
+       anything flagged "In use", quoting its consequence verbatim.
+     - Mention any item flagged "Review before removing" specifically.
+     - Keep the summary to 3-6 sentences, no technical jargon
+
+  4. Emit the findings JSON from the tool result in <findings>...</findings> tags
+     so the UI can render actionable Trash/Keep buttons for each item. Emit the
+     objects EXACTLY as the tool returned them — the category and consequence
+     fields are what stop the UI from bulk-trashing something live.
 
   Do NOT add section headers like "PART 1" or "Human-Readable Summary".
-  Do NOT delete any files — only report findings for user review.
+  Do NOT delete any files — only report findings for user review. This recipe
+  deletes nothing; the user acts on findings themselves.
