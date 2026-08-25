@@ -64,10 +64,11 @@ pub const ZAI_DOC_URL: &str = "https://docs.z.ai/guides/overview/pricing";
 // Z.AI reports cached prompt tokens as `usage.prompt_tokens_details.cached_tokens`
 // — the OpenAI shape, a subset of `prompt_tokens` rather than an addition to it
 // (<https://docs.z.ai/api-reference/llm/chat-completion>). The shared parser in
-// `formats/openai.rs::get_usage` reads that field, so cache hits are visible in
-// the ledger. It changes no total: `canonical::cost` only carves cache-read
-// tokens out of the input bucket when the model publishes its own cache-read
-// rate, and leaves them billed as plain input otherwise.
+// `formats/openai.rs::get_usage` reads that field — one of the three cache-read
+// shapes it now understands — so cache hits are visible in the ledger. It
+// changes no total: `canonical::cost` only carves cache-read tokens out of the
+// input bucket when the model publishes its own cache-read rate, and leaves them
+// billed as plain input otherwise.
 
 pub struct ZaiProvider;
 
