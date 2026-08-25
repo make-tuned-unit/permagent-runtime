@@ -1065,6 +1065,53 @@ impl SummonClient {
         }
     }
 
+    /// Instructions a worker cannot act on.
+    ///
+    /// Observed live on 2026-08-25: a GLM-5.3 harness session called
+    /// `delegate` with `{"async": true, "instructions": "placeholder"}` and the
+    /// daemon dutifully started a background task named "placeholder" — a whole
+    /// subagent, a whole session, and a share of the same rate-limited API key,
+    /// spent on nothing. A worker needs a task, and one word is not one.
+    ///
+    /// Deliberately narrow: it rejects the literal filler words and anything
+    /// too short to be a task, and nothing else. Guessing at whether a real
+    /// instruction is *good enough* is not this function's business.
+    fn unusable_instructions(instructions: &str) -> Option<String> {
+        const FILLER: &[&str] = &[
+            "placeholder",
+            "tbd",
+            "todo",
+            "test",
+            "n/a",
+            "none",
+            "...",
+            "instructions",
+            "your instructions here",
+        ];
+        /// Shorter than this is never a task a subagent can carry out.
+        const MIN_MEANINGFUL_CHARS: usize = 20;
+
+        let trimmed = instructions.trim();
+        let normalised = trimmed.trim_matches(|c: char| !c.is_alphanumeric());
+        let folded = normalised.to_ascii_lowercase();
+
+        if trimmed.is_empty() {
+            return Some("'instructions' is empty".to_string());
+        }
+        if FILLER.contains(&folded.as_str()) {
+            return Some(format!(
+                "'instructions' is placeholder text ({trimmed:?}), not a task"
+            ));
+        }
+        if normalised.chars().filter(|c| !c.is_whitespace()).count() < MIN_MEANINGFUL_CHARS {
+            return Some(format!(
+                "'instructions' is too short to delegate ({trimmed:?}) — \
+                 say what the worker should do, in a sentence"
+            ));
+        }
+        None
+    }
+
     fn validate_delegate_params(&self, params: &DelegateParams) -> Result<(), String> {
         if params.instructions.is_none() && params.source.is_none() {
             return Err("Must provide 'instructions' or 'source' (or both)".to_string());
@@ -1077,6 +1124,19 @@ impl SummonClient {
         if let Some(max) = params.max_turns {
             if max < 1 {
                 return Err("'max_turns' must be at least 1".to_string());
+            }
+        }
+
+        // A `source` names a real recipe, which carries its own prompt — only
+        // ad-hoc instructions have to stand on their own.
+        if params.source.is_none() {
+            if let Some(instructions) = params.instructions.as_deref() {
+                if let Some(reason) = Self::unusable_instructions(instructions) {
+                    return Err(format!(
+                        "{reason}. Nothing was started. Send the delegate call again \
+                         with the actual task."
+                    ));
+                }
             }
         }
 
@@ -2029,6 +2089,69 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
 
+    /// The live call that started this: a whole background subagent spun up on
+    /// the word "placeholder".
+    #[test]
+    fn placeholder_instructions_are_refused() {
+        for filler in [
+            "placeholder",
+            "Placeholder",
+            "  placeholder  ",
+            "placeholder.",
+            "TBD",
+            "todo",
+            "n/a",
+            "...",
+            "",
+            "   ",
+            "fix it",
+        ] {
+            assert!(
+                SummonClient::unusable_instructions(filler).is_some(),
+                "{filler:?} should not start a worker"
+            );
+        }
+    }
+
+    /// A real task must still get through, including a short but specific one.
+    #[test]
+    fn a_real_task_is_delegated() {
+        for task in [
+            "Run the voice latency benchmark and report the p95",
+            "Update crates/goose/src/providers/zai.rs to map cached tokens",
+            "Read PR 1101 and summarise what its classifier changed",
+        ] {
+            assert_eq!(
+                SummonClient::unusable_instructions(task),
+                None,
+                "{task:?} should be delegated"
+            );
+        }
+    }
+
+    /// A recipe named by `source` carries its own prompt, so its instructions
+    /// field is free to be a note rather than the whole task.
+    #[test]
+    fn the_guard_only_applies_to_ad_hoc_instructions() {
+        let ext = SummonClient::new(create_test_context()).unwrap();
+        let with_source = DelegateParams {
+            instructions: Some("placeholder".to_string()),
+            source: Some("some-recipe".to_string()),
+            ..Default::default()
+        };
+        assert!(ext.validate_delegate_params(&with_source).is_ok());
+
+        let ad_hoc = DelegateParams {
+            instructions: Some("placeholder".to_string()),
+            ..Default::default()
+        };
+        let error = ext
+            .validate_delegate_params(&ad_hoc)
+            .expect_err("ad-hoc placeholder instructions must be refused");
+        assert!(error.contains("placeholder text"), "{error}");
+        assert!(error.contains("Nothing was started"), "{error}");
+    }
+
     fn create_test_context() -> PlatformExtensionContext {
         PlatformExtensionContext {
             extension_manager: None,
@@ -2566,7 +2689,7 @@ You review code."#;
         let client = SummonClient::new(context).unwrap();
 
         let params = DelegateParams {
-            instructions: Some("do something".to_string()),
+            instructions: Some("run the full test suite and report failures".to_string()),
             max_turns: Some(0),
             ..Default::default()
         };
@@ -2580,7 +2703,7 @@ You review code."#;
         let client = SummonClient::new(context).unwrap();
 
         let params = DelegateParams {
-            instructions: Some("do something".to_string()),
+            instructions: Some("run the full test suite and report failures".to_string()),
             max_turns: Some(5),
             ..Default::default()
         };
