@@ -313,13 +313,23 @@ async fn warm_and_run(schedule: &LibrarianSchedule, keep_alive_secs: u64) -> Res
     let (total, described) = query_memory_counts()?;
     librarian_state::set_warming(total, described);
 
-    // A new window: clear last night's circuit, then take ONE readiness probe at
-    // the loopback dedicated endpoint before any memory is processed. A dead
-    // `127.0.0.1:8080` now costs a single WARN line for the night instead of one
-    // per memory (2026-08-22: 281 identical failures) or the three the per-call
-    // circuit still allowed.
+    // Every batch — scheduled or manual — lands here, so this is where the
+    // dedicated endpoint gets re-probed: clear the previous batch's circuit,
+    // then take ONE readiness probe at the loopback endpoint before any memory
+    // is processed. A dead or still-loading `127.0.0.1:8081` now costs a single
+    // WARN line for the batch instead of one per memory (2026-08-22: 281
+    // identical failures) or the three the per-call circuit still allowed.
+    //
+    // Re-probing per batch rather than once per night is what lets a split that
+    // only came up at the 03:20 retry slot actually get used: the batch that
+    // starts after it asks again instead of inheriting a "down" verdict.
     librarian_state::reset_dedicated_endpoint_gate();
-    permagent::agents::platform_extensions::librarian::probe_dedicated_endpoint().await;
+    let endpoint_ready =
+        permagent::agents::platform_extensions::librarian::probe_dedicated_endpoint().await;
+    tracing::info!(
+        endpoint_ready,
+        "Librarian dedicated-endpoint readiness settled for this batch"
+    );
 
     // Warm-load through the mesh pool ladder so the warm follows EXACTLY the
     // routing the batch itself will follow: with the pool engine on, this

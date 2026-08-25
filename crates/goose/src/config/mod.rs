@@ -76,9 +76,11 @@ pub fn ollama_host() -> String {
 ///
 /// When set, the Librarian's describe passes go here instead of the mesh
 /// pool / `PERMAGENT_OLLAMA_HOST`, so a larger model served by a different
-/// engine (today: a two-machine `llama-server` split of Qwen3.8-27B) can do
-/// the nightly archiving without touching the app's other Ollama uses. Unset
-/// means today's behaviour exactly. Trailing slashes are stripped.
+/// engine (today: a two-machine `llama-server` split of Qwen3.8-27B, which
+/// serves `http://127.0.0.1:8081` — it moved off :8080 on 2026-08-25 because
+/// the Finance Picker's Flask scanner owns that port) can do the nightly
+/// archiving without touching the app's other Ollama uses. Unset means today's
+/// behaviour exactly. Trailing slashes are stripped.
 pub fn librarian_endpoint() -> Option<String> {
     Config::global()
         .get_param::<String>("PERMAGENT_LIBRARIAN_ENDPOINT")
