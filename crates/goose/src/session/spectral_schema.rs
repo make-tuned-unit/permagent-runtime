@@ -167,7 +167,10 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
             -- content or tool calls corroborate it. Nullable because a global
             -- chat honestly has no project.
             project_hint_id   TEXT,
-            project_hint_wing TEXT
+            project_hint_wing TEXT,
+            -- When this session last wrote a chat turn. A hint does not survive
+            -- a long silence: see `permagent::session_wing::HINT_GAP_SECONDS`.
+            project_hint_last_turn_at TEXT
         )",
     )
     .execute(&mut *tx)
@@ -1056,6 +1059,10 @@ pub async fn apply_session_project_hint_schema(pool: &Pool<Sqlite>) -> Result<()
         (
             "project_hint_wing",
             "ALTER TABLE sessions ADD COLUMN project_hint_wing TEXT",
+        ),
+        (
+            "project_hint_last_turn_at",
+            "ALTER TABLE sessions ADD COLUMN project_hint_last_turn_at TEXT",
         ),
     ] {
         let has_column: i64 =

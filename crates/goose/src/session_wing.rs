@@ -92,9 +92,30 @@
 //! target was never zero.
 
 use crate::wing_rules;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Sqlite};
 use tracing::warn;
+
+/// How long a conversation may go quiet before its project hint is no longer
+/// evidence about the next turn.
+///
+/// Of the twelve sessions Jesse labelled by hand, two change subject entirely
+/// mid-session, and the boundaries fall exactly on long silences: +152 min,
+/// +67 min, +1068 min. A session is not one topic — it is one *window*, and a
+/// window left open overnight is reopened for something else. So the hint is
+/// dropped after a gap this long and stays dropped until a new
+/// `project_selected` event arrives to re-establish it.
+///
+/// Ten minutes is deliberately shorter than the shortest observed boundary
+/// (67 min). The cost of dropping a hint too eagerly is a turn left honestly
+/// `general`; the cost of keeping one too long is a turn filed under the wrong
+/// project, which is invisible. The asymmetry decides the direction.
+///
+/// This does NOT touch episode boundaries (R45): the session is still the
+/// episode. What expires is the scope hypothesis, not the conversation's
+/// identity.
+pub const HINT_GAP_SECONDS: i64 = 10 * 60;
 
 /// The implicit catch-all project. Never a wing: its display name would swallow
 /// any content containing the word "personal". [`wing_rules::project_wing_rules`]
@@ -524,6 +545,60 @@ pub async fn record_turn_provenance(
     }
 }
 
+/// Drop a session's project hint. Called when a silence has made it stale;
+/// a later `project_selected` may set a fresh one, because
+/// [`set_session_project_hint`] only refuses to overwrite a hint that is
+/// still there.
+async fn clear_session_project_hint(pool: &Pool<Sqlite>, session_id: &str) {
+    if let Err(e) = sqlx::query(
+        "UPDATE sessions SET project_hint_id = NULL, project_hint_wing = NULL WHERE id = ?",
+    )
+    .bind(session_id)
+    .execute(pool)
+    .await
+    {
+        warn!(
+            target: "permagent::session_wing",
+            session = %session_id,
+            error = %e,
+            "could not clear a stale session project hint"
+        );
+    }
+}
+
+/// Record that this session just wrote a turn, so the NEXT turn can measure the
+/// gap. Best-effort: a missed stamp makes the next gap look shorter, which
+/// errs toward dropping the hint — the safe direction.
+async fn touch_session_turn_clock(pool: &Pool<Sqlite>, session_id: &str, now: DateTime<Utc>) {
+    if let Err(e) = sqlx::query("UPDATE sessions SET project_hint_last_turn_at = ? WHERE id = ?")
+        .bind(now.to_rfc3339())
+        .bind(session_id)
+        .execute(pool)
+        .await
+    {
+        warn!(
+            target: "permagent::session_wing",
+            session = %session_id,
+            error = %e,
+            "could not stamp the session turn clock"
+        );
+    }
+}
+
+/// When this session last wrote a turn, if it ever has.
+async fn last_turn_at(pool: &Pool<Sqlite>, session_id: &str) -> Option<DateTime<Utc>> {
+    let raw: Option<Option<String>> =
+        sqlx::query_scalar("SELECT project_hint_last_turn_at FROM sessions WHERE id = ?")
+            .bind(session_id)
+            .fetch_optional(pool)
+            .await
+            .ok()?;
+    let raw = raw??;
+    DateTime::parse_from_rfc3339(&raw)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
 /// Decide one turn's wing from its session, end to end.
 ///
 /// Returns the verdict plus the hint it was judged against, so the caller can
@@ -531,12 +606,39 @@ pub async fn record_turn_provenance(
 /// session has no project hint the verdict is [`WingVerdict::Unverifiable`] and
 /// the hint is `None` — a global chat is honestly `general`, and that is a
 /// result, not a failure.
+///
+/// A hint older than [`HINT_GAP_SECONDS`] of silence is dropped before it is
+/// consulted, and this turn is judged as if the session never had one.
 pub async fn decide_turn_wing(
     pool: &Pool<Sqlite>,
     session_id: &str,
     content: &str,
     tool_text: &str,
 ) -> (Option<ProjectHint>, WingVerdict) {
+    decide_turn_wing_at(pool, session_id, content, tool_text, Utc::now()).await
+}
+
+/// [`decide_turn_wing`] with an explicit clock, so the gap rule is testable
+/// without sleeping.
+pub async fn decide_turn_wing_at(
+    pool: &Pool<Sqlite>,
+    session_id: &str,
+    content: &str,
+    tool_text: &str,
+    now: DateTime<Utc>,
+) -> (Option<ProjectHint>, WingVerdict) {
+    // The gap is measured first, and the clock is stamped whatever happens —
+    // a turn that inherited no hint still marks the timeline for the next one.
+    let gap = last_turn_at(pool, session_id)
+        .await
+        .map(|last| (now - last).num_seconds());
+    touch_session_turn_clock(pool, session_id, now).await;
+
+    if gap.is_some_and(|seconds| seconds >= HINT_GAP_SECONDS) {
+        clear_session_project_hint(pool, session_id).await;
+        return (None, WingVerdict::Unverifiable);
+    }
+
     let Some(hint) = load_session_project_hint(pool, session_id).await else {
         return (None, WingVerdict::Unverifiable);
     };
@@ -1126,5 +1228,139 @@ mod tests {
             load_session_project_hint(&pool, "s1").await.unwrap().slug,
             "permagent"
         );
+    }
+
+    // ── the hint expires on a long silence ──
+
+    #[tokio::test]
+    async fn a_hint_does_not_survive_a_ten_minute_silence() {
+        let pool = test_pool().await;
+        a_project(&pool, "permagent", "Permagent", None).await;
+        a_session(&pool, "s1").await;
+        set_session_project_hint(&pool, "s1", "project:permagent")
+            .await
+            .unwrap();
+
+        let t0 = chrono::DateTime::parse_from_rfc3339("2026-08-20T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        // First turn establishes the clock and inherits the hint.
+        let (hint, verdict) =
+            decide_turn_wing_at(&pool, "s1", "User: permagent build\nAssistant: ok", "", t0).await;
+        assert_eq!(hint.unwrap().slug, "permagent");
+        assert_eq!(verdict.wing(), Some("permagent"));
+
+        // Back within the window: still the same conversation.
+        let (hint, verdict) = decide_turn_wing_at(
+            &pool,
+            "s1",
+            "User: permagent again\nAssistant: ok",
+            "",
+            t0 + chrono::Duration::minutes(9),
+        )
+        .await;
+        assert_eq!(hint.unwrap().slug, "permagent");
+        assert_eq!(verdict.wing(), Some("permagent"));
+
+        // Ten minutes later the window was reopened for something else. The
+        // hint is dropped, and dropping it is a WRITE — a later turn must not
+        // silently re-inherit it either.
+        let (hint, verdict) = decide_turn_wing_at(
+            &pool,
+            "s1",
+            "User: permagent still\nAssistant: ok",
+            "",
+            t0 + chrono::Duration::minutes(19),
+        )
+        .await;
+        assert!(
+            hint.is_none(),
+            "a hint must not carry across a long silence"
+        );
+        assert_eq!(verdict, WingVerdict::Unverifiable);
+        assert!(load_session_project_hint(&pool, "s1").await.is_none());
+
+        // Even an immediately following turn stays unhinted: the hypothesis is
+        // gone until a new project_selected re-establishes it.
+        let (hint, _) = decide_turn_wing_at(
+            &pool,
+            "s1",
+            "User: permagent once more\nAssistant: ok",
+            "",
+            t0 + chrono::Duration::minutes(20),
+        )
+        .await;
+        assert!(hint.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_new_project_selection_re_establishes_a_dropped_hint() {
+        let pool = test_pool().await;
+        a_project(&pool, "permagent", "Permagent", None).await;
+        a_project(&pool, "plekk", "Plekk", None).await;
+        a_session(&pool, "s1").await;
+        set_session_project_hint(&pool, "s1", "project:permagent")
+            .await
+            .unwrap();
+
+        let t0 = chrono::DateTime::parse_from_rfc3339("2026-08-20T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        decide_turn_wing_at(&pool, "s1", "User: hi\nAssistant: hi", "", t0).await;
+        decide_turn_wing_at(
+            &pool,
+            "s1",
+            "User: hi\nAssistant: hi",
+            "",
+            t0 + chrono::Duration::hours(3),
+        )
+        .await;
+        assert!(load_session_project_hint(&pool, "s1").await.is_none());
+
+        // The once-only guard protects a LIVE hint, not a retired one: after
+        // the gap the session is free to be told what it is about again.
+        let recorded = set_session_project_hint(&pool, "s1", "project:plekk")
+            .await
+            .unwrap();
+        assert!(recorded);
+        let (hint, verdict) = decide_turn_wing_at(
+            &pool,
+            "s1",
+            "User: plekk onboarding\nAssistant: ok",
+            "",
+            t0 + chrono::Duration::hours(3) + chrono::Duration::minutes(1),
+        )
+        .await;
+        assert_eq!(hint.unwrap().slug, "plekk");
+        assert_eq!(verdict.wing(), Some("plekk"));
+    }
+
+    #[tokio::test]
+    async fn the_gap_rule_does_not_touch_the_episode_identity() {
+        // R45 says the session IS the episode. What expires here is the scope
+        // hypothesis, not the conversation's identity — nothing in this module
+        // writes or clears an episode, and this test exists so a future change
+        // that starts to has to delete an explicit statement that it must not.
+        let pool = test_pool().await;
+        a_session(&pool, "s1").await;
+        let t0 = chrono::DateTime::parse_from_rfc3339("2026-08-20T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        decide_turn_wing_at(&pool, "s1", "User: a\nAssistant: b", "", t0).await;
+        decide_turn_wing_at(
+            &pool,
+            "s1",
+            "User: a\nAssistant: b",
+            "",
+            t0 + chrono::Duration::hours(5),
+        )
+        .await;
+        // The session row is still one session; only the hint columns moved.
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE id = 's1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
     }
 }
