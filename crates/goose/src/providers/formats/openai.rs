@@ -3,6 +3,7 @@ use crate::mcp_utils::extract_text_from_resource;
 use crate::model::ModelConfig;
 use crate::providers::base::{ProviderUsage, Usage};
 use crate::providers::errors::ProviderError;
+use crate::providers::model_family::ModelFamily;
 use crate::providers::utils::{
     convert_image, detect_image_path, extract_reasoning_effort, is_valid_function_name,
     load_image_file, safely_parse_json, sanitize_function_name, ImageFormat,
@@ -136,7 +137,106 @@ fn extract_content_and_signature(
     }
 }
 
+/// How much of the model's own reasoning is echoed back to the provider on the
+/// next request.
+///
+/// This matters more than it sounds. Reasoning is the largest single item in a
+/// long coding conversation: a live GLM-5.3 session measured here carried
+/// 581,819 characters of `reasoning_content` from *already-finished* turns
+/// inside a 1 MB request payload — over half the request, resent on every turn,
+/// and the direct cause of the Z.AI 429s that prompted this change.
+///
+/// The policy is per-family because the vendors genuinely disagree, and two of
+/// them document the echo as **required**:
+///
+/// - **Z.AI / GLM** defaults `clear_thinking` to true, which means the service
+///   "ignores/removes reasoning_content from prior turns" on its own. Sending it
+///   buys nothing and is billed and rate-limited all the same.
+///   <https://docs.z.ai/api-reference/llm/chat-completion>
+/// - **DeepSeek** requires the opposite when tools are in play: the intermediate
+///   assistant's `reasoning_content` "must participate in the context
+///   concatenation and must be passed back to the API in all subsequent user
+///   interaction turns". Stripping it there is a 400.
+///   <https://api-docs.deepseek.com/guides/thinking_mode/>
+/// - **Moonshot / Kimi** requires the full history for the Preserved Thinking
+///   models, and requires at minimum that reasoning produced "during one
+///   tool-call loop" be sent back with the request.
+///   <https://platform.kimi.ai/docs/guide/use-kimi-k2-thinking-model>
+///
+/// So the default for a family we have not verified is [`ReasoningEcho::Always`]
+/// — today's behaviour, unchanged. Only families whose docs say the prior-turn
+/// reasoning is discarded anyway get trimmed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningEcho {
+    /// Send every `reasoning_content` we have. Required by DeepSeek's tool-call
+    /// mode and by Moonshot's Preserved Thinking models; the safe default for
+    /// anything unverified.
+    Always,
+    /// Keep `reasoning_content` only on messages after the last real user
+    /// message — the tool loop currently in flight — and strip everything older.
+    ///
+    /// Never strips the in-flight loop, because a thinking model mid-tool-loop
+    /// is entitled to see what it was thinking when it asked for the tool, and
+    /// that is the one part every vendor above agrees on.
+    CurrentTurnOnly,
+}
+
+impl ReasoningEcho {
+    /// The echo policy for a model family.
+    ///
+    /// Unrecognised families — which is where Moonshot/Kimi lands, since
+    /// [`ModelFamily`] does not name it — keep today's behaviour on purpose.
+    pub fn for_family(family: ModelFamily) -> Self {
+        match family {
+            // Documented as discarding prior-turn reasoning server-side.
+            ModelFamily::Glm => ReasoningEcho::CurrentTurnOnly,
+            // No reasoning echo is documented as required, and these families
+            // carry their reasoning in fields this module does not populate.
+            ModelFamily::OpenAi | ModelFamily::Xai | ModelFamily::Anthropic => {
+                ReasoningEcho::CurrentTurnOnly
+            }
+            // DeepSeek requires it; QwenLocal is served from this machine, where
+            // the payload costs nothing and some chat templates want the block;
+            // Other is unverified by definition.
+            ModelFamily::DeepSeek | ModelFamily::QwenLocal | ModelFamily::Other => {
+                ReasoningEcho::Always
+            }
+        }
+    }
+}
+
+/// Strip `reasoning_content` the provider has told us it will discard anyway.
+///
+/// Runs after [`merge_split_tool_call_messages`], which needs the field intact
+/// to recognise messages the agent split out of one assistant turn.
+fn strip_stale_reasoning(messages: &mut [Value], echo: ReasoningEcho) {
+    let strip_before = match echo {
+        ReasoningEcho::Always => return,
+        ReasoningEcho::CurrentTurnOnly => messages
+            .iter()
+            .rposition(|m| {
+                m.get("role") == Some(&json!("user")) && !is_image_only_user_message(m)
+            })
+            .map(|i| i + 1)
+            .unwrap_or(0),
+    };
+
+    for message in messages.iter_mut().take(strip_before) {
+        if let Some(object) = message.as_object_mut() {
+            object.remove("reasoning_content");
+        }
+    }
+}
+
 pub fn format_messages(messages: &[Message], image_format: &ImageFormat) -> Vec<Value> {
+    format_messages_with_echo(messages, image_format, ReasoningEcho::CurrentTurnOnly)
+}
+
+pub fn format_messages_with_echo(
+    messages: &[Message],
+    image_format: &ImageFormat,
+    echo: ReasoningEcho,
+) -> Vec<Value> {
     let mut messages_spec = Vec::new();
     for message in messages {
         let mut converted = json!({
@@ -374,6 +474,7 @@ pub fn format_messages(messages: &[Message], image_format: &ImageFormat) -> Vec<
     }
 
     merge_split_tool_call_messages(&mut messages_spec);
+    strip_stale_reasoning(&mut messages_spec, echo);
     messages_spec
 }
 
@@ -653,9 +754,22 @@ pub fn get_usage(usage: &Value) -> Usage {
         .or_else(|| usage.get("eval_count").and_then(|v| v.as_i64()))
         .map(|v| v as i32);
 
+    // Two shapes in the wild. Anthropic-via-a-compatible-gateway sends a flat
+    // `cache_read_input_tokens`; OpenAI, Z.AI and most GLM-compatible hosts send
+    // `prompt_tokens_details.cached_tokens` — a *subset* of `prompt_tokens`,
+    // which is exactly the breakdown `canonical::cost` expects. Reading it costs
+    // nothing where no cache-read rate is published (those tokens stay in the
+    // input bucket) and makes cache hits visible where one is.
+    // <https://docs.z.ai/api-reference/llm/chat-completion>
     let cache_read_input_tokens = usage
         .get("cache_read_input_tokens")
         .and_then(|v| v.as_i64())
+        .or_else(|| {
+            usage
+                .get("prompt_tokens_details")
+                .and_then(|d| d.get("cached_tokens"))
+                .and_then(|v| v.as_i64())
+        })
         .map(|v| v as i32);
 
     let cache_write_input_tokens = usage
@@ -1022,7 +1136,11 @@ pub fn create_request(
         "content": system
     });
 
-    let messages_spec = format_messages(messages, image_format);
+    // Provider id is not threaded down here; the model id is the signal that
+    // actually decides the family anyway (and the only one that survives an
+    // aggregator), so resolve on it alone.
+    let echo = ReasoningEcho::for_family(ModelFamily::resolve("", &model_config.model_name));
+    let messages_spec = format_messages_with_echo(messages, image_format, echo);
     let mut tools_spec = format_tools(tools)?;
 
     validate_tool_schemas(&mut tools_spec);
@@ -2285,6 +2403,222 @@ data: [DONE]"#;
             panic!("Expected Text content");
         }
 
+        Ok(())
+    }
+
+    fn thinking_tool_call(id: &str, thought: &str) -> Message {
+        Message::assistant()
+            .with_thinking(thought, "")
+            .with_tool_request(id, Ok(CallToolRequestParams::new("read")))
+    }
+
+    fn tool_answer(id: &str) -> Message {
+        Message::user().with_tool_response(
+            id,
+            Ok(CallToolResult::success(vec![Content::text("file contents")])),
+        )
+    }
+
+    /// Two finished turns then a third in flight.
+    fn two_turns_then_one_in_flight() -> Vec<Message> {
+        vec![
+            Message::user().with_text("first question"),
+            thinking_tool_call("call-1", "OLD REASONING"),
+            tool_answer("call-1"),
+            Message::user().with_text("second question"),
+            thinking_tool_call("call-2", "LIVE REASONING"),
+            tool_answer("call-2"),
+        ]
+    }
+
+    /// Z.AI (and OpenAI) report cache hits as a subset of `prompt_tokens`.
+    /// Before this they were invisible, so nobody could tell whether the prompt
+    /// cache was working at all.
+    #[test]
+    fn usage_reads_openai_style_cached_prompt_tokens() {
+        let usage = get_usage(&json!({
+            "usage": {
+                "prompt_tokens": 63_485,
+                "completion_tokens": 512,
+                "total_tokens": 63_997,
+                "prompt_tokens_details": { "cached_tokens": 60_000 }
+            }
+        }));
+        assert_eq!(usage.input_tokens, Some(63_485));
+        assert_eq!(usage.cache_read_input_tokens, Some(60_000));
+        // input still carries the full prompt surface: the cached count is a
+        // breakdown of it, not an addition to it.
+        assert_eq!(usage.total_tokens, Some(63_997));
+    }
+
+    /// The flat Anthropic-style field still wins where a gateway sends both.
+    #[test]
+    fn usage_prefers_the_flat_cache_read_field() {
+        let usage = get_usage(&json!({
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 1,
+                "cache_read_input_tokens": 40,
+                "prompt_tokens_details": { "cached_tokens": 90 }
+            }
+        }));
+        assert_eq!(usage.cache_read_input_tokens, Some(40));
+    }
+
+    /// No cache block at all stays `None`, not `Some(0)` — "not reported" and
+    /// "reported as zero" are different facts.
+    #[test]
+    fn usage_without_a_cache_block_reports_none() {
+        let usage = get_usage(&json!({
+            "usage": { "prompt_tokens": 10, "completion_tokens": 2 }
+        }));
+        assert_eq!(usage.cache_read_input_tokens, None);
+    }
+
+    /// The bug this whole policy exists for.
+    ///
+    /// A live GLM-5.3 coding session was measured sending 581,819 characters of
+    /// `reasoning_content` from turns that had already finished, inside a 1 MB
+    /// request — over half the payload, resent every turn, and the direct cause
+    /// of the Z.AI 429s. Z.AI discards it server-side by default, so it bought
+    /// nothing at all.
+    #[test]
+    fn prior_turn_reasoning_is_absent_from_the_payload() -> anyhow::Result<()> {
+        let spec = format_messages_with_echo(
+            &two_turns_then_one_in_flight(),
+            &ImageFormat::OpenAi,
+            ReasoningEcho::CurrentTurnOnly,
+        );
+        let payload = serde_json::to_string(&spec)?;
+
+        assert!(
+            !payload.contains("OLD REASONING"),
+            "reasoning from a finished turn must not be resent: {payload}"
+        );
+        assert!(
+            payload.contains("LIVE REASONING"),
+            "reasoning from the in-flight turn must survive: {payload}"
+        );
+
+        // The stale message loses the field entirely rather than keeping an
+        // empty one — an empty `reasoning_content` is itself rejected by some
+        // providers, which is why the writer at format time skips empties too.
+        let stale = spec
+            .iter()
+            .find(|m| {
+                m.get("tool_calls")
+                    .and_then(|tc| tc.as_array())
+                    .is_some_and(|a| {
+                        a.first().and_then(|c| c.get("id")) == Some(&json!("call-1"))
+                    })
+            })
+            .expect("the first turn's tool call is still in the payload");
+        assert!(stale.get("reasoning_content").is_none());
+
+        Ok(())
+    }
+
+    /// The families that document the echo as required keep every byte.
+    #[test]
+    fn always_policy_keeps_prior_turn_reasoning() -> anyhow::Result<()> {
+        let spec = format_messages_with_echo(
+            &two_turns_then_one_in_flight(),
+            &ImageFormat::OpenAi,
+            ReasoningEcho::Always,
+        );
+        let payload = serde_json::to_string(&spec)?;
+        assert!(payload.contains("OLD REASONING"), "{payload}");
+        assert!(payload.contains("LIVE REASONING"), "{payload}");
+        Ok(())
+    }
+
+    /// With no user message yet there is no prior turn, so nothing is stale.
+    #[test]
+    fn reasoning_survives_when_there_is_no_prior_turn() -> anyhow::Result<()> {
+        let spec = format_messages_with_echo(
+            &[thinking_tool_call("call-1", "LIVE REASONING")],
+            &ImageFormat::OpenAi,
+            ReasoningEcho::CurrentTurnOnly,
+        );
+        assert_eq!(spec[0]["reasoning_content"], json!("LIVE REASONING"));
+        Ok(())
+    }
+
+    /// A tool result is carried as a user-role message. It must not be mistaken
+    /// for the user speaking, or the whole in-flight loop reads as a prior turn.
+    #[test]
+    fn a_tool_result_does_not_end_the_in_flight_turn() -> anyhow::Result<()> {
+        let messages = vec![
+            Message::user().with_text("question"),
+            thinking_tool_call("call-1", "FIRST STEP"),
+            tool_answer("call-1"),
+            thinking_tool_call("call-2", "SECOND STEP"),
+        ];
+        let payload = serde_json::to_string(&format_messages_with_echo(
+            &messages,
+            &ImageFormat::OpenAi,
+            ReasoningEcho::CurrentTurnOnly,
+        ))?;
+        assert!(payload.contains("FIRST STEP"), "{payload}");
+        assert!(payload.contains("SECOND STEP"), "{payload}");
+        Ok(())
+    }
+
+    /// Per-family table. DeepSeek and Moonshot/Kimi (which resolves to `Other`)
+    /// document the echo as required, so they must never be trimmed.
+    #[test]
+    fn echo_policy_per_family() {
+        use ReasoningEcho::*;
+        let expected = [
+            (ModelFamily::Glm, CurrentTurnOnly),
+            (ModelFamily::OpenAi, CurrentTurnOnly),
+            (ModelFamily::Xai, CurrentTurnOnly),
+            (ModelFamily::Anthropic, CurrentTurnOnly),
+            (ModelFamily::DeepSeek, Always),
+            (ModelFamily::QwenLocal, Always),
+            (ModelFamily::Other, Always),
+        ];
+        for (family, want) in expected {
+            assert_eq!(ReasoningEcho::for_family(family), want, "{family:?}");
+        }
+        // exhaustive: every family in the enum is covered above
+        assert_eq!(expected.len(), ModelFamily::ALL.len());
+
+        // Kimi is not a named family, so it lands on the safe default.
+        assert_eq!(
+            ReasoningEcho::for_family(ModelFamily::resolve("kimicode", "kimi-k2.5")),
+            Always
+        );
+    }
+
+    /// `create_request` must pick the policy up, not just `format_messages`.
+    #[test]
+    fn create_request_strips_prior_turn_reasoning_for_glm() -> anyhow::Result<()> {
+        let payload = serde_json::to_string(&create_request(
+            &ModelConfig::new_or_fail("glm-5.3"),
+            "system",
+            &two_turns_then_one_in_flight(),
+            &[],
+            &ImageFormat::OpenAi,
+            false,
+        )?)?;
+        assert!(!payload.contains("OLD REASONING"), "{payload}");
+        assert!(payload.contains("LIVE REASONING"), "{payload}");
+        Ok(())
+    }
+
+    /// ...and must not strip it for a family that needs it.
+    #[test]
+    fn create_request_keeps_prior_turn_reasoning_for_deepseek() -> anyhow::Result<()> {
+        let payload = serde_json::to_string(&create_request(
+            &ModelConfig::new_or_fail("deepseek-reasoner"),
+            "system",
+            &two_turns_then_one_in_flight(),
+            &[],
+            &ImageFormat::OpenAi,
+            false,
+        )?)?;
+        assert!(payload.contains("OLD REASONING"), "{payload}");
         Ok(())
     }
 

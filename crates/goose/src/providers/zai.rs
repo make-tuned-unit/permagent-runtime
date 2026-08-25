@@ -61,16 +61,13 @@ pub const ZAI_KNOWN_MODELS: &[&str] = &[
 
 pub const ZAI_DOC_URL: &str = "https://docs.z.ai/guides/overview/pricing";
 
-// KNOWN GAP (not introduced here, and deliberately not fixed here): Z.AI reports
-// cached prompt tokens as `usage.prompt_tokens_details.cached_tokens`, the OpenAI
-// shape. The shared parser in `formats/openai.rs::get_usage` only reads the
-// Anthropic-style `cache_read_input_tokens`, so those cached tokens stay folded
-// into the plain input bucket. Input/output token counts — the numbers the spend
-// gate actually meters — are correct; only the cache *breakdown* is missed, which
-// bills cached tokens at the full input rate and so ERRS HIGH (fail-safe) rather
-// than under-reporting spend. Fixing it means changing the shared OpenAI parser,
-// which would move the reported cost of every OpenAI-compatible provider, so it
-// belongs in its own change rather than riding along with a new provider.
+// Z.AI reports cached prompt tokens as `usage.prompt_tokens_details.cached_tokens`
+// — the OpenAI shape, a subset of `prompt_tokens` rather than an addition to it
+// (<https://docs.z.ai/api-reference/llm/chat-completion>). The shared parser in
+// `formats/openai.rs::get_usage` reads that field, so cache hits are visible in
+// the ledger. It changes no total: `canonical::cost` only carves cache-read
+// tokens out of the input bucket when the model publishes its own cache-read
+// rate, and leaves them billed as plain input otherwise.
 
 pub struct ZaiProvider;
 
