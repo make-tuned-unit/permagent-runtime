@@ -1311,6 +1311,16 @@ impl CliSession {
                                 self.messages.push(message.clone());
 
                                 if let Some(c) = composer.as_mut() {
+                                    // Tell the pinned status what this turn is
+                                    // doing before printing anything. Added
+                                    // 2026-08-25: a GLM-5.3 turn ran four
+                                    // minutes of reasoning with no text and no
+                                    // tool call, and the status said only
+                                    // "Working (Ns)" the whole time.
+                                    if let Some(phase) = composer::phase_of(&message) {
+                                        c.set_phase(phase);
+                                    }
+                                    c.mark_output();
                                     c.prepare_output();
                                 }
                                 if interactive { output::hide_thinking() };
