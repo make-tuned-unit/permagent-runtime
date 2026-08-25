@@ -127,3 +127,82 @@ describe('ModelsPanel roster pointer', () => {
     expect(goto).toHaveBeenCalledWith('agents');
   });
 });
+
+/**
+ * The voice model route (crates/goose/src/config/voice_model.rs): which
+ * model answers a SPOKEN turn, separate from the main GOOSE_MODEL that
+ * answers chat. `voice_provider` and `voice_model` set together override a
+ * measured default (custom_deepseek / deepseek-chat); either key set to
+ * session/off/none turns the feature off. This block checks the panel's
+ * display mirrors that precedence and that it writes only on user action —
+ * never as a side effect of mounting (the Guard test above already tripwires
+ * that for its own key; the "typing alone doesn't save" case below tripwires
+ * it for these two).
+ */
+describe('ModelsPanel voice model block', () => {
+  function providerInput(): HTMLInputElement {
+    return container.querySelector('input[placeholder="custom_deepseek"]') as HTMLInputElement;
+  }
+  function modelInput(): HTMLInputElement {
+    return container.querySelector('input[placeholder="deepseek-chat"]') as HTMLInputElement;
+  }
+  async function typeInto(input: HTMLInputElement, value: string) {
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  }
+  function saveButton(): HTMLButtonElement {
+    return Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Save') as HTMLButtonElement;
+  }
+  function sessionButton(): HTMLButtonElement {
+    return Array.from(container.querySelectorAll('button')).find(
+      b => b.textContent === 'Use the session model',
+    ) as HTMLButtonElement;
+  }
+
+  it('shows the measured default when neither key is set', async () => {
+    await mount(vi.fn());
+    expect(container.textContent).toContain('custom_deepseek / deepseek-chat (default)');
+  });
+
+  it('shows the configured route when both keys are set', async () => {
+    allowed.readConfig.mockImplementation(async (k: string) =>
+      (k === 'voice_provider' ? 'anthropic' : k === 'voice_model' ? 'claude-haiku-4-5-20251001' : null) as never,
+    );
+    await mount(vi.fn());
+    expect(container.textContent).toContain('anthropic / claude-haiku-4-5-20251001');
+  });
+
+  it('shows "session model" when voice_model is set to session', async () => {
+    allowed.readConfig.mockImplementation(async (k: string) => (k === 'voice_model' ? 'session' : null) as never);
+    await mount(vi.fn());
+    expect(container.textContent).toContain('session model');
+  });
+
+  it('does not write either key just from mounting or typing', async () => {
+    await mount(vi.fn());
+    await typeInto(providerInput(), 'minimax');
+    expect(allowed.upsertConfig).not.toHaveBeenCalled();
+  });
+
+  it('Save writes both voice_provider and voice_model', async () => {
+    await mount(vi.fn());
+    await typeInto(providerInput(), 'minimax');
+    await typeInto(modelInput(), 'MiniMax-M2.7-highspeed');
+    await act(async () => { saveButton().click(); });
+
+    expect(allowed.upsertConfig).toHaveBeenCalledWith('voice_provider', 'minimax');
+    expect(allowed.upsertConfig).toHaveBeenCalledWith('voice_model', 'MiniMax-M2.7-highspeed');
+  });
+
+  it('"Use the session model" writes only voice_model, to session', async () => {
+    await mount(vi.fn());
+    await act(async () => { sessionButton().click(); });
+
+    expect(allowed.upsertConfig).toHaveBeenCalledWith('voice_model', 'session');
+    const keysWritten = allowed.upsertConfig.mock.calls.map(c => c[0]);
+    expect(keysWritten).toEqual(['voice_model']);
+  });
+});

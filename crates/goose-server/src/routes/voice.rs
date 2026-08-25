@@ -45,6 +45,187 @@ use permagent::download_manager::{get_download_manager, DownloadProgress, Downlo
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+/// The style contract for a SPOKEN reply, appended to the agent's system prompt on
+/// the voice path only. The chat path never sees it — a chat reply is read, and
+/// most of what follows (no markdown, contractions, delivery tags, "never open in
+/// silence") would be wrong advice there.
+///
+/// The silence rule at the end came out of the voice-model bench
+/// (`docs/research/VOICE_MODEL_BENCH_2026-08-25.md`): every candidate opened some
+/// turns with a bare tool call and no spoken text, up to 7 turns in 20, and the
+/// user then hears nothing for a whole tool round trip. It is model-independent,
+/// so it belongs in the prompt rather than in the model choice.
+pub const VOICE_REPLY_STYLE: &str =
+    "The user is speaking to you by voice. Reply in natural conversational speech: \
+     short sentences, contractions, concise and direct. No markdown, no bullet points, \
+     no numbered lists, no code blocks. Keep replies brief — 1-3 sentences for simple \
+     questions. For a story or a longer ask, keep going — do not stop at three \
+     sentences to ask if they want more. Never say 'do you want me to continue', \
+     'shall I go on', or any mid-reply continue offer; if there is more, say it. \
+     Speak as you would in a real conversation — with feeling, not a flat \
+     reading: let a reaction through, vary the length of sentences, take a breath. \
+     USE CONTRACTIONS the way people do: I'm, don't, should've, would've, it's, I'll, haven't. \
+     Never expand those into 'I am' / 'should have' — the voice can say them. \
+     Finish the sentence you are on. Do not trail off mid-clause. \
+     Never write '=' or letter-spell a name (no 'EL-speth', no 'E-L-S-P-E-T-H'). Say the name. \
+     The voice takes its rhythm from punctuation, not from stage directions. \
+     Write the way people talk: a comma for a breath, an em dash for a turn, \
+     an ellipsis (...) when you are thinking, a question mark when you actually \
+     want an answer, an exclamation only when you mean the energy. Prefer two \
+     short sentences over one long one — long lines flatten. \
+     You may prefix a sentence with ONE delivery tag: [warm] [excited] [calm] \
+     [gentle] [serious] [thoughtful] [playful]. Insert [pause] for a beat. Never \
+     say the tag names or the brackets aloud; most sentences need no tag. \
+     NEVER spell a word letter by letter. If you do not already know how a name \
+     will sound, STOP. Say you will place it on the Orb and listen. Do not say \
+     the word. Then call save_pronunciation with the word and what they said — \
+     one time, then it is saved forever. Do not guess a respelling and keep going. \
+     Verbalize outcomes, not interface mechanics: don't read out UI labels, button names, \
+     menu paths, file paths, URLs, or settings keys, and don't narrate the individual \
+     steps you take to do something. Say what happened or what the user should do in plain \
+     spoken terms — e.g. 'I turned on web search' rather than 'I clicked the Search and \
+     tools toggle in Settings'. If a literal name, path, or value is essential, give just \
+     that one item, not the surrounding navigation. \
+     When they ask for copyable text — a post, caption, speech, blurb, 'give me the \
+     text', 'copy that', 'so I can paste into Notes' — call copy_to_clipboard with \
+     the exact paste-ready body and speak one short confirmation such as 'It's on \
+     your clipboard.' Do not read the body aloud and do not skip the tool: saying \
+     the words is not the same as putting them on the clipboard. \
+     NEVER OPEN A TURN IN SILENCE. If a tool call is the right next step, say one \
+     short sentence first or alongside it — 'Let me check.', 'One sec, pulling that \
+     up.' — and only then call the tool. A turn that begins with a bare tool call and \
+     no words is dead air in the user's ear for the whole round trip, and they cannot \
+     tell it from a crash.";
+
+// ── The voice model (#voice-latency): which model answers a spoken turn ──────
+
+/// The provider built for the configured voice route, kept across turns.
+///
+/// Building a provider is cheap but not free (an HTTP client and a config read),
+/// and the voice path is the one place in the daemon where a hundred milliseconds
+/// is audible. Keyed on the resolved (provider, model) so a config change during
+/// a session is picked up on the next turn rather than pinned for the life of the
+/// process.
+/// The voice route that is live plus the provider built for it.
+type CachedVoiceProvider = (
+    permagent::config::VoiceModel,
+    Arc<dyn permagent::providers::base::Provider>,
+);
+
+static VOICE_PROVIDER_CACHE: tokio::sync::OnceCell<
+    tokio::sync::Mutex<Option<CachedVoiceProvider>>,
+> = tokio::sync::OnceCell::const_new();
+
+async fn voice_provider_cache() -> &'static tokio::sync::Mutex<Option<CachedVoiceProvider>> {
+    VOICE_PROVIDER_CACHE
+        .get_or_init(|| async { tokio::sync::Mutex::new(None) })
+        .await
+}
+
+/// Point this turn's agent at the configured VOICE model, if one is configured
+/// and reachable.
+///
+/// Returns the route that is now live, or `None` when the turn should run on the
+/// session model — which is the case when nothing is configured (the common one),
+/// when the model id is invalid, or when the provider cannot be built (no API key,
+/// no network). A voice model that cannot be reached must never turn into a failed
+/// turn: the user is mid-conversation, and the session model still answers.
+///
+/// On "turn reasoning off for voice": there is no such switch to throw, and this
+/// function deliberately does not pretend otherwise. No in-tree request builder
+/// emits a disable-thinking field for a non-Claude model
+/// (`formats::anthropic::thinking_type` returns `Disabled` and writes nothing),
+/// MiniMax documents that it ignores `thinking: {"type": "disabled"}`, and Claude
+/// only thinks when asked. So the `reasoning` flag stays whatever the canonical
+/// table says the chosen model actually does — the request log then tells the
+/// truth about it. The way to stop a voice turn thinking is to configure a model
+/// that does not think; see `docs/research/VOICE_MODEL_BENCH_2026-08-25.md`.
+/// Build the `ModelConfig` for a voice route, or `None` if the model id is not
+/// usable. Split out from [`apply_voice_model`] so the fallback path — a bad id
+/// must never take a spoken turn down — is testable without a live agent.
+fn voice_model_config(
+    route: &permagent::config::VoiceModel,
+) -> Option<permagent::model::ModelConfig> {
+    if route.model.trim().is_empty() || route.provider.trim().is_empty() {
+        tracing::warn!(
+            target: "permagentd::voice",
+            "voice route is missing a provider or a model; this turn runs on the session model"
+        );
+        return None;
+    }
+    match permagent::model::ModelConfig::new(&route.model) {
+        Ok(config) => Some(config.with_canonical_limits(&route.provider)),
+        Err(e) => {
+            tracing::warn!(
+                target: "permagentd::voice",
+                voice_provider = %route.provider,
+                voice_model = %route.model,
+                error = %e,
+                "configured voice model is invalid; this turn runs on the session model"
+            );
+            None
+        }
+    }
+}
+
+async fn apply_voice_model(
+    agent: &Arc<permagent::agents::Agent>,
+    session_id: &str,
+) -> Option<permagent::config::VoiceModel> {
+    let (route, source) = permagent::config::voice_model_from_config()?;
+    if source == permagent::config::VoiceModelSource::HalfConfigured {
+        tracing::warn!(
+            target: "permagentd::voice",
+            "only one of `{}`/`{}` is set — a half-configured pair cannot route, so the \
+             measured default ({}/{}) applies; set both or set one to `session` to turn the \
+             voice model off",
+            permagent::config::VOICE_PROVIDER_KEY,
+            permagent::config::VOICE_MODEL_KEY,
+            route.provider,
+            route.model,
+        );
+    }
+
+    let cache = voice_provider_cache().await;
+    let mut cached = cache.lock().await;
+    let provider = match cached.as_ref() {
+        Some((cached_route, provider)) if *cached_route == route => Arc::clone(provider),
+        _ => {
+            let model_config = voice_model_config(&route)?;
+            let extensions = agent.get_extension_configs().await;
+            match permagent::providers::create(&route.provider, model_config, extensions).await {
+                Ok(provider) => {
+                    *cached = Some((route.clone(), Arc::clone(&provider)));
+                    provider
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "permagentd::voice",
+                        voice_provider = %route.provider,
+                        voice_model = %route.model,
+                        error = %e,
+                        "configured voice model is unreachable; this turn runs on the session model"
+                    );
+                    return None;
+                }
+            }
+        }
+    };
+    drop(cached);
+
+    if let Err(e) = agent.update_provider(provider, session_id).await {
+        tracing::warn!(
+            target: "permagentd::voice",
+            voice_provider = %route.provider,
+            voice_model = %route.model,
+            error = %e,
+            "could not switch this session to the voice model; running on the session model"
+        );
+        return None;
+    }
+    Some(route)
+}
+
 // ── User pronunciation lexicon (#516 follow-through: the never-spell rule) ──
 
 #[derive(serde::Deserialize)]
@@ -1461,45 +1642,23 @@ async fn stream_reply_with_tts(
         .await
         .map_err(|e| anyhow::anyhow!("Failed to get agent: {}", e))?;
 
+    // Voice turns may answer on a different model than chat — the whole point of
+    // the knob. Unconfigured or unreachable falls through to the session model.
+    match apply_voice_model(&agent, &sid).await {
+        Some(route) => tracing::info!(
+            target: "permagentd::voice",
+            "  voice model: {}/{}", route.provider, route.model
+        ),
+        None => tracing::info!(
+            target: "permagentd::voice",
+            "  voice model: session model (not configured, or unreachable — see warnings above)"
+        ),
+    }
+
     agent
         .extend_system_prompt(
             "voice_reply_style".to_string(),
-            "The user is speaking to you by voice. Reply in natural conversational speech: \
-             short sentences, contractions, concise and direct. No markdown, no bullet points, \
-             no numbered lists, no code blocks. Keep replies brief — 1-3 sentences for simple \
-             questions. For a story or a longer ask, keep going — do not stop at three \
-             sentences to ask if they want more. Never say 'do you want me to continue', \
-             'shall I go on', or any mid-reply continue offer; if there is more, say it. \
-             Speak as you would in a real conversation — with feeling, not a flat \
-             reading: let a reaction through, vary the length of sentences, take a breath. \
-             USE CONTRACTIONS the way people do: I'm, don't, should've, would've, it's, I'll, haven't. \
-             Never expand those into 'I am' / 'should have' — the voice can say them. \
-             Finish the sentence you are on. Do not trail off mid-clause. \
-             Never write '=' or letter-spell a name (no 'EL-speth', no 'E-L-S-P-E-T-H'). Say the name. \
-             The voice takes its rhythm from punctuation, not from stage directions. \
-             Write the way people talk: a comma for a breath, an em dash for a turn, \
-             an ellipsis (...) when you are thinking, a question mark when you actually \
-             want an answer, an exclamation only when you mean the energy. Prefer two \
-             short sentences over one long one — long lines flatten. \
-             You may prefix a sentence with ONE delivery tag: [warm] [excited] [calm] \
-             [gentle] [serious] [thoughtful] [playful]. Insert [pause] for a beat. Never \
-             say the tag names or the brackets aloud; most sentences need no tag. \
-             NEVER spell a word letter by letter. If you do not already know how a name \
-             will sound, STOP. Say you will place it on the Orb and listen. Do not say \
-             the word. Then call save_pronunciation with the word and what they said — \
-             one time, then it is saved forever. Do not guess a respelling and keep going. \
-             Verbalize outcomes, not interface mechanics: don't read out UI labels, button names, \
-             menu paths, file paths, URLs, or settings keys, and don't narrate the individual \
-             steps you take to do something. Say what happened or what the user should do in plain \
-             spoken terms — e.g. 'I turned on web search' rather than 'I clicked the Search and \
-             tools toggle in Settings'. If a literal name, path, or value is essential, give just \
-             that one item, not the surrounding navigation. \
-             When they ask for copyable text — a post, caption, speech, blurb, 'give me the \
-             text', 'copy that', 'so I can paste into Notes' — call copy_to_clipboard with \
-             the exact paste-ready body and speak one short confirmation such as 'It's on \
-             your clipboard.' Do not read the body aloud and do not skip the tool: saying \
-             the words is not the same as putting them on the clipboard."
-                .to_string(),
+            VOICE_REPLY_STYLE.to_string(),
         )
         .await;
     agent
@@ -2356,7 +2515,11 @@ async fn speak_remainder(
 ///
 /// `first_chunk` lowers the floors so the first audio can leave before a
 /// full 25-character clause has landed.
-fn find_speakable_boundary(text: &str, first_chunk: bool) -> Option<(usize, usize)> {
+///
+/// Public so the voice-model bench (`src/bin/voice_model_bench.rs`) can time
+/// candidate models against the SAME boundary rule first audio actually fires
+/// on, rather than a re-implementation that would drift from it.
+pub fn find_speakable_boundary(text: &str, first_chunk: bool) -> Option<(usize, usize)> {
     let sentence_min = if first_chunk { 3 } else { 5 };
     let clause_min = if first_chunk { 12 } else { 25 };
 
@@ -2402,6 +2565,83 @@ fn find_speakable_boundary(text: &str, first_chunk: bool) -> Option<(usize, usiz
 mod tests {
     use super::*;
     use permagent::download_manager::DownloadManager;
+
+    // ── The voice model knob ─────────────────────────────────────────────────
+
+    /// The measured default routes voice away from the session model. If this
+    /// ever quietly reverts, the 7.4 s TTFT comes back with it.
+    #[test]
+    fn the_voice_path_defaults_to_the_benched_voice_model() {
+        let (route, source) = permagent::config::voice_model::resolve_voice_model(|_| None)
+            .expect("an unconfigured daemon still routes voice to the measured default");
+        assert_eq!(route, permagent::config::default_voice_model());
+        assert_eq!(source, permagent::config::VoiceModelSource::Default);
+    }
+
+    /// The fallback path: an invalid model id must NOT take the turn down. The
+    /// user is mid-sentence; the session model still answers.
+    #[test]
+    fn an_invalid_voice_model_id_falls_back_rather_than_failing_the_turn() {
+        assert!(
+            voice_model_config(&permagent::config::VoiceModel {
+                provider: "minimax".to_string(),
+                model: String::new(),
+            })
+            .is_none(),
+            "an empty model id must resolve to None so the caller keeps the session model"
+        );
+    }
+
+    #[test]
+    fn a_valid_voice_model_id_builds_a_model_config_for_that_model() {
+        let route = permagent::config::default_voice_model();
+        let config = voice_model_config(&route).expect("the default must build");
+        assert_eq!(config.model_name, route.model);
+        assert!(
+            config.context_limit.is_some_and(|limit| limit > 0),
+            "canonical limits must be applied so the voice turn does not overflow"
+        );
+    }
+
+    /// Turning it off is the way back to one model for everything.
+    #[test]
+    fn session_turns_the_voice_model_off_entirely() {
+        let read =
+            |key: &str| (key == permagent::config::VOICE_MODEL_KEY).then(|| "session".to_string());
+        assert!(permagent::config::voice_model::resolve_voice_model(read).is_none());
+    }
+
+    // ── The spoken-reply style contract ──────────────────────────────────────
+
+    /// The bench's biggest perceived-latency finding, as a prompt rule.
+    #[test]
+    fn the_voice_style_forbids_opening_a_turn_in_silence() {
+        assert!(VOICE_REPLY_STYLE.contains("NEVER OPEN A TURN IN SILENCE"));
+        assert!(
+            VOICE_REPLY_STYLE.contains("say one \n             short sentence")
+                || VOICE_REPLY_STYLE.contains("say one short sentence"),
+            "the rule must say WHAT to do, not only what not to do"
+        );
+    }
+
+    /// Voice-only: the style contract is spoken-reply advice (no markdown,
+    /// contractions, delivery tags) and would be wrong on the chat path. It must
+    /// reach the agent through `extend_system_prompt` on the voice route and not
+    /// be baked into the shared base prompt every session gets.
+    #[test]
+    fn the_voice_style_is_not_part_of_the_shared_base_prompt() {
+        let base = include_str!(
+            "../../../goose/src/agents/snapshots/permagent__agents__prompt_manager__tests__all_platform_extensions.snap"
+        );
+        assert!(
+            !base.contains("NEVER OPEN A TURN IN SILENCE"),
+            "the voice style leaked into the base system prompt — chat turns would get spoken-reply rules"
+        );
+        assert!(
+            !base.contains("The user is speaking to you by voice"),
+            "the voice style leaked into the base system prompt"
+        );
+    }
 
     #[test]
     fn voice_roster_labels_and_sorting() {

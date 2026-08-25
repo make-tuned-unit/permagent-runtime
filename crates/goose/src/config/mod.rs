@@ -17,6 +17,7 @@ pub mod secure_fs;
 pub mod signup_nanogpt;
 pub mod signup_openrouter;
 pub mod signup_tetrate;
+pub mod voice_model;
 pub mod worker_probe;
 
 pub use crate::agents::ExtensionConfig;
@@ -35,6 +36,10 @@ pub use secret_source::{SecretSource, SecretSourceError};
 pub use signup_nanogpt::configure_nanogpt;
 pub use signup_openrouter::configure_openrouter;
 pub use signup_tetrate::configure_tetrate;
+pub use voice_model::{
+    default_voice_model, voice_model_from_config, VoiceModel, VoiceModelSource,
+    DEFAULT_VOICE_MODEL_ID, DEFAULT_VOICE_PROVIDER_ID, VOICE_MODEL_KEY, VOICE_PROVIDER_KEY,
+};
 
 pub use extensions::DEFAULT_DISPLAY_NAME;
 pub use extensions::DEFAULT_EXTENSION;

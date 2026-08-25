@@ -54,6 +54,28 @@ const selectStyle = (colors: C): React.CSSProperties => ({
   minWidth: 240, cursor: 'pointer',
 });
 
+// ── Voice model route readout ────────────────────────────────────────
+// Mirrors crates/goose/src/config/voice_model.rs::resolve_voice_model — this
+// is a DISPLAY-ONLY mirror of that precedence (disabled > configured >
+// half-configured/default), not the source of truth. The daemon resolves the
+// real route from config.yaml; this just tells the operator what to expect.
+const VOICE_DISABLE_VALUES = new Set(['session', 'off', 'none']);
+const DEFAULT_VOICE_PROVIDER_ID = 'custom_deepseek';
+const DEFAULT_VOICE_MODEL_ID = 'deepseek-chat';
+
+function describeVoiceRoute(provider: string | null, model: string | null): string {
+  const providerVal = (provider ?? '').trim();
+  const modelVal = (model ?? '').trim();
+  const isDisabled = (v: string) => VOICE_DISABLE_VALUES.has(v.toLowerCase());
+  if ((providerVal && isDisabled(providerVal)) || (modelVal && isDisabled(modelVal))) {
+    return 'session model';
+  }
+  if (providerVal && modelVal) {
+    return `${providerVal} / ${modelVal}`;
+  }
+  return `${DEFAULT_VOICE_PROVIDER_ID} / ${DEFAULT_VOICE_MODEL_ID} (default)`;
+}
+
 // ── Nav rail categories ──────────────────────────────────────────────
 
 const CATEGORIES = [
@@ -597,6 +619,67 @@ export function ModelsPanel({ goto }: PanelProps) {
     return () => { active = false; };
   }, []);
 
+  // Voice model (crates/goose/src/config/voice_model.rs) — which model
+  // answers a SPOKEN turn; chat is unaffected. Both `voice_provider` and
+  // `voice_model` set together override the measured default; either one set
+  // to session/off/none turns the feature off and voice rides the session
+  // model. Read on mount only — writes happen on Save / "Use the session
+  // model", never as a side effect of loading the panel.
+  const [voiceProvider, setVoiceProvider] = useState<string | null>(null);
+  const [voiceModel, setVoiceModel] = useState<string | null>(null);
+  const [voiceProviderInput, setVoiceProviderInput] = useState('');
+  const [voiceModelInput, setVoiceModelInput] = useState('');
+  const [voiceSaving, setVoiceSaving] = useState(false);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    Promise.all([api.readConfig('voice_provider'), api.readConfig('voice_model')])
+      .then(([p, m]) => {
+        if (!active) return;
+        const provider = typeof p === 'string' ? p : null;
+        const model = typeof m === 'string' ? m : null;
+        setVoiceProvider(provider);
+        setVoiceModel(model);
+        setVoiceProviderInput(provider ?? '');
+        setVoiceModelInput(model ?? '');
+      })
+      .catch(() => {});
+    return () => { active = false; };
+  }, []);
+  const saveVoiceModel = () => {
+    const prevProvider = voiceProvider;
+    const prevModel = voiceModel;
+    const nextProvider = voiceProviderInput;
+    const nextModel = voiceModelInput;
+    setVoiceProvider(nextProvider);
+    setVoiceModel(nextModel);
+    setVoiceError(null);
+    setVoiceSaving(true);
+    Promise.all([
+      api.upsertConfig('voice_provider', nextProvider),
+      api.upsertConfig('voice_model', nextModel),
+    ])
+      .catch(err => {
+        setVoiceProvider(prevProvider);
+        setVoiceModel(prevModel);
+        setVoiceProviderInput(prevProvider ?? '');
+        setVoiceModelInput(prevModel ?? '');
+        setVoiceError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
+      })
+      .finally(() => setVoiceSaving(false));
+  };
+  const useSessionVoiceModel = () => {
+    const prevModel = voiceModel;
+    setVoiceModel('session');
+    setVoiceModelInput('session');
+    setVoiceError(null);
+    api.upsertConfig('voice_model', 'session').catch(err => {
+      setVoiceModel(prevModel);
+      setVoiceModelInput(prevModel ?? '');
+      setVoiceError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  };
+
   // Strix — the security sweep loop (crate::strix). The daemon re-reads
   // `strix_enabled` every tick, so a flip here takes effect at the next tick
   // without a restart.
@@ -734,6 +817,35 @@ export function ModelsPanel({ goto }: PanelProps) {
             ? 'Loading primary model…'
             : `${primary.model ?? '—'} · provider: ${primary.provider ?? 'default'}${primary.mode ? ` · mode: ${primary.mode}` : ''}`}
         </div>
+        <Row
+          label="Voice model"
+          hint="Which model answers spoken turns. Chat is unaffected. Leave both blank for the measured default, or use the session model to route voice back through the main model."
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ fontSize: 13, color: colors.text, fontFamily: font.mono }}>
+              {describeVoiceRoute(voiceProvider, voiceModel)}
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <TextInput
+                value={voiceProviderInput}
+                onChange={setVoiceProviderInput}
+                placeholder={DEFAULT_VOICE_PROVIDER_ID}
+                mono
+              />
+              <TextInput
+                value={voiceModelInput}
+                onChange={setVoiceModelInput}
+                placeholder={DEFAULT_VOICE_MODEL_ID}
+                mono
+              />
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              {voiceError && <span style={{ fontSize: 12, color: colors.danger }}>{voiceError}</span>}
+              <SaveButton onClick={saveVoiceModel} disabled={voiceSaving} saving={voiceSaving} />
+              <button style={ghost(colors)} onClick={useSessionVoiceModel}>Use the session model</button>
+            </div>
+          </div>
+        </Row>
         <button style={ghost(colors)} onClick={() => goto('keys')}>Manage API keys</button>
       </Section>
       {/* The old Routing/Behavior selects were decorative — hardcoded options
