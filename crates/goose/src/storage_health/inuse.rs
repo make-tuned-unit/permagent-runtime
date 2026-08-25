@@ -170,20 +170,19 @@ pub(crate) fn parse_lsof_fields(stdout: &str) -> Vec<ProcessRef> {
                 recorded_current = false;
             }
             'c' => command = value.trim().to_string(),
-            'n' | 'f' => {
-                // Any file record under the current process confirms it.
-                if !recorded_current {
-                    if let Some(p) = pid {
-                        out.push(ProcessRef {
-                            pid: p,
-                            command: if command.is_empty() {
-                                "process".to_string()
-                            } else {
-                                command.clone()
-                            },
-                        });
-                        recorded_current = true;
-                    }
+            // Any file record under the current process confirms it — but only
+            // the first one, so a process with fifty open files counts once.
+            'n' | 'f' if !recorded_current => {
+                if let Some(p) = pid {
+                    out.push(ProcessRef {
+                        pid: p,
+                        command: if command.is_empty() {
+                            "process".to_string()
+                        } else {
+                            command.clone()
+                        },
+                    });
+                    recorded_current = true;
                 }
             }
             _ => {}
