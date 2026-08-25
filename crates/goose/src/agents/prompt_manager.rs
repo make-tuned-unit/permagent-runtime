@@ -10,6 +10,7 @@ use crate::agents::extension::ExtensionInfo;
 use crate::cost_router::cache::SystemPromptParts;
 use crate::hints::load_hints::build_gitignore;
 use crate::hints::{get_context_filenames, load_hint_files, SubdirectoryHintTracker};
+use crate::providers::model_family::ModelFamily;
 use crate::{
     config::{Config, GooseMode},
     prompt_template,
@@ -79,6 +80,11 @@ pub struct SystemPromptBuilder<'a, M> {
     /// async at the call site (the probe may block). Empty → section omitted.
     dispatchable_workers: Vec<crate::agents::self_knowledge::DispatchableWorker>,
     agent_briefings: Option<Vec<crate::agents::self_knowledge::BriefingLine>>,
+    /// The model family answering this turn, if the caller knows it. `None` →
+    /// no overlay at all, which is what every non-agent build site (recipes,
+    /// tests) wants: they have no provider in hand, and inventing a family for
+    /// them would put words in front of a model we did not identify.
+    model_family: Option<ModelFamily>,
 }
 
 impl<'a> SystemPromptBuilder<'a, PromptManager> {
@@ -156,6 +162,26 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
         briefings: Option<Vec<crate::agents::self_knowledge::BriefingLine>>,
     ) -> Self {
         self.agent_briefings = briefings;
+        self
+    }
+
+    /// Select the per-family prompt overlay from the provider and model that
+    /// will answer this turn.
+    ///
+    /// The overlay is appended to the shared prompt body — one shared body plus
+    /// a short family-specific block, never a separate prompt per family. It
+    /// lands in the CACHED prefix on purpose: the family is fixed for as long as
+    /// the session's provider is, so it is exactly as stable as the persona and
+    /// the extension list it sits beside.
+    pub fn with_model_family_from(mut self, provider: &str, model: &str) -> Self {
+        self.model_family = Some(ModelFamily::resolve(provider, model));
+        self
+    }
+
+    /// Select the overlay from an already-resolved family (tests, and callers
+    /// that resolved it once for logging).
+    pub fn with_model_family(mut self, family: ModelFamily) -> Self {
+        self.model_family = Some(family);
         self
     }
 
@@ -286,6 +312,16 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
             prompt_template::render_template("system.md", &context)
         }
         .unwrap_or(persona_block);
+
+        // Append the per-family overlay exactly once, to the END of the shared
+        // body and BEFORE `# Additional Instructions`, so the shared body is
+        // byte-identical across families and the user's own extras still have
+        // the last word. `Other` and `None` both contribute nothing — no
+        // separator, no heading, no tokens.
+        let base_prompt = match self.model_family.map(|f| f.overlay()).unwrap_or("") {
+            "" => base_prompt,
+            overlay => format!("{}\n\n{}", base_prompt.trim_end(), overlay.trim_end()),
+        };
 
         let mut system_prompt_extras = self.manager.system_prompt_extras.clone();
 
@@ -473,6 +509,7 @@ impl PromptManager {
             scheduled_job_count: None,
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
+            model_family: None,
         }
     }
 
@@ -692,6 +729,193 @@ mod tests {
         for key in VOLATILE_EXTRA_KEYS {
             assert!(parts.render().contains(&format!("VOLATILE::{key}")));
         }
+    }
+
+    /// The load-bearing property: ONE shared body, not one prompt per family.
+    /// Strip each family's overlay off the end of its prefix and what is left
+    /// must be byte-identical everywhere — including against a build that
+    /// selected no family at all.
+    #[test]
+    fn the_shared_body_is_identical_across_families() {
+        // Pin config resolution to an empty temp root so the build is a
+        // function of its inputs, not of this machine's real config.
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let temp_root = tmp_dir.path().display().to_string();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(temp_root.as_str())),
+            ("PERMAGENT_PATH_ROOT", Some(temp_root.as_str())),
+            ("INITIATIVE_ENABLED", Some("false")),
+        ]);
+        let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+
+        let baseline = manager
+            .builder()
+            .with_extension(ExtensionInfo::new("test", "how to use it", true))
+            .build_parts();
+        let baseline_body = baseline.stable_prefix().trim_end().to_string();
+
+        for family in ModelFamily::ALL {
+            let parts = manager
+                .builder()
+                .with_extension(ExtensionInfo::new("test", "how to use it", true))
+                .with_model_family(*family)
+                .build_parts();
+            let prefix = parts.stable_prefix();
+            let overlay = family.overlay().trim_end();
+            // `strip_suffix` rather than a byte slice: it is the same check and
+            // the same cut in one step, and it cannot land mid-codepoint.
+            let body = if overlay.is_empty() {
+                prefix.trim_end().to_string()
+            } else {
+                prefix
+                    .strip_suffix(overlay)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{} overlay must sit at the end of the shared body",
+                            family.as_str()
+                        )
+                    })
+                    .trim_end()
+                    .to_string()
+            };
+            assert_eq!(
+                body,
+                baseline_body,
+                "{} changed the shared body — overlays are additive only",
+                family.as_str()
+            );
+        }
+    }
+
+    /// A family's overlay must appear exactly once, and a rebuild must not
+    /// accumulate copies of it.
+    #[test]
+    fn the_overlay_is_applied_exactly_once() {
+        // Pin config resolution to an empty temp root so the build is a
+        // function of its inputs, not of this machine's real config.
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let temp_root = tmp_dir.path().display().to_string();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(temp_root.as_str())),
+            ("PERMAGENT_PATH_ROOT", Some(temp_root.as_str())),
+            ("INITIATIVE_ENABLED", Some("false")),
+        ]);
+        let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+
+        for family in ModelFamily::ALL {
+            let overlay = family.overlay().trim_end();
+            if overlay.is_empty() {
+                continue;
+            }
+            let rendered = manager
+                .builder()
+                .with_extension(ExtensionInfo::new("test", "how to use it", true))
+                .with_model_family(*family)
+                .build();
+            assert_eq!(
+                rendered.matches(overlay).count(),
+                1,
+                "{} overlay appeared {} times",
+                family.as_str(),
+                rendered.matches(overlay).count()
+            );
+            // Rebuilding from the same manager must not append a second copy.
+            let again = manager
+                .builder()
+                .with_extension(ExtensionInfo::new("test", "how to use it", true))
+                .with_model_family(*family)
+                .build();
+            assert_eq!(again, rendered);
+        }
+    }
+
+    /// The overlay rides in the CACHED prefix, not the volatile suffix — the
+    /// family is fixed for the session, so paying for it every turn would be a
+    /// straight cache regression.
+    #[test]
+    fn the_overlay_rides_in_the_cached_prefix() {
+        // Pin config resolution to an empty temp root so the build is a
+        // function of its inputs, not of this machine's real config.
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let temp_root = tmp_dir.path().display().to_string();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(temp_root.as_str())),
+            ("PERMAGENT_PATH_ROOT", Some(temp_root.as_str())),
+            ("INITIATIVE_ENABLED", Some("false")),
+        ]);
+        let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+        let parts = manager
+            .builder()
+            .with_model_family(ModelFamily::QwenLocal)
+            .build_parts();
+        assert!(parts
+            .stable_prefix()
+            .contains("Tool calls must be exact JSON"));
+        assert!(!parts
+            .volatile_suffix()
+            .contains("Tool calls must be exact JSON"));
+    }
+
+    /// The user's own extras keep the last word: the overlay is a default the
+    /// operator can override, so it must come BEFORE `# Additional
+    /// Instructions`, not after.
+    #[test]
+    fn the_overlay_precedes_the_users_own_extras() {
+        // Pin config resolution to an empty temp root so the build is a
+        // function of its inputs, not of this machine's real config.
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let temp_root = tmp_dir.path().display().to_string();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(temp_root.as_str())),
+            ("PERMAGENT_PATH_ROOT", Some(temp_root.as_str())),
+            ("INITIATIVE_ENABLED", Some("false")),
+        ]);
+        let mut manager =
+            PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+        manager.add_system_prompt_extra("recipe".into(), "OPERATOR_SAYS_THIS".into());
+        let rendered = manager
+            .builder()
+            .with_model_family(ModelFamily::QwenLocal)
+            .build();
+        let overlay_at = rendered.find("Tool calls must be exact JSON").unwrap();
+        let extra_at = rendered.find("OPERATOR_SAYS_THIS").unwrap();
+        assert!(overlay_at < extra_at);
+    }
+
+    /// The whole point of the change, measured: the per-family prompt cost sits
+    /// in one snapshot, so a family growing an expensive habit is visible in a
+    /// review diff rather than only on a bill.
+    #[test]
+    fn family_prompt_size_table() {
+        // Pin config resolution to an empty temp root so the build is a
+        // function of its inputs, not of this machine's real config.
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let temp_root = tmp_dir.path().display().to_string();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(temp_root.as_str())),
+            ("PERMAGENT_PATH_ROOT", Some(temp_root.as_str())),
+            ("INITIATIVE_ENABLED", Some("false")),
+        ]);
+        let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+
+        let baseline = manager.builder().build().len();
+        let mut table = format!(
+            "shared body (no family selected): {} bytes / ~{} tokens\n\n\
+             family        overlay_bytes  total_bytes  approx_total_tokens\n",
+            baseline,
+            baseline.div_ceil(4)
+        );
+        for family in ModelFamily::ALL {
+            let total = manager.builder().with_model_family(*family).build().len();
+            table.push_str(&format!(
+                "{:<13} {:>13}  {:>11}  {:>19}\n",
+                family.as_str(),
+                family.overlay().len(),
+                total,
+                total.div_ceil(4)
+            ));
+        }
+        assert_snapshot!(table);
     }
 
     #[test]

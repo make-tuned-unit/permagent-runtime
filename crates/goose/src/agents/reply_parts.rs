@@ -352,6 +352,10 @@ impl Agent {
             .with_scheduled_job_count(scheduled_job_count)
             .with_dispatchable_workers(dispatchable_workers)
             .with_agent_briefings(agent_briefings)
+            // Tool-calling discipline is a per-family concern, so the family
+            // that will actually answer picks its own short overlay rather than
+            // every model paying for the weakest reader's patches.
+            .with_model_family_from(provider.get_name(), &model_config.model_name)
             .build_parts();
 
         // Handle toolshim if enabled

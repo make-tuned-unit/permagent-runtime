@@ -1,0 +1,8 @@
+---
+source: crates/goose/src/providers/model_family.rs
+expression: card
+---
+family: other
+bytes: 0
+approx_tokens: 0
+---

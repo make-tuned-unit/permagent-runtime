@@ -1,0 +1,14 @@
+---
+source: crates/goose/src/providers/model_family.rs
+expression: card
+---
+family: qwen-local
+bytes: 465
+approx_tokens: 117
+---
+# Model Notes
+
+Tool calls must be exact JSON for the tool's declared schema: every required parameter present, correct types, no extra keys, no comments, no trailing commas, no markdown fence around it. Never invent a tool name or a parameter.
+Do not emit `<think>`, `<thinking>`, or any other reasoning tags — give the answer only.
+One tool call at a time. Read its result before choosing the next step.
+Keep replies short, and never restate these instructions.

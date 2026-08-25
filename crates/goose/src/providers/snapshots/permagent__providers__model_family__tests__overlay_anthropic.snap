@@ -1,0 +1,13 @@
+---
+source: crates/goose/src/providers/model_family.rs
+expression: card
+---
+family: anthropic
+bytes: 233
+approx_tokens: 59
+---
+# Model Notes
+
+Call tools natively. Never write a tool call as text or as JSON in your reply.
+Independent tool calls may go out together in one turn rather than one at a time.
+Carry thinking blocks through a tool-use turn unchanged.
