@@ -1849,6 +1849,10 @@ mod pty_tests {
                 ws_xpixel: 0,
                 ws_ypixel: 0,
             };
+            // `winp` is `*mut winsize` on macOS and `*const winsize` on Linux;
+            // a typed raw pointer satisfies both without passing `&mut` where
+            // one platform only wants a const pointer.
+            let ws_ptr: *mut libc::winsize = &mut ws;
             assert_eq!(
                 unsafe {
                     libc::openpty(
@@ -1856,7 +1860,7 @@ mod pty_tests {
                         &mut slave,
                         std::ptr::null_mut(),
                         std::ptr::null_mut(),
-                        &mut ws,
+                        ws_ptr,
                     )
                 },
                 0,
@@ -1887,7 +1891,8 @@ mod pty_tests {
                 ws_xpixel: 0,
                 ws_ypixel: 0,
             };
-            unsafe { libc::ioctl(self.master, libc::TIOCSWINSZ, &ws) };
+            let ws_ptr: *const libc::winsize = &ws;
+            unsafe { libc::ioctl(self.master, libc::TIOCSWINSZ, ws_ptr) };
         }
 
         fn write(&self, bytes: &[u8]) {
