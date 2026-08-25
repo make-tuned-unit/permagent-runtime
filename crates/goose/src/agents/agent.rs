@@ -2580,6 +2580,43 @@ impl Agent {
                     }
                 }
 
+                // ── Make the turn WELL-FORMED before anything is added to it ──
+                //
+                // One provider turn can arrive as SEVERAL assistant messages:
+                // any provider that emits reasoning before its tool call (this
+                // was MiniMax-M2.7) streams thinking/text in one item and the
+                // tool request in the next, and the loop above pushed each item
+                // as its own assistant row. The result is consecutive
+                // same-role assistant messages — a sequence no provider
+                // accepts, repaired downstream on every single turn.
+                //
+                // That repair is what the "merged consecutive same-role
+                // messages" warnings were: session 20260825_3 logged 22 of them
+                // in one conversation, one per tool-calling turn. MOIM was
+                // fixing this correctly and warning, correctly, that something
+                // upstream was producing it. This is that something.
+                //
+                // Fixed at the source with the SAME lossless merge MOIM relies
+                // on: consecutive same-role content is concatenated in order,
+                // nothing is dropped, and the reasoning ends up attached to the
+                // tool call it belongs to — which is also what Gemini/Kimi
+                // require to accept the next request.
+                //
+                // Runs HERE, before the tool-pair summaries are appended below:
+                // each summary stands in for one tool pair and has to remain its
+                // own message, so folding them into each other would collapse a
+                // whole batch into one.
+                let (coalesced, merges) =
+                    coalesce_turn_messages(messages_to_add.messages().clone());
+                if merges > 0 {
+                    debug!(
+                        session_id = %session_config.id,
+                        merges,
+                        "coalesced a streamed turn into alternating messages before persisting"
+                    );
+                }
+                messages_to_add = Conversation::new_unvalidated(coalesced);
+
                 if is_token_cancelled(&cancel_token) {
                     tool_pair_summarization_task.abort();
                 }
@@ -2615,38 +2652,6 @@ impl Agent {
                     }
                     conversation = Conversation::new_unvalidated(updated_messages);
                 }
-
-                // ── Persist a WELL-FORMED turn, not the raw stream ──────
-                //
-                // One provider turn can arrive as SEVERAL assistant messages:
-                // any provider that emits reasoning before its tool call (this
-                // was MiniMax-M2.7) streams thinking/text in one item and the
-                // tool request in the next, and the loop above pushed each item
-                // as its own assistant row. The result is consecutive
-                // same-role assistant messages — a sequence no provider
-                // accepts, repaired downstream on every single turn.
-                //
-                // That repair is what the "merged consecutive same-role
-                // messages" warnings were: session 20260825_3 logged 22 of them
-                // in one conversation, one per tool-calling turn. MOIM was
-                // fixing this correctly and warning, correctly, that something
-                // upstream was producing it. This is that something.
-                //
-                // Fixed at the source with the SAME lossless merge MOIM relies
-                // on: consecutive same-role content is concatenated in order,
-                // nothing is dropped, and the reasoning ends up attached to the
-                // tool call it belongs to — which is also what Gemini/Kimi
-                // require to accept the next request.
-                let (coalesced, merges) =
-                    coalesce_turn_messages(messages_to_add.messages().clone());
-                if merges > 0 {
-                    debug!(
-                        session_id = %session_config.id,
-                        merges,
-                        "coalesced a streamed turn into alternating messages before persisting"
-                    );
-                }
-                let messages_to_add = Conversation::new_unvalidated(coalesced);
 
                 for msg in &messages_to_add {
                     session_manager.add_message(&session_config.id, msg).await?;
@@ -3311,6 +3316,30 @@ mod tests {
         for pair in folded.windows(2) {
             assert_ne!(pair[0].role, pair[1].role);
         }
+    }
+
+    /// Tool-pair summaries must NEVER be folded together.
+    ///
+    /// Each one stands in for a single tool request/response pair that has just
+    /// been marked agent-invisible, so a batch of ten is ten messages. Folding
+    /// them collapsed a whole batch into one (caught by
+    /// `test_batch_summarization_preserves_all_summaries`), which is why the
+    /// fold runs before they are appended, not over the finished list. This
+    /// pins the property the ordering exists to protect.
+    #[test]
+    fn folding_a_run_of_summaries_would_collapse_the_batch() {
+        let summaries: Vec<Message> = (0..10)
+            .map(|i| Message::assistant().with_text(format!("Summary of tool call #{i}")))
+            .collect();
+
+        let (folded, merges) = coalesce_turn_messages(summaries.clone());
+
+        assert_eq!(
+            folded.len(),
+            1,
+            "the fold WOULD collapse them — hence the ordering"
+        );
+        assert_eq!(merges, 9);
     }
 
     /// A provider that streams a whole turn as one message must be untouched —
