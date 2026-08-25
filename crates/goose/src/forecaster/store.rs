@@ -242,7 +242,9 @@ pub async fn find(
         "SELECT {SELECT_COLS} FROM forecaster_series
          WHERE project_id = ? AND source_kind = ? AND subject = ?"
     );
-    let row = sqlx::query(&sql)
+    // Audited: the only interpolation is the `SELECT_COLS` const above; every
+    // value reaches the statement through `.bind()`.
+    let row = sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(project_id)
         .bind(source_kind.as_str())
         .bind(subject)
@@ -254,7 +256,9 @@ pub async fn find(
 
 pub async fn get(pool: &Pool<Sqlite>, id: &str) -> Result<Option<Series>, String> {
     let sql = format!("SELECT {SELECT_COLS} FROM forecaster_series WHERE id = ?");
-    let row = sqlx::query(&sql)
+    // Audited: the only interpolation is the `SELECT_COLS` const above; every
+    // value reaches the statement through `.bind()`.
+    let row = sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(id)
         .fetch_optional(pool)
         .await
@@ -283,7 +287,9 @@ pub async fn active_series(pool: &Pool<Sqlite>) -> Result<Vec<Series>, String> {
         "SELECT {SELECT_COLS} FROM forecaster_series WHERE status = 'active' \
          ORDER BY project_id, source_kind, subject"
     );
-    let rows = sqlx::query(&sql)
+    // Audited: the only interpolation is the `SELECT_COLS` const above; every
+    // value reaches the statement through `.bind()`.
+    let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
         .fetch_all(pool)
         .await
         .map_err(|e| format!("list active series: {e}"))?;
@@ -367,19 +373,23 @@ pub async fn summarize(
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<Vec<SeriesSummary>, String> {
     let base = format!("SELECT {SELECT_COLS} FROM forecaster_series");
+    // Audited: both arms interpolate only `base` — itself just the `SELECT_COLS`
+    // const above — and `project_id` reaches the statement through `.bind()`.
     let rows = match project_id {
         Some(p) => {
-            sqlx::query(&format!(
+            sqlx::query(sqlx::AssertSqlSafe(format!(
                 "{base} WHERE project_id = ? ORDER BY source_kind, subject"
-            ))
+            )))
             .bind(p)
             .fetch_all(pool)
             .await
         }
         None => {
-            sqlx::query(&format!("{base} ORDER BY project_id, source_kind, subject"))
-                .fetch_all(pool)
-                .await
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "{base} ORDER BY project_id, source_kind, subject"
+            )))
+            .fetch_all(pool)
+            .await
         }
     }
     .map_err(|e| format!("summarize series: {e}"))?;
