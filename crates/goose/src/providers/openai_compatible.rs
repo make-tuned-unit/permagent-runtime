@@ -15,8 +15,9 @@ use super::errors::{is_billing_message, ProviderError};
 use super::retry::ProviderRetry;
 use super::utils::{ImageFormat, RequestLog};
 use crate::conversation::message::Message;
+use crate::cost_router::cache::SystemPromptParts;
 use crate::model::ModelConfig;
-use crate::providers::formats::openai::{create_request, response_to_streaming_message};
+use crate::providers::formats::openai::{create_request_split, response_to_streaming_message};
 use rmcp::model::Tool;
 
 pub struct OpenAiCompatibleProvider {
@@ -46,12 +47,12 @@ impl OpenAiCompatibleProvider {
     fn build_request(
         &self,
         model_config: &ModelConfig,
-        system: &str,
+        system: &SystemPromptParts,
         messages: &[Message],
         tools: &[Tool],
         for_streaming: bool,
     ) -> Result<Value, ProviderError> {
-        create_request(
+        create_request_split(
             model_config,
             system,
             messages,
@@ -60,6 +61,36 @@ impl OpenAiCompatibleProvider {
             for_streaming,
         )
         .map_err(|e| ProviderError::RequestFailed(format!("Failed to create request: {}", e)))
+    }
+
+    /// The one body both `stream` and `stream_split` run; they differ only in
+    /// whether the caller had a split prompt to hand.
+    async fn stream_parts(
+        &self,
+        model_config: &ModelConfig,
+        session_id: &str,
+        system: &SystemPromptParts,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<MessageStream, ProviderError> {
+        let payload = self.build_request(model_config, system, messages, tools, true)?;
+        let mut log = RequestLog::start(model_config, &payload)?;
+
+        let completions_path = format!("{}chat/completions", self.completions_prefix);
+        let response = self
+            .with_retry(|| async {
+                let resp = self
+                    .api_client
+                    .response_post(Some(session_id), &completions_path, &payload)
+                    .await?;
+                handle_status_openai_compat(resp).await
+            })
+            .await
+            .inspect_err(|e| {
+                let _ = log.error(e);
+            })?;
+
+        stream_openai_compat(response, log)
     }
 }
 
@@ -108,24 +139,32 @@ impl Provider for OpenAiCompatibleProvider {
         messages: &[Message],
         tools: &[Tool],
     ) -> Result<MessageStream, ProviderError> {
-        let payload = self.build_request(model_config, system, messages, tools, true)?;
-        let mut log = RequestLog::start(model_config, &payload)?;
+        self.stream_parts(
+            model_config,
+            session_id,
+            &SystemPromptParts::all_stable(system.to_string()),
+            messages,
+            tools,
+        )
+        .await
+    }
 
-        let completions_path = format!("{}chat/completions", self.completions_prefix);
-        let response = self
-            .with_retry(|| async {
-                let resp = self
-                    .api_client
-                    .response_post(Some(session_id), &completions_path, &payload)
-                    .await?;
-                handle_status_openai_compat(resp).await
-            })
+    /// Overridden so the turn-volatile tail lands AFTER the conversation rather
+    /// than inside the leading system message. Every provider behind this struct
+    /// (DeepSeek, Z.AI, xAI, Azure, …) caches automatically on an exact prompt
+    /// prefix, and the default flattening puts the one block that changes every
+    /// turn upstream of the tool schemas and the entire history. See
+    /// `formats::openai::create_request_split`.
+    async fn stream_split(
+        &self,
+        model_config: &ModelConfig,
+        session_id: &str,
+        system: &SystemPromptParts,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<MessageStream, ProviderError> {
+        self.stream_parts(model_config, session_id, system, messages, tools)
             .await
-            .inspect_err(|e| {
-                let _ = log.error(e);
-            })?;
-
-        stream_openai_compat(response, log)
     }
 }
 

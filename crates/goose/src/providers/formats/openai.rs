@@ -1,4 +1,5 @@
 use crate::conversation::message::{Message, MessageContent, ProviderMetadata};
+use crate::cost_router::cache::SystemPromptParts;
 use crate::mcp_utils::extract_text_from_resource;
 use crate::model::ModelConfig;
 use crate::providers::base::{ProviderUsage, Usage};
@@ -752,16 +753,32 @@ pub fn get_usage(usage: &Value) -> Usage {
         .or_else(|| usage.get("eval_count").and_then(|v| v.as_i64()))
         .map(|v| v as i32);
 
-    // Two shapes in the wild. Anthropic-via-a-compatible-gateway sends a flat
-    // `cache_read_input_tokens`; OpenAI, Z.AI and most GLM-compatible hosts send
-    // `prompt_tokens_details.cached_tokens` — a *subset* of `prompt_tokens`,
-    // which is exactly the breakdown `canonical::cost` expects. Reading it costs
-    // nothing where no cache-read rate is published (those tokens stay in the
-    // input bucket) and makes cache hits visible where one is.
-    // <https://docs.z.ai/api-reference/llm/chat-completion>
+    // Three shapes in the wild, and reading only some of them is how a warm
+    // cache reports as a cold one — the tokens stay folded into the plain input
+    // bucket, the ledger records `cache_read_tokens = 0`, and a 70%-hit path
+    // becomes indistinguishable from a 0%-hit path:
+    //
+    // 1. `cache_read_input_tokens` — Anthropic's flat name, sent by gateways
+    //    that proxy Anthropic models over an OpenAI-shaped API (OpenRouter,
+    //    LiteLLM). Tried first so those keep their existing values.
+    // 2. `prompt_cache_hit_tokens` — DeepSeek's own name, alongside
+    //    `prompt_cache_miss_tokens` (<https://api-docs.deepseek.com>).
+    // 3. `prompt_tokens_details.cached_tokens` — the OpenAI shape, copied by
+    //    Z.AI, xAI, Groq and most GLM-compatible hosts
+    //    (<https://docs.z.ai/api-reference/llm/chat-completion>).
+    //
+    // All three are a *subset* of `prompt_tokens`, which is exactly the
+    // breakdown `canonical::cost` expects. Reading them costs nothing where no
+    // cache-read rate is published (those tokens stay in the input bucket) and
+    // makes cache hits visible where one is.
     let cache_read_input_tokens = usage
         .get("cache_read_input_tokens")
         .and_then(|v| v.as_i64())
+        .or_else(|| {
+            usage
+                .get("prompt_cache_hit_tokens")
+                .and_then(|v| v.as_i64())
+        })
         .or_else(|| {
             usage
                 .get("prompt_tokens_details")
@@ -770,6 +787,13 @@ pub fn get_usage(usage: &Value) -> Usage {
         })
         .map(|v| v as i32);
 
+    // Cache *writes* are deliberately NOT inferred from DeepSeek's
+    // `prompt_cache_miss_tokens` or OpenAI's uncached remainder. Those are
+    // ordinary fresh input on a provider with no write premium — calling them
+    // "cache creation" would invent a billable category that does not exist and,
+    // where a model's pricing does carry a `cache_write` rate, would bill fresh
+    // input at it. Only a provider that explicitly reports a creation count gets
+    // one.
     let cache_write_input_tokens = usage
         .get("cache_creation_input_tokens")
         .and_then(|v| v.as_i64())
@@ -1112,9 +1136,59 @@ where
     }
 }
 
+/// Build a chat/completions payload from a system prompt with no volatile tail.
+///
+/// Byte-identical to what this function has always produced: it forwards to
+/// [`create_request_split`] with an all-stable prompt, and an empty volatile
+/// suffix adds no message.
 pub fn create_request(
     model_config: &ModelConfig,
     system: &str,
+    messages: &[Message],
+    tools: &[Tool],
+    image_format: &ImageFormat,
+    for_streaming: bool,
+) -> anyhow::Result<Value, Error> {
+    create_request_split(
+        model_config,
+        &SystemPromptParts::all_stable(system.to_string()),
+        messages,
+        tools,
+        image_format,
+        for_streaming,
+    )
+}
+
+/// Build a chat/completions payload that keeps the prompt cache's prefix intact.
+///
+/// The OpenAI wire shape has no `cache_control` marker: every provider that
+/// caches on it — DeepSeek, Z.AI, OpenAI itself — does so **automatically, on an
+/// exact byte/token prefix** of the rendered prompt. The first byte that differs
+/// from the previous request ends the cacheable region, and everything after it
+/// is re-tokenised and re-billed at the full input rate. Exactly where a given
+/// provider splices the tool schemas into that rendering is its own business;
+/// what is fixed for all of them is that the leading system message comes first
+/// and the conversation follows it.
+///
+/// That is why the turn-volatile tail cannot ride inside the system message.
+/// Concatenated there (`stable + volatile`, the old shape) it sits UPSTREAM of
+/// the whole conversation — and of the tool schemas, wherever they land — so a
+/// single changed live-status counter (a briefing that was unread last turn, a
+/// worker that flipped to "engine pending") evicts every prior turn from the
+/// cache and leaves only the stable system block cached. On the
+/// Anthropic path the same prompt caches far better purely because that API
+/// orders tools BEFORE system, putting them upstream of the volatile block by
+/// accident of wire format.
+///
+/// The fix is placement, not deletion: the volatile suffix is emitted as a
+/// trailing `system` message AFTER the conversation, so the cacheable prefix
+/// covers the stable system prompt, the tool schemas, and the entire history.
+/// The suffix is never persisted into the conversation, so next turn's history
+/// is byte-identical to this turn's — the divergence point stays pinned to the
+/// very end of the request, which is the best any prefix cache can do.
+pub fn create_request_split(
+    model_config: &ModelConfig,
+    system: &SystemPromptParts,
     messages: &[Message],
     tools: &[Tool],
     image_format: &ImageFormat,
@@ -1129,9 +1203,14 @@ pub fn create_request(
     let (model_name, reasoning_effort) = extract_reasoning_effort(&model_config.model_name);
     let is_reasoning_model = reasoning_effort.is_some();
 
+    let system_role = if is_reasoning_model {
+        "developer"
+    } else {
+        "system"
+    };
     let system_message = json!({
-        "role": if is_reasoning_model { "developer" } else { "system" },
-        "content": system
+        "role": system_role,
+        "content": system.stable_prefix()
     });
 
     // Provider id is not threaded down here; the model id is the signal that
@@ -1145,6 +1224,19 @@ pub fn create_request(
 
     let mut messages_array = vec![system_message];
     messages_array.extend(messages_spec);
+
+    // The turn-volatile tail, last of all — see this function's doc comment.
+    // Same role as the leading block because it is the same kind of content
+    // (instructions from the harness, not something the user said); putting it
+    // in a `user` message would misattribute it and, worse, would have to be
+    // folded into the real last user message, which would then differ between
+    // the turn that sent it and the turn that replays it as history.
+    if !system.volatile_suffix().is_empty() {
+        messages_array.push(json!({
+            "role": system_role,
+            "content": system.volatile_suffix(),
+        }));
+    }
 
     let mut payload = json!({
         "model": model_name,
@@ -2808,5 +2900,252 @@ data: [DONE]"#;
         assert_eq!(result.input_tokens, Some(42));
         assert_eq!(result.output_tokens, Some(128));
         assert_eq!(result.total_tokens, Some(170));
+    }
+    // ── Prompt-cache prefix stability, on the OpenAI wire shape ──────────────
+    //
+    // DeepSeek, Z.AI and OpenAI all cache automatically on an exact prompt
+    // prefix; there is no `cache_control` marker to place. What the provider
+    // hashes is the rendered prompt, in this order: the leading system message,
+    // the tool schemas, then the conversation. The tests below reconstruct that
+    // order deliberately rather than serialising the whole payload, because
+    // `serde_json` sorts object keys alphabetically and would put `messages`
+    // before `tools` — a JSON artefact that has nothing to do with what the
+    // provider caches on.
+
+    fn bench_model() -> ModelConfig {
+        ModelConfig {
+            model_name: "deepseek-chat".to_string(),
+            context_limit: Some(128_000),
+            temperature: None,
+            max_tokens: Some(1024),
+            toolshim: false,
+            toolshim_model: None,
+            fast_model_config: None,
+            request_params: None,
+            reasoning: None,
+        }
+    }
+
+    fn bench_tools() -> Vec<Tool> {
+        vec![
+            Tool::new(
+                "edit",
+                "Edit a file in place",
+                object!({"type": "object", "properties": {"path": {"type": "string"}}}),
+            ),
+            Tool::new(
+                "shell",
+                "Run a shell command",
+                object!({"type": "object", "properties": {"command": {"type": "string"}}}),
+            ),
+        ]
+    }
+
+    /// The byte sequence a prefix cache actually sees, in provider render order.
+    fn cacheable_render(payload: &Value) -> String {
+        let messages = payload["messages"].as_array().expect("messages array");
+        let system = serde_json::to_string(&messages[0]).unwrap();
+        let tools = serde_json::to_string(payload.get("tools").unwrap_or(&Value::Null)).unwrap();
+        let rest: String = messages[1..]
+            .iter()
+            .map(|m| serde_json::to_string(m).unwrap())
+            .collect();
+        format!("{system}{tools}{rest}")
+    }
+
+    /// Turn N's conversation: user asks, model calls a tool, tool answers.
+    fn three_turn_history() -> Vec<Message> {
+        let mut messages = vec![
+            Message::user().with_text("Implement the affine cipher."),
+            Message::assistant().with_tool_request(
+                "call_1",
+                Ok(CallToolRequestParams::new("shell").with_arguments(object!({"command": "ls"}))),
+            ),
+        ];
+        messages.push(Message::user().with_tool_response(
+            "call_1",
+            Ok(CallToolResult::success(vec![Content::text(
+                "affine_cipher.py",
+            )])),
+        ));
+        messages
+    }
+
+    #[test]
+    fn the_volatile_tail_never_sits_inside_the_system_message() -> anyhow::Result<()> {
+        let system = SystemPromptParts::new(
+            "You are a coding agent.\n".to_string(),
+            "\n# Live Status\n- 3 unread briefings\n".to_string(),
+        );
+        let payload = create_request_split(
+            &bench_model(),
+            &system,
+            &three_turn_history(),
+            &bench_tools(),
+            &ImageFormat::OpenAi,
+            false,
+        )?;
+
+        let messages = payload["messages"].as_array().unwrap();
+        assert_eq!(
+            messages[0]["content"], "You are a coding agent.\n",
+            "the leading system message must carry the stable prefix ONLY"
+        );
+
+        // The tail is present, and it is last — after the whole conversation.
+        let last = messages.last().unwrap();
+        assert_eq!(last["role"], "system");
+        assert_eq!(last["content"], "\n# Live Status\n- 3 unread briefings\n");
+        assert_eq!(
+            messages.len(),
+            1 + three_turn_history().len() + 1,
+            "system + history + one trailing volatile block"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn two_consecutive_turns_share_a_prefix_covering_system_tools_and_history() -> anyhow::Result<()>
+    {
+        let tools = bench_tools();
+        let model = bench_model();
+        let stable = "You are a coding agent. Follow the recipe.\n".to_string();
+
+        // Turn N.
+        let history_a = three_turn_history();
+        let request_a = create_request_split(
+            &model,
+            &SystemPromptParts::new(stable.clone(), "\n# Live Status\n- 3 unread\n".to_string()),
+            &history_a,
+            &tools,
+            &ImageFormat::OpenAi,
+            false,
+        )?;
+
+        // Turn N+1: the history has grown, and the live status has moved on.
+        let mut history_b = history_a.clone();
+        history_b.push(Message::assistant().with_text("Found it."));
+        history_b.push(Message::user().with_text("Now make the tests pass."));
+        let request_b = create_request_split(
+            &model,
+            &SystemPromptParts::new(
+                stable.clone(),
+                "\n# Live Status\n- 11 unread, 2 workers pending\n".to_string(),
+            ),
+            &history_b,
+            &tools,
+            &ImageFormat::OpenAi,
+            false,
+        )?;
+
+        let render_a = cacheable_render(&request_a);
+        let render_b = cacheable_render(&request_b);
+
+        // Everything turn N sent EXCEPT its volatile tail must be a byte-prefix
+        // of what turn N+1 sends. That is the whole property: system prompt,
+        // tool schemas, and every prior message, all cacheable.
+        let volatile_a =
+            serde_json::to_string(request_a["messages"].as_array().unwrap().last().unwrap())
+                .unwrap();
+        let shared = render_a
+            .strip_suffix(&volatile_a)
+            .expect("turn N's render ends with its volatile block");
+        assert!(
+            render_b.starts_with(shared),
+            "turn N+1 diverges from turn N inside the cacheable region"
+        );
+
+        // And the shared region is the bulk of the request, not a token or two.
+        let lcp = render_a
+            .as_bytes()
+            .iter()
+            .zip(render_b.as_bytes())
+            .take_while(|(x, y)| x == y)
+            .count();
+        let system_bytes = serde_json::to_string(&request_a["messages"][0])
+            .unwrap()
+            .len();
+        let tool_bytes = serde_json::to_string(&request_a["tools"]).unwrap().len();
+        assert!(
+            lcp >= system_bytes + tool_bytes,
+            "longest common prefix ({lcp} bytes) does not even cover the system \
+             prompt ({system_bytes}) plus the tool schemas ({tool_bytes})"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_all_stable_prompt_is_byte_identical_to_the_unsplit_request() -> anyhow::Result<()> {
+        let model = bench_model();
+        let tools = bench_tools();
+        let history = three_turn_history();
+        let flat = create_request(
+            &model,
+            "You are a coding agent.\n",
+            &history,
+            &tools,
+            &ImageFormat::OpenAi,
+            false,
+        )?;
+        let split = create_request_split(
+            &model,
+            &SystemPromptParts::all_stable("You are a coding agent.\n".to_string()),
+            &history,
+            &tools,
+            &ImageFormat::OpenAi,
+            false,
+        )?;
+        assert_eq!(flat, split, "an empty volatile suffix must add nothing");
+        Ok(())
+    }
+
+    // ── Cache-token reporting across the three OpenAI-compatible shapes ──────
+
+    #[test]
+    fn get_usage_reads_deepseeks_cache_hit_field() {
+        let usage = get_usage(&json!({
+            "prompt_tokens": 24_600,
+            "completion_tokens": 120,
+            "total_tokens": 24_720,
+            "prompt_cache_hit_tokens": 23_552,
+            "prompt_cache_miss_tokens": 1_048
+        }));
+        assert_eq!(usage.input_tokens, Some(24_600));
+        assert_eq!(usage.cache_read_input_tokens, Some(23_552));
+        // A miss is ordinary fresh input on a provider with no write premium —
+        // never a cache *creation* charge.
+        assert_eq!(usage.cache_write_input_tokens, None);
+    }
+
+    #[test]
+    fn get_usage_reads_the_openai_shaped_cached_tokens_detail() {
+        let usage = get_usage(&json!({
+            "prompt_tokens": 10_000,
+            "completion_tokens": 50,
+            "prompt_tokens_details": { "cached_tokens": 9_216 }
+        }));
+        assert_eq!(usage.cache_read_input_tokens, Some(9_216));
+    }
+
+    #[test]
+    fn get_usage_still_prefers_an_anthropic_shaped_passthrough() {
+        // OpenRouter/LiteLLM proxying an Anthropic model keep Anthropic's names;
+        // those must keep winning so their existing numbers do not move.
+        let usage = get_usage(&json!({
+            "prompt_tokens": 500,
+            "completion_tokens": 10,
+            "cache_read_input_tokens": 400,
+            "cache_creation_input_tokens": 60,
+            "prompt_cache_hit_tokens": 1
+        }));
+        assert_eq!(usage.cache_read_input_tokens, Some(400));
+        assert_eq!(usage.cache_write_input_tokens, Some(60));
+    }
+
+    #[test]
+    fn get_usage_reports_no_cache_when_the_provider_says_nothing() {
+        let usage = get_usage(&json!({ "prompt_tokens": 100, "completion_tokens": 10 }));
+        assert_eq!(usage.cache_read_input_tokens, None);
+        assert_eq!(usage.cache_write_input_tokens, None);
     }
 }

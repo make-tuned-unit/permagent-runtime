@@ -70,6 +70,12 @@ instructions: |
     longer progress — the runaway-loop guard escalates it to the user's Decision
     Inbox, so stop and surface it rather than looping. If the reviewer cannot
     run, say so ("review unavailable") instead of silently declaring done.
+    This is not only a request: a `ReviewerMandate` after-turn check enforces
+    it — a turn that changed files AND has a passing verify cannot end until
+    the `delegate` call to `worker_persona: "reviewer"` has actually been
+    made, or the turn is stopped with a stated reason why no independent
+    reviewer was available or affordable. It re-opens such a turn exactly
+    once, so do the delegation the first time it asks.
   - Make the smallest change that fully solves the task. Do not refactor
     surrounding code, add abstractions, or handle cases that cannot occur beyond
     what was asked.

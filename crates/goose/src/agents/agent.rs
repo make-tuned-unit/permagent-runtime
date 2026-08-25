@@ -435,9 +435,15 @@ impl Agent {
     /// `cost_router::decide_hold` — the same pure decision goal dispatch makes.
     /// Safe on ordinary conversation because the guard only consults that
     /// decision when the session actually wrote something.
+    ///
+    /// `ReviewerMandate` runs second: it refuses to let a turn that changed
+    /// files end without an independent, cross-family reviewer having been
+    /// asked (or a `Park` explaining why none could be). Same applicability
+    /// gate as `PrematureDoneGuard` — ordinary conversation never triggers it.
     fn create_after_turn_manager() -> crate::after_turn::AfterTurnManager {
         let mut manager = crate::after_turn::AfterTurnManager::new();
         manager.add_hook(Box::new(crate::after_turn::PrematureDoneGuard::new()));
+        manager.add_hook(Box::new(crate::after_turn::ReviewerMandate::new()));
         manager
     }
 
