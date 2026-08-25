@@ -12,6 +12,13 @@
 //! Provider ids, model strings and key envs are the ones wired on `main`:
 //! `ollama` (keyless), `minimax`/`MINIMAX_API_KEY`, `moonshot` (Kimi)/
 //! `MOONSHOT_API_KEY`, `anthropic`/`ANTHROPIC_API_KEY`.
+//!
+//! The `model-defaults-bench` candidate set (`haiku`, `sonnet5`, `glm53`,
+//! `glm47`, `minimax27`, `dschat`, `dsreason`, `kimi25`, `gpt54mini`) adds three
+//! more provider ids: the declarative providers `custom_deepseek` (DeepSeek) and
+//! `moonshot` (reused for the newer Kimi model) plus the built-in `zai`
+//! (Z.ai/GLM) and `openai`, alongside `ANTHROPIC_API_KEY`/`ZAI_API_KEY`/
+//! `MINIMAX_API_KEY`/`DEEPSEEK_API_KEY`/`MOONSHOT_API_KEY`/`OPENAI_API_KEY`.
 
 /// The four cost-router pack roles (see `permagent`'s `cost_router::packs`).
 /// Pinning every role to the tier's model keeps all work on one model.
@@ -64,13 +71,76 @@ impl Tier {
                 "claude-opus-4-8",
                 Some("ANTHROPIC_API_KEY"),
             )),
+            // model-defaults-bench candidates (#the-nine): reproducible-by-name
+            // tiers for the coding-harness default sweep. Provider ids verified
+            // live: `custom_deepseek`, `minimax`, `moonshot` are this repo's
+            // declarative providers; `zai`, `anthropic`, `openai` are built in.
+            "haiku" => Some(t(
+                "haiku",
+                "anthropic",
+                "claude-haiku-4-5-20251001",
+                Some("ANTHROPIC_API_KEY"),
+            )),
+            "sonnet5" => Some(t(
+                "sonnet5",
+                "anthropic",
+                "claude-sonnet-5",
+                Some("ANTHROPIC_API_KEY"),
+            )),
+            "glm53" => Some(t("glm53", "zai", "glm-5.3", Some("ZAI_API_KEY"))),
+            "glm47" => Some(t("glm47", "zai", "glm-4.7", Some("ZAI_API_KEY"))),
+            "minimax27" => Some(t(
+                "minimax27",
+                "minimax",
+                "MiniMax-M2.7",
+                Some("MINIMAX_API_KEY"),
+            )),
+            "dschat" => Some(t(
+                "dschat",
+                "custom_deepseek",
+                "deepseek-chat",
+                Some("DEEPSEEK_API_KEY"),
+            )),
+            "dsreason" => Some(t(
+                "dsreason",
+                "custom_deepseek",
+                "deepseek-reasoner",
+                Some("DEEPSEEK_API_KEY"),
+            )),
+            "kimi25" => Some(t(
+                "kimi25",
+                "moonshot",
+                "kimi-k2.5",
+                Some("MOONSHOT_API_KEY"),
+            )),
+            "gpt54mini" => Some(t(
+                "gpt54mini",
+                "openai",
+                "gpt-5.4-mini",
+                Some("OPENAI_API_KEY"),
+            )),
             _ => None,
         }
     }
 
     /// The names of every built-in tier (for `--help` and the CLI's tier list).
     pub fn builtin_names() -> &'static [&'static str] {
-        &["local", "kimi", "minimax", "sonnet", "frontier"]
+        &[
+            "local",
+            "kimi",
+            "minimax",
+            "sonnet",
+            "frontier",
+            "haiku",
+            "sonnet5",
+            "glm53",
+            "glm47",
+            "minimax27",
+            "dschat",
+            "dsreason",
+            "kimi25",
+            "gpt54mini",
+        ]
     }
 
     /// A custom, ad-hoc tier from explicit `--provider`/`--model` flags.
@@ -138,6 +208,79 @@ mod tests {
     #[test]
     fn unknown_tier_is_none() {
         assert!(Tier::builtin("nope").is_none());
+    }
+
+    #[test]
+    fn builtin_names_lists_every_tier_and_each_one_resolves() {
+        let names = Tier::builtin_names();
+        assert_eq!(names.len(), 14, "{names:?}");
+        for &name in names {
+            let t = Tier::builtin(name)
+                .unwrap_or_else(|| panic!("{name} is in builtin_names() but does not resolve"));
+            assert_eq!(t.name, name);
+        }
+        // The pre-existing five must still be present, unrenamed.
+        for name in ["local", "kimi", "minimax", "sonnet", "frontier"] {
+            assert!(names.contains(&name), "{name} missing from builtin_names()");
+        }
+        // The nine model-defaults-bench candidates.
+        for name in [
+            "haiku",
+            "sonnet5",
+            "glm53",
+            "glm47",
+            "minimax27",
+            "dschat",
+            "dsreason",
+            "kimi25",
+            "gpt54mini",
+        ] {
+            assert!(names.contains(&name), "{name} missing from builtin_names()");
+        }
+    }
+
+    /// The nine model-defaults-bench candidates: provider, model and required
+    /// key env, verified against the task's spec.
+    #[test]
+    fn resolves_the_nine_candidate_tiers_with_expected_wiring() {
+        let cases: &[(&str, &str, &str, &str)] = &[
+            (
+                "haiku",
+                "anthropic",
+                "claude-haiku-4-5-20251001",
+                "ANTHROPIC_API_KEY",
+            ),
+            (
+                "sonnet5",
+                "anthropic",
+                "claude-sonnet-5",
+                "ANTHROPIC_API_KEY",
+            ),
+            ("glm53", "zai", "glm-5.3", "ZAI_API_KEY"),
+            ("glm47", "zai", "glm-4.7", "ZAI_API_KEY"),
+            ("minimax27", "minimax", "MiniMax-M2.7", "MINIMAX_API_KEY"),
+            (
+                "dschat",
+                "custom_deepseek",
+                "deepseek-chat",
+                "DEEPSEEK_API_KEY",
+            ),
+            (
+                "dsreason",
+                "custom_deepseek",
+                "deepseek-reasoner",
+                "DEEPSEEK_API_KEY",
+            ),
+            ("kimi25", "moonshot", "kimi-k2.5", "MOONSHOT_API_KEY"),
+            ("gpt54mini", "openai", "gpt-5.4-mini", "OPENAI_API_KEY"),
+        ];
+        for &(name, provider, model, key) in cases {
+            let t = Tier::builtin(name).unwrap_or_else(|| panic!("{name} must resolve"));
+            assert_eq!(t.provider, provider, "{name} provider");
+            assert_eq!(t.model, model, "{name} model");
+            assert_eq!(t.required_key_env.as_deref(), Some(key), "{name} key env");
+            assert!(t.pin_packs, "{name} should default to pinned packs");
+        }
     }
 
     #[test]

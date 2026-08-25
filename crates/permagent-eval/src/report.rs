@@ -5,6 +5,7 @@
 //! an undefined ratio (e.g. $/solved with nothing solved).
 
 use crate::metrics::{aggregate, Aggregate, TaskResult};
+use crate::oracle::OracleOutcome;
 use serde_json::json;
 
 /// One tier's slice of a report: its identity plus the per-task results.
@@ -36,11 +37,14 @@ pub fn fmt_pct(fraction: f64) -> String {
     format!("{:.1}%", fraction * 100.0)
 }
 
-fn solved_mark(solved: bool) -> &'static str {
-    if solved {
-        "PASS"
-    } else {
-        "FAIL"
+/// Per-task outcome label. [`OracleOutcome::NotRun`] renders as `SKIP` — a
+/// distinct state from `FAIL`, so a budget-stopped task never reads as a
+/// graded failure.
+fn solved_mark(r: &TaskResult) -> &'static str {
+    match r.oracle {
+        OracleOutcome::NotRun => "SKIP",
+        _ if r.solved => "PASS",
+        _ => "FAIL",
     }
 }
 
@@ -83,7 +87,7 @@ pub fn render_text(reports: &[TierReport]) -> String {
         for r in &tr.results {
             out.push_str(&format!(
                 "  {:<6} {:<24} cost={:<10} {:.1}s{}\n",
-                solved_mark(r.solved),
+                solved_mark(r),
                 r.task_id,
                 fmt_usd(r.cost.usd),
                 r.duration_secs,
@@ -97,7 +101,7 @@ pub fn render_text(reports: &[TierReport]) -> String {
         out.push_str(&format!(
             "  --> {}/{} solved ({}), $/solved={}, median $/task={}, total={}{}{}\n",
             agg.solved,
-            agg.total,
+            agg.attempted,
             fmt_pct(agg.pass_rate),
             fmt_usd(agg.dollars_per_solved),
             fmt_usd(agg.median_cost_per_task),
@@ -113,6 +117,25 @@ pub fn render_text(reports: &[TierReport]) -> String {
                 ""
             },
         ));
+        out.push_str(&format!(
+            "  --> median wall-clock={}, tool calls={}, cache-hit={}, rate-limit events={}\n",
+            match agg.median_duration_secs {
+                Some(s) => format!("{s:.1}s"),
+                None => "n/a".to_string(),
+            },
+            agg.total_tool_calls,
+            match agg.cache_hit_rate {
+                Some(r) => fmt_pct(r),
+                None => "n/a".to_string(),
+            },
+            agg.total_rate_limit_events,
+        ));
+        if agg.not_run > 0 {
+            out.push_str(&format!(
+                "  --> {} task(s) skipped (budget stop) — pass-rate excludes them\n",
+                agg.not_run
+            ));
+        }
     }
     out
 }
@@ -139,11 +162,24 @@ pub fn render_markdown(reports: &[TierReport]) -> String {
         out.push_str(&format!(
             "- **{}/{} solved** ({}) · **$/solved {}{mark}** · median $/task {}{mark} · total {}{mark}\n",
             agg.solved,
-            agg.total,
+            agg.attempted,
             fmt_pct(agg.pass_rate),
             fmt_usd(agg.dollars_per_solved),
             fmt_usd(agg.median_cost_per_task),
             fmt_usd(agg.total_cost_usd),
+        ));
+        out.push_str(&format!(
+            "- median wall-clock {} · tool calls {} · cache-hit {} · rate-limit events {}\n",
+            match agg.median_duration_secs {
+                Some(s) => format!("{s:.1}s"),
+                None => "n/a".to_string(),
+            },
+            agg.total_tool_calls,
+            match agg.cache_hit_rate {
+                Some(r) => fmt_pct(r),
+                None => "n/a".to_string(),
+            },
+            agg.total_rate_limit_events,
         ));
         if agg.any_cost_unknown {
             out.push_str(&format!("- {MD_UNKNOWN_NOTE}\n"));
@@ -151,17 +187,24 @@ pub fn render_markdown(reports: &[TierReport]) -> String {
         if agg.any_estimated {
             out.push_str(&format!("- {MD_ESTIMATED_NOTE}\n"));
         }
+        if agg.not_run > 0 {
+            out.push_str(&format!(
+                "- {} task(s) **skipped** (budget stop) — excluded from pass-rate\n",
+                agg.not_run
+            ));
+        }
         out.push('\n');
-        out.push_str("| task | category | result | cost | seconds |\n");
-        out.push_str("|------|----------|--------|------|---------|\n");
+        out.push_str("| task | category | result | cost | seconds | tool calls |\n");
+        out.push_str("|------|----------|--------|------|---------|------------|\n");
         for r in &tr.results {
             out.push_str(&format!(
-                "| {} | {} | {} | {} | {:.1} |\n",
+                "| {} | {} | {} | {} | {:.1} | {} |\n",
                 r.task_id,
                 r.category,
-                solved_mark(r.solved),
+                solved_mark(r),
                 fmt_usd(r.cost.usd),
                 r.duration_secs,
+                r.signals.tool_calls,
             ));
         }
         out.push('\n');
@@ -169,8 +212,14 @@ pub fn render_markdown(reports: &[TierReport]) -> String {
 
     if reports.len() > 1 {
         out.push_str("## Tier comparison\n\n");
-        out.push_str("| tier | pass-rate | solved | $/solved | median $/task | total $ |\n");
-        out.push_str("|------|-----------|--------|----------|---------------|---------|\n");
+        out.push_str(
+            "| tier | pass-rate | solved | $/solved | median $/task | total $ | \
+             median wall-clock | tool calls | cache-hit | rate-limits |\n",
+        );
+        out.push_str(
+            "|------|-----------|--------|----------|---------------|---------|\
+             --------------------|------------|-----------|-------------|\n",
+        );
         let mut any_unknown = false;
         let mut any_estimated = false;
         for tr in reports {
@@ -179,14 +228,24 @@ pub fn render_markdown(reports: &[TierReport]) -> String {
             any_unknown |= agg.any_cost_unknown;
             any_estimated |= agg.any_estimated;
             out.push_str(&format!(
-                "| {} | {} | {}/{} | {}{mark} | {}{mark} | {}{mark} |\n",
+                "| {} | {} | {}/{} | {}{mark} | {}{mark} | {}{mark} | {} | {} | {} | {} |\n",
                 tr.tier,
                 fmt_pct(agg.pass_rate),
                 agg.solved,
-                agg.total,
+                agg.attempted,
                 fmt_usd(agg.dollars_per_solved),
                 fmt_usd(agg.median_cost_per_task),
                 fmt_usd(agg.total_cost_usd),
+                match agg.median_duration_secs {
+                    Some(s) => format!("{s:.1}s"),
+                    None => "n/a".to_string(),
+                },
+                agg.total_tool_calls,
+                match agg.cache_hit_rate {
+                    Some(r) => fmt_pct(r),
+                    None => "n/a".to_string(),
+                },
+                agg.total_rate_limit_events,
             ));
         }
         out.push('\n');
@@ -220,10 +279,21 @@ pub fn render_json(reports: &[TierReport]) -> serde_json::Value {
                         "cost_usd": r.cost.usd,
                         "cost_estimated": r.cost.estimated,
                         "ledger_rows": r.cost.ledger_rows,
+                        "input_tokens": r.cost.input_tokens,
+                        "output_tokens": r.cost.output_tokens,
+                        "cache_read_tokens": r.cost.cache_read_tokens,
+                        "cache_write_tokens": r.cost.cache_write_tokens,
+                        "cache_hit_rate": r.cost.cache_hit_rate(),
                         "duration_secs": r.duration_secs,
                         "harness_exit": r.harness_exit,
                         "harness_timed_out": r.harness_timed_out,
                         "note": r.note,
+                        "signals": {
+                            "tool_calls": r.signals.tool_calls,
+                            "tool_names": r.signals.tool_names,
+                            "rate_limit_events": r.signals.rate_limit_events,
+                            "max_turns_hit": r.signals.max_turns_hit,
+                        },
                     })
                 })
                 .collect();
@@ -234,6 +304,8 @@ pub fn render_json(reports: &[TierReport]) -> serde_json::Value {
                 "pinned_packs": tr.pinned_packs,
                 "summary": {
                     "total": agg.total,
+                    "attempted": agg.attempted,
+                    "not_run": agg.not_run,
                     "solved": agg.solved,
                     "pass_rate": agg.pass_rate,
                     "dollars_per_solved": agg.dollars_per_solved,
@@ -241,6 +313,10 @@ pub fn render_json(reports: &[TierReport]) -> serde_json::Value {
                     "total_cost_usd": agg.total_cost_usd,
                     "any_cost_unknown": agg.any_cost_unknown,
                     "any_estimated": agg.any_estimated,
+                    "median_duration_secs": agg.median_duration_secs,
+                    "total_tool_calls": agg.total_tool_calls,
+                    "total_rate_limit_events": agg.total_rate_limit_events,
+                    "cache_hit_rate": agg.cache_hit_rate,
                 },
                 "tasks": tasks,
             })
@@ -427,5 +503,107 @@ mod tests {
         assert_eq!(tier["tasks"][0]["solved"], true);
         // $/solved with 1 solved and total cost 0.0 => 0.0
         assert_eq!(tier["summary"]["dollars_per_solved"], 0.0);
+    }
+
+    /// A tier report including a budget-stopped (`NotRun`) task, plus tool-call
+    /// and rate-limit signals on the ones that did run — the shape the report
+    /// must represent honestly.
+    fn sample_with_skip_and_signals() -> TierReport {
+        let mut solved = TaskResult::new(
+            "alpha",
+            "classic",
+            OracleOutcome::Pass,
+            CostReading::known_with_tokens(1.0, false, 1, Some(1000), Some(100), Some(400), None),
+        );
+        solved.duration_secs = 10.0;
+        solved.signals.tool_calls = 4;
+        solved.signals.tool_names = vec!["shell".to_string()];
+        solved.signals.rate_limit_events = 1;
+
+        let mut failed = TaskResult::new(
+            "bravo",
+            "classic",
+            OracleOutcome::Fail,
+            CostReading::known(0.5, false, 1),
+        );
+        failed.duration_secs = 20.0;
+        failed.signals.tool_calls = 2;
+
+        let mut skipped = TaskResult::new(
+            "charlie",
+            "classic",
+            OracleOutcome::NotRun,
+            CostReading::unknown(),
+        );
+        skipped.note = Some("skipped: --budget-usd cap reached".to_string());
+
+        TierReport {
+            tier: "sonnet5".to_string(),
+            provider: "anthropic".to_string(),
+            model: "claude-sonnet-5".to_string(),
+            pinned_packs: true,
+            results: vec![solved, failed, skipped],
+        }
+    }
+
+    #[test]
+    fn text_report_marks_not_run_as_skip_not_fail_and_shows_the_skip_count() {
+        let text = render_text(&[sample_with_skip_and_signals()]);
+        assert!(text.contains("SKIP"), "{text}");
+        // pass-rate is over the 2 attempted tasks (1 solved of 2), not 3.
+        assert!(text.contains("1/2 solved"), "{text}");
+        assert!(text.contains("1 task(s) skipped"), "{text}");
+    }
+
+    #[test]
+    fn text_report_shows_median_wall_clock_tool_calls_cache_hit_and_rate_limits() {
+        let text = render_text(&[sample_with_skip_and_signals()]);
+        // median of [10.0, 20.0] (the not-run task is excluded) = 15.0s
+        assert!(text.contains("median wall-clock=15.0s"), "{text}");
+        assert!(text.contains("tool calls=6"), "{text}");
+        // cache-hit: only "alpha" has known tokens => 400/1000 = 40.0%
+        assert!(text.contains("cache-hit=40.0%"), "{text}");
+        assert!(text.contains("rate-limit events=1"), "{text}");
+    }
+
+    #[test]
+    fn markdown_shows_skip_count_and_new_columns() {
+        let md = render_markdown(&[sample_with_skip_and_signals()]);
+        assert!(md.contains("**skipped**"), "{md}");
+        assert!(md.contains("median wall-clock 15.0s"), "{md}");
+        assert!(md.contains("tool calls 6"), "{md}");
+        assert!(md.contains("cache-hit 40.0%"), "{md}");
+        assert!(md.contains("rate-limit events 1"), "{md}");
+        // Per-task table carries the SKIP row and its tool-call column.
+        assert!(md.contains("| charlie | classic | SKIP |"), "{md}");
+        assert!(
+            md.contains("| alpha | classic | PASS | $1.0000 | 10.0 | 4 |"),
+            "{md}"
+        );
+    }
+
+    #[test]
+    fn json_report_carries_not_run_state_tokens_and_signals() {
+        let v = render_json(&[sample_with_skip_and_signals()]);
+        let tier = &v["tiers"][0];
+        assert_eq!(tier["summary"]["total"], 3);
+        assert_eq!(tier["summary"]["attempted"], 2);
+        assert_eq!(tier["summary"]["not_run"], 1);
+        // pass-rate 1/2, not 1/3.
+        assert!((tier["summary"]["pass_rate"].as_f64().unwrap() - 0.5).abs() < 1e-9);
+
+        let alpha = &tier["tasks"][0];
+        assert_eq!(alpha["task_id"], "alpha");
+        assert_eq!(alpha["input_tokens"], 1000);
+        assert_eq!(alpha["cache_read_tokens"], 400);
+        assert!((alpha["cache_hit_rate"].as_f64().unwrap() - 0.4).abs() < 1e-9);
+        assert_eq!(alpha["signals"]["tool_calls"], 4);
+        assert_eq!(alpha["signals"]["tool_names"][0], "shell");
+        assert_eq!(alpha["signals"]["rate_limit_events"], 1);
+
+        let charlie = &tier["tasks"][2];
+        assert_eq!(charlie["oracle"], "not_run");
+        assert_eq!(charlie["solved"], false);
+        assert_eq!(charlie["cost_usd"], serde_json::Value::Null);
     }
 }

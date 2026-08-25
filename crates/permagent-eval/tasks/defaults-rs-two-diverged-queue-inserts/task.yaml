@@ -1,0 +1,18 @@
+id: defaults-rs-two-diverged-queue-inserts
+title: "Consolidate two diverged queue inserts"
+category: model-defaults-rs
+max_turns: 25
+harness_timeout_secs: 600
+oracle_timeout_secs: 180
+test: [bash, oracle_check.sh]
+# The oracle is a shell script, so the Python/Node import allowlist does
+# not apply; the overlay still makes it untamperable by the agent.
+deliverables: []
+# lang=rs difficulty=medium needs_repo_map=false needs_test_run=false
+prompt: |
+  `TaskQueue` has two ways to add a task -- `push` and `push_stable` -- that were
+  supposed to behave identically but have drifted apart: only one of them
+  actually keeps equal-priority tasks in the order they were added. Consolidate
+  them into a single correct implementation on `push` (equal-priority tasks stay
+  first-in-first-out), delete `push_stable`, and update the batch-import path
+  that still calls it.

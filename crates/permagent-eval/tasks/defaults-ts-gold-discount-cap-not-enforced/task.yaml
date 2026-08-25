@@ -1,0 +1,18 @@
+id: defaults-ts-gold-discount-cap-not-enforced
+title: "The gold-tier discount cap is not enforced"
+category: model-defaults-ts
+max_turns: 25
+harness_timeout_secs: 600
+oracle_timeout_secs: 180
+test: [bash, oracle_check.sh]
+# The oracle is a shell script, so the Python/Node import allowlist does
+# not apply; the overlay still makes it untamperable by the agent.
+deliverables: []
+# lang=ts difficulty=medium needs_repo_map=true needs_test_run=false
+prompt: |
+  Gold-tier customers are supposed to have their loyalty discount capped at
+  $50.00, but some gold orders are coming out with a bigger discount than that.
+  Find where `applyLoyaltyDiscount` actually gets used by the checkout flow and
+  fix the cap so gold-tier discounts never exceed $50.00. (There's more than one
+  function with this name in the codebase -- make sure you're fixing the one
+  that's actually wired into checkout, not a leftover.)

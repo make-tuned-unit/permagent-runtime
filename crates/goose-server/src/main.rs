@@ -5,6 +5,7 @@ mod app_catalog;
 mod automation;
 pub(crate) use permagent::backup;
 mod brain_ops;
+mod chat_model;
 mod commands;
 mod concierge;
 mod configuration;
