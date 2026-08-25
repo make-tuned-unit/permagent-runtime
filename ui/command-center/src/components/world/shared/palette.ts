@@ -55,6 +55,13 @@ export const AGENT_TRIM = {
   // The Financier — market research and the Finance tab. Muted antique gold:
   // not Henry's warm white-gold, not STATE working-amber. Identity trim only.
   financier: '#C4A35A',
+  // The Forecaster — where the market around each project is going. Dusk
+  // violet: the band between the Financier's gold and Nova's lavender is
+  // unoccupied, and it is far from every STATE color (idle grey, working
+  // amber, available cyan, error red). Identity must never read as a state,
+  // least of all for an agent whose whole job is to be honest about
+  // uncertainty. Distinct from watcher's #9FB8D8 at a glance.
+  forecaster: '#8E7CC3',
 } as const;
 
 export type AgentHudState = keyof typeof STATE;
