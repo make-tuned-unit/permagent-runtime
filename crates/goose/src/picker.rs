@@ -130,15 +130,20 @@ pub async fn status() -> PickerStatus {
                         .and_then(|n| n.as_u64());
                 } else {
                     out.detail = Some(format!(
-                        "{base} answered, but it is not the stock scanner \
-                         (Librarian llama-server also defaults to :8080). \
-                         Stop that process or set picker_url to the scanner."
+                        "{base} answered, but it is not the stock scanner. \
+                         The Librarian's nightly llama-server split moved off \
+                         this port to :8081 on 2026-08-25 — if something is \
+                         still serving llama-server here, it is an old \
+                         qwen38-split.sh. Stop that process or set picker_url \
+                         to the scanner."
                     ));
                 }
             } else {
                 out.detail = Some(format!(
                     "{base} answered, but the body is not scanner JSON — \
-                     something else is bound to that port"
+                     something else is bound to that port (the Librarian \
+                     split serves :8081 now, so a stale one here is the \
+                     usual culprit)"
                 ));
             }
         }

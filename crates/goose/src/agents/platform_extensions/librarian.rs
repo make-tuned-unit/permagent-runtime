@@ -1594,7 +1594,24 @@ pub(crate) async fn call_ollama_streaming_pooled(
                 return Ok(text);
             }
             Err(err) if is_endpoint_down(&err) => {
-                if is_loopback_connect_failure(&endpoint, &err) {
+                if is_endpoint_not_ready(&err) {
+                    // Settled for this batch. `mark_dedicated_endpoint_down`
+                    // returns true exactly once, and every later memory then
+                    // short-circuits on `dedicated_endpoint_is_skipped` above
+                    // without dialling at all — no retries, no churn, one line.
+                    if librarian_state::mark_dedicated_endpoint_down(&endpoint) {
+                        tracing::warn!(
+                            target: "permagent::librarian",
+                            endpoint = %endpoint,
+                            backend = %backend,
+                            error = %err,
+                            fallback_model = DEFAULT_MODEL,
+                            "Librarian endpoint answered but is NOT ready (still loading, or a \
+                             foreign service on the port) — skipping it for the rest of this \
+                             batch; the pass continues on the local pool"
+                        );
+                    }
+                } else if is_loopback_connect_failure(&endpoint, &err) {
                     if librarian_state::note_dedicated_loopback_connect_fail(&endpoint) {
                         tracing::error!(
                             target: "permagent::librarian",
@@ -1761,13 +1778,15 @@ async fn try_apple_on_device(
 /// is our request's fault and must surface as-is rather than be papered over
 /// by the fallback.
 /// The readiness probe for the dedicated Librarian endpoint, run ONCE at the top
-/// of a nightly window.
+/// of every batch.
 ///
 /// ## The storm this ends
 ///
-/// `PERMAGENT_LIBRARIAN_ENDPOINT=http://127.0.0.1:8080` is the nightly
+/// `PERMAGENT_LIBRARIAN_ENDPOINT=http://127.0.0.1:8081` is the nightly
 /// Qwen3.8-27B llama-server split, started by launchd at 01:50 local with retry
-/// slots across the window. The Librarian's own batch window opens at 02:00
+/// slots across the window. (It was :8080 until 2026-08-25, which is also the
+/// Finance Picker's Flask scanner — whoever bound first won, and part of the
+/// storm below was the Librarian talking to a stock scanner.) The Librarian's own batch window opens at 02:00
 /// local — 05:00 UTC — which is exactly when the health review saw the storm
 /// begin on three consecutive days (281 failures 2026-08-22, 23 on 08-23, 24 on
 /// 08-24). The split refuses to start when the machine is busy (a build
@@ -1776,7 +1795,9 @@ async fn try_apple_on_device(
 ///
 /// The per-call circuit in `librarian_state` capped that at three attempts.
 /// This probe takes it to one, BEFORE any memory is processed, so the pass runs
-/// on the Ollama fallback from the first memory instead of the fourth.
+/// on the Ollama fallback from the first memory instead of the fourth. It runs
+/// per BATCH rather than per night: a split that only comes up at 03:20 is
+/// picked up by the next batch instead of being written off until tomorrow.
 ///
 /// ## Why it retries at all
 ///
@@ -1800,15 +1821,6 @@ pub async fn probe_dedicated_endpoint() -> bool {
     }
 
     let backend = crate::config::librarian_backend();
-    // `/v1/models` on llama-server and `/api/tags` on Ollama both prove two
-    // things at once: something is listening, AND it speaks the protocol the
-    // batch is about to use. A bare TCP connect proves only the first.
-    let path = if backend == "ollama" {
-        "/api/tags"
-    } else {
-        "/v1/models"
-    };
-    let url = format!("{endpoint}{path}");
 
     let client = match reqwest::Client::builder().timeout(PROBE_TIMEOUT).build() {
         Ok(c) => c,
@@ -1822,8 +1834,8 @@ pub async fn probe_dedicated_endpoint() -> bool {
         if attempt > 0 {
             tokio::time::sleep(probe_backoff(attempt)).await;
         }
-        match client.get(&url).send().await {
-            Ok(resp) if resp.status().is_success() => {
+        match check_endpoint_ready(&client, &endpoint, &backend).await {
+            Readiness::Ready => {
                 librarian_state::note_dedicated_endpoint_ok(&endpoint);
                 tracing::info!(
                     target: "permagent::librarian",
@@ -1834,19 +1846,42 @@ pub async fn probe_dedicated_endpoint() -> bool {
                 );
                 return true;
             }
-            // Something IS listening but unhappy (a 5xx, or a 404 on a build
-            // without that route). Not our call to write off — the per-call
-            // circuit still applies, and a wrong route is not a dead service.
-            Ok(resp) => {
+            // A settled "no". A 503 means the weights are still loading — on
+            // 2026-08-25 that lasted 7.5 minutes, far past any probe budget —
+            // and HTML means a different service owns the port. Neither
+            // improves inside the next eighteen seconds, so do not retry: trip
+            // the gate now and let the whole batch run on the local pool.
+            Readiness::NotReady(why) => {
+                if librarian_state::mark_dedicated_endpoint_down(&endpoint) {
+                    tracing::warn!(
+                        target: "permagent::librarian",
+                        endpoint = %endpoint,
+                        backend = %backend,
+                        reason = %why,
+                        split_refusal = split_refusal_reason()
+                            .as_deref()
+                            .unwrap_or("none (the split logged no refusal)"),
+                        fallback_model = DEFAULT_MODEL,
+                        "Librarian endpoint answered the readiness probe but is NOT ready — \
+                         skipping the dedicated endpoint for this batch; it runs on the local pool"
+                    );
+                }
+                return false;
+            }
+            // Something IS listening, speaks JSON, and is merely answering a
+            // route this build does not serve. Not our call to write off — the
+            // per-call circuit still applies, and a wrong route is not a dead
+            // service.
+            Readiness::Inconclusive(why) => {
                 tracing::debug!(
                     target: "permagent::librarian",
                     endpoint = %endpoint,
-                    status = %resp.status(),
-                    "dedicated Librarian endpoint answered the readiness probe with a non-success status"
+                    reason = %why,
+                    "dedicated Librarian endpoint answered the readiness probe inconclusively"
                 );
                 return true;
             }
-            Err(err) => last_error = err.to_string(),
+            Readiness::Unreachable(err) => last_error = err,
         }
     }
 
@@ -1891,6 +1926,186 @@ fn probe_backoff(attempt: u32) -> std::time::Duration {
     std::time::Duration::from_secs(4u64 << exponent)
 }
 
+/// Budget for the second readiness stage. A 1-token completion on the split
+/// 27B has to cross the RPC link to the other mini and back, which the 3s
+/// list-endpoint timeout cannot cover; 30s is generous for one token and still
+/// cheap once per batch.
+const PROBE_COMPLETION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// What one readiness check concluded.
+///
+/// The three-way split is the whole fix. Before 2026-08-25 the probe had two
+/// answers — "success" and "something answered, assume fine" — and the second
+/// one covered the exact failure we were trying to catch: llama-server serving
+/// `503 {"error":{"message":"Loading model"}}` for seven and a half minutes
+/// while the Librarian treated the endpoint as usable.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Readiness {
+    /// The endpoint proved it is the inference server we expect AND that it
+    /// has finished loading.
+    Ready,
+    /// It answered, and the answer settles the question for this batch.
+    NotReady(String),
+    /// It answered, speaks JSON, and simply does not serve this route. Leave
+    /// it to the per-call circuit rather than writing off a live service.
+    Inconclusive(String),
+    /// Nothing answered — worth another attempt inside the probe's budget,
+    /// because the split's RPC side needs ~10s of Metal init before it binds.
+    Unreachable(String),
+}
+
+/// Two-stage readiness for the dedicated Librarian endpoint.
+///
+/// Stage one — the model list — proves the weights are in (llama-server 503s
+/// this route until they are) and that this is the inference server rather
+/// than whatever else grabbed the port. Stage two — a 1-token completion —
+/// proves it can actually run a forward pass: on the two-machine split the
+/// model can be resident on this side while the other mini's half is gone,
+/// and the list endpoint cannot see that.
+pub(crate) async fn check_endpoint_ready(
+    client: &reqwest::Client,
+    endpoint: &str,
+    backend: &str,
+) -> Readiness {
+    // `/v1/models` on llama-server and `/api/tags` on Ollama both prove the
+    // endpoint speaks the protocol the batch is about to use. A bare TCP
+    // connect proves only that something is listening.
+    let (path, key) = if backend == "ollama" {
+        ("/api/tags", "models")
+    } else {
+        ("/v1/models", "data")
+    };
+    let listed = match client.get(format!("{endpoint}{path}")).send().await {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            classify_list_answer(status, &body, key)
+        }
+        Err(err) => return Readiness::Unreachable(err.to_string()),
+    };
+    match listed {
+        Readiness::Ready => {}
+        other => return other,
+    }
+    // Ollama's generate path has no cheap 1-token equivalent worth a second
+    // round trip here; the tags list plus the per-call circuit is enough.
+    if backend == "ollama" {
+        return Readiness::Ready;
+    }
+
+    let body = serde_json::json!({
+        "messages": [{ "role": "user", "content": "ok" }],
+        "max_tokens": 1,
+        "stream": false,
+    });
+    match client
+        .post(format!("{endpoint}/v1/chat/completions"))
+        .timeout(PROBE_COMPLETION_TIMEOUT)
+        .json(&body)
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            let text = resp.text().await.unwrap_or_default();
+            classify_completion_answer(status, &text)
+        }
+        Err(err) => Readiness::NotReady(format!(
+            "the model list answered but a 1-token completion did not: {err}"
+        )),
+    }
+}
+
+/// Pure: what an answer from the model-list route means. `key` is `data` for
+/// llama-server's OpenAI-compatible list and `models` for Ollama's tags.
+pub(crate) fn classify_list_answer(status: u16, body: &str, key: &str) -> Readiness {
+    if status == 503 {
+        return Readiness::NotReady(
+            "HTTP 503 — the server is still loading the model (llama-server answers 503 on the \
+             model list until the weights are in; on 2026-08-25 that lasted 7.5 minutes)"
+                .to_string(),
+        );
+    }
+    // Checked before the status, deliberately: the Finance Picker's Flask
+    // scanner answers a *404 page of HTML* on `/v1/models`, and treating that
+    // as "a wrong route on a live service" is what let the two services share
+    // a port unnoticed.
+    if let Some(why) = foreign_body_reason(body) {
+        return Readiness::NotReady(why);
+    }
+    if !(200..300).contains(&status) {
+        return Readiness::Inconclusive(format!("HTTP {status} from the model list"));
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return Readiness::NotReady("the model list body is not JSON".to_string());
+    };
+    match value.get(key).and_then(|d| d.as_array()) {
+        Some(models) if !models.is_empty() => Readiness::Ready,
+        Some(_) => Readiness::NotReady(format!(
+            "`{key}` is present but empty — the server is up with no model loaded"
+        )),
+        None => Readiness::NotReady(format!(
+            "the body is JSON but has no `{key}` array — this is not the inference server we \
+             expect on this port"
+        )),
+    }
+}
+
+/// Pure: what an answer to the 1-token readiness completion means. Unlike the
+/// list route there is no benign 404 here — we control this request, so any
+/// non-success is the endpoint failing to serve it.
+pub(crate) fn classify_completion_answer(status: u16, body: &str) -> Readiness {
+    if status == 503 {
+        return Readiness::NotReady(
+            "HTTP 503 on the 1-token readiness completion — the model list answered but the \
+             server cannot serve a request yet"
+                .to_string(),
+        );
+    }
+    if let Some(why) = foreign_body_reason(body) {
+        return Readiness::NotReady(why);
+    }
+    if !(200..300).contains(&status) {
+        return Readiness::NotReady(format!("HTTP {status} on the 1-token readiness completion"));
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return Readiness::NotReady("the completion body is not JSON".to_string());
+    };
+    match value.get("choices").and_then(|c| c.as_array()) {
+        Some(choices) if !choices.is_empty() => Readiness::Ready,
+        _ => Readiness::NotReady(
+            "the completion returned no choices — the server answered but produced nothing"
+                .to_string(),
+        ),
+    }
+}
+
+/// Pure: is this body something other than the JSON API we are talking to?
+/// Returns the one line worth logging when it is.
+pub(crate) fn foreign_body_reason(body: &str) -> Option<String> {
+    let trimmed = body.trim_start();
+    if trimmed.is_empty() {
+        return Some("the endpoint answered with an empty body".to_string());
+    }
+    if trimmed.starts_with('<') {
+        return Some(
+            "the endpoint answered with HTML, not JSON — something other than the inference \
+             server is bound to this port (the Finance Picker's Flask scanner sharing :8080 is \
+             how this happened)"
+                .to_string(),
+        );
+    }
+    if serde_json::from_str::<serde_json::Value>(trimmed).is_err() {
+        return Some("the endpoint answered with a body that is not JSON".to_string());
+    }
+    None
+}
+
+/// Bound an untrusted body before it goes into a log line.
+fn body_snippet(body: &str) -> String {
+    body.trim().chars().take(200).collect()
+}
+
 /// Config key naming the split script's log, so a refusal can be quoted in the
 /// one WARN the probe emits. Optional and unset by default — the daemon must
 /// not hardcode a path under the operator's home directory.
@@ -1931,10 +2146,21 @@ fn last_refusal_line(log: &str) -> Option<String> {
 
 fn is_endpoint_down(err: &str) -> bool {
     err.contains("unreachable")
+        || err.contains("not ready")
         || err.contains("error (5")
         || err.contains("stream error")
         || err.contains("terminated prematurely")
         || err.contains("Stream interrupted")
+}
+
+/// The endpoint answered, but it cannot serve this batch: llama-server 503s
+/// `{"error":{"message":"Loading model"}}` for the entire time the weights are
+/// loading, and a foreign service on the port answers HTML. Neither gets
+/// better by being retried inside one describe pass — the 2026-08-25 load was
+/// still 503-ing at 7.5 minutes — and every retry is one more fallback churn.
+/// One line, gate tripped, the rest of the batch goes to the local pool.
+fn is_endpoint_not_ready(err: &str) -> bool {
+    err.contains("not ready")
 }
 
 /// A refused / unsent request to a loopback dedicated endpoint. Remote hosts
@@ -2085,9 +2311,38 @@ pub(crate) async fn call_llamacpp_streaming(
         .await
         .map_err(|e| format!("llama-server unreachable: {}", e))?;
 
+    // An HTML content-type on a 200 is not llama-server at all — it is
+    // whatever else is bound to this port. Caught before the stream, because
+    // the SSE parser would otherwise turn a whole HTML page into "Malformed
+    // SSE" noise, one line per memory.
+    let html_body = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.contains("text/html"));
+    if html_body {
+        return Err(format!(
+            "llama-server not ready ({}): the endpoint answered with HTML, not an SSE stream — \
+             something other than llama-server is bound to this port",
+            resp.status()
+        ));
+    }
+
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
+        // 503 is llama-server saying "still loading the model" — it answered
+        // 503 for 7.5 minutes on 2026-08-25 while the Librarian treated it as
+        // a transient 5xx and re-dialled once per memory. A non-JSON body is
+        // a different service on the port. Both are NOT READY, not "down" and
+        // not our bad request: one line, skip the endpoint for this batch.
+        if status.as_u16() == 503 || foreign_body_reason(&text).is_some() {
+            return Err(format!(
+                "llama-server not ready ({}): {}",
+                status,
+                body_snippet(&text)
+            ));
+        }
         return Err(format!("llama-server error ({}): {}", status, text));
     }
 
@@ -3622,5 +3877,243 @@ CATEGORIES: team meeting, project planning, engineering"#;
         assert_eq!(outcome.described, 3);
         // Reset from the prior completed campaign, not 99 + 3.
         assert_eq!(store.snapshot().described_total, 3);
+    }
+}
+
+/// Readiness, against a real HTTP server.
+///
+/// These exist because the night of 2026-08-25 was lost to a probe that could
+/// only answer "success" or "something answered, assume fine". Six starts
+/// logged healthy; none served a request. Every case below is a shape that
+/// probe called ready.
+#[cfg(test)]
+mod readiness_probe_tests {
+    use super::{
+        check_endpoint_ready, classify_completion_answer, classify_list_answer,
+        foreign_body_reason, is_endpoint_down, is_endpoint_not_ready, Readiness,
+    };
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn models_ok() -> serde_json::Value {
+        serde_json::json!({
+            "object": "list",
+            "data": [{ "id": "qwen3.8-27b", "object": "model" }],
+        })
+    }
+
+    /// The exact 2026-08-25 failure: the port is open, `/health` says ok, and
+    /// `/v1/models` answers `503 {"error":{"message":"Loading model"}}` for the
+    /// next seven and a half minutes. That is NOT ready.
+    #[tokio::test]
+    async fn a_503_loading_model_is_not_ready() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(ResponseTemplate::new(503).set_body_json(serde_json::json!({
+                "error": { "code": 503, "message": "Loading model", "type": "unavailable_error" }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        match check_endpoint_ready(&client, &server.uri(), "llamacpp").await {
+            Readiness::NotReady(why) => assert!(
+                why.contains("503"),
+                "the reason must name the status so the log is actionable: {why}"
+            ),
+            other => panic!("a loading model must not read as ready: {other:?}"),
+        }
+    }
+
+    /// The port collision: the Finance Picker's Flask scanner answers HTML.
+    /// Nothing about that is an inference server, and the Librarian must not
+    /// spend a batch talking to it.
+    #[tokio::test]
+    async fn an_html_body_is_not_ready() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                "<!doctype html><html><body><h1>Pre-Surge Scanner</h1></body></html>",
+                "text/html",
+            ))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        match check_endpoint_ready(&client, &server.uri(), "llamacpp").await {
+            Readiness::NotReady(why) => assert!(
+                why.contains("HTML"),
+                "the reason must say it was HTML, which points straight at the port: {why}"
+            ),
+            other => panic!("HTML must not read as ready: {other:?}"),
+        }
+    }
+
+    /// Valid JSON, wrong service: 200 with no `data` array is not a model list.
+    #[tokio::test]
+    async fn a_model_list_without_data_is_not_ready() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "object": "list" })),
+            )
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        match check_endpoint_ready(&client, &server.uri(), "llamacpp").await {
+            Readiness::NotReady(why) => assert!(
+                why.contains("data"),
+                "the reason must name the missing array: {why}"
+            ),
+            other => panic!("a JSON body with no model list must not read as ready: {other:?}"),
+        }
+    }
+
+    /// The other half of the fix: a model list alone is not readiness. The
+    /// split can have the weights resident on this mini while the other one's
+    /// half is gone, and only a real forward pass shows that.
+    #[tokio::test]
+    async fn a_model_list_without_a_working_completion_is_not_ready() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(models_ok()))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(503).set_body_json(serde_json::json!({
+                "error": { "message": "Loading model" }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        assert!(
+            matches!(
+                check_endpoint_ready(&client, &server.uri(), "llamacpp").await,
+                Readiness::NotReady(_)
+            ),
+            "a listed model that cannot serve one token is not ready"
+        );
+    }
+
+    /// And the positive: both stages answer, so the batch may use the split.
+    #[tokio::test]
+    async fn a_loaded_model_that_completes_is_ready() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(models_ok()))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{
+                    "index": 0,
+                    "finish_reason": "length",
+                    "message": { "role": "assistant", "content": "o" }
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::new();
+        assert_eq!(
+            check_endpoint_ready(&client, &server.uri(), "llamacpp").await,
+            Readiness::Ready
+        );
+    }
+
+    /// Nothing listening stays retryable — the split's RPC side needs ~10s of
+    /// Metal init before it binds, and writing that off would turn a slow
+    /// night into a no-split night.
+    #[tokio::test]
+    async fn nothing_listening_is_unreachable_not_not_ready() {
+        let server = MockServer::start().await;
+        let uri = server.uri();
+        drop(server);
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(500))
+            .build()
+            .unwrap();
+        assert!(
+            matches!(
+                check_endpoint_ready(&client, &uri, "llamacpp").await,
+                Readiness::Unreachable(_)
+            ),
+            "a closed port is worth another attempt inside the probe budget"
+        );
+    }
+
+    /// A live service that simply does not serve this route is not written
+    /// off: the per-call circuit still applies, and a 404 is not a dead split.
+    #[test]
+    fn a_json_404_is_inconclusive_not_not_ready() {
+        assert!(matches!(
+            classify_list_answer(404, r#"{"error":"no route"}"#, "data"),
+            Readiness::Inconclusive(_)
+        ));
+    }
+
+    #[test]
+    fn an_empty_model_list_is_not_ready() {
+        assert!(matches!(
+            classify_list_answer(200, r#"{"object":"list","data":[]}"#, "data"),
+            Readiness::NotReady(_)
+        ));
+    }
+
+    #[test]
+    fn a_completion_with_no_choices_is_not_ready() {
+        assert!(matches!(
+            classify_completion_answer(200, r#"{"choices":[]}"#),
+            Readiness::NotReady(_)
+        ));
+        assert_eq!(
+            classify_completion_answer(200, r#"{"choices":[{"index":0}]}"#),
+            Readiness::Ready
+        );
+    }
+
+    #[test]
+    fn foreign_bodies_are_named_for_what_they_are() {
+        assert!(foreign_body_reason("<!doctype html>").is_some_and(|why| why.contains("HTML")));
+        assert!(foreign_body_reason("").is_some());
+        assert!(foreign_body_reason("Loading model").is_some());
+        assert!(foreign_body_reason(r#"{"data":[]}"#).is_none());
+    }
+
+    /// The per-call side of the same fix: the error string
+    /// `call_llamacpp_streaming` produces for a 503 or an HTML body must route
+    /// to the not-ready arm (one line, gate tripped) AND still count as
+    /// "endpoint down" so the pass falls back instead of failing.
+    #[test]
+    fn the_not_ready_error_shape_trips_the_gate_and_still_falls_back() {
+        let loading = "llama-server not ready (503 Service Unavailable): {\"error\":{\"message\":\"Loading model\"}}";
+        assert!(is_endpoint_not_ready(loading));
+        assert!(is_endpoint_down(loading));
+
+        let html = "llama-server not ready (404 Not Found): <!doctype html>";
+        assert!(is_endpoint_not_ready(html));
+        assert!(is_endpoint_down(html));
+
+        // A genuine 5xx from a loaded model is still "down", not "not ready":
+        // it is worth the existing fallback path, not a settled skip.
+        assert!(!is_endpoint_not_ready(
+            "llama-server error (500): Compute error."
+        ));
+        // Our own bad request remains neither.
+        assert!(!is_endpoint_not_ready(
+            "llama-server error (400): invalid max_tokens"
+        ));
+        assert!(!is_endpoint_down(
+            "llama-server error (400): invalid max_tokens"
+        ));
     }
 }

@@ -246,6 +246,7 @@ pub fn set_idle() {
 // ── Dedicated-endpoint circuit (loopback connect storms) ─────────────
 //
 // Observed 2026-08-22: PERMAGENT_LIBRARIAN_ENDPOINT=http://127.0.0.1:8080
+// (the split serves :8081 since 2026-08-25 — :8080 is the Picker scanner)
 // with nothing listening produced 259 identical "llama-server unreachable"
 // warnings over 88 minutes. Each memory re-probed loopback, failed, and
 // silently fell back to qwen2.5:7b. A refused connection on this machine
