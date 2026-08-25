@@ -291,7 +291,7 @@ def cmd_run(args):
             "stdout_tail": out[-8000:],
             "stderr_tail": err[-8000:],
             "stream_evidence": stream_evidence(out, err),
-            "ledger": harvest_ledger(sname),
+            "ledger": harvest_ledger_settled(sname),
         }
         with open(rec_path, "w") as fh:
             json.dump(rec, fh, indent=2)
@@ -308,6 +308,19 @@ def _txt(v):
 
 
 DB = os.path.expanduser("~/.permagent/spectral/permagent.db")
+
+
+def harvest_ledger_settled(session_name, tries=6, delay=1.0):
+    """The CLI's last DB write can land after its process exits, so a harvest
+    that fires the instant `subprocess.run` returns sometimes reads an empty
+    ledger. Retry briefly rather than record a false zero."""
+    led = harvest_ledger(session_name)
+    for _ in range(tries - 1):
+        if led["db_found"]:
+            return led
+        time.sleep(delay)
+        led = harvest_ledger(session_name)
+    return led
 
 
 def resolve_session_id(con, session_name):
