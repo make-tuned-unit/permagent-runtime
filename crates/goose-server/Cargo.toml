@@ -55,6 +55,7 @@ native-tls = [
 ]
 
 [dependencies]
+async-trait = { workspace = true }
 permagent = { path = "../goose", default-features = false }
 permagent-mcp = { path = "../goose-mcp" }
 spectral = { workspace = true }
@@ -150,7 +151,6 @@ tower = "0.5.2"
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros"] }
 env-lock = { workspace = true }
-async-trait = { workspace = true }
 serial_test = { workspace = true }
 wiremock = { workspace = true }
 

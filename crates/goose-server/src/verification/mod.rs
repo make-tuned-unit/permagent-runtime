@@ -22,6 +22,7 @@ pub mod check_lint;
 pub mod checks;
 pub mod digest;
 pub mod placeholder_scan;
+pub mod review;
 pub mod verifier;
 
 use serde::{Deserialize, Serialize};
@@ -73,6 +74,12 @@ pub struct VerificationRecord {
     /// verdict on its own.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub check_lint_notes: Vec<String>,
+    /// The independent cross-family review that ran after the typed checks
+    /// passed — WHO reviewed, through which lenses, and what it found. `None`
+    /// for a record written before the gate existed, or for a verdict that
+    /// never reached the gate (a Fail is not re-reviewed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub independent_review: Option<review::IndependentReview>,
     pub started_at: String,
     pub finished_at: String,
     pub evidence_digest: EvidenceDigest,
@@ -129,6 +136,27 @@ pub async fn run_for_goal_with_cfg(
     goal_id: &str,
     ollama_base_url: &str,
     cfg: verifier::VerifierConfig,
+) -> Result<VerificationRecord, String> {
+    run_for_goal_with_review(
+        pool,
+        goal_id,
+        ollama_base_url,
+        cfg,
+        review::ReviewDeps::live(),
+    )
+    .await
+}
+
+/// As [`run_for_goal_with_cfg`] but with an injectable reviewer
+/// ([`review::ReviewDeps`]). The one seam that lets a test drive the WIRED gate
+/// — checks pass, reviewer rejects, goal does not complete — with no network
+/// call and no configured provider.
+pub async fn run_for_goal_with_review(
+    pool: &Pool<Sqlite>,
+    goal_id: &str,
+    ollama_base_url: &str,
+    cfg: verifier::VerifierConfig,
+    review_deps: review::ReviewDeps<'_>,
 ) -> Result<VerificationRecord, String> {
     let started_at = chrono::Utc::now().to_rfc3339();
 
@@ -438,8 +466,125 @@ pub async fn run_for_goal_with_cfg(
     record.panel = panel_verdicts;
     record.check_lint_notes = lint_report.notes;
 
+    // ── 4b. The independent cross-family review ──
+    //
+    // Everything above this line is the SAME model family judging itself: the
+    // worker wrote the code, wrote the checks that test it, and a local verifier
+    // graded the evidence the worker attached. That pipeline structurally cannot
+    // see the one failure that matters most — a test weakened until it passes —
+    // because a weakened test passes.
+    //
+    // So a PASS is not the end. It is the point at which the work has earned a
+    // second opinion from a model of a DIFFERENT family, reading the diff with
+    // five adversarial lenses and instructed to refute it. The gate's semantics
+    // are unchanged from the day they were written: only an APPROVE that states
+    // what it checked lets the Pass stand; everything else — uncertain, an
+    // un-evidenced sign-off, a refused spend, a reviewer that could not be found
+    // or could not be reached — blocks.
+    //
+    // Only a PASS reaches here. A Fail already has its answer, and paying a
+    // second model to re-confirm a failure buys nothing.
+    let mut review_corrective_plan: Option<String> = None;
+    if record.status == VerdictStatus::Pass {
+        let review_outcome = run_independent_review(
+            pool,
+            goal_id,
+            &card,
+            &meta,
+            project.as_ref(),
+            &cfg,
+            &record,
+            &review_deps,
+        )
+        .await;
+        if let Some(outcome) = review_outcome {
+            tracing::info!(
+                target: "permagentd::verification",
+                goal_id = %goal_id,
+                decision = outcome.decision.as_str(),
+                mode = outcome.mode.as_str(),
+                reviewer = outcome.reviewer.as_ref().map(|p| p.label()).unwrap_or_default(),
+                cross_family = outcome.cross_family,
+                findings = outcome.findings.len(),
+                "independent review complete"
+            );
+            if outcome.rubber_stamp {
+                tracing::warn!(
+                    target: "permagentd::verification",
+                    goal_id = %goal_id,
+                    "the independent reviewer approved a substantive change without naming a \
+                     single finding — recorded so a lazy sign-off is auditable"
+                );
+            }
+            if let Some(warning) = outcome.reviewer.as_ref().and_then(|p| p.warning.as_deref()) {
+                tracing::warn!(
+                    target: "permagentd::verification",
+                    goal_id = %goal_id,
+                    "review gate: {warning}"
+                );
+            }
+            match outcome.decision {
+                review::ReviewDecision::Rejected => {
+                    // The findings ARE the corrective plan: they go back with the
+                    // goal through the same refinement path a failing check uses,
+                    // so `retry_context_block` puts them in the next brief.
+                    review_corrective_plan = Some(outcome.corrective_plan());
+                    record.status = VerdictStatus::Fail;
+                    record.rationale = format!(
+                        "{}\n\nThe independent reviewer did not approve this work: {}",
+                        record.rationale, outcome.summary
+                    );
+                }
+                review::ReviewDecision::Blocked
+                | review::ReviewDecision::Escalated
+                | review::ReviewDecision::Unavailable => {
+                    // Default-to-reject. Untested is not failed and unreviewed is
+                    // not wrong — it is unconfirmed, so the record is Uncertain
+                    // and a person is asked.
+                    record.status = VerdictStatus::Uncertain;
+                    record.degraded_reason = Some(
+                        outcome
+                            .reason
+                            .clone()
+                            .unwrap_or_else(|| outcome.summary.clone()),
+                    );
+                }
+                review::ReviewDecision::Passed
+                | review::ReviewDecision::Skipped
+                | review::ReviewDecision::Disabled => {}
+            }
+            record.independent_review = Some(outcome);
+        }
+    }
+    // Re-render the digest's verifier line over the FINAL status, so the summary
+    // the UI reads can never say "confirmed" about a verdict the review lowered.
+    record.evidence_digest.verifier.status = record.status;
+    record.evidence_digest.verifier.degraded_reason = record.degraded_reason.clone();
+    record.evidence_digest.verifier_summary = digest::verifier_one_line(
+        &permagent::config::agent_identity::load_agent_config()
+            .primary
+            .display_name(),
+        record.status,
+        record.degraded_reason.as_deref(),
+    );
+    record.evidence_digest.independent_review = record
+        .independent_review
+        .as_ref()
+        .map(digest::review_detail_from);
+
     // ── 5. ONE atomic metadata write: only `dispatch_evidence.verdict` (#466) ──
     write_verification(pool, goal_id, &record).await?;
+
+    // ── 5a. A review that stopped the line hands the goal to a person ──
+    //
+    // Reuses the shape `hold_done`'s park arm established: dedupe against an
+    // already-open unblock decision, file, then park. Failure-tolerant and loud —
+    // this runs on a spawned task, where a swallowed error simply vanishes.
+    if let Some(outcome) = record.independent_review.as_ref() {
+        if outcome.decision.parks() {
+            park_for_review(pool, goal_id, &card, outcome).await;
+        }
+    }
 
     // ── 5b. The ladder learns from this run ──
     //
@@ -517,6 +662,14 @@ pub async fn run_for_goal_with_cfg(
     // runs on a spawned task where a swallowed error simply vanishes.
     if record.status == VerdictStatus::Fail {
         let meta_value = serde_json::Value::Object(meta.clone());
+        // A review reject carries its own corrective plan — the grounded lens
+        // findings, each citing where it was found. That is strictly better
+        // guidance than a check dump, so it wins when both exist.
+        let check_fail_output = match review_corrective_plan {
+            Some(plan) if check_fail_output.is_empty() => plan,
+            Some(plan) => format!("{check_fail_output}\n\n{plan}"),
+            None => check_fail_output,
+        };
         let refinement = if check_fail_output.is_empty() {
             Ok(permagent::goal_refinement::Applied::Skipped)
         } else {
@@ -687,6 +840,251 @@ fn placeholder_scan_applies(meta: &serde_json::Map<String, serde_json::Value>) -
             !permagent::agents::platform_extensions::orchestrator::NON_CODE_GOAL_TYPES.contains(&t)
         }
         None => true,
+    }
+}
+
+// ── The independent cross-family review ─────────────────────────────────────
+
+/// Assemble the gate's inputs from what verification already computed, choose a
+/// reviewer, and run it. `None` when the gate is turned off for this goal.
+///
+/// Everything here is failure-tolerant by construction: [`review::run_review`]
+/// answers with an outcome for every path, and every degraded path answers
+/// "not confirmed", never "done".
+#[allow(clippy::too_many_arguments)]
+async fn run_independent_review(
+    pool: &Pool<Sqlite>,
+    goal_id: &str,
+    card: &permagent::cards::Card,
+    meta: &serde_json::Map<String, serde_json::Value>,
+    project: Option<&permagent::projects::Project>,
+    cfg: &verifier::VerifierConfig,
+    record: &VerificationRecord,
+    deps: &review::ReviewDeps<'_>,
+) -> Option<review::IndependentReview> {
+    if !review::gate_enabled(
+        cfg.independent_review,
+        project.map(|p| &p.metadata_json),
+        meta,
+    ) {
+        tracing::info!(
+            target: "permagentd::verification",
+            goal_id = %goal_id,
+            "independent review is turned off for this goal — the verified pass stands unreviewed"
+        );
+        return None;
+    }
+
+    let diff = &record.evidence_digest.diff;
+    let changed_lines = (diff.insertions + diff.deletions) as usize;
+    let changed_paths: Vec<String> = diff.per_file.iter().map(|f| f.path.clone()).collect();
+
+    // The worktree the verifier just diffed — the same tree, so the patch the
+    // reviewer reads is the patch the checks ran against.
+    let working_dir: Option<PathBuf> = meta
+        .get("dispatch_evidence")
+        .and_then(|e| e.get("worktree_path"))
+        .and_then(|v| v.as_str())
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+        .or_else(|| {
+            project
+                .and_then(|p| p.root_path.as_ref())
+                .map(PathBuf::from)
+                .filter(|p| p.is_dir())
+        });
+
+    let goal_type = meta
+        .get("goal_type")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let mode = review::mode_for_goal(goal_type.as_deref());
+
+    // Code goals are reviewed on their patch. A prose goal's product IS its
+    // text, and the patch is that text, so the same read serves both; the
+    // worker's own claimed evidence backs it up when the range degraded.
+    let mut body =
+        review::diff_text(working_dir.as_deref(), &record_diff_range(meta, record)).await;
+    if body.trim().is_empty() && mode == review::ReviewMode::Rubric {
+        body = meta
+            .get("claimed_evidence")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+    }
+
+    let acceptance_criteria: Vec<String> = meta
+        .get("acceptance_criteria")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let worker = review::worker_model(pool, meta).await;
+    let selection = match &deps.selection {
+        Some(s) => s.clone(),
+        None => {
+            review::select_for_goal(
+                worker.as_ref().map(|(p, m)| (p.as_str(), m.as_str())),
+                changed_lines,
+            )
+            .await
+        }
+    };
+    let spend = match (&deps.spend, selection.pick()) {
+        (Some(s), _) => Some(s.clone()),
+        (None, Some(p)) => Some(review::spend_for_goal(pool, meta, p).await),
+        (None, None) => None,
+    };
+
+    let inputs = review::ReviewInputs {
+        goal_id: goal_id.to_string(),
+        title: card.title.clone(),
+        description: card.description.clone(),
+        acceptance_criteria,
+        goal_type,
+        changed_paths,
+        changed_lines,
+        body,
+        verify_output: passing_evidence_summary(record),
+        worker,
+        prior: review::IndependentReview::from_metadata(meta),
+    };
+
+    Some(review::run_review(&inputs, &selection, spend.as_ref(), deps.client).await)
+}
+
+/// The `git diff` range the analysis resolved. Re-derived from the durable
+/// commits on the card so the reviewer reads exactly the range the checks and
+/// the placeholder scan already read.
+fn record_diff_range(
+    meta: &serde_json::Map<String, serde_json::Value>,
+    record: &VerificationRecord,
+) -> Vec<String> {
+    let ev = meta.get("dispatch_evidence");
+    let get = |k: &str| {
+        ev.and_then(|e| e.get(k))
+            .and_then(|v| v.as_str())
+            .map(String::from)
+    };
+    match (get("work_base_commit"), get("head_commit")) {
+        (Some(base), Some(head)) => vec![base, head],
+        _ => record
+            .baseline_commit
+            .clone()
+            .map(|b| vec![b])
+            .unwrap_or_default(),
+    }
+}
+
+/// The passing evidence the reviewer is explicitly told to DISTRUST — checks
+/// that went green and the local verifier's rationale. The whole point of the
+/// TEST_INTEGRITY lens is to ask whether these passed honestly.
+fn passing_evidence_summary(record: &VerificationRecord) -> String {
+    let mut out = String::from(
+        "The automated checks below all passed and a local verifier graded the evidence as \
+         complete. Do not take that as proof — ask whether these checks could have failed.\n",
+    );
+    for c in &record.evidence_digest.checks {
+        out.push_str(&format!(
+            "\n[{:?}] {} ({})",
+            c.status, c.summary, c.check_type
+        ));
+        if let Some(lint) = &c.lint {
+            out.push_str(&format!("\n  NOTE: {lint}"));
+        }
+    }
+    if record.evidence_digest.checks.is_empty() {
+        out.push_str("\n(no automated checks were declared for this goal)");
+    }
+    if !record.rationale.trim().is_empty() {
+        out.push_str(&format!(
+            "\n\nLocal verifier rationale: {}",
+            record.rationale
+        ));
+    }
+    out
+}
+
+/// A review that stopped the line — blocked, escalated, or unavailable — hands
+/// the goal to a person. Same shape as `hold_done`'s park arm: dedupe against an
+/// already-open unblock decision, file, then park. Never throws: a filing
+/// failure must not also mean the goal stays open looking finished.
+async fn park_for_review(
+    pool: &Pool<Sqlite>,
+    goal_id: &str,
+    card: &permagent::cards::Card,
+    outcome: &review::IndependentReview,
+) {
+    let detail = match &outcome.reason {
+        Some(r) => format!("{}\n\n{}", outcome.summary, r),
+        None => outcome.summary.clone(),
+    };
+
+    match permagent::decisions::find_open_decision_for_goal(pool, goal_id, "unblock").await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            let headline: String = format!("\"{}\" was not confirmed by its reviewer", card.title)
+                .chars()
+                .take(permagent::decisions::MAX_HEADLINE_CHARS)
+                .collect();
+            match serde_json::to_value(permagent::decisions::UnblockPayload {
+                reason: permagent::decisions::UnblockReason::Stuck,
+                spent: None,
+                cap: None,
+            }) {
+                Ok(payload) => {
+                    if let Err(e) = permagent::decisions::create_decision(
+                        pool,
+                        permagent::decisions::NewDecision {
+                            kind: "unblock".to_string(),
+                            goal_id: Some(goal_id.to_string()),
+                            project_id: Some(card.project_id.clone()),
+                            headline: Some(headline),
+                            detail: Some(detail.clone()),
+                            payload,
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    {
+                        tracing::error!(
+                            target: "permagentd::verification",
+                            goal_id = %goal_id,
+                            "unreviewed goal could not file its unblock decision: {e}"
+                        );
+                    }
+                }
+                Err(e) => tracing::error!(
+                    target: "permagentd::verification",
+                    goal_id = %goal_id,
+                    "unblock payload could not be built: {e}"
+                ),
+            }
+        }
+        Err(e) => tracing::warn!(
+            target: "permagentd::verification",
+            goal_id = %goal_id,
+            "could not check for an open unblock decision (filing skipped): {e}"
+        ),
+    }
+
+    if let Err(e) = permagent::goal_transition::park_goal(
+        pool,
+        goal_id,
+        permagent::decisions::ACTOR_SYSTEM,
+        &detail,
+    )
+    .await
+    {
+        tracing::warn!(
+            target: "permagentd::verification",
+            goal_id = %goal_id,
+            "could not park the goal its reviewer did not confirm: {e}"
+        );
     }
 }
 
@@ -1095,6 +1493,7 @@ fn aggregate_record(
         degraded_reason,
         panel: Vec::new(),
         check_lint_notes: Vec::new(),
+        independent_review: None,
         started_at: started_at.to_string(),
         finished_at,
         evidence_digest,
@@ -1842,6 +2241,14 @@ mod tests {
         let mut meta = serde_json::Map::new();
         meta.insert("goal_state".to_string(), serde_json::json!("review"));
         meta.insert("attempt_count".to_string(), serde_json::json!(1));
+        // These fixtures predate the independent review and assert the typed
+        // pipeline's own verdict, so they use the goal-level knob to opt out —
+        // the same switch a project uses, not a test backdoor. The tests that
+        // exercise the gate set it back to true and inject a reviewer.
+        meta.insert(
+            review::REVIEW_GATE_KEY.to_string(),
+            serde_json::json!(false),
+        );
         if let Some(obj) = extra_meta.as_object() {
             for (k, v) in obj {
                 meta.insert(k.clone(), v.clone());
@@ -4089,6 +4496,397 @@ mod tests {
             command_row(&record).approval.as_ref().unwrap().decision,
             approval::GateDecision::Parked
         );
+    }
+
+    // ── The independent cross-family review, on the WIRED path ──────────────
+    //
+    // Each of these drives the real `run_for_goal_with_review` entry point: the
+    // typed checks really run, the local verifier really grades, and only then
+    // does the gate fire. The reviewer itself is canned, so no test in this tree
+    // ever makes a live model call.
+
+    struct CannedReviewer(&'static str);
+
+    #[async_trait::async_trait]
+    impl review::ReviewerClient for CannedReviewer {
+        async fn ask(&self, _: &str, _: &str, _: &str, _: &str) -> Result<String, String> {
+            Ok(self.0.to_string())
+        }
+    }
+
+    /// A cross-family reviewer, pre-resolved so the test needs no configured
+    /// provider and no model discovery.
+    fn cross_family_reviewer() -> permagent::cost_router::ReviewerSelection {
+        permagent::cost_router::ReviewerSelection::Reviewer(Box::new(
+            permagent::cost_router::ReviewerPick {
+                provider: "otherco".into(),
+                model: "other-1".into(),
+                family: "otherco".into(),
+                worker_family: "workerco".into(),
+                source: permagent::cost_router::ReviewerSource::BestFit,
+                cross_family: true,
+                cost_hint_per_mtok: 1.5,
+                input_usd_per_mtok: 0.5,
+                output_usd_per_mtok: 1.0,
+                priced: true,
+                is_local: false,
+                why: "cheapest capable different-family model".into(),
+                warning: None,
+            },
+        ))
+    }
+
+    /// A goal whose checks all pass and whose diff is a real, substantive
+    /// in-path change — the exact state that used to mean "done".
+    async fn reviewable_goal(repo: &Path, pool: &Pool<Sqlite>) -> permagent::cards::Card {
+        let baseline = init_repo(repo);
+        std::fs::write(
+            repo.join("src/lib.rs"),
+            "pub fn a() {}\npub fn b() {}\npub fn c() {}\npub fn d() {}\npub fn e() {}\n",
+        )
+        .unwrap();
+        let card = make_goal(
+            pool,
+            repo.to_str().unwrap(),
+            serde_json::json!({
+                "baseline_commit": baseline,
+                "declared_paths": ["src/**"],
+                "completion_checks": [
+                    {"type": "command_exit_zero", "cmd": "true", "timeout_secs": 30},
+                    {"type": "file_exists", "path": "src/lib.rs"}
+                ],
+                "acceptance_criteria": ["src/lib.rs gains function b"],
+                // The gate is default-ON; `make_goal` opts the legacy fixtures
+                // out, so a gate test opts back in explicitly.
+                "independent_review": true,
+                "worker_session_id": "sess-none"
+            }),
+        )
+        .await;
+        card
+    }
+
+    async fn run_gated(
+        pool: &Pool<Sqlite>,
+        goal_id: &str,
+        base_url: &str,
+        client: &dyn review::ReviewerClient,
+        spend: Option<permagent::cost_router::SpendDecision>,
+        selection: Option<permagent::cost_router::ReviewerSelection>,
+    ) -> VerificationRecord {
+        run_for_goal_with_review(
+            pool,
+            goal_id,
+            base_url,
+            verifier::VerifierConfig::default(),
+            review::ReviewDeps {
+                client,
+                selection: Some(selection.unwrap_or_else(cross_family_reviewer)),
+                spend: Some(spend.unwrap_or(permagent::cost_router::SpendDecision::Allow)),
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn checks_pass_but_the_reviewer_rejects_so_the_goal_does_not_complete() {
+        let repo = tempfile::tempdir().unwrap();
+        let pool = test_pool().await;
+        let card = reviewable_goal(repo.path(), &pool).await;
+        let (base_url, _h) = spawn_mock_ollama(MockMode::Respond(GOOD_PASS.to_string())).await;
+
+        let record = run_gated(
+            &pool,
+            &card.id,
+            &base_url,
+            &CannedReviewer(
+                "VERDICT: REQUEST_CHANGES\nCHECKED: the diff and its tests\n\
+                 FINDING TEST_INTEGRITY | the only assertion was deleted | src/lib.rs:3\n",
+            ),
+            None,
+            None,
+        )
+        .await;
+
+        // Every typed check passed and the local verifier said PASS...
+        assert!(
+            record
+                .check_results
+                .iter()
+                .all(|r| r.status == CheckStatus::Pass),
+            "the typed checks must all have passed for this test to mean anything"
+        );
+        // ...and the goal still does not complete.
+        assert_eq!(record.status, VerdictStatus::Fail);
+
+        let review = record.independent_review.as_ref().expect("a review ran");
+        assert_eq!(review.decision, review::ReviewDecision::Rejected);
+        assert!(!review.decision.allows_completion());
+        assert_eq!(review.findings.len(), 1);
+        // The reviewer is from a different family than the worker — the point.
+        assert!(review.cross_family);
+        assert_ne!(
+            review.reviewer.as_ref().unwrap().family,
+            review.reviewer.as_ref().unwrap().worker_family
+        );
+        // The lens findings are the corrective plan the next attempt is given.
+        let plan = review.corrective_plan();
+        assert!(plan.contains("TEST_INTEGRITY"), "{plan}");
+        assert!(plan.contains("src/lib.rs:3"), "{plan}");
+        // And the card carries it all for the UI.
+        let detail = record
+            .evidence_digest
+            .independent_review
+            .as_ref()
+            .expect("digest carries the review");
+        assert_eq!(detail.decision, "rejected");
+        assert!(detail.reviewer.contains("otherco"));
+        assert!(detail.lenses.contains(&"TEST_INTEGRITY".to_string()));
+    }
+
+    #[tokio::test]
+    async fn an_evidenced_cross_family_approval_lets_the_pass_stand() {
+        let repo = tempfile::tempdir().unwrap();
+        let pool = test_pool().await;
+        let card = reviewable_goal(repo.path(), &pool).await;
+        let (base_url, _h) = spawn_mock_ollama(MockMode::Respond(GOOD_PASS.to_string())).await;
+
+        let record = run_gated(
+            &pool,
+            &card.id,
+            &base_url,
+            &CannedReviewer("VERDICT: APPROVE\nCHECKED: every new fn and its callers"),
+            None,
+            None,
+        )
+        .await;
+
+        assert_eq!(record.status, VerdictStatus::Pass);
+        let review = record.independent_review.as_ref().expect("a review ran");
+        assert_eq!(review.decision, review::ReviewDecision::Passed);
+        assert!(review.cross_family);
+        assert!(
+            review.estimated_cost_usd.is_some(),
+            "a priced review is costed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_spend_refusal_lands_uncertain_and_parked_never_pass() {
+        let repo = tempfile::tempdir().unwrap();
+        let pool = test_pool().await;
+        let card = reviewable_goal(repo.path(), &pool).await;
+        let (base_url, _h) = spawn_mock_ollama(MockMode::Respond(GOOD_PASS.to_string())).await;
+
+        let record = run_gated(
+            &pool,
+            &card.id,
+            &base_url,
+            &CannedReviewer("VERDICT: APPROVE\nCHECKED: everything"),
+            Some(permagent::cost_router::SpendDecision::Refuse {
+                reason: "the task budget has reached its gate at $5.00".into(),
+            }),
+            None,
+        )
+        .await;
+
+        assert_eq!(record.status, VerdictStatus::Uncertain);
+        let review = record.independent_review.as_ref().expect("a review ran");
+        assert_eq!(review.decision, review::ReviewDecision::Unavailable);
+        assert!(review.decision.parks());
+        // Parked, with a decision filed asking the person about it.
+        let decision =
+            permagent::decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+                .await
+                .unwrap();
+        assert!(decision.is_some(), "a refused review must reach the inbox");
+    }
+
+    #[tokio::test]
+    async fn no_cross_family_reviewer_also_lands_uncertain_and_parked() {
+        let repo = tempfile::tempdir().unwrap();
+        let pool = test_pool().await;
+        let card = reviewable_goal(repo.path(), &pool).await;
+        let (base_url, _h) = spawn_mock_ollama(MockMode::Respond(GOOD_PASS.to_string())).await;
+
+        let record = run_gated(
+            &pool,
+            &card.id,
+            &base_url,
+            &CannedReviewer("VERDICT: APPROVE\nCHECKED: everything"),
+            None,
+            Some(permagent::cost_router::ReviewerSelection::Unavailable {
+                reason: "only one model family is configured".into(),
+            }),
+        )
+        .await;
+
+        assert_eq!(record.status, VerdictStatus::Uncertain);
+        assert_eq!(
+            record.independent_review.as_ref().unwrap().decision,
+            review::ReviewDecision::Unavailable
+        );
+    }
+
+    #[tokio::test]
+    async fn the_gate_can_be_turned_off_per_project() {
+        let repo = tempfile::tempdir().unwrap();
+        let pool = test_pool().await;
+        let baseline = init_repo(repo.path());
+        std::fs::write(
+            repo.path().join("src/lib.rs"),
+            "pub fn a() {}\npub fn b() {}\npub fn c() {}\npub fn d() {}\n",
+        )
+        .unwrap();
+        // No goal-level key at all — the PROJECT's setting is what decides.
+        let card = make_goal_without_gate_key(
+            &pool,
+            repo.path().to_str().unwrap(),
+            serde_json::json!({
+                "baseline_commit": baseline,
+                "declared_paths": ["src/**"],
+                // Two checks on purpose: a lone existence check is an
+                // "existence-only ledger", which the check lint clamps to
+                // Uncertain — the verdict would never reach the gate, and the
+                // test would pass for the wrong reason.
+                "completion_checks": [
+                    {"type": "command_exit_zero", "cmd": "true", "timeout_secs": 30},
+                    {"type": "file_exists", "path": "src/lib.rs"}
+                ],
+                "worker_session_id": "sess-none"
+            }),
+            false,
+        )
+        .await;
+        let (base_url, _h) = spawn_mock_ollama(MockMode::Respond(GOOD_PASS.to_string())).await;
+
+        let record = run_gated(
+            &pool,
+            &card.id,
+            &base_url,
+            &CannedReviewer("VERDICT: REQUEST_CHANGES\nCHECKED: x\nFINDING SPEC | no | a.rs:1"),
+            None,
+            None,
+        )
+        .await;
+
+        // The reviewer would have rejected — it was never asked.
+        assert_eq!(record.status, VerdictStatus::Pass);
+        assert!(record.independent_review.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_non_code_goal_is_rubric_graded_instead_of_finishing_unjudged() {
+        let repo = tempfile::tempdir().unwrap();
+        let pool = test_pool().await;
+        let baseline = init_repo(repo.path());
+        std::fs::write(
+            repo.path().join("README.md"),
+            "# Brief\n\nTBD\n\nMore TBD.\n",
+        )
+        .unwrap();
+        let card = make_goal(
+            &pool,
+            repo.path().to_str().unwrap(),
+            serde_json::json!({
+                "baseline_commit": baseline,
+                "goal_type": permagent::agents::platform_extensions::orchestrator::NON_CODE_GOAL_TYPES[0],
+                "declared_paths": ["**"],
+                // As above: two checks, so the ledger is not existence-only and
+                // the verdict actually reaches the gate.
+                "completion_checks": [
+                    {"type": "command_exit_zero", "cmd": "true", "timeout_secs": 30},
+                    {"type": "file_exists", "path": "README.md"}
+                ],
+                "acceptance_criteria": ["names the three markets", "every figure is sourced"],
+                "independent_review": true,
+                "worker_session_id": "sess-none"
+            }),
+        )
+        .await;
+        let (base_url, _h) = spawn_mock_ollama(MockMode::Respond(GOOD_PASS.to_string())).await;
+
+        let record = run_gated(
+            &pool,
+            &card.id,
+            &base_url,
+            &CannedReviewer(
+                "VERDICT: REQUEST_CHANGES\nCHECKED: the brief against both criteria\n\
+                 FINDING PLACEHOLDER | the body is still a stub | \"TBD\"\n\
+                 FINDING COMPLETENESS | no market is named | criterion 1\n",
+            ),
+            None,
+            None,
+        )
+        .await;
+
+        // A doc-only change would SKIP the code review — the prose rubric does not.
+        let review = record
+            .independent_review
+            .as_ref()
+            .expect("a rubric review ran");
+        assert_eq!(review.mode, review::ReviewMode::Rubric);
+        assert_eq!(review.decision, review::ReviewDecision::Rejected);
+        assert_eq!(review.findings.len(), 2);
+        assert!(review.lenses.contains(&"CITATION".to_string()));
+        assert_eq!(record.status, VerdictStatus::Fail);
+    }
+
+    /// `make_goal`, but leaving the goal-level review key unset so the PROJECT's
+    /// setting is the one under test.
+    async fn make_goal_without_gate_key(
+        pool: &Pool<Sqlite>,
+        root_path: &str,
+        extra_meta: serde_json::Value,
+        project_review_on: bool,
+    ) -> permagent::cards::Card {
+        let project = permagent::projects::create_project(
+            pool,
+            permagent::projects::CreateProject {
+                name: "Verify Test".to_string(),
+                root_path: Some(root_path.to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        permagent::projects::update_project(
+            pool,
+            &project.id,
+            permagent::projects::UpdateProject {
+                metadata_json: Some(
+                    serde_json::json!({ review::REVIEW_GATE_KEY: project_review_on }),
+                ),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let mut meta = serde_json::Map::new();
+        meta.insert("goal_state".to_string(), serde_json::json!("review"));
+        meta.insert("attempt_count".to_string(), serde_json::json!(1));
+        if let Some(obj) = extra_meta.as_object() {
+            for (k, v) in obj {
+                meta.insert(k.clone(), v.clone());
+            }
+        }
+
+        permagent::cards::create_card(
+            pool,
+            permagent::cards::CreateCard {
+                project_id: project.id.clone(),
+                title: "Toy goal".to_string(),
+                description: Some("Make src/lib.rs have function b".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: None,
+                created_by: Some("user".to_string()),
+                metadata_json: Some(serde_json::Value::Object(meta)),
+            },
+        )
+        .await
+        .unwrap()
     }
 }
 

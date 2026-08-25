@@ -204,6 +204,24 @@ export interface VerifierDetail {
   degraded_reason?: string | null;
 }
 
+/// The independent cross-family review that runs after the typed checks pass.
+/// Server shape: crates/goose-server/src/verification/digest.rs.
+export interface IndependentReviewDetail {
+  decision: 'passed' | 'rejected' | 'blocked' | 'escalated' | 'unavailable' | 'skipped' | 'disabled';
+  mode: 'code' | 'rubric';
+  one_line: string;
+  reviewer: string;
+  reviewer_family: string;
+  worker_family: string;
+  cross_family: boolean;
+  source: string;
+  lenses: string[];
+  checked: string;
+  findings: string[];
+  estimated_cost_usd?: number | null;
+  reason?: string | null;
+}
+
 export interface EvidenceDigestData {
   version: number;
   goal_id: string;
@@ -217,6 +235,7 @@ export interface EvidenceDigestData {
   diff: DiffSummary;
   out_of_path_files: string[];
   verifier: VerifierDetail;
+  independent_review?: IndependentReviewDetail | null;
   started_at: string;
   finished_at: string;
 }

@@ -49,6 +49,7 @@ pub mod mesh;
 pub mod packs;
 pub mod recommend;
 pub mod review_gate;
+pub mod reviewer_pick;
 pub mod role_map;
 pub mod snapshot;
 pub mod tier;
@@ -104,6 +105,12 @@ pub use review_gate::{
     reviewer_dispatch, reviewer_routing, FileClass, GateDecision, ReviewFinding, ReviewLens,
     ReviewOutcome, ReviewTrigger, ReviewerDispatch, ReviewerRouting, Verdict as ReviewVerdict,
     REVIEWER_DIVERSITY_WARNING, REVIEWER_EXTENSIONS, REVIEW_ESCALATE_AT, REVIEW_SYSTEM_PROMPT,
+};
+pub use review_gate::{build_rubric_prompt, REVIEW_RUBRIC_SYSTEM_PROMPT};
+pub use reviewer_pick::{
+    family_of, reviewer_spend_gate, select_reviewer, ReviewerPick, ReviewerSelection,
+    ReviewerSource, SpendDecision, NO_REVIEWER_AVAILABLE, REVIEWER_MIN_ORCHESTRATION,
+    REVIEWER_STRONG_ORCHESTRATION, SMALL_DIFF_LINES,
 };
 pub use role_map::{
     cache_guard_should_warn, clear_role_model, configured as configured_role_models, derive_role,

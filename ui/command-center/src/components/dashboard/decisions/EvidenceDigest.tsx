@@ -15,7 +15,7 @@ import { useEffect, useState } from 'react';
 import { font, radius, ease } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { decisionsClient } from './client';
-import type { DispatchEvidenceData, EvidenceDigestData } from './types';
+import type { DispatchEvidenceData, EvidenceDigestData, IndependentReviewDetail } from './types';
 import { formatUsd } from './format';
 
 export function EvidenceDigest({ projectId, goalId }: { projectId: string; goalId: string }) {
@@ -138,6 +138,9 @@ function DigestView({ digest }: { digest: EvidenceDigestData }) {
   const cs = digest.checks_summary;
   const checksOk = cs.total_count > 0 && cs.passed_count === cs.total_count;
   const verifierOk = digest.verifier.status === 'pass' && !digest.verifier.degraded_reason;
+  // The cross-family second opinion. Absent on records written before the gate
+  // existed, and on verdicts that never reached it.
+  const review = digest.independent_review ?? null;
 
   // Dollars first; when no rate is configured the server sends cost_usd=null
   // with an explanatory note (digest.rs:165-191).
@@ -158,6 +161,7 @@ function DigestView({ digest }: { digest: EvidenceDigestData }) {
       }}>
         <SummaryRow ok={checksOk} text={cs.one_line} />
         <SummaryRow ok={verifierOk} text={digest.verifier_summary} />
+        {review && <SummaryRow ok={review.decision === 'passed' && review.cross_family} text={review.one_line} />}
         <div style={{ color: colors.text, fontWeight: 500 }}>
           {costLine}
         </div>
@@ -192,6 +196,13 @@ function DigestView({ digest }: { digest: EvidenceDigestData }) {
           <Section label="VERIFIER" color={colors.codeText} />
           {verifierText(digest)}
           {'\n\n'}
+          {review && (
+            <>
+              <Section label="INDEPENDENT REVIEW" color={colors.codeText} />
+              {reviewText(review)}
+              {'\n\n'}
+            </>
+          )}
           <Section label="COST" color={colors.codeText} />
           {costText(digest)}
         </pre>
@@ -226,6 +237,25 @@ function verifierText(d: EvidenceDigestData): string {
   const lines = [`status: ${v.status} (model: ${v.model})`];
   if (v.degraded_reason) lines.push(`degraded: ${v.degraded_reason}`);
   if (v.rationale) lines.push(v.rationale);
+  return lines.join('\n');
+}
+
+// Who reviewed, from which family, through which lenses, and what they found.
+// Joins server strings; adds no claim the server did not make — in particular it
+// never calls a same-family review independent.
+function reviewText(r: IndependentReviewDetail): string {
+  const lines = [
+    `decision: ${r.decision} (${r.mode} rubric)`,
+    r.reviewer
+      ? `reviewer: ${r.reviewer} [${r.source}] — family ${r.reviewer_family || '?'} vs worker ${r.worker_family || '?'}${r.cross_family ? '' : ' (SAME family: not an independent cross-family review)'}`
+      : 'reviewer: none could be chosen',
+  ];
+  if (r.lenses.length > 0) lines.push(`lenses: ${r.lenses.join(', ')}`);
+  if (r.checked) lines.push(`checked: ${r.checked}`);
+  if (r.estimated_cost_usd != null) lines.push(`estimated cost: ${formatUsd(r.estimated_cost_usd)}`);
+  else if (r.reviewer) lines.push('estimated cost: unknown (the reviewer model has no published price)');
+  if (r.reason) lines.push(`reason: ${r.reason}`);
+  if (r.findings.length > 0) lines.push('', 'Findings:', ...r.findings.map(f => `- ${f}`));
   return lines.join('\n');
 }
 
