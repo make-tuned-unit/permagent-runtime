@@ -75,8 +75,9 @@ pub use cheap::{
     reference_cost_for, CheapCandidate, CheapLadder, PricedCandidate,
 };
 pub use delegate::{
-    decide_delegate_model, delegate_routing, escalation_allowed as delegate_escalation_allowed,
-    DelegateRouting, DelegateSource, EscalationRefusal, KEY_ALLOW_ESCALATION,
+    decide_delegate_model, delegate_routing, delegate_routing_live,
+    escalation_allowed as delegate_escalation_allowed, DelegateRouting, DelegateSource,
+    EscalationRefusal, KEY_ALLOW_ESCALATION,
 };
 pub use derived::{
     config_key_affects_derived_map, derive_role_map, derived_role_map, invalidate_derived_role_map,

@@ -349,7 +349,7 @@ mod tests {
 
     // ── Explicit pins (the delegate seam) ──────────────────────────────────
 
-    fn reader(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> + '_ {
+    fn reader<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
         move |k: &str| {
             pairs
                 .iter()

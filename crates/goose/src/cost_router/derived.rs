@@ -565,16 +565,28 @@ mod tests {
                 );
             }
         }
-        // Positive control: the delegated-work seams DO consult it, so the
-        // assertion above is not vacuous.
-        for p in [
-            root.join("src/agents/platform_extensions/orchestrator.rs"),
-            root.join("src/agents/platform_extensions/summon.rs"),
+        // Positive control: the delegated-work seams DO reach the map, so the
+        // assertion above is not vacuous. Each is named with the symbol that
+        // carries it there — `summon` consults the map through
+        // `cost_router::delegate`, which gates the pick on the operator's pins and
+        // the escalation knob rather than taking it raw (see that module), so the
+        // literal moved one level down and the control follows it.
+        for (p, needle) in [
+            (
+                root.join("src/agents/platform_extensions/orchestrator.rs"),
+                "derived_role_map",
+            ),
+            (
+                root.join("src/agents/platform_extensions/summon.rs"),
+                "delegate_routing_live",
+            ),
+            (root.join("src/cost_router/delegate.rs"), "derived_role_map"),
         ] {
             let src = std::fs::read_to_string(&p).unwrap();
             assert!(
-                src.contains("derived_role_map"),
-                "{} is a delegated-work seam and must route through the derived map",
+                src.contains(needle),
+                "{} is a delegated-work seam and must route through the derived map \
+                 (expected `{needle}`)",
                 p.display()
             );
         }
