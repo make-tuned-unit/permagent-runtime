@@ -2,9 +2,9 @@
  * orbDrive — the orb's per-frame band targets, extracted from VoiceOrb.tsx so
  * the state→motion mapping is testable without a canvas or an audio graph.
  *
- * The contract (Jesse, 2026-08-25): while THEY speak the orb pulses with their
- * voice; while the AGENT speaks it changes shape with the speech; and the wait
- * in between must look like neither. The three states have to read as three
+ * The contract (user report, 2026-08-25): while THEY speak the orb pulses with
+ * their voice; while the AGENT speaks it changes shape with the speech; and the
+ * wait in between must look like neither. The three states have to read as three
  * different KINDS of motion, not one shape at three speeds.
  *
  * Bands map onto geometry in VoiceOrb.tsx: `low` → `amp`, the magnitude of the

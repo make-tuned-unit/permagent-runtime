@@ -1,6 +1,6 @@
 # Voice latency and the Orb — forensics, research, plan (2026-08-25)
 
-Jesse's report, 2026-08-25 morning (iPhone, hands-free): (1) waiting for the agent
+The user's report, 2026-08-25 morning (iPhone, hands-free): (1) waiting for the agent
 is too long; (2) the app sits on "listening" too long after they stop talking;
 (3) the Orb should PULSE with their voice while they speak, and go DYNAMIC —
 changing shape — while the agent speaks.
@@ -36,7 +36,7 @@ starts: iOS holds `listening` for `quickSilenceMs = 800 ms` (utterances with
 — `ios/PermagentMobile/PermagentMobile/VoiceVAD.swift:44-56`. Most real asks that
 morning were 3.3–17.1 s of recorded audio, i.e. **the 1400 ms branch**.
 
-So the honest end-to-end number Jesse experienced is:
+So the honest end-to-end number the user experienced is:
 
 ```
 user stops talking
@@ -173,7 +173,7 @@ is the reasoning model, and nothing on the client can touch it.
 4. **Orb — thinking.** A different KIND of motion: `low` (shape) held flat so it
    does not pulse, `mid` (spin) pinned high so it visibly turns. With a 7.4 s
    think in every turn, a thinking state that looks like listening is very
-   plausibly part of what Jesse read as "stuck on listening".
+   plausibly part of what the user read as "stuck on listening".
 5. **Orb — speaking.** The residual is a floor rather than a blend, so the shape
    follows the real TTS envelope; `amp` is now monotonic in the envelope at every
    phase. Reduce Motion is honoured on both surfaces — and the web's single
@@ -184,11 +184,11 @@ is the reasoning model, and nothing on the client can touch it.
 7. **Measurement.** `scripts/voice-latency-report.py` parses the daemon's existing
    TIMING lines into the table in §1; before/after goes in the PR body.
 
-**Needs Jesse's decision (not in this PR):**
+**Needs the user's decision (not in this PR):**
 8. **Route the voice turn to `MiniMax-M2.7-highspeed`** (same model family, lower
    latency, already in the provider manifest) or to a small non-reasoning model,
    *for the voice path only*. This is the only lever on the 7 s, and it is a
-   quality/cost/latency trade-off Jesse owns — the routing principle is best-fit,
+   quality/cost/latency trade-off the user owns — the routing principle is best-fit,
    not cheapest-first.
 9. **Trim the voice turn's tool surface.** 124 tool schemas (~39 k tokens) ride on
    every spoken "how are you". They are cached, so this is a smaller win than it

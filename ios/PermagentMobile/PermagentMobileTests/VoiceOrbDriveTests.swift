@@ -1,6 +1,6 @@
 import XCTest
 
-/// The orb's contract (Jesse, 2026-08-25): while THEY speak it pulses with
+/// The orb's contract (user report, 2026-08-25): while THEY speak it pulses with
 /// their voice; while the AGENT speaks it changes shape with the speech; and
 /// the wait in between must not look like either of those. These tests pin
 /// each of those three claims, and the level scales they have to hold at:

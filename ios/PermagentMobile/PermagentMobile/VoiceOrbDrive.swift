@@ -1,10 +1,10 @@
 // VoiceOrbDrive — the orb's motion targets, extracted so they can be tested
 // without a Canvas.
 //
-// The contract the orb is meant to keep (Jesse, 2026-08-25): while THEY speak
-// the orb pulses with their voice; while the AGENT speaks it goes dynamic and
-// changes shape with the speech. The three states must read as three different
-// KINDS of motion, not one shape at three speeds — that is the convention every
+// The contract the orb is meant to keep (user report, 2026-08-25): while THEY
+// speak the orb pulses with their voice; while the AGENT speaks it goes dynamic
+// and changes shape with the speech. The three states must read as three
+// different KINDS of motion, not one shape at three speeds — the convention every
 // shipped voice orb follows, and it is what makes a long think tolerable.
 //
 // Bands map onto geometry in VoiceOrbView: `low` → `amp`, the magnitude of the
@@ -17,9 +17,9 @@
 // lands around 0.10–0.60. That is why the old listening floor was wrong: its
 // synthetic breath sat at 0.16–0.27, i.e. ON TOP of ordinary speech, so
 // `max(breath, level)` returned the breath almost every frame and the orb
-// pulsed to a metronome rather than to Jesse. The floor now sits at 0.05–0.08,
-// safely BELOW speech, so the pulse is the voice and the floor only catches
-// true silence.
+// pulsed to a metronome rather than to the speaker. The floor now sits at
+// 0.05–0.08, safely BELOW speech, so the pulse is the voice and the floor only
+// catches true silence.
 
 import Foundation
 
