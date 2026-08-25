@@ -476,6 +476,18 @@ mod tests {
         assert_eq!(report.points_added, 2);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
 
+        // `store::mark_collected` stamps `last_collected_at` from the real
+        // clock, not the `now` this test injects, so the simulated timeline
+        // has to be pinned here. Without this, "eight days on" below is
+        // measured from `Utc::now()` to a fixed 2026-09-01, which crosses the
+        // seven-day mark at 09:00 UTC and turns the test into a time bomb.
+        sqlx::query("UPDATE forecaster_series SET last_collected_at = ? WHERE id = ?")
+            .bind(now.to_rfc3339())
+            .bind(&approved.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
         // Same day again: weekly cadence, so nothing is due and nothing is
         // fetched. The tick is not the cadence.
         let report = collect_due(&pool, &fetcher, &knobs, now).await;
