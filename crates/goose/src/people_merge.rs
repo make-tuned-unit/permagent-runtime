@@ -169,7 +169,10 @@ pub fn score_pair(a: &Person, b: &Person) -> (f32, Vec<String>) {
             // 0.5 similarity → 0.55, 1.0 → 0.85. Never enough on its own to
             // clear a same-email pair, always enough to surface for review.
             score = score.max(0.55 + (sim - 0.5) * 0.6);
-            reasons.push(format!("similar name ({:.0}% of words shared)", sim * 100.0));
+            reasons.push(format!(
+                "similar name ({:.0}% of words shared)",
+                sim * 100.0
+            ));
         }
     }
 
@@ -177,9 +180,7 @@ pub fn score_pair(a: &Person, b: &Person) -> (f32, Vec<String>) {
     // a pair that already has a name/contact signal, and adds nothing to a
     // pair that has none.
     let same_company = match (a.company.as_deref(), b.company.as_deref()) {
-        (Some(x), Some(y)) if !x.trim().is_empty() => {
-            x.trim().eq_ignore_ascii_case(y.trim())
-        }
+        (Some(x), Some(y)) if !x.trim().is_empty() => x.trim().eq_ignore_ascii_case(y.trim()),
         _ => false,
     };
     if same_company && score > 0.0 {
@@ -432,7 +433,11 @@ async fn field_and_edge_plan(
     kept.sort();
     kept.dedup();
 
-    let edges = brain.person_edges(dup_hex).await.map(|e| e.len()).unwrap_or(0);
+    let edges = brain
+        .person_edges(dup_hex)
+        .await
+        .map(|e| e.len())
+        .unwrap_or(0);
     (moves, kept, edges)
 }
 
@@ -645,11 +650,13 @@ pub async fn merge_people(
     .await
     .map_err(|e| e.to_string())?;
     // `MAX(x, '')` yields '' when both are empty; normalise that back to NULL.
-    sqlx::query("UPDATE people SET last_contact_at = NULL WHERE entity_uuid = ? AND last_contact_at = ''")
-        .bind(survivor_uuid)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| e.to_string())?;
+    sqlx::query(
+        "UPDATE people SET last_contact_at = NULL WHERE entity_uuid = ? AND last_contact_at = ''",
+    )
+    .bind(survivor_uuid)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
 
     tx.commit().await.map_err(|e| e.to_string())?;
 
@@ -665,9 +672,12 @@ pub async fn merge_people(
             Ok(edges) => {
                 let db = crate::config::paths::Paths::brain_dir().join("graph.sqlite");
                 for e in &edges {
-                    if let Err(err) =
-                        crate::project_graph::delete_graph_triple(&db, &e.from_id, &e.to_id, &e.predicate)
-                    {
+                    if let Err(err) = crate::project_graph::delete_graph_triple(
+                        &db,
+                        &e.from_id,
+                        &e.to_id,
+                        &e.predicate,
+                    ) {
                         tracing::warn!(
                             target: "permagent::people_merge",
                             error = %err,
@@ -849,13 +859,14 @@ pub async fn undo_merge(
     //    REPLACE` resolves a UNIQUE conflict by DELETING the conflicting row —
     //    so a person created under that slug since the merge would be silently
     //    destroyed by the undo. Refuse instead, and say what is in the way.
-    let squatter: Option<String> =
-        sqlx::query_scalar("SELECT entity_uuid FROM people WHERE canonical_id = ? AND entity_uuid != ?")
-            .bind(&dup.canonical_id)
-            .bind(&dup.entity_uuid)
-            .fetch_optional(pool)
-            .await
-            .map_err(|e| e.to_string())?;
+    let squatter: Option<String> = sqlx::query_scalar(
+        "SELECT entity_uuid FROM people WHERE canonical_id = ? AND entity_uuid != ?",
+    )
+    .bind(&dup.canonical_id)
+    .bind(&dup.entity_uuid)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
     if let Some(other) = squatter {
         // Put the aliases back — this undo is not happening.
         for (kind, value) in alias_pairs_from_snapshot(dup) {
@@ -957,19 +968,33 @@ pub async fn undo_merge(
             if e.survivor_already_had_it {
                 continue;
             }
-            let new_from = if e.from_id == dup_hex { surv_hex } else { &e.from_id };
-            let new_to = if e.to_id == dup_hex { surv_hex } else { &e.to_id };
+            let new_from = if e.from_id == dup_hex {
+                surv_hex
+            } else {
+                &e.from_id
+            };
+            let new_to = if e.to_id == dup_hex {
+                surv_hex
+            } else {
+                &e.to_id
+            };
             let _ = crate::project_graph::delete_graph_triple(&db, new_from, new_to, &e.predicate);
         }
     }
 
-    sqlx::query("UPDATE person_merge_log SET undone_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?")
-        .bind(merge_id)
-        .execute(pool)
-        .await
-        .map_err(|e| e.to_string())?;
+    sqlx::query(
+        "UPDATE person_merge_log SET undone_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?",
+    )
+    .bind(merge_id)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
 
-    crate::events::emit(crate::events::person_changed("", &dup.entity_uuid, "created"));
+    crate::events::emit(crate::events::person_changed(
+        "",
+        &dup.entity_uuid,
+        "created",
+    ));
     crate::events::emit(crate::events::person_changed("", &survivor_uuid, "updated"));
 
     Ok(UndoReport {
@@ -1167,7 +1192,10 @@ pub async fn names_for(pool: &Pool<Sqlite>, person: &Person) -> Vec<String> {
     .await
     .unwrap_or_default();
     for n in absorbed {
-        if !names.iter().any(|existing| existing.eq_ignore_ascii_case(&n)) {
+        if !names
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(&n))
+        {
             names.push(n);
         }
     }
@@ -1187,10 +1215,7 @@ pub struct MergeLogEntry {
     pub created_at: String,
 }
 
-pub async fn list_merge_log(
-    pool: &Pool<Sqlite>,
-    limit: i64,
-) -> Result<Vec<MergeLogEntry>, String> {
+pub async fn list_merge_log(pool: &Pool<Sqlite>, limit: i64) -> Result<Vec<MergeLogEntry>, String> {
     let rows = sqlx::query(
         "SELECT id, kind, survivor_uuid, duplicate_uuid, summary, undone_at, created_at \
          FROM person_merge_log ORDER BY created_at DESC, rowid DESC LIMIT ?",
@@ -1255,12 +1280,7 @@ mod tests {
 
     /// Insert a meeting row directly. `create_meeting` write-throughs to
     /// Calendar.app; this test cares about the row, not the calendar.
-    async fn a_meeting(
-        pool: &Pool<Sqlite>,
-        entity_uuid: &str,
-        id: &str,
-        follow_up: Option<&str>,
-    ) {
+    async fn a_meeting(pool: &Pool<Sqlite>, entity_uuid: &str, id: &str, follow_up: Option<&str>) {
         sqlx::query(
             "INSERT INTO person_meetings \
                (id, entity_uuid, title, starts_at, notes, follow_up_at, follow_up_done) \
@@ -1296,7 +1316,10 @@ mod tests {
             normalize_phone("+1 (902) 555-0134").as_deref(),
             Some("9025550134")
         );
-        assert_eq!(normalize_phone("902-555-0134").as_deref(), Some("9025550134"));
+        assert_eq!(
+            normalize_phone("902-555-0134").as_deref(),
+            Some("9025550134")
+        );
         // Too short to be a phone number at all.
         assert_eq!(normalize_phone("555"), None);
     }
@@ -1345,8 +1368,8 @@ mod tests {
         assert_eq!(out[1].reasons, vec!["identical name".to_string()]);
         // Sabaa Quao pairs with nobody.
         assert!(
-            !out.iter().any(|s| s.survivor_uuid == e.entity_uuid
-                || s.duplicate_uuid == e.entity_uuid),
+            !out.iter()
+                .any(|s| s.survivor_uuid == e.entity_uuid || s.duplicate_uuid == e.entity_uuid),
             "a stranger was suggested as a duplicate: {out:#?}"
         );
         // Exactly the two real pairs.
@@ -1427,11 +1450,20 @@ mod tests {
             .iter()
             .any(|a| a == &format!("entity_uuid: {}", dup.entity_uuid)));
         assert!(preview.aliases.iter().any(|a| a == "display_name: Mel S"));
-        assert!(!preview.retained.is_empty(), "the preview must state its limits");
+        assert!(
+            !preview.retained.is_empty(),
+            "the preview must state its limits"
+        );
 
         // Nothing moved.
-        assert_eq!(meeting_owner(&pool, "m1").await.as_deref(), Some(dup.entity_uuid.as_str()));
-        assert!(people::get_by_uuid(&pool, &dup.entity_uuid).await.unwrap().is_some());
+        assert_eq!(
+            meeting_owner(&pool, "m1").await.as_deref(),
+            Some(dup.entity_uuid.as_str())
+        );
+        assert!(people::get_by_uuid(&pool, &dup.entity_uuid)
+            .await
+            .unwrap()
+            .is_some());
     }
 
     #[tokio::test]
@@ -1535,7 +1567,10 @@ mod tests {
 
         // Aliases recorded, so the dead id and the absorbed name still resolve.
         assert_eq!(
-            resolve_alias(&pool, &dup.entity_uuid).await.unwrap().as_deref(),
+            resolve_alias(&pool, &dup.entity_uuid)
+                .await
+                .unwrap()
+                .as_deref(),
             Some(keep.entity_uuid.as_str())
         );
         let names = names_for(&pool, &survivor).await;
@@ -1558,7 +1593,9 @@ mod tests {
 
         // And the whole thing is logged.
         let log = list_merge_log(&pool, 10).await.unwrap();
-        assert!(log.iter().any(|e| e.id == report.merge_id && e.kind == "merge"));
+        assert!(log
+            .iter()
+            .any(|e| e.id == report.merge_id && e.kind == "merge"));
     }
 
     #[tokio::test]
@@ -1597,7 +1634,10 @@ mod tests {
             .expect("duplicate restored");
         assert_eq!(back.canonical_id, dup.canonical_id);
         assert_eq!(back.display_name, "Mel S");
-        assert_eq!(back.created_at, dup.created_at, "created_at must be verbatim");
+        assert_eq!(
+            back.created_at, dup.created_at,
+            "created_at must be verbatim"
+        );
 
         assert_eq!(
             meeting_owner(&pool, "m1").await.as_deref(),
@@ -1649,7 +1689,10 @@ mod tests {
             "a delete must state what it keeps"
         );
 
-        assert!(people::get_by_uuid(&pool, &p.entity_uuid).await.unwrap().is_none());
+        assert!(people::get_by_uuid(&pool, &p.entity_uuid)
+            .await
+            .unwrap()
+            .is_none());
         assert_eq!(meeting_owner(&pool, "m1").await, None, "meetings cascade");
         assert_eq!(meeting_owner(&pool, "m2").await, None);
         let remaining: i64 =

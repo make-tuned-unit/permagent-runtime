@@ -583,8 +583,7 @@ async fn person_activity_handler(
                     let title = r.get::<String, _>("title");
                     let description = r.get::<String, _>("description");
                     names.iter().any(|n| {
-                        contains_whole_word_ci(&title, n)
-                            || contains_whole_word_ci(&description, n)
+                        contains_whole_word_ci(&title, n) || contains_whole_word_ci(&description, n)
                     })
                 })
                 .map(|r| PersonActivity {
