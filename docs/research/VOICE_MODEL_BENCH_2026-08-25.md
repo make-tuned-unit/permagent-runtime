@@ -55,7 +55,8 @@ cliff*, not the ordering.
 MiniMax and the Z.AI models were measured in earlier sessions than Haiku and
 Kimi. The runs are comparable — the prompt, the tool set and the harness are
 byte-identical, and the one code change between them (the OpenAI-format
-cache-field fix) only ever made a cached turn *cheaper to report*, never faster.
+cache-field fix in #1122) only ever made a cached turn *cheaper to report*, never
+faster.
 A repeat of deepseek-chat across two sessions gave 1339–1580 ms median, so read
 its latency as a band rather than a point.
 
@@ -100,15 +101,17 @@ That is model-independent enough to fix in the prompt, and this PR does.
 `observe_app` recurring where `project_list` or the inbox tool was wanted. A
 prompt/tool-surface problem, not a model choice, and unchanged by this decision.
 
-**Cost.** deepseek-chat's first-session figure of $0.0181/turn was an artefact
-this bench uncovered and this PR fixes: `formats::openai::get_usage` read only the
-Anthropic-style `cache_read_input_tokens`, so DeepSeek's automatic context cache
-(`prompt_cache_hit_tokens`) and OpenAI's own `prompt_tokens_details.cached_tokens`
-were both invisible and every cached turn on every OpenAI-format provider billed
-as a cold prefill. With the fix in, the same run measures **$0.0018/turn at a
-100 % cache-hit rate** — a tenth of the pre-fix number. Both Z.AI models likewise
-only report a cache hit at all because of this fix. Haiku's 94 %→100 % confirms
-the Anthropic path's `cache_control` placement was already correct for it.
+**Cost.** deepseek-chat's first-session figure of $0.0181/turn was a reporting
+artefact, and this bench is how it surfaced: `formats::openai::get_usage` read
+only the Anthropic-style `cache_read_input_tokens`, so DeepSeek's automatic
+context cache (`prompt_cache_hit_tokens`) and OpenAI's own
+`prompt_tokens_details.cached_tokens` were both invisible and every cached turn on
+every OpenAI-format provider billed as a cold prefill. That is fixed on `main` by
+#1122, which reads all three names; re-running against it, the same turns measure
+**$0.0018/turn at a 100 % cache-hit rate** — a tenth of the pre-fix number. Both
+Z.AI models likewise only report a cache hit at all because of it. Haiku's
+94 %→100 % is separate: it confirms the Anthropic path's `cache_control`
+placement was already correct.
 
 ## Recommendation
 
@@ -165,12 +168,12 @@ voice_model: claude-haiku-4-5-20251001
   and the turn runs on the session model. A voice model that cannot be reached
   must never become a failed turn.
 
-Editable in Settings → Models, under the primary model readout. Two other bench
-findings ship with it: **the silence rule** is now in `VOICE_REPLY_STYLE` (voice
+Editable in Settings → Models, under the primary model readout. One other bench
+finding ships with it: **the silence rule** is now in `VOICE_REPLY_STYLE` (voice
 path only) — never open a turn in silence, say one short sentence before or
-alongside the tool call, which is model-independent and the largest
-perceived-latency win in the data; and **the OpenAI-format prompt-cache fix**
-described under Cost.
+alongside the tool call. It is model-independent and the largest
+perceived-latency win in the data. The OpenAI-format prompt-cache reporting bug
+this bench turned up is fixed separately, on `main`, by #1122.
 
 ## Reproducing
 
