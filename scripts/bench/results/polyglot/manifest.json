@@ -1,0 +1,234 @@
+{
+  "created_at": "2026-08-25T16:27:10Z",
+  "suite": "aider-polyglot",
+  "suite_repo": "https://github.com/Aider-AI/polyglot-benchmark",
+  "suite_sha": "7e0611e77b54e2dea774cdc0aa00cf9f7ed6144f",
+  "lang": "python",
+  "seed": 20260825,
+  "n_requested": 10,
+  "n_selected": 10,
+  "population_size": 34,
+  "selection": "sorted(random.Random(seed).sample(sorted(names), n))",
+  "test_cmd": [
+    "/opt/homebrew/opt/python@3.14/bin/python3.14",
+    "-m",
+    "unittest",
+    "discover",
+    "-p",
+    "*_test.py"
+  ],
+  "harness_sha": "9679fafa1b27ae4b80f2c33e4033c8f5bf784ce5",
+  "tasks": [
+    {
+      "name": "affine-cipher",
+      "lang": "python",
+      "blurb": "Create an implementation of the Affine cipher, an ancient encryption algorithm from the Middle East.",
+      "solution_files": [
+        "affine_cipher.py"
+      ],
+      "test_files": [
+        "affine_cipher_test.py"
+      ],
+      "instructions_files": [
+        ".docs/instructions.append.md",
+        ".docs/instructions.md"
+      ],
+      "test_sha256": {
+        "affine_cipher_test.py": "4d9dac99b726068707a37e36145d73f74a52704145fb95bb4acaccdd7cd3ef54"
+      },
+      "stub_sha256": {
+        "affine_cipher.py": "d3164dc77d13a429fb14899cd5e74a81d848ed0c7b95b02db3247a75e0bbd72b"
+      }
+    },
+    {
+      "name": "book-store",
+      "lang": "python",
+      "blurb": "To try and encourage more sales of different books from a popular 5 book series, a bookshop has decided to offer discounts of multiple-book purchases.",
+      "solution_files": [
+        "book_store.py"
+      ],
+      "test_files": [
+        "book_store_test.py"
+      ],
+      "instructions_files": [
+        ".docs/instructions.md"
+      ],
+      "test_sha256": {
+        "book_store_test.py": "fa4109f3378cceaff8bdc389b333bc23c65f8b1345bc907be5c09593be0ee1eb"
+      },
+      "stub_sha256": {
+        "book_store.py": "5c22fe209f90b16dbbacff457199d0b14152b48616c875085c8ff1f6f7188ec2"
+      }
+    },
+    {
+      "name": "bowling",
+      "lang": "python",
+      "blurb": "Score a bowling game.",
+      "solution_files": [
+        "bowling.py"
+      ],
+      "test_files": [
+        "bowling_test.py"
+      ],
+      "instructions_files": [
+        ".docs/instructions.append.md",
+        ".docs/instructions.md"
+      ],
+      "test_sha256": {
+        "bowling_test.py": "6b9a80b6835828f575ce0aba66876850f75c59f764014ac509fe1df7e3a9ee20"
+      },
+      "stub_sha256": {
+        "bowling.py": "a356c0682b6c0c04e9e30a7da603b2014c227426b43bbe37f34cd99913d368b6"
+      }
+    },
+    {
+      "name": "go-counting",
+      "lang": "python",
+      "blurb": "Count the scored points on a Go board.",
+      "solution_files": [
+        "go_counting.py"
+      ],
+      "test_files": [
+        "go_counting_test.py"
+      ],
+      "instructions_files": [
+        ".docs/instructions.append.md",
+        ".docs/instructions.md"
+      ],
+      "test_sha256": {
+        "go_counting_test.py": "66b355989d67c4120e49bf5e7e1d224f0af21dd1eeb30b884c204640e73fe358"
+      },
+      "stub_sha256": {
+        "go_counting.py": "93533b48aa59c4b85a8ddd8a6f212f28491dfe6c016a660d0ef7c97192ee18d3"
+      }
+    },
+    {
+      "name": "grade-school",
+      "lang": "python",
+      "blurb": "Given students' names along with the grade that they are in, create a roster for the school.",
+      "solution_files": [
+        "grade_school.py"
+      ],
+      "test_files": [
+        "grade_school_test.py"
+      ],
+      "instructions_files": [
+        ".docs/instructions.append.md",
+        ".docs/instructions.md"
+      ],
+      "test_sha256": {
+        "grade_school_test.py": "72827c03772b6cf4256fd2f378ae6ddff2703ccacb6053ba647e973b415e27b9"
+      },
+      "stub_sha256": {
+        "grade_school.py": "d2af6e7a288b738c4d98ec1989f5a604809a07abe42d76a7aebe223d7460d53d"
+      }
+    },
+    {
+      "name": "hangman",
+      "lang": "python",
+      "blurb": "Implement the logic of the hangman game using functional reactive programming.",
+      "solution_files": [
+        "hangman.py"
+      ],
+      "test_files": [
+        "hangman_test.py"
+      ],
+      "instructions_files": [
+        ".docs/instructions.append.md",
+        ".docs/instructions.md"
+      ],
+      "test_sha256": {
+        "hangman_test.py": "0eece50307284a914eca79d25ea623d023029f1b173bfbc60293578d3570a11a"
+      },
+      "stub_sha256": {
+        "hangman.py": "9ed6db0932276c19a9aaac728211c1bda0d8a143c4ac4c6a3c5c23b941137562"
+      }
+    },
+    {
+      "name": "pig-latin",
+      "lang": "python",
+      "blurb": "Implement a program that translates from English to Pig Latin.",
+      "solution_files": [
+        "pig_latin.py"
+      ],
+      "test_files": [
+        "pig_latin_test.py"
+      ],
+      "instructions_files": [
+        ".docs/instructions.md",
+        ".docs/introduction.md"
+      ],
+      "test_sha256": {
+        "pig_latin_test.py": "2a2bec06a0389dad5636c83cc604a418e6f0ed79fbf8768f620c7d1101ec65c2"
+      },
+      "stub_sha256": {
+        "pig_latin.py": "fbef923db1bc51436424e83ca92e8d5d4f2505c5796fee8daf3fe276b2259e63"
+      }
+    },
+    {
+      "name": "sgf-parsing",
+      "lang": "python",
+      "blurb": "Parsing a Smart Game Format string.",
+      "solution_files": [
+        "sgf_parsing.py"
+      ],
+      "test_files": [
+        "sgf_parsing_test.py"
+      ],
+      "instructions_files": [
+        ".docs/instructions.append.md",
+        ".docs/instructions.md"
+      ],
+      "test_sha256": {
+        "sgf_parsing_test.py": "c8274cd12d6432b18d5f4fd6b15e64bdba6745007ae6c0d275a4fe048d4dba6e"
+      },
+      "stub_sha256": {
+        "sgf_parsing.py": "e821e6d68abd9336a222d56049ed9fb89c001b6d8ac62e2d10da44a36f76de9d"
+      }
+    },
+    {
+      "name": "simple-linked-list",
+      "lang": "python",
+      "blurb": "Write a simple linked list implementation that uses Elements and a List.",
+      "solution_files": [
+        "simple_linked_list.py"
+      ],
+      "test_files": [
+        "simple_linked_list_test.py"
+      ],
+      "instructions_files": [
+        ".docs/hints.md",
+        ".docs/instructions.append.md",
+        ".docs/instructions.md",
+        ".docs/introduction.md"
+      ],
+      "test_sha256": {
+        "simple_linked_list_test.py": "2ac2c242c2348058a7ce1319b2d8dd653a33f1cc39a7df4d1a6552bdff3b4229"
+      },
+      "stub_sha256": {
+        "simple_linked_list.py": "99ae2a714c113f895a899f79728ead86001e0a3c2c8042485bea4279269e0101"
+      }
+    },
+    {
+      "name": "tree-building",
+      "lang": "python",
+      "blurb": "Refactor a tree building algorithm.",
+      "solution_files": [
+        "tree_building.py"
+      ],
+      "test_files": [
+        "tree_building_test.py"
+      ],
+      "instructions_files": [
+        ".docs/instructions.append.md",
+        ".docs/instructions.md"
+      ],
+      "test_sha256": {
+        "tree_building_test.py": "074179d36fb946588411674c0441328c123c2107737ff419ff3aca8c230744b7"
+      },
+      "stub_sha256": {
+        "tree_building.py": "ee9128807b278a39a851ee4df53479dec6d5da7dbb066a86fac810c8f28ba285"
+      }
+    }
+  ]
+}
