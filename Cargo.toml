@@ -83,7 +83,7 @@ opentelemetry-otlp = "0.31"
 opentelemetry-appender-tracing = { version = "0.31", features = ["experimental_span_attributes"] }
 opentelemetry-stdout = { version = "0.31", features = ["trace", "metrics", "logs"] }
 tracing-futures = { version = "0.2", features = ["futures-03"] }
-tracing-opentelemetry = "0.32"
+tracing-opentelemetry = "0.33"
 
 spectral = { git = "https://github.com/make-tuned-unit/spectral", rev = "7025328e198a2df4826f5c4aba173162d16cc521" }
 rayon = "1.12"
