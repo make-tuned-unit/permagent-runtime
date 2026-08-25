@@ -7445,7 +7445,7 @@ dependencies = [
  "test-case",
  "thiserror 2.0.19",
  "tiktoken-rs",
- "tokenizers 0.21.4",
+ "tokenizers 0.23.1",
  "tokio",
  "tokio-cron-scheduler",
  "tokio-stream",
@@ -11520,13 +11520,13 @@ dependencies = [
 
 [[package]]
 name = "tokenizers"
-version = "0.23.1"
+version = "0.22.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44e5bea67576e04b6ff8564c5d9e09c2ef0cf476502245f2f120e497769d3112"
+checksum = "b238e22d44a15349529690fb07bd645cf58149a1b1e44d6cb5bd1641ff1a6223"
 dependencies = [
  "ahash",
+ "aho-corasick",
  "compact_str 0.9.0",
- "daachorse",
  "dary_heap",
  "derive_builder",
  "esaxx-rs",
@@ -11553,13 +11553,13 @@ dependencies = [
 
 [[package]]
 name = "tokenizers"
-version = "0.22.2"
+version = "0.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b238e22d44a15349529690fb07bd645cf58149a1b1e44d6cb5bd1641ff1a6223"
+checksum = "44e5bea67576e04b6ff8564c5d9e09c2ef0cf476502245f2f120e497769d3112"
 dependencies = [
  "ahash",
- "aho-corasick",
  "compact_str 0.9.0",
+ "daachorse",
  "dary_heap",
  "derive_builder",
  "esaxx-rs",
