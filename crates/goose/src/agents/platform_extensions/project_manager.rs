@@ -849,6 +849,26 @@ impl ProjectManagerClient {
             notes: args.get("notes").and_then(|v| v.as_str()).map(String::from),
             metadata_json: None,
         };
+        // ── A no-op update must NOT report success ───────────────────────
+        //
+        // 2026-08-25, session 20260825_3: the model created a project, made its
+        // directory, then called
+        // `project_update {"id_or_slug":"civicledger","root_path":null}` —
+        // meaning to set the path, but sending null. Every field resolved to
+        // "no change", the tool answered `Updated project "CivicLedger"` with
+        // root_path still null, and the model — correctly reading that as a
+        // failure it could retry — sent the identical call twice more. The
+        // runaway-loop guard stopped it (working exactly as designed, on
+        // identical args + identical result), and the session dead-ended before
+        // the work the user had actually asked for began.
+        //
+        // The lie is upstream of the guard: a tool that changes nothing and
+        // says "Updated" gives the model no way to correct itself. Say what
+        // happened instead, and name the one thing that would land.
+        if let Some(nothing_changed) = Self::no_op_update_reason(&project, &input) {
+            return Err(nothing_changed);
+        }
+
         let updated = projects::update_project(&pool, &project.id, input)
             .await?
             .ok_or("Project not found after update")?;
@@ -859,6 +879,46 @@ impl ProjectManagerClient {
             updated.slug,
             serde_json::to_string_pretty(&json).unwrap_or_default()
         ))])
+    }
+
+    /// `Some(reason)` when applying `input` to `project` would change nothing.
+    ///
+    /// Both shapes reach here from a model: no settable field at all, and every
+    /// settable field already holding the value asked for (which is what an
+    /// explicit `null` on an already-empty `root_path` is).
+    fn no_op_update_reason(
+        project: &projects::Project,
+        input: &projects::UpdateProject,
+    ) -> Option<String> {
+        let changes_a_string =
+            |asked: &Option<String>, current: &str| asked.as_ref().is_some_and(|v| v != current);
+        let changes_an_optional = |asked: &Option<Option<String>>, current: &Option<String>| {
+            asked.as_ref().is_some_and(|v| v != current)
+        };
+
+        let changes = changes_a_string(&input.name, &project.name)
+            || input.slug.is_some()
+            || changes_a_string(&input.description, &project.description)
+            || changes_a_string(&input.status, &project.status)
+            || changes_an_optional(&input.root_path, &project.root_path)
+            || changes_an_optional(&input.site_url, &project.site_url)
+            || changes_an_optional(&input.repo_url, &project.repo_url)
+            || changes_a_string(&input.notes, &project.notes)
+            || input.metadata_json.is_some();
+
+        if changes {
+            return None;
+        }
+
+        let root = project
+            .root_path
+            .as_deref()
+            .map(|p| format!("\"{p}\""))
+            .unwrap_or_else(|| "not set".to_string());
+        Some(format!(
+            "project_update changed nothing on \"{}\": every field you passed already holds              that value. root_path is currently {root}. To set a field, pass it as a value —              e.g. root_path: \"/absolute/path/that/exists\" — not as null; null CLEARS a field.              Settable fields: name, slug, description, status, root_path, site_url, repo_url,              notes.",
+            project.name
+        ))
     }
 
     async fn handle_delete(&self, arguments: Option<JsonObject>) -> Result<Vec<Content>, String> {
@@ -2252,7 +2312,10 @@ impl ProjectManagerClient {
                 indoc! {r#"
                 Update an existing project. Accepts the project ID or slug and any fields
                 to change. Use when the user says "update project X", "change the root path
-                for Y", etc.
+                for Y", etc. Pass a field's new VALUE (root_path: "/Users/me/proj");
+                passing null CLEARS that field. An update that would change nothing is
+                rejected rather than reported as success, so retrying it unchanged never
+                helps.
             "#}
                 .to_string(),
                 update_schema.as_object().unwrap().clone(),
@@ -3047,6 +3110,91 @@ fn levenshtein(a: &str, b: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The 2026-08-25 dead end (session 20260825_3), as a unit.
+    ///
+    /// `project_update {"id_or_slug":"civicledger","root_path":null}` against a
+    /// project whose root_path is ALREADY null changes nothing. It used to
+    /// answer "Updated project" — so the model retried the identical call until
+    /// the runaway-loop guard stopped it, and the DAG the user asked for was
+    /// never started. It must now say what happened.
+    #[test]
+    fn an_update_that_changes_nothing_is_refused_not_reported_as_success() {
+        let project = test_project(None);
+        let input = projects::UpdateProject {
+            root_path: Some(None), // explicit null against an already-null field
+            ..Default::default()
+        };
+
+        let reason = ProjectManagerClient::no_op_update_reason(&project, &input)
+            .expect("a no-op update must be refused");
+        assert!(
+            reason.contains("changed nothing"),
+            "must name the outcome: {reason}"
+        );
+        assert!(
+            reason.contains("root_path is currently not set"),
+            "must state the field's real value so the model can correct itself: {reason}"
+        );
+        assert!(
+            reason.contains("null CLEARS"),
+            "must explain why null did not do what the model meant: {reason}"
+        );
+    }
+
+    /// The bare call the model reaches for when it has no field to set.
+    #[test]
+    fn an_update_with_no_fields_is_refused() {
+        let project = test_project(None);
+        assert!(ProjectManagerClient::no_op_update_reason(&project, &Default::default()).is_some());
+    }
+
+    /// A real change still goes through — this is a guard, not a lock.
+    #[test]
+    fn a_real_change_is_not_a_no_op() {
+        let project = test_project(None);
+
+        let sets_root = projects::UpdateProject {
+            root_path: Some(Some("/Users/j/Documents/Dev/civic-ledger".into())),
+            ..Default::default()
+        };
+        assert!(ProjectManagerClient::no_op_update_reason(&project, &sets_root).is_none());
+
+        let renames = projects::UpdateProject {
+            name: Some("CivicLedger v2".into()),
+            ..Default::default()
+        };
+        assert!(ProjectManagerClient::no_op_update_reason(&project, &renames).is_none());
+
+        // Clearing a field that IS set is a real change.
+        let with_root = test_project(Some("/tmp/x"));
+        let clears = projects::UpdateProject {
+            root_path: Some(None),
+            ..Default::default()
+        };
+        assert!(ProjectManagerClient::no_op_update_reason(&with_root, &clears).is_none());
+    }
+
+    fn test_project(root_path: Option<&str>) -> projects::Project {
+        projects::Project {
+            id: "01a036f7-add5-7ae2-a0d8-5879fca1dbd9".into(),
+            user_id: "default".into(),
+            slug: "civicledger".into(),
+            name: "CivicLedger".into(),
+            description: String::new(),
+            status: "active".into(),
+            root_path: root_path.map(String::from),
+            site_url: None,
+            repo_url: None,
+            notes: String::new(),
+            metadata_json: serde_json::json!({}),
+            graph_entity_id: None,
+            tags: Vec::new(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            last_opened_at: String::new(),
+        }
+    }
 
     #[test]
     fn card_create_rejects_schedule_on_non_social_post() {

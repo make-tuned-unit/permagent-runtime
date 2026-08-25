@@ -394,6 +394,11 @@ pub enum PermagentEventType {
     IdentityChanged,
     /// The chat-session list changed (created / deleted / renamed / forked).
     SessionChanged,
+    /// A scheduled job changed (created / updated / deleted / paused /
+    /// unpaused / run started / run finished). The Automate tab subscribes
+    /// to this instead of polling `/schedule/list` on a tight interval —
+    /// added for the 2026-08-25 "schedule polling storm" health-review fix.
+    ScheduleChanged,
 }
 
 // ── Convenience constructors ────────────────────────────────────────────────
@@ -1011,6 +1016,18 @@ pub fn session_changed(session_id: &str, change: &str) -> PermagentEvent {
         PermagentEventType::SessionChanged,
         serde_json::json!({
             "session_id": session_id,
+            "change": change,
+        }),
+    )
+}
+
+/// A scheduled job changed. `change` ∈
+/// `created|updated|deleted|paused|unpaused|run_started|run_finished`.
+pub fn schedule_changed(schedule_id: &str, change: &str) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::ScheduleChanged,
+        serde_json::json!({
+            "schedule_id": schedule_id,
             "change": change,
         }),
     )

@@ -5,6 +5,8 @@ import type { ThemeColors } from '../../styles/useTheme';
 import { cronToEnglish } from '../../lib/schedule-format';
 import { useCommandCenter } from '../../lib/store';
 import { apiFetch } from '../../lib/api';
+import { useScheduleEvents } from '../../lib/useScheduleEvents';
+import { usePollWhenVisible } from '../../lib/usePollWhenVisible';
 import {
   formatBytes,
   sumRunRecovered,
@@ -99,6 +101,16 @@ interface ExtensionInfo {
   bundled: boolean;
   available_tools: string[];
 }
+
+// Backstop poll interval for the schedule list + run-history summary.
+// `useScheduleEvents` delivers live updates on every real write, so this is
+// only the fallback for whatever it misses (a dropped WebSocket, a
+// cron-triggered run that fires with no route call to emit from) — the
+// 2026-08-25 "schedule polling storm" health review found the old 5s
+// indefinite poll driving an unindexed SQL query (97 slow-query bursts in 9
+// minutes). `usePollWhenVisible` also stops this entirely while the tab is
+// hidden.
+export const SCHEDULE_LIST_POLL_MS = 60_000;
 
 const CRON_PRESETS = [
   { label: 'Every weekday morning (8 AM)', cron: '0 8 * * 1-5' },
@@ -333,20 +345,21 @@ export function AutomateView() {
     }
   }, []);
 
-  const fetchAllSessions = useCallback(async (jobIds: string[]) => {
-    let loadedAny = false;
-    let failed = false;
-    for (const jobId of jobIds) {
-      try {
-        const data = await apiFetch<SessionInfo[]>(`/schedule/${encodeURIComponent(jobId)}/sessions?limit=5`);
-        setSessions(prev => new Map(prev).set(jobId, data));
-        loadedAny = true;
-      } catch { failed = true; }
+  // Recent runs for EVERY schedule, in ONE request — replaces the old
+  // per-job loop (`/schedule/{id}/sessions` called once per job, every poll
+  // tick: N queries hitting an unindexed `sessions.schedule_id` scan). See
+  // `/schedule/sessions_recent` + `list_recent_sessions_by_schedule` (the
+  // 2026-08-25 schedule-polling-storm fix).
+  const fetchAllSessions = useCallback(async () => {
+    try {
+      const data = await apiFetch<{ sessions: Record<string, SessionInfo[]> }>('/schedule/sessions_recent?limit=5');
+      setSessions(new Map(Object.entries(data.sessions || {})));
+      setRunsError(null);
+    } catch (err) {
+      setRunsError(err instanceof Error ? err.message : "Couldn't load run history.");
+    } finally {
+      setRunsLoading(false);
     }
-    // Only treat it as an error when nothing at all came back — a partial fetch
-    // still renders useful history.
-    setRunsError(failed && !loadedAny ? "Couldn't load run history." : null);
-    setRunsLoading(false);
   }, []);
 
   const fetchExtensions = useCallback(async () => {
@@ -356,23 +369,30 @@ export function AutomateView() {
     } catch {}
   }, []);
 
-  useEffect(() => { fetchJobs(); fetchExtensions(); loadSkills(); loadProposals(); }, [fetchJobs, fetchExtensions, loadSkills, loadProposals]);
   useEffect(() => {
-    const interval = setInterval(fetchJobs, 5000);
-    return () => {
-      clearInterval(interval);
-      ++jobsRequestGeneration.current;
-    };
-  }, [fetchJobs]);
-  useEffect(() => {
-    if (jobs.length > 0) fetchAllSessions(jobs.map(j => j.id));
-    // 15s matches the Dashboard/Decisions cadence; the per-job session fetch is
-    // now a cheap filtered SQL lookup, so this no longer drives DB contention.
-    const interval = setInterval(() => {
-      if (jobs.length > 0) fetchAllSessions(jobs.map(j => j.id));
-    }, 15000);
-    return () => clearInterval(interval);
-  }, [jobs.length]); // eslint-disable-line react-hooks/exhaustive-deps
+    fetchJobs();
+    fetchAllSessions();
+    fetchExtensions();
+    loadSkills();
+    loadProposals();
+  }, [fetchJobs, fetchAllSessions, fetchExtensions, loadSkills, loadProposals]);
+
+  useEffect(() => () => { ++jobsRequestGeneration.current; }, []);
+
+  // Live updates: a real schedule write (create/update/delete/pause/unpause/
+  // run start/finish) pushes a `schedule_changed` event over the daemon's
+  // event stream — refetch both the job list and the run-history summary
+  // immediately instead of waiting for the poll backstop below.
+  const onScheduleEvent = useCallback(() => {
+    fetchJobs();
+    fetchAllSessions();
+  }, [fetchJobs, fetchAllSessions]);
+  useScheduleEvents(onScheduleEvent);
+
+  // Backstop only — see `SCHEDULE_LIST_POLL_MS`. Skips entirely while the
+  // tab is hidden (`usePollWhenVisible`), and stops on unmount.
+  usePollWhenVisible(fetchJobs, SCHEDULE_LIST_POLL_MS);
+  usePollWhenVisible(fetchAllSessions, SCHEDULE_LIST_POLL_MS);
 
   // ── Derived data ──
 
@@ -631,7 +651,7 @@ export function AutomateView() {
             {runsLoading && allRuns.length === 0 ? (
               <SectionState kind="loading" message="Loading run history…" />
             ) : runsError && allRuns.length === 0 ? (
-              <SectionState kind="error" message={runsError} onRetry={() => { setRunsLoading(true); fetchAllSessions(jobs.map(j => j.id)); }} />
+              <SectionState kind="error" message={runsError} onRetry={() => { setRunsLoading(true); fetchAllSessions(); }} />
             ) : allRuns.length === 0 ? (
               <div style={{ fontSize: 12, color: colors.textDim, padding: '8px 0' }}>
                 No runs yet. History appears here once an automation runs — use "Run Now" on a recipe to try one.

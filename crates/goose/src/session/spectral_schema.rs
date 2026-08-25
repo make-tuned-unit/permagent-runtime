@@ -188,6 +188,13 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query("CREATE INDEX idx_sessions_thread ON sessions(thread_id)")
         .execute(&mut *tx)
         .await?;
+    // Backs `list_sessions_by_schedule_id`'s `WHERE schedule_id = ?` — the
+    // Automate tab's per-schedule session lookup. See
+    // `apply_sessions_schedule_id_index` / migrate_v48_to_v49 for the upgrade
+    // path (this fresh-init copy keeps a brand-new DB from ever missing it).
+    sqlx::query("CREATE INDEX idx_sessions_schedule_id ON sessions(schedule_id)")
+        .execute(&mut *tx)
+        .await?;
 
     // ── MESSAGES ──
     sqlx::query(
@@ -1646,6 +1653,34 @@ pub async fn migrate_v47_to_v48(pool: &Pool<Sqlite>) -> Result<()> {
         .execute(pool)
         .await?;
     info!("Spectral schema migrated to v48 (forecaster market series)");
+    Ok(())
+}
+
+/// Apply the `sessions.schedule_id` index (nightly health review, 2026-08-25 —
+/// "schedule polling storm"). `sessions` carries `user_id`, `updated_at`,
+/// `session_type`, `thread_id` indexes but never one on `schedule_id`, even
+/// though `SessionStorage::list_sessions_by_schedule_id`
+/// (`WHERE s.schedule_id = ?`) is exactly the query the Automate tab polls
+/// every 5-15s per scheduled job — an unindexed full scan of `sessions`
+/// (~970 rows), 1-3.7s per poll under load. Additive and idempotent
+/// (`CREATE INDEX IF NOT EXISTS`): safe to run on a DB that already has it.
+pub async fn apply_sessions_schedule_id_index(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_schedule_id ON sessions(schedule_id)")
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Migrate an existing database to add the `sessions.schedule_id` index
+/// (schema v49). Base-independent (`CREATE INDEX IF NOT EXISTS`), so it
+/// applies cleanly regardless of which prior version the DB sits at.
+pub async fn migrate_v48_to_v49(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v48 -> v49 (sessions.schedule_id index)");
+    apply_sessions_schedule_id_index(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (49)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v49 (sessions.schedule_id index)");
     Ok(())
 }
 

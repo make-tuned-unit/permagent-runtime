@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use std::path::PathBuf;
 
 use crate::scheduler::{ScheduledJob, SchedulerError};
-use crate::session::Session;
+use crate::session::{ScheduleSessionSummary, Session};
 
 #[async_trait]
 pub trait SchedulerTrait: Send + Sync {
@@ -38,6 +38,16 @@ pub trait SchedulerTrait: Send + Sync {
         sched_id: &str,
         limit: usize,
     ) -> Result<Vec<(String, Session)>, SchedulerError>;
+    /// Recent runs for every schedule, batched into one query — see
+    /// `Scheduler::recent_sessions_by_schedule` (the schedule-polling-storm
+    /// fix, 2026-08-25). Default returns empty so test doubles that predate
+    /// this method keep compiling; the real `Scheduler` overrides it.
+    async fn recent_sessions_by_schedule(
+        &self,
+        _limit_per_schedule: usize,
+    ) -> Result<Vec<ScheduleSessionSummary>, SchedulerError> {
+        Ok(Vec::new())
+    }
     async fn update_schedule(&self, sched_id: &str, new_cron: String)
         -> Result<(), SchedulerError>;
     /// Generalized reschedule across kinds (cron / one-time `at` / interval

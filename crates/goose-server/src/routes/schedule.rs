@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::fs;
 
@@ -212,6 +213,11 @@ async fn create_schedule(
             _ => ErrorResponse::internal(format!("Error creating schedule: {}", e)),
         })?;
 
+    // Multi-client liveness (#629 pattern): fire only after the write
+    // succeeded, so the Automate tab's SSE subscription refreshes
+    // `/schedule/list` instead of relying on its 60s poll backstop.
+    permagent::events::emit(permagent::events::schedule_changed(&job.id, "created"));
+
     Ok(Json(job))
 }
 
@@ -306,6 +312,7 @@ async fn delete_schedule(
             }
             _ => ErrorResponse::internal(format!("Error deleting schedule: {}", e)),
         })?;
+    permagent::events::emit(permagent::events::schedule_changed(&id, "deleted"));
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -382,10 +389,20 @@ async fn run_now_handler(
     // session (observed live 2026-08-06; the disk-cleanup automation wedge).
     // Spawning makes the run's execution and cleanup unconditional; awaiting
     // the JoinHandle keeps the response identical for clients that stay.
+    let id_for_events = id.clone();
+    permagent::events::emit(permagent::events::schedule_changed(
+        &id_for_events,
+        "run_started",
+    ));
     let run = tokio::spawn(async move { scheduler.run_now(&id).await });
-    match run.await.map_err(|e| {
+    let result = run.await.map_err(|e| {
         ErrorResponse::internal(format!("Schedule run task failed to complete: {e}"))
-    })? {
+    })?;
+    permagent::events::emit(permagent::events::schedule_changed(
+        &id_for_events,
+        "run_finished",
+    ));
+    match result {
         Ok(session_id) => Ok(Json(RunNowResponse { session_id })),
         Err(e) => match e {
             permagent::scheduler::SchedulerError::JobNotFound(msg) => Err(
@@ -459,6 +476,66 @@ async fn sessions_handler(
     Ok(Json(display_infos))
 }
 
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct RecentSessionsResponse {
+    /// schedule_id -> its most recent sessions, newest first, capped at
+    /// `limit` per schedule.
+    sessions: HashMap<String, Vec<SessionDisplayInfo>>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/schedule/sessions_recent",
+    params(SessionsQuery),
+    responses(
+        (status = 200, description = "Recent sessions for every schedule, batched into a single query", body = RecentSessionsResponse),
+        (status = 500, description = "Internal server error")
+    ),
+    tag = "schedule"
+)]
+#[axum::debug_handler]
+async fn recent_sessions_handler(
+    State(state): State<Arc<AppState>>,
+    Query(query_params): Query<SessionsQuery>,
+) -> Result<Json<RecentSessionsResponse>, ErrorResponse> {
+    // Batched replacement for the Automate tab's old pattern of calling
+    // `/schedule/{id}/sessions` once per job on every poll tick (N queries —
+    // the 2026-08-25 "schedule polling storm" health review). ONE query,
+    // grouped here by schedule_id for the client.
+    let scheduler = state.scheduler();
+
+    let rows = scheduler
+        .recent_sessions_by_schedule(query_params.limit)
+        .await
+        .map_err(|e| ErrorResponse::internal(format!("Error fetching recent sessions: {}", e)))?;
+
+    let mut sessions: HashMap<String, Vec<SessionDisplayInfo>> = HashMap::new();
+    for row in rows {
+        let Some(schedule_id) = row.schedule_id.clone() else {
+            continue;
+        };
+        sessions
+            .entry(schedule_id.clone())
+            .or_default()
+            .push(SessionDisplayInfo {
+                id: row.id,
+                name: row.name,
+                created_at: row.created_at.to_rfc3339(),
+                working_dir: row.working_dir.to_string_lossy().into_owned(),
+                schedule_id: Some(schedule_id),
+                message_count: row.message_count,
+                total_tokens: row.total_tokens,
+                input_tokens: row.input_tokens,
+                output_tokens: row.output_tokens,
+                accumulated_total_tokens: row.accumulated_total_tokens,
+                accumulated_input_tokens: row.accumulated_input_tokens,
+                accumulated_output_tokens: row.accumulated_output_tokens,
+            });
+    }
+
+    Ok(Json(RecentSessionsResponse { sessions }))
+}
+
 #[utoipa::path(
     post,
     path = "/schedule/{id}/pause",
@@ -489,6 +566,7 @@ async fn pause_schedule(
         }
         _ => ErrorResponse::internal(format!("Error pausing schedule: {}", e)),
     })?;
+    permagent::events::emit(permagent::events::schedule_changed(&id, "paused"));
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -523,6 +601,7 @@ async fn unpause_schedule(
         }
         _ => ErrorResponse::internal(format!("Error unpausing schedule: {}", e)),
     })?;
+    permagent::events::emit(permagent::events::schedule_changed(&id, "unpaused"));
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -573,6 +652,8 @@ async fn update_schedule(
         .into_iter()
         .find(|job| job.id == id)
         .ok_or_else(|| ErrorResponse::internal("Schedule not found after update"))?;
+
+    permagent::events::emit(permagent::events::schedule_changed(&id, "updated"));
 
     Ok(Json(updated_job))
 }
@@ -690,6 +771,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/schedule/{id}/kill", post(kill_running_job))
         .route("/schedule/{id}/inspect", get(inspect_running_job))
         .route("/schedule/{id}/sessions", get(sessions_handler)) // Corrected
+        .route("/schedule/sessions_recent", get(recent_sessions_handler))
         .route("/schedule/{id}/reset_to_default", post(reset_to_default))
         .with_state(state)
 }
