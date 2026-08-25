@@ -25,10 +25,14 @@
 //! stores a quote. Scoped, not broken: the Financier answers *what is it now*,
 //! the Forecaster *where is it going*, and only the second needs a past.
 
+pub mod backtest;
+pub mod baseline;
 pub mod collect;
+pub mod forecast;
 pub mod series;
 pub mod store;
 
+pub use forecast::{Forecast, Method, Refusal};
 pub use series::{Cadence, Series, SeriesStatus, SourceKind};
 
 /// The Forecaster's tunable behaviour, all of it read from the same config
