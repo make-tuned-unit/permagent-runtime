@@ -1,3 +1,4 @@
+use crate::chat_model::apply_chat_model;
 use crate::routes::errors::ErrorResponse;
 use crate::state::AppState;
 #[cfg(test)]
@@ -324,6 +325,8 @@ pub async fn reply(
                 return;
             }
         };
+
+        apply_chat_model(&agent, &session_id).await;
 
         let session = match state.session_manager().get_session(&session_id, true).await {
             Ok(metadata) => metadata,

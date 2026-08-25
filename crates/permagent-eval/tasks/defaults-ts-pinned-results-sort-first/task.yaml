@@ -1,0 +1,16 @@
+id: defaults-ts-pinned-results-sort-first
+title: "Pinned results must sort ahead of unpinned"
+category: model-defaults-ts
+max_turns: 25
+harness_timeout_secs: 600
+oracle_timeout_secs: 180
+test: [bash, oracle_check.sh]
+# The oracle is a shell script, so the Python/Node import allowlist does
+# not apply; the overlay still makes it untamperable by the agent.
+deliverables: []
+# lang=ts difficulty=medium needs_repo_map=false needs_test_run=false
+prompt: |
+  In search results, pinned items should always show up before everything else,
+  no matter their score -- then the rest should be sorted by score, highest
+  first. Right now pinned items just get mixed in wherever their score happens
+  to land. Add the pinned-first behavior.

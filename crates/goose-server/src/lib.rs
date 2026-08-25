@@ -29,6 +29,7 @@ pub mod auth;
 pub mod automation;
 pub use permagent::backup;
 pub mod brain_ops;
+pub mod chat_model;
 pub mod configuration;
 pub mod device_registry;
 pub mod error;

@@ -147,6 +147,10 @@ path = "src/bin/tts_bench.rs"
 name = "voice_model_bench"
 path = "src/bin/voice_model_bench.rs"
 
+[[bin]]
+name = "chat_model_bench"
+path = "src/bin/chat_model_bench.rs"
+
 [dev-dependencies]
 # Runs the config pin before any test body — see lib.rs. cfg(test) in the
 # permagent crate does not apply to this binary, so the pin has to be armed here.

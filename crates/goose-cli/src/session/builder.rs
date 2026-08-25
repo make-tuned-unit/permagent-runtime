@@ -342,6 +342,42 @@ struct ResolvedProviderConfig {
     model_config: permagent::model::ModelConfig,
 }
 
+/// The first source that actually holds a value, in the order given.
+///
+/// Extracted so the PRECEDENCE ITSELF is unit-testable: the order of these five
+/// sources is the whole contract of [`resolve_provider_and_model`], and it is a
+/// contract that was previously only expressed as a chain of `.or_else` calls no
+/// test could reach without a process-global config and a live provider. A
+/// whitespace-only value counts as unset — a config key edited down to `""` is
+/// not a provider named "space".
+fn first_configured(sources: [Option<String>; 5]) -> Option<String> {
+    sources
+        .into_iter()
+        .flatten()
+        .find(|value| !value.trim().is_empty())
+}
+
+/// The coding harness's own model route, or `None` when the operator's session
+/// model should be used instead. Warns — once, loudly — on a half-configured
+/// pair, because `harness_provider` without `harness_model` cannot route and is
+/// always a typo rather than an intention.
+fn harness_role_route(config: &Config) -> Option<permagent::config::RoleModel> {
+    use permagent::config::{ModelRole, RoleModelSource};
+
+    let resolved = permagent::config::resolve_role_model(ModelRole::Harness, |key| {
+        config.get_param::<String>(key).ok()
+    });
+    if resolved.source == RoleModelSource::HalfConfigured {
+        output::render_error(&format!(
+            "Only one of `{}`/`{}` is set. A half-configured pair cannot route, so it is being \
+             ignored; set both, or set one to `session` to run the harness on your session model.",
+            ModelRole::Harness.provider_key(),
+            ModelRole::Harness.model_key(),
+        ));
+    }
+    resolved.route
+}
+
 fn resolve_provider_and_model(
     session_config: &SessionBuilderConfig,
     config: &Config,
@@ -353,27 +389,44 @@ fn resolve_provider_and_model(
         .as_ref()
         .and_then(|r| r.settings.as_ref());
 
-    let provider_name = session_config
-        .provider
-        .clone()
-        .or(saved_provider)
-        .or_else(|| recipe_settings.and_then(|s| s.goose_provider.clone()))
-        .or_else(|| config.get_goose_provider().ok())
-        .unwrap_or_else(|| {
-            output::render_error("No provider configured. Run 'goose configure' first.");
-            process::exit(1);
-        });
+    // The coding harness has its own measured model default (`harness_provider`
+    // / `harness_model`, see `permagent::config::model_roles` and
+    // docs/research/MODEL_DEFAULTS_BENCH_2026-08-25.md). It is read ONLY for the
+    // coding recipe — an ordinary `permagent run` is a session, not a harness —
+    // and sits below the recipe's own `settings:` block and above
+    // GOOSE_PROVIDER/GOOSE_MODEL, so a `--provider/--model` flag, a resumed
+    // session and a recipe that pins its own model all still win.
+    let harness_route = session_config
+        .recipe
+        .as_ref()
+        .map(crate::recipes::builtin_recipes::is_coding_harness_recipe)
+        .unwrap_or(false)
+        .then(|| harness_role_route(config))
+        .flatten();
 
-    let model_name = session_config
-        .model
-        .clone()
-        .or_else(|| saved_model_config.as_ref().map(|mc| mc.model_name.clone()))
-        .or_else(|| recipe_settings.and_then(|s| s.goose_model.clone()))
-        .or_else(|| config.get_goose_model().ok())
-        .unwrap_or_else(|| {
-            output::render_error("No model configured. Run 'goose configure' first.");
-            process::exit(1);
-        });
+    let provider_name = first_configured([
+        session_config.provider.clone(),
+        saved_provider,
+        recipe_settings.and_then(|s| s.goose_provider.clone()),
+        harness_route.as_ref().map(|r| r.provider.clone()),
+        config.get_goose_provider().ok(),
+    ])
+    .unwrap_or_else(|| {
+        output::render_error("No provider configured. Run 'goose configure' first.");
+        process::exit(1);
+    });
+
+    let model_name = first_configured([
+        session_config.model.clone(),
+        saved_model_config.as_ref().map(|mc| mc.model_name.clone()),
+        recipe_settings.and_then(|s| s.goose_model.clone()),
+        harness_route.as_ref().map(|r| r.model.clone()),
+        config.get_goose_model().ok(),
+    ])
+    .unwrap_or_else(|| {
+        output::render_error("No model configured. Run 'goose configure' first.");
+        process::exit(1);
+    });
 
     let model_config = if session_config.resume
         && saved_model_config
@@ -943,6 +996,74 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn s(v: &str) -> Option<String> {
+        Some(v.to_string())
+    }
+
+    /// The five sources in `resolve_provider_and_model`'s order:
+    /// CLI flag, resumed session, recipe `settings:`, the harness role default,
+    /// then `GOOSE_PROVIDER`/`GOOSE_MODEL`.
+    #[test]
+    fn a_cli_flag_outranks_every_other_source() {
+        assert_eq!(
+            first_configured([
+                s("cli"),
+                s("saved"),
+                s("recipe"),
+                s("harness"),
+                s("session")
+            ]),
+            s("cli")
+        );
+    }
+
+    #[test]
+    fn a_resumed_session_outranks_the_recipe_and_the_harness_default() {
+        assert_eq!(
+            first_configured([None, s("saved"), s("recipe"), s("harness"), s("session")]),
+            s("saved")
+        );
+    }
+
+    #[test]
+    fn a_recipe_that_pins_its_own_model_outranks_the_harness_default() {
+        assert_eq!(
+            first_configured([None, None, s("recipe"), s("harness"), s("session")]),
+            s("recipe")
+        );
+    }
+
+    #[test]
+    fn the_harness_default_outranks_the_session_model() {
+        // `harness_provider`/`harness_model` are read only for the coding
+        // recipe, and when they are set they are the point.
+        assert_eq!(
+            first_configured([None, None, None, s("harness"), s("session")]),
+            s("harness")
+        );
+    }
+
+    #[test]
+    fn the_session_model_is_the_fallback_when_no_harness_route_applies() {
+        // `harness_role_route` returns None whenever the operator has a session
+        // model and no harness keys — the case that must not change behaviour
+        // for anyone who already configured GOOSE_MODEL.
+        assert_eq!(
+            first_configured([None, None, None, None, s("session")]),
+            s("session")
+        );
+    }
+
+    #[test]
+    fn nothing_configured_anywhere_is_none_not_an_empty_string() {
+        assert_eq!(first_configured([None, None, None, None, None]), None);
+        assert_eq!(
+            first_configured([s("   "), s(""), None, None, s("session")]),
+            s("session"),
+            "a blanked-out key is unset, not a provider named whitespace"
+        );
+    }
 
     #[test]
     fn test_session_builder_config_creation() {

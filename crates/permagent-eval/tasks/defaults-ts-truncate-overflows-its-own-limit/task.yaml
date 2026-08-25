@@ -1,0 +1,17 @@
+id: defaults-ts-truncate-overflows-its-own-limit
+title: "truncate() overruns the length it promises"
+category: model-defaults-ts
+max_turns: 25
+harness_timeout_secs: 600
+oracle_timeout_secs: 180
+test: [bash, oracle_check.sh]
+# The oracle is a shell script, so the Python/Node import allowlist does
+# not apply; the overlay still makes it untamperable by the agent.
+deliverables: []
+# lang=ts difficulty=easy needs_repo_map=false needs_test_run=false
+prompt: |
+  The `truncate` helper (used to shorten long titles for display) is supposed to cap
+  a string at a given number of characters, ellipsis included. Right now it slices
+  the string to that length and *then* tacks "..." on the end, so the result ends up
+  longer than the limit you asked for. Fix it so the returned string, ellipsis
+  included, never exceeds the requested length.

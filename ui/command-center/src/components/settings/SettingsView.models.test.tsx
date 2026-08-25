@@ -56,7 +56,9 @@ afterEach(() => {
 
 async function mount(goto: (key: string) => void) {
   await act(async () => { root.render(<ModelsPanel goto={goto} />); });
-  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+  // The role table loads six keys via Promise.all — one more microtask hop
+  // than the single .then() chains elsewhere on this pane.
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
 }
 
 /** atoms.Toggle is the only 36px-wide button on the pane. */
@@ -65,6 +67,123 @@ function toggles(): HTMLButtonElement[] {
     b => (b as HTMLButtonElement).style.width === '36px',
   ) as HTMLButtonElement[];
 }
+
+// ── Chat / Voice / Harness role table helpers ────────────────────────────
+// All three rows now carry inputs and a Save button, so nothing here indexes
+// into "every Save button on the pane": each row is scoped by its data-testid.
+// Chat and Harness share RoleModelRow's placeholders; Voice has its own, since
+// it resolves through voice_model.rs rather than model_roles.rs.
+
+/** The scoping wrapper for one role row. */
+function roleRow(role: 'chat' | 'voice' | 'harness'): HTMLElement {
+  const el = container.querySelector(`[data-testid="role-row-${role}"]`);
+  if (!el) throw new Error(`no ${role} role row rendered`);
+  return el as HTMLElement;
+}
+
+/** The Save button belonging to ONE row. */
+function rowSave(role: 'chat' | 'voice' | 'harness'): HTMLButtonElement {
+  const btn = Array.from(roleRow(role).querySelectorAll('button')).find(
+    b => b.textContent === 'Save' || b.textContent === 'Saving...',
+  );
+  if (!btn) throw new Error(`no Save button in the ${role} row`);
+  return btn as HTMLButtonElement;
+}
+
+/** `allowed.readConfig` keyed by config key; anything not listed answers
+ *  `null` (unset), matching the default mock. */
+function mockRoleConfig(map: Record<string, unknown>) {
+  allowed.readConfig.mockImplementation(async (k: string) => (k in map ? map[k] : null) as never);
+}
+
+function mockSessionModel(provider: string, model: string) {
+  allowed.getConfig.mockResolvedValue({
+    config: { GOOSE_PROVIDER: provider, GOOSE_MODEL: model },
+    effective_goose_mode: 'auto',
+  } as never);
+}
+
+function providerInputs(): HTMLInputElement[] {
+  return Array.from(container.querySelectorAll('input[placeholder="provider"]')) as HTMLInputElement[];
+}
+function modelInputs(): HTMLInputElement[] {
+  return Array.from(
+    container.querySelectorAll('input[placeholder="model id, or session / off / none"]'),
+  ) as HTMLInputElement[];
+}
+
+async function setInput(el: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+  await act(async () => {
+    setter.call(el, value);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+describe('ModelsPanel Chat/Voice/Harness role table', () => {
+  it('reads a default on all three rows when nothing is configured', async () => {
+    await mount(vi.fn());
+    // Chat and Harness say "(default) · built-in default"; Voice names its own
+    // measured pair, because voice_model.rs resolves it above GOOSE_MODEL.
+    expect(roleRow('chat').textContent).toContain('built-in default');
+    expect(roleRow('harness').textContent).toContain('built-in default');
+    expect(roleRow('voice').textContent).toContain('anthropic / claude-haiku-4-5-20251001 (default)');
+    expect(container.textContent).not.toContain('from GOOSE_MODEL');
+  });
+
+  it('falls Chat and Harness back to the session model, but NOT Voice', async () => {
+    // The one place the three rows deliberately disagree. Chat and Harness
+    // treat an explicit GOOSE_MODEL as the user's choice and defer to it;
+    // voice_model.rs puts its measured default ABOVE GOOSE_MODEL, because a
+    // spoken turn on a reasoning model is ten seconds of silence.
+    mockSessionModel('zai', 'glm-5.3');
+    await mount(vi.fn());
+    expect(roleRow('chat').textContent).toContain('zai / glm-5.3');
+    expect(roleRow('chat').textContent).toContain('from GOOSE_MODEL');
+    expect(roleRow('harness').textContent).toContain('zai / glm-5.3');
+    expect(roleRow('harness').textContent).toContain('from GOOSE_MODEL');
+    expect(roleRow('voice').textContent).not.toContain('zai / glm-5.3');
+    expect(roleRow('voice').textContent).toContain('anthropic / claude-haiku-4-5-20251001 (default)');
+  });
+
+  it('separates Chat from Harness and Voice when only chat_* is set', async () => {
+    // This is the whole point of splitting the knobs: setting Chat must not
+    // leak into either of the other two.
+    mockSessionModel('zai', 'glm-5.3');
+    mockRoleConfig({ chat_provider: 'anthropic', chat_model: 'claude-sonnet-5' });
+    await mount(vi.fn());
+    expect(roleRow('chat').textContent).toContain('anthropic / claude-sonnet-5');
+    expect(roleRow('chat').textContent).toContain('from chat_model');
+    expect(roleRow('harness').textContent).toContain('zai / glm-5.3');
+    expect(roleRow('harness').textContent).toContain('from GOOSE_MODEL');
+    expect(roleRow('voice').textContent).not.toContain('claude-sonnet-5');
+  });
+
+  it('warns on a half-configured pair and writes nothing', async () => {
+    await mount(vi.fn());
+    await setInput(providerInputs()[0], 'anthropic');
+    // model left blank — a half pair, not "anthropic" as a session shorthand.
+    await act(async () => { rowSave('chat').click(); });
+    expect(container.textContent).toContain('provider and model must be set together, or neither');
+    expect(allowed.upsertConfig).not.toHaveBeenCalled();
+  });
+
+  it('writes both keys when both boxes are filled', async () => {
+    await mount(vi.fn());
+    await setInput(providerInputs()[0], 'anthropic');
+    await setInput(modelInputs()[0], 'claude-sonnet-5');
+    await act(async () => { rowSave('chat').click(); });
+    expect(allowed.upsertConfig).toHaveBeenCalledTimes(2);
+    expect(allowed.upsertConfig).toHaveBeenNthCalledWith(1, 'chat_provider', 'anthropic');
+    expect(allowed.upsertConfig).toHaveBeenNthCalledWith(2, 'chat_model', 'claude-sonnet-5');
+  });
+
+  it('renders the Harness row as running on the session model when harness_model is "session"', async () => {
+    mockRoleConfig({ harness_model: 'session' });
+    await mount(vi.fn());
+    expect(container.textContent).toContain('session model (explicit)');
+  });
+});
 
 /**
  * The Guard's switch is written by THREE surfaces — this pane, Settings →
@@ -139,12 +258,17 @@ describe('ModelsPanel roster pointer', () => {
  * that for its own key; the "typing alone doesn't save" case below tripwires
  * it for these two).
  */
-describe('ModelsPanel voice model block', () => {
+describe('ModelsPanel voice model row', () => {
+  // The voice editor moved from a standalone Row into the Chat/Voice/Harness
+  // table (one concept, one place), so every query here scopes to that row —
+  // there are now three Save buttons on the pane and the first is Chat's.
   function providerInput(): HTMLInputElement {
-    return container.querySelector('input[placeholder="anthropic"]') as HTMLInputElement;
+    return roleRow('voice').querySelector('input[placeholder="anthropic"]') as HTMLInputElement;
   }
   function modelInput(): HTMLInputElement {
-    return container.querySelector('input[placeholder="claude-haiku-4-5-20251001"]') as HTMLInputElement;
+    return roleRow('voice').querySelector(
+      'input[placeholder="claude-haiku-4-5-20251001"]',
+    ) as HTMLInputElement;
   }
   async function typeInto(input: HTMLInputElement, value: string) {
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
@@ -154,17 +278,17 @@ describe('ModelsPanel voice model block', () => {
     });
   }
   function saveButton(): HTMLButtonElement {
-    return Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Save') as HTMLButtonElement;
+    return rowSave('voice');
   }
   function sessionButton(): HTMLButtonElement {
-    return Array.from(container.querySelectorAll('button')).find(
+    return Array.from(roleRow('voice').querySelectorAll('button')).find(
       b => b.textContent === 'Use the session model',
     ) as HTMLButtonElement;
   }
 
   it('shows the measured default when neither key is set', async () => {
     await mount(vi.fn());
-    expect(container.textContent).toContain('anthropic / claude-haiku-4-5-20251001 (default)');
+    expect(roleRow('voice').textContent).toContain('anthropic / claude-haiku-4-5-20251001 (default)');
   });
 
   it('shows the configured route when both keys are set', async () => {
@@ -173,15 +297,16 @@ describe('ModelsPanel voice model block', () => {
     );
     await mount(vi.fn());
     // Deliberately NOT the default pair — otherwise this passes on the default
-    // readout and proves nothing about reading the configured keys.
-    expect(container.textContent).toContain('custom_deepseek / deepseek-chat');
-    expect(container.textContent).not.toContain('(default)');
+    // readout and proves nothing about reading the configured keys. Scoped to
+    // the row: Chat and Harness are unset here and legitimately say "(default)".
+    expect(roleRow('voice').textContent).toContain('custom_deepseek / deepseek-chat');
+    expect(roleRow('voice').textContent).not.toContain('(default)');
   });
 
   it('shows "session model" when voice_model is set to session', async () => {
     allowed.readConfig.mockImplementation(async (k: string) => (k === 'voice_model' ? 'session' : null) as never);
     await mount(vi.fn());
-    expect(container.textContent).toContain('session model');
+    expect(roleRow('voice').textContent).toContain('session model');
   });
 
   it('does not write either key just from mounting or typing', async () => {
