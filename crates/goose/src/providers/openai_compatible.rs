@@ -207,7 +207,10 @@ pub fn parse_retry_after(headers: &HeaderMap) -> Option<std::time::Duration> {
         let Some(raw) = headers.get(name).and_then(|v| v.to_str().ok()) else {
             continue;
         };
-        if let Some(secs) = seconds(raw).or_else(|| http_date(raw)).or_else(|| go_duration(raw)) {
+        if let Some(secs) = seconds(raw)
+            .or_else(|| http_date(raw))
+            .or_else(|| go_duration(raw))
+        {
             // A provider that says "wait 0" is saying "go now"; keep it as a
             // real answer rather than falling through to our own floor.
             return Some(std::time::Duration::from_secs(secs));
@@ -322,7 +325,11 @@ pub async fn handle_status_openai_compat(response: Response) -> Result<Response,
         let retry_after = parse_retry_after(response.headers());
         let body = response.text().await.unwrap_or_default();
         let payload = serde_json::from_str::<Value>(&body).ok();
-        return Err(map_http_error_with_retry_after(status, payload, retry_after));
+        return Err(map_http_error_with_retry_after(
+            status,
+            payload,
+            retry_after,
+        ));
     }
     Ok(response)
 }
@@ -419,7 +426,9 @@ mod tests {
     fn retry_after_accepts_the_http_date_form() {
         let when = chrono::Utc::now() + chrono::Duration::seconds(90);
         let parsed = parse_retry_after(&headers(&[("retry-after", &when.to_rfc2822())]));
-        let secs = parsed.expect("an HTTP-date Retry-After is parseable").as_secs();
+        let secs = parsed
+            .expect("an HTTP-date Retry-After is parseable")
+            .as_secs();
         assert!((85..=90).contains(&secs), "got {secs}s");
     }
 
@@ -447,7 +456,10 @@ mod tests {
 
     #[test]
     fn an_unparseable_retry_after_is_none_not_zero() {
-        assert_eq!(parse_retry_after(&headers(&[("retry-after", "soon")])), None);
+        assert_eq!(
+            parse_retry_after(&headers(&[("retry-after", "soon")])),
+            None
+        );
         assert_eq!(parse_retry_after(&headers(&[])), None);
     }
 
@@ -457,7 +469,9 @@ mod tests {
     fn a_billing_429_stays_credits_exhausted_even_with_retry_after() {
         let error = map_http_error_with_retry_after(
             StatusCode::TOO_MANY_REQUESTS,
-            Some(json!({"error": {"message": "You exceeded your current quota, insufficient_quota"}})),
+            Some(
+                json!({"error": {"message": "You exceeded your current quota, insufficient_quota"}}),
+            ),
             Some(std::time::Duration::from_secs(30)),
         );
         assert!(matches!(error, ProviderError::CreditsExhausted { .. }));

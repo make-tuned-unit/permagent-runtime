@@ -87,7 +87,10 @@ pub fn rate_limit_headline(provider_id: &str) -> String {
     format!("{} rate limit", display_provider(provider_id))
 }
 
-type Slot = (watch::Sender<Option<ProviderWait>>, watch::Receiver<Option<ProviderWait>>);
+type Slot = (
+    watch::Sender<Option<ProviderWait>>,
+    watch::Receiver<Option<ProviderWait>>,
+);
 
 fn slot() -> &'static Slot {
     static SLOT: OnceLock<Slot> = OnceLock::new();
@@ -154,10 +157,7 @@ mod tests {
     #[test]
     fn the_rate_limit_headline_names_the_provider() {
         assert_eq!(rate_limit_headline("zai"), "Z.AI rate limit");
-        assert_eq!(
-            rate_limit_headline(""),
-            "The model provider rate limit"
-        );
+        assert_eq!(rate_limit_headline(""), "The model provider rate limit");
     }
 
     #[test]

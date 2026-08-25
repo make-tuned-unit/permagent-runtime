@@ -386,9 +386,10 @@ mod tests {
         for attempt in 1..=RATE_LIMIT_MAX_RETRIES {
             let delay = config.delay_for_error(&rate_limit(None), attempt);
             assert!(
-                delay >= Duration::from_millis(
-                    (RATE_LIMIT_MIN_RETRY_INTERVAL_MS as f64 * 0.8) as u64
-                ),
+                delay
+                    >= Duration::from_millis(
+                        (RATE_LIMIT_MIN_RETRY_INTERVAL_MS as f64 * 0.8) as u64
+                    ),
                 "attempt {attempt} waited only {delay:?}"
             );
         }

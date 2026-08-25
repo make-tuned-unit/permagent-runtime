@@ -50,6 +50,15 @@ struct SystemPromptContext {
     /// The `permagent_self` brief — an authoritative, live inventory of the
     /// agent's own capabilities. Assembled each turn; empty string when not set.
     permagent_self_block: String,
+    /// The `repo_map` system-prompt extra (`goose-cli`'s coding-harness
+    /// orientation block), templated in its own slot right after the opening
+    /// and BEFORE `permagent_self_block` rather than folded into the general
+    /// `# Additional Instructions` join. Before this it landed after the
+    /// capability inventory — 91% into a 90KB coding-harness prompt in a
+    /// captured session (#1090) — so its offset grew with the inventory
+    /// instead of staying fixed near the top. Empty string when no session
+    /// registered a `repo_map` extra.
+    repo_map_block: String,
     extensions: Vec<ExtensionInfo>,
     current_date_time: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -80,6 +89,12 @@ pub struct SystemPromptBuilder<'a, M> {
     /// async at the call site (the probe may block). Empty → section omitted.
     dispatchable_workers: Vec<crate::agents::self_knowledge::DispatchableWorker>,
     agent_briefings: Option<Vec<crate::agents::self_knowledge::BriefingLine>>,
+    /// The extensions this session explicitly declared (recipe/CLI runs),
+    /// passed straight through to [`self_knowledge::SelfKnowledgeBuilder`] to
+    /// scope the `## Tools you can call` section. `None` — the default, and
+    /// what the daemon's resident sessions always pass — renders the full,
+    /// unfiltered inventory. See `with_declared_extensions`.
+    declared_extensions: Option<Vec<String>>,
     /// The model family answering this turn, if the caller knows it. `None` →
     /// no overlay at all, which is what every non-agent build site (recipes,
     /// tests) wants: they have no provider in hand, and inventing a family for
@@ -162,6 +177,19 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
         briefings: Option<Vec<crate::agents::self_knowledge::BriefingLine>>,
     ) -> Self {
         self.agent_briefings = briefings;
+        self
+    }
+
+    /// Scope the self-knowledge capability inventory to this session's
+    /// explicitly declared extensions (recipe/CLI runs — see the call site in
+    /// `Agent::prepare_tools_and_prompt`, which passes `Some` only for
+    /// `GoosePlatform::GooseCli` sessions). `None` (the default if this is
+    /// never called) renders the full inventory — the product contract for
+    /// the daemon's resident chat sessions, which must always be able to
+    /// describe everything Permagent can do regardless of which extensions
+    /// happen to be active this turn.
+    pub fn with_declared_extensions(mut self, names: Option<Vec<String>>) -> Self {
+        self.declared_extensions = names;
         self
     }
 
@@ -273,6 +301,21 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
                 (persona.system_prompt_block(), persona.display_name())
             };
 
+        // Pulled out of `system_prompt_extras` into its own template slot
+        // (see `SystemPromptContext::repo_map_block`) instead of riding in
+        // the general `# Additional Instructions` join below — that join
+        // lands after the capability inventory, and `#1090` found a captured
+        // coding-harness prompt with its repo map at 91% depth as a result.
+        // Extracted here, before that join runs, so it renders once, in its
+        // own slot, and is removed from `system_prompt_extras` below so it
+        // does not ALSO appear in the join.
+        let repo_map_block = self
+            .manager
+            .system_prompt_extras
+            .get("repo_map")
+            .map(|s| sanitize_unicode_tags(s))
+            .unwrap_or_default();
+
         // Assemble the permagent_self brief from the resolved display name (so
         // the persona name is interpolated, never hardcoded) plus any live
         // scheduled-job count fetched at the call site, and the feature flags
@@ -287,6 +330,7 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
                 flags: crate::agents::self_knowledge::FeatureFlags::from_live_config(),
                 dispatchable_workers: self.dispatchable_workers.clone(),
                 agent_briefings: self.agent_briefings.clone(),
+                declared_extensions: self.declared_extensions.clone(),
             }
             .build_parts();
 
@@ -294,6 +338,7 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
             agent_persona_block: persona_block.clone(),
             agent_display_name: display_name,
             permagent_self_block,
+            repo_map_block,
             extensions: sanitized_extensions_info,
             current_date_time: self.manager.current_date_timestamp.clone(),
             extension_tool_limits,
@@ -324,6 +369,10 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
         };
 
         let mut system_prompt_extras = self.manager.system_prompt_extras.clone();
+        // Already rendered above into its own `repo_map_block` slot — drop it
+        // here so it does not also land in the `# Additional Instructions`
+        // join a second time.
+        system_prompt_extras.shift_remove("repo_map");
 
         // Add hints if provided
         if let Some(hints) = self.hints {
@@ -509,6 +558,7 @@ impl PromptManager {
             scheduled_job_count: None,
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
+            declared_extensions: None,
             model_family: None,
         }
     }
@@ -1210,5 +1260,62 @@ mod tests {
             .build();
 
         assert_snapshot!(system_prompt);
+    }
+
+    /// #1090: a captured coding-harness prompt put its `repo_map` extra at
+    /// 91% depth, behind the full capability inventory, because it rode in
+    /// the general `# Additional Instructions` join at the end of the prompt.
+    /// It now renders in its own slot right after the opening and before the
+    /// inventory (see `SystemPromptContext::repo_map_block`), so its offset
+    /// stays near the top regardless of how large the inventory grows. Built
+    /// through the real `PromptManager` builder — the thing that actually
+    /// assembles a session's prompt — not by string concatenation, so this
+    /// would catch a regression in the template or the extraction, not just
+    /// in a hand-rolled string.
+    #[test]
+    fn repo_map_offset_stays_near_the_top_regardless_of_inventory_size() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let temp_root = tmp_dir.path().display().to_string();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(temp_root.as_str())),
+            ("PERMAGENT_PATH_ROOT", Some(temp_root.as_str())),
+            ("INITIATIVE_ENABLED", Some("false")),
+        ]);
+
+        let mut manager =
+            PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+        manager.add_system_prompt_extra(
+            "repo_map".to_string(),
+            "<repo_map>\nsrc/\n  main.rs\n</repo_map>".to_string(),
+        );
+
+        let parts = manager.builder().build_parts();
+        let rendered = parts.render();
+
+        // Sanity: this test is only meaningful with an inventory present —
+        // otherwise a small prompt would trivially satisfy the 20% bound.
+        assert!(
+            rendered.contains("# Who You Are — Your Capabilities"),
+            "capability inventory must be present for this test to be meaningful"
+        );
+
+        let offset = rendered
+            .find("<repo_map>")
+            .expect("repo_map block must be present in the rendered prompt");
+        let total_len = rendered.len();
+        let pct = offset as f64 / total_len as f64;
+
+        assert!(
+            pct < 0.20,
+            "repo_map at byte {offset} of {total_len} ({:.1}%) is not near the top",
+            pct * 100.0
+        );
+
+        // And it must be in the CACHE-STABLE half, not the volatile suffix —
+        // the whole point of the stable/volatile split (see the comments
+        // around `VOLATILE_EXTRA_KEYS`) is that the provider's cache
+        // breakpoint sits after this content, not before it.
+        assert!(parts.stable_prefix().contains("<repo_map>"));
+        assert!(!parts.volatile_suffix().contains("<repo_map>"));
     }
 }

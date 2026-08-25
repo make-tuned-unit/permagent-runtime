@@ -84,7 +84,10 @@ pub enum TurnPhase {
     /// A tool is running. `target` is the thing it is acting on — a path, a
     /// pattern, the head of a command — and is what makes the line worth
     /// reading, so a collapsed tool line still says WHAT it is doing.
-    RunningTool { name: String, target: Option<String> },
+    RunningTool {
+        name: String,
+        target: Option<String>,
+    },
 }
 
 /// After this long with nothing printed, say so and name the way out. Chosen to
@@ -638,7 +641,14 @@ pub fn phase_of(message: &permagent::conversation::message::Message) -> Option<T
 /// most-specific first.
 fn tool_target(arguments: Option<&serde_json::Map<String, serde_json::Value>>) -> Option<String> {
     let args = arguments?;
-    for key in ["path", "file_path", "pattern", "command", "query", "instructions"] {
+    for key in [
+        "path",
+        "file_path",
+        "pattern",
+        "command",
+        "query",
+        "instructions",
+    ] {
         if let Some(value) = args.get(key).and_then(|v| v.as_str()) {
             let value = value.trim();
             if !value.is_empty() {
@@ -2000,7 +2010,11 @@ mod tests {
         let mut state = busy_state();
         state.phase = TurnPhase::Thinking;
         state.turn_tokens = None;
-        assert!(!status_line(&state).contains("tok"), "{}", status_line(&state));
+        assert!(
+            !status_line(&state).contains("tok"),
+            "{}",
+            status_line(&state)
+        );
     }
 
     /// Silence past the threshold is named, with the way out.

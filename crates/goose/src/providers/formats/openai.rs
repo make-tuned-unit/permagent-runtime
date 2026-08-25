@@ -214,9 +214,7 @@ fn strip_stale_reasoning(messages: &mut [Value], echo: ReasoningEcho) {
         ReasoningEcho::Always => return,
         ReasoningEcho::CurrentTurnOnly => messages
             .iter()
-            .rposition(|m| {
-                m.get("role") == Some(&json!("user")) && !is_image_only_user_message(m)
-            })
+            .rposition(|m| m.get("role") == Some(&json!("user")) && !is_image_only_user_message(m))
             .map(|i| i + 1)
             .unwrap_or(0),
     };
@@ -2415,7 +2413,9 @@ data: [DONE]"#;
     fn tool_answer(id: &str) -> Message {
         Message::user().with_tool_response(
             id,
-            Ok(CallToolResult::success(vec![Content::text("file contents")])),
+            Ok(CallToolResult::success(vec![Content::text(
+                "file contents",
+            )])),
         )
     }
 
@@ -2508,9 +2508,7 @@ data: [DONE]"#;
             .find(|m| {
                 m.get("tool_calls")
                     .and_then(|tc| tc.as_array())
-                    .is_some_and(|a| {
-                        a.first().and_then(|c| c.get("id")) == Some(&json!("call-1"))
-                    })
+                    .is_some_and(|a| a.first().and_then(|c| c.get("id")) == Some(&json!("call-1")))
             })
             .expect("the first turn's tool call is still in the payload");
         assert!(stale.get("reasoning_content").is_none());
