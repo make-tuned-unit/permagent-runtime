@@ -329,7 +329,11 @@ pub async fn inject_recall(
 /// Split out of [`spawn_persist_chat_turn`] so the metadata a chat memory
 /// carries can be asserted in a unit test without a Brain, a runtime, or a
 /// detached task.
-pub fn chat_turn_opts(session_id: &str, device_id: spectral::DeviceId) -> spectral::RememberOpts {
+pub fn chat_turn_opts(
+    session_id: &str,
+    device_id: spectral::DeviceId,
+    wing: Option<String>,
+) -> spectral::RememberOpts {
     spectral::RememberOpts {
         source: Some("chat".into()),
         device_id: Some(device_id),
@@ -344,19 +348,85 @@ pub fn chat_turn_opts(session_id: &str, device_id: spectral::DeviceId) -> spectr
         // splits a conversation the user paused mid-way and merges two
         // back-to-back conversations into one.
         episode_id: Some(session_id.to_string()),
-        wing: None,
+        // The project scope, and ONLY when this turn's own content or tool
+        // calls corroborated the project the session was opened in — see
+        // `permagent::session_wing` for why the session's open project is not
+        // enough on its own (21% verified precision, measured). `None` here is
+        // an honest `general`, which is the right answer for a turn that names
+        // no project.
+        wing,
         ..Default::default()
     }
 }
+
+/// This turn's tool-call arguments, as one searchable string.
+///
+/// Corroboration reads tool calls as well as prose because a turn can work
+/// inside a project without ever naming it — "fix the failing test" plus a
+/// tool call against `/Users/j/dev/plekk/src/lib.rs`. That evidence is
+/// available HERE and nowhere later: the memory stores only
+/// `User: …\nAssistant: …`, so retrospectively just ~1% of turns show a
+/// project path.
+///
+/// Bounded to the messages after the LAST user message — i.e. this turn, not
+/// the conversation. Scanning the whole transcript would let a path mentioned
+/// an hour ago wing a turn about something else, which is the scope leakage
+/// this design exists to prevent.
+pub fn turn_tool_call_text(messages: &[permagent::conversation::message::Message]) -> String {
+    use permagent::conversation::message::MessageContent;
+
+    let start = messages
+        .iter()
+        .rposition(|m| m.role == rmcp::model::Role::User)
+        .map(|i| i + 1)
+        .unwrap_or(0);
+
+    let mut out = String::new();
+    for message in &messages[start..] {
+        for content in &message.content {
+            let rendered = match content {
+                MessageContent::ToolRequest(r) => r.to_readable_string(),
+                MessageContent::FrontendToolRequest(r) => match &r.tool_call {
+                    Ok(call) => format!(
+                        "Tool: {}, Args: {}",
+                        call.name,
+                        serde_json::to_string(&call.arguments).unwrap_or_default()
+                    ),
+                    Err(_) => continue,
+                },
+                _ => continue,
+            };
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&rendered);
+            if out.len() >= MAX_TOOL_TEXT_CHARS {
+                // Truncate on a character boundary — `String::truncate` panics
+                // on a byte index inside a multi-byte character, and tool
+                // arguments carry arbitrary user text.
+                return out.chars().take(MAX_TOOL_TEXT_CHARS).collect();
+            }
+        }
+    }
+    out
+}
+
+/// Cap on the tool-call text a corroboration check will scan. A turn that
+/// pasted a megabyte of JSON must not turn a per-turn regex sweep into a
+/// latency problem; the project path, when there is one, is in the arguments
+/// near the front.
+const MAX_TOOL_TEXT_CHARS: usize = 16_384;
 
 /// Persist a chat turn's memories via SafeBrain::remember_with.
 /// Spawns a detached background task — fire-and-forget.
 pub fn spawn_persist_chat_turn(
     brain: permagent::brain_handle::SafeBrain,
+    pool: Option<sqlx::Pool<sqlx::Sqlite>>,
     session_id: String,
     turn_idx: usize,
     user_text: String,
     assistant_text: String,
+    tool_text: String,
 ) {
     tokio::spawn(async move {
         let key = format!("chat-{}-{}", session_id, turn_idx);
@@ -364,8 +434,20 @@ pub fn spawn_persist_chat_turn(
         let device_id = *brain.device_id();
         let key_for_log = key.clone();
 
+        // Does this turn's own evidence support the project the session was
+        // opened in? `None` pool (no session DB mounted) means we cannot ask,
+        // so we do not guess: unverifiable, wing stays empty.
+        let (hint, verdict) = match pool.as_ref() {
+            Some(pool) => {
+                permagent::session_wing::decide_turn_wing(pool, &session_id, &content, &tool_text)
+                    .await
+            }
+            None => (None, permagent::session_wing::WingVerdict::Unverifiable),
+        };
+        let wing = verdict.wing().map(str::to_string);
+
         match brain
-            .remember_with(&key, &content, chat_turn_opts(&session_id, device_id))
+            .remember_with(&key, &content, chat_turn_opts(&session_id, device_id, wing))
             .await
         {
             Ok(_) => {
@@ -386,6 +468,21 @@ pub fn spawn_persist_chat_turn(
                     e
                 );
             }
+        }
+
+        // Record what was decided and on what evidence — including the turns
+        // left honestly unwinged. Without the negative rows the corroborated
+        // yield is a numerator with no denominator, and a turn nobody looked
+        // at is indistinguishable from a turn that had nothing to go on.
+        if let Some(pool) = pool.as_ref() {
+            permagent::session_wing::record_turn_provenance(
+                pool,
+                &key,
+                &session_id,
+                hint.as_ref(),
+                &verdict,
+            )
+            .await;
         }
     });
 }
@@ -479,14 +576,87 @@ mod tests {
     #[test]
     fn chat_turn_opts_carry_the_session_as_the_episode() {
         let device_id = spectral::DeviceId::from_bytes([7u8; 32]);
-        let opts = chat_turn_opts("session-abc", device_id);
+        let opts = chat_turn_opts("session-abc", device_id, None);
 
         assert_eq!(opts.episode_id.as_deref(), Some("session-abc"));
         assert_eq!(opts.session_id.as_deref(), Some("session-abc"));
 
         // Stable across turns: the same session yields the same episode, which
         // is the whole point — a per-write id would link nothing.
-        let later_turn = chat_turn_opts("session-abc", device_id);
+        let later_turn = chat_turn_opts("session-abc", device_id, None);
         assert_eq!(opts.episode_id, later_turn.episode_id);
+    }
+
+    /// A corroborated turn carries its project as the wing; an uncorroborated
+    /// one carries nothing. `chat_turn_opts` itself does not decide — it is the
+    /// seam where the decision becomes a write, and it must not invent a wing.
+    #[test]
+    fn a_corroborated_turn_carries_its_wing_and_an_uncorroborated_one_does_not() {
+        let device_id = spectral::DeviceId::from_bytes([7u8; 32]);
+
+        let winged = chat_turn_opts("s1", device_id, Some("permagent".to_string()));
+        assert_eq!(winged.wing.as_deref(), Some("permagent"));
+
+        let unwinged = chat_turn_opts("s1", device_id, None);
+        assert_eq!(
+            unwinged.wing, None,
+            "no corroboration means an honest `general`, never a guess"
+        );
+    }
+
+    fn tool_msg(name: &str, path: &str) -> permagent::conversation::message::Message {
+        let mut args = rmcp::model::JsonObject::new();
+        args.insert("path".to_string(), serde_json::json!(path));
+        let params = rmcp::model::CallToolRequestParams::new(name.to_string()).with_arguments(args);
+        permagent::conversation::message::Message::assistant().with_tool_request("t1", Ok(params))
+    }
+
+    /// Tool arguments from THIS turn are corroboration evidence. Tool arguments
+    /// from an earlier turn are not — treating them as such is exactly the
+    /// scope leakage the wing rule exists to prevent.
+    #[test]
+    fn tool_call_text_covers_this_turn_and_stops_at_the_previous_user_message() {
+        use permagent::conversation::message::Message;
+
+        let messages = vec![
+            Message::user().with_text("work on plekk"),
+            tool_msg("read_file", "/dev/plekk/src/lib.rs"),
+            Message::assistant().with_text("done"),
+            Message::user().with_text("now fix the test"),
+            tool_msg("read_file", "/dev/permagent/crates/goose/src/lib.rs"),
+        ];
+
+        let text = turn_tool_call_text(&messages);
+        assert!(
+            text.contains("/dev/permagent/crates/goose/src/lib.rs"),
+            "this turn's tool call must be visible: {text}"
+        );
+        assert!(
+            !text.contains("plekk"),
+            "an earlier turn's tool call must not leak into this one: {text}"
+        );
+    }
+
+    #[test]
+    fn a_turn_with_no_tool_calls_yields_no_tool_text() {
+        use permagent::conversation::message::Message;
+        let messages = vec![
+            Message::user().with_text("hello"),
+            Message::assistant().with_text("hi"),
+        ];
+        assert_eq!(turn_tool_call_text(&messages), "");
+    }
+
+    /// The wing must not disturb the identity fields a chat memory has always
+    /// carried — a turn is still its session's episode whether or not it is
+    /// scoped to a project.
+    #[test]
+    fn the_wing_does_not_change_the_session_or_episode_identity() {
+        let device_id = spectral::DeviceId::from_bytes([7u8; 32]);
+        let a = chat_turn_opts("s1", device_id, None);
+        let b = chat_turn_opts("s1", device_id, Some("plekk".to_string()));
+        assert_eq!(a.episode_id, b.episode_id);
+        assert_eq!(a.session_id, b.session_id);
+        assert_eq!(a.source, b.source);
     }
 }

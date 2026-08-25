@@ -1781,7 +1781,19 @@ pub async fn reindex_project_code(
     // Markdown/text project knowledge is useful even when tree-sitter finds no
     // source language. Run this before the NoSourceFiles decision so a notes-only
     // project still gets durable, project-scoped Brain memories.
-    let text_digests = match reader::ingest_tree_for_project(&project.id, &notes_root).await {
+    //
+    // Unlike a chat turn (where the UI's open project is only a hypothesis
+    // about what the conversation is about — see `permagent::session_wing`),
+    // this ingest IS a property of a known project: `project` is the row
+    // itself, so the slug needs no lookup. Skip the implicit "personal" project
+    // the same way
+    // `crate::wing_rules::project_wing_rules` and `project_notes::resolve_note_wing`
+    // do: its wing would swallow anything mentioning the word "personal", so an
+    // unscoped project should keep falling through to Spectral's classifier
+    // instead of a literal "personal" wing.
+    let wing =
+        (project.slug != permagent::session_wing::PERSONAL_SLUG).then_some(project.slug.as_str());
+    let text_digests = match reader::ingest_tree_for_project(&project.id, &notes_root, wing).await {
         Ok(digests) => digests,
         Err(e) => {
             tracing::warn!(project = %project.id, error = %e, "tree ingest of project notes failed");

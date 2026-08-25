@@ -160,7 +160,17 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
             provider_name     TEXT,
             model_config_json TEXT,
             goose_mode        TEXT NOT NULL DEFAULT 'auto',
-            thread_id         TEXT
+            thread_id         TEXT,
+            -- The project the UI had open when this session was created, as a
+            -- HYPOTHESIS about scope (see `permagent::session_wing`). NOT the
+            -- session's wing: a turn only inherits it when the turn's own
+            -- content or tool calls corroborate it. Nullable because a global
+            -- chat honestly has no project.
+            project_hint_id   TEXT,
+            project_hint_wing TEXT,
+            -- When this session last wrote a chat turn. A hint does not survive
+            -- a long silence: see `permagent::session_wing::HINT_GAP_SECONDS`.
+            project_hint_last_turn_at TEXT
         )",
     )
     .execute(&mut *tx)
@@ -801,6 +811,13 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     apply_incidents_schema(pool).await?;
     apply_lessons_schema(pool).await?;
 
+    // The session project hint + per-turn wing provenance. The two `sessions`
+    // columns are already in the CREATE TABLE above, so the guarded ADD COLUMNs
+    // no-op here; the provenance table is not, and a fresh install that skipped
+    // it would silently stop recording which signal winged each turn — the one
+    // number this whole change is measured by.
+    apply_session_project_hint_schema(pool).await?;
+
     info!(
         "Spectral schema v{} initialized successfully",
         SPECTRAL_SCHEMA_VERSION
@@ -998,6 +1015,102 @@ pub async fn apply_incidents_schema(pool: &Pool<Sqlite>) -> Result<()> {
 ///
 /// Fully idempotent — every statement uses IF NOT EXISTS — so it is safe on
 /// fresh installs and on every boot.
+/// The session project hint and the per-turn wing provenance record.
+///
+/// # What it adds
+///
+/// * `sessions.project_hint_id` / `sessions.project_hint_wing` — the project
+///   the UI had open when the session was created, in canonical
+///   `project:<slug>` form plus the slug that would be its wing. It is a
+///   HYPOTHESIS about scope, never the session's wing: Spectral measured a
+///   session-start pin at 21% verified precision (of 334 turns it would assign,
+///   the turn's own content names the same project in 31, a different one in
+///   114, none in 189). Writing it as a wing would be invisibly wrong in the
+///   recognition ground truth and the TACT gate, so the hint is stored and the
+///   wing is earned per turn — see [`crate::session_wing`].
+///
+/// * `chat_turn_wing_provenance` — one row per chat turn recording what was
+///   decided and on what evidence: the hint that was available, the bucket the
+///   turn fell into (`corroborated` / `conflicting` / `unverifiable`), which
+///   source corroborated it (`content-name` / `alias` / `tool-path`), and the
+///   wing actually written. Without this the yield of each signal would be an
+///   assumption rather than a measurement, and a turn left honestly unwinged
+///   would be indistinguishable from a turn nothing ever looked at.
+///
+/// Keyed on `memory_key` (the Brain key, `chat-<session>-<idx>`) so a re-write
+/// of the same turn replaces its provenance rather than accumulating rows.
+///
+/// # Idempotence
+///
+/// PRAGMA-guarded `ADD COLUMN` plus `CREATE TABLE IF NOT EXISTS`: additive,
+/// base-version independent, and safe to run on every boot. It is deliberately
+/// NOT gated on a version stamp — this codebase has been bitten three times by
+/// a schema repair sitting behind a `version < N` that a later stamp skipped
+/// past (see the recognition-columns and briefings safety nets), and a missing
+/// column here would fail every chat-turn write, not a niche feature.
+pub async fn apply_session_project_hint_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut tx = pool.begin().await?;
+
+    for (col, ddl) in [
+        (
+            "project_hint_id",
+            "ALTER TABLE sessions ADD COLUMN project_hint_id TEXT",
+        ),
+        (
+            "project_hint_wing",
+            "ALTER TABLE sessions ADD COLUMN project_hint_wing TEXT",
+        ),
+        (
+            "project_hint_last_turn_at",
+            "ALTER TABLE sessions ADD COLUMN project_hint_last_turn_at TEXT",
+        ),
+    ] {
+        let has_column: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = ?")
+                .bind(col)
+                .fetch_one(&mut *tx)
+                .await?;
+        if has_column == 0 {
+            sqlx::query(ddl).execute(&mut *tx).await?;
+        }
+    }
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS chat_turn_wing_provenance (
+            memory_key        TEXT PRIMARY KEY,
+            session_id        TEXT NOT NULL,
+            project_hint_id   TEXT,
+            project_hint_wing TEXT,
+            verdict           TEXT NOT NULL
+                              CHECK (verdict IN ('corroborated','conflicting','unverifiable')),
+            corroborated_by   TEXT,
+            named_wing        TEXT,
+            wing_written      TEXT,
+            created_at        TEXT NOT NULL
+                              DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_chat_turn_wing_provenance_session
+         ON chat_turn_wing_provenance(session_id)",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_chat_turn_wing_provenance_verdict
+         ON chat_turn_wing_provenance(verdict)",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
 pub async fn apply_recognition_schema(pool: &Pool<Sqlite>) -> Result<()> {
     let mut tx = pool.begin().await?;
 

@@ -1146,6 +1146,49 @@ async fn backfill_approval_halls(
     Ok(Json(report))
 }
 
+/// Survey chat memories in the catch-all wing, and (when Spectral supports the
+/// write) assign a wing where two independent signals agree.
+///
+/// See [`permagent::wing_backfill`] for the rule and the measurement behind it.
+/// **Dry run by default**: `apply` is `false` unless explicitly passed, and a
+/// dry run is the shape to run first. The response reports all four buckets —
+/// `corroborated`, `conflicting`, `unverifiable`, `noHint` — plus corroborated
+/// counts by signal and by wing, and up to 25 verbatim examples.
+///
+/// A `applyBlocked` string in the response means a write was requested and
+/// refused, with the reason. Do not read a zero `applied` as "nothing matched";
+/// read `corroborated`.
+#[utoipa::path(post, path = "/api/brain/backfill-chat-wings",
+    params(("apply" = Option<bool>, Query, description = "Write the corroborated bucket. Default false (dry run).")),
+    responses(
+        (status = 200, description = "Bucket counts, per-signal yield, and sample rows"),
+        (status = 503, description = "Session store is not ready"),
+    )
+)]
+async fn backfill_chat_wings(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<BackfillChatWingsQuery>,
+) -> Result<Json<permagent::wing_backfill::WingBackfillReport>, crate::routes::errors::ErrorResponse>
+{
+    let pool =
+        state.session_manager().pool_clone().await.map_err(|e| {
+            crate::routes::errors::ErrorResponse::service_unavailable(e.to_string())
+        })?;
+    let report = permagent::wing_backfill::run_on_default_paths(&pool, params.apply)
+        .await
+        .map_err(crate::routes::errors::ErrorResponse::internal)?;
+    Ok(Json(report))
+}
+
+/// `apply` defaults to false: the safe shape has to be the one you get by not
+/// thinking about it.
+#[derive(serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BackfillChatWingsQuery {
+    #[serde(default)]
+    apply: bool,
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/brain/search", get(brain_search))
@@ -1156,6 +1199,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
             "/api/brain/backfill-approval-halls",
             post(backfill_approval_halls),
         )
+        .route("/api/brain/backfill-chat-wings", post(backfill_chat_wings))
         .with_state(state)
 }
 

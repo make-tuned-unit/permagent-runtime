@@ -533,12 +533,20 @@ pub async fn reply(
             let turn_idx = all_messages.len();
 
             if !user_text.is_empty() && !assistant_text.is_empty() {
+                // This turn's tool calls, read here because they are gone by
+                // the time the memory is read back — the corroboration check
+                // in `permagent::session_wing` uses them to recognise a turn
+                // that worked inside a project without naming it.
+                let tool_text = crate::brain_ops::turn_tool_call_text(all_messages.messages());
+                let pool = state.session_manager().pool_clone().await.ok();
                 crate::brain_ops::spawn_persist_chat_turn(
                     brain.clone(),
+                    pool,
                     session_id.clone(),
                     turn_idx,
                     user_text,
                     assistant_text,
+                    tool_text,
                 );
             }
         }

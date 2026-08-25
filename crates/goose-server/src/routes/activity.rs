@@ -48,6 +48,7 @@ struct ErrorBody {
 }
 
 async fn emit_event(
+    State(state): State<Arc<AppState>>,
     Json(mut event): Json<ActivityEvent>,
 ) -> Result<Json<EmitResponse>, (StatusCode, Json<ErrorBody>)> {
     // ── Rate limit ──
@@ -86,6 +87,20 @@ async fn emit_event(
     // ── Enforce canonical tier (server-side override) ──
     event.tier = activity::canonical_tier(&event.event_type);
 
+    // Capture the session→project association the client just told us about.
+    //
+    // This is the seam where it actually arrives: the desktop shells create
+    // their chat sessions over ACP rather than through `POST /api/sessions`, so
+    // a `project_selected` event carrying a session id is the moment the UI
+    // says "this chat belongs to this project". Recorded as a HYPOTHESIS on the
+    // session row, never as the session's wing — see `permagent::session_wing`
+    // for the measurement (21% verified precision) that makes the difference.
+    //
+    // Once-only: `set_session_project_hint` refuses to overwrite an existing
+    // hint, so a later selection cannot re-scope a conversation already under
+    // way. Best-effort — an activity emit must never fail over this.
+    capture_session_project_hint(&state, &event).await;
+
     let event_id = event.event_id.clone();
     activity::emit_activity(event);
 
@@ -93,6 +108,68 @@ async fn emit_event(
         accepted: true,
         event_id,
     }))
+}
+
+/// Record a `project_selected` event's session→project association, if it has
+/// one. Silent no-op for every other event, for a selection with no session
+/// (opening a project board is a genuine sessionless selection), and for a
+/// project id that is not in canonical `project:<slug>` form.
+async fn capture_session_project_hint(state: &AppState, event: &ActivityEvent) {
+    use permagent::events::activity::ActivityEventType;
+
+    if event.event_type != ActivityEventType::ProjectSelected {
+        return;
+    }
+    let Some(session_id) = event
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return;
+    };
+    let Some(project_id) = event
+        .project_id
+        .as_deref()
+        .or_else(|| event.payload.get("project_id").and_then(|v| v.as_str()))
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    else {
+        return;
+    };
+
+    let pool = match state.session_manager().pool_clone().await {
+        Ok(pool) => pool,
+        Err(e) => {
+            tracing::warn!(
+                target: "permagentd::activity",
+                error = %e,
+                "no session pool for the project hint"
+            );
+            return;
+        }
+    };
+
+    match permagent::session_wing::set_session_project_hint(&pool, session_id, project_id).await {
+        Ok(true) => tracing::info!(
+            target: "permagentd::activity",
+            session = %session_id,
+            project = %project_id,
+            "recorded the session project hint"
+        ),
+        Ok(false) => tracing::debug!(
+            target: "permagentd::activity",
+            session = %session_id,
+            "session already has a project hint — not overwritten"
+        ),
+        Err(e) => tracing::warn!(
+            target: "permagentd::activity",
+            session = %session_id,
+            project = %project_id,
+            error = %e,
+            "could not record the session project hint"
+        ),
+    }
 }
 
 // ── GET /api/activity — durable activity journal (#619) ────────────────

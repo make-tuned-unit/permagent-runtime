@@ -1133,6 +1133,13 @@ impl SessionStorage {
                     // Governed lesson pool (Phase 3). Same discipline: new tables
                     // only, idempotent, version-independent.
                     spectral_schema::apply_lessons_schema(&self.pool).await?;
+
+                    // Session project hint + per-turn wing provenance. Version
+                    // independent for the same reason as the recognition
+                    // columns above: a missing column here fails every chat
+                    // turn write, and a `version < N` gate is exactly how the
+                    // last three schema repairs went missing in production.
+                    spectral_schema::apply_session_project_hint_schema(&self.pool).await?;
                 } else {
                     info!("Initializing Spectral schema at {:?}", self.db_path);
                     spectral_schema::init_spectral_db(&self.pool).await?;

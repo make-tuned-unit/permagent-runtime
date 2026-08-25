@@ -169,6 +169,20 @@ fn default_limit() -> usize {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct BackfillApprovalHallsParams {}
 
+/// The wing survey takes exactly one knob, and its default is the safe one.
+///
+/// There is deliberately no "which wing" or "which project" filter: the rule is
+/// defined in [`crate::wing_backfill`] and narrowing it from a tool call is how
+/// a run reports a clean survey over rows it never looked at.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct BackfillChatWingsParams {
+    /// Write the corroborated bucket. Defaults to FALSE — a dry run that
+    /// changes nothing and reports what it would do. Run the dry run first,
+    /// every time.
+    #[serde(default)]
+    apply: bool,
+}
+
 // (Ollama response types removed — streaming NDJSON parser handles inline)
 
 // ---------------------------------------------------------------------------
@@ -191,7 +205,10 @@ impl LibrarianClient {
                  specific memory. Use list_undescribed to find memories that need descriptions. \
                  Use backfill_approval_halls to repair approval records that were filed into the \
                  wrong hall before the approval rule existed — it snapshots first and is safe to \
-                 re-run.",
+                 re-run. Use backfill_chat_wings to survey chat memories left in the catch-all \
+                 `general` wing — it is a dry run unless apply=true, and it only assigns a wing \
+                 where the memory's own content corroborates the project its session was opened \
+                 in.",
             );
 
         let active_model = resolve_model();
@@ -259,6 +276,42 @@ impl LibrarianClient {
 
         // The structured report goes to the agent alongside the summary, so a
         // remainder or a per-row error is visible rather than summarised away.
+        let detail = serde_json::to_string_pretty(&report)
+            .unwrap_or_else(|e| format!("(report could not be serialised: {e})"));
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "{}\n\n{}",
+            report.summary(),
+            detail
+        ))]))
+    }
+
+    /// Survey chat memories in the catch-all wing and report the four buckets.
+    ///
+    /// Thin wrapper over [`crate::wing_backfill::run_on_default_paths`] — the
+    /// same function `POST /api/brain/backfill-chat-wings` calls, so the tool
+    /// and the route cannot drift apart.
+    ///
+    /// The full structured report goes back alongside the summary on purpose:
+    /// the `conflicting` count is the number that falsifies the whole hint
+    /// mechanism, and a summary line that hid it would be worse than useless.
+    async fn handle_backfill_chat_wings(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<CallToolResult, String> {
+        let args = arguments.unwrap_or_default();
+        let params: BackfillChatWingsParams =
+            serde_json::from_value(serde_json::Value::Object(args))
+                .unwrap_or(BackfillChatWingsParams { apply: false });
+
+        let pool = self
+            .context
+            .session_manager
+            .pool_clone()
+            .await
+            .map_err(|e| format!("session store not available: {e}"))?;
+        let report = crate::wing_backfill::run_on_default_paths(&pool, params.apply).await?;
+
         let detail = serde_json::to_string_pretty(&report)
             .unwrap_or_else(|e| format!("(report could not be serialised: {e})"));
 
@@ -357,6 +410,12 @@ impl McpClientTrait for LibrarianClient {
                     .to_string(),
                 schema::<BackfillApprovalHallsParams>(),
             ),
+            Tool::new(
+                "backfill_chat_wings".to_string(),
+                "Survey chat memories sitting in the catch-all `general` wing and report which                  could be scoped to a project. DRY RUN BY DEFAULT (apply=false): it changes                  nothing unless asked. A memory is only assigned where TWO independent signals                  agree — a project was open for that session, AND the memory's own content names                  that same project — because the session's open project alone was measured at 21%                  precision. Reports four buckets: corroborated, conflicting (content names a                  DIFFERENT project), unverifiable (names none), and noHint. Report the                  `conflicting` count to the user verbatim: it is the number that would falsify                  the approach, not a rounding error."
+                    .to_string(),
+                schema::<BackfillChatWingsParams>(),
+            ),
         ];
 
         Ok(ListToolsResult {
@@ -380,6 +439,7 @@ impl McpClientTrait for LibrarianClient {
             }
             "list_undescribed" => self.handle_list_undescribed(arguments).await,
             "backfill_approval_halls" => self.handle_backfill_approval_halls(arguments).await,
+            "backfill_chat_wings" => self.handle_backfill_chat_wings(arguments).await,
             _ => Err(format!("Unknown tool: {}", name)),
         };
 
@@ -2889,17 +2949,28 @@ CATEGORIES: team meeting, project planning, engineering"#;
     }
 
     #[tokio::test]
-    async fn test_list_tools_returns_three_tools() {
+    async fn test_list_tools_returns_four_tools() {
         let client = LibrarianClient::new(test_context()).unwrap();
         let result = client
             .list_tools("test", None, CancellationToken::new())
             .await
             .unwrap();
-        assert_eq!(result.tools.len(), 3);
+        assert_eq!(result.tools.len(), 4);
         let names: Vec<String> = result.tools.iter().map(|t| t.name.to_string()).collect();
         assert!(names.contains(&"describe_memory".to_string()));
         assert!(names.contains(&"list_undescribed".to_string()));
         assert!(names.contains(&"backfill_approval_halls".to_string()));
+        assert!(names.contains(&"backfill_chat_wings".to_string()));
+    }
+
+    /// The dangerous default would be `apply: true`. Assert the shape a caller
+    /// gets by saying nothing.
+    #[test]
+    fn backfill_chat_wings_defaults_to_a_dry_run() {
+        let params: BackfillChatWingsParams = serde_json::from_str("{}").unwrap();
+        assert!(!params.apply, "omitting `apply` must never write");
+        let explicit: BackfillChatWingsParams = serde_json::from_str(r#"{"apply": true}"#).unwrap();
+        assert!(explicit.apply);
     }
 
     #[tokio::test]

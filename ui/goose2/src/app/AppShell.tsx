@@ -335,15 +335,18 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
 
   const handleStartChatFromProject = useCallback(
     (project: ProjectInfo) => {
-      // Activity: project selected — user initiated a chat within a project
-      invoke("emit_activity", {
-        event_type: "project_selected",
-        source_surface: "project_picker",
-        payload: { project_id: project.id, project_name: project.name },
-        session_id: null,
-        project_id: project.id,
-      }).catch(() => {});
-      void createNewTab(DEFAULT_CHAT_TITLE, project);
+      // Activity: project selected — user initiated a chat within a project.
+      // Emitted AFTER the session exists so the event carries its real id
+      // (never null/invented for a selection that started a chat).
+      void createNewTab(DEFAULT_CHAT_TITLE, project).then((session) => {
+        invoke("emit_activity", {
+          event_type: "project_selected",
+          source_surface: "project_picker",
+          payload: { project_id: project.id, project_name: project.name },
+          session_id: session.id,
+          project_id: project.id,
+        }).catch(() => {});
+      });
     },
     [createNewTab],
   );
@@ -352,15 +355,17 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     (projectId: string) => {
       const project = projectStore.projects.find((p) => p.id === projectId);
       if (project) {
-        // Activity: project selected — new chat within an existing project
-        invoke("emit_activity", {
-          event_type: "project_selected",
-          source_surface: "project_picker",
-          payload: { project_id: project.id, project_name: project.name },
-          session_id: null,
-          project_id: project.id,
-        }).catch(() => {});
-        void createNewTab(DEFAULT_CHAT_TITLE, project);
+        // Activity: project selected — new chat within an existing project.
+        // Emitted AFTER the session exists so the event carries its real id.
+        void createNewTab(DEFAULT_CHAT_TITLE, project).then((session) => {
+          invoke("emit_activity", {
+            event_type: "project_selected",
+            source_surface: "project_picker",
+            payload: { project_id: project.id, project_name: project.name },
+            session_id: session.id,
+            project_id: project.id,
+          }).catch(() => {});
+        });
       }
     },
     [createNewTab, projectStore.projects],

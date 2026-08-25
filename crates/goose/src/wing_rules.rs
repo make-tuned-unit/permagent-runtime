@@ -89,7 +89,15 @@ pub fn project_wing_rules(projects: &[(String, String)]) -> Vec<(String, String)
 /// Lowercase, split on whitespace and separator punctuation, escape each
 /// token, and rejoin with the flexible separator class. Returns `None` when
 /// nothing survives (e.g. a name that is all punctuation).
-fn tokens_to_pattern(raw: &str) -> Option<String> {
+///
+/// Public because the write-time corroboration check in
+/// [`crate::session_wing`] must be able to ask "does this turn name *this one*
+/// project?" for the display name and the slug SEPARATELY — the generated
+/// rule set above fuses both variants into one alternation, which answers
+/// "which project" but not "by which spelling". Two callers, one tokenizer:
+/// a second implementation is how a corroboration check and the classifier it
+/// is supposed to agree with quietly diverge.
+pub fn tokens_to_pattern(raw: &str) -> Option<String> {
     let tokens: Vec<String> = raw
         .to_lowercase()
         .split(|c: char| c.is_whitespace() || c == '-' || c == '_' || c == '.')
@@ -103,26 +111,35 @@ fn tokens_to_pattern(raw: &str) -> Option<String> {
     }
 }
 
+/// The `(slug, name)` project registry, in rule order.
+///
+/// Split out of [`load_project_wing_rules`] because the write-time
+/// corroboration check and the backfill need the ROWS (they match a specific
+/// project's name and slug separately), not the fused rule strings. Best-effort:
+/// any error degrades to an empty vec, which every caller reads as "we know of
+/// no projects", i.e. nothing can be corroborated — the safe direction.
+pub async fn load_project_rows(pool: &Pool<Sqlite>) -> Vec<(String, String)> {
+    match sqlx::query_as("SELECT slug, name FROM projects ORDER BY slug")
+        .fetch_all(pool)
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            warn!(
+                target: "permagent::wing_rules",
+                error = %e,
+                "failed to load project registry — falling back to default wing rules"
+            );
+            Vec::new()
+        }
+    }
+}
+
 /// Load all projects (any status — archived projects' history still deserves
 /// correct wings) and generate rules. Best-effort: any error degrades to an
 /// empty vec, which callers treat as "pass None / keep defaults".
 pub async fn load_project_wing_rules(pool: &Pool<Sqlite>) -> Vec<(String, String)> {
-    let rows: Vec<(String, String)> =
-        match sqlx::query_as("SELECT slug, name FROM projects ORDER BY slug")
-            .fetch_all(pool)
-            .await
-        {
-            Ok(rows) => rows,
-            Err(e) => {
-                warn!(
-                    target: "permagent::wing_rules",
-                    error = %e,
-                    "failed to load project registry — falling back to default wing rules"
-                );
-                return Vec::new();
-            }
-        };
-
+    let rows = load_project_rows(pool).await;
     let rules = project_wing_rules(&rows);
     debug!(
         target: "permagent::wing_rules",
@@ -131,6 +148,101 @@ pub async fn load_project_wing_rules(pool: &Pool<Sqlite>) -> Vec<(String, String
         "generated per-project wing rules"
     );
     rules
+}
+
+/// [`tokens_to_pattern`], anchored to whole tokens.
+///
+/// Without anchoring, `permagent` matches inside `permagent-runtime` — and
+/// those are two of the largest real wings (the marketing site and this
+/// codebase). Anchoring alone does not settle it either, because `\b` sits
+/// happily against the hyphen; the caller must ALSO take the longest match.
+/// This function provides the first half. See
+/// [`crate::session_wing::WingCorroborator`] for the second.
+///
+/// The boundary is added only where the adjacent character is a word
+/// character. A project called `C++ (native)` ends in punctuation, and `\b`
+/// after `+` would never match — an anchor that silently makes a project
+/// unrecognisable is worse than no anchor for that project.
+pub fn bounded_token_pattern(raw: &str) -> Option<String> {
+    let body = tokens_to_pattern(raw)?;
+    let lowered = raw.to_lowercase();
+    let tokens: Vec<&str> = lowered
+        .split(|c: char| c.is_whitespace() || c == '-' || c == '_' || c == '.')
+        .filter(|t| t.len() >= MIN_TOKEN_LEN)
+        .collect();
+    let first = tokens.first()?.chars().next()?;
+    let last = tokens.last()?.chars().last()?;
+
+    let mut out = String::new();
+    if first.is_alphanumeric() || first == '_' {
+        out.push_str(r"\b");
+    }
+    out.push_str(&body);
+    if last.is_alphanumeric() || last == '_' {
+        out.push_str(r"\b");
+    }
+    Some(out)
+}
+
+/// Project wing rules compiled once, matched many times.
+///
+/// [`project_wing_rules`] returns patterns as strings because that is the shape
+/// `BrainConfig::wing_rules` wants. Anything that evaluates them locally — the
+/// write-time corroboration check, the backfill sweep over a thousand memories —
+/// would otherwise recompile every regex for every row. Compile once here and
+/// keep Spectral's semantics exactly: lowercased haystack, rules tried in the
+/// order [`project_wing_rules`] produced (most specific first), FIRST MATCH
+/// WINS, no match means no project was named.
+pub struct CompiledWingRules {
+    rules: Vec<(regex::Regex, String)>,
+}
+
+impl CompiledWingRules {
+    /// Compile `(pattern, wing)` pairs, dropping any pattern that does not
+    /// compile rather than failing the whole set — a single malformed project
+    /// name must not blind the matcher to the other twenty-one. A dropped rule
+    /// is warned about, not swallowed silently.
+    pub fn compile(rules: &[(String, String)]) -> Self {
+        let mut compiled = Vec::with_capacity(rules.len());
+        for (pattern, wing) in rules {
+            match regex::Regex::new(pattern) {
+                Ok(re) => compiled.push((re, wing.clone())),
+                Err(e) => warn!(
+                    target: "permagent::wing_rules",
+                    wing = %wing,
+                    pattern = %pattern,
+                    error = %e,
+                    "wing rule failed to compile — that project cannot be recognised in text"
+                ),
+            }
+        }
+        Self { rules: compiled }
+    }
+
+    /// Build straight from the `(slug, name)` project registry.
+    pub fn from_projects(projects: &[(String, String)]) -> Self {
+        Self::compile(&project_wing_rules(projects))
+    }
+
+    /// The wing of the first project named in `text`, or `None` when the text
+    /// names no known project. `text` is lowercased here so callers cannot
+    /// forget to.
+    pub fn first_match(&self, text: &str) -> Option<&str> {
+        let text = text.to_lowercase();
+        self.rules
+            .iter()
+            .find(|(re, _)| re.is_match(&text))
+            .map(|(_, wing)| wing.as_str())
+    }
+
+    /// Number of compiled rules — the honest count after any drop above.
+    pub fn len(&self) -> usize {
+        self.rules.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.rules.is_empty()
+    }
 }
 
 #[cfg(test)]
@@ -231,5 +343,67 @@ mod tests {
     fn empty_registry_yields_no_rules() {
         assert!(rules_for(&[]).is_empty());
         // Callers treat empty as "pass None" — asserted at the state.rs seam.
+    }
+
+    #[test]
+    fn compiled_rules_agree_with_the_string_rules_they_came_from() {
+        let projects = [p("permagent", "Permagent"), p("plekk", "Plekk")];
+        let compiled = CompiledWingRules::from_projects(&projects);
+        assert_eq!(compiled.len(), 2);
+        assert_eq!(
+            compiled.first_match("the Permagent daemon"),
+            Some("permagent")
+        );
+        assert_eq!(compiled.first_match("PLEKK onboarding"), Some("plekk"));
+        assert_eq!(compiled.first_match("a grocery list"), None);
+    }
+
+    #[test]
+    fn compiled_rules_keep_first_match_wins_ordering() {
+        let projects = [
+            p("permagent", "Permagent"),
+            p("permagent-runtime", "Permagent Runtime"),
+        ];
+        let compiled = CompiledWingRules::from_projects(&projects);
+        assert_eq!(
+            compiled.first_match("bug in permagent-runtime"),
+            Some("permagent-runtime")
+        );
+    }
+
+    #[test]
+    fn an_uncompilable_rule_is_dropped_not_fatal() {
+        // A pattern that cannot compile must cost only its own project.
+        let compiled = CompiledWingRules::compile(&[
+            ("(unclosed".to_string(), "broken".to_string()),
+            ("plekk".to_string(), "plekk".to_string()),
+        ]);
+        assert_eq!(compiled.len(), 1);
+        assert_eq!(compiled.first_match("plekk onboarding"), Some("plekk"));
+    }
+
+    #[test]
+    fn bounded_patterns_anchor_on_word_characters_only() {
+        let p = bounded_token_pattern("Permagent").unwrap();
+        assert!(p.starts_with(r"\b") && p.ends_with(r"\b"));
+        let re = regex::Regex::new(&p).unwrap();
+        assert!(re.is_match("the permagent daemon"));
+        assert!(
+            !re.is_match("superpermagentish"),
+            "a whole-token match must not fire inside a longer word"
+        );
+    }
+
+    #[test]
+    fn a_name_ending_in_punctuation_is_not_anchored_into_uselessness() {
+        // `\b` after `+` can never match, so anchoring there would make the
+        // project unrecognisable rather than precise.
+        let p = bounded_token_pattern("C++ (native)").unwrap();
+        // Patterns are lowercased by the generator, so callers lowercase the
+        // haystack — `CompiledWingRules::first_match` and
+        // `session_wing::WingCorroborator::verdict` both do.
+        assert!(regex::Regex::new(&p)
+            .unwrap()
+            .is_match(&"the C++ (native) build".to_lowercase()));
     }
 }

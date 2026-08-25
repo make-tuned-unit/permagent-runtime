@@ -955,11 +955,17 @@ export const api = {
       method: 'DELETE',
     }),
 
-  // Create session — POST /api/sessions
-  createSession: (workingDir?: string) =>
+  // Create session — POST /api/sessions. `projectId` is the CANONICAL project
+  // id (`project:<slug>`) of the project open/known at creation time, so the
+  // daemon can wing-scope memories written in this session. Omitted (not
+  // `null`) when no project is open — never invented.
+  createSession: (workingDir?: string, projectId?: string) =>
     apiFetch<Session>('/api/sessions', {
       method: 'POST',
-      body: JSON.stringify(workingDir ? { workingDir } : {}),
+      body: JSON.stringify({
+        ...(workingDir ? { workingDir } : {}),
+        ...(projectId ? { projectId } : {}),
+      }),
     }),
 
   /**
