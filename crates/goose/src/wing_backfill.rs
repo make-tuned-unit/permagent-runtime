@@ -191,9 +191,12 @@ impl CatchAllTurn {
     /// the identity this writer minted. `None` for anything not shaped like a
     /// chat turn — those are skipped, not guessed at.
     fn session_id(&self) -> Option<&str> {
-        let rest = self.key.strip_prefix("chat-")?;
-        let cut = rest.rfind('-')?;
-        (cut > 0).then(|| &rest[..cut])
+        // `rsplit_once` rather than a byte-index slice: the turn index is the
+        // LAST hyphen-separated field, and a session id contains hyphens of its
+        // own. Splitting also keeps us off `&s[..i]`, which panics if the index
+        // ever lands inside a multi-byte character.
+        let (session, _turn_idx) = self.key.strip_prefix("chat-")?.rsplit_once('-')?;
+        (!session.is_empty()).then_some(session)
     }
 }
 
@@ -291,7 +294,9 @@ fn reconstruct_hint_slug(timeline: &[(String, String)], at: &str) -> Option<Stri
         .filter_map(|(ts, slug)| {
             let ts = parse_ts(ts)?;
             let age = at_ts - ts;
-            (age >= 0 && age <= HINT_WINDOW_SECONDS).then_some((ts, slug.clone()))
+            (0..=HINT_WINDOW_SECONDS)
+                .contains(&age)
+                .then_some((ts, slug.clone()))
         })
         .max_by_key(|(ts, _)| *ts)
         .map(|(_, slug)| slug)

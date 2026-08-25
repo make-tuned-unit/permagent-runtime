@@ -100,7 +100,7 @@ use tracing::warn;
 /// How long a conversation may go quiet before its project hint is no longer
 /// evidence about the next turn.
 ///
-/// Of the twelve sessions Jesse labelled by hand, two change subject entirely
+/// Of the twelve sessions the user labelled by hand, two change subject entirely
 /// mid-session, and the boundaries fall exactly on long silences: +152 min,
 /// +67 min, +1068 min. A session is not one topic — it is one *window*, and a
 /// window left open overnight is reopened for something else. So the hint is
@@ -450,6 +450,20 @@ pub async fn set_session_project_hint(
     Ok(result.rows_affected() > 0)
 }
 
+/// One row of the `sessions` ⋈ `projects` join a hint is read from: the
+/// canonical hint id, the hint's wing slug, the project's display name, and its
+/// root path.
+///
+/// Every column is nullable, and each `None` means something different: the
+/// session may carry no hint at all, and a hint whose project row has since
+/// been deleted still names a slug worth recognising.
+type HintRow = (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
 /// Read a session's project hint, enriched with the project's display name and
 /// root path.
 ///
@@ -462,12 +476,7 @@ pub async fn load_session_project_hint(
     pool: &Pool<Sqlite>,
     session_id: &str,
 ) -> Option<ProjectHint> {
-    let row: Option<(
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    )> = sqlx::query_as(
+    let row: Option<HintRow> = sqlx::query_as(
         "SELECT s.project_hint_id, s.project_hint_wing, p.name, p.root_path
              FROM sessions s
              LEFT JOIN projects p ON p.slug = s.project_hint_wing

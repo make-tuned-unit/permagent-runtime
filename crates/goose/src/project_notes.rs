@@ -625,17 +625,16 @@ mod tests {
             Some("acme")
         );
 
-        let personal = create_project(
-            &pool,
-            CreateProject {
-                name: "Personal".to_string(),
-                slug: Some("personal".to_string()),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap()
-        .id;
+        // The implicit personal project already exists — it is seeded by
+        // `init_spectral_db`. Creating a second one called "Personal" gets the
+        // uniquified slug `personal-2`, which is a DIFFERENT, ordinary project
+        // and should keep its wing; asking for it here would assert the
+        // opposite of the rule. Look up the real one.
+        let personal: String =
+            sqlx::query_scalar("SELECT id FROM projects WHERE slug = 'personal'")
+                .fetch_one(&pool)
+                .await
+                .expect("the implicit personal project must be seeded");
         assert_eq!(
             resolve_note_wing(&pool, &personal).await,
             None,

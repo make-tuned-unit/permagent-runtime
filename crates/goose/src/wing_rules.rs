@@ -399,8 +399,11 @@ mod tests {
         // `\b` after `+` can never match, so anchoring there would make the
         // project unrecognisable rather than precise.
         let p = bounded_token_pattern("C++ (native)").unwrap();
+        // Patterns are lowercased by the generator, so callers lowercase the
+        // haystack — `CompiledWingRules::first_match` and
+        // `session_wing::WingCorroborator::verdict` both do.
         assert!(regex::Regex::new(&p)
             .unwrap()
-            .is_match("the C++ (native) build"));
+            .is_match(&"the C++ (native) build".to_lowercase()));
     }
 }
