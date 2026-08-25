@@ -53,6 +53,28 @@
 //! `User: …\nAssistant: …` and the paths lived in the tool calls in between.
 //! At write time those arguments are still in hand.
 //!
+//! # Projects whose names nest
+//!
+//! `permagent` (the marketing site) and `permagent-runtime` (this codebase) are
+//! two of the largest wings, and one name contains the other. Word-boundary
+//! anchoring does not separate them on its own — `\b` sits happily against the
+//! hyphen, so a bare `permagent` pattern matches inside `permagent-runtime`.
+//! The rule is therefore **longest match wins**, evaluated across every
+//! project's every spelling, with shorter nested matches discarded. A bare
+//! `permagent` corroborates the site only when the runtime is not also named,
+//! and a path under a project's root outranks any name match.
+//!
+//! # A known gap this cannot close
+//!
+//! Lexical matching cannot recognise a project the user SAID rather than typed:
+//! a voice turn transcribed "Loft" for the project LAUFT names the project to a
+//! human and nothing at all to a regex. Those turns fall into `unverifiable`
+//! and stay honestly `general` — which is the right failure, but it is a recall
+//! gap, not an absence of signal. Spectral is assembling a labelled calibration
+//! set; the fix belongs there, measured, rather than in a fuzzy-stem heuristic
+//! here that would reintroduce exactly the collisions the retired demo fixtures
+//! caused.
+//!
 //! Two sources are deliberately NOT consulted:
 //!
 //! * **the Librarian's description** — measured: across 987 described memories
@@ -69,7 +91,7 @@
 //! includes personal conversation that belongs to no project at all, and the
 //! target was never zero.
 
-use crate::wing_rules::{self, CompiledWingRules};
+use crate::wing_rules;
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Sqlite};
 use tracing::warn;
@@ -198,39 +220,77 @@ impl WingVerdict {
 /// the registry is ~22 projects and a turn is a hot path.
 pub struct WingCorroborator {
     hint: ProjectHint,
-    /// Matches the hint project's display name.
-    name_re: Option<regex::Regex>,
-    /// Matches the hint project's slug form.
-    slug_re: Option<regex::Regex>,
-    /// Lowercased project root, when the project has one.
+    /// Lowercased project root, when the hint's project has one.
     root: Option<String>,
-    /// Every known project, for detecting that a DIFFERENT one was named.
-    registry: CompiledWingRules,
+    /// Every spelling of every known project — the hinted one included. One
+    /// candidate per (project, spelling), because the winner is decided by
+    /// match LENGTH and the losing spellings have to be in the race to lose it.
+    candidates: Vec<Candidate>,
+}
+
+/// One project, one spelling, compiled.
+struct Candidate {
+    wing: String,
+    source: CorroborationSource,
+    re: regex::Regex,
 }
 
 impl WingCorroborator {
     /// Build from a hint and the `(slug, name)` project registry.
     ///
     /// The registry should contain every project, including the hinted one —
-    /// [`WingVerdict::Conflicting`] is decided by comparing the first project
-    /// the text names against the hint, and a registry missing the hint would
-    /// make its own project look like a conflict.
+    /// a conflict is decided by comparing the project the text names against
+    /// the hint, and a registry missing the hint would make its own project
+    /// look like a conflict. If the hint's project is absent (its row was
+    /// deleted), its spellings are added so it can still be recognised.
     pub fn new(hint: ProjectHint, projects: &[(String, String)]) -> Self {
-        let compile =
-            |raw: &str| wing_rules::tokens_to_pattern(raw).and_then(|p| regex::Regex::new(&p).ok());
-        let name_re = compile(&hint.name);
-        let slug_re = compile(&hint.slug);
+        let mut candidates: Vec<Candidate> = Vec::new();
+        let mut push = |slug: &str, name: &str| {
+            if slug == PERSONAL_SLUG {
+                return;
+            }
+            // Display name first, so an exact tie between the two spellings of
+            // the SAME project records the more legible label.
+            for (raw, source) in [
+                (name, CorroborationSource::ContentName),
+                (slug, CorroborationSource::Alias),
+            ] {
+                let Some(pattern) = wing_rules::bounded_token_pattern(raw) else {
+                    continue;
+                };
+                if candidates
+                    .iter()
+                    .any(|c| c.wing == slug && c.re.as_str() == pattern)
+                {
+                    continue;
+                }
+                if let Ok(re) = regex::Regex::new(&pattern) {
+                    candidates.push(Candidate {
+                        wing: slug.to_string(),
+                        source,
+                        re,
+                    });
+                }
+            }
+        };
+
+        for (slug, name) in projects {
+            push(slug, name);
+        }
+        if !projects.iter().any(|(slug, _)| *slug == hint.slug) {
+            push(&hint.slug, &hint.name);
+        }
+
         let root = hint
             .root_path
             .as_deref()
             .map(str::trim)
             .filter(|r| !r.is_empty())
             .map(str::to_lowercase);
+
         Self {
-            name_re,
-            slug_re,
             root,
-            registry: CompiledWingRules::from_projects(projects),
+            candidates,
             hint,
         }
     }
@@ -243,14 +303,29 @@ impl WingCorroborator {
     /// Judge one turn.
     ///
     /// `content` is what will be stored (`User: …\nAssistant: …`); `tool_text`
-    /// is the turn's tool-call arguments, which are visible at write time and
-    /// mostly gone by the time the memory is read back. Both are searched for
-    /// every source — a project path can appear in either.
+    /// is the turn's tool-call arguments, visible at write time and mostly gone
+    /// by the time the memory is read back. Both are searched — a project path
+    /// or a project name can appear in either.
     ///
-    /// Order of preference when more than one source fires: display name,
-    /// then slug, then path. It is only a labelling order (all three set the
-    /// same wing), chosen so the recorded source is the most human-legible
-    /// evidence available rather than the incidental one.
+    /// # Order, and why it is this order
+    ///
+    /// 1. **A path under the hint's project root wins outright.** A file under
+    ///    a project's tree is structural evidence about what the turn was
+    ///    working on; a project name in prose is a mention, and a turn can
+    ///    mention any number of projects while editing exactly one.
+    /// 2. **Otherwise the LONGEST name match wins**, across every project's
+    ///    every spelling, and shorter nested matches are discarded. `\b`
+    ///    anchoring alone does not separate nesting projects, because a word
+    ///    boundary sits happily against the hyphen in `permagent-runtime` —
+    ///    so a bare `permagent` pattern matches inside it. Length does
+    ///    separate them: `permagent-runtime` (17) beats `permagent` (9), so a
+    ///    bare `permagent` corroborates the marketing site only when the
+    ///    runtime is not also named. These are two of the largest real wings;
+    ///    conflating them would be scope leakage between the two projects most
+    ///    likely to be confused.
+    /// 3. If the winner is the hinted project, that is corroboration; if it is
+    ///    a different one, that is a conflict and no wing is written; if
+    ///    nothing matched at all, it is unverifiable.
     pub fn verdict(&self, content: &str, tool_text: &str) -> WingVerdict {
         // The catch-all project is never a wing. Bail before any matching so
         // this can never be reported as corroborated.
@@ -264,46 +339,39 @@ impl WingCorroborator {
         haystack.push_str(tool_text);
         let haystack = haystack.to_lowercase();
 
-        let corroborated = |source: CorroborationSource| WingVerdict::Corroborated {
-            wing: self.hint.slug.clone(),
-            source,
-        };
-
-        if self
-            .name_re
-            .as_ref()
-            .is_some_and(|re| re.is_match(&haystack))
-        {
-            return corroborated(CorroborationSource::ContentName);
-        }
-        if self
-            .slug_re
-            .as_ref()
-            .is_some_and(|re| re.is_match(&haystack))
-        {
-            return corroborated(CorroborationSource::Alias);
-        }
         if self
             .root
             .as_deref()
             .is_some_and(|root| haystack.contains(root))
         {
-            return corroborated(CorroborationSource::ToolPath);
+            return WingVerdict::Corroborated {
+                wing: self.hint.slug.clone(),
+                source: CorroborationSource::ToolPath,
+            };
         }
 
-        // Nothing pointed at the hinted project. Did the turn point at a
-        // different one? That distinction does not change what we write — both
-        // leave the wing empty — but it is the number that tells us whether the
-        // hint mechanism is worth keeping.
-        match self.registry.first_match(&haystack) {
-            Some(other) if other != self.hint.slug => WingVerdict::Conflicting {
-                named_wing: other.to_string(),
+        // Longest match wins. Ties keep the earlier candidate, which is the
+        // display name of the same project before its slug, and otherwise
+        // registry order — deterministic either way.
+        let mut best: Option<(usize, &Candidate)> = None;
+        for candidate in &self.candidates {
+            let Some(len) = candidate.re.find_iter(&haystack).map(|m| m.len()).max() else {
+                continue;
+            };
+            if best.is_none_or(|(best_len, _)| len > best_len) {
+                best = Some((len, candidate));
+            }
+        }
+
+        match best {
+            Some((_, candidate)) if candidate.wing == self.hint.slug => WingVerdict::Corroborated {
+                wing: candidate.wing.clone(),
+                source: candidate.source,
             },
-            // `Some(self.hint.slug)` is unreachable in practice (the two checks
-            // above would have fired), but treat it as unverifiable rather than
-            // asserting: the registry's fused alternation and our per-spelling
-            // regexes are built from the same tokenizer, not the same string.
-            _ => WingVerdict::Unverifiable,
+            Some((_, candidate)) => WingVerdict::Conflicting {
+                named_wing: candidate.wing.clone(),
+            },
+            None => WingVerdict::Unverifiable,
         }
     }
 }
@@ -586,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn a_root_path_containing_the_slug_corroborates_by_spelling() {
+    fn a_path_under_the_project_root_corroborates_and_is_labelled_as_such() {
         let c = corroborator("plekk", "Plekk", Some("/Users/j/Documents/dev/plekk"));
         // Content that never says "plekk" in prose, but a tool call touched
         // the tree. Note this only works at WRITE time — the stored content
@@ -599,10 +667,116 @@ mod tests {
             v,
             WingVerdict::Corroborated {
                 wing: "plekk".to_string(),
-                source: CorroborationSource::Alias,
+                source: CorroborationSource::ToolPath,
             },
-            "the slug appears inside the path, so the cheaper spelling check \
-             fires first; either way the wing is the same"
+            "structural evidence outranks a name mention, and is recorded as \
+             the structural signal it is"
+        );
+    }
+
+    #[test]
+    fn a_path_under_the_hint_root_beats_another_project_named_in_prose() {
+        // The turn talks about Permagent while editing a file in Plekk. The
+        // file is what the turn was DOING; the name is what it mentioned.
+        let c = corroborator("plekk", "Plekk", Some("/Users/j/Documents/dev/plekk"));
+        let v = c.verdict(
+            "User: like the permagent one\nAssistant: done",
+            r#"{"path":"/Users/j/Documents/dev/plekk/src/lib.rs"}"#,
+        );
+        assert_eq!(
+            v,
+            WingVerdict::Corroborated {
+                wing: "plekk".to_string(),
+                source: CorroborationSource::ToolPath,
+            }
+        );
+    }
+
+    // ── nesting names: the two largest wings, one inside the other ──
+
+    fn nesting_registry() -> Vec<(String, String)> {
+        vec![
+            ("permagent".to_string(), "Permagent".to_string()),
+            (
+                "permagent-runtime".to_string(),
+                "Permagent Runtime".to_string(),
+            ),
+        ]
+    }
+
+    /// Which project does a turn name, judged from each side of the nesting?
+    /// Returns the wing the corroborator settled on, whichever verdict carried
+    /// it — the point is WHICH project won, not whether it matched the hint.
+    fn named_project(text: &str) -> Option<String> {
+        let c = WingCorroborator::new(hint("permagent", "Permagent", None), &nesting_registry());
+        match c.verdict(text, "") {
+            WingVerdict::Corroborated { wing, .. } => Some(wing),
+            WingVerdict::Conflicting { named_wing } => Some(named_wing),
+            WingVerdict::Unverifiable => None,
+        }
+    }
+
+    #[test]
+    fn the_runtime_name_does_not_corroborate_the_site() {
+        assert_eq!(
+            named_project("User: fixed permagent-runtime\nAssistant: ok"),
+            Some("permagent-runtime".to_string()),
+            "`permagent` matches inside `permagent-runtime`; the longer match \
+             must win or the two largest wings leak into each other"
+        );
+    }
+
+    #[test]
+    fn a_bare_site_name_corroborates_the_site() {
+        assert_eq!(
+            named_project("User: permagent is down\nAssistant: looking"),
+            Some("permagent".to_string())
+        );
+        assert_eq!(
+            named_project("User: the permagent app\nAssistant: ok"),
+            Some("permagent".to_string())
+        );
+    }
+
+    #[test]
+    fn when_both_are_named_the_longer_one_wins() {
+        assert_eq!(
+            named_project("User: permagent and permagent-runtime\nAssistant: ok"),
+            Some("permagent-runtime".to_string())
+        );
+        // Word order must not decide it.
+        assert_eq!(
+            named_project("User: permagent runtime, not permagent\nAssistant: ok"),
+            Some("permagent-runtime".to_string())
+        );
+    }
+
+    #[test]
+    fn the_runtime_hint_is_corroborated_by_its_own_name_and_conflicted_by_the_sites() {
+        let c = WingCorroborator::new(
+            hint("permagent-runtime", "Permagent Runtime", None),
+            &nesting_registry(),
+        );
+        assert_eq!(
+            c.verdict("User: permagent-runtime tests\nAssistant: ok", ""),
+            WingVerdict::Corroborated {
+                wing: "permagent-runtime".to_string(),
+                source: CorroborationSource::ContentName,
+            }
+        );
+        assert_eq!(
+            c.verdict("User: the permagent app\nAssistant: ok", ""),
+            WingVerdict::Conflicting {
+                named_wing: "permagent".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn a_whole_token_is_required_so_a_name_inside_a_word_does_not_match() {
+        assert_eq!(
+            named_project("User: superpermagentish nonsense\nAssistant: ok"),
+            None
         );
     }
 

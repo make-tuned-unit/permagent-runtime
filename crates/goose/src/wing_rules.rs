@@ -150,6 +150,40 @@ pub async fn load_project_wing_rules(pool: &Pool<Sqlite>) -> Vec<(String, String
     rules
 }
 
+/// [`tokens_to_pattern`], anchored to whole tokens.
+///
+/// Without anchoring, `permagent` matches inside `permagent-runtime` — and
+/// those are two of the largest real wings (the marketing site and this
+/// codebase). Anchoring alone does not settle it either, because `\b` sits
+/// happily against the hyphen; the caller must ALSO take the longest match.
+/// This function provides the first half. See
+/// [`crate::session_wing::WingCorroborator`] for the second.
+///
+/// The boundary is added only where the adjacent character is a word
+/// character. A project called `C++ (native)` ends in punctuation, and `\b`
+/// after `+` would never match — an anchor that silently makes a project
+/// unrecognisable is worse than no anchor for that project.
+pub fn bounded_token_pattern(raw: &str) -> Option<String> {
+    let body = tokens_to_pattern(raw)?;
+    let lowered = raw.to_lowercase();
+    let tokens: Vec<&str> = lowered
+        .split(|c: char| c.is_whitespace() || c == '-' || c == '_' || c == '.')
+        .filter(|t| t.len() >= MIN_TOKEN_LEN)
+        .collect();
+    let first = tokens.first()?.chars().next()?;
+    let last = tokens.last()?.chars().last()?;
+
+    let mut out = String::new();
+    if first.is_alphanumeric() || first == '_' {
+        out.push_str(r"\b");
+    }
+    out.push_str(&body);
+    if last.is_alphanumeric() || last == '_' {
+        out.push_str(r"\b");
+    }
+    Some(out)
+}
+
 /// Project wing rules compiled once, matched many times.
 ///
 /// [`project_wing_rules`] returns patterns as strings because that is the shape
@@ -346,5 +380,27 @@ mod tests {
         ]);
         assert_eq!(compiled.len(), 1);
         assert_eq!(compiled.first_match("plekk onboarding"), Some("plekk"));
+    }
+
+    #[test]
+    fn bounded_patterns_anchor_on_word_characters_only() {
+        let p = bounded_token_pattern("Permagent").unwrap();
+        assert!(p.starts_with(r"\b") && p.ends_with(r"\b"));
+        let re = regex::Regex::new(&p).unwrap();
+        assert!(re.is_match("the permagent daemon"));
+        assert!(
+            !re.is_match("superpermagentish"),
+            "a whole-token match must not fire inside a longer word"
+        );
+    }
+
+    #[test]
+    fn a_name_ending_in_punctuation_is_not_anchored_into_uselessness() {
+        // `\b` after `+` can never match, so anchoring there would make the
+        // project unrecognisable rather than precise.
+        let p = bounded_token_pattern("C++ (native)").unwrap();
+        assert!(regex::Regex::new(&p)
+            .unwrap()
+            .is_match("the C++ (native) build"));
     }
 }
