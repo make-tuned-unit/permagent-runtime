@@ -2030,13 +2030,20 @@ pub(crate) fn classify_list_answer(status: u16, body: &str, key: &str) -> Readin
     // scanner answers a *404 page of HTML* on `/v1/models`, and treating that
     // as "a wrong route on a live service" is what let the two services share
     // a port unnoticed.
-    if let Some(why) = foreign_body_reason(body) {
-        return Readiness::NotReady(why);
+    let trimmed = body.trim_start();
+    if trimmed.starts_with('<') {
+        return Readiness::NotReady(html_body_reason());
     }
     if !(200..300).contains(&status) {
+        // A live JSON service answering a route this build does not serve.
+        // An empty body is ordinary here (most 404s have one), so this stays
+        // inconclusive and the per-call circuit keeps its say.
         return Readiness::Inconclusive(format!("HTTP {status} from the model list"));
     }
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+    if trimmed.is_empty() {
+        return Readiness::NotReady("the model list answered 200 with an empty body".to_string());
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
         return Readiness::NotReady("the model list body is not JSON".to_string());
     };
     match value.get(key).and_then(|d| d.as_array()) {
@@ -2088,17 +2095,20 @@ pub(crate) fn foreign_body_reason(body: &str) -> Option<String> {
         return Some("the endpoint answered with an empty body".to_string());
     }
     if trimmed.starts_with('<') {
-        return Some(
-            "the endpoint answered with HTML, not JSON — something other than the inference \
-             server is bound to this port (the Finance Picker's Flask scanner sharing :8080 is \
-             how this happened)"
-                .to_string(),
-        );
+        return Some(html_body_reason());
     }
     if serde_json::from_str::<serde_json::Value>(trimmed).is_err() {
         return Some("the endpoint answered with a body that is not JSON".to_string());
     }
     None
+}
+
+/// The one sentence for "this is not the inference server", shared by the
+/// readiness classifier and the streaming path.
+fn html_body_reason() -> String {
+    "the endpoint answered with HTML, not JSON — something other than the inference server is \
+     bound to this port (the Finance Picker's Flask scanner sharing :8080 is how this happened)"
+        .to_string()
 }
 
 /// Bound an untrusted body before it goes into a log line.
@@ -4035,20 +4045,44 @@ mod readiness_probe_tests {
     /// night into a no-split night.
     #[tokio::test]
     async fn nothing_listening_is_unreachable_not_not_ready() {
-        let server = MockServer::start().await;
-        let uri = server.uri();
-        drop(server);
+        // Bind a port, learn its number, then give it back: loopback refuses
+        // the connect immediately, which is exactly the shape of "the split
+        // has not bound yet". (Dropping a MockServer is not the same thing —
+        // its shutdown is asynchronous.)
+        let closed = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap()
+        };
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_millis(500))
             .build()
             .unwrap();
         assert!(
             matches!(
-                check_endpoint_ready(&client, &uri, "llamacpp").await,
+                check_endpoint_ready(&client, &format!("http://{closed}"), "llamacpp").await,
                 Readiness::Unreachable(_)
             ),
             "a closed port is worth another attempt inside the probe budget"
         );
+    }
+
+    /// The nit the flaky version of the test above turned up: an EMPTY 404 is
+    /// an ordinary answer from a live JSON service, not evidence of a foreign
+    /// one. Only HTML (and a non-JSON 200) is evidence.
+    #[test]
+    fn an_empty_404_is_inconclusive_but_an_html_404_is_not() {
+        assert!(matches!(
+            classify_list_answer(404, "", "data"),
+            Readiness::Inconclusive(_)
+        ));
+        assert!(matches!(
+            classify_list_answer(404, "<!doctype html><h1>Pre-Surge Scanner</h1>", "data"),
+            Readiness::NotReady(_)
+        ));
+        assert!(matches!(
+            classify_list_answer(200, "", "data"),
+            Readiness::NotReady(_)
+        ));
     }
 
     /// A live service that simply does not serve this route is not written
