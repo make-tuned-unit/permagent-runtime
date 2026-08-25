@@ -40,6 +40,7 @@ pub mod best_of_n;
 pub mod budget;
 pub mod cache;
 pub mod cheap;
+pub mod delegate;
 pub mod derived;
 pub mod escalation;
 pub mod fallback;
@@ -73,6 +74,10 @@ pub use cheap::{
     build_ladder, default_anchor, discover_priced_candidates, is_key_configured, load_ladder,
     reference_cost_for, CheapCandidate, CheapLadder, PricedCandidate,
 };
+pub use delegate::{
+    decide_delegate_model, delegate_routing, escalation_allowed as delegate_escalation_allowed,
+    DelegateRouting, DelegateSource, EscalationRefusal, KEY_ALLOW_ESCALATION,
+};
 pub use derived::{
     config_key_affects_derived_map, derive_role_map, derived_role_map, invalidate_derived_role_map,
     model_routing_receipt, DerivedRoleMap, Provenance, RoleSource, DERIVED_ROLE_MAP_TTL,
@@ -91,7 +96,8 @@ pub use mesh::{
     gate as mesh_gate, MeshGateInputs, MeshIneligible, MeshRoute, MeshWorkload, PoolHealth,
 };
 pub use packs::{
-    load_packs, packs_from, resolve as resolve_model, role_for_tier, ModelPack, ModelPacks, Role,
+    configured_pack_pin, load_packs, pack_pin, pack_role_for_workflow_role, packs_from,
+    resolve as resolve_model, role_for_tier, ModelPack, ModelPacks, Role,
 };
 pub use recommend::{
     available_from, discover_available_models, discover_available_models_async,

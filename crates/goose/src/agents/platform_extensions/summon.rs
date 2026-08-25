@@ -971,7 +971,7 @@ impl SummonClient {
             .build_delegate_recipe(&params, session_id, &working_dir)
             .await?;
 
-        let task_config = self
+        let (task_config, routing) = self
             .build_task_config(&params, &recipe, &session)
             .await
             .map_err(|e| format!("Failed to build task config: {}", e))?;
@@ -1034,6 +1034,10 @@ impl SummonClient {
             "subagent_session_id".to_string(),
             serde_json::Value::String(subagent_session_id),
         );
+        // The routing receipt travels with the result so a reader can say which
+        // model this subagent's tokens were billed to, and why it was that one.
+        meta.0
+            .insert("model_routing".to_string(), routing.receipt_json());
 
         match result {
             Ok(text) => {
@@ -1340,8 +1344,8 @@ impl SummonClient {
         params: &DelegateParams,
         recipe: &Recipe,
         session: &crate::session::Session,
-    ) -> Result<TaskConfig, anyhow::Error> {
-        let provider = self.resolve_provider(params, recipe, session).await?;
+    ) -> Result<(TaskConfig, crate::cost_router::DelegateRouting), anyhow::Error> {
+        let (provider, routing) = self.resolve_provider(params, recipe, session).await?;
 
         let mut extensions = EnabledExtensionsState::extensions_or_default(
             Some(&session.extension_data),
@@ -1372,7 +1376,7 @@ impl SummonClient {
         let task_config = TaskConfig::new(provider, &session.id, &session.working_dir, extensions)
             .with_max_turns(Some(max_turns));
 
-        Ok(task_config)
+        Ok((task_config, routing))
     }
 
     /// The workflow role a delegate's worker persona plays, for cost routing.
@@ -1384,35 +1388,84 @@ impl SummonClient {
         config.workers.get(key).and_then(|w| w.routing_role())
     }
 
+    /// The spend band that gates a delegate ESCALATION.
+    ///
+    /// FAIL-CLOSED, and deliberately the opposite polarity to
+    /// [`crate::tool_monitor`]'s `budget_verdict_for`: that gate STOPS work, so a
+    /// transient fault must never fabricate a stop and it fails OPEN. This one
+    /// AUTHORIZES extra spend on a pricier model, and a band we cannot read is not
+    /// permission. `None` ⇒ no escalation.
+    async fn escalation_spend_band(
+        &self,
+        session: &crate::session::Session,
+    ) -> Option<crate::cost_router::BudgetBand> {
+        use crate::agents::platform_extensions::orchestrator as orch;
+        let pool = self.context.session_manager.pool_clone().await.ok()?;
+        let task_spent = orch::task_spent_usd(&pool, &session.id).await;
+        let session_spent = orch::session_spent_usd(&pool, &session.id).await;
+        let unpriced = orch::unpriced_calls_in_session(&pool, &session.id).await;
+        let cfg = crate::cost_router::budget::load_budget_config();
+        Some(
+            crate::cost_router::budget::budget_verdict_with_unpriced(
+                task_spent,
+                session_spent,
+                unpriced,
+                &cfg,
+            )
+            .band,
+        )
+    }
+
     async fn resolve_provider(
         &self,
         params: &DelegateParams,
         recipe: &Recipe,
         session: &crate::session::Session,
-    ) -> Result<Arc<dyn crate::providers::base::Provider>, anyhow::Error> {
-        // The objective role→model layer (#730 wiring). If the delegate carries a
-        // worker persona with a workflow role, route to that role's model — the
-        // hand-CONFIGURED mapping first, else the recommender-DERIVED best-fit
-        // pick (ruling 2026-08-18: the cheapest model the user actually
-        // has that clears the role's floor, local or cloud) — slotted after an
-        // explicit param / recipe setting, before the GOOSE_SUBAGENT_* fallback.
-        // Neither ⇒ `None` ⇒ fall through to the current single-model behaviour
-        // (parent/session model). It is NEVER a baked-in vendor default: the
-        // derived map is built only from keyed providers and installed local
-        // models; the tier-pack Opus/Sonnet/Haiku is not reachable from here.
-        // The derived map is only fetched when a role needs it (cached process-
-        // wide; the first fetch may probe the local Ollama daemon, bounded).
+    ) -> Result<
+        (
+            Arc<dyn crate::providers::base::Provider>,
+            crate::cost_router::DelegateRouting,
+        ),
+        anyhow::Error,
+    > {
+        // The role→model layer. If the delegate carries a worker persona with a
+        // workflow role, route to that role's model by the precedence in
+        // `cost_router::delegate`: role pin (`PERMAGENT_ROLE_*`) → pack pin
+        // (`PERMAGENT_PACK_*`) → cost-router escalation (OPT-IN only) → the
+        // session's own pair. Slotted after an explicit param / recipe setting and
+        // before the `GOOSE_SUBAGENT_*` fallback, as before.
+        //
+        // What changed on 2026-08-25 (measured; see the `delegate` module note):
+        // the `PERMAGENT_PACK_*` pins were not read here at all, and with no pin
+        // the DERIVED best-fit map silently escalated across providers — an
+        // `ANTHROPIC_API_KEY` alone was enough to route every EDIT/ORCHESTRATE/
+        // REVIEW delegate of a gpt-5.4-mini or glm-5.3 session onto
+        // `anthropic/claude-fable-5`, the priciest row in the knowledge base. A
+        // subagent must never silently run on a family the operator did not
+        // configure for this session, so escalation is now behind
+        // `PERMAGENT_DELEGATE_ALLOW_ESCALATION` (default off), bounded to
+        // configured providers, gated on the spend caps, and always on the record.
         let role = Self::role_for_persona(params.worker_persona.as_deref());
-        let role_model = match role {
-            Some(r) => match crate::cost_router::role_model(r) {
-                Some(rm) => Some((rm, crate::cost_router::RoleSource::Configured)),
-                None => crate::cost_router::derived_role_map()
-                    .await
-                    .get(r)
-                    .map(|(rm, _)| (rm.clone(), crate::cost_router::RoleSource::Derived)),
-            },
-            None => None,
+        let session_pair = session.provider_name.as_deref().map(|p| {
+            (
+                p,
+                session
+                    .model_config
+                    .as_ref()
+                    .map(|m| m.model_name.as_str())
+                    .unwrap_or("the session model"),
+            )
+        });
+        // The spend band is only read when it can change the answer: with
+        // escalation off the `Disabled` refusal fires first, and a pinned dispatch
+        // must not pay a DB round trip for a gate it will not reach.
+        let spend = if crate::cost_router::delegate_escalation_allowed() {
+            self.escalation_spend_band(session).await
+        } else {
+            None
         };
+        let routing = crate::cost_router::delegate_routing_live(role, spend, session_pair).await;
+        let role_model = routing.role_model.clone().map(|rm| (rm, routing.source));
 
         // The review gate's cross-vendor routing sits HERE for the `reviewer`
         // persona: `reviewer_dispatch` composes `reviewer_routing` with the
@@ -1438,16 +1491,33 @@ impl SummonClient {
                 .and_then(|rm| role_model.as_ref().map(|(_, source)| (rm, *source))),
             None => role_model,
         };
-        if let (Some(r), Some((rm, source))) = (role, role_model.as_ref()) {
-            tracing::debug!(
-                target: "permagentd::brain",
-                role = r.as_str(),
-                provider = %rm.provider,
-                model = %rm.model,
-                source = source.as_str(),
-                "subagent role→model resolved",
-            );
-        }
+        // The routing receipt (#1090's pattern): one line naming the model and
+        // WHY, at info — a delegate that changes model is a spend decision and
+        // must not be discoverable only at debug. The same line is returned to the
+        // caller in `DelegateRouting::receipt` and rides the tool result's `_meta`
+        // as `model_routing`, so the status row and the ledger reader can show it.
+        tracing::info!(
+            target: "permagentd::brain",
+            role = role.map(|r| r.as_str()).unwrap_or("none"),
+            source = routing.source.as_str(),
+            provider = routing
+                .role_model
+                .as_ref()
+                .map(|rm| rm.provider.as_str())
+                .unwrap_or_else(|| session.provider_name.as_deref().unwrap_or("session")),
+            model = routing
+                .role_model
+                .as_ref()
+                .map(|rm| rm.model.as_str())
+                .unwrap_or_else(|| session
+                    .model_config
+                    .as_ref()
+                    .map(|m| m.model_name.as_str())
+                    .unwrap_or("session")),
+            refused = routing.refused.as_ref().map(|(_, why)| why.as_str()),
+            "{}",
+            routing.receipt,
+        );
         let role_model = role_model.map(|(rm, _)| rm);
 
         let recipe_provider = recipe
@@ -1569,7 +1639,7 @@ impl SummonClient {
             }
         }
 
-        Ok(provider)
+        Ok((provider, routing))
     }
 
     fn resolve_max_turns(&self, session: &crate::session::Session) -> usize {
@@ -1678,7 +1748,7 @@ impl SummonClient {
             .build_delegate_recipe(&params, session_id, &working_dir)
             .await?;
 
-        let task_config = self
+        let (task_config, routing) = self
             .build_task_config(&params, &recipe, &session)
             .await
             .map_err(|e| format!("Failed to build task config: {}", e))?;
@@ -1772,10 +1842,13 @@ impl SummonClient {
             .await
             .insert(task_id.clone(), task);
 
+        // The routing receipt on the start line: a background delegate spends money
+        // on a model the caller never named, so the caller is told which one.
         let content = vec![Content::text(format!(
             "Task {} started in background: \"{}\"\n\
+             {}\n\
              Continue with other work. When you need the result, use load(source: \"{}\").",
-            task_id, description, task_id
+            task_id, description, routing.receipt, task_id
         ))];
         Ok((content, task_id))
     }
