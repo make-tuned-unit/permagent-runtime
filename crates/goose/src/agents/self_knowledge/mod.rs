@@ -452,6 +452,19 @@ pub struct SelfKnowledgeBuilder {
     /// read is indistinguishable from a clean slate, and Henry would tell the
     /// user "nothing to report" on the strength of a query that never ran.
     pub agent_briefings: Option<Vec<BriefingLine>>,
+    /// The extensions THIS session actually declared, when it declared an
+    /// explicit list at all. `Some(names)` scopes the `## Tools you can call`
+    /// section to those names — a recipe/CLI session (e.g. the coding harness
+    /// with 2 extensions) gets an inventory sized to what it can reach,
+    /// instead of all ~33 registered platform extensions. `None` renders the
+    /// full inventory, unfiltered — this is the default and it is what every
+    /// daemon (`GoosePlatform::GooseDesktop`) session gets: Aria's resident
+    /// chat is a product contract to describe everything Permagent can do,
+    /// not just what happens to be loaded this turn. See #1090 — a captured
+    /// coding-harness prompt buried its repo map at 91% depth behind a
+    /// 69KB inventory of tools (finance, voice, 31 others) the session had
+    /// never loaded.
+    pub declared_extensions: Option<Vec<String>>,
 }
 
 /// One unread briefing, flattened for rendering. Deliberately a display-only
@@ -571,6 +584,16 @@ impl SelfKnowledgeBuilder {
         let mut tools: Vec<&PlatformExtensionDef> = PLATFORM_EXTENSIONS
             .values()
             .filter(|d| !d.hidden && !TOOL_IDS_RENDERED_ELSEWHERE.contains(&d.name))
+            // A `Some` list means this session declared an explicit
+            // extension set (recipe/CLI — see `declared_extensions`'s doc
+            // comment); scope the inventory to it. `None` — the daemon's
+            // default — keeps every registered tool, exactly as before this
+            // field existed.
+            .filter(|d| {
+                self.declared_extensions
+                    .as_ref()
+                    .is_none_or(|names| names.iter().any(|n| n == d.name))
+            })
             .collect();
         tools.sort_by(|a, b| a.name.cmp(b.name));
         for def in tools {
@@ -588,6 +611,19 @@ impl SelfKnowledgeBuilder {
                 out,
                 "- **{}** [{}] — {}. {}",
                 desc.display_name, state, desc.what_it_does, desc.why_it_matters
+            )
+            .ok();
+        }
+        // The pointer, not an enumeration: a scoped session (e.g. the coding
+        // harness's 2 extensions) must not read this list as the whole of
+        // Permagent — #1090 was exactly that, a session that had 2 tools and
+        // a 69KB brief describing 33. Say where the rest lives; do not name it.
+        if self.declared_extensions.is_some() {
+            writeln!(
+                out,
+                "\nThis session only loaded the extensions listed above. The rest of the \
+                 Permagent runtime's capabilities exist in the main agent conversation — point \
+                 the user there rather than assuming this session can reach them."
             )
             .ok();
         }
@@ -1394,6 +1430,7 @@ mod tests {
             flags: FeatureFlags::default(),
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
+            declared_extensions: None,
         }
         .build();
         assert!(brief.contains("## Guardrails you operate under"));
@@ -1541,6 +1578,7 @@ mod tests {
             flags: FeatureFlags::default(),
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
+            declared_extensions: None,
         }
         .build();
 
@@ -1577,6 +1615,7 @@ mod tests {
                 flags,
                 dispatchable_workers: Vec::new(),
                 agent_briefings: None,
+                declared_extensions: None,
             }
             .build_parts()
         };
@@ -1648,6 +1687,7 @@ mod tests {
             flags: FeatureFlags::default(),
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
+            declared_extensions: None,
         }
         .build();
 
@@ -1672,6 +1712,7 @@ mod tests {
             },
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
+            declared_extensions: None,
         }
         .build();
 
@@ -1698,6 +1739,7 @@ mod tests {
             flags: FeatureFlags::default(),
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
+            declared_extensions: None,
         }
         .build();
 
@@ -1722,6 +1764,7 @@ mod tests {
             },
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
+            declared_extensions: None,
         }
         .build();
 
@@ -1744,6 +1787,7 @@ mod tests {
             flags: FeatureFlags::default(),
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
+            declared_extensions: None,
         }
         .build_parts();
         // It appears once in the inventory (under workers, not also under
@@ -1771,6 +1815,7 @@ mod tests {
             flags: FeatureFlags::default(),
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
+            declared_extensions: None,
         }
         .build();
         // Rendered once, under Tools (it is a platform extension, not hidden).
@@ -1803,6 +1848,7 @@ mod tests {
             flags: FeatureFlags::default(),
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
+            declared_extensions: None,
         }
         .build();
         assert!(!empty.contains("Workers you can dispatch goals to"));
@@ -1823,6 +1869,7 @@ mod tests {
                 },
             ],
             agent_briefings: None,
+            declared_extensions: None,
         }
         .build();
         assert!(brief.contains("## Workers you can dispatch goals to"));
@@ -1843,6 +1890,7 @@ mod tests {
                 flags: FeatureFlags::default(),
                 dispatchable_workers: Vec::new(),
                 agent_briefings: briefings,
+                declared_extensions: None,
             }
             .build()
         };
@@ -1934,6 +1982,7 @@ mod tests {
             flags: FeatureFlags::default(),
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
+            declared_extensions: None,
         }
         .build();
         // The harness + cost optimizer render under Surfaces and self-describe
@@ -2009,6 +2058,7 @@ mod tests {
             flags: FeatureFlags::default(),
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
+            declared_extensions: None,
         }
         .build();
         assert!(brief.contains("**Grow tab**"));
@@ -2746,6 +2796,96 @@ mod tests {
             "user-facing 'goose' branding leak(s) found — rebrand to Permagent \
              (or allowlist if genuinely internal):\n{}",
             leaks.join("\n")
+        );
+    }
+
+    // ── Declared-extension scoping (#1090) ──────────────────────────────
+    //
+    // A captured coding-harness prompt (`permagent run --recipe
+    // permagent-coding`) had loaded 2 extensions (analyze, developer) but its
+    // `## Tools you can call` section listed all 33 registered platform
+    // extensions — 69KB, 76% of the whole prompt — burying the repo map the
+    // recipe tells the model to read first at 91% depth. These three tests
+    // pin the fix: a session that DECLARES its extensions gets an inventory
+    // scoped to them, plus a pointer to where the rest lives; a session that
+    // declares nothing (the daemon's product contract) is untouched.
+
+    #[test]
+    fn declared_extensions_scope_the_tool_inventory_and_exclude_the_rest() {
+        let brief = SelfKnowledgeBuilder {
+            agent_display_name: "Aria".to_string(),
+            scheduled_job_count: None,
+            flags: FeatureFlags::default(),
+            dispatchable_workers: Vec::new(),
+            agent_briefings: None,
+            declared_extensions: Some(vec!["analyze".to_string(), "browser".to_string()]),
+        }
+        .build();
+
+        assert!(
+            brief.contains("**Analyze**"),
+            "a declared extension must still be listed"
+        );
+        assert!(
+            brief.contains("**Browser**"),
+            "a declared extension must still be listed"
+        );
+        // Finance was never declared for this session — it must not appear,
+        // unmistakably, anywhere the model could read it as available.
+        assert!(
+            !brief.contains("**Finance**"),
+            "an undeclared extension must not appear in a scoped inventory"
+        );
+    }
+
+    /// The product-contract guard: the daemon's resident chat sessions never
+    /// declare an explicit extension list, and MUST keep describing
+    /// everything Permagent can do — narrowing that to whatever happens to be
+    /// loaded this turn would make Aria under-report her own capabilities,
+    /// which is the exact "core gap" #353 (this module's own opening doc
+    /// comment) exists to close.
+    #[test]
+    fn no_declared_extensions_keeps_the_full_product_contract_inventory() {
+        let brief = SelfKnowledgeBuilder {
+            agent_display_name: "Aria".to_string(),
+            scheduled_job_count: None,
+            flags: FeatureFlags::default(),
+            dispatchable_workers: Vec::new(),
+            agent_briefings: None,
+            declared_extensions: None,
+        }
+        .build();
+
+        for name in ["**Analyze**", "**Browser**", "**Finance**"] {
+            assert!(
+                brief.contains(name),
+                "with no declared list, the full inventory must be unfiltered — \
+                 missing {name:?}"
+            );
+        }
+        assert!(
+            !brief.contains("main agent conversation"),
+            "the pointer line is specific to a scoped session and must not \
+             appear when the inventory was not filtered"
+        );
+    }
+
+    #[test]
+    fn scoped_inventory_points_the_model_at_the_main_agent() {
+        let brief = SelfKnowledgeBuilder {
+            agent_display_name: "Aria".to_string(),
+            scheduled_job_count: None,
+            flags: FeatureFlags::default(),
+            dispatchable_workers: Vec::new(),
+            agent_briefings: None,
+            declared_extensions: Some(vec!["analyze".to_string()]),
+        }
+        .build();
+
+        assert!(
+            brief.contains("main agent conversation"),
+            "a scoped session must point the model at where the rest of \
+             Permagent's capabilities live, not just go silent about them"
         );
     }
 }

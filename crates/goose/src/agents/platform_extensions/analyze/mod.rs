@@ -328,6 +328,44 @@ impl AnalyzeClient {
     }
 }
 
+/// Fallback repo-map source for the coding harness's session-start injection
+/// ([`crate::agents::platform_extensions::code_map`]) when the ranked-tags map
+/// ([`repo_map::coding_context_block`]) has nothing to offer — e.g. a repo in a
+/// language tree-sitter parses poorly, mapping was declined or disabled, or a
+/// tree too fresh to have been PageRanked yet. In that case the project may
+/// still have a STORED code map from a prior `analyze`/index-code run sitting
+/// in the Brain, unused; this tries that second source before the harness
+/// falls back to the "no map" orientation text.
+///
+/// Slicing and the character budget are shared with `map_query` and the
+/// orchestrator's dispatch-time injection via [`super::code_map::format_code_map_block`]
+/// (bounded by [`super::code_map::CODE_MAP_INJECT_MAX_CHARS`]) — no unbounded
+/// map ever lands in a system prompt that is already ~90 KB before this runs.
+///
+/// Returns `None` on any miss — no project matches `working_dir`, no Brain is
+/// running, or the project has no stored map — so the caller can fall through
+/// to its "no map" orientation text. Never panics, never errors out loud: a
+/// missing fallback is an ordinary outcome, not a session-start failure.
+pub async fn stored_code_map_block(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    working_dir: Option<&Path>,
+) -> Option<String> {
+    let project = AnalyzeClient::project_for_working_dir(pool, working_dir, None)
+        .await
+        .ok()?;
+    let brain = super::get_global_brain()?;
+    let map = brain
+        .get_memory_by_key(&format!("code:{}:map", project.id))
+        .await
+        .ok()
+        .flatten()?
+        .content;
+    // No goal text at session start — this is orientation, not a dispatched
+    // task — so the goal-aware slice degrades to the flat top-of-tree view,
+    // which is exactly right here.
+    super::code_map::format_code_map_block(&map, "")
+}
+
 /// A persisted **code map**: the rendered directory/symbol overview plus the
 /// count of files that parsed into it — what a caller reports as "indexed N
 /// files".

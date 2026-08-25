@@ -577,6 +577,41 @@ async fn resolve_and_load_extensions(
     .await
 }
 
+/// Build the `repo_map` system-prompt extra for a coding-harness session.
+///
+/// Pure and total: exactly one of two mutually exclusive wordings. The
+/// recipe's instructions state, as a flat fact, that a repo map is already in
+/// the model's context — this function is what has to make that statement
+/// true, or retract it, on every session; there is no third path where the
+/// prompt stays silent and the recipe's claim goes unchecked. Extracted out
+/// of the session-building side effects so both branches are unit-testable
+/// without a real session or a Brain.
+fn orientation_block(map: Option<String>) -> String {
+    match map {
+        Some(block) => format!(
+            "{block}\n\nThis map is your starting point for this session — look symbols and \
+             files up in it before reading whole files. Use `map_query`, `analyze`, and \
+             `search` to go deeper into anything it doesn't cover in enough detail; do not \
+             re-derive it by hand with ls/cat/grep."
+        ),
+        None => "No repo map is in context for this session (mapping was skipped, disabled, or \
+                  found nothing to map here). Orient with `tree`, `map_query` (the project's \
+                  stored code map, if one has been indexed), and `search` before reading whole \
+                  files."
+            .to_string(),
+    }
+}
+
+/// Token budget for the coding harness's ranked-tags repo map.
+///
+/// Was 1024. Measured 2026-08-25 against a real Next.js checkout: 1024 tokens
+/// bought 40 files and 71 symbols — which did not reach the components the
+/// session actually needed to edit, so the map could not answer the question it
+/// was asked and the model shelled out to read files by hand instead. 4096 is
+/// still small next to the rest of the prompt and covers a mid-sized app.
+/// `PERMAGENT_CODING_REPO_MAP_TOKENS` overrides it; 0 still disables mapping.
+const DEFAULT_CODING_REPO_MAP_TOKENS: usize = 4096;
+
 async fn configure_session_prompts(
     session: &CliSession,
     config: &Config,
@@ -602,6 +637,16 @@ async fn configure_session_prompts(
     // permagent::cost_router::cache). The working dir is already the session's
     // root at this point (build_session set it before calling us), so cwd is the
     // repo to map.
+    //
+    // The recipe's instructions (permagent-coding.yaml) assert as fact that a
+    // repo map is already in the model's context. `coding_context_block` can
+    // legitimately return `None` — an empty or unsupported tree, mapping
+    // disabled via the budget, or a remembered per-repo decline — and until
+    // now nothing downstream checked for that: the recipe's claim went
+    // unverified either way. This block now ALWAYS lands an orientation extra
+    // for a coding-harness session — one of two mutually exclusive wordings
+    // (`orientation_block` below) — so the prompt never claims a map that was
+    // not actually injected.
     if session_config
         .recipe
         .as_ref()
@@ -610,20 +655,24 @@ async fn configure_session_prompts(
     {
         let budget = config
             .get_param::<usize>("PERMAGENT_CODING_REPO_MAP_TOKENS")
-            .unwrap_or(1024);
-        if budget > 0 {
-            // Interactive sessions get an explicit offer: mapping is the cost
-            // lever (the agent orients from ranked signatures instead of
-            // reading whole files), and surfacing it makes that legible + lets
-            // the user skip the whole-repo parse on a tree they know is huge.
-            // Non-interactive runs keep the silent auto-map.
-            use std::io::IsTerminal;
-            let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+            .unwrap_or(DEFAULT_CODING_REPO_MAP_TOKENS);
+        // Interactive sessions get an explicit offer: mapping is the cost
+        // lever (the agent orients from ranked signatures instead of
+        // reading whole files), and surfacing it makes that legible + lets
+        // the user skip the whole-repo parse on a tree they know is huge.
+        // Non-interactive runs keep the silent auto-map. Only asked when
+        // there is a budget to map into at all.
+        use std::io::IsTerminal;
+        let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+        let root = std::env::current_dir().ok();
+        let wants_map = if budget == 0 {
+            false
+        } else {
             // Remember the answer PER REPO. The map itself is mtime-cached, so
             // re-asking every single session was pure friction — you answer
             // the same way for the same tree every time. First run asks; after
             // that it just says what it did.
-            let repo_key = std::env::current_dir().ok().map(|p| {
+            let repo_key = root.as_ref().map(|p| {
                 use std::hash::{Hash, Hasher};
                 let mut h = std::collections::hash_map::DefaultHasher::new();
                 p.to_string_lossy().hash(&mut h);
@@ -632,7 +681,7 @@ async fn configure_session_prompts(
             let remembered = repo_key
                 .as_ref()
                 .and_then(|k| config.get_param::<bool>(k).ok());
-            let wants_map = match (interactive, remembered) {
+            match (interactive, remembered) {
                 (_, Some(prev)) => prev,
                 (true, None) => {
                     let answer = cliclack::confirm(format!(
@@ -650,36 +699,79 @@ async fn configure_session_prompts(
                     answer
                 }
                 (false, None) => true,
-            };
-            if wants_map {
-                if let Ok(root) = std::env::current_dir() {
-                    if let Some(block) =
-                        permagent::agents::platform_extensions::analyze::repo_map::coding_context_block(
-                            &root, budget,
-                        )
-                    {
-                        if interactive {
-                            // ~4 chars/token — the same heuristic the budget
-                            // fill uses; this is a report, not an invoice.
-                            let approx_tokens = block.len() / 4;
-                            let _ = cliclack::log::success(format!(
-                                "Codebase mapped: ~{approx_tokens} tokens of ranked symbol \
-                                 signatures pinned into context (cached by file mtime; \
-                                 tune with PERMAGENT_CODING_REPO_MAP_TOKENS)."
-                            ));
-                        }
-                        session
-                            .agent
-                            .extend_system_prompt("repo_map".to_string(), block)
+            }
+        };
+
+        let mut map_block: Option<String> = None;
+        let mut skip_reason: &str = "PERMAGENT_CODING_REPO_MAP_TOKENS is 0 (mapping disabled)";
+        if wants_map {
+            if let Some(ref root) = root {
+                map_block =
+                    permagent::agents::platform_extensions::analyze::repo_map::coding_context_block(
+                        root, budget,
+                    );
+                skip_reason = "ranked-tags map returned no symbols for this tree";
+                // Ranked-tags mapping needs a parseable, PageRank-worthy tree.
+                // When it comes back empty, fall back to whatever code map the
+                // project already has stored in the Brain from a prior
+                // analyze/index-code run, rather than leaving the session with
+                // nothing at all.
+                if map_block.is_none() {
+                    if let Ok(pool) = session.agent.config.session_manager.pool_clone().await {
+                        map_block =
+                            permagent::agents::platform_extensions::analyze::stored_code_map_block(
+                                &pool,
+                                Some(root.as_path()),
+                            )
                             .await;
-                    } else if interactive {
-                        let _ = cliclack::log::info(
-                            "No mappable source found here — skipping the repo map.",
-                        );
+                        if map_block.is_none() {
+                            skip_reason =
+                                "no ranked-tags map and no stored Brain code map for this project";
+                        }
                     }
                 }
+            } else {
+                skip_reason = "could not resolve the session's working directory";
+            }
+        } else if budget > 0 {
+            skip_reason = "mapping was declined for this repo";
+        }
+
+        if interactive {
+            match &map_block {
+                Some(block) => {
+                    // ~4 chars/token — the same heuristic the budget fill
+                    // uses; this is a report, not an invoice.
+                    let approx_tokens = block.len() / 4;
+                    let _ = cliclack::log::success(format!(
+                        "Codebase mapped: ~{approx_tokens} tokens of ranked symbol \
+                         signatures pinned into context (cached by file mtime; \
+                         tune with PERMAGENT_CODING_REPO_MAP_TOKENS)."
+                    ));
+                }
+                None if wants_map => {
+                    let _ = cliclack::log::info(
+                        "No mappable source found here — skipping the repo map.",
+                    );
+                }
+                None => {}
             }
         }
+        if map_block.is_none() {
+            // Visible in ~/.permagent/logs/cli/*.log — the interactive message
+            // above only reaches a terminal, and a non-interactive run (or a
+            // recipe's `run --interactive` capture reviewed after the fact)
+            // needs this recorded somewhere durable.
+            tracing::warn!(
+                root = %root.as_ref().map(|p| p.display().to_string()).unwrap_or_default(),
+                reason = skip_reason,
+                "coding harness session starting without a repo map"
+            );
+        }
+        session
+            .agent
+            .extend_system_prompt("repo_map".to_string(), orientation_block(map_block))
+            .await;
     }
 
     let system_prompt_file: Option<String> = config.get_param("GOOSE_SYSTEM_PROMPT_FILE_PATH").ok();
@@ -938,5 +1030,53 @@ mod tests {
         assert_eq!(truncate_with_ellipsis("hello world", 5), "hello…");
 
         assert_eq!(truncate_with_ellipsis("", 5), "");
+    }
+
+    // The recipe's instructions state as fact that a repo map is already in
+    // context. `orientation_block` is what has to keep that statement honest:
+    // the "map present" wording must only ever appear alongside an actual
+    // injected map, and the "no map" wording must never claim one exists.
+
+    #[test]
+    fn orientation_block_with_a_map_includes_it_and_says_to_go_deeper() {
+        let out = orientation_block(Some("Codebase map (pre-indexed...):\nsrc/\n".to_string()));
+        assert!(out.contains("Codebase map (pre-indexed"));
+        assert!(out.contains("starting point"));
+        assert!(out.contains("map_query"));
+        // Must not also carry the "no map" claim.
+        assert!(!out.contains("No repo map is in context"));
+    }
+
+    #[test]
+    fn orientation_block_without_a_map_never_claims_one_is_present() {
+        let out = orientation_block(None);
+        assert!(out.contains("No repo map is in context"));
+        assert!(out.contains("map_query"));
+        assert!(out.contains("tree"));
+        // Wording unique to the "map present" branch must not leak in here —
+        // that claim is only honest when a map was actually injected.
+        assert!(!out.contains("starting point"));
+        assert!(!out.contains("Codebase map (pre-indexed"));
+        assert!(!out.contains("do not re-derive"));
+    }
+
+    /// The two branches must be mutually exclusive over a range of map
+    /// contents, not just the two examples above — neither wording is a
+    /// substring of the other regardless of what the map body itself says.
+    #[test]
+    fn orientation_block_branches_are_mutually_exclusive() {
+        for map in [
+            "".to_string(),
+            "src/\n  main.rs\n".to_string(),
+            "No repo map is in context — this text is part of the MAP CONTENT, not the \
+             wrapper, and must not fool the mutual-exclusion check."
+                .to_string(),
+        ] {
+            let with_map = orientation_block(Some(map));
+            let without_map = orientation_block(None);
+            assert!(with_map.contains("starting point"));
+            assert!(without_map.contains("No repo map is in context"));
+            assert!(!without_map.contains("starting point"));
+        }
     }
 }

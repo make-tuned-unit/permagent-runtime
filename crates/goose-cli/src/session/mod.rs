@@ -1161,6 +1161,22 @@ impl CliSession {
             c.set_busy(true);
         }
 
+        // Tokens THIS turn, for the pinned status row. Taken as a delta from
+        // the session total rather than accumulated here, so it cannot drift
+        // away from the number the footer and the ledger agree on. Sampled at
+        // most once every couple of seconds: the total lives in the session
+        // store, and a read per stream event would be a database call per
+        // token.
+        let turn_token_baseline: u64 = self
+            .get_session()
+            .await
+            .ok()
+            .and_then(|m| m.total_tokens)
+            .unwrap_or(0)
+            .max(0) as u64;
+        let mut last_token_sample = std::time::Instant::now();
+        const TOKEN_SAMPLE_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
         let mut progress_bars = output::McpSpinners::new();
         let cancel_token_clone = cancel_token.clone();
         let mut markdown_buffer = streaming_buffer::MarkdownBuffer::new();
@@ -1310,7 +1326,33 @@ impl CliSession {
                                 log_tool_metrics(&message, &self.messages);
                                 self.messages.push(message.clone());
 
+                                let turn_tokens = if last_token_sample.elapsed()
+                                    >= TOKEN_SAMPLE_EVERY
+                                {
+                                    last_token_sample = std::time::Instant::now();
+                                    self.get_session()
+                                        .await
+                                        .ok()
+                                        .and_then(|m| m.total_tokens)
+                                        .map(|t| (t.max(0) as u64).saturating_sub(turn_token_baseline))
+                                } else {
+                                    None
+                                };
+
                                 if let Some(c) = composer.as_mut() {
+                                    // Tell the pinned status what this turn is
+                                    // doing before printing anything. Added
+                                    // 2026-08-25: a GLM-5.3 turn ran four
+                                    // minutes of reasoning with no text and no
+                                    // tool call, and the status said only
+                                    // "Working (Ns)" the whole time.
+                                    if let Some(phase) = composer::phase_of(&message) {
+                                        c.set_phase(phase);
+                                    }
+                                    if let Some(tokens) = turn_tokens {
+                                        c.set_turn_tokens(Some(tokens));
+                                    }
+                                    c.mark_output();
                                     c.prepare_output();
                                 }
                                 if interactive { output::hide_thinking() };

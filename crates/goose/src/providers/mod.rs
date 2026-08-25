@@ -57,6 +57,7 @@ pub mod toolshim;
 pub mod usage_estimator;
 pub mod utils;
 pub mod venice;
+pub mod wait_status;
 pub mod xai;
 pub mod zai;
 

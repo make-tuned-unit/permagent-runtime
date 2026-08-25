@@ -414,4 +414,26 @@ mod tests {
         // Empty map: no block at all rather than framing around nothing.
         assert!(format_code_map_block("   ", "anything").is_none());
     }
+
+    /// The coding harness's session-start fallback
+    /// (`analyze::stored_code_map_block`) has no goal text — it is session
+    /// orientation, not a dispatched task — so it calls this with an empty
+    /// goal string. That call pattern must stay bounded by
+    /// [`CODE_MAP_INJECT_MAX_CHARS`] exactly like the goal-aware slice does;
+    /// the system prompt this lands in is already ~90 KB before this runs.
+    #[test]
+    fn empty_goal_slice_used_by_the_session_start_fallback_respects_the_budget() {
+        let big: String = (0..2000)
+            .map(|i| format!("dir{:04}/file.rs (10 loc)\n", i))
+            .collect();
+        let block = format_code_map_block(&big, "").unwrap();
+        assert!(
+            block.chars().count() < CODE_MAP_INJECT_MAX_CHARS + 400,
+            "fallback slice must stay near its budget, got {} chars",
+            block.chars().count()
+        );
+        // No goal terms means nothing matches, so it degrades to the flat
+        // top-of-tree slice rather than an empty "matching paths" section.
+        assert!(!block.contains("## Paths matching this goal"));
+    }
 }

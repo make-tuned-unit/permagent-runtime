@@ -1,6 +1,7 @@
 use anyhow::Error;
 use async_stream::try_stream;
 use futures::TryStreamExt;
+use reqwest::header::HeaderMap;
 use reqwest::{Response, StatusCode};
 use serde_json::Value;
 use tokio::pin;
@@ -149,9 +150,86 @@ fn check_context_length_exceeded(text: &str) -> bool {
         .any(|phrase| text_lower.contains(phrase))
 }
 
+/// How long the provider asked us to wait, from the standard `Retry-After`
+/// header.
+///
+/// Two documented forms (RFC 9110 §10.2.3): whole seconds, or an HTTP-date.
+/// Both appear in the wild; OpenAI also sends the non-standard
+/// `x-ratelimit-reset-requests` in `1s` / `6m0s` form, which is read as a
+/// fallback because it is the only hint some gateways give.
+///
+/// Returns `None` rather than a zero wait when nothing is parseable, so the
+/// caller can tell "the provider said nothing" from "the provider said now".
+pub fn parse_retry_after(headers: &HeaderMap) -> Option<std::time::Duration> {
+    fn seconds(value: &str) -> Option<u64> {
+        value.trim().parse::<u64>().ok()
+    }
+
+    fn http_date(value: &str) -> Option<u64> {
+        let when = chrono::DateTime::parse_from_rfc2822(value.trim()).ok()?;
+        let seconds_away = (when.timestamp() - chrono::Utc::now().timestamp()).max(0);
+        Some(seconds_away as u64)
+    }
+
+    /// `6m0s`, `1s`, `1m30s` — the shape OpenAI's reset headers use.
+    fn go_duration(value: &str) -> Option<u64> {
+        let value = value.trim();
+        if value.is_empty() || !value.ends_with('s') && !value.ends_with('m') {
+            return None;
+        }
+        let mut total = 0u64;
+        let mut digits = String::new();
+        let mut saw_unit = false;
+        for c in value.chars() {
+            if c.is_ascii_digit() {
+                digits.push(c);
+                continue;
+            }
+            let n: u64 = digits.parse().ok()?;
+            digits.clear();
+            match c {
+                'm' => total += n * 60,
+                's' => total += n,
+                'h' => total += n * 3600,
+                _ => return None,
+            }
+            saw_unit = true;
+        }
+        saw_unit.then_some(total)
+    }
+
+    let candidates = [
+        "retry-after",
+        "x-ratelimit-reset-requests",
+        "x-ratelimit-reset-tokens",
+    ];
+    for name in candidates {
+        let Some(raw) = headers.get(name).and_then(|v| v.to_str().ok()) else {
+            continue;
+        };
+        if let Some(secs) = seconds(raw)
+            .or_else(|| http_date(raw))
+            .or_else(|| go_duration(raw))
+        {
+            // A provider that says "wait 0" is saying "go now"; keep it as a
+            // real answer rather than falling through to our own floor.
+            return Some(std::time::Duration::from_secs(secs));
+        }
+    }
+    None
+}
+
 pub fn map_http_error_to_provider_error(
     status: StatusCode,
     payload: Option<Value>,
+) -> ProviderError {
+    map_http_error_with_retry_after(status, payload, None)
+}
+
+pub fn map_http_error_with_retry_after(
+    status: StatusCode,
+    payload: Option<Value>,
+    retry_after: Option<std::time::Duration>,
 ) -> ProviderError {
     let extract_message = || -> String {
         payload
@@ -209,9 +287,12 @@ pub fn map_http_error_to_provider_error(
                     top_up_url: None,
                 }
             } else {
+                // Z.AI's `1302` and OpenAI's plain 429 both arrive here. What
+                // separates a useful backoff from a guess is `retry_after`,
+                // which until 2026-08-25 was never read off the response.
                 ProviderError::RateLimitExceeded {
                     details,
-                    retry_delay: None,
+                    retry_delay: retry_after,
                 }
             }
         }
@@ -240,9 +321,15 @@ pub fn map_http_error_to_provider_error(
 pub async fn handle_status_openai_compat(response: Response) -> Result<Response, ProviderError> {
     let status = response.status();
     if !status.is_success() {
+        // Read the headers before the body: `text()` consumes the response.
+        let retry_after = parse_retry_after(response.headers());
         let body = response.text().await.unwrap_or_default();
         let payload = serde_json::from_str::<Value>(&body).ok();
-        return Err(map_http_error_to_provider_error(status, payload));
+        return Err(map_http_error_with_retry_after(
+            status,
+            payload,
+            retry_after,
+        ));
     }
     Ok(response)
 }
@@ -284,6 +371,111 @@ mod tests {
     use super::*;
     use serde_json::json;
     use test_case::test_case;
+
+    fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        for (name, value) in pairs {
+            map.insert(
+                reqwest::header::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                value.parse().unwrap(),
+            );
+        }
+        map
+    }
+
+    /// The live Z.AI 429 that started this: code 1302, no `Retry-After` at all.
+    /// It must still be typed as a rate limit, and it must be honest that the
+    /// provider named no wait — the floor is the retry layer's job, not a
+    /// number invented here.
+    #[test]
+    fn zai_1302_is_a_rate_limit_with_no_provider_delay() {
+        let error = map_http_error_with_retry_after(
+            StatusCode::TOO_MANY_REQUESTS,
+            Some(json!({"error": {"code": "1302", "message": "Rate limit reached for requests"}})),
+            parse_retry_after(&headers(&[])),
+        );
+        match error {
+            ProviderError::RateLimitExceeded {
+                details,
+                retry_delay,
+            } => {
+                assert_eq!(details, "Rate limit reached for requests");
+                assert_eq!(retry_delay, None);
+            }
+            other => panic!("expected RateLimitExceeded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_retry_after_header_becomes_the_provider_delay() {
+        let error = map_http_error_with_retry_after(
+            StatusCode::TOO_MANY_REQUESTS,
+            Some(json!({"error": {"message": "slow down"}})),
+            parse_retry_after(&headers(&[("retry-after", "42")])),
+        );
+        assert!(matches!(
+            error,
+            ProviderError::RateLimitExceeded {
+                retry_delay: Some(d),
+                ..
+            } if d == std::time::Duration::from_secs(42)
+        ));
+    }
+
+    #[test]
+    fn retry_after_accepts_the_http_date_form() {
+        let when = chrono::Utc::now() + chrono::Duration::seconds(90);
+        let parsed = parse_retry_after(&headers(&[("retry-after", &when.to_rfc2822())]));
+        let secs = parsed
+            .expect("an HTTP-date Retry-After is parseable")
+            .as_secs();
+        assert!((85..=90).contains(&secs), "got {secs}s");
+    }
+
+    /// A date already in the past means "now", not a wildly negative wait.
+    #[test]
+    fn a_past_retry_after_date_is_zero_not_negative() {
+        let when = chrono::Utc::now() - chrono::Duration::seconds(600);
+        assert_eq!(
+            parse_retry_after(&headers(&[("retry-after", &when.to_rfc2822())])),
+            Some(std::time::Duration::from_secs(0))
+        );
+    }
+
+    #[test]
+    fn openai_reset_headers_are_read_when_retry_after_is_absent() {
+        assert_eq!(
+            parse_retry_after(&headers(&[("x-ratelimit-reset-requests", "6m0s")])),
+            Some(std::time::Duration::from_secs(360))
+        );
+        assert_eq!(
+            parse_retry_after(&headers(&[("x-ratelimit-reset-requests", "1s")])),
+            Some(std::time::Duration::from_secs(1))
+        );
+    }
+
+    #[test]
+    fn an_unparseable_retry_after_is_none_not_zero() {
+        assert_eq!(
+            parse_retry_after(&headers(&[("retry-after", "soon")])),
+            None
+        );
+        assert_eq!(parse_retry_after(&headers(&[])), None);
+    }
+
+    /// A depleted balance arriving as a 429 must not be retried, `Retry-After`
+    /// or not — waiting does not top up an account.
+    #[test]
+    fn a_billing_429_stays_credits_exhausted_even_with_retry_after() {
+        let error = map_http_error_with_retry_after(
+            StatusCode::TOO_MANY_REQUESTS,
+            Some(
+                json!({"error": {"message": "You exceeded your current quota, insufficient_quota"}}),
+            ),
+            Some(std::time::Duration::from_secs(30)),
+        );
+        assert!(matches!(error, ProviderError::CreditsExhausted { .. }));
+    }
 
     #[test_case(
         StatusCode::PAYMENT_REQUIRED,
