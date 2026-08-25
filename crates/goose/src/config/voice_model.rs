@@ -32,10 +32,10 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Config key holding the voice provider id (e.g. `custom_deepseek`).
+/// Config key holding the voice provider id (e.g. `anthropic`).
 pub const VOICE_PROVIDER_KEY: &str = "voice_provider";
 
-/// Config key holding the voice model id (e.g. `deepseek-chat`).
+/// Config key holding the voice model id (e.g. `claude-haiku-4-5-20251001`).
 pub const VOICE_MODEL_KEY: &str = "voice_model";
 
 /// Values that mean "no separate voice model — use the session model".
@@ -49,21 +49,29 @@ pub struct VoiceModel {
 }
 
 /// Provider id of the measured default. See [`default_voice_model`].
-pub const DEFAULT_VOICE_PROVIDER_ID: &str = "custom_deepseek";
+pub const DEFAULT_VOICE_PROVIDER_ID: &str = "anthropic";
 /// Model id of the measured default. See [`default_voice_model`].
-pub const DEFAULT_VOICE_MODEL_ID: &str = "deepseek-chat";
+pub const DEFAULT_VOICE_MODEL_ID: &str = "claude-haiku-4-5-20251001";
 
 /// The bench winner (2026-08-25). Of seven candidates measured on the real prompt
 /// and the real 124 tool schemas, only two emitted no reasoning block on a single
-/// turn — and those two were the only fast ones. Warm, this one answers with a
-/// 1.58 s median time-to-first-token and a 1.89 s p90, against 3.20 s / 4.36 s
-/// for the MiniMax reasoning model the voice path used before, at $0.0018/turn
-/// with a 100 % cache-hit rate — cheaper than what it replaces.
+/// turn — and those two were the only fast ones. This is the faster of them, by a
+/// distance: warm, an 856 ms median time-to-first-token and a 1070 ms p90 (the
+/// MiniMax reasoning model the voice path used before: 3202 ms / 4363 ms), a
+/// speakable first sentence at 1136 ms, 100 % prompt-cache hit rate, and — alone
+/// in the slate — **zero** turns in 40 that opened with a bare tool call and no
+/// spoken words, where the others managed 1 to 7.
 ///
-/// Claude Haiku 4.5 is faster still (0.86 s / 1.07 s, and zero silent turns
-/// against this one's 1 in 20) but costs 4.1× per turn, past the gate this
-/// decision was held to, so it is an opt-in rather than the default. Set both
-/// keys to take it. See `docs/research/VOICE_MODEL_BENCH_2026-08-25.md`.
+/// It is not the cheapest. At $0.0074/turn it is ~4× `custom_deepseek` /
+/// `deepseek-chat`, which is the documented alternative for anyone who wants the
+/// bill smaller than the wait short (1580 ms / 1885 ms, $0.0018/turn):
+///
+/// ```yaml
+/// voice_provider: custom_deepseek
+/// voice_model: deepseek-chat
+/// ```
+///
+/// See `docs/research/VOICE_MODEL_BENCH_2026-08-25.md`.
 pub fn default_voice_model() -> VoiceModel {
     VoiceModel {
         provider: DEFAULT_VOICE_PROVIDER_ID.to_string(),
@@ -164,8 +172,8 @@ mod tests {
     #[test]
     fn a_half_configured_pair_falls_back_to_the_default_and_says_so() {
         for pairs in [
-            vec![(VOICE_PROVIDER_KEY, "anthropic")],
-            vec![(VOICE_MODEL_KEY, "claude-haiku-4-5-20251001")],
+            vec![(VOICE_PROVIDER_KEY, "custom_deepseek")],
+            vec![(VOICE_MODEL_KEY, "deepseek-chat")],
         ] {
             let (route, source) = resolve_voice_model(reader(&pairs)).expect("default applies");
             assert_eq!(route, default_voice_model());
@@ -246,7 +254,7 @@ mod tests {
     fn the_default_is_the_bench_winner() {
         // Guards the doc: if someone changes the default they must change the
         // research note that justifies it.
-        assert_eq!(default_voice_model().provider, "custom_deepseek");
-        assert_eq!(default_voice_model().model, "deepseek-chat");
+        assert_eq!(default_voice_model().provider, "anthropic");
+        assert_eq!(default_voice_model().model, "claude-haiku-4-5-20251001");
     }
 }

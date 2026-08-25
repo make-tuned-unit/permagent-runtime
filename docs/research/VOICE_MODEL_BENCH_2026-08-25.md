@@ -31,9 +31,9 @@ spoken text at all. "thinks" counts turns that emitted a reasoning block.
 
 | candidate | run | TTFT med | TTFT p90 | first sentence | total med | tool ok | silent | cache hit | $/turn | thinks | quality |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| Claude Haiku 4.5 | cold | 931 | 1090 | 1191 | 1475 | 4/5 | **0/20** | 94 % | $0.0125 | 0/20 | 2.55 |
+| **Claude Haiku 4.5** (default) | cold | 931 | 1090 | 1191 | 1475 | 4/5 | **0/20** | 94 % | $0.0125 | 0/20 | 2.55 |
 | | warm | **856** | **1070** | **1136** | 1497 | 4/5 | **0/20** | 100 % | $0.0074 | 0/20 | |
-| **deepseek-chat** (default) | cold | 1515 | 1786 | 1833 | 2100 | 3/5 | 3/20 | 100 % | $0.0018 | 0/20 | 2.60 |
+| **deepseek-chat** | cold | 1515 | 1786 | 1833 | 2100 | 3/5 | 3/20 | 100 % | $0.0018 | 0/20 | 2.60 |
 | | warm | 1580 | 1885 | 1798 | 2071 | 4/5 | 1/20 | 100 % | **$0.0018** | 0/20 | |
 | MiniMax-M2.7 (before) | cold | 2619 | 6836 | 3124 | 2822 | 2/5 | 6/20 | 95 % | $0.0055 | 20/20 | 2.70 |
 | | warm | 3202 | 4363 | 3267 | 2899 | 2/5 | 6/20 | 100 % | $0.0046 | 20/20 | |
@@ -77,7 +77,8 @@ is judged on its worst turns, and on a voice path a 28 s turn is a hang.
 **Haiku is the latency ceiling, and it never goes silent.** 856 ms to first
 token, 1136 ms to a speakable sentence, 4/5 tools, 100 % cache hit on the warm
 run — and **zero** turns in 40 that opened with a bare tool call and no words,
-where every other candidate managed 1 to 7. It costs 4.1× deepseek-chat per turn.
+where every other candidate managed 1 to 7. It costs 4.1× deepseek-chat per turn,
+which is the whole of the case against it.
 
 **`MiniMax-M2.7-highspeed` is the same class of thing as the model it varies.**
 ~10 % off TTFT for ~20 % more per turn, still thinking on every turn.
@@ -111,32 +112,35 @@ the Anthropic path's `cache_control` placement was already correct for it.
 
 ## Recommendation
 
-**Keep `custom_deepseek` / `deepseek-chat` as the default, and treat Claude
-Haiku 4.5 as the upgrade Jesse can buy.**
+**Route voice turns to `anthropic` / `claude-haiku-4-5-20251001`.** It wins the
+two things that matter most on a voice path: a p90 of 1070 ms against
+deepseek-chat's 1885 ms, and **zero** silent turns in 40 against one. It also
+takes 4/5 tool turns, holds a 100 % cache-hit rate on the warm run, and never
+emits a reasoning block.
 
-Haiku wins the two things that matter most — p90 1070 ms against deepseek-chat's
-1885 ms, and zero silent turns against one — but at $0.0074/turn it is 4.1× the
-price, past the ~2× the decision gate allowed. So the default does not move on
-this bench's authority. In absolute terms the difference is small: at 100 spoken
-turns a day, $0.74 against $0.18. If Jesse wants the extra ~700 ms off every
-spoken reply and the silent turns gone entirely, the knob is two lines:
+It is not the cheapest. At $0.0074/turn it is ~4× deepseek-chat's $0.0018 — at a
+hundred spoken turns a day, $0.74 against $0.18. Jesse took that trade for
+~700 ms off every spoken reply and the dead air gone. Anyone who wants the bill
+smaller than the wait short has the alternative documented and one edit away:
 
 ```yaml
-voice_provider: anthropic
-voice_model: claude-haiku-4-5-20251001
+voice_provider: custom_deepseek
+voice_model: deepseek-chat
 ```
 
 Against the stated budget, the shipped default:
 
-- *First audio ≤ 2.5 s* — approached, not reached. This bench's 1798 ms
-  first-sentence plus the rest of the measured pipeline (500 ms endpointing after
+- *First audio ≤ 2.5 s* — nearly. This bench's 1136 ms first-sentence plus the
+  rest of the measured pipeline (500 ms endpointing after
   `feat/voice-endpointing-and-orb`, 116 ms STT, 142 ms pre-stream, 896 ms Kokoro)
-  is **≈3.5 s** speech-end→first-audio, against ≈4.9 s for MiniMax warm and
-  ≈10.6 s today. On Haiku the same arithmetic gives **≈2.8 s**, which is the only
-  configuration in this bench that comes close to the target.
-- *Tool calls correct* — 4/5 warm, joint-best across the slate.
-- *Quality not markedly below baseline* — 2.60 against MiniMax-M2.7's 2.70, well
-  inside the ±0.55 the judge moved when the slate changed.
+  is **≈2.8 s** speech-end→first-audio, against ≈10.6 s today. No other
+  configuration in this bench comes close (deepseek-chat: ≈3.5 s; MiniMax warm:
+  ≈4.9 s).
+- *Tool calls correct* — 4/5, joint-best across the slate.
+- *Quality not markedly below baseline* — 2.55 against MiniMax-M2.7's 2.70, well
+  inside the ±0.55 the judge moved when the slate changed. Note this is the one
+  column where Haiku does not lead; it is also the column this bench trusts least
+  (see above).
 
 ## Shipped (this PR)
 
@@ -146,8 +150,8 @@ Against the stated budget, the shipped default:
 The chat path keeps `GOOSE_PROVIDER`/`GOOSE_MODEL`, untouched.
 
 ```yaml
-voice_provider: custom_deepseek   # both keys, or neither
-voice_model: deepseek-chat
+voice_provider: anthropic                  # both keys, or neither
+voice_model: claude-haiku-4-5-20251001
 ```
 
 - **Unset** → the measured default applies. A deliberate departure from the role

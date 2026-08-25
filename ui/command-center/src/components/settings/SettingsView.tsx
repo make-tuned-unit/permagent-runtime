@@ -60,8 +60,8 @@ const selectStyle = (colors: C): React.CSSProperties => ({
 // half-configured/default), not the source of truth. The daemon resolves the
 // real route from config.yaml; this just tells the operator what to expect.
 const VOICE_DISABLE_VALUES = new Set(['session', 'off', 'none']);
-const DEFAULT_VOICE_PROVIDER_ID = 'custom_deepseek';
-const DEFAULT_VOICE_MODEL_ID = 'deepseek-chat';
+const DEFAULT_VOICE_PROVIDER_ID = 'anthropic';
+const DEFAULT_VOICE_MODEL_ID = 'claude-haiku-4-5-20251001';
 
 function describeVoiceRoute(provider: string | null, model: string | null): string {
   const providerVal = (provider ?? '').trim();

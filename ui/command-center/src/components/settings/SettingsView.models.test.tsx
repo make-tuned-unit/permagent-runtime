@@ -132,7 +132,7 @@ describe('ModelsPanel roster pointer', () => {
  * The voice model route (crates/goose/src/config/voice_model.rs): which
  * model answers a SPOKEN turn, separate from the main GOOSE_MODEL that
  * answers chat. `voice_provider` and `voice_model` set together override a
- * measured default (custom_deepseek / deepseek-chat); either key set to
+ * measured default (anthropic / claude-haiku-4-5-20251001); either key set to
  * session/off/none turns the feature off. This block checks the panel's
  * display mirrors that precedence and that it writes only on user action —
  * never as a side effect of mounting (the Guard test above already tripwires
@@ -141,10 +141,10 @@ describe('ModelsPanel roster pointer', () => {
  */
 describe('ModelsPanel voice model block', () => {
   function providerInput(): HTMLInputElement {
-    return container.querySelector('input[placeholder="custom_deepseek"]') as HTMLInputElement;
+    return container.querySelector('input[placeholder="anthropic"]') as HTMLInputElement;
   }
   function modelInput(): HTMLInputElement {
-    return container.querySelector('input[placeholder="deepseek-chat"]') as HTMLInputElement;
+    return container.querySelector('input[placeholder="claude-haiku-4-5-20251001"]') as HTMLInputElement;
   }
   async function typeInto(input: HTMLInputElement, value: string) {
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
@@ -164,15 +164,18 @@ describe('ModelsPanel voice model block', () => {
 
   it('shows the measured default when neither key is set', async () => {
     await mount(vi.fn());
-    expect(container.textContent).toContain('custom_deepseek / deepseek-chat (default)');
+    expect(container.textContent).toContain('anthropic / claude-haiku-4-5-20251001 (default)');
   });
 
   it('shows the configured route when both keys are set', async () => {
     allowed.readConfig.mockImplementation(async (k: string) =>
-      (k === 'voice_provider' ? 'anthropic' : k === 'voice_model' ? 'claude-haiku-4-5-20251001' : null) as never,
+      (k === 'voice_provider' ? 'custom_deepseek' : k === 'voice_model' ? 'deepseek-chat' : null) as never,
     );
     await mount(vi.fn());
-    expect(container.textContent).toContain('anthropic / claude-haiku-4-5-20251001');
+    // Deliberately NOT the default pair — otherwise this passes on the default
+    // readout and proves nothing about reading the configured keys.
+    expect(container.textContent).toContain('custom_deepseek / deepseek-chat');
+    expect(container.textContent).not.toContain('(default)');
   });
 
   it('shows "session model" when voice_model is set to session', async () => {
