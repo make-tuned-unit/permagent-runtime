@@ -96,6 +96,7 @@ beforeEach(() => {
     sessions: [],
     workspaces: [],
     activeWorkspaceId: null,
+    personDetail: null,
   });
 });
 
@@ -125,6 +126,33 @@ describe('person_changed → People panel refetch', () => {
     route(frame('person_changed', { project_id: 'p1', entity_uuid: 'e1', change: 'associated' }));
     await flush();
     expect(useCommandCenter.getState().peopleRev).toBe(1);
+  });
+});
+
+describe('person_merged → people refetch + open-detail reconciliation', () => {
+  it('bumps peopleRev so the directory/graph refetch', async () => {
+    route(frame('person_merged', { survivor_uuid: 's1', duplicate_uuid: 'd1', merge_id: 'm1' }));
+    await flush();
+    expect(useCommandCenter.getState().peopleRev).toBe(1);
+  });
+
+  it('closes the open person detail when it is the duplicate that got absorbed', async () => {
+    useCommandCenter.setState({
+      personDetail: { projectId: null, person: { entity_uuid: 'd1', display_name: 'Dup' } as never, association: null },
+    });
+    route(frame('person_merged', { survivor_uuid: 's1', duplicate_uuid: 'd1', merge_id: 'm1' }));
+    await flush();
+    expect(useCommandCenter.getState().personDetail).toBeNull();
+    expect(useCommandCenter.getState().peopleRev).toBe(1);
+  });
+
+  it('leaves an unrelated open person detail alone', async () => {
+    useCommandCenter.setState({
+      personDetail: { projectId: null, person: { entity_uuid: 'other', display_name: 'Other' } as never, association: null },
+    });
+    route(frame('person_merged', { survivor_uuid: 's1', duplicate_uuid: 'd1', merge_id: 'm1' }));
+    await flush();
+    expect(useCommandCenter.getState().personDetail?.person.entity_uuid).toBe('other');
   });
 });
 

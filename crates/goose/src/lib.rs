@@ -71,6 +71,7 @@ pub mod overbought;
 pub mod people;
 pub mod people_bridge;
 pub mod people_create;
+pub mod people_merge;
 pub mod people_provenance;
 pub mod permission;
 pub mod person_meetings;

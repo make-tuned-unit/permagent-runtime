@@ -81,6 +81,19 @@ pub struct PersonGraphEdge {
     pub predicate: String,
 }
 
+/// One graph edge that a merge moved from the duplicate onto the survivor.
+/// `from_id`/`to_id` are the ORIGINAL (duplicate-side) endpoints — the row is
+/// the undo record, so it names what to put back, not what was written.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct MovedTriple {
+    pub from_id: String,
+    pub to_id: String,
+    pub predicate: String,
+    /// True when the survivor already had the rewritten edge, so the merge
+    /// asserted nothing new. Undo must not delete that pre-existing edge.
+    pub survivor_already_had_it: bool,
+}
+
 /// Outcome of resolving a free-text name against the ontology + graph store
 /// (see [`SafeBrain::resolve_ontology_entities_exact`]).
 #[derive(Debug, Clone)]
@@ -1098,6 +1111,115 @@ impl SafeBrain {
     /// List all graph triples touching a person whose other endpoint is also a
     /// person. Both directions are returned so relationship direction is not
     /// lost (for example `manages`).
+    /// Re-assert every graph edge touching `from_hex` onto `to_hex`, through
+    /// Spectral's own `insert_triple` (never a raw UPDATE — a rewritten row
+    /// would leave anything Spectral derives from a triple pointing at the old
+    /// endpoint). Returns the ORIGINAL edges so the caller can delete them and
+    /// so undo knows what to restore.
+    ///
+    /// Self-edges (`from == to` after rewriting) are skipped and NOT returned:
+    /// there is nothing sensible to assert and nothing to put back.
+    ///
+    /// This copies; it does not delete. Spectral exposes no triple-delete API,
+    /// so removal of the originals stays in `project_graph`'s documented
+    /// direct-SQL bridge (`delete_graph_triple`).
+    pub async fn copy_entity_triples(
+        &self,
+        from_hex: &str,
+        to_hex: &str,
+    ) -> anyhow::Result<Vec<MovedTriple>> {
+        let brain = self.inner.clone();
+        let from: spectral::core::entity_id::EntityId = from_hex
+            .parse()
+            .map_err(|e| anyhow::anyhow!("invalid source entity id hex: {e:?}"))?;
+        let to: spectral::core::entity_id::EntityId = to_hex
+            .parse()
+            .map_err(|e| anyhow::anyhow!("invalid target entity id hex: {e:?}"))?;
+        if from == to {
+            anyhow::bail!("cannot copy an entity's triples onto itself");
+        }
+        tokio::task::spawn_blocking(move || {
+            let store = brain.store();
+            let mut originals = store.find_triples(Some(&from), None, None)?;
+            originals.extend(store.find_triples(None, Some(&from), None)?);
+            let mut seen = std::collections::HashSet::new();
+            let mut moved = Vec::new();
+            for triple in originals {
+                if !seen.insert((triple.from, triple.to, triple.predicate.clone())) {
+                    continue;
+                }
+                let new_from = if triple.from == from { to } else { triple.from };
+                let new_to = if triple.to == from { to } else { triple.to };
+                if new_from == new_to {
+                    // Would become a self-edge (the two people were already
+                    // linked to each other). Nothing to assert, nothing to undo.
+                    continue;
+                }
+                let already = !store
+                    .find_triples(Some(&new_from), Some(&new_to), Some(&triple.predicate))?
+                    .is_empty();
+                if !already {
+                    let mut rewritten = triple.clone();
+                    rewritten.from = new_from;
+                    rewritten.to = new_to;
+                    rewritten.asserted_at = chrono::Utc::now();
+                    store.insert_triple(&rewritten)?;
+                }
+                moved.push(MovedTriple {
+                    from_id: triple.from.to_string(),
+                    to_id: triple.to.to_string(),
+                    predicate: triple.predicate,
+                    survivor_already_had_it: already,
+                });
+            }
+            Ok::<_, anyhow::Error>(moved)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("brain task panicked: copy_entity_triples: {e}"))?
+    }
+
+    /// Re-insert a triple verbatim (undo path for [`Self::copy_entity_triples`]).
+    /// Idempotent: an existing identical edge is left alone.
+    pub async fn restore_triple(
+        &self,
+        from_hex: &str,
+        to_hex: &str,
+        predicate: &str,
+    ) -> anyhow::Result<bool> {
+        let brain = self.inner.clone();
+        let from: spectral::core::entity_id::EntityId = from_hex
+            .parse()
+            .map_err(|e| anyhow::anyhow!("invalid source entity id hex: {e:?}"))?;
+        let to: spectral::core::entity_id::EntityId = to_hex
+            .parse()
+            .map_err(|e| anyhow::anyhow!("invalid target entity id hex: {e:?}"))?;
+        let predicate = predicate.to_string();
+        tokio::task::spawn_blocking(move || {
+            use spectral::graph::graph_store::Triple;
+            let store = brain.store();
+            if !store
+                .find_triples(Some(&from), Some(&to), Some(&predicate))?
+                .is_empty()
+            {
+                return Ok(false);
+            }
+            store.insert_triple(&Triple {
+                from,
+                to,
+                predicate,
+                confidence: 1.0,
+                source_doc_id: None,
+                source_brain_id: *brain.brain_id(),
+                asserted_at: chrono::Utc::now(),
+                visibility: spectral::Visibility::Private,
+                weight: 1.0,
+            })?;
+            Ok(true)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("brain task panicked: restore_triple: {e}"))?
+    }
+
     pub async fn person_edges(&self, person_id_hex: &str) -> anyhow::Result<Vec<PersonGraphEdge>> {
         let brain = self.inner.clone();
         let person_id: spectral::core::entity_id::EntityId = person_id_hex

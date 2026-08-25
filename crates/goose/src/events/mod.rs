@@ -388,6 +388,11 @@ pub enum PermagentEventType {
     /// memories-assoc / documents / notes) changed. Payload's `change` names
     /// the collection so clients can refresh narrowly.
     ProjectChanged,
+    /// Two directory people were merged into one. Payload carries the
+    /// survivor, the duplicate that is now gone, and the merge id (the undo
+    /// handle). Clients drop the duplicate from any open view rather than
+    /// waiting for a refetch to 404.
+    PersonMerged,
     /// A person's project association changed (associate / disassociate).
     PersonChanged,
     /// The agent's primary persona was edited (PUT /api/agent/identity).
@@ -988,7 +993,8 @@ pub fn project_changed(project_id: &str, change: &str) -> PermagentEvent {
     )
 }
 
-/// A person changed. `change` ∈ `associated|disassociated|created|updated|meeting`.
+/// A person changed. `change` ∈
+/// `associated|disassociated|created|updated|meeting|merged|deleted`.
 pub fn person_changed(project_id: &str, entity_uuid: &str, change: &str) -> PermagentEvent {
     PermagentEvent::new(
         PermagentEventType::PersonChanged,
@@ -996,6 +1002,20 @@ pub fn person_changed(project_id: &str, entity_uuid: &str, change: &str) -> Perm
             "project_id": project_id,
             "entity_uuid": entity_uuid,
             "change": change,
+        }),
+    )
+}
+
+/// Two people were merged. `survivor_uuid` is the id that lives on;
+/// `duplicate_uuid` no longer resolves. `merge_id` is the undo handle
+/// (`POST /api/people/merges/{merge_id}/undo`).
+pub fn person_merged(survivor_uuid: &str, duplicate_uuid: &str, merge_id: &str) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::PersonMerged,
+        serde_json::json!({
+            "survivor_uuid": survivor_uuid,
+            "duplicate_uuid": duplicate_uuid,
+            "merge_id": merge_id,
         }),
     )
 }

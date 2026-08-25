@@ -5,7 +5,7 @@
 
 import { useEffect, useState, type CSSProperties } from 'react';
 import { font } from '../../styles/tokens';
-import { personInitials, safePhotoUrl } from './peopleFace';
+import { faceVisuals, personInitials, safePhotoUrl } from './peopleFace';
 
 export function PersonFace({
   name,
@@ -13,19 +13,33 @@ export function PersonFace({
   size,
   accent,
   onClick,
+  onFocusChange,
   dimmed,
+  active,
+  reducedMotion,
 }: {
   name: string;
   photoUrl: string | null;
   size: number;
   accent: string;
   onClick?: () => void;
+  /** Fires on keyboard focus/blur of the face button, alongside onClick. */
+  onFocusChange?: (focused: boolean) => void;
   dimmed?: boolean;
+  /** Hovered, keyboard-focused, or the selected (detail-open) person. */
+  active?: boolean;
+  reducedMotion?: boolean;
 }) {
   const src = safePhotoUrl(photoUrl);
   const [broken, setBroken] = useState(false);
   useEffect(() => { setBroken(false); }, [src]);
   const showPhoto = Boolean(src) && !broken;
+  const visuals = faceVisuals({
+    active: Boolean(active),
+    dimmed: Boolean(dimmed),
+    accent,
+    reducedMotion: Boolean(reducedMotion),
+  });
   const style: CSSProperties = {
     width: size,
     height: size,
@@ -41,9 +55,11 @@ export function PersonFace({
     fontSize: Math.max(11, Math.round(size * 0.36)),
     fontWeight: 600,
     color: accent,
-    boxShadow: '0 6px 16px rgba(0,0,0,0.35)',
     flexShrink: 0,
-    opacity: dimmed ? 0.42 : 1,
+    opacity: visuals.opacity,
+    boxShadow: visuals.boxShadow,
+    transform: visuals.transform,
+    transition: visuals.transition,
   };
   const inner = showPhoto ? (
     <img
@@ -61,6 +77,8 @@ export function PersonFace({
       <button
         type="button"
         onClick={e => { e.stopPropagation(); onClick(); }}
+        onFocus={() => onFocusChange?.(true)}
+        onBlur={() => onFocusChange?.(false)}
         aria-label={`Open ${name}`}
         title={name}
         style={style}
