@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react';
+import { orbAmp, orbBands, orbMotionFor, orbSpin } from './orbDrive';
 import { useTheme } from '../../styles/useTheme';
 import { font, ease } from '../../styles/tokens';
 
@@ -95,6 +96,19 @@ export function VoiceOrb({
   const levelRef = useRef(0);
   const stateRef = useRef(state);
   stateRef.current = state;
+
+  // Reduced motion draws ONE static frame instead of running the animation
+  // loop. Hoisted out of the effect so the effect can depend on it: without
+  // this, a reduced-motion viewer kept whatever frame was drawn at mount for
+  // the rest of the session, so the canvas never showed that the orb had moved
+  // from listening to thinking to speaking — the one audience that most needs
+  // the state to be legible got the least of it. See the dep array below.
+  const reduce = useMemo(
+    () =>
+      typeof window !== 'undefined' &&
+      (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false),
+    [],
+  );
   const mirrorRef = useRef(mirrorLevel);
   mirrorRef.current = mirrorLevel;
 
@@ -114,9 +128,6 @@ export function VoiceOrb({
     if (!ctx) return;
     ctx.scale(dpr, dpr);
 
-    const reduce =
-      typeof window !== 'undefined' &&
-      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
     const data = new Uint8Array(32); // frequencyBinCount for fftSize 64
     let phase = 0;
@@ -145,12 +156,7 @@ export function VoiceOrb({
         tLow = mirror;
         tMid = mirror * (0.7 + 0.3 * Math.sin(t * 0.011));
         tHigh = mirror * (0.5 + 0.5 * Math.sin(t * 0.019 + 1.7));
-      } else if (s === 'processing' || s === 'connecting' || !analyser) {
-        phase += 0.016;
-        tLow = 0.10 + 0.06 * (0.5 + 0.5 * Math.sin(phase));
-        tMid = tLow * 0.6;
-        tHigh = tLow * 0.3;
-      } else {
+      } else if (analyser) {
         analyser.getByteFrequencyData(data);
         const band = (a: number, b: number) => {
           let sum = 0;
@@ -161,20 +167,19 @@ export function VoiceOrb({
         tMid = band(7, 15) * 1.5;
         tHigh = band(15, 26) * 1.9;
       }
-      // Listening / ready must breathe when the mic is quiet — the iOS orb
-      // went dead at RMS 0 last night. Speaking keeps a residual pulse so
-      // quiet syllables still move the sphere.
-      if (s === 'ready' || s === 'recording') {
-        const breath = 0.14 + 0.10 * (0.5 + 0.5 * Math.sin(t * 0.0022));
-        tLow = Math.max(tLow, breath);
-        tMid = Math.max(tMid, breath * 0.75);
-        tHigh = Math.max(tHigh, breath * 0.45);
-      } else if (s === 'playing') {
-        const residual = 0.10 + 0.05 * (0.5 + 0.5 * Math.sin(t * 0.0026));
-        tLow = Math.max(tLow * 1.35, residual);
-        tMid = Math.max(tMid * 1.35, residual * 0.7);
-        tHigh = Math.max(tHigh * 1.35, residual * 0.5);
-      }
+      // State shaping — floors, residuals, and the thinking state's distinct
+      // motion — lives in orbDrive.ts so it can be unit-tested. `phase` keeps
+      // the synthetic clocks advancing at the frame rate rather than reading
+      // wall time, so a paused tab does not jump the animation.
+      phase += dt;
+      const shaped = orbBands(
+        orbMotionFor(s),
+        { low: tLow, mid: tMid, high: tHigh },
+        phase,
+      );
+      tLow = shaped.low;
+      tMid = shaped.mid;
+      tHigh = shaped.high;
       // Fast attack, slow release — syllables land visibly, decay is graceful.
       const smooth = (cur: number, target: number) =>
         cur + (target - cur) * (target > cur ? 0.5 : 0.08);
@@ -184,12 +189,12 @@ export function VoiceOrb({
       const level = Math.min(1.2, low * 0.5 + mid * 0.35 + high * 0.15);
       levelRef.current = level;
 
-      rotY += dt * (0.2 + mid * 0.9); // mids spin it up
+      rotY += dt * orbSpin(mid, s === 'playing'); // mids spin it up
       noiseT += dt * (0.9 + mid * 4.5 + high * 2.0); // speech churns the surface
       const rotX = 0.42 + 0.06 * Math.sin(t * 0.00013);
       const cosY = Math.cos(rotY), sinY = Math.sin(rotY);
       const cosX = Math.cos(rotX), sinX = Math.sin(rotX);
-      const amp = 0.045 + low * 0.34; // lows swell the whole body
+      const amp = orbAmp(low, s === 'playing'); // lows swell the whole body
       const tt = noiseT;
 
       // ── Backdrop glow ──
@@ -275,7 +280,11 @@ export function VoiceOrb({
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
     };
-  }, [getPlaybackAnalyser, getMicAnalyser, points]);
+    // `reduce ? state : ''` redraws the single static frame when the state
+    // changes, and is a constant for everyone else — so the animation loop is
+    // never torn down mid-turn (which would reset the band smoothing and the
+    // rotation).
+  }, [getPlaybackAnalyser, getMicAnalyser, points, reduce, reduce ? state : '']);
 
   const stateColor = speaking
     ? colors.cyan

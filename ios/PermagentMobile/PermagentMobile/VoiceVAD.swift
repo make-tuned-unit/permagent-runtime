@@ -16,10 +16,18 @@
 // phone dips under 0.010 between words and on soft syllables, so the trailing
 // -silence window filled up mid-utterance and ended the turn while the user
 // was still talking — the reported "orb cuts out at 5-10 seconds". Keepalive
-// now preserves the web's onset:keepalive ratio (0.4) at iOS's onset level,
-// and the trailing-silence window is widened to ride out a natural
-// mid-thought pause, which on the phone (dictation pacing, arm's length)
-// routinely exceeds the desktop's conversational 900 ms.
+// now preserves the web's onset:keepalive ratio (0.4) at iOS's onset level.
+//
+// ENDPOINT WINDOWS (2026-08-25). Measured against the morning's session, the
+// client holds `listening` for 800 ms (quick asks) or 1400 ms (anything with
+// more than 3.5 s of voiced audio) after the speaker stops — before the
+// daemon's clock even starts. Current practice puts a FIXED hangover at
+// 300–800 ms, so the quick window comes down to 500 ms (OpenAI Realtime's
+// `server_vad` default) and the noise-abort to 500 ms. The long window stays
+// at 1400 ms on purpose: the agents that run 500 ms on long turns all pair the
+// timer with a semantic end-of-turn model, and without one a shorter window
+// cuts people off mid-thought — see the note on `silenceMs`. All three are
+// overridable at runtime via `applyingDefaults` so they can be tuned by ear.
 
 import Foundation
 
@@ -41,18 +49,31 @@ struct VoiceVAD {
         /// capture runs in `.voiceChat` mode, whose echo cancellation removes
         /// the speaker signal — and two consecutive frames are still required.
         var barge: Float = 0.03
-        /// Trailing silence that completes a LONG turn. Wider than the web's
-        /// 900 ms so a mid-thought dictation pause (~1.2 s) still survives,
-        /// but tighter than the old 1.8 s — last night a finished utterance
-        /// sat in Listening for a second too long after the speaker stopped.
+        /// Trailing silence that completes a LONG (dictation-length) turn.
+        ///
+        /// DELIBERATELY NOT CUT on 2026-08-25. It is 2–3× the 300–800 ms that
+        /// shipped voice agents use, and it is the largest client-side share
+        /// of "the app sits on listening too long" — but every one of those
+        /// agents buys the short window back with a semantic end-of-turn model
+        /// (LiveKit's Qwen2.5-0.5B EOU, Pipecat's Smart Turn v3), and we have
+        /// no such signal. With a fixed timer alone, dropping this cuts people
+        /// off mid-thought: `testNaturalPausesDoNotEndTheTurn` is the
+        /// regression guard for exactly that reported bug, and a 1.2 s pause
+        /// after four seconds of speech must survive. A false endpoint costs
+        /// far more than 900 ms of latency. Tune by ear via `DefaultsKey`
+        /// below; see docs/research/VOICE_LATENCY_AND_ORB_2026-08-25.md §3.
         var silenceMs: Double = 1_400
         /// Trailing silence that completes a QUICK turn — one whose VOICED
         /// duration so far is under `quickTurnSpeechMs`. Short conversational
         /// asks ("what's on my board?") are almost always complete when the
-        /// speaker stops. 2026-08-21: the 1.1 s window still felt late;
-        /// 800 ms hands over without cutting a breath.
-        var quickSilenceMs: Double = 800
-        /// Voiced duration below which a turn counts as quick.
+        /// speaker stops, and there is no mid-thought pause to protect.
+        /// 500 ms is OpenAI Realtime's `server_vad` `silence_duration_ms`
+        /// default and sits inside the 300–800 ms band LiveKit and Pipecat
+        /// both land in. Was 800 ms.
+        var quickSilenceMs: Double = 500
+        /// Voiced duration below which a turn counts as quick. Held at 3.5 s:
+        /// raising it would hand four- and five-second utterances — which DO
+        /// contain mid-thought pauses — to the tight window above.
         var quickTurnSpeechMs: Double = 3_500
         /// Hard cap on one listening turn: a full minute.
         var maxTurnMs: Double = 60_000
@@ -67,9 +88,56 @@ struct VoiceVAD {
         /// does not sit in Listening for the full quick window.
         var minCommitMs: Double = 350
         /// Trailing silence that aborts an uncommitted (noise-only) turn.
-        var abortSilenceMs: Double = 650
+        /// Nothing was said, so there is no pause to protect. Was 650 ms.
+        var abortSilenceMs: Double = 500
 
         init() {}
+    }
+
+    // ── Tuning knob ─────────────────────────────────────────────────────────
+    //
+    // The endpoint windows are the one part of this file worth turning by ear
+    // on a real phone in a real room, so they are overridable at runtime
+    // without a rebuild. Pure and clamped, so the override is unit-testable
+    // and a fat-fingered value cannot wedge a turn open or cut every sentence
+    // in half.
+
+    /// UserDefaults keys for the three endpoint windows, in milliseconds.
+    enum DefaultsKey {
+        static let silenceMs = "voice.vad.silenceMs"
+        static let quickSilenceMs = "voice.vad.quickSilenceMs"
+        static let quickTurnSpeechMs = "voice.vad.quickTurnSpeechMs"
+    }
+
+    /// Accepted range for an overridden trailing-silence window. The floor is
+    /// below anything research recommends but still long enough that a single
+    /// inter-word gap cannot end a turn; the ceiling is the old default, so
+    /// the knob can restore previous behaviour but not make it worse.
+    static let silenceOverrideRange: ClosedRange<Double> = 200...1_800
+
+    /// Accepted range for the quick/long classifier.
+    static let quickTurnOverrideRange: ClosedRange<Double> = 1_000...20_000
+
+    /// Apply any `voice.vad.*` overrides present in `defaults` on top of
+    /// `base`, clamping each to its accepted range. An absent or non-numeric
+    /// key leaves the compiled default alone.
+    static func applyingDefaults(_ base: Config, defaults: UserDefaults) -> Config {
+        var c = base
+        func read(_ key: String, _ range: ClosedRange<Double>) -> Double? {
+            guard defaults.object(forKey: key) != nil else { return nil }
+            let v = defaults.double(forKey: key)
+            guard v.isFinite, v > 0 else { return nil }
+            return min(range.upperBound, max(range.lowerBound, v))
+        }
+        if let v = read(DefaultsKey.silenceMs, silenceOverrideRange) { c.silenceMs = v }
+        if let v = read(DefaultsKey.quickSilenceMs, silenceOverrideRange) { c.quickSilenceMs = v }
+        if let v = read(DefaultsKey.quickTurnSpeechMs, quickTurnOverrideRange) {
+            c.quickTurnSpeechMs = v
+        }
+        // A quick window longer than the long window would invert the whole
+        // point of the two tiers; hold the invariant regardless of input.
+        c.quickSilenceMs = min(c.quickSilenceMs, c.silenceMs)
+        return c
     }
 
     /// The engine states the VAD distinguishes. `.inactive` covers everything
@@ -146,9 +214,18 @@ struct VoiceVAD {
     /// built-in mic is quieter AND, with AEC off so the mic actually works,
     /// barge-in must be higher so TTS from the same speaker is not an interrupt.
     /// Pure so the chooser is unit-testable without an audio session.
-    static func configForRoute(inputPortTypes: [String], speakerphone: Bool = false) -> Config {
-        if speakerphone { return speakerphoneConfig }
-        return inputPortTypes.contains(Self.builtInMicPort) ? builtInMicConfig : headsetConfig
+    static func configForRoute(
+        inputPortTypes: [String],
+        speakerphone: Bool = false,
+        defaults: UserDefaults = .standard
+    ) -> Config {
+        let base: Config
+        if speakerphone {
+            base = speakerphoneConfig
+        } else {
+            base = inputPortTypes.contains(Self.builtInMicPort) ? builtInMicConfig : headsetConfig
+        }
+        return applyingDefaults(base, defaults: defaults)
     }
 
     /// `AVAudioSession.Port.builtInMic.rawValue`. Kept as a string so this

@@ -121,8 +121,63 @@ final class VoiceVADTests: XCTestCase {
             return XCTFail("trailing silence never ended the turn")
         }
         XCTAssertEqual(end.action, .endTurn)
-        XCTAssertGreaterThan(end.at, 0.65)
-        XCTAssertLessThan(end.at, 1.05, "quick-ask endpoint drifted — lag is back")
+        XCTAssertGreaterThan(end.at, 0.4, "quick-ask endpoint got tighter than the 300-800ms band")
+        XCTAssertLessThan(end.at, 0.75, "quick-ask endpoint drifted — lag is back")
+    }
+
+    /// The quick window is the one that moved on 2026-08-25 (800 -> 500 ms).
+    /// Pinned against the research band so a future tweak has to be deliberate.
+    func testQuickWindowSitsInsideThePublishedBand() {
+        let c = VoiceVAD.Config()
+        XCTAssertGreaterThanOrEqual(c.quickSilenceMs, 300)
+        XCTAssertLessThanOrEqual(c.quickSilenceMs, 800)
+        XCTAssertLessThan(c.quickSilenceMs, c.silenceMs,
+                          "quick window must stay tighter than the dictation window")
+        XCTAssertEqual(c.quickTurnSpeechMs, 3_500,
+                       "raising the classifier hands mid-thought pauses to the tight window")
+    }
+
+    /// The endpoint windows are tunable by ear without a rebuild, and a bad
+    /// value must clamp rather than wedge a turn open or cut every sentence.
+    func testDefaultsOverrideAppliesAndClamps() {
+        let suite = "voice.vad.tests.\(UUID().uuidString)"
+        guard let d = UserDefaults(suiteName: suite) else { return XCTFail("no suite") }
+        defer { UserDefaults().removePersistentDomain(forName: suite) }
+
+        // Absent keys leave the compiled defaults alone.
+        XCTAssertEqual(VoiceVAD.applyingDefaults(.init(), defaults: d).silenceMs, 1_400)
+
+        d.set(700.0, forKey: VoiceVAD.DefaultsKey.silenceMs)
+        d.set(350.0, forKey: VoiceVAD.DefaultsKey.quickSilenceMs)
+        let tuned = VoiceVAD.applyingDefaults(.init(), defaults: d)
+        XCTAssertEqual(tuned.silenceMs, 700)
+        XCTAssertEqual(tuned.quickSilenceMs, 350)
+
+        // Absurd values clamp to the accepted range.
+        d.set(99_000.0, forKey: VoiceVAD.DefaultsKey.silenceMs)
+        d.set(1.0, forKey: VoiceVAD.DefaultsKey.quickSilenceMs)
+        let clamped = VoiceVAD.applyingDefaults(.init(), defaults: d)
+        XCTAssertEqual(clamped.silenceMs, VoiceVAD.silenceOverrideRange.upperBound)
+        XCTAssertEqual(clamped.quickSilenceMs, VoiceVAD.silenceOverrideRange.lowerBound)
+
+        // The two-tier invariant holds even if the knob inverts it.
+        d.set(600.0, forKey: VoiceVAD.DefaultsKey.silenceMs)
+        d.set(1_500.0, forKey: VoiceVAD.DefaultsKey.quickSilenceMs)
+        let inverted = VoiceVAD.applyingDefaults(.init(), defaults: d)
+        XCTAssertLessThanOrEqual(inverted.quickSilenceMs, inverted.silenceMs)
+    }
+
+    /// A tuned window must reach the live VAD through the route chooser, not
+    /// just through `applyingDefaults` — the engine only ever calls the former.
+    func testRouteChooserCarriesTheOverride() {
+        let suite = "voice.vad.tests.\(UUID().uuidString)"
+        guard let d = UserDefaults(suiteName: suite) else { return XCTFail("no suite") }
+        defer { UserDefaults().removePersistentDomain(forName: suite) }
+        d.set(650.0, forKey: VoiceVAD.DefaultsKey.silenceMs)
+        let c = VoiceVAD.configForRoute(inputPortTypes: [VoiceVAD.builtInMicPort], defaults: d)
+        XCTAssertEqual(c.silenceMs, 650)
+        XCTAssertEqual(c.onset, VoiceVAD.builtInMicConfig.onset,
+                       "the override must not disturb the route preset's thresholds")
     }
 
     /// A LONG turn (dictation-length voiced duration) keeps the patient

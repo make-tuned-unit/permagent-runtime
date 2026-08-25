@@ -98,6 +98,52 @@ export function routeWakeEvent(
   return 'ignore';
 }
 
+// ── Endpointing ────────────────────────────────────────────────────────────
+//
+// How long we keep `recording` after the speaker goes quiet. This window is
+// the whole of the "the app sits on listening too long" complaint on the
+// client side: nothing downstream starts until it expires.
+//
+// Two tiers, matching ios/PermagentMobile/PermagentMobile/VoiceVAD.swift. A
+// short conversational ask is almost always finished when the speaker stops,
+// so it gets the tight window; a dictation-length turn contains mid-thought
+// pauses that must survive, so it keeps the patient one. The agents that run a
+// tight window on BOTH tiers (LiveKit, Pipecat, OpenAI Realtime's semantic
+// mode) all pair the timer with a semantic end-of-turn model; we have no such
+// signal, and a false endpoint costs far more than the extra 400 ms.
+// See docs/research/VOICE_LATENCY_AND_ORB_2026-08-25.md §3.
+
+/** Tight window, for a turn with less than {@link VAD_QUICK_TURN_SPEECH_MS} of
+ *  voiced audio. 500 ms is OpenAI Realtime's `server_vad` `silence_duration_ms`
+ *  default, inside the 300-800 ms band LiveKit and Pipecat also land in. */
+export const VAD_QUICK_SILENCE_MS = 500;
+
+/** Patient window, for a dictation-length turn. Unchanged. */
+export const VAD_SILENCE_MS = 900;
+
+/** Voiced duration below which a turn counts as a quick ask. */
+export const VAD_QUICK_TURN_SPEECH_MS = 3_500;
+
+/**
+ * Pure: the trailing-silence window that should end a turn whose voiced
+ * duration so far is `voicedMs`. Exported so the endpoint timing is testable
+ * without an audio graph.
+ */
+export function endpointWindowMs(
+  voicedMs: number,
+  opts: { quickMs?: number; longMs?: number; quickTurnMs?: number } = {},
+): number {
+  const {
+    quickMs = VAD_QUICK_SILENCE_MS,
+    longMs = VAD_SILENCE_MS,
+    quickTurnMs = VAD_QUICK_TURN_SPEECH_MS,
+  } = opts;
+  // A quick window longer than the patient one would invert the two tiers.
+  const quick = Math.min(quickMs, longMs);
+  if (!Number.isFinite(voicedMs) || voicedMs < 0) return longMs;
+  return voicedMs < quickTurnMs ? quick : longMs;
+}
+
 /** localStorage key for the wake-word preference (default: enabled). */
 export const WAKE_WORD_LS_KEY = 'voice:wakeWordEnabled';
 
@@ -911,7 +957,6 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const VAD_ONSET = 0.025;
   const VAD_KEEPALIVE = 0.010;
   const VAD_BARGE = 0.05;
-  const VAD_SILENCE_MS = 900;
   const VAD_MAX_TURN_MS = 45_000;
   /** Consecutive ~128ms buffers over onset before a turn starts. A mechanical
    *  keyboard click is a single-buffer transient; speech sustains — this was
@@ -1040,7 +1085,12 @@ export function useVoice(options: UseVoiceOptions = {}) {
         const spoke = vadHeardSpeechRef.current;
         const silentFor = now - vadLastVoiceRef.current;
         const turnFor = now - vadTurnStartRef.current;
-        if ((spoke && silentFor > VAD_SILENCE_MS) || turnFor > VAD_MAX_TURN_MS) {
+        // Adaptive endpoint, matching the iOS VAD: a short ask hands over on
+        // the tight window, a dictation keeps the patient one. Voiced duration
+        // (turn start → last voice) is the discriminator, so the silence being
+        // measured never counts against the classification.
+        const window = endpointWindowMs(vadLastVoiceRef.current - vadTurnStartRef.current);
+        if ((spoke && silentFor > window) || turnFor > VAD_MAX_TURN_MS) {
           vadHeardSpeechRef.current = false;
           stopRecordingRef.current?.();
         }
