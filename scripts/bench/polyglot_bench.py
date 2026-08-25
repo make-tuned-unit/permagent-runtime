@@ -156,6 +156,13 @@ def cmd_prepare(args):
                 t: sha256_file(os.path.join(ws, t)) for t in meta["test"]
                 if os.path.exists(os.path.join(ws, t))
             },
+            # The untouched stub's hash. "Wrote wrong code" and "wrote no code
+            # at all" are different failures and must not read the same in a
+            # results table.
+            "stub_sha256": {
+                f: sha256_file(os.path.join(ws, f)) for f in meta["solution"]
+                if os.path.exists(os.path.join(ws, f))
+            },
         })
 
     manifest = {
@@ -442,11 +449,13 @@ def cmd_grade(args):
         shutil.copytree(os.path.join(args.workdir, "pristine", task["name"]), grade_dir)
         shutil.rmtree(os.path.join(grade_dir, ".meta"), ignore_errors=True)
 
-        missing = []
+        missing, unchanged = [], []
         for sol in task["solution_files"]:
             src = os.path.join(ws_label, sol)
             if os.path.exists(src):
                 shutil.copy2(src, os.path.join(grade_dir, sol))
+                if sha256_file(src) == task.get("stub_sha256", {}).get(sol):
+                    unchanged.append(sol)
             else:
                 missing.append(sol)
 
@@ -469,6 +478,7 @@ def cmd_grade(args):
         rec["grade"] = {
             "passed": passed,
             "missing_solution_files": missing,
+            "solution_files_untouched": unchanged,
             "test_files_tampered": tampered,
             "test_timeout": test_timeout,
             "test_output_tail": tail,
@@ -479,6 +489,8 @@ def cmd_grade(args):
         with open(rec_path, "w") as fh:
             json.dump(rec, fh, indent=2)
         flag = "PASS" if passed else "FAIL"
+        if unchanged:
+            flag += " (NO CODE WRITTEN)"
         if tampered:
             flag += f" (TEST TAMPER: {tampered})"
         print(f"  {task['name']:<24} {flag}")
@@ -512,8 +524,9 @@ def cmd_report(args):
         A("")
 
     A("| label | model(s) actually billed | pass@1 | passed/n | cost | median wall | "
-      "total wall | tool calls | test tamper | timeouts | rate-limit retries |")
-    A("|---|---|---|---|---|---|---|---|---|---|---|")
+      "total wall | tool calls | no code written | test tamper | timeouts | "
+      "rate-limit retries |")
+    A("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for label in labels:
         recs = []
         d = os.path.join(runs_root, label)
@@ -530,6 +543,7 @@ def cmd_report(args):
         med = walls[len(walls) // 2] if walls else 0
         tot = sum(walls)
         tamp = sum(1 for r in graded if r["grade"]["test_files_tampered"])
+        nocode = sum(1 for r in graded if r["grade"].get("solution_files_untouched"))
         tmo = sum(1 for r in recs if r.get("timed_out"))
         rl = sum(r["stream_evidence"]["rate_limit_retries"] for r in recs)
         cost = sum(r["ledger"]["cost_usd"] or 0 for r in recs)
@@ -540,7 +554,7 @@ def cmd_report(args):
         rate = f"{100.0 * p / n:.0f}%" if n else "—"
         cost_cell = f"${cost:.2f}" + ("" if priced == len(recs) else f" ({priced}/{len(recs)} priced)")
         A(f"| {label} | {', '.join(f'`{m}`' for m in models)} | {rate} | {p}/{n} | "
-          f"{cost_cell} | {med:.0f}s | {tot/60:.0f}m | {tools} | {tamp} | {tmo} | {rl} |")
+          f"{cost_cell} | {med:.0f}s | {tot/60:.0f}m | {tools} | {nocode} | {tamp} | {tmo} | {rl} |")
     A("")
     A("## Per task")
     A("")
@@ -560,6 +574,8 @@ def cmd_report(args):
                 cells.append("ungraded")
             else:
                 c = "PASS" if g["passed"] else "FAIL"
+                if g.get("solution_files_untouched"):
+                    c += " ∅no-code"
                 if g["test_files_tampered"]:
                     c += " ⚠tamper"
                 if r.get("timed_out"):
