@@ -41,7 +41,7 @@ async fn latest(State(state): State<Arc<AppState>>) -> Result<Json<LatestRespons
         .map_err(|e| ErrorResponse::internal(e.to_string()))?;
     let pair = store::latest_finished(&pool)
         .await
-        .map_err(|e| ErrorResponse::internal(e))?;
+        .map_err(ErrorResponse::internal)?;
     let open_actions: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM decisions WHERE kind = 'council_action' AND status = 'open'",
     )
@@ -80,14 +80,14 @@ async fn one(
         .map_err(|e| ErrorResponse::internal(e.to_string()))?;
     let session = store::get_session(&pool, &id)
         .await
-        .map_err(|e| ErrorResponse::internal(e))?
+        .map_err(ErrorResponse::internal)?
         .ok_or_else(|| ErrorResponse::not_found(format!("no council session {id}")))?;
     let report = store::get_report_for_session(&pool, &id)
         .await
-        .map_err(|e| ErrorResponse::internal(e))?;
+        .map_err(ErrorResponse::internal)?;
     let positions = store::list_positions(&pool, &id)
         .await
-        .map_err(|e| ErrorResponse::internal(e))?;
+        .map_err(ErrorResponse::internal)?;
     Ok(Json(LatestResponse {
         session: Some(session),
         report,
