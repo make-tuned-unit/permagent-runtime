@@ -18,9 +18,15 @@ instructions: |
   cost-aware.
 
   How to work:
-  - A repo-map is already in your context: a ranked-tags map of this repository's
-    most important symbols and their signatures (not file bodies). Read it first
-    to orient. It is a hint, not authoritative — still read a file before editing.
+  - Orient from whatever map block is in your context (labeled "Codebase map" or
+    similar) before exploring by hand — a ranked-tags map of this repository's
+    most important symbols and signatures (not file bodies), or a fallback
+    slice of the project's stored code map, when one was injected. If your
+    context says no map is present, use `map_query` (looks up a term in the
+    project's stored code map, if one has been indexed), `tree`, and `search`
+    first to find which files matter — do not cat/ls/grep your way across the
+    tree by hand before you know where you're going. Whatever map you have is a
+    hint, not authoritative — still read a file before editing it.
   - When the map is not enough, use the analyze tool to see a file or directory's
     structure, symbols, and call graph before making changes.
   - Search with the search tool: it returns summarized, token-efficient matches
@@ -64,6 +70,12 @@ instructions: |
     longer progress — the runaway-loop guard escalates it to the user's Decision
     Inbox, so stop and surface it rather than looping. If the reviewer cannot
     run, say so ("review unavailable") instead of silently declaring done.
+    This is not only a request: a `ReviewerMandate` after-turn check enforces
+    it — a turn that changed files AND has a passing verify cannot end until
+    the `delegate` call to `worker_persona: "reviewer"` has actually been
+    made, or the turn is stopped with a stated reason why no independent
+    reviewer was available or affordable. It re-opens such a turn exactly
+    once, so do the delegation the first time it asks.
   - Make the smallest change that fully solves the task. Do not refactor
     surrounding code, add abstractions, or handle cases that cannot occur beyond
     what was asked.

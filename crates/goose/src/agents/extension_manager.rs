@@ -1632,7 +1632,26 @@ impl ExtensionManager {
             }
         });
 
-        let results = future::join_all(client_futures).await;
+        let mut results = future::join_all(client_futures).await;
+
+        // Deterministic extension order, and therefore a deterministic tool
+        // order in every request built from this list.
+        //
+        // `self.extensions` and `self.pending_extensions` are `HashMap`s, and a
+        // `HashMap`'s iteration order is randomised per instance. Within one
+        // process that only means "arbitrary"; ACROSS processes it means the
+        // same profile emits the same tool schemas in a different order every
+        // run. Automatic prompt caches (DeepSeek, Z.AI, OpenAI) key on an exact
+        // prefix that includes those schemas, so a reshuffle is a guaranteed
+        // cold start — and each benchmark task, each `permagent run`, is its own
+        // process. Sorting by extension name here costs nothing and makes the
+        // prefix reproducible run to run.
+        //
+        // Sorted by extension, not flattened and sorted by tool name, so each
+        // extension's own tools stay grouped and in the order it advertised
+        // them.
+        results.sort_by(|a, b| a.0.cmp(&b.0));
+        pending_tools.sort_by(|a, b| a.0.cmp(&b.0));
 
         let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut tools = Vec::new();

@@ -2,13 +2,13 @@
 source: crates/goose/src/agents/prompt_manager.rs
 expression: table
 ---
-shared body (no family selected): 74632 bytes / ~18658 tokens
+shared body (no family selected): 75093 bytes / ~18774 tokens
 
 family        overlay_bytes  total_bytes  approx_total_tokens
-anthropic               233        74866                18717
-openai                  300        74933                18734
-deepseek                253        74886                18722
-glm                     287        74920                18730
-xai                     215        74848                18712
-qwen-local              465        75098                18775
-other                     0        74632                18658
+anthropic               233        75327                18832
+openai                  300        75394                18849
+deepseek                253        75347                18837
+glm                     287        75381                18846
+xai                     215        75309                18828
+qwen-local              465        75559                18890
+other                     0        75093                18774

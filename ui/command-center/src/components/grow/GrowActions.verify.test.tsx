@@ -83,15 +83,62 @@ function actionsPayload(identity: Partial<Identity> | null) {
   };
 }
 
-/** Route the mock by URL, the way the real daemon would. */
-function routeTo(actions: unknown, verify?: unknown) {
+/**
+ * Route the mock by URL, the way the real daemon would.
+ *
+ * `actions` may be a QUEUE — an array of payloads consumed one per GET, the
+ * last one repeating once exhausted — rather than a single static payload.
+ * A mock that always answers `/growth-actions` the same way cannot represent
+ * a refetch at all, which is exactly why the same-tab bug this file guards
+ * against (`ActionVerify.verify()` never calling `onChanged()`) shipped
+ * without a test catching it: every existing test here only ever needed one
+ * GET's worth of board.
+ */
+function routeTo(actions: unknown, verify?: unknown, reopen?: unknown) {
+  const queue = Array.isArray(actions) ? [...actions] : null;
   apiFetch.mockImplementation((url: string) => {
     if (url.includes('/verify')) {
       return verify instanceof Error ? Promise.reject(verify) : Promise.resolve(verify);
     }
-    if (url.includes('/growth-actions')) return Promise.resolve(actions);
+    if (url.includes('/reopen')) {
+      return reopen instanceof Error ? Promise.reject(reopen) : Promise.resolve(reopen ?? {});
+    }
+    if (url.includes('/growth-actions')) {
+      if (queue) return Promise.resolve(queue.length > 1 ? queue.shift() : queue[0]);
+      return Promise.resolve(actions);
+    }
     return Promise.resolve({});
   });
+}
+
+/**
+ * The board payload from a SECOND (or later) GET, after `onChanged`
+ * refetches. `render_board` (growth_actions.rs) builds `actions` and
+ * `tracking` from the same durable rows split by status, so all a test has to
+ * do to represent "the daemon now sees this row differently" is put it in the
+ * other array — nothing here is a second source of truth.
+ */
+function boardState(over: { actions?: unknown[]; tracking?: unknown[] } = {}) {
+  return {
+    actions: [],
+    tracking: [],
+    archived: [],
+    dismissed: [],
+    generatedAt: '2026-08-11T10:00:00Z',
+    reason: null,
+    periodDays: 30,
+    droppedForNoTarget: 0,
+    droppedAsRestatement: 0,
+    droppedAsAlreadyPresent: 0,
+    ...over,
+  };
+}
+
+/** One board row, reusing `actionsPayload`'s row shape with a caller-chosen
+ *  identity — so a test can move the SAME row between lists rather than
+ *  duplicating the title/evidence/steps fields it doesn't care about. */
+function row(identity: Record<string, unknown>) {
+  return { ...actionsPayload({}).actions[0], identity };
 }
 
 let container: HTMLDivElement;
@@ -436,5 +483,113 @@ describe('the verdict', () => {
     // Attribution is unsolvable at this traffic; a percentage would imply it
     // was solved (proposal:126-128).
     expect(container.textContent).not.toContain('+40%');
+  });
+});
+
+describe('same-tab refetch on verify', () => {
+  // REGRESSION. The daemon now emits `project_changed` on verify, which bumps
+  // `projectsRev` and refetches — but that is the OTHER tab's path (or this
+  // tab's, after a round trip through the socket). The tab that fired the
+  // verify itself has the answer sitting in its own POST response and used to
+  // do nothing with it beyond `setResult`: the card stayed drawn from the
+  // `actions` array in component state, which nothing here ever touched, so a
+  // card that had genuinely verified on the daemon stayed visibly stuck in
+  // the suggestion list until something else happened to remount the panel.
+  it('a verified action leaves the suggestions and appears under Completed', async () => {
+    const suggested = row({
+      id: 'act-1', status: 'suggested', targetMetric: 'sessions', targetDir: 'up',
+      verifiedBy: null, verifiedAt: null, outcomes: [],
+    });
+    const verifiedIdentity = {
+      id: 'act-1', status: 'verified', targetMetric: 'sessions', targetDir: 'up',
+      verifiedBy: 'git', verifiedAt: '2026-08-14T10:00:00Z',
+      verifiedCommit: '8f2a1c334455667788990011223344556677889a',
+      verifiedDetail: 'Commit 8f2a1c33 "Add FAQ block" changed src/pages/index.astro, which the '
+        + 'action named as src/pages/index.astro.',
+      outcomes: [],
+    };
+
+    routeTo(
+      [
+        boardState({ actions: [suggested] }),
+        boardState({ actions: [], tracking: [row(verifiedIdentity)] }),
+      ],
+      { verified: true, identity: verifiedIdentity, checks: [], reason: null },
+    );
+    await render(<GrowActions project={project} colors={colors} />);
+
+    expect(container.textContent).toContain('Expand the grocery-stores post');
+    expect(container.textContent).not.toContain('Completed');
+
+    await act(async () => { button('I did this').click(); });
+
+    // Under Completed, carrying its receipt…
+    expect(container.textContent).toContain('Completed (1)');
+    expect(container.textContent).toContain('8f2a1c33');
+    // …and gone from the suggestions: the title now appears exactly once,
+    // where before this fix it would still also be sitting above as an
+    // untouched suggestion.
+    const titleHits = container.textContent!.match(/Expand the grocery-stores post/g) ?? [];
+    expect(titleHits.length).toBe(1);
+  });
+});
+
+describe('reopen', () => {
+  it('posts to the reopen route and refetches the board', async () => {
+    const tracked = row({
+      id: 'act-1', status: 'verified', targetMetric: 'sessions', targetDir: 'up',
+      verifiedBy: 'git', verifiedAt: '2026-08-14T10:00:00Z', outcomes: [],
+    });
+    const reopened = row({
+      id: 'act-1', status: 'suggested', targetMetric: 'sessions', targetDir: 'up',
+      verifiedBy: null, verifiedAt: null, outcomes: [],
+    });
+
+    routeTo(
+      [
+        boardState({ tracking: [tracked] }),
+        boardState({ actions: [reopened] }),
+      ],
+      undefined,
+      { id: 'act-1', status: 'suggested', verifiedAt: null, verifiedBy: null, outcomes: [] },
+    );
+    await render(<GrowActions project={project} colors={colors} />);
+    expect(container.textContent).toContain('Completed (1)');
+
+    await act(async () => { button('Reopen').click(); });
+
+    expect(apiFetch).toHaveBeenCalledWith(
+      '/api/projects/p1/growth-actions/act-1/reopen',
+      { method: 'POST' },
+    );
+    // The refetch put the row back under Actions, not left it sitting under a
+    // Completed heading that the reopen route is supposed to empty out.
+    expect(container.textContent).not.toContain('Completed (');
+  });
+
+  // The server's own guard (409, growth_actions.rs): reopening clears the
+  // pivot an outcome was measured from, so once one exists Archive is the
+  // only exit and the button is not offered rather than being offered and
+  // refused every time it's pressed.
+  it('offers no Reopen on a Completed card that already has a measured outcome', async () => {
+    routeTo(boardState({
+      tracking: [row({
+        id: 'act-1', status: 'judged', targetMetric: 'pageviews', targetDir: 'up',
+        verifiedBy: 'git', verifiedAt: '2026-07-01T10:00:00Z',
+        outcomes: [{
+          windowDays: 28, verdict: 'helped',
+          rationale: 'Pageviews went from 900 to 1130 over 28 days.',
+          deltaPct: 0.26, confounders: [], judgedAt: '2026-07-30T00:00:00Z',
+        }],
+      })],
+    }));
+    await render(<GrowActions project={project} colors={colors} />);
+
+    expect(container.textContent).toContain('Completed (1)');
+    expect(
+      Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.includes('Reopen')),
+    ).toBeUndefined();
+    // Archive is still the exit.
+    expect(button('Archive')).toBeTruthy();
   });
 });

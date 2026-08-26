@@ -1,0 +1,18 @@
+id: defaults-py-competition-ranking-keeps-order
+title: "Competition ranking that preserves input order"
+category: model-defaults-py
+max_turns: 25
+harness_timeout_secs: 600
+oracle_timeout_secs: 180
+test: [bash, oracle_check.sh]
+# The oracle is a shell script, so the Python/Node import allowlist does
+# not apply; the overlay still makes it untamperable by the agent.
+deliverables: [bench_py]
+# lang=py difficulty=hard needs_repo_map=false needs_test_run=false
+prompt: |
+  `rank_players` is supposed to give players a standard sports-style ranking:
+  players with the same score share the same rank, and the next distinct score
+  skips ahead by however many players tied for the rank before it (1st, 2nd,
+  2nd, 4th -- not 1st, 2nd, 3rd, 4th). Right now it doesn't handle ties at all,
+  and on top of that it silently reorders the players by score instead of
+  keeping them in the order they were given. Fix both problems.

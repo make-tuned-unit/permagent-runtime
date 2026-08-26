@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
+  endpointWindowMs,
+  VAD_QUICK_SILENCE_MS,
+  VAD_QUICK_TURN_SPEECH_MS,
+  VAD_SILENCE_MS,
   isVoiceWedged,
   isInterruptibleState,
   isTransientVoiceIdle,
@@ -109,5 +113,34 @@ describe('isTransientVoiceIdle (20260821_14 empty STT flash)', () => {
     expect(isTransientVoiceIdle('STT failed: model missing')).toBe(false);
     expect(isTransientVoiceIdle('Voice reply failed: timeout')).toBe(false);
     expect(isTransientVoiceIdle(null)).toBe(false);
+  });
+});
+
+describe('endpointWindowMs (how long "listening" holds after you stop)', () => {
+  it('hands a short conversational ask over on the tight window', () => {
+    expect(endpointWindowMs(0)).toBe(VAD_QUICK_SILENCE_MS);
+    expect(endpointWindowMs(VAD_QUICK_TURN_SPEECH_MS - 1)).toBe(VAD_QUICK_SILENCE_MS);
+  });
+
+  it('keeps the patient window for a dictation-length turn', () => {
+    // Deliberate: a mid-thought pause must survive, and we have no semantic
+    // end-of-turn model to buy the short window back with.
+    expect(endpointWindowMs(VAD_QUICK_TURN_SPEECH_MS)).toBe(VAD_SILENCE_MS);
+    expect(endpointWindowMs(30_000)).toBe(VAD_SILENCE_MS);
+  });
+
+  it('keeps the tight window inside the published 300-800ms band', () => {
+    expect(VAD_QUICK_SILENCE_MS).toBeGreaterThanOrEqual(300);
+    expect(VAD_QUICK_SILENCE_MS).toBeLessThanOrEqual(800);
+    expect(VAD_QUICK_SILENCE_MS).toBeLessThan(VAD_SILENCE_MS);
+  });
+
+  it('never lets the quick tier outlast the patient one', () => {
+    expect(endpointWindowMs(0, { quickMs: 1_500, longMs: 600 })).toBe(600);
+  });
+
+  it('falls back to the patient window on a garbage clock', () => {
+    expect(endpointWindowMs(NaN)).toBe(VAD_SILENCE_MS);
+    expect(endpointWindowMs(-1)).toBe(VAD_SILENCE_MS);
   });
 });

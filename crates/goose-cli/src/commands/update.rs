@@ -110,12 +110,12 @@ fn verify_bundle(
     let bundle = Bundle::from_json(&bundle_str)
         .map_err(|e| anyhow::anyhow!("Failed to parse bundle: {e}"))?;
 
+    // sigstore-verify 0.11 removed `VerificationResult::success`: the type carries
+    // no failure signal at all (identity/issuer/integrated_time/warnings), and a
+    // failed verification is returned as `Err`. The `?` above is therefore the
+    // whole gate — an `Ok` here means the bundle verified against the trusted root.
     let result = sigstore_verify::verify(artifact_digest, &bundle, policy, trusted_root)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-    if !result.success {
-        bail!("Verification unsuccessful");
-    }
 
     let identity = result
         .identity

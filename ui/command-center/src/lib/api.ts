@@ -319,6 +319,13 @@ export interface TokenState {
   model: string;
 }
 
+/** Parent + direct-child cost rollup from GET /api/sessions/{id}/cost. */
+export interface SessionCostRollup {
+  own: number;
+  childrenTotal: number;
+  perChild: Array<{ sessionId: string; costUsd: number }>;
+}
+
 export interface Skill {
   id: string;
   name: string;
@@ -964,6 +971,10 @@ export const api = {
   // Session detail — GET /api/sessions/{id} returns Session with conversation
   getSession: (id: string) =>
     apiFetch<Session>(`/api/sessions/${encodeURIComponent(id)}`),
+
+  /** Parent + child cost rollup — GET /api/sessions/{id}/cost */
+  getSessionCost: (id: string) =>
+    apiFetch<SessionCostRollup>(`/api/sessions/${encodeURIComponent(id)}/cost`),
 
   // Delete session — DELETE /api/sessions/{id}. apiFetch, not raw fetch: a raw
   // fetch RESOLVES on a 5xx, so the store treated a failed delete as success

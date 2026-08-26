@@ -592,7 +592,7 @@ describe('the tracking view', () => {
     routeTo(payload({ actions: [], tracking: [tracked()] }));
     await render(<GrowActions project={project} colors={colors} />);
 
-    expect(container.textContent).toContain('Tracking (1)');
+    expect(container.textContent).toContain('Completed (1)');
     expect(container.textContent).toContain('Rewrite the homepage');
     // An empty Actions list beside a full Tracking list is not "nothing to
     // say" — saying the wrong one of those reads as data loss.
@@ -664,6 +664,42 @@ describe('the tracking view', () => {
 
     expect(maybeButton('Archive')).toBeTruthy();
     expect(maybeButton('Not interested')).toBeUndefined();
+  });
+
+  // The receipt for "this shipped". A commit chip only when the passing check
+  // was `git` — `verifiedCommit` is omitted from the JSON for every other
+  // strategy (routes/growth_actions.rs), so a card verified by content, an
+  // event, or the user's own word must never grow a sha it was never given.
+  it('renders the short sha as a receipt when the card was verified from a commit', async () => {
+    routeTo(payload({
+      actions: [],
+      tracking: [tracked({}, {
+        verifiedCommit: '8f2a1c334455667788990011223344556677889a',
+        verifiedDetail: 'Commit 8f2a1c33 "Add FAQ block" changed src/pages/index.astro, which '
+          + 'the action named as src/pages/index.astro.',
+      })],
+    }));
+    await render(<GrowActions project={project} colors={colors} />);
+
+    expect(container.textContent).toContain('8f2a1c33');
+    // Shortened, not the full sha — the full 40 characters would be the kind
+    // of noise the chip exists to avoid.
+    expect(container.textContent).not.toContain('8f2a1c334455667788990011223344556677889a');
+    expect(container.textContent).toContain('Commit 8f2a1c33 "Add FAQ block" changed src/pages/index.astro');
+  });
+
+  it('shows the strategy instead of a sha when there is no commit to name', async () => {
+    routeTo(payload({
+      actions: [],
+      tracking: [tracked({}, { verifiedBy: 'self', verifiedCommit: null })],
+    }));
+    await render(<GrowActions project={project} colors={colors} />);
+
+    // The chip's own words, not fabricated ones — "you told me it landed" is
+    // the same self-attest copy `verifiedByMeta` already uses everywhere else
+    // on the card, and reusing it is what keeps this claim honest.
+    expect(container.textContent).toContain('your word, not a check');
+    expect(container.textContent).not.toContain('commit ');
   });
 });
 

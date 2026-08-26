@@ -12,7 +12,7 @@
 
 use super::output::Theme;
 use console::measure_text_width;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub const MAX_INPUT_ROWS: usize = 6;
 pub const PLACEHOLDER: &str = "Ask Permagent to do anything";
@@ -65,6 +65,35 @@ pub enum ComposerAction {
     Redraw,
 }
 
+/// What the turn is doing right now.
+///
+/// Added 2026-08-25. A GLM-5.3 session spent four minutes and fourteen
+/// thousand reasoning tokens in one stream with no text and no tool call, and
+/// the status line said only "Working (Ns)" the whole time. The user read it as
+/// a hang, which was reasonable — nothing on screen distinguished thinking from
+/// stuck from waiting on a rate limit.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum TurnPhase {
+    /// Nothing has reported a phase. Renders as the generic "Working" the
+    /// composer has always shown — we say what we know, and this is the case
+    /// where we know nothing more than "a turn is in flight".
+    #[default]
+    Unreported,
+    /// The model is producing reasoning or text.
+    Thinking,
+    /// A tool is running. `target` is the thing it is acting on — a path, a
+    /// pattern, the head of a command — and is what makes the line worth
+    /// reading, so a collapsed tool line still says WHAT it is doing.
+    RunningTool {
+        name: String,
+        target: Option<String>,
+    },
+}
+
+/// After this long with nothing printed, say so and name the way out. Chosen to
+/// sit well past a slow tool call and well inside a user's patience.
+pub const STUCK_HINT_AFTER: Duration = Duration::from_secs(60);
+
 #[derive(Debug, Clone, Default)]
 pub struct ComposerState {
     pub buffer: String,
@@ -86,6 +115,26 @@ pub struct ComposerState {
     pub pasting: bool,
     /// Last pasted byte was CR — used to fold a CRLF pair into one line break.
     pub paste_saw_cr: bool,
+    /// What this turn is doing, as last reported by the session loop.
+    pub phase: TurnPhase,
+    /// Tokens this turn, if the provider has reported any yet.
+    pub turn_tokens: Option<u64>,
+    /// Dollars spent THIS turn, for the same status row as `turn_tokens`.
+    ///
+    /// Tokens alone answer "how much work" but not "how much money", and the
+    /// two do not track each other: a cache-heavy turn can be tens of
+    /// thousands of tokens and fractions of a cent, and the whole reason the
+    /// Build meter was reported dead was that nobody could see the money
+    /// moving. `None` when it is not known — never `Some(0.0)` as a stand-in,
+    /// because a real free turn (a local model) and an unknown one must not
+    /// render identically.
+    pub turn_cost_usd: Option<f64>,
+    /// When anything was last printed. `None` means nothing yet this turn.
+    pub last_output_at: Option<Instant>,
+    /// A provider wait in progress, already rendered by
+    /// `permagent::providers::wait_status`. Pre-rendered rather than modelled
+    /// here so this module stays pure and testable.
+    pub provider_wait: Option<String>,
 }
 
 impl ComposerState {
@@ -96,7 +145,25 @@ impl ComposerState {
         } else {
             self.busy_since = None;
         }
+        // Either way the phase starts unknown: a previous turn's tool name
+        // lingering into the next turn would be a lie, and claiming "Thinking"
+        // before the model has said anything is a guess.
+        self.phase = TurnPhase::Unreported;
+        self.turn_tokens = None;
+        self.last_output_at = None;
+        self.provider_wait = None;
         self.maybe_exit = false;
+    }
+
+    /// What the turn is doing now. Called by the session loop as tool calls
+    /// start and finish.
+    pub fn set_phase(&mut self, phase: TurnPhase) {
+        self.phase = phase;
+    }
+
+    /// Note that something was printed, so the silence timer restarts.
+    pub fn mark_output(&mut self) {
+        self.last_output_at = Some(Instant::now());
     }
 
     pub fn set_theme(&mut self, theme: Theme) {
@@ -508,12 +575,154 @@ pub fn status_line(state: &ComposerState) -> String {
         return format!("• Queued {n} · {preview}  —  will send when this turn ends");
     }
     if state.busy {
-        return format!(
-            "• Working ({}s • esc to interrupt · enter queues a follow-up)",
-            state.elapsed_secs()
-        );
+        return busy_status_line(state);
     }
     "• Ready  ·  enter send · ctrl+j newline · /help".to_string()
+}
+
+/// The busy line, most-specific fact first.
+///
+/// Everything lives on ONE row on purpose: the pinned strip's height is
+/// `4 + input rows`, and a status line that wrapped would push the composer's
+/// own box off its reserved rows and smear it into the scrollback. The caller
+/// truncates to width; what goes leftmost is what survives a narrow terminal.
+fn busy_status_line(state: &ComposerState) -> String {
+    // A provider wait outranks everything: it is the only case where the agent
+    // is doing nothing at all, and the only one with a number that counts down.
+    if let Some(wait) = &state.provider_wait {
+        return format!("• {wait} · esc to interrupt");
+    }
+
+    let mut line = format!("• {}", phase_text(&state.phase));
+    line.push_str(&format!(" ({}s", state.elapsed_secs()));
+    if let Some(tokens) = state.turn_tokens {
+        line.push_str(&format!(" · {}", format_turn_tokens(tokens)));
+    }
+    if let Some(usd) = state.turn_cost_usd {
+        line.push_str(&format!(" · {}", format_turn_cost(usd)));
+    }
+    line.push(')');
+
+    // Silence is the thing the user cannot interpret. Name it and name the way
+    // out; do not wait for them to guess whether it is stuck.
+    if let Some(quiet) = quiet_for(state) {
+        if quiet >= STUCK_HINT_AFTER {
+            line.push_str(&format!(
+                " · no output for {}s — Ctrl+C to interrupt",
+                quiet.as_secs()
+            ));
+            return line;
+        }
+    }
+
+    line.push_str(" · esc to interrupt · enter queues a follow-up");
+    line
+}
+
+/// Read the phase off an agent message, if it says anything about one.
+///
+/// `None` means "this message does not change what we can honestly claim the
+/// turn is doing" — the status keeps whatever it had rather than flickering.
+pub fn phase_of(message: &permagent::conversation::message::Message) -> Option<TurnPhase> {
+    use permagent::conversation::message::MessageContent;
+    // A tool request is the most specific thing a message can carry, so it wins
+    // over reasoning that arrived in the same message.
+    for content in &message.content {
+        if let MessageContent::ToolRequest(request) = content {
+            if let Ok(call) = &request.tool_call {
+                return Some(TurnPhase::RunningTool {
+                    name: call.name.to_string(),
+                    target: tool_target(call.arguments.as_ref()),
+                });
+            }
+        }
+    }
+    for content in &message.content {
+        match content {
+            MessageContent::Thinking(_) => return Some(TurnPhase::Thinking),
+            MessageContent::Text(_) => return Some(TurnPhase::Thinking),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The thing a tool is acting on, for the status row.
+///
+/// Argument names differ per tool, so this reads the handful that actually name
+/// a target and gives up rather than printing a JSON blob at the user. Order is
+/// most-specific first.
+fn tool_target(arguments: Option<&serde_json::Map<String, serde_json::Value>>) -> Option<String> {
+    let args = arguments?;
+    for key in [
+        "path",
+        "file_path",
+        "pattern",
+        "command",
+        "query",
+        "instructions",
+    ] {
+        if let Some(value) = args.get(key).and_then(|v| v.as_str()) {
+            let value = value.trim();
+            if !value.is_empty() {
+                // A shell command is often a whole pipeline; its head is the
+                // part worth a status row.
+                let head = value.lines().next().unwrap_or(value);
+                return Some(head.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// How long since anything was printed this turn. `None` when no turn is in
+/// flight, or when nothing has been printed yet and there is no turn start to
+/// measure from.
+fn quiet_for(state: &ComposerState) -> Option<Duration> {
+    // Falling back to the turn start matters: a turn that prints NOTHING from
+    // its first instant — the exact GLM case — has no last-output mark, and
+    // that is precisely when the hint is most needed.
+    let since = state.last_output_at.or(state.busy_since)?;
+    Some(since.elapsed())
+}
+
+fn phase_text(phase: &TurnPhase) -> String {
+    match phase {
+        TurnPhase::Unreported => "Working".to_string(),
+        TurnPhase::Thinking => "Thinking".to_string(),
+        TurnPhase::RunningTool { name, target } => match target {
+            Some(target) if !target.is_empty() => {
+                format!("{name} {}", truncate(&sanitize_row(target), 44))
+            }
+            _ => name.clone(),
+        },
+    }
+}
+
+/// `$0.0032` / `$0.41` — the turn's money, beside its tokens.
+///
+/// Sub-cent amounts keep four decimals rather than rounding to `$0.00`: a turn
+/// that cost a third of a cent DID cost something, and a status row that says
+/// `$0.00` for it is the same lie the Build meter was telling all day. Mirrors
+/// `output::format_cost_line`'s `money()`, so the row and the footer never
+/// disagree about the same figure.
+fn format_turn_cost(usd: f64) -> String {
+    if usd > 0.0 && usd < 0.01 {
+        format!("${usd:.4}")
+    } else {
+        format!("${usd:.2}")
+    }
+}
+
+/// `840 tok` / `12.4k tok` — short enough to sit in a status row without
+/// pushing the interrupt hint off a narrow terminal. Distinct from
+/// `format_tokens` below, which formats a session total for the footer.
+fn format_turn_tokens(tokens: u64) -> String {
+    if tokens < 10_000 {
+        format!("{tokens} tok")
+    } else {
+        format!("{:.1}k tok", tokens as f64 / 1000.0)
+    }
 }
 
 /// One queued message is one row: its first line, plus how many more it
@@ -1215,6 +1424,39 @@ mod tty {
             self.paint();
         }
 
+        pub fn set_phase(&mut self, phase: TurnPhase) {
+            if self.state.phase == phase {
+                return;
+            }
+            self.state.set_phase(phase);
+            self.paint();
+        }
+
+        pub fn set_turn_tokens(&mut self, tokens: Option<u64>) {
+            self.state.turn_tokens = tokens;
+        }
+
+        pub fn set_turn_cost(&mut self, usd: Option<f64>) {
+            self.state.turn_cost_usd = usd;
+        }
+
+        /// Something was printed — restart the silence timer. Deliberately does
+        /// NOT repaint: the caller is mid-output and owns the terminal.
+        pub fn mark_output(&mut self) {
+            self.state.mark_output();
+        }
+
+        /// Pull the current provider wait into the state. Called from the
+        /// once-a-second tick rather than pushed from the retry layer, because
+        /// the retry layer lives in another crate and has no business knowing a
+        /// TUI exists.
+        fn refresh_provider_wait(&mut self) -> bool {
+            let line = permagent::providers::wait_status::current().map(|w| w.status_line());
+            let changed = line != self.state.provider_wait;
+            self.state.provider_wait = line;
+            changed
+        }
+
         pub fn suspend(&mut self) {
             self.paused.store(true, Ordering::Relaxed);
             self.release_region();
@@ -1250,7 +1492,9 @@ mod tty {
             }
             // Repaint on an edit, and also once a second while busy so the
             // elapsed counter ticks even when nothing was typed.
+            let wait_changed = self.refresh_provider_wait();
             if changed
+                || wait_changed
                 || busy_second_changed(
                     self.state.busy,
                     self.last_busy_second,
@@ -1281,11 +1525,14 @@ mod tty {
                         }
                     }
                     _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {
-                        if busy_second_changed(
-                            self.state.busy,
-                            self.last_busy_second,
-                            self.state.elapsed_secs(),
-                        ) {
+                        let wait_changed = self.refresh_provider_wait();
+                        if wait_changed
+                            || busy_second_changed(
+                                self.state.busy,
+                                self.last_busy_second,
+                                self.state.elapsed_secs(),
+                            )
+                        {
                             self.paint();
                         }
                     }
@@ -1320,6 +1567,20 @@ impl Composer {
     pub fn prepare_output(&mut self) {}
     pub fn set_busy(&mut self, busy: bool) {
         self.state.set_busy(busy);
+    }
+    pub fn set_phase(&mut self, phase: TurnPhase) {
+        self.state.set_phase(phase);
+    }
+    pub fn set_turn_tokens(&mut self, tokens: Option<u64>) {
+        self.state.turn_tokens = tokens;
+    }
+
+    /// Dollars spent this turn, for the pinned status row's cost slot.
+    pub fn set_turn_cost(&mut self, usd: Option<f64>) {
+        self.state.turn_cost_usd = usd;
+    }
+    pub fn mark_output(&mut self) {
+        self.state.mark_output();
     }
     pub fn suspend(&mut self) {}
     pub fn resume(&mut self) {}
@@ -1714,6 +1975,213 @@ mod tests {
             !row.contains('\n'),
             "the queue row must stay one line: {row:?}"
         );
+    }
+
+    // ── turn phase / stuck hint (2026-08-25) ───────────────────────────────
+
+    fn busy_state() -> ComposerState {
+        let mut state = idle();
+        state.set_busy(true);
+        state
+    }
+
+    /// The GLM case: four minutes of reasoning with nothing printed. The line
+    /// must say what it is doing, not just that it is doing something.
+    #[test]
+    fn a_thinking_turn_says_thinking() {
+        let mut state = busy_state();
+        state.phase = TurnPhase::Thinking;
+        let line = status_line(&state);
+        assert!(line.contains("Thinking"), "{line}");
+        assert!(line.contains("esc to interrupt"), "{line}");
+    }
+
+    /// A collapsed tool line still has to name the tool AND its target.
+    #[test]
+    fn a_running_tool_names_its_target() {
+        let mut state = busy_state();
+        state.phase = TurnPhase::RunningTool {
+            name: "read".to_string(),
+            target: Some("crates/goose/src/providers/zai.rs".to_string()),
+        };
+        let line = status_line(&state);
+        assert!(line.contains("read"), "{line}");
+        assert!(line.contains("zai.rs"), "{line}");
+    }
+
+    #[test]
+    fn a_tool_with_no_target_still_renders() {
+        let mut state = busy_state();
+        state.phase = TurnPhase::RunningTool {
+            name: "verify".to_string(),
+            target: None,
+        };
+        assert!(status_line(&state).contains("verify"));
+    }
+
+    /// A target carrying control bytes must not escape the pinned frame.
+    #[test]
+    fn a_tool_target_cannot_break_the_frame() {
+        let mut state = busy_state();
+        state.phase = TurnPhase::RunningTool {
+            name: "shell".to_string(),
+            target: Some("a\nb\x1b[2Jc".to_string()),
+        };
+        let line = status_line(&state);
+        assert!(!line.contains('\n'), "{line:?}");
+        assert!(!line.contains('\x1b'), "{line:?}");
+    }
+
+    #[test]
+    fn tokens_this_turn_are_shown_when_known() {
+        let mut state = busy_state();
+        state.phase = TurnPhase::Thinking;
+        state.turn_tokens = Some(840);
+        assert!(status_line(&state).contains("840 tok"));
+        state.turn_tokens = Some(12_400);
+        assert!(status_line(&state).contains("12.4k tok"));
+    }
+
+    /// The money half of the same row. Tokens do not imply cost — a
+    /// cache-heavy turn is tens of thousands of tokens and fractions of a cent
+    /// — so the row carries both or the user is reading work as spend.
+    #[test]
+    fn cost_this_turn_sits_beside_the_tokens() {
+        let mut state = busy_state();
+        state.phase = TurnPhase::Thinking;
+        state.turn_tokens = Some(12_400);
+        state.turn_cost_usd = Some(0.41);
+        let line = status_line(&state);
+        assert!(line.contains("12.4k tok"), "{line}");
+        assert!(line.contains("$0.41"), "{line}");
+    }
+
+    /// REGRESSION. A third of a cent rendered at two decimals is `$0.00`,
+    /// which is precisely the "the meter never moves" complaint that started
+    /// this — a turn that cost something must never say it cost nothing.
+    #[test]
+    fn a_sub_cent_turn_is_not_rounded_away_to_zero() {
+        let mut state = busy_state();
+        state.phase = TurnPhase::Thinking;
+        state.turn_cost_usd = Some(0.0032);
+        let line = status_line(&state);
+        assert!(line.contains("$0.0032"), "{line}");
+        assert!(!line.contains("$0.00 "), "{line}");
+    }
+
+    /// A free turn and an unknown one must not look the same: a local model
+    /// genuinely costs $0.00, and "we have not read the ledger yet" is not a
+    /// number at all.
+    #[test]
+    fn an_unknown_cost_is_omitted_while_a_real_zero_is_shown() {
+        let mut state = busy_state();
+        state.phase = TurnPhase::Thinking;
+        state.turn_cost_usd = None;
+        assert!(
+            !status_line(&state).contains('$'),
+            "{}",
+            status_line(&state)
+        );
+        state.turn_cost_usd = Some(0.0);
+        assert!(
+            status_line(&state).contains("$0.00"),
+            "{}",
+            status_line(&state)
+        );
+    }
+
+    #[test]
+    fn tokens_are_omitted_rather_than_guessed_at_zero() {
+        let mut state = busy_state();
+        state.phase = TurnPhase::Thinking;
+        state.turn_tokens = None;
+        assert!(
+            !status_line(&state).contains("tok"),
+            "{}",
+            status_line(&state)
+        );
+    }
+
+    /// Silence past the threshold is named, with the way out.
+    #[test]
+    fn a_long_silence_is_named_and_offers_the_way_out() {
+        let mut state = busy_state();
+        state.phase = TurnPhase::Thinking;
+        state.last_output_at = Some(Instant::now() - Duration::from_secs(62));
+        let line = status_line(&state);
+        assert!(line.contains("no output for 62s"), "{line}");
+        assert!(line.contains("Ctrl+C to interrupt"), "{line}");
+    }
+
+    /// A turn that has printed NOTHING from its first instant is exactly the
+    /// case that needs the hint, so it must fall back to the turn start.
+    #[test]
+    fn a_turn_that_never_printed_still_gets_the_hint() {
+        let mut state = busy_state();
+        state.phase = TurnPhase::Thinking;
+        state.busy_since = Some(Instant::now() - Duration::from_secs(90));
+        state.last_output_at = None;
+        assert!(status_line(&state).contains("no output for 90s"));
+    }
+
+    #[test]
+    fn a_short_silence_says_nothing_about_being_stuck() {
+        let mut state = busy_state();
+        state.phase = TurnPhase::Thinking;
+        state.last_output_at = Some(Instant::now() - Duration::from_secs(5));
+        assert!(!status_line(&state).contains("no output"));
+    }
+
+    /// A provider wait outranks the phase: it is the one case where the agent
+    /// is doing nothing at all, and it comes with a number that counts down.
+    #[test]
+    fn a_provider_wait_replaces_the_phase() {
+        let mut state = busy_state();
+        state.phase = TurnPhase::Thinking;
+        state.last_output_at = Some(Instant::now() - Duration::from_secs(120));
+        state.provider_wait =
+            Some("Z.AI rate limit — retrying in 12 s (attempt 2 of 4)".to_string());
+        let line = status_line(&state);
+        assert!(line.contains("Z.AI rate limit"), "{line}");
+        assert!(line.contains("retrying in 12 s"), "{line}");
+        assert!(!line.contains("Thinking"), "{line}");
+        // even a long silence does not override it — we KNOW why it is quiet
+        assert!(!line.contains("no output"), "{line}");
+    }
+
+    /// Queued input still outranks everything, unchanged.
+    #[test]
+    fn a_queued_message_still_wins_over_the_phase() {
+        let mut state = busy_state();
+        state.phase = TurnPhase::Thinking;
+        state.queued.push("next thing".to_string());
+        assert!(status_line(&state).contains("Queued 1"));
+    }
+
+    /// The whole point of one line: the pinned strip's height must not move.
+    #[test]
+    fn the_richer_status_does_not_add_a_row() {
+        let plain = busy_state();
+        let mut rich = busy_state();
+        rich.phase = TurnPhase::RunningTool {
+            name: "shell".to_string(),
+            target: Some("a".repeat(300)),
+        };
+        rich.turn_tokens = Some(999_999);
+        rich.last_output_at = Some(Instant::now() - Duration::from_secs(300));
+        for width in [40usize, 80, 200] {
+            assert_eq!(
+                composer_rows(&plain, width),
+                composer_rows(&rich, width),
+                "width {width}"
+            );
+            let frame = render_plain(&rich, width);
+            assert_eq!(
+                frame[0].lines().count().max(1),
+                1,
+                "status must stay one row at width {width}"
+            );
+        }
     }
 
     // ── pinned region ──────────────────────────────────────────────────────

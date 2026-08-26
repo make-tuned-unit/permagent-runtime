@@ -1,5 +1,9 @@
 {{ agent_persona_block }}
 {{ agent_display_name }} helps users accomplish tasks by coordinating tools, managing context, and learning from interactions.
+{% if repo_map_block %}
+
+{{ repo_map_block }}
+{% endif %}
 {% if permagent_self_block %}
 
 {{ permagent_self_block }}

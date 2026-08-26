@@ -31,6 +31,17 @@ pub struct CostReading {
     pub estimated: bool,
     /// Number of ledger rows (provider responses) seen.
     pub ledger_rows: u64,
+    /// Sum of `input_tokens` across ledger rows. On this ledger `input_tokens`
+    /// is INCLUSIVE of the cached share (it is not "fresh tokens only") — see
+    /// [`Self::cache_hit_rate`]. `None` when unknown (no ledger / no rows),
+    /// never conflated with a genuine `Some(0)`.
+    pub input_tokens: Option<i64>,
+    /// Sum of `output_tokens` across ledger rows. `None` when unknown.
+    pub output_tokens: Option<i64>,
+    /// Sum of `cache_read_tokens` across ledger rows. `None` when unknown.
+    pub cache_read_tokens: Option<i64>,
+    /// Sum of `cache_write_tokens` across ledger rows. `None` when unknown.
+    pub cache_write_tokens: Option<i64>,
 }
 
 impl CostReading {
@@ -40,16 +51,62 @@ impl CostReading {
             usd: None,
             estimated: false,
             ledger_rows: 0,
+            input_tokens: None,
+            output_tokens: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
         }
     }
 
-    /// A concrete reading (test/helper constructor).
+    /// A concrete reading with no token/cache detail (test/helper constructor).
     pub fn known(usd: f64, estimated: bool, ledger_rows: u64) -> Self {
         Self {
             usd: Some(usd),
             estimated,
             ledger_rows,
+            input_tokens: None,
+            output_tokens: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
         }
+    }
+
+    /// A concrete reading including token/cache detail (test/helper
+    /// constructor).
+    #[allow(clippy::too_many_arguments)]
+    pub fn known_with_tokens(
+        usd: f64,
+        estimated: bool,
+        ledger_rows: u64,
+        input_tokens: Option<i64>,
+        output_tokens: Option<i64>,
+        cache_read_tokens: Option<i64>,
+        cache_write_tokens: Option<i64>,
+    ) -> Self {
+        Self {
+            usd: Some(usd),
+            estimated,
+            ledger_rows,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+        }
+    }
+
+    /// Cache-read share of prompt input tokens: `cache_read_tokens /
+    /// input_tokens`. `input_tokens` is inclusive of the cached share on this
+    /// ledger, so this is literally "what fraction of the prompt was served
+    /// from cache" — not "cache reads vs fresh-only tokens". Returns `None`
+    /// (never `0.0`) when `input_tokens` is unknown or `Some(0)`, so an
+    /// undefined ratio is never misread as "no cache hits".
+    pub fn cache_hit_rate(&self) -> Option<f64> {
+        let input = self.input_tokens?;
+        if input <= 0 {
+            return None;
+        }
+        let cache_read = self.cache_read_tokens.unwrap_or(0);
+        Some(cache_read as f64 / input as f64)
     }
 }
 
@@ -100,12 +157,32 @@ pub fn read_ledger_db(db_path: &Path) -> Result<CostReading> {
         return Ok(CostReading::unknown());
     }
 
-    let (rows, total, est_max): (i64, f64, i64) = conn
+    #[allow(clippy::type_complexity)]
+    let (rows, total, est_max, sum_input, sum_output, sum_cache_read, sum_cache_write): (
+        i64,
+        f64,
+        i64,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+    ) = conn
         .query_row(
-            "SELECT COUNT(*), COALESCE(SUM(cost_usd), 0.0), COALESCE(MAX(is_estimated), 0) \
+            "SELECT COUNT(*), COALESCE(SUM(cost_usd), 0.0), COALESCE(MAX(is_estimated), 0), \
+             SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(cache_write_tokens) \
              FROM cost_ledger",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
         )
         .context("summing cost_ledger")?;
 
@@ -116,6 +193,13 @@ pub fn read_ledger_db(db_path: &Path) -> Result<CostReading> {
         usd: Some(total),
         estimated: est_max != 0,
         ledger_rows: rows as u64,
+        // Plain (non-COALESCEd) SUMs: a genuine SQL NULL — no rows carrying
+        // that column, or the column not present — stays `None` here, never
+        // silently becomes `Some(0)`.
+        input_tokens: sum_input,
+        output_tokens: sum_output,
+        cache_read_tokens: sum_cache_read,
+        cache_write_tokens: sum_cache_write,
     })
 }
 
@@ -126,19 +210,48 @@ mod tests {
 
     /// Create a ledger DB mirroring the real schema's relevant columns.
     fn seed_db(path: &Path, rows: &[(f64, i64)]) {
+        seed_db_with_tokens(
+            path,
+            &rows
+                .iter()
+                .map(|(cost, est)| (*cost, *est, 0, 0, 0, 0))
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    /// Like [`seed_db`] but including the token/cache columns, mirroring
+    /// `apply_cost_ledger_schema` in `crates/goose/src/session/spectral_schema.rs`
+    /// (`input_tokens`/`output_tokens`/`cache_read_tokens`/`cache_write_tokens`,
+    /// all `INTEGER NOT NULL DEFAULT 0`).
+    fn seed_db_with_tokens(path: &Path, rows: &[(f64, i64, i64, i64, i64, i64)]) {
         let conn = Connection::open(path).unwrap();
         conn.execute(
             "CREATE TABLE cost_ledger (\
                 call_id TEXT PRIMARY KEY, \
                 cost_usd REAL NOT NULL DEFAULT 0, \
-                is_estimated INTEGER NOT NULL DEFAULT 0)",
+                is_estimated INTEGER NOT NULL DEFAULT 0, \
+                input_tokens INTEGER NOT NULL DEFAULT 0, \
+                output_tokens INTEGER NOT NULL DEFAULT 0, \
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0, \
+                cache_write_tokens INTEGER NOT NULL DEFAULT 0)",
             [],
         )
         .unwrap();
-        for (i, (cost, est)) in rows.iter().enumerate() {
+        for (i, (cost, est, input, output, cache_read, cache_write)) in rows.iter().enumerate() {
             conn.execute(
-                "INSERT INTO cost_ledger (call_id, cost_usd, is_estimated) VALUES (?1, ?2, ?3)",
-                params![format!("call-{i}"), cost, est],
+                "INSERT INTO cost_ledger \
+                 (call_id, cost_usd, is_estimated, input_tokens, output_tokens, \
+                  cache_read_tokens, cache_write_tokens) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    format!("call-{i}"),
+                    cost,
+                    est,
+                    input,
+                    output,
+                    cache_read,
+                    cache_write
+                ],
             )
             .unwrap();
         }
@@ -210,5 +323,60 @@ mod tests {
         seed_db(&db, &[(0.25, 0)]);
         let r = LedgerCostReader.read_total(tmp.path()).unwrap();
         assert_eq!(r.usd, Some(0.25));
+    }
+
+    #[test]
+    fn sums_token_and_cache_columns_across_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("permagent.db");
+        // (cost, est, input, output, cache_read, cache_write)
+        seed_db_with_tokens(
+            &db,
+            &[(0.01, 0, 1000, 200, 400, 50), (0.02, 0, 500, 100, 100, 0)],
+        );
+        let r = read_ledger_db(&db).unwrap();
+        assert_eq!(r.input_tokens, Some(1500));
+        assert_eq!(r.output_tokens, Some(300));
+        assert_eq!(r.cache_read_tokens, Some(500));
+        assert_eq!(r.cache_write_tokens, Some(50));
+    }
+
+    #[test]
+    fn empty_ledger_has_unknown_not_zero_tokens() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("permagent.db");
+        seed_db_with_tokens(&db, &[]);
+        let r = read_ledger_db(&db).unwrap();
+        assert_eq!(r, CostReading::unknown());
+        assert_eq!(r.input_tokens, None);
+    }
+
+    #[test]
+    fn cache_hit_rate_divides_read_by_input() {
+        let r = CostReading::known_with_tokens(
+            0.03,
+            false,
+            2,
+            Some(1500),
+            Some(300),
+            Some(500),
+            Some(50),
+        );
+        assert!((r.cache_hit_rate().unwrap() - 500.0 / 1500.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn cache_hit_rate_is_none_when_input_unknown_or_zero() {
+        assert_eq!(CostReading::known(0.01, false, 1).cache_hit_rate(), None);
+        let zero_input =
+            CostReading::known_with_tokens(0.0, false, 1, Some(0), Some(0), Some(0), Some(0));
+        assert_eq!(zero_input.cache_hit_rate(), None);
+    }
+
+    #[test]
+    fn cache_hit_rate_treats_missing_cache_read_as_zero_not_unknown() {
+        // input known, cache_read unknown => 0 cache reads, not an undefined ratio.
+        let r = CostReading::known_with_tokens(0.01, false, 1, Some(100), Some(10), None, None);
+        assert_eq!(r.cache_hit_rate(), Some(0.0));
     }
 }

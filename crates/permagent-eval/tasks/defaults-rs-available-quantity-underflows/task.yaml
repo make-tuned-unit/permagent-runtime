@@ -1,0 +1,16 @@
+id: defaults-rs-available-quantity-underflows
+title: "available_quantity panics instead of saturating"
+category: model-defaults-rs
+max_turns: 25
+harness_timeout_secs: 600
+oracle_timeout_secs: 180
+test: [bash, oracle_check.sh]
+# The oracle is a shell script, so the Python/Node import allowlist does
+# not apply; the overlay still makes it untamperable by the agent.
+deliverables: []
+# lang=rs difficulty=easy needs_repo_map=false needs_test_run=false
+prompt: |
+  Reserving more units than we actually have on hand shouldn't be possible in
+  theory, but when it happens in practice `available_quantity` blows up instead
+  of just reporting that nothing is left. Make it report zero available instead
+  of crashing.

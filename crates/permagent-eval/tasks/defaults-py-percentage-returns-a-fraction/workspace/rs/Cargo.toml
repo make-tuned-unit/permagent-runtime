@@ -1,0 +1,10 @@
+[package]
+name = "bench_rs"
+version = "0.1.0"
+edition = "2021"
+
+# Its own workspace root: this crate sits inside the repo but is NOT a member
+# of it (members = ["crates/*"] is one level deep). Without this, running
+# `cargo test` in place makes cargo walk up, find the root manifest, and refuse
+# with "current package believes it's in a workspace when it's not".
+[workspace]
