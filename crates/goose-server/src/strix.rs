@@ -526,8 +526,7 @@ fn scanner_failure_detail(output: &std::process::Output) -> String {
         String::from_utf8_lossy(bytes)
             .lines()
             .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .next_back()
+            .rfind(|l| !l.is_empty())
             .unwrap_or("")
             .to_string()
     };
