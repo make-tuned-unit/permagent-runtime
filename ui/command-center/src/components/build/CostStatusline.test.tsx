@@ -28,6 +28,11 @@ vi.mock('../../lib/api', () => ({
         { sessionId: 'child-b', costUsd: 0.07 },
       ],
     })),
+    getPacks: vi.fn(async () => ({
+      prompt: false,
+      configured: [],
+      recommendation: { recommendations: [], considered: [] },
+    })),
   },
 }));
 
