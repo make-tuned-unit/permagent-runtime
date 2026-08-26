@@ -15,6 +15,7 @@ pub mod dispatch_brief;
 pub mod dispatch_scope;
 pub mod execution_receipt;
 pub mod ext_manager;
+pub mod fanout;
 pub mod file_to_project;
 pub mod finance;
 pub mod forecaster;
@@ -454,7 +455,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: summon::EXTENSION_NAME,
                 display_name: "Summon",
-                description: "Load knowledge into your context — subrecipes, recipes, agents, and background-task results (load) — and delegate tasks to subagents that run independently, in parallel or in the background (delegate)",
+                description: "Load knowledge into your context — subrecipes, recipes, agents, and background-task results (load) — and delegate tasks to subagents that run independently, in parallel or in the background (delegate), or fan out to several at once under a concurrency cap (delegate_many)",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,

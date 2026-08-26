@@ -10,7 +10,7 @@ the inventory (goal 0). Feature work lives in the numbered follow-on goals.
 | Prime concept | Current Permagent file/API | Gap | Proposed goal id |
 | --- | --- | --- | --- |
 | RLM kernel (persistent eval context across turns) | none as a control plane; closest is goal metadata + `cost_router::GoalEscalationState` handoff on re-dispatch (`orchestrator.rs` `dispatch_goal_fn`) | **missing** — no session-scoped get/set/list store that outlives a single LLM turn | 3 (seam), 4 (inject into dispatch brief) |
-| Async subagents | `crates/goose/src/agents/subagent_handler.rs` `run_subagent_task` (awaited); `goal_engine::InternalSubagentEngine` returns a `JoinHandle` for *goal* workers, not generic subagent work | **partial** — goal engines spawn, but review/audit helpers cannot fan out two in-process subagents without blocking | 1 (spawn+join API), 2 (parallel review fan-out) |
+| Async subagents | `agents/platform_extensions/fanout.rs` (`run_bounded`, `subagent_cost`) behind the `delegate_many` tool; `subagent_handler::spawn_subagent_task` / `spawn_subagent_work` for a single handle | **closed** — N children run with a configured cap on how many are in flight (`PERMAGENT_FANOUT_CONCURRENCY`, default 2), each routed on its own through `cost_router::delegate`'s precedence, results joined in request order with per-child ledger cost by `subagent_id`, and a parent cancel reaching every child | 1 (spawn+join API), 2 (parallel review fan-out) |
 | Executable skills | `skill_md.rs` + `platform_extensions/skills.rs` load **markdown** `SKILL.md` folders (agentskills.io). No runner that execs a package and returns structured stdout | **missing** — skills are prompts, not runnable artifacts | 5 (package + runner), 6 (`run_executable_skill` tool) |
 | Goal threading (resume with prior attempt context) | `resume_in_progress_goals` / `resume_single_goal` (`orchestrator.rs`); `requeue_goal` preserves `attempt_count` + `last_error`; dispatch brief does **not** re-inject them (W4/W5) | **partial** — metadata survives; the next worker starts cold; dead-session resume can still fabricate Review success if a re-attached session goes idle | 7 |
 | Bounded refinement | `goal_refinement.rs` rework budget (config `verifier.json` → `refinement_budget`, default 3; per-goal override) wired into `goose-server` verification; separate from `goal_transition::goal_budget` and from `cost_router::hold_done` | **closed** — a failing check auto-requeues to Ready with the check stdout/stderr, placeholder findings and check lint as the corrective plan, leaves a routing snapshot per round, and parks with the full history at exhaustion | 8 |
@@ -28,6 +28,17 @@ Landed by the Prime DAG implementation (goals 0–11):
 
 - **RLM control plane** — `crates/goose/src/rlm.rs` (`get` / `set` / `list`, session-keyed). Re-dispatch briefs quote recovered state as data-not-instructions.
 - **Async subagent spawn** — `spawn_subagent_task` / `spawn_subagent_work` in `subagent_handler.rs`. Two handles can be outstanding before either join.
+- **Bounded fan-out** — `agents/platform_extensions/fanout.rs`, behind the
+  orchestrator-side tool `delegate_many`. At most
+  `fanout::MAX_FANOUT_CHILDREN` children per call and at most
+  `PERMAGENT_FANOUT_CONCURRENCY` (default 2) in flight at once; each child is
+  resolved through the same `build_delegate_recipe` → `build_task_config` path a
+  single `delegate` takes, so `cost_router::delegate`'s precedence applies per
+  child and pins are honoured with no silent escalation. Results join in request
+  order, each carrying its own routing receipt, its own `subagent_id`, and the
+  spend read back from `cost_ledger` under that id. Every child runs on a token
+  derived from the caller's, so cancelling the fan-out cancels the children and a
+  child still queued never starts.
 - **Parallel review fan-out** — `review_fanout` module; opt-in via goal or project metadata `review_fanout: true`. Security + debugger briefs fold into `approve_review` detail.
 - **Executable skills** — `crates/goose/src/executable_skills.rs` plus `skills/examples/hello-json/`. Orchestrator tool `run_executable_skill` refuses paths outside the skills root.
 - **Goal threading** — dispatch briefs on `attempt_count > 0` include `last_error`, RLM snapshot, A2A inbox, and worktree pointer. Resume never promotes a dead session to Review without worktree evidence (W5).
