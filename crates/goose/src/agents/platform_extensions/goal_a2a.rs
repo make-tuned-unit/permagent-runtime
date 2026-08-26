@@ -207,7 +207,10 @@ mod tests {
             .await
             .unwrap()
             .expect("a2a feedback is stored in the RLM control plane");
-        let ring = cell.value.as_array().expect("the feedback ring is an array");
+        let ring = cell
+            .value
+            .as_array()
+            .expect("the feedback ring is an array");
         assert_eq!(ring.len(), 1);
         assert_eq!(ring[0]["body"], "watch the race");
 

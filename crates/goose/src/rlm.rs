@@ -139,7 +139,11 @@ pub enum RlmError {
         actual: i64,
     },
     #[error("value for '{key}' is {size} bytes; the cap is {cap}. Store a pointer (a path, an id), not the payload.")]
-    TooLarge { key: String, size: usize, cap: usize },
+    TooLarge {
+        key: String,
+        size: usize,
+        cap: usize,
+    },
     #[error("namespace '{ns}' is full: {detail}. Delete keys you no longer need.")]
     NamespaceFull { ns: String, detail: String },
     #[error("refused to store '{key}': the value looks like a credential ({pattern}). Store a reference to the secret, never the secret itself.")]
@@ -211,7 +215,10 @@ pub fn credential_shape(text: &str) -> Option<&'static str> {
 static CACHE: LazyLock<DashMap<String, BTreeMap<String, Cell>>> = LazyLock::new(DashMap::new);
 
 fn cache_put(ns: &str, key: &str, cell: Cell) {
-    CACHE.entry(ns.to_string()).or_default().insert(key.to_string(), cell);
+    CACHE
+        .entry(ns.to_string())
+        .or_default()
+        .insert(key.to_string(), cell);
 }
 
 fn cache_replace(ns: &str, cells: BTreeMap<String, Cell>) {
@@ -227,14 +234,20 @@ fn cache_evict(ns: &str, key: &str) {
 /// Read one cached binding. Sync — for callers that cannot `await`. Returns
 /// `None` when the namespace has not been [`hydrate`]d in this process.
 pub fn cache_get(ns: &str, key: &str) -> Option<Value> {
-    CACHE.get(ns).and_then(|m| m.get(key).map(|c| c.value.clone()))
+    CACHE
+        .get(ns)
+        .and_then(|m| m.get(key).map(|c| c.value.clone()))
 }
 
 /// Every cached binding in `ns`, in stable key order.
 pub fn cache_list(ns: &str) -> BTreeMap<String, Value> {
     CACHE
         .get(ns)
-        .map(|m| m.iter().map(|(k, c)| (k.clone(), c.value.clone())).collect())
+        .map(|m| {
+            m.iter()
+                .map(|(k, c)| (k.clone(), c.value.clone()))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -321,13 +334,13 @@ pub async fn get(
          WHERE scope = ? AND scope_id = ? AND key = ? \
            AND (expires_at IS NULL OR expires_at > ?)",
     )
-        .bind(scope.as_str())
-        .bind(scope_id)
-        .bind(key)
-        .bind(now_rfc3339())
-        .fetch_optional(pool)
-        .await
-        .map_err(db)?;
+    .bind(scope.as_str())
+    .bind(scope_id)
+    .bind(key)
+    .bind(now_rfc3339())
+    .fetch_optional(pool)
+    .await
+    .map_err(db)?;
     let Some(row) = row else { return Ok(None) };
     let cell = row_to_cell(&row)?;
     cache_put(&namespace_key(scope, scope_id), key, cell.clone());
@@ -354,12 +367,12 @@ pub async fn list(
          WHERE scope = ? AND scope_id = ? \
            AND (expires_at IS NULL OR expires_at > ?) ORDER BY key",
     )
-        .bind(scope.as_str())
-        .bind(scope_id)
-        .bind(now_rfc3339())
-        .fetch_all(pool)
-        .await
-        .map_err(db)?;
+    .bind(scope.as_str())
+    .bind(scope_id)
+    .bind(now_rfc3339())
+    .fetch_all(pool)
+    .await
+    .map_err(db)?;
     let mut out = BTreeMap::new();
     for row in &rows {
         let key: String = row.get("key");
@@ -549,12 +562,12 @@ async fn enforce_namespace_capacity(
          FROM rlm_context WHERE scope = ? AND scope_id = ? \
            AND (expires_at IS NULL OR expires_at > ?)",
     )
-        .bind(scope.as_str())
-        .bind(scope_id)
-        .bind(now_rfc3339())
-        .fetch_one(pool)
-        .await
-        .map_err(db)?;
+    .bind(scope.as_str())
+    .bind(scope_id)
+    .bind(now_rfc3339())
+    .fetch_one(pool)
+    .await
+    .map_err(db)?;
     let n: i64 = row.get("n");
     let bytes: i64 = row.get("bytes");
     if n as usize >= MAX_KEYS_PER_NAMESPACE {
@@ -582,14 +595,15 @@ pub async fn delete(
     scope_id: &str,
     key: &str,
 ) -> Result<bool, RlmError> {
-    let affected = sqlx::query("DELETE FROM rlm_context WHERE scope = ? AND scope_id = ? AND key = ?")
-        .bind(scope.as_str())
-        .bind(scope_id)
-        .bind(key)
-        .execute(pool)
-        .await
-        .map_err(db)?
-        .rows_affected();
+    let affected =
+        sqlx::query("DELETE FROM rlm_context WHERE scope = ? AND scope_id = ? AND key = ?")
+            .bind(scope.as_str())
+            .bind(scope_id)
+            .bind(key)
+            .execute(pool)
+            .await
+            .map_err(db)?
+            .rows_affected();
     cache_evict(&namespace_key(scope, scope_id), key);
     Ok(affected > 0)
 }
@@ -820,9 +834,16 @@ mod tests {
         assert_eq!(second.version, 2);
 
         // A writer still holding v1 loses, and the stored value is untouched.
-        let err = set(&pool, Scope::Session, &s, "k", json!(99), SetOpts::expect(1))
-            .await
-            .unwrap_err();
+        let err = set(
+            &pool,
+            Scope::Session,
+            &s,
+            "k",
+            json!(99),
+            SetOpts::expect(1),
+        )
+        .await
+        .unwrap_err();
         match err {
             RlmError::VersionConflict {
                 expected, actual, ..
@@ -832,7 +853,11 @@ mod tests {
             other => panic!("expected VersionConflict, got {other}"),
         }
         assert_eq!(
-            get(&pool, Scope::Session, &s, "k").await.unwrap().unwrap().value,
+            get(&pool, Scope::Session, &s, "k")
+                .await
+                .unwrap()
+                .unwrap()
+                .value,
             json!(2),
             "a losing CAS must not overwrite"
         );
@@ -844,16 +869,37 @@ mod tests {
     async fn identical_rewrite_does_not_bump_the_version() {
         let pool = mem_pool().await;
         let s = uid("rlm-noop");
-        let a = set(&pool, Scope::Session, &s, "k", json!({"n": 1}), SetOpts::default())
-            .await
-            .unwrap();
-        let b = set(&pool, Scope::Session, &s, "k", json!({"n": 1}), SetOpts::default())
-            .await
-            .unwrap();
+        let a = set(
+            &pool,
+            Scope::Session,
+            &s,
+            "k",
+            json!({"n": 1}),
+            SetOpts::default(),
+        )
+        .await
+        .unwrap();
+        let b = set(
+            &pool,
+            Scope::Session,
+            &s,
+            "k",
+            json!({"n": 1}),
+            SetOpts::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(a.version, b.version, "identical write must be a no-op");
-        let c = set(&pool, Scope::Session, &s, "k", json!({"n": 2}), SetOpts::default())
-            .await
-            .unwrap();
+        let c = set(
+            &pool,
+            Scope::Session,
+            &s,
+            "k",
+            json!({"n": 2}),
+            SetOpts::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(c.version, a.version + 1);
     }
 
@@ -870,19 +916,44 @@ mod tests {
 
         let count = |k: &str| SEEN.lock().unwrap().iter().filter(|s| *s == k).count();
 
-        set(&pool, Scope::Goal, &goal, "handoff", json!("a"), SetOpts::default())
-            .await
-            .unwrap();
+        set(
+            &pool,
+            Scope::Goal,
+            &goal,
+            "handoff",
+            json!("a"),
+            SetOpts::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(count(&want), 1, "first write mirrors");
 
-        set(&pool, Scope::Goal, &goal, "handoff", json!("a"), SetOpts::default())
-            .await
-            .unwrap();
-        assert_eq!(count(&want), 1, "an identical rewrite must not mirror again");
+        set(
+            &pool,
+            Scope::Goal,
+            &goal,
+            "handoff",
+            json!("a"),
+            SetOpts::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            count(&want),
+            1,
+            "an identical rewrite must not mirror again"
+        );
 
-        set(&pool, Scope::Goal, &goal, "handoff", json!("b"), SetOpts::default())
-            .await
-            .unwrap();
+        set(
+            &pool,
+            Scope::Goal,
+            &goal,
+            "handoff",
+            json!("b"),
+            SetOpts::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(count(&want), 2, "a changed value mirrors once more");
     }
 
@@ -891,12 +962,26 @@ mod tests {
         let pool = mem_pool().await;
         let s = uid("rlm-ttl");
 
-        set(&pool, Scope::Session, &s, "keep", json!("k"), SetOpts::default())
-            .await
-            .unwrap();
-        set(&pool, Scope::Session, &s, "soon", json!("s"), SetOpts::ttl(-0))
-            .await
-            .unwrap();
+        set(
+            &pool,
+            Scope::Session,
+            &s,
+            "keep",
+            json!("k"),
+            SetOpts::default(),
+        )
+        .await
+        .unwrap();
+        set(
+            &pool,
+            Scope::Session,
+            &s,
+            "soon",
+            json!("s"),
+            SetOpts::ttl(-0),
+        )
+        .await
+        .unwrap();
         // An already-expired cell, written directly so the test does not sleep.
         sqlx::query(
             "INSERT INTO rlm_context (scope, scope_id, key, value_json, version, created_at, updated_at, expires_at) \
@@ -911,12 +996,18 @@ mod tests {
         .unwrap();
 
         // Expired cells read as absent even before the sweep.
-        assert!(get(&pool, Scope::Session, &s, "stale").await.unwrap().is_none());
+        assert!(get(&pool, Scope::Session, &s, "stale")
+            .await
+            .unwrap()
+            .is_none());
 
         let removed = gc_expired(&pool).await.unwrap();
         assert!(removed >= 1, "the sweep must delete the expired row");
         assert!(
-            get(&pool, Scope::Session, &s, "keep").await.unwrap().is_some(),
+            get(&pool, Scope::Session, &s, "keep")
+                .await
+                .unwrap()
+                .is_some(),
             "the sweep must not touch live rows"
         );
     }
@@ -927,7 +1018,10 @@ mod tests {
         let s = uid("rlm-secret");
         for (label, secret) in [
             ("openai", json!("sk-abcdefghijklmnopqrstuvwxyz012345")),
-            ("bearer", json!("Authorization: Bearer abcdefghijklmnop1234")),
+            (
+                "bearer",
+                json!("Authorization: Bearer abcdefghijklmnop1234"),
+            ),
             ("assignment", json!({"api_key": "hunter2hunter2hunter2"})),
             ("github", json!("ghp_abcdefghijklmnopqrstuvwxyz0123")),
         ] {
@@ -939,7 +1033,10 @@ mod tests {
                 "{label} must be refused, got {err}"
             );
             assert!(
-                get(&pool, Scope::Session, &s, label).await.unwrap().is_none(),
+                get(&pool, Scope::Session, &s, label)
+                    .await
+                    .unwrap()
+                    .is_none(),
                 "{label} must not be stored even partially"
             );
         }
@@ -987,7 +1084,10 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, RlmError::TooLarge { .. }), "{err}");
-        assert!(get(&pool, Scope::Session, &s, "big").await.unwrap().is_none());
+        assert!(get(&pool, Scope::Session, &s, "big")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -995,9 +1095,16 @@ mod tests {
         let pool = mem_pool().await;
         let a = uid("rlm-ns-a");
         let b = uid("rlm-ns-b");
-        set(&pool, Scope::Session, &a, "k", json!("only-a"), SetOpts::default())
-            .await
-            .unwrap();
+        set(
+            &pool,
+            Scope::Session,
+            &a,
+            "k",
+            json!("only-a"),
+            SetOpts::default(),
+        )
+        .await
+        .unwrap();
         assert!(get(&pool, Scope::Session, &b, "k").await.unwrap().is_none());
         // Same id, different scope, is a different namespace.
         assert!(get(&pool, Scope::Goal, &a, "k").await.unwrap().is_none());
@@ -1042,7 +1149,10 @@ mod tests {
             .unwrap();
         assert!(delete(&pool, Scope::Session, &s, "a").await.unwrap());
         assert!(!delete(&pool, Scope::Session, &s, "a").await.unwrap());
-        assert_eq!(delete_namespace(&pool, Scope::Session, &s).await.unwrap(), 1);
+        assert_eq!(
+            delete_namespace(&pool, Scope::Session, &s).await.unwrap(),
+            1
+        );
         assert!(list(&pool, Scope::Session, &s).await.unwrap().is_empty());
     }
 

@@ -2567,12 +2567,9 @@ impl OrchestratorClient {
     ) -> Result<(crate::rlm::Scope, String), String> {
         match scope.map(str::trim).unwrap_or("session") {
             "session" => {
-                let id = self
-                    .context
-                    .session
-                    .as_ref()
-                    .map(|s| s.id.clone())
-                    .ok_or("session scope needs a live session; pass scope='goal' with a goal_id")?;
+                let id = self.context.session.as_ref().map(|s| s.id.clone()).ok_or(
+                    "session scope needs a live session; pass scope='goal' with a goal_id",
+                )?;
                 Ok((crate::rlm::Scope::Session, id))
             }
             "goal" => {
@@ -2608,7 +2605,11 @@ impl OrchestratorClient {
             .await
             .map_err(|e| e.to_string())?;
         let (scope, scope_id) = self
-            .rlm_target(&pool, params.scope.scope.as_deref(), params.scope.goal_id.as_deref())
+            .rlm_target(
+                &pool,
+                params.scope.scope.as_deref(),
+                params.scope.goal_id.as_deref(),
+            )
             .await?;
         let cell = crate::rlm::set(
             &pool,
@@ -2645,7 +2646,11 @@ impl OrchestratorClient {
             .await
             .map_err(|e| e.to_string())?;
         let (scope, scope_id) = self
-            .rlm_target(&pool, params.scope.scope.as_deref(), params.scope.goal_id.as_deref())
+            .rlm_target(
+                &pool,
+                params.scope.scope.as_deref(),
+                params.scope.goal_id.as_deref(),
+            )
             .await?;
         match crate::rlm::get(&pool, scope, &scope_id, &params.key)
             .await
@@ -2679,7 +2684,11 @@ impl OrchestratorClient {
             .await
             .map_err(|e| e.to_string())?;
         let (scope, scope_id) = self
-            .rlm_target(&pool, params.scope.scope.as_deref(), params.scope.goal_id.as_deref())
+            .rlm_target(
+                &pool,
+                params.scope.scope.as_deref(),
+                params.scope.goal_id.as_deref(),
+            )
             .await?;
         let cells = crate::rlm::list(&pool, scope, &scope_id)
             .await
@@ -2730,7 +2739,11 @@ impl OrchestratorClient {
             .await
             .map_err(|e| e.to_string())?;
         let (scope, scope_id) = self
-            .rlm_target(&pool, params.scope.scope.as_deref(), params.scope.goal_id.as_deref())
+            .rlm_target(
+                &pool,
+                params.scope.scope.as_deref(),
+                params.scope.goal_id.as_deref(),
+            )
             .await?;
         let deleted = crate::rlm::delete(&pool, scope, &scope_id, &params.key)
             .await
