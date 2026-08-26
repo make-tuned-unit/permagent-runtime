@@ -3,6 +3,7 @@ import { font } from '../../styles/tokens';
 import { useProjects, Project } from './useProjects';
 import { useTheme } from '../../styles/useTheme';
 import { useCommandCenter } from '../../lib/store';
+import { launchTooltip, SUBSCRIPTION_FIRST_HINT } from '../grow/codingAgents';
 
 const PERSONAL_ID = '00000000-0000-0000-0000-000000000001';
 
@@ -162,24 +163,35 @@ project, onLaunch, onVisit }: {
 
       {expanded && (
         <div style={{ padding: '4px 8px 8px 8px', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <div
+            data-testid="subscription-first-hint"
+            style={{
+              width: '100%',
+              fontSize: 10,
+              fontFamily: font.body,
+              color: colors.textDim,
+              lineHeight: 1.35,
+              marginBottom: 2,
+            }}
+          >
+            {SUBSCRIPTION_FIRST_HINT}
+          </div>
           <ActionBtn
             label="Claude"
             disabled={!project.rootPath}
-            tooltip={!project.rootPath ? 'Add a root path to launch a terminal here.' : undefined}
+            tooltip={launchTooltip('claude', !!project.rootPath)}
             onClick={() => onLaunch(project, 'claude')}
           />
           <ActionBtn
             label="Codex"
             disabled={!project.rootPath}
-            tooltip={!project.rootPath ? 'Add a root path to launch a terminal here.' : undefined}
+            tooltip={launchTooltip('codex', !!project.rootPath)}
             onClick={() => onLaunch(project, 'codex')}
           />
           <ActionBtn
             label="Cursor"
             disabled={!project.rootPath}
-            tooltip={!project.rootPath
-              ? 'Add a root path to launch a terminal here.'
-              : 'Cursor CLI — install with: curl https://cursor.com/install -fsS | bash'}
+            tooltip={launchTooltip('cursor-agent', !!project.rootPath)}
             // `cursor-agent`, not the `agent` symlink its installer also drops
             // in ~/.local/bin: "agent" is generic enough to collide with an
             // unrelated binary already on PATH.
@@ -188,9 +200,10 @@ project, onLaunch, onVisit }: {
           <ActionBtn
             label="Permagent"
             disabled={!project.rootPath}
-            tooltip={!project.rootPath
-              ? 'Add a root path to launch a terminal here.'
-              : 'Permagent coding harness — provider-agnostic, cost-optimized'}
+            tooltip={launchTooltip(
+              'permagent run --recipe permagent-coding --interactive',
+              !!project.rootPath,
+            )}
             onClick={() => onLaunch(project, 'permagent run --recipe permagent-coding --interactive')}
           />
           <ActionBtn

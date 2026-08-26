@@ -341,6 +341,24 @@ export interface Skill {
   updated_at?: string;
 }
 
+export interface PacksRoleRec {
+  role: string;
+  provider: string;
+  model: string;
+  display_name?: string;
+  blended_cost_per_mtok?: number;
+  reason?: string;
+}
+
+export interface PacksResponse {
+  prompt: boolean;
+  configured: Array<{ role: string; provider: string; model: string }>;
+  recommendation: {
+    recommendations: PacksRoleRec[];
+    considered: string[];
+  };
+}
+
 export interface PermagentConfig {
   /** YAML-file (+ defaults) config values. Env-blind by design — an env var
    *  can override any of these at the daemon without appearing here. */
@@ -1355,17 +1373,26 @@ export const api = {
     }
   },
 
-  /** Validate a provider against its current stored config: confirms the daemon
-   *  can construct it (registered + required secrets present + well-formed URL /
-   *  headers). Resolves on success; rejects with the daemon's reason on failure.
-   *  Note: this is a config/constructibility check, not a guaranteed live API
-   *  round-trip for every provider. POST /config/check_provider returns an empty
-   *  200 body on success — apiFetch handles that (returns undefined). */
-  checkProvider: (provider: string): Promise<void> =>
+  /** Validate a provider against stored config, optionally overlaying a typed
+   *  key for validate-without-save. The overlay is not persisted; a stored
+   *  keychain value still wins. Resolves on success; rejects on failure.
+   *  POST /config/check_provider returns an empty 200 body on success. */
+  checkProvider: (provider: string, apiKey?: string): Promise<void> =>
     apiFetch<void>('/config/check_provider', {
       method: 'POST',
-      body: JSON.stringify({ provider }),
+      body: JSON.stringify({
+        provider,
+        ...(apiKey ? { api_key: apiKey } : {}),
+      }),
     }),
+
+  /** Objective per-role recommendation + whether to prompt Apply. */
+  getPacks: (): Promise<PacksResponse> =>
+    apiFetch<PacksResponse>('/api/packs'),
+
+  /** Persist the recommended role→model map (same triples as `permagent packs apply`). */
+  applyPacks: (): Promise<{ applied: Array<{ role: string; provider: string; model: string }> }> =>
+    apiFetch('/api/packs/apply', { method: 'POST' }),
 
   /** Create a user-defined custom provider (writes a declarative provider
    *  definition + stores its API key, then hot-registers it). The new provider

@@ -32,6 +32,7 @@ import { useDecisions } from '../dashboard/decisions/useDecisions';
 import { DecisionInbox } from '../dashboard/decisions/DecisionInbox';
 import { formatAge } from '../dashboard/decisions/format';
 import { getOpenOnLaunch, setOpenOnLaunch, OPEN_ON_LAUNCH_OPTIONS, type OpenOnLaunch } from '../../lib/openOnLaunch';
+import { RoleRoutingPrompt } from '../chat/RoleRoutingPrompt';
 
 // The PreviewBadge/PreviewNotice machinery (2026-07-10 audit) is gone: every
 // preview-only control has been either wired to real state or removed
@@ -987,6 +988,7 @@ export function ModelsPanel({ goto }: PanelProps) {
   return (
     <div>
       <H1 sub="Pick the brains behind the agent. Use stronger models when stakes are high; cheaper for routine work.">Models</H1>
+      <RoleRoutingPrompt variant="settings" />
       <Section title="Providers" sub="Provider credentials live in the API keys tab — add or update a key there, then route to it below.">
         {/* One-line primary readout (condensed from Governance → Models; the
             full editor is redundant with the provider modal on API keys). */}
