@@ -180,12 +180,16 @@ mod tests {
             active,
             peak: peak.clone(),
         });
-        let calls = (0..20).map(|_| {
-            let provider = provider.clone();
-            tokio::spawn(async move { provider.request("fake").await })
-        });
-        for call in calls {
-            call.await.unwrap();
+        // Collect first: a lazy `map` + immediate `.await` would spawn-then-join
+        // one task at a time, so the peak would be 1 even with a cap of 2.
+        let handles: Vec<_> = (0..20)
+            .map(|_| {
+                let provider = provider.clone();
+                tokio::spawn(async move { provider.request("fake").await })
+            })
+            .collect();
+        for handle in handles {
+            handle.await.unwrap();
         }
         assert_eq!(peak.load(Ordering::SeqCst), 2);
     }
