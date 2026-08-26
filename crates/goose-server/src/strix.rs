@@ -527,7 +527,7 @@ fn scanner_failure_detail(output: &std::process::Output) -> String {
             .lines()
             .map(str::trim)
             .filter(|l| !l.is_empty())
-            .last()
+            .next_back()
             .unwrap_or("")
             .to_string()
     };
