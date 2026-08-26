@@ -133,10 +133,24 @@ async fn a_coding_turn_announces_real_spend_on_the_bus() {
         .unwrap();
 
     // Turn one: a plain call, priced from a published rate.
+    //
+    // TWO writes, because production does two. `append_cost_ledger` advances
+    // the MONEY rollups (`cost_usd`, `accumulated_cost_usd`, the cache
+    // accumulators) and deliberately does not touch
+    // `accumulated_total_tokens` — that column is maintained by the agent's
+    // usage path through the session update builder. A fixture that wrote only
+    // the ledger would leave the token figure at 0 and quietly prove nothing
+    // about the number the meter actually renders.
     manager
         .append_cost_ledger(&call(
             &coding.id, "glm-5.3", 12_000, 800, 0, 0.030, 0.0, false,
         ))
+        .await
+        .unwrap();
+    manager
+        .update(&coding.id)
+        .accumulated_total_tokens(Some(12_800))
+        .apply()
         .await
         .unwrap();
 
@@ -182,6 +196,12 @@ async fn a_coding_turn_announces_real_spend_on_the_bus() {
         ))
         .await
         .unwrap();
+    manager
+        .update(&coding.id)
+        .accumulated_total_tokens(Some(13_800))
+        .apply()
+        .await
+        .unwrap();
     let second = body_json(
         app.clone()
             .oneshot(req(
@@ -200,6 +220,11 @@ async fn a_coding_turn_announces_real_spend_on_the_bus() {
     assert!(
         (second["sessionUsd"].as_f64().unwrap() - 0.0332).abs() < 1e-9,
         "the session total accumulates: {second}"
+    );
+    assert_eq!(
+        second["totalTokens"].as_i64().unwrap(),
+        13_800,
+        "the token figure tracks the session too, not just the money"
     );
 
     // (4) "Today" is every session, not this one relabelled.
