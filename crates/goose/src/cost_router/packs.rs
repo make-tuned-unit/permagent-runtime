@@ -233,6 +233,78 @@ pub fn load_packs() -> ModelPacks {
     )
 }
 
+// ── Explicit pins (the delegate seam) ────────────────────────────────────────
+
+/// The `packs::Role` a user-facing [`super::recommend::WorkflowRole`] pins
+/// through. Every role maps, so "I pinned all four packs" leaves none of them
+/// free to route elsewhere; the `Option` is kept for a future role the ladder
+/// genuinely has no rung for.
+///
+/// `Orchestrate` is the tier ladder's `Hard` under its user-facing name (see the
+/// note in [`super::role_map`]).
+///
+/// `Review` pins through `Hard` as well. The ladder has no review rung — it is a
+/// cheapest-path escalation ladder and cross-family verification is not a rung on
+/// it — but leaving `Review` unmapped would mean an operator who pinned all four
+/// packs still had review delegates free to route elsewhere, which is not what
+/// "I pinned the models" means to the person who typed it. Both roles are the
+/// frontier-judgment tier, so both read the `HARD` pack. An operator who wants
+/// review somewhere else sets `PERMAGENT_ROLE_REVIEW_*`, which outranks this.
+///
+/// The review gate's cross-family diversity preference still runs and still warns
+/// when the reviewer shares the author's family; it does not override the pin —
+/// an operator's explicit choice is not second-guessed.
+pub fn pack_role_for_workflow_role(role: super::recommend::WorkflowRole) -> Option<Role> {
+    use super::recommend::WorkflowRole;
+    match role {
+        WorkflowRole::Orchestrate | WorkflowRole::Review => Some(Role::Hard),
+        WorkflowRole::Edit => Some(Role::Edit),
+        WorkflowRole::Mechanical => Some(Role::Mechanical),
+        WorkflowRole::Local => Some(Role::Local),
+    }
+}
+
+/// The `(provider_key, model_key)` pair for a role.
+pub fn keys_for(role: Role) -> (&'static str, &'static str) {
+    match role {
+        Role::Edit => (KEY_EDIT_PROVIDER, KEY_EDIT_MODEL),
+        Role::Hard => (KEY_HARD_PROVIDER, KEY_HARD_MODEL),
+        Role::Mechanical => (KEY_MECHANICAL_PROVIDER, KEY_MECHANICAL_MODEL),
+        Role::Local => (KEY_LOCAL_PROVIDER, KEY_LOCAL_MODEL),
+    }
+}
+
+/// Pure: the pack a role was EXPLICITLY pinned to, or `None`.
+///
+/// This is deliberately NOT [`load_packs`]: it never falls back to
+/// [`ModelPacks::default`], so an unset role yields `None` and the caller falls
+/// through instead of silently dispatching to a shipped vendor default. Both the
+/// provider AND the model key must be present and non-empty — a half-configured
+/// pin is treated as unset, matching [`super::role_map::resolve_role_model`].
+///
+/// Added 2026-08-25: the `PERMAGENT_PACK_*` keys existed but nothing on the
+/// delegate dispatch path read them, so an operator who pinned every pack to a
+/// cheaper model still had subagents routed elsewhere. See
+/// [`super::delegate`].
+pub fn configured_pack_pin(role: Role, read: impl Fn(&str) -> Option<String>) -> Option<ModelPack> {
+    let (pk, mk) = keys_for(role);
+    let non_empty = |k: &str| {
+        read(k)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    Some(ModelPack {
+        provider: non_empty(pk)?,
+        model: non_empty(mk)?,
+    })
+}
+
+/// Live [`configured_pack_pin`] against the global config.
+pub fn pack_pin(role: Role) -> Option<ModelPack> {
+    let cfg = crate::config::Config::global();
+    configured_pack_pin(role, |k| cfg.get_param::<String>(k).ok())
+}
+
 // ── Compose: route → tier → pack ─────────────────────────────────────────────
 
 /// The full "which model runs this sub-task" decision: classify + gate the work
@@ -273,6 +345,70 @@ mod tests {
             trusted: false,
             health: PoolHealth::Unknown,
         }
+    }
+
+    // ── Explicit pins (the delegate seam) ──────────────────────────────────
+
+    fn reader<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |k: &str| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == k)
+                .map(|(_, v)| v.to_string())
+        }
+    }
+
+    /// The whole point: an unset pack yields `None`, NOT the shipped default.
+    /// If this ever returns Opus/Sonnet/Haiku, a delegate can be dispatched to a
+    /// vendor the operator never chose.
+    #[test]
+    fn an_unset_pack_is_not_a_pin() {
+        for role in [Role::Edit, Role::Hard, Role::Mechanical, Role::Local] {
+            assert_eq!(configured_pack_pin(role, reader(&[])), None, "{role:?}");
+        }
+    }
+
+    #[test]
+    fn a_fully_set_pack_is_a_pin() {
+        let env = [
+            (KEY_EDIT_PROVIDER, "openai"),
+            (KEY_EDIT_MODEL, "gpt-5.4-mini"),
+        ];
+        assert_eq!(
+            configured_pack_pin(Role::Edit, reader(&env)),
+            Some(ModelPack::new("openai", "gpt-5.4-mini"))
+        );
+        // …and it pins only its own role.
+        assert_eq!(configured_pack_pin(Role::Hard, reader(&env)), None);
+    }
+
+    /// Half a pin is not a pin — the same rule as `role_map::resolve_role_model`.
+    /// Half-applying it would pair a provider with a foreign model and 404.
+    #[test]
+    fn a_half_configured_pack_is_unset() {
+        for env in [
+            vec![(KEY_HARD_PROVIDER, "openai")],
+            vec![(KEY_HARD_MODEL, "gpt-5.6-sol")],
+            vec![(KEY_HARD_PROVIDER, "  "), (KEY_HARD_MODEL, "gpt-5.6-sol")],
+            vec![(KEY_HARD_PROVIDER, "openai"), (KEY_HARD_MODEL, "")],
+        ] {
+            assert_eq!(
+                configured_pack_pin(Role::Hard, reader(&env)),
+                None,
+                "{env:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn each_role_reads_its_own_keys() {
+        assert_eq!(keys_for(Role::Edit), (KEY_EDIT_PROVIDER, KEY_EDIT_MODEL));
+        assert_eq!(keys_for(Role::Hard), (KEY_HARD_PROVIDER, KEY_HARD_MODEL));
+        assert_eq!(
+            keys_for(Role::Mechanical),
+            (KEY_MECHANICAL_PROVIDER, KEY_MECHANICAL_MODEL)
+        );
+        assert_eq!(keys_for(Role::Local), (KEY_LOCAL_PROVIDER, KEY_LOCAL_MODEL));
     }
 
     // ── tier → role → model (the test bar's tier→model mapping) ────────────
