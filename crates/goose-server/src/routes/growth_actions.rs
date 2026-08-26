@@ -157,6 +157,20 @@ pub struct ActionIdentity {
     /// and "you told me so" are different claims and must not look identical.
     pub verified_by: Option<String>,
     pub verified_at: Option<String>,
+    /// The full sha of the commit that earned a `git` verification, when one
+    /// did. The card shortens it for display and shows it as the receipt for
+    /// "this shipped" — which is a different, checkable claim from "something
+    /// confirmed it".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_commit: Option<String>,
+    /// The passing check's own sentence, as it read at the moment it passed.
+    ///
+    /// Stored and replayed rather than recomputed: `verify_git` searches
+    /// `--since=created_at`, so asking it again a week later can honestly name
+    /// a different commit, and a completed card that quietly changes which
+    /// commit it credits is worse than one that shows none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified_detail: Option<String>,
     pub outcomes: Vec<OutcomeView>,
     /// The reading frozen at verification, decoded from `baseline_json`.
     ///
@@ -2032,6 +2046,81 @@ async fn set_action_status(
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
         .ok_or((StatusCode::NOT_FOUND, "unknown action".to_string()))?;
+
+    // Emitted for the same reason as the verify path: this moves the card
+    // between two lists. The tab that pressed the button refetches on its own
+    // (`onChanged`), but a SECOND open window has no poll backstop and would
+    // otherwise keep offering an exit on a card that has already taken one.
+    permagent::events::emit(permagent::events::project_changed(
+        &project.id,
+        "growth_actions",
+    ));
+    Ok(Json(identity_of(&pool, &updated).await))
+}
+
+/// Put a verified action back on the board as a suggestion.
+///
+/// The exit that was missing. Verification is a judgement about reality, and
+/// judgements are wrong sometimes — the commit gets reverted, the check matched
+/// a file the action did not mean, the user pressed Verify on the wrong card.
+/// Without this the only way back was to edit the database, so a mistaken
+/// verification was permanent and went on being MEASURED: `verified_at` is the
+/// pivot every comparison window is taken from, so a wrong one does not sit
+/// there inertly, it silently produces verdicts about a change that never
+/// landed.
+///
+/// REFUSED once a verdict exists. `store::reopen` clears the pivot and the
+/// frozen baseline, which is correct for a withdrawn claim and destructive for
+/// a finished experiment: the outcome rows would survive, pointing at a
+/// before-window that no longer exists, and the action would be re-proposable
+/// while its own measured result still fed the generator. An action that has
+/// been judged is history — archive it, which keeps every one of those
+/// guarantees intact.
+async fn reopen_action(
+    State(state): State<Arc<AppState>>,
+    Path((project_id, action_id)): Path<(String, String)>,
+) -> Result<Json<ActionIdentity>, ApiError> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let project = projects::get_project_by_id_or_slug(&pool, &project_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "unknown project".to_string()))?;
+    let action = growth_store::get(&pool, &project.id, &action_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "unknown action".to_string()))?;
+
+    if action.verified_at.is_none() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "This action was never verified, so there is nothing to reopen.".to_string(),
+        )
+            .into());
+    }
+    if !outcome_views(&pool, &action.id).await.is_empty() {
+        return Err((
+            StatusCode::CONFLICT,
+            "This action has already been measured. Reopening would delete the before-window its \
+             verdicts were computed against and leave them describing a change nobody claims \
+             landed. Archive it instead — that files it away and keeps the result."
+                .to_string(),
+        )
+            .into());
+    }
+
+    let updated = growth_store::reopen(&pool, &project.id, &action_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "unknown action".to_string()))?;
+
+    permagent::events::emit(permagent::events::project_changed(
+        &project.id,
+        "growth_actions",
+    ));
     Ok(Json(identity_of(&pool, &updated).await))
 }
 
@@ -2186,17 +2275,34 @@ async fn verify_action(
         }
     };
 
+    let stamped_at = verified_at.to_rfc3339();
     let updated = growth_store::record_verification(
         &pool,
         &project.id,
         &action.id,
-        verified_by,
-        &verified_at.to_rfc3339(),
-        encoded.as_deref(),
+        growth_store::VerificationEvidence {
+            baseline_json: encoded.as_deref(),
+            commit: outcome.commit.as_deref(),
+            detail: outcome.detail.as_deref(),
+            ..growth_store::VerificationEvidence::new(verified_by, &stamped_at)
+        },
     )
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     .ok_or((StatusCode::NOT_FOUND, "unknown action".to_string()))?;
+
+    // ONE WRITER, ONE ANNOUNCEMENT (#1090). This write moves the action off the
+    // Actions list and onto the Completed one — `render_board` buckets on
+    // `status`, and `record_verification` has just set it to `verified` — but
+    // until this emit existed no client was ever told, so the card sat in the
+    // suggestions until something else happened to trigger a refetch. The user
+    // pressed Verify, the check passed, the database moved on, and the screen
+    // did not. `regenerate` and `complete_from_harness`, the module's other two
+    // writers, have always emitted here; verify was the one that did not.
+    permagent::events::emit(permagent::events::project_changed(
+        &project.id,
+        "growth_actions",
+    ));
 
     Ok(Json(VerifyResponse {
         verified: true,
@@ -2242,6 +2348,8 @@ async fn identity_of(pool: &Pool<Sqlite>, row: &growth_store::GrowthActionRow) -
         target_dir: row.target_dir.clone(),
         verified_by: row.verified_by.clone(),
         verified_at: row.verified_at.clone(),
+        verified_commit: row.verified_commit.clone(),
+        verified_detail: row.verified_detail.clone(),
         outcomes,
         baseline: baseline_view(row.baseline_json.as_deref()),
     }
@@ -2823,13 +2931,17 @@ async fn complete_from_harness(
                         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
                 )
             };
+            let stamped_at = verified_at.to_rfc3339();
             let updated = growth_store::record_verification(
                 &pool,
                 &project.id,
                 &action.id,
-                verified_by,
-                &verified_at.to_rfc3339(),
-                encoded.as_deref(),
+                growth_store::VerificationEvidence {
+                    baseline_json: encoded.as_deref(),
+                    commit: outcome.commit.as_deref(),
+                    detail: outcome.detail.as_deref(),
+                    ..growth_store::VerificationEvidence::new(verified_by, &stamped_at)
+                },
             )
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
@@ -2897,6 +3009,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route(
             "/api/projects/{project_id}/growth-actions/{action_id}/verify",
             post(verify_action),
+        )
+        .route(
+            "/api/projects/{project_id}/growth-actions/{action_id}/reopen",
+            post(reopen_action),
         )
         .route(
             "/api/projects/{project_id}/growth-actions/{action_id}/complete-from-harness",
@@ -3217,6 +3333,12 @@ mod tests {
             status: growth_store::STATUS_VERIFIED.into(),
             verified_by: Some(growth_store::VERIFIED_BY_GIT.into()),
             verified_at: Some("2026-08-11T14:00:00Z".into()),
+            verified_commit: Some("8f2a1c3390ab4455667788990011223344556677".into()),
+            verified_detail: Some(
+                "Commit 8f2a1c33 \"Add an FAQPage block\" changed src/pages/index.astro, which \
+                 the action named as src/pages/index.astro."
+                    .into(),
+            ),
             created_at: "2026-08-01T00:00:00Z".into(),
         }
     }
@@ -3773,9 +3895,10 @@ mod tests {
                 &pool,
                 &project.id,
                 &row.id,
-                growth_store::VERIFIED_BY_GIT,
-                "2026-08-12T00:00:00Z",
-                None,
+                growth_store::VerificationEvidence::new(
+                    growth_store::VERIFIED_BY_GIT,
+                    "2026-08-12T00:00:00Z",
+                ),
             )
             .await
             .unwrap();
@@ -3997,13 +4120,18 @@ mod tests {
                 "weekly": [1.0, 2.0],
                 "earliestEvent": "2026-05-01"
             });
+            let frozen_json = frozen.to_string();
             growth_store::record_verification(
                 &pool,
                 &project.id,
                 &row.id,
-                growth_store::VERIFIED_BY_GIT,
-                "2026-08-19T12:00:00Z",
-                Some(&frozen.to_string()),
+                growth_store::VerificationEvidence {
+                    baseline_json: Some(&frozen_json),
+                    ..growth_store::VerificationEvidence::new(
+                        growth_store::VERIFIED_BY_GIT,
+                        "2026-08-19T12:00:00Z",
+                    )
+                },
             )
             .await
             .unwrap();

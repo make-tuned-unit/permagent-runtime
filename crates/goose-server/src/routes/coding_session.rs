@@ -179,9 +179,108 @@ async fn summarize_and_store(
     }))
 }
 
+/// What the harness announces when a turn ends. No numbers: see
+/// [`announce_spend`].
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpendAnnounceReq {
+    /// The harness's own session id — the one that owns the `cost_ledger` rows.
+    pub session_id: String,
+    pub working_dir: Option<String>,
+    /// The session is closing; this is its last word.
+    #[serde(default)]
+    pub final_turn: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpendAnnounceResp {
+    pub turn_usd: f64,
+    pub session_usd: f64,
+    pub today_usd: f64,
+    pub total_tokens: i64,
+    /// The last call had no published rate and was priced at the fail-closed
+    /// worst case. Shown, not hidden — see [`permagent::events::SessionSpend`].
+    pub estimated: bool,
+}
+
+/// "That turn is finished" — from the CLI harness, at the end of every turn.
+///
+/// ANNOUNCES, never posts. The body carries no tokens and no dollars, and that
+/// is the whole design: the harness has ALREADY written its `cost_ledger` row,
+/// in-process, through the same `append_cost_ledger` the daemon uses, into the
+/// same `permagent.db`. Accepting the figures here and writing them again would
+/// double every number in `accumulated_cost_usd` — the exact rollup the meter
+/// reads — so the harness sends the one thing the daemon cannot know on its
+/// own: that there is something new to look at, and under which session id.
+///
+/// The id is the point. The harness mints its own session (`cli.rs`'s
+/// `get_or_create_session_id`, "CLI Session") and nothing ever told the UI it
+/// existed; the Build tab's meter was subscribed to the browser's chat session,
+/// which is idle for the entire time the user is coding. That is why it read
+/// $0.00 all day while the terminal's own footer, reading the same ledger by
+/// the right id, printed real money.
+///
+/// Emitting rather than answering is what makes the meter live: every open
+/// window learns the new total on the same bus every other surface uses, with
+/// nothing to poll. The response body repeats the figures for the caller's own
+/// use (and so this is testable without a bus subscriber).
+async fn announce_spend(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SpendAnnounceReq>,
+) -> Result<Json<SpendAnnounceResp>, StatusCode> {
+    let manager = state.session_manager();
+    let session = manager
+        .get_session(&req.session_id, false)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+
+    // Midnight UTC, the same boundary `growth::metrics` measures days on.
+    let today = chrono::Utc::now()
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .map(|d| d.and_utc().to_rfc3339())
+        .unwrap_or_default();
+    // A failed rollup query must not lose the announcement: the session figures
+    // are the ones the meter is for, and reporting them with today's total
+    // missing beats reporting nothing.
+    let today_usd = manager.spend_since(&today).await.unwrap_or(0.0);
+    let last_call = manager
+        .last_call_facts(&req.session_id)
+        .await
+        .ok()
+        .flatten();
+
+    let resp = SpendAnnounceResp {
+        turn_usd: session.cost_usd.unwrap_or(0.0),
+        session_usd: session.accumulated_cost_usd.unwrap_or(0.0),
+        today_usd,
+        total_tokens: session.accumulated_total_tokens.unwrap_or(0) as i64,
+        estimated: last_call.as_ref().is_some_and(|c| c.estimated),
+    };
+
+    permagent::events::emit(permagent::events::session_spend_changed(
+        permagent::events::SessionSpend {
+            session_id: &req.session_id,
+            turn_usd: resp.turn_usd,
+            session_usd: resp.session_usd,
+            today_usd: resp.today_usd,
+            total_tokens: resp.total_tokens,
+            provider: last_call.as_ref().and_then(|c| c.provider.as_deref()),
+            model: last_call.as_ref().and_then(|c| c.model.as_deref()),
+            working_dir: req.working_dir.as_deref(),
+            estimated: last_call.as_ref().is_some_and(|c| c.estimated),
+            final_turn: req.final_turn,
+        },
+    ));
+
+    Ok(Json(resp))
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/coding-sessions/summary", post(coding_session_summary))
+        .route("/api/coding-sessions/spend", post(announce_spend))
         .with_state(state)
 }
 

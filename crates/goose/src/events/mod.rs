@@ -404,6 +404,7 @@ pub enum PermagentEventType {
     /// to this instead of polling `/schedule/list` on a tight interval —
     /// added for the 2026-08-25 "schedule polling storm" health-review fix.
     ScheduleChanged,
+    SessionSpendChanged,
 }
 
 // ── Convenience constructors ────────────────────────────────────────────────
@@ -1039,6 +1040,67 @@ pub fn session_changed(session_id: &str, change: &str) -> PermagentEvent {
             "change": change,
         }),
     )
+}
+
+/// A session's running spend moved. Payload carries the figures themselves
+/// rather than ids alone — the one documented exception to this bus's "clients
+/// refetch, the bus doesn't carry state" rule, and it is deliberate.
+///
+/// The rule exists so a frame cannot go stale between emit and read. These
+/// numbers cannot: they are a monotonic rollup already committed to
+/// `cost_ledger`, and the emitter has just read them from it. Refetching
+/// instead would mean the Build meter issues an HTTP round trip per turn for a
+/// number the frame was holding, on the surface whose entire complaint was that
+/// it does not move while the user works.
+///
+/// `session_id` is the CLI harness's OWN session — the one that owns the ledger
+/// rows — not the browser's chat session. Those have always been different ids,
+/// which is why a meter wired to the chat session read $0.00 for a whole day of
+/// coding.
+///
+/// `final_turn` marks the announcement made as the session closes, so the meter
+/// can keep showing a finished session's total instead of decaying to nothing.
+pub fn session_spend_changed(spend: SessionSpend<'_>) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::SessionSpendChanged,
+        serde_json::json!({
+            "session_id": spend.session_id,
+            "turn_usd": spend.turn_usd,
+            "session_usd": spend.session_usd,
+            "today_usd": spend.today_usd,
+            "total_tokens": spend.total_tokens,
+            "provider": spend.provider,
+            "model": spend.model,
+            "working_dir": spend.working_dir,
+            "estimated": spend.estimated,
+            "final_turn": spend.final_turn,
+        }),
+    )
+}
+
+/// The figures one [`session_spend_changed`] announcement carries.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SessionSpend<'a> {
+    pub session_id: &'a str,
+    /// The most recent turn's cost, USD.
+    pub turn_usd: f64,
+    /// The session's running total, USD — `SUM(cost_ledger.cost_usd)`.
+    pub session_usd: f64,
+    /// Every session's spend since UTC midnight, USD.
+    pub today_usd: f64,
+    pub total_tokens: i64,
+    pub provider: Option<&'a str>,
+    pub model: Option<&'a str>,
+    pub working_dir: Option<&'a str>,
+    /// The last call's cost was a fail-closed estimate, not a published rate.
+    ///
+    /// The meter must say so. `worst_case_pricing` charges the most expensive
+    /// rate in the whole registry when a model has no row, which is the right
+    /// way to fail — the spend cap fires early — and the wrong thing to render
+    /// as a bare dollar amount, because the user would read a safety margin as
+    /// a bill.
+    pub estimated: bool,
+    pub final_turn: bool,
 }
 
 /// A scheduled job changed. `change` ∈

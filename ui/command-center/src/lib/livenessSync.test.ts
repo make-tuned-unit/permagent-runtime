@@ -97,6 +97,7 @@ beforeEach(() => {
     workspaces: [],
     activeWorkspaceId: null,
     personDetail: null,
+    codingSpend: null,
   });
 });
 
@@ -224,6 +225,48 @@ describe('identity_changed → identity consumers re-read', () => {
     const s = useCommandCenter.getState();
     expect(s.agentName).toBe('Henry');
     expect(s.identityRev).toBe(0);
+  });
+});
+
+describe('session_spend_changed → codingSpend applies immediately (not debounced)', () => {
+  const rawPayload = {
+    session_id: 'harness-1',
+    turn_usd: 0.0032,
+    session_usd: 0.0332,
+    today_usd: 0.5332,
+    total_tokens: 12800,
+    provider: 'zai',
+    model: 'glm-5.3',
+    working_dir: '/tmp/proj',
+    estimated: true,
+    final_turn: false,
+  };
+
+  it('camelCases a raw daemon frame into store.codingSpend synchronously, with no debounce wait', () => {
+    // Exactly as the daemon serializes it: snake_case payload keys, applied
+    // via applyLivenessFrame directly (this lane is not driven through
+    // routeGlobalFrame's nav-only stub in this file's `route` helper).
+    applyLivenessFrame(frame('session_spend_changed', rawPayload), EPOCH);
+
+    // No `await flush()` — the APPLY_BY_TYPE lane is synchronous by design
+    // (see livenessSync.ts module doc), so the store must already reflect it.
+    expect(useCommandCenter.getState().codingSpend).toEqual({
+      sessionId: 'harness-1',
+      turnUsd: 0.0032,
+      sessionUsd: 0.0332,
+      todayUsd: 0.5332,
+      totalTokens: 12800,
+      provider: 'zai',
+      model: 'glm-5.3',
+      workingDir: '/tmp/proj',
+      estimated: true,
+      finalTurn: false,
+    });
+  });
+
+  it('ignores a replayed spend frame — a reconnect burst must not stomp a live total', () => {
+    applyLivenessFrame(frame('session_spend_changed', rawPayload, { replayed: true }), EPOCH);
+    expect(useCommandCenter.getState().codingSpend).toBeNull();
   });
 });
 

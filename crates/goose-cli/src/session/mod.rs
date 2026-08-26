@@ -6,6 +6,7 @@ mod elicitation;
 mod export;
 mod input;
 mod output;
+mod spend_announce;
 pub mod streaming_buffer;
 mod task_execution_display;
 mod thinking;
@@ -535,6 +536,20 @@ impl CliSession {
             } else {
                 self.sync_composer_meta().await?;
             }
+            // One announcement per turn, on the path BOTH display branches
+            // reach — the composer branch is the one the Build tab actually
+            // takes, and wiring only the other would have left the meter dead
+            // in exactly the place it was reported dead.
+            //
+            // The first pass through the loop announces a session that has
+            // spent nothing yet, and that is the point: it is the moment the
+            // browser first learns this session id EXISTS. Without it the
+            // meter would stay bound to the chat session — the original bug —
+            // until the first turn happened to finish.
+            //
+            // Detached and silent: a turn must not wait on, or fail because
+            // of, a window that may not even be open.
+            spend_announce::announce(&self.session_id, false);
 
             let conversation_strings: Vec<String> = self
                 .messages
@@ -563,6 +578,27 @@ impl CliSession {
         }
 
         self.composer = None;
+
+        // The closing figure, and the closing announcement. Both matter: the
+        // terminal keeps the total where the user is looking, and the meter in
+        // the other window stops at the real number instead of at whatever the
+        // second-to-last turn left behind.
+        if let Ok(metadata) = self.get_session().await {
+            if let Some(line) = spend_announce::format_session_total(
+                metadata.accumulated_cost_usd,
+                metadata.accumulated_total_tokens.unwrap_or(0) as i64,
+            ) {
+                println!(
+                    "  {} {}",
+                    console::style("·").dim(),
+                    console::style(line).dim()
+                );
+            }
+        }
+        // Awaited, not detached: the process is about to exit, and a spawned
+        // task would be dropped before it ever reached the daemon — which is
+        // precisely when the meter most needs the final number.
+        spend_announce::announce_now(&self.session_id, true).await;
 
         println!(
             "\n  {} {}",
@@ -1174,6 +1210,18 @@ impl CliSession {
             .and_then(|m| m.total_tokens)
             .unwrap_or(0)
             .max(0) as u64;
+        // The money half of the same row, taken the same way and from the same
+        // read. Tokens say how much work a turn did; they do not say what it
+        // cost, and the two come apart badly on a cache-heavy turn — tens of
+        // thousands of tokens for fractions of a cent. `accumulated_cost_usd`
+        // is the ledger's own rollup, so this delta cannot drift away from the
+        // footer or from the Build meter.
+        let turn_cost_baseline: f64 = self
+            .get_session()
+            .await
+            .ok()
+            .and_then(|m| m.accumulated_cost_usd)
+            .unwrap_or(0.0);
         let mut last_token_sample = std::time::Instant::now();
         const TOKEN_SAMPLE_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -1326,17 +1374,30 @@ impl CliSession {
                                 log_tool_metrics(&message, &self.messages);
                                 self.messages.push(message.clone());
 
-                                let turn_tokens = if last_token_sample.elapsed()
+                                // One read, both numbers: sampling them
+                                // separately would be two database calls on
+                                // the same tick for figures that must agree.
+                                let (turn_tokens, turn_cost) = if last_token_sample.elapsed()
                                     >= TOKEN_SAMPLE_EVERY
                                 {
                                     last_token_sample = std::time::Instant::now();
-                                    self.get_session()
-                                        .await
-                                        .ok()
-                                        .and_then(|m| m.total_tokens)
-                                        .map(|t| (t.max(0) as u64).saturating_sub(turn_token_baseline))
+                                    match self.get_session().await {
+                                        Ok(m) => (
+                                            m.total_tokens.map(|t| {
+                                                (t.max(0) as u64).saturating_sub(turn_token_baseline)
+                                            }),
+                                            // Clamped at zero: the rollup only
+                                            // grows, but a session resumed
+                                            // against a different baseline
+                                            // must never render a negative
+                                            // bill.
+                                            m.accumulated_cost_usd
+                                                .map(|c| (c - turn_cost_baseline).max(0.0)),
+                                        ),
+                                        Err(_) => (None, None),
+                                    }
                                 } else {
-                                    None
+                                    (None, None)
                                 };
 
                                 if let Some(c) = composer.as_mut() {
@@ -1351,6 +1412,9 @@ impl CliSession {
                                     }
                                     if let Some(tokens) = turn_tokens {
                                         c.set_turn_tokens(Some(tokens));
+                                    }
+                                    if let Some(usd) = turn_cost {
+                                        c.set_turn_cost(Some(usd));
                                     }
                                     c.mark_output();
                                     c.prepare_output();

@@ -49,11 +49,84 @@ export interface CostMeterModel {
 }
 
 /**
- * Build the meter model from the latest {@link TokenState}. Shows exactly ONE
- * cost-ish number (the running session $) to avoid the "Usage $ vs Spending %"
- * confusion; the cache figure is explicitly a *saving*, not a second spend.
+ * Spend announcement from the CODING HARNESS's own session (`permagent run
+ * --recipe permagent-coding --interactive`, running as a PTY subprocess in the
+ * Build terminal). This is NOT the browser chat session `TokenState` above —
+ * the harness mints its own session id in its own process and writes correct
+ * cost-ledger rows under THAT id, which the browser chat SSE stream never
+ * carries. Arrives via the daemon's `session_spend_changed` bus frame
+ * (livenessSync.ts), snake_case on the wire, camelCased here at the boundary.
  */
-export function formatCostMeter(tokens: TokenState | null): CostMeterModel {
+export interface CodingSpend {
+  sessionId: string;
+  turnUsd: number;
+  sessionUsd: number;
+  todayUsd: number;
+  totalTokens: number;
+  provider: string | null;
+  model: string | null;
+  workingDir: string | null;
+  /** True when the last call had NO published price and was billed at the
+   *  fail-closed worst case (the most expensive rate in the registry) —
+   *  deliberately over-stated so a spend cap fires early. Rendering this
+   *  as a plain bill would present a safety margin as a fact, so the meter
+   *  must show it as an estimate, not a number to trust literally. */
+  estimated: boolean;
+  /** True on the session's closing announcement — the total is final, not
+   *  merely the value between two turns. */
+  finalTurn: boolean;
+}
+
+/**
+ * Build the meter model from the latest {@link TokenState} and, when the Build
+ * tab has one, the coding harness's own {@link CodingSpend}. `coding` defaults
+ * to null so every existing call site (and the SSE-wiring test below) keeps
+ * compiling and rendering byte-identically off `tokens` alone.
+ *
+ * When `coding` is non-null it is AUTHORITATIVE: it is the Build tab's own PTY
+ * session, and `tokens` (the browser chat session) is a different account
+ * entirely — showing both would put the meter right back to reading whichever
+ * number happened to be non-zero, which is the bug this two-argument shape
+ * fixes. Shows exactly ONE cost-ish number (the running session $) to avoid
+ * the "Usage $ vs Spending %" confusion.
+ */
+export function formatCostMeter(
+  tokens: TokenState | null,
+  coding: CodingSpend | null = null,
+): CostMeterModel {
+  if (coding) {
+    const sessionCost = fmtUsd(coding.sessionUsd);
+    // A fail-closed estimate rendered as a plain "$" reads as a bill the
+    // harness actually charged — the `~` is the difference between "this is
+    // what it cost" and "this is the worst case we're guarding against".
+    const cost = coding.estimated ? `~${sessionCost}` : sessionCost;
+    const todayCost = fmtUsd(coding.todayUsd);
+
+    const segments: string[] = [
+      `${fmtTokens(coding.totalTokens)} tokens`,
+      `+${fmtUsd(coding.turnUsd)} this turn`,
+      `today ${todayCost}`,
+    ];
+    const aria: string[] = [`Session cost ${sessionCost}`, `today ${todayCost}`];
+
+    if (coding.model) {
+      segments.push(coding.model);
+      aria.push(`model ${coding.model}`);
+    }
+    if (coding.estimated) {
+      // The segment text, not just the `~`, so the reason is on screen —
+      // a squiggle alone is easy to miss or mistake for a rounding mark.
+      segments.push('estimated — no published price');
+      aria.push('this figure is an estimate, not a final bill');
+    }
+    if (coding.finalTurn) {
+      segments.push('session ended');
+      aria.push('session ended');
+    }
+
+    return { cost, segments, ariaLabel: aria.join(', ') };
+  }
+
   if (!tokens) {
     return { cost: '$0.00', segments: [], ariaLabel: 'No cost recorded yet' };
   }
