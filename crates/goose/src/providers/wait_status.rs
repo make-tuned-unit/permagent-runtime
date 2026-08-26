@@ -22,6 +22,8 @@ pub enum WaitReason {
     ServerError,
     /// Anything else the retry layer decided to sit out.
     Transient,
+    /// The process-wide concurrency pool for this provider is full.
+    ConcurrencyLimit,
 }
 
 impl WaitReason {
@@ -31,6 +33,7 @@ impl WaitReason {
             WaitReason::RateLimited => "rate limit",
             WaitReason::ServerError => "server error",
             WaitReason::Transient => "connection problem",
+            WaitReason::ConcurrencyLimit => "request capacity",
         }
     }
 }
@@ -59,6 +62,12 @@ impl ProviderWait {
     /// The one-line form a status area shows, e.g.
     /// `Z.AI rate limit — retrying in 12 s (attempt 2 of 4)`.
     pub fn status_line(&self) -> String {
+        if self.reason == WaitReason::ConcurrencyLimit {
+            return format!(
+                "waiting for a free slot on {}",
+                display_provider(&self.provider)
+            );
+        }
         format!(
             "{} {} — retrying in {} s (attempt {} of {})",
             display_provider(&self.provider),
@@ -164,5 +173,12 @@ mod tests {
     fn an_unknown_provider_id_is_shown_as_given() {
         assert_eq!(display_provider("openrouter"), "openrouter");
         assert_eq!(display_provider(""), "The model provider");
+    }
+
+    #[test]
+    fn concurrency_wait_reports_the_free_slot_status() {
+        let mut wait = wait_of(0);
+        wait.reason = WaitReason::ConcurrencyLimit;
+        assert_eq!(wait.status_line(), "waiting for a free slot on Z.AI");
     }
 }
