@@ -1,14 +1,11 @@
 /**
  * @vitest-environment jsdom
  *
- * CostStatusline render test — the UI half of the Build-tab cost-meter fix.
- * Mounts the REAL component against the REAL zustand store and drives a
- * `session_spend_changed` frame through the REAL `applyLivenessFrame`, proving
- * the meter updates by EVENT the instant a frame lands — no refetch, no timer,
- * no poll. This is the "updates every turn" claim from the bug report (the old
- * behavior was $0.00 forever because the browser chat SSE stream — the only
- * thing feeding the meter — stayed idle while the user coded in the CLI
- * harness's own PTY session).
+ * CostStatusline render tests:
+ * - the UI half of the Build-tab cost-meter fix (coding-harness spend via
+ *   `session_spend_changed` through `applyLivenessFrame`)
+ * - the subagent suffix: when a parent session has child spend, the meter
+ *   shows `incl. N subagents $X` beside the running total
  *
  * useLiveGoals is mocked: it polls /api/goals/active and opens its own event
  * subscription, neither of which this test needs or wants touching the network.
@@ -21,8 +18,22 @@ vi.mock('../../lib/useLiveGoals', () => ({
   useLiveGoals: () => ({ goals: [], activeCount: 0, loaded: true, refresh: () => {} }),
 }));
 
+vi.mock('../../lib/api', () => ({
+  api: {
+    getSessionCost: vi.fn(async () => ({
+      own: 0.42,
+      childrenTotal: 0.17,
+      perChild: [
+        { sessionId: 'child-a', costUsd: 0.1 },
+        { sessionId: 'child-b', costUsd: 0.07 },
+      ],
+    })),
+  },
+}));
+
 import { CostStatusline } from './CostStatusline';
 import { useCommandCenter } from '../../lib/store';
+import { api } from '../../lib/api';
 import { applyLivenessFrame, _resetLivenessSync } from '../../lib/livenessSync';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -31,7 +42,23 @@ let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
 function resetStore() {
-  useCommandCenter.setState({ liveTokens: null, codingSpend: null });
+  useCommandCenter.setState({
+    liveTokens: {
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      accumulatedInputTokens: 1000,
+      accumulatedOutputTokens: 200,
+      accumulatedTotalTokens: 1200,
+      costUsd: 0.01,
+      accumulatedCostUsd: 0.42,
+      cacheSavingsUsd: 0,
+      contextPercent: null,
+      model: '',
+    },
+    codingSpend: null,
+    chatSessionId: 'parent-1',
+  });
 }
 
 beforeEach(() => {
@@ -43,25 +70,26 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  act(() => { root?.unmount(); });
+  act(() => {
+    root?.unmount();
+  });
   container?.remove();
   container = null;
   root = null;
   _resetLivenessSync();
   resetStore();
+  vi.clearAllMocks();
 });
 
 describe('CostStatusline', () => {
   it('shows $0.00 with an empty store, then updates to the coding-harness session total off a live wire frame', async () => {
+    useCommandCenter.setState({ liveTokens: null, codingSpend: null, chatSessionId: null });
     await act(async () => {
       root!.render(<CostStatusline />);
     });
     expect(container!.textContent).toContain('$0.00');
 
     await act(async () => {
-      // A frame exactly as the daemon serializes it (snake_case payload keys),
-      // pushed through the production entry point — no mock of the store
-      // setter, no direct setState, no timer to advance.
       applyLivenessFrame(
         {
           id: 'evt-1',
@@ -80,15 +108,25 @@ describe('CostStatusline', () => {
             final_turn: false,
           },
         },
-        // Epoch far in the past, so a "now"-stamped frame always reads live.
         Date.parse('2020-01-01T00:00:00Z'),
       );
     });
 
-    // The bold cost figure specifically, not just "somewhere in the text" —
-    // "+$0.0032 this turn" also appears and its digits happen to start with
-    // "$0.00", so asserting on the cost span's own content is the honest check.
     const costSpan = container!.querySelector('span[style*="font-weight"]');
     expect(costSpan?.textContent).toBe('$0.03');
+  });
+
+  it('shows incl. N subagents $X when the parent cost rollup has children', async () => {
+    await act(async () => {
+      root!.render(<CostStatusline />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.getSessionCost).toHaveBeenCalledWith('parent-1');
+    expect(container!.textContent).toContain('incl. 2 subagents $0.17');
+    expect(container!.textContent).toContain('$0.42');
   });
 });

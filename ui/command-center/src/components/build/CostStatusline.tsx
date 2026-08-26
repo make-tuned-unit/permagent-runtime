@@ -1,13 +1,16 @@
+import { useEffect, useState } from 'react';
 import { useCommandCenter } from '../../lib/store';
 import { useTheme } from '../../styles/useTheme';
 import { font } from '../../styles/tokens';
-import { formatCostMeter } from '../../lib/costMeter';
+import { formatCostMeter, type SubagentCostIncl } from '../../lib/costMeter';
 import { useLiveGoals } from '../../lib/useLiveGoals';
+import { api } from '../../lib/api';
 
 /**
  * Always-on Build statusline: `$0.42 · 47k↑ 12k↓ · cache saved $0.28 · 31% ctx · <model>`
  * while chatting, or `~$0.03 · 13k tokens · +$0.0032 this turn · today $0.53 ·
- * glm-5.3 · estimated — no published price` while the CLI coding harness runs.
+ * glm-5.3 · estimated — no published price` while the CLI coding harness runs,
+ * plus `· incl. N subagents $X` when the session has spawned children.
  *
  * The Build tab's terminal runs `permagent run --recipe permagent-coding
  * --interactive` as its own PTY subprocess with its OWN session id — a
@@ -17,16 +20,47 @@ import { useLiveGoals } from '../../lib/useLiveGoals';
  * wrong account. `codingSpend`, sourced from the daemon's
  * `session_spend_changed` bus frame (see livenessSync.ts), is the harness's
  * own ledger and — per {@link formatCostMeter} — is authoritative over
- * `liveTokens` whenever it is present. The rendered strings come verbatim from
- * {@link formatCostMeter}, which is what the wiring test asserts.
+ * `liveTokens` whenever it is present. Child spend comes from
+ * `GET /api/sessions/{id}/cost` for the coding session id when that is the
+ * authority, otherwise the active chat session. The rendered strings come
+ * verbatim from {@link formatCostMeter}, which is what the wiring test asserts.
  */
 export function CostStatusline() {
   const { colors } = useTheme();
   const liveTokens = useCommandCenter((s) => s.liveTokens);
   const codingSpend = useCommandCenter((s) => s.codingSpend);
+  const chatSessionId = useCommandCenter((s) => s.chatSessionId);
   const { goals } = useLiveGoals();
-  const meter = formatCostMeter(liveTokens, codingSpend);
-  const routeNote = goals.find(g => g.routing_note || g.hold_note);
+  const [subagents, setSubagents] = useState<SubagentCostIncl | null>(null);
+
+  const rollupSessionId = codingSpend?.sessionId ?? chatSessionId;
+
+  useEffect(() => {
+    if (!rollupSessionId) {
+      setSubagents(null);
+      return;
+    }
+    let cancelled = false;
+    api
+      .getSessionCost(rollupSessionId)
+      .then((cost) => {
+        if (cancelled) return;
+        if (cost.perChild.length === 0) {
+          setSubagents(null);
+          return;
+        }
+        setSubagents({ count: cost.perChild.length, totalUsd: cost.childrenTotal });
+      })
+      .catch(() => {
+        if (!cancelled) setSubagents(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rollupSessionId, liveTokens?.accumulatedCostUsd, codingSpend?.sessionUsd]);
+
+  const meter = formatCostMeter(liveTokens, codingSpend, subagents);
+  const routeNote = goals.find((g) => g.routing_note || g.hold_note);
   const note = routeNote?.hold_note || routeNote?.routing_note;
 
   return (

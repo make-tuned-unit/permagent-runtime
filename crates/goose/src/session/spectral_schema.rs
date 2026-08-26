@@ -73,6 +73,12 @@ use tracing::{info, warn};
 /// be attached to it. New tables + index only, additive and base-independent.
 /// `migrate_v41_to_v42` applies it.
 ///
+/// v51 = `sessions.parent_session_id` — durable link from a SubAgent (or other
+/// fan-out child) session back to the session that spawned it, so cost-ledger
+/// rows and the parent cost rollup can attribute delegated spend. PRAGMA-
+/// guarded ADD COLUMN + index, additive and base-independent.
+/// `migrate_v50_to_v51` applies it.
+///
 /// NOTE on the version drift: this constant intentionally stays at 14 even though
 /// the migration chain now runs to v19 (`migrate_v14_to_v15` … `migrate_v18_to_v19`).
 /// It is the stamp `init_spectral_db` applies to a *fresh* DB — those later steps
@@ -170,7 +176,10 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
             project_hint_wing TEXT,
             -- When this session last wrote a chat turn. A hint does not survive
             -- a long silence: see `permagent::session_wing::HINT_GAP_SECONDS`.
-            project_hint_last_turn_at TEXT
+            project_hint_last_turn_at TEXT,
+            -- Session that spawned this one (SubAgent / fan-out child). NULL for
+            -- top-level chats. See `apply_session_parent_schema` / v51.
+            parent_session_id TEXT
         )",
     )
     .execute(&mut *tx)
@@ -193,6 +202,9 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // `apply_sessions_schedule_id_index` / migrate_v48_to_v49 for the upgrade
     // path (this fresh-init copy keeps a brand-new DB from ever missing it).
     sqlx::query("CREATE INDEX idx_sessions_schedule_id ON sessions(schedule_id)")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("CREATE INDEX idx_sessions_parent ON sessions(parent_session_id)")
         .execute(&mut *tx)
         .await?;
 
@@ -829,6 +841,11 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // it would silently stop recording which signal winged each turn — the one
     // number this whole change is measured by.
     apply_session_project_hint_schema(pool).await?;
+
+    // Parent-session link for subagent cost rollup (schema v51). The column is
+    // already in the CREATE TABLE above on fresh installs; the guarded ADD is a
+    // no-op there and fills it in on older DBs that never ran the version step.
+    apply_session_parent_schema(pool).await?;
 
     info!(
         "Spectral schema v{} initialized successfully",
@@ -1777,6 +1794,46 @@ pub async fn migrate_v49_to_v50(pool: &Pool<Sqlite>) -> Result<()> {
         .execute(pool)
         .await?;
     info!("Spectral schema migrated to v50 (person aliases + merge log)");
+    Ok(())
+}
+
+/// Apply `sessions.parent_session_id` (schema v51): durable link from a child
+/// (SubAgent / fan-out) session back to the session that spawned it, so the
+/// cost ledger and parent rollup can attribute delegated spend.
+///
+/// PRAGMA-guarded `ADD COLUMN` + `CREATE INDEX IF NOT EXISTS`: additive,
+/// base-version independent, and safe on every boot. Shared by
+/// `migrate_v50_to_v51` and `init_spectral_db`.
+pub async fn apply_session_parent_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut tx = pool.begin().await?;
+
+    let has_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'parent_session_id'",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if has_column == 0 {
+        sqlx::query("ALTER TABLE sessions ADD COLUMN parent_session_id TEXT")
+            .execute(&mut *tx)
+            .await?;
+    }
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id)")
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// v51: `sessions.parent_session_id` for subagent cost rollup attribution.
+pub async fn migrate_v50_to_v51(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v50 -> v51 (sessions.parent_session_id)");
+    apply_session_parent_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (51)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v51 (sessions.parent_session_id)");
     Ok(())
 }
 
