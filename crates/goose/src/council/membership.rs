@@ -279,10 +279,8 @@ mod tests {
             (ollama(), ProviderType::Builtin),
         ];
         let seats = seats_from(&listed, &["ollama".into()]);
-        let names: Vec<&str> = members_from_seats(&seats)
-            .iter()
-            .map(|m| m.provider.as_str())
-            .collect();
+        let members = members_from_seats(&seats);
+        let names: Vec<&str> = members.iter().map(|m| m.provider.as_str()).collect();
         assert_eq!(names, vec!["openai"]);
     }
 

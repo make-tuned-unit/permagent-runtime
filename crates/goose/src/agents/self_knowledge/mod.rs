@@ -2648,6 +2648,12 @@ mod tests {
     // unless the prose distinguishes them. Its sibling aspects (`grow`, `trace`,
     // `brain`, …) need no entry only because they are single words the
     // tool-shaped-token scan never sees.
+    // `council_enabled` is the Council's config flag (~/.permagent/config.yaml),
+    // named in the council worker descriptor so the agent can tell the user which
+    // Features switch turns the weekly debate on — a setting, not a tool.
+    // `council_action` is a Decision Inbox kind (approve files a board card),
+    // named in the same descriptor so the agent does not invent a tool for filing
+    // those proposals.
     const NON_TOOL_PROSE_TOKENS: &[&str] = &[
         "sub_recipes",
         "worker_persona",
@@ -2656,6 +2662,8 @@ mod tests {
         "steward_scan_enabled",
         "recipe_author",
         "decision_inbox",
+        "council_enabled",
+        "council_action",
     ];
 
     /// Every tool name that exists in the runtime: the statically-derived

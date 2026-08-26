@@ -208,7 +208,9 @@ describe('FeaturesPanel', () => {
     expect(getCouncilMembers).toHaveBeenCalled();
     expect(container.textContent).toContain('Council seats');
     expect(container.textContent).toContain('Anthropic');
-    expect(container.textContent).not.toContain('Claude Code');
+    expect(container.querySelector('[data-testid="council-seat-anthropic"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="council-seat-ollama"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="council-seat-claude_code"]')).toBeNull();
     const boxes = Array.from(container.querySelectorAll('input[type="checkbox"]')) as HTMLInputElement[];
     expect(boxes).toHaveLength(2);
     await act(async () => { boxes[1].click(); });
