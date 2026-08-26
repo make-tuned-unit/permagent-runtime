@@ -3468,10 +3468,16 @@ mod tests {
         );
     }
 
-    /// Wire 4 negative: a FAIL verdict leaves the approve_review decision
-    /// open and the goal in Review — auto-approval only fires on pass.
+    /// Wire 4 negative: a FAIL verdict never auto-approves. What happens next
+    /// depends on the rework budget, and both arms are asserted — this one with
+    /// the budget in force (the default), the opt-out arm below with it off.
+    ///
+    /// With budget: the goal returns to Ready to be fixed, and the open
+    /// approve_review card is SUPERSEDED, not answered. Nobody decided
+    /// anything; the question "is this finished work good?" stopped applying
+    /// the moment the work went back to be rewritten.
     #[tokio::test]
-    async fn verifier_fail_leaves_review_decision_open() {
+    async fn verifier_fail_requeues_and_supersedes_the_review_decision() {
         use permagent::decisions::{self, NewDecision};
 
         let repo = tempfile::tempdir().unwrap();
@@ -3484,6 +3490,65 @@ mod tests {
             serde_json::json!({
                 "baseline_commit": baseline,
                 "declared_paths": ["src/**"],
+                "completion_checks": [
+                    {"type": "command_exit_zero", "cmd": "exit 1", "timeout_secs": 30}
+                ],
+            }),
+        )
+        .await;
+        let d = decisions::create_decision(
+            &pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(goal.id.clone()),
+                project_id: Some(goal.project_id.clone()),
+                headline: Some("Review the finished work on the failing goal".to_string()),
+                detail: Some("worker reported success".to_string()),
+                payload: serde_json::json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let (base_url, _h) = spawn_mock_ollama(MockMode::Respond(GOOD_PASS.to_string())).await;
+        let record = run_for_goal_with(&pool, &goal.id, &base_url).await.unwrap();
+        assert_eq!(record.status, VerdictStatus::Fail);
+
+        let d = decisions::get_decision(&pool, &d.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            d.status, "answered",
+            "a failing verdict must never resolve the review card as approved"
+        );
+        assert_eq!(d.status, "superseded");
+        assert_eq!(
+            state_of(&pool, &goal.id).await,
+            "ready",
+            "within the rework budget the goal goes back to be fixed"
+        );
+    }
+
+    /// The same negative with rework turned off (`refinement_budget: 0`): the
+    /// pre-budget behaviour exactly — the card stays open, unacted, and the
+    /// goal stays in Review waiting for a person.
+    #[tokio::test]
+    async fn verifier_fail_without_a_rework_budget_leaves_the_decision_open() {
+        use permagent::decisions::{self, NewDecision};
+
+        let repo = tempfile::tempdir().unwrap();
+        let baseline = init_repo(repo.path());
+
+        let pool = test_pool().await;
+        let goal = make_review_goal_in_columns(
+            &pool,
+            repo.path().to_str().unwrap(),
+            serde_json::json!({
+                "baseline_commit": baseline,
+                "declared_paths": ["src/**"],
+                "refinement_budget": 0,
                 "completion_checks": [
                     {"type": "command_exit_zero", "cmd": "exit 1", "timeout_secs": 30}
                 ],

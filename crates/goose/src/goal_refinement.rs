@@ -172,6 +172,20 @@ pub async fn apply(
             )
             .await
             .map_err(|e| e.to_string())?;
+
+            // The goal has gone back to be redone, so the open "is this
+            // finished work good?" card is moot — asking a person to approve
+            // work that a worker is at this moment rewriting is a question
+            // whose answer cannot be acted on. Superseded, not answered: nobody
+            // decided anything, the question stopped applying. Same discipline
+            // as a cancelled goal, which supersedes its open decisions rather
+            // than leaving a stale approve in the inbox.
+            //
+            // After the move, never before: a stale card on a goal that did
+            // requeue is a smaller wrong than a superseded card on a goal that
+            // never moved.
+            supersede_stale_review(pool, card_id, spent, budget).await;
+
             Ok(Applied::Requeued { spent, budget })
         }
         RefinementDecision::Park { spent, budget } => {
@@ -211,6 +225,43 @@ pub async fn apply(
                 decision_id,
             })
         }
+    }
+}
+
+/// Close the goal's open `approve_review` card when its work goes back for
+/// rework. Failure-tolerant and loud: the requeue itself has already committed,
+/// and a warn beats unwinding a correct state change.
+async fn supersede_stale_review(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    spent: u64,
+    budget: u64,
+) {
+    let open = match decisions::find_open_decision_for_goal(pool, card_id, "approve_review").await {
+        Ok(Some(d)) => d,
+        Ok(None) => return,
+        Err(e) => {
+            tracing::warn!(
+                target: "permagent::goal_refinement",
+                card_id = %card_id,
+                "could not look up the goal's open review decision: {e}"
+            );
+            return;
+        }
+    };
+    if let Err(e) = decisions::supersede_decision(
+        pool,
+        &open.id,
+        &format!("completion checks failed; goal requeued for rework {spent}/{budget}"),
+    )
+    .await
+    {
+        tracing::warn!(
+            target: "permagent::goal_refinement",
+            card_id = %card_id,
+            decision_id = %open.id,
+            "requeued the goal but left its review decision open: {e}"
+        );
     }
 }
 
@@ -488,6 +539,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_requeue_closes_the_review_card_it_just_invalidated() {
+        // The card asked "is this finished work good?". The work is being
+        // redone, so the question no longer applies — and a person answering
+        // "approve" on it would be approving a diff that no longer exists.
+        let pool = test_pool().await;
+        let card = goal_in_review(&pool, json!({REFINEMENT_BUDGET_KEY: 2})).await;
+        let decision = decisions::create_decision(
+            &pool,
+            decisions::NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(card.id.clone()),
+                project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Review the finished work".to_string()),
+                detail: Some("worker reported success".to_string()),
+                payload: json!({}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        apply(
+            &pool,
+            &card.id,
+            PERSONAL_PROJECT_ID,
+            &card.title,
+            &card.metadata_json,
+            "cargo test failed",
+            DEFAULT_REFINEMENT_BUDGET,
+        )
+        .await
+        .unwrap();
+
+        let after = decisions::get_decision(&pool, &decision.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.status, "superseded");
+        assert_ne!(
+            after.status, "answered",
+            "a requeue must never look like someone approved the work"
+        );
+        assert!(
+            after.acted_by.is_none() || after.acted_by.as_deref() == Some(decisions::ACTOR_SYSTEM),
+            "nobody decided anything: {:?}",
+            after.acted_by
+        );
+        assert!(
+            after
+                .answer_note
+                .as_deref()
+                .is_some_and(|n| n.contains("rework 1/2")),
+            "the note says why it stopped applying: {:?}",
+            after.answer_note
+        );
+    }
+
+    #[tokio::test]
     async fn exhaustion_parks_with_the_whole_history() {
         let pool = test_pool().await;
         let card = goal_in_review(
@@ -540,7 +649,10 @@ mod tests {
             detail.contains("round one: clippy screamed"),
             "the card carries every round, not just the last: {detail}"
         );
-        assert!(detail.contains("round two: clippy still screams"), "{detail}");
+        assert!(
+            detail.contains("round two: clippy still screams"),
+            "{detail}"
+        );
 
         assert_eq!(refinement_history(&updated.metadata_json).len(), 2);
     }
