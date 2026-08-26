@@ -2,6 +2,7 @@ use anstream::println;
 use bat::WrappingMode;
 use console::{measure_text_width, style, Color, Term};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use permagent::after_turn::REVIEW_PARK_PREFIX;
 use permagent::config::Config;
 use permagent::conversation::message::{
     ActionRequiredData, Message, MessageContent, SystemNotificationContent, SystemNotificationType,
@@ -217,6 +218,28 @@ pub fn set_thinking_message(s: &String) {
     }
 }
 
+/// Say out loud that a turn ended WITHOUT an independent review, and why.
+///
+/// The `ReviewerMandate` after-turn hook (`permagent::after_turn`) parks a turn
+/// rather than letting it finish silently when no cross-family reviewer is
+/// available, or when the spend gate refuses one (an unpriced model is refused,
+/// never billed as free). That reason arrives as ordinary assistant text
+/// stamped with `REVIEW_PARK_PREFIX`; this renders it as its own labelled
+/// block — mirroring `render_extension_error`'s header-plus-dim-detail shape —
+/// so "review unavailable" cannot be mistaken for part of the answer.
+///
+/// There is deliberately no counterpart for the review that DID run: its
+/// verdict comes back as the `delegate` subagent's own tool response, which the
+/// session already renders, and the recipe requires the model to report it.
+/// Printing it a second time here would be the same fact in two places.
+pub fn render_review_notice(reason: &str) {
+    println!();
+    println!("  {} no independent review", style("●").yellow());
+    println!();
+    println!("{}", style(reason).dim());
+    println!();
+}
+
 pub fn render_message(message: &Message, debug: bool) {
     let theme = get_theme();
 
@@ -233,7 +256,10 @@ pub fn render_message(message: &Message, debug: bool) {
                     println!("action_required(elicitation_response): {}", id)
                 }
             },
-            MessageContent::Text(text) => print_markdown(&text.text, theme),
+            MessageContent::Text(text) => match text.text.strip_prefix(REVIEW_PARK_PREFIX) {
+                Some(reason) => render_review_notice(reason),
+                None => print_markdown(&text.text, theme),
+            },
             MessageContent::ToolRequest(req) => render_tool_request(req, theme, debug),
             MessageContent::ToolResponse(resp) => render_tool_response(resp, debug),
             MessageContent::Image(image) => {
@@ -313,7 +339,10 @@ pub fn render_message_streaming(
 
         match content {
             MessageContent::Text(text) => {
-                if let Some(safe_content) = buffer.push(&text.text) {
+                if let Some(reason) = text.text.strip_prefix(REVIEW_PARK_PREFIX) {
+                    flush_markdown_buffer(buffer, theme);
+                    render_review_notice(reason);
+                } else if let Some(safe_content) = buffer.push(&text.text) {
                     print_markdown(&safe_content, theme);
                 }
             }
@@ -1743,6 +1772,24 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::env;
+
+    /// The seam `render_message`/`render_message_streaming` match on: a
+    /// `ReviewerMandate` `Park` reason (always `REVIEW_PARK_PREFIX` + reason)
+    /// strips cleanly to the reason text; anything else does not match, and
+    /// falls through to ordinary markdown rendering.
+    #[test]
+    fn review_park_prefix_strips_to_the_bare_reason() {
+        let reason = "no cross-family reviewer is available";
+        let text = format!("{REVIEW_PARK_PREFIX}{reason}");
+        assert_eq!(text.strip_prefix(REVIEW_PARK_PREFIX), Some(reason));
+        assert_eq!("Here is the answer.".strip_prefix(REVIEW_PARK_PREFIX), None);
+    }
+
+    /// Smoke test: the notice renders without panicking.
+    #[test]
+    fn render_review_notice_renders() {
+        render_review_notice("no cross-family reviewer is available");
+    }
 
     #[test]
     fn accepted_user_turn_has_a_stable_multiline_transcript() {

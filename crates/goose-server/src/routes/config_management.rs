@@ -20,6 +20,7 @@ use permagent::providers::catalog::{
     ProviderTemplate,
 };
 use permagent::providers::create_with_default_model;
+use permagent::providers::get_from_registry;
 use permagent::providers::providers as get_providers;
 use permagent::{
     agents::execute_commands, agents::ExtensionConfig, config::permission::PermissionLevel,
@@ -132,6 +133,10 @@ fn default_requires_auth() -> bool {
 #[derive(Deserialize, ToSchema)]
 pub struct CheckProviderRequest {
     pub provider: String,
+    /// Optional typed key for a validate-without-save check. Used only when no
+    /// keychain value exists (keychain wins over env). Never persisted.
+    #[serde(default)]
+    pub api_key: Option<String>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -1240,8 +1245,30 @@ pub async fn update_custom_provider(
     request_body = CheckProviderRequest,
 )]
 pub async fn check_provider(
-    Json(CheckProviderRequest { provider }): Json<CheckProviderRequest>,
+    Json(CheckProviderRequest { provider, api_key }): Json<CheckProviderRequest>,
 ) -> Result<(), ErrorResponse> {
+    let overlay = match api_key.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(typed) => {
+            let entry = get_from_registry(&provider).await.map_err(|err| {
+                ErrorResponse::bad_request(format!("Provider '{}' check failed: {}", provider, err))
+            })?;
+            entry
+                .metadata()
+                .config_keys
+                .iter()
+                .find(|k| k.secret)
+                .map(|k| {
+                    let prev = std::env::var(&k.name).ok();
+                    std::env::set_var(&k.name, typed);
+                    EnvOverlay {
+                        name: k.name.clone(),
+                        prev,
+                    }
+                })
+        }
+        None => None,
+    };
+
     let runtime = tokio::runtime::Handle::current();
     let checked_provider = provider.clone();
 
@@ -1259,7 +1286,25 @@ pub async fn check_provider(
             .map_err(|err| err.to_string())
     });
 
-    await_provider_check(&provider, PROVIDER_CHECK_TIMEOUT, check).await
+    let result = await_provider_check(&provider, PROVIDER_CHECK_TIMEOUT, check).await;
+    drop(overlay);
+    result
+}
+
+/// Temporary env overlay for validate-without-save. Restored on drop so a
+/// typed key never leaks into later requests. Keychain still wins over env.
+struct EnvOverlay {
+    name: String,
+    prev: Option<String>,
+}
+
+impl Drop for EnvOverlay {
+    fn drop(&mut self) {
+        match &self.prev {
+            Some(v) => std::env::set_var(&self.name, v),
+            None => std::env::remove_var(&self.name),
+        }
+    }
 }
 
 async fn await_provider_check(

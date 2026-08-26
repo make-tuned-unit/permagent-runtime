@@ -4,6 +4,13 @@ What this measures, how, and every result so far — including the ones that
 didn't flatter us. The point of this file is that a claim like "the harness
 is cost-effective" is either backed by a row here or it is marketing.
 
+This file measures **our own** task suite, which nobody else runs — good for
+tracking ourselves against ourselves, useless for credibility with anyone
+outside. For a **recognised public suite**, see
+[`POLYGLOT_PUBLIC.md`](POLYGLOT_PUBLIC.md) (Aider polyglot) and the design
+behind it in
+[`docs/research/HARNESS_PUBLIC_BENCHMARK_2026-08-25.md`](../research/HARNESS_PUBLIC_BENCHMARK_2026-08-25.md).
+
 ## Method
 
 `scripts/bench/harness_bench.py` drives the REAL goal pipeline — card →

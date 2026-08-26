@@ -52,6 +52,10 @@ pub struct SubagentRunParams {
 }
 
 pub async fn run_subagent_task(params: SubagentRunParams) -> Result<String, anyhow::Error> {
+    crate::providers::inflight::background(run_subagent_task_inner(params)).await
+}
+
+async fn run_subagent_task_inner(params: SubagentRunParams) -> Result<String, anyhow::Error> {
     let return_last_only = params.return_last_only;
     let (messages, final_output) = get_agent_messages(params).await.map_err(|e| {
         ErrorData::new(
@@ -81,7 +85,7 @@ where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
-    tokio::spawn(work)
+    tokio::spawn(crate::providers::inflight::background(work))
 }
 
 fn extract_response_text(messages: &Conversation, return_last_only: bool) -> String {

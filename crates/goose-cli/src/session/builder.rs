@@ -342,6 +342,42 @@ struct ResolvedProviderConfig {
     model_config: permagent::model::ModelConfig,
 }
 
+/// The first source that actually holds a value, in the order given.
+///
+/// Extracted so the PRECEDENCE ITSELF is unit-testable: the order of these five
+/// sources is the whole contract of [`resolve_provider_and_model`], and it is a
+/// contract that was previously only expressed as a chain of `.or_else` calls no
+/// test could reach without a process-global config and a live provider. A
+/// whitespace-only value counts as unset — a config key edited down to `""` is
+/// not a provider named "space".
+fn first_configured(sources: [Option<String>; 5]) -> Option<String> {
+    sources
+        .into_iter()
+        .flatten()
+        .find(|value| !value.trim().is_empty())
+}
+
+/// The coding harness's own model route, or `None` when the operator's session
+/// model should be used instead. Warns — once, loudly — on a half-configured
+/// pair, because `harness_provider` without `harness_model` cannot route and is
+/// always a typo rather than an intention.
+fn harness_role_route(config: &Config) -> Option<permagent::config::RoleModel> {
+    use permagent::config::{ModelRole, RoleModelSource};
+
+    let resolved = permagent::config::resolve_role_model(ModelRole::Harness, |key| {
+        config.get_param::<String>(key).ok()
+    });
+    if resolved.source == RoleModelSource::HalfConfigured {
+        output::render_error(&format!(
+            "Only one of `{}`/`{}` is set. A half-configured pair cannot route, so it is being \
+             ignored; set both, or set one to `session` to run the harness on your session model.",
+            ModelRole::Harness.provider_key(),
+            ModelRole::Harness.model_key(),
+        ));
+    }
+    resolved.route
+}
+
 fn resolve_provider_and_model(
     session_config: &SessionBuilderConfig,
     config: &Config,
@@ -353,27 +389,44 @@ fn resolve_provider_and_model(
         .as_ref()
         .and_then(|r| r.settings.as_ref());
 
-    let provider_name = session_config
-        .provider
-        .clone()
-        .or(saved_provider)
-        .or_else(|| recipe_settings.and_then(|s| s.goose_provider.clone()))
-        .or_else(|| config.get_goose_provider().ok())
-        .unwrap_or_else(|| {
-            output::render_error("No provider configured. Run 'goose configure' first.");
-            process::exit(1);
-        });
+    // The coding harness has its own measured model default (`harness_provider`
+    // / `harness_model`, see `permagent::config::model_roles` and
+    // docs/research/MODEL_DEFAULTS_BENCH_2026-08-25.md). It is read ONLY for the
+    // coding recipe — an ordinary `permagent run` is a session, not a harness —
+    // and sits below the recipe's own `settings:` block and above
+    // GOOSE_PROVIDER/GOOSE_MODEL, so a `--provider/--model` flag, a resumed
+    // session and a recipe that pins its own model all still win.
+    let harness_route = session_config
+        .recipe
+        .as_ref()
+        .map(crate::recipes::builtin_recipes::is_coding_harness_recipe)
+        .unwrap_or(false)
+        .then(|| harness_role_route(config))
+        .flatten();
 
-    let model_name = session_config
-        .model
-        .clone()
-        .or_else(|| saved_model_config.as_ref().map(|mc| mc.model_name.clone()))
-        .or_else(|| recipe_settings.and_then(|s| s.goose_model.clone()))
-        .or_else(|| config.get_goose_model().ok())
-        .unwrap_or_else(|| {
-            output::render_error("No model configured. Run 'goose configure' first.");
-            process::exit(1);
-        });
+    let provider_name = first_configured([
+        session_config.provider.clone(),
+        saved_provider,
+        recipe_settings.and_then(|s| s.goose_provider.clone()),
+        harness_route.as_ref().map(|r| r.provider.clone()),
+        config.get_goose_provider().ok(),
+    ])
+    .unwrap_or_else(|| {
+        output::render_error("No provider configured. Run 'goose configure' first.");
+        process::exit(1);
+    });
+
+    let model_name = first_configured([
+        session_config.model.clone(),
+        saved_model_config.as_ref().map(|mc| mc.model_name.clone()),
+        recipe_settings.and_then(|s| s.goose_model.clone()),
+        harness_route.as_ref().map(|r| r.model.clone()),
+        config.get_goose_model().ok(),
+    ])
+    .unwrap_or_else(|| {
+        output::render_error("No model configured. Run 'goose configure' first.");
+        process::exit(1);
+    });
 
     let model_config = if session_config.resume
         && saved_model_config
@@ -577,6 +630,41 @@ async fn resolve_and_load_extensions(
     .await
 }
 
+/// Build the `repo_map` system-prompt extra for a coding-harness session.
+///
+/// Pure and total: exactly one of two mutually exclusive wordings. The
+/// recipe's instructions state, as a flat fact, that a repo map is already in
+/// the model's context — this function is what has to make that statement
+/// true, or retract it, on every session; there is no third path where the
+/// prompt stays silent and the recipe's claim goes unchecked. Extracted out
+/// of the session-building side effects so both branches are unit-testable
+/// without a real session or a Brain.
+fn orientation_block(map: Option<String>) -> String {
+    match map {
+        Some(block) => format!(
+            "{block}\n\nThis map is your starting point for this session — look symbols and \
+             files up in it before reading whole files. Use `map_query`, `analyze`, and \
+             `search` to go deeper into anything it doesn't cover in enough detail; do not \
+             re-derive it by hand with ls/cat/grep."
+        ),
+        None => "No repo map is in context for this session (mapping was skipped, disabled, or \
+                  found nothing to map here). Orient with `tree`, `map_query` (the project's \
+                  stored code map, if one has been indexed), and `search` before reading whole \
+                  files."
+            .to_string(),
+    }
+}
+
+/// Token budget for the coding harness's ranked-tags repo map.
+///
+/// Was 1024. Measured 2026-08-25 against a real Next.js checkout: 1024 tokens
+/// bought 40 files and 71 symbols — which did not reach the components the
+/// session actually needed to edit, so the map could not answer the question it
+/// was asked and the model shelled out to read files by hand instead. 4096 is
+/// still small next to the rest of the prompt and covers a mid-sized app.
+/// `PERMAGENT_CODING_REPO_MAP_TOKENS` overrides it; 0 still disables mapping.
+const DEFAULT_CODING_REPO_MAP_TOKENS: usize = 4096;
+
 async fn configure_session_prompts(
     session: &CliSession,
     config: &Config,
@@ -602,6 +690,16 @@ async fn configure_session_prompts(
     // permagent::cost_router::cache). The working dir is already the session's
     // root at this point (build_session set it before calling us), so cwd is the
     // repo to map.
+    //
+    // The recipe's instructions (permagent-coding.yaml) assert as fact that a
+    // repo map is already in the model's context. `coding_context_block` can
+    // legitimately return `None` — an empty or unsupported tree, mapping
+    // disabled via the budget, or a remembered per-repo decline — and until
+    // now nothing downstream checked for that: the recipe's claim went
+    // unverified either way. This block now ALWAYS lands an orientation extra
+    // for a coding-harness session — one of two mutually exclusive wordings
+    // (`orientation_block` below) — so the prompt never claims a map that was
+    // not actually injected.
     if session_config
         .recipe
         .as_ref()
@@ -610,20 +708,24 @@ async fn configure_session_prompts(
     {
         let budget = config
             .get_param::<usize>("PERMAGENT_CODING_REPO_MAP_TOKENS")
-            .unwrap_or(1024);
-        if budget > 0 {
-            // Interactive sessions get an explicit offer: mapping is the cost
-            // lever (the agent orients from ranked signatures instead of
-            // reading whole files), and surfacing it makes that legible + lets
-            // the user skip the whole-repo parse on a tree they know is huge.
-            // Non-interactive runs keep the silent auto-map.
-            use std::io::IsTerminal;
-            let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+            .unwrap_or(DEFAULT_CODING_REPO_MAP_TOKENS);
+        // Interactive sessions get an explicit offer: mapping is the cost
+        // lever (the agent orients from ranked signatures instead of
+        // reading whole files), and surfacing it makes that legible + lets
+        // the user skip the whole-repo parse on a tree they know is huge.
+        // Non-interactive runs keep the silent auto-map. Only asked when
+        // there is a budget to map into at all.
+        use std::io::IsTerminal;
+        let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+        let root = std::env::current_dir().ok();
+        let wants_map = if budget == 0 {
+            false
+        } else {
             // Remember the answer PER REPO. The map itself is mtime-cached, so
             // re-asking every single session was pure friction — you answer
             // the same way for the same tree every time. First run asks; after
             // that it just says what it did.
-            let repo_key = std::env::current_dir().ok().map(|p| {
+            let repo_key = root.as_ref().map(|p| {
                 use std::hash::{Hash, Hasher};
                 let mut h = std::collections::hash_map::DefaultHasher::new();
                 p.to_string_lossy().hash(&mut h);
@@ -632,7 +734,7 @@ async fn configure_session_prompts(
             let remembered = repo_key
                 .as_ref()
                 .and_then(|k| config.get_param::<bool>(k).ok());
-            let wants_map = match (interactive, remembered) {
+            match (interactive, remembered) {
                 (_, Some(prev)) => prev,
                 (true, None) => {
                     let answer = cliclack::confirm(format!(
@@ -650,36 +752,79 @@ async fn configure_session_prompts(
                     answer
                 }
                 (false, None) => true,
-            };
-            if wants_map {
-                if let Ok(root) = std::env::current_dir() {
-                    if let Some(block) =
-                        permagent::agents::platform_extensions::analyze::repo_map::coding_context_block(
-                            &root, budget,
-                        )
-                    {
-                        if interactive {
-                            // ~4 chars/token — the same heuristic the budget
-                            // fill uses; this is a report, not an invoice.
-                            let approx_tokens = block.len() / 4;
-                            let _ = cliclack::log::success(format!(
-                                "Codebase mapped: ~{approx_tokens} tokens of ranked symbol \
-                                 signatures pinned into context (cached by file mtime; \
-                                 tune with PERMAGENT_CODING_REPO_MAP_TOKENS)."
-                            ));
-                        }
-                        session
-                            .agent
-                            .extend_system_prompt("repo_map".to_string(), block)
+            }
+        };
+
+        let mut map_block: Option<String> = None;
+        let mut skip_reason: &str = "PERMAGENT_CODING_REPO_MAP_TOKENS is 0 (mapping disabled)";
+        if wants_map {
+            if let Some(ref root) = root {
+                map_block =
+                    permagent::agents::platform_extensions::analyze::repo_map::coding_context_block(
+                        root, budget,
+                    );
+                skip_reason = "ranked-tags map returned no symbols for this tree";
+                // Ranked-tags mapping needs a parseable, PageRank-worthy tree.
+                // When it comes back empty, fall back to whatever code map the
+                // project already has stored in the Brain from a prior
+                // analyze/index-code run, rather than leaving the session with
+                // nothing at all.
+                if map_block.is_none() {
+                    if let Ok(pool) = session.agent.config.session_manager.pool_clone().await {
+                        map_block =
+                            permagent::agents::platform_extensions::analyze::stored_code_map_block(
+                                &pool,
+                                Some(root.as_path()),
+                            )
                             .await;
-                    } else if interactive {
-                        let _ = cliclack::log::info(
-                            "No mappable source found here — skipping the repo map.",
-                        );
+                        if map_block.is_none() {
+                            skip_reason =
+                                "no ranked-tags map and no stored Brain code map for this project";
+                        }
                     }
                 }
+            } else {
+                skip_reason = "could not resolve the session's working directory";
+            }
+        } else if budget > 0 {
+            skip_reason = "mapping was declined for this repo";
+        }
+
+        if interactive {
+            match &map_block {
+                Some(block) => {
+                    // ~4 chars/token — the same heuristic the budget fill
+                    // uses; this is a report, not an invoice.
+                    let approx_tokens = block.len() / 4;
+                    let _ = cliclack::log::success(format!(
+                        "Codebase mapped: ~{approx_tokens} tokens of ranked symbol \
+                         signatures pinned into context (cached by file mtime; \
+                         tune with PERMAGENT_CODING_REPO_MAP_TOKENS)."
+                    ));
+                }
+                None if wants_map => {
+                    let _ = cliclack::log::info(
+                        "No mappable source found here — skipping the repo map.",
+                    );
+                }
+                None => {}
             }
         }
+        if map_block.is_none() {
+            // Visible in ~/.permagent/logs/cli/*.log — the interactive message
+            // above only reaches a terminal, and a non-interactive run (or a
+            // recipe's `run --interactive` capture reviewed after the fact)
+            // needs this recorded somewhere durable.
+            tracing::warn!(
+                root = %root.as_ref().map(|p| p.display().to_string()).unwrap_or_default(),
+                reason = skip_reason,
+                "coding harness session starting without a repo map"
+            );
+        }
+        session
+            .agent
+            .extend_system_prompt("repo_map".to_string(), orientation_block(map_block))
+            .await;
     }
 
     let system_prompt_file: Option<String> = config.get_param("GOOSE_SYSTEM_PROMPT_FILE_PATH").ok();
@@ -852,6 +997,74 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
 mod tests {
     use super::*;
 
+    fn s(v: &str) -> Option<String> {
+        Some(v.to_string())
+    }
+
+    /// The five sources in `resolve_provider_and_model`'s order:
+    /// CLI flag, resumed session, recipe `settings:`, the harness role default,
+    /// then `GOOSE_PROVIDER`/`GOOSE_MODEL`.
+    #[test]
+    fn a_cli_flag_outranks_every_other_source() {
+        assert_eq!(
+            first_configured([
+                s("cli"),
+                s("saved"),
+                s("recipe"),
+                s("harness"),
+                s("session")
+            ]),
+            s("cli")
+        );
+    }
+
+    #[test]
+    fn a_resumed_session_outranks_the_recipe_and_the_harness_default() {
+        assert_eq!(
+            first_configured([None, s("saved"), s("recipe"), s("harness"), s("session")]),
+            s("saved")
+        );
+    }
+
+    #[test]
+    fn a_recipe_that_pins_its_own_model_outranks_the_harness_default() {
+        assert_eq!(
+            first_configured([None, None, s("recipe"), s("harness"), s("session")]),
+            s("recipe")
+        );
+    }
+
+    #[test]
+    fn the_harness_default_outranks_the_session_model() {
+        // `harness_provider`/`harness_model` are read only for the coding
+        // recipe, and when they are set they are the point.
+        assert_eq!(
+            first_configured([None, None, None, s("harness"), s("session")]),
+            s("harness")
+        );
+    }
+
+    #[test]
+    fn the_session_model_is_the_fallback_when_no_harness_route_applies() {
+        // `harness_role_route` returns None whenever the operator has a session
+        // model and no harness keys — the case that must not change behaviour
+        // for anyone who already configured GOOSE_MODEL.
+        assert_eq!(
+            first_configured([None, None, None, None, s("session")]),
+            s("session")
+        );
+    }
+
+    #[test]
+    fn nothing_configured_anywhere_is_none_not_an_empty_string() {
+        assert_eq!(first_configured([None, None, None, None, None]), None);
+        assert_eq!(
+            first_configured([s("   "), s(""), None, None, s("session")]),
+            s("session"),
+            "a blanked-out key is unset, not a provider named whitespace"
+        );
+    }
+
     #[test]
     fn test_session_builder_config_creation() {
         let config = SessionBuilderConfig {
@@ -938,5 +1151,53 @@ mod tests {
         assert_eq!(truncate_with_ellipsis("hello world", 5), "hello…");
 
         assert_eq!(truncate_with_ellipsis("", 5), "");
+    }
+
+    // The recipe's instructions state as fact that a repo map is already in
+    // context. `orientation_block` is what has to keep that statement honest:
+    // the "map present" wording must only ever appear alongside an actual
+    // injected map, and the "no map" wording must never claim one exists.
+
+    #[test]
+    fn orientation_block_with_a_map_includes_it_and_says_to_go_deeper() {
+        let out = orientation_block(Some("Codebase map (pre-indexed...):\nsrc/\n".to_string()));
+        assert!(out.contains("Codebase map (pre-indexed"));
+        assert!(out.contains("starting point"));
+        assert!(out.contains("map_query"));
+        // Must not also carry the "no map" claim.
+        assert!(!out.contains("No repo map is in context"));
+    }
+
+    #[test]
+    fn orientation_block_without_a_map_never_claims_one_is_present() {
+        let out = orientation_block(None);
+        assert!(out.contains("No repo map is in context"));
+        assert!(out.contains("map_query"));
+        assert!(out.contains("tree"));
+        // Wording unique to the "map present" branch must not leak in here —
+        // that claim is only honest when a map was actually injected.
+        assert!(!out.contains("starting point"));
+        assert!(!out.contains("Codebase map (pre-indexed"));
+        assert!(!out.contains("do not re-derive"));
+    }
+
+    /// The two branches must be mutually exclusive over a range of map
+    /// contents, not just the two examples above — neither wording is a
+    /// substring of the other regardless of what the map body itself says.
+    #[test]
+    fn orientation_block_branches_are_mutually_exclusive() {
+        for map in [
+            "".to_string(),
+            "src/\n  main.rs\n".to_string(),
+            "No repo map is in context — this text is part of the MAP CONTENT, not the \
+             wrapper, and must not fool the mutual-exclusion check."
+                .to_string(),
+        ] {
+            let with_map = orientation_block(Some(map));
+            let without_map = orientation_block(None);
+            assert!(with_map.contains("starting point"));
+            assert!(without_map.contains("No repo map is in context"));
+            assert!(!without_map.contains("starting point"));
+        }
     }
 }

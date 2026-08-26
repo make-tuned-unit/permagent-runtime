@@ -488,10 +488,12 @@ fn security_report_markdown(project_name: &str, current: &[Finding], fresh: &[Fi
 /// writes `findings.sarif` per run; SARIF is preferred over its bespoke JSON
 /// because it is schema-validated and dedupes on CWE.
 /// The scanner's model, as a LiteLLM model string (`strix_llm` in config).
-/// Defaults to Haiku: sweeps recur on the user's credits, and finding exposed
-/// secrets and vulnerable dependencies does not need a frontier model.
+/// Defaults to GPT-5.4-mini: sweeps recur on the user's credits, and finding
+/// exposed secrets does not need a frontier model. Haiku was the previous
+/// default; Anthropic credit exhaustion (and a stale 3.5-Sonnet pin on the
+/// reviewer) took the Guard and the independent-review gate down together.
 const STRIX_LLM_KEY: &str = "strix_llm";
-const DEFAULT_STRIX_LLM: &str = "anthropic/claude-haiku-4-5-20251001";
+const DEFAULT_STRIX_LLM: &str = "openai/gpt-5.4-mini";
 
 /// The cloud model the scanner drives — the destination the user's source
 /// actually reaches, and so what the egress audit records.
@@ -499,6 +501,44 @@ fn strix_model() -> String {
     permagent::config::Config::global()
         .get_param::<String>(STRIX_LLM_KEY)
         .unwrap_or_else(|_| DEFAULT_STRIX_LLM.to_string())
+}
+
+/// Which keychain secret fills `LLM_API_KEY` for a LiteLLM `provider/model` string.
+/// `deepseek` and `custom_deepseek` share `DEEPSEEK_API_KEY`; an unknown prefix
+/// is left unset rather than guessed.
+fn strix_llm_secret_name(model: &str) -> Option<&'static str> {
+    match model.split('/').next().unwrap_or_default() {
+        "anthropic" => Some("ANTHROPIC_API_KEY"),
+        "openai" => Some("OPENAI_API_KEY"),
+        "groq" => Some("GROQ_API_KEY"),
+        "gemini" | "google" => Some("GOOGLE_API_KEY"),
+        "deepseek" | "custom_deepseek" => Some("DEEPSEEK_API_KEY"),
+        "moonshot" => Some("MOONSHOT_API_KEY"),
+        _ => None,
+    }
+}
+
+/// Last non-empty line of stderr, falling back to stdout. Strix often prints
+/// the real failure on stdout (or nothing at all), which used to log as
+/// `scanner exited exit status: 2: ` with a blank reason.
+fn scanner_failure_detail(output: &std::process::Output) -> String {
+    let last_nonempty = |bytes: &[u8]| {
+        String::from_utf8_lossy(bytes)
+            .lines()
+            .map(str::trim)
+            .rfind(|l| !l.is_empty())
+            .unwrap_or("")
+            .to_string()
+    };
+    let stderr = last_nonempty(&output.stderr);
+    if !stderr.is_empty() {
+        return stderr;
+    }
+    let stdout = last_nonempty(&output.stdout);
+    if !stdout.is_empty() {
+        return stdout;
+    }
+    "(scanner printed nothing)".to_string()
 }
 
 /// Build the scanner's LLM environment from Permagent's own config/keychain,
@@ -515,13 +555,7 @@ fn scanner_env() -> Vec<(&'static str, String)> {
         env.push(("STRIX_LLM", model.clone()));
     }
     if std::env::var("LLM_API_KEY").is_err() {
-        let secret_key = match model.split('/').next().unwrap_or_default() {
-            "anthropic" => Some("ANTHROPIC_API_KEY"),
-            "openai" => Some("OPENAI_API_KEY"),
-            "groq" => Some("GROQ_API_KEY"),
-            "gemini" | "google" => Some("GOOGLE_API_KEY"),
-            _ => None,
-        };
+        let secret_key = strix_llm_secret_name(&model);
         if let Some(name) = secret_key {
             if let Ok(key) = config.get_secret::<String>(name) {
                 env.push(("LLM_API_KEY", key));
@@ -1019,10 +1053,7 @@ async fn scan_project_remote(
         return Err(format!(
             "scanner exited {}: {}",
             output.status,
-            String::from_utf8_lossy(&output.stderr)
-                .lines()
-                .last()
-                .unwrap_or_default()
+            scanner_failure_detail(&output)
         ));
     }
     rsync_strix_back(target, ssh_target).await?;
@@ -1076,10 +1107,7 @@ async fn scan_project_local(target: &std::path::Path) -> Result<Vec<Finding>, St
         return Err(format!(
             "scanner exited {}: {}",
             output.status,
-            String::from_utf8_lossy(&output.stderr)
-                .lines()
-                .last()
-                .unwrap_or_default()
+            scanner_failure_detail(&output)
         ));
     }
     let sarif = find_sarif(target).ok_or_else(|| "scan produced no findings.sarif".to_string())?;
@@ -1335,6 +1363,52 @@ mod tests {
         assert!(preflight_should_brief(None, "docker down"));
         assert!(!preflight_should_brief(Some("docker down"), "docker down"));
         assert!(preflight_should_brief(Some("docker down"), "strix missing"));
+    }
+
+    #[test]
+    fn strix_llm_secret_covers_openai_and_deepseek() {
+        assert_eq!(
+            strix_llm_secret_name("openai/gpt-5.4-mini"),
+            Some("OPENAI_API_KEY")
+        );
+        assert_eq!(
+            strix_llm_secret_name("deepseek/deepseek-chat"),
+            Some("DEEPSEEK_API_KEY")
+        );
+        assert_eq!(
+            strix_llm_secret_name("custom_deepseek/deepseek-chat"),
+            Some("DEEPSEEK_API_KEY")
+        );
+        assert_eq!(strix_llm_secret_name("unknown/model"), None);
+        assert_eq!(DEFAULT_STRIX_LLM, "openai/gpt-5.4-mini");
+    }
+
+    #[test]
+    fn scanner_failure_prefers_stderr_then_stdout() {
+        let with_stderr = std::process::Output {
+            status: std::os::unix::process::ExitStatusExt::from_raw(2 << 8),
+            stdout: b"noise\n".to_vec(),
+            stderr: b"\nAuthentication Error, Model not found\n".to_vec(),
+        };
+        assert_eq!(
+            scanner_failure_detail(&with_stderr),
+            "Authentication Error, Model not found"
+        );
+        let stdout_only = std::process::Output {
+            status: std::os::unix::process::ExitStatusExt::from_raw(2 << 8),
+            stdout: b"LiteLLM: 404 model not found\n".to_vec(),
+            stderr: b"\n".to_vec(),
+        };
+        assert_eq!(
+            scanner_failure_detail(&stdout_only),
+            "LiteLLM: 404 model not found"
+        );
+        let empty = std::process::Output {
+            status: std::os::unix::process::ExitStatusExt::from_raw(2 << 8),
+            stdout: b"".to_vec(),
+            stderr: b"".to_vec(),
+        };
+        assert_eq!(scanner_failure_detail(&empty), "(scanner printed nothing)");
     }
 
     /// Preflight failure files ONE briefing, not one per 15-minute tick — and

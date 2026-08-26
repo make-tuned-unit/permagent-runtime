@@ -96,13 +96,15 @@ async fn the_growth_action_lifecycle_holds_through_the_router() {
     let action = growth_store::upsert_suggested(&pool, &project.id, &seed("Add FAQPage schema"))
         .await
         .unwrap();
+    let frozen = baseline().to_string();
     growth_store::record_verification(
         &pool,
         &project.id,
         &action.id,
-        "git_commit",
-        "2026-08-12T00:00:00Z",
-        Some(&baseline().to_string()),
+        growth_store::VerificationEvidence {
+            baseline_json: Some(&frozen),
+            ..growth_store::VerificationEvidence::new("git_commit", "2026-08-12T00:00:00Z")
+        },
     )
     .await
     .unwrap();

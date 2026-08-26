@@ -17,7 +17,8 @@ use permagent_eval::cost::LedgerCostReader;
 use permagent_eval::invocation::build_invocation;
 use permagent_eval::report::{render_json, render_markdown, render_text, TierReport};
 use permagent_eval::runner::{
-    run_tier, Deps, RunConfig, SubprocessHarnessRunner, SubprocessOracleRunner,
+    run_tier, BudgetTracker, Deps, RunConfig, SubprocessHarnessRunner, SubprocessOracleRunner,
+    SubprocessRecipeSource,
 };
 use permagent_eval::task::{load_task_set, select_tasks, Task};
 use permagent_eval::tier::Tier;
@@ -57,7 +58,11 @@ struct TasksDirArg {
 
 #[derive(Args, Debug)]
 struct TierSelection {
-    /// A built-in tier to run (repeatable): local, kimi, minimax, sonnet, frontier.
+    /// A built-in tier to run (repeatable). See `Tier::builtin_names()` for the
+    /// full, current list (includes `local`, `kimi`, `minimax`, `sonnet`,
+    /// `frontier` and the model-defaults-bench candidates: `haiku`, `sonnet5`,
+    /// `glm53`, `glm47`, `minimax27`, `dschat`, `dsreason`, `kimi25`,
+    /// `gpt54mini`).
     #[arg(long = "tier", value_name = "NAME")]
     tiers: Vec<String>,
 
@@ -158,6 +163,25 @@ struct RunArgs {
     /// the best tier solves under 80% of tasks.
     #[arg(long, value_name = "PERCENT")]
     fail_under: Option<f64>,
+
+    /// Let the child `permagent` process read the OS keychain for provider
+    /// secrets, instead of forcing it to read them from file/env only. Required
+    /// when secrets are not present as environment variables — e.g. on a
+    /// machine where they live only in the macOS keychain (service
+    /// `permagent`, account `secrets`) and are read by the signed bundled CLI.
+    /// Without this flag, `PERMAGENT_DISABLE_KEYRING=1` is set on every child
+    /// AND any copy of it exported in your own shell is left alone (today's
+    /// behavior, unchanged).
+    #[arg(long)]
+    use_keyring: bool,
+
+    /// Stop launching further tasks once measured spend (summed from the
+    /// ledger, across every tier and task run so far in this session) exceeds
+    /// this many dollars. Already-collected results are still reported in
+    /// full; remaining tasks are recorded as a distinct not-run state (not a
+    /// fail) and excluded from pass-rate. Omit for no cap (default: unlimited).
+    #[arg(long, value_name = "USD")]
+    budget_usd: Option<f64>,
 }
 
 #[derive(Args, Debug)]
@@ -175,6 +199,13 @@ struct PlanArgs {
     /// The `permagent` binary name to show in the planned command.
     #[arg(long, default_value = "permagent")]
     permagent_bin: String,
+
+    /// Plan as if `--use-keyring` were passed to `run` — shows
+    /// `PERMAGENT_DISABLE_KEYRING` as removed (`env -u`) rather than set, so
+    /// the planned invocation matches what `run --use-keyring` will actually
+    /// do. See `run --help` for what the flag is for.
+    #[arg(long)]
+    use_keyring: bool,
 }
 
 fn resolve_tasks_dir(arg: &TasksDirArg) -> PathBuf {
@@ -230,9 +261,30 @@ fn cmd_plan(args: PlanArgs) -> Result<()> {
     for tier in &tiers {
         println!("# tier: {} ({} {})", tier.name, tier.provider, tier.model);
         for task in &tasks {
-            let inv = build_invocation(&task.spec, tier, workdir, data_root, &args.permagent_bin);
+            // `plan` never touches disk or shells out (it's "safe anywhere; no
+            // models are called"), so the recipe path shown here is the SHAPE
+            // `run` would actually write, not a real file. The task's prompt
+            // is never a separate `-t`/`--text` flag — it is embedded inside
+            // that recipe file (`--recipe` and `-t` are mutually exclusive on
+            // the CLI: crates/goose-cli/src/cli.rs:188-220).
+            let recipe_path = data_root.join(format!("{}-recipe.yaml", task.spec.id));
+            let inv = build_invocation(
+                &task.spec,
+                tier,
+                workdir,
+                data_root,
+                &recipe_path,
+                &args.permagent_bin,
+                args.use_keyring,
+            );
             println!("## {}", task.spec.id);
-            println!("{}\n", inv.display_line());
+            println!("{}", inv.display_line());
+            println!(
+                "  (prompt for {:?} is embedded in {} — see `recipe_with_prompt`; \
+                 --recipe and -t/--text cannot both be passed)\n",
+                task.spec.id,
+                recipe_path.display()
+            );
         }
     }
     Ok(())
@@ -263,14 +315,24 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         permagent_bin: args.permagent_bin.clone(),
         runs_root,
         keep: args.keep,
+        use_keyring: args.use_keyring,
     };
     let harness = SubprocessHarnessRunner;
     let oracle = SubprocessOracleRunner;
     let cost = LedgerCostReader;
+    let recipe = SubprocessRecipeSource;
     let deps = Deps {
         harness: &harness,
         oracle: &oracle,
         cost: &cost,
+        recipe: &recipe,
+    };
+
+    // Shared across every tier: measured spend accumulates for the WHOLE
+    // session, not per tier, so `--budget-usd` caps the sweep as a whole.
+    let mut budget = match args.budget_usd {
+        Some(cap) => BudgetTracker::with_cap(cap),
+        None => BudgetTracker::unlimited(),
     };
 
     let mut reports: Vec<TierReport> = Vec::new();
@@ -282,11 +344,15 @@ fn cmd_run(args: RunArgs) -> Result<()> {
             tier.model,
             tasks.len()
         );
-        let results = run_tier(&tasks, tier, &cfg, &deps);
+        let results = run_tier(&tasks, tier, &cfg, &deps, &mut budget);
         for r in &results {
             eprintln!(
                 "    {:<6} {:<22} {}",
-                if r.solved { "PASS" } else { "FAIL" },
+                match r.oracle {
+                    permagent_eval::oracle::OracleOutcome::NotRun => "SKIP",
+                    _ if r.solved => "PASS",
+                    _ => "FAIL",
+                },
                 r.task_id,
                 permagent_eval::report::fmt_usd(r.cost.usd)
             );
@@ -298,6 +364,12 @@ fn cmd_run(args: RunArgs) -> Result<()> {
             pinned_packs: tier.pin_packs,
             results,
         });
+        // Print the stop line exactly once, right after the tier in which the
+        // cap tripped finishes (it, and every later tier, will have its
+        // remaining tasks recorded as not-run above).
+        if let Some(msg) = budget.take_stop_message() {
+            eprintln!("{msg}");
+        }
     }
 
     let rendered = match args.format.as_str() {
@@ -499,5 +571,47 @@ mod tests {
         };
         let resolved = sel.resolve().unwrap();
         assert!(resolved.iter().all(|t| !t.pin_packs));
+    }
+
+    // --- --use-keyring / --budget-usd parse and default correctly ----------
+
+    #[test]
+    fn use_keyring_and_budget_usd_default_off() {
+        let cli = Cli::try_parse_from(["permagent-eval", "run", "--tier", "local"]).unwrap();
+        let Command::Run(args) = cli.command else {
+            panic!("expected Run");
+        };
+        assert!(!args.use_keyring);
+        assert_eq!(args.budget_usd, None);
+    }
+
+    #[test]
+    fn use_keyring_and_budget_usd_parse_on_run() {
+        let cli = Cli::try_parse_from([
+            "permagent-eval",
+            "run",
+            "--tier",
+            "local",
+            "--use-keyring",
+            "--budget-usd",
+            "12.50",
+        ])
+        .unwrap();
+        let Command::Run(args) = cli.command else {
+            panic!("expected Run");
+        };
+        assert!(args.use_keyring);
+        assert_eq!(args.budget_usd, Some(12.50));
+    }
+
+    #[test]
+    fn use_keyring_parses_on_plan() {
+        let cli =
+            Cli::try_parse_from(["permagent-eval", "plan", "--tier", "local", "--use-keyring"])
+                .unwrap();
+        let Command::Plan(args) = cli.command else {
+            panic!("expected Plan");
+        };
+        assert!(args.use_keyring);
     }
 }

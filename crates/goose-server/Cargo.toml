@@ -111,7 +111,7 @@ sherpa-onnx = { version = "1.13.2", default-features = false, features = ["share
 hound = "3.5"
 # Wake-word model tarball extraction (sherpa-onnx kws release ships .tar.bz2).
 tar = "0.4"
-bzip2 = "0.5"
+bzip2 = "0.6"
 ort = { version = "2.0.0-rc.12", features = ["download-binaries"] }
 misaki-rs = { version = "0.3", default-features = false }
 zip = { version = "2", default-features = false, features = ["deflate"] }
@@ -142,6 +142,14 @@ path = "src/bin/generate_schema.rs"
 [[bin]]
 name = "tts_bench"
 path = "src/bin/tts_bench.rs"
+
+[[bin]]
+name = "voice_model_bench"
+path = "src/bin/voice_model_bench.rs"
+
+[[bin]]
+name = "chat_model_bench"
+path = "src/bin/chat_model_bench.rs"
 
 [dev-dependencies]
 # Runs the config pin before any test body — see lib.rs. cfg(test) in the

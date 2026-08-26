@@ -8,7 +8,8 @@
  * `scheduleFollowUpInput` pasted on a blind 2200ms timer that the harness
  * routinely missed (Keychain prompt, workspace-trust dialog, MCP startup).
  * The fix pastes only once the PTY stream shows the TUI took the tty
- * (DEC private mode 2004/1049 — see followUpDelivery.ts), and surfaces a
+ * (bracketed paste plus a full-screen surface — see followUpDelivery.ts for
+ * why 2004 alone is not enough), and surfaces a
  * "not delivered" chip if a ceiling elapses first.
  *
  * Mocks mirror Terminal.reattach.test.tsx, extended so the `pty_data` Tauri
@@ -148,7 +149,10 @@ describe('Terminal follow-up delivery (wired)', () => {
     });
     await flushAsyncSetup();
 
-    emitPtyData('\x1b[?2004h');
+    // Bracketed paste PLUS the alternate screen: 2004 on its own is raw mode,
+    // which Claude Code also sets for its workspace-trust dialog. See
+    // followUpDelivery.ts and harnessStartupFixtures.ts.
+    emitPtyData('\x1b[?2004h\x1b[?1049h');
     await act(async () => { await vi.advanceTimersByTimeAsync(250); });
 
     const delivered = followUpWrites();
@@ -157,7 +161,10 @@ describe('Terminal follow-up delivery (wired)', () => {
     expect(delivered[0].args?.sessionId).toBe('pty-fresh');
 
     // A later marker must not deliver again.
-    emitPtyData('\x1b[?2004h');
+    // Bracketed paste PLUS the alternate screen: 2004 on its own is raw mode,
+    // which Claude Code also sets for its workspace-trust dialog. See
+    // followUpDelivery.ts and harnessStartupFixtures.ts.
+    emitPtyData('\x1b[?2004h\x1b[?1049h');
     await act(async () => { await vi.advanceTimersByTimeAsync(250); });
     expect(followUpWrites()).toHaveLength(1);
   });

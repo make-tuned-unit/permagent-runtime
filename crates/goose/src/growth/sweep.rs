@@ -351,13 +351,15 @@ mod tests {
         let baseline = snapshot_baseline(pool, project, metric, dir, at(verified_at))
             .await
             .unwrap();
+        let encoded = serde_json::to_string(&baseline).unwrap();
         let row = store::record_verification(
             pool,
             project,
             &row.id,
-            VERIFIED_BY_GIT,
-            verified_at,
-            Some(&serde_json::to_string(&baseline).unwrap()),
+            store::VerificationEvidence {
+                baseline_json: Some(&encoded),
+                ..store::VerificationEvidence::new(VERIFIED_BY_GIT, verified_at)
+            },
         )
         .await
         .unwrap()

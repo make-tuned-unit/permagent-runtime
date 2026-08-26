@@ -115,6 +115,49 @@ pub struct CostLedgerRow {
     pub is_estimated: bool,
 }
 
+/// One child's contribution inside a [`ParentSessionCost`] rollup.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildSessionCost {
+    pub session_id: String,
+    pub cost_usd: f64,
+}
+
+/// Parent-session cost rollup: this session's own spend plus every direct
+/// child's. Backs `GET /api/sessions/{id}/cost` and the Build statusline's
+/// "incl. N subagents $X" suffix.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ParentSessionCost {
+    pub own: f64,
+    pub children_total: f64,
+    pub per_child: Vec<ChildSessionCost>,
+}
+
+impl ParentSessionCost {
+    pub fn total(&self) -> f64 {
+        self.own + self.children_total
+    }
+
+    pub fn child_count(&self) -> usize {
+        self.per_child.len()
+    }
+}
+
+/// What the most recent provider call on a session says about itself.
+///
+/// `provider`/`model` are `Option` because the ledger's columns are: a call
+/// recorded without them is unusual but legal, and the meter should name what
+/// it can rather than refuse to report. `estimated` is NOT optional and never
+/// inferred from the other two — it is the difference between a figure and a
+/// fail-closed ceiling, and it must survive a row whose model name is missing.
+#[derive(Debug, Clone)]
+pub struct LastCall {
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub estimated: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Session {
     pub id: String,
@@ -161,6 +204,12 @@ pub struct Session {
     pub goose_mode: GooseMode,
     #[serde(default)]
     pub thread_id: Option<String>,
+    /// Session that spawned this one (SubAgent / fan-out child). `None` for
+    /// top-level chats. Populated at create time via
+    /// [`SessionManager::create_session_with_parent`]; copied onto each
+    /// `cost_ledger` row so parent rollups do not need a join.
+    #[serde(default)]
+    pub parent_session_id: Option<String>,
 }
 
 pub struct SessionUpdateBuilder<'a> {
@@ -384,8 +433,30 @@ impl SessionManager {
         session_type: SessionType,
         goose_mode: GooseMode,
     ) -> Result<Session> {
+        self.create_session_with_parent(None, working_dir, name, session_type, goose_mode)
+            .await
+    }
+
+    /// Create a session, optionally recording the parent that spawned it.
+    /// Existing call sites keep using [`Self::create_session`]; fan-out /
+    /// SubAgent spawn sites pass `Some(parent_id)` so cost ledger rows and
+    /// [`Self::cost_by_parent_session`] can roll delegated spend up.
+    pub async fn create_session_with_parent(
+        &self,
+        parent_session_id: Option<&str>,
+        working_dir: PathBuf,
+        name: String,
+        session_type: SessionType,
+        goose_mode: GooseMode,
+    ) -> Result<Session> {
         self.storage
-            .create_session(working_dir, name, session_type, goose_mode)
+            .create_session(
+                parent_session_id,
+                working_dir,
+                name,
+                session_type,
+                goose_mode,
+            )
             .await
     }
 
@@ -406,6 +477,45 @@ impl SessionManager {
     /// transaction. See [`CostLedgerRow`].
     pub async fn append_cost_ledger(&self, row: &CostLedgerRow) -> Result<()> {
         self.storage.append_cost_ledger(row).await
+    }
+
+    /// Roll a parent's own spend together with every direct child's spend.
+    /// `own` is this session's ledger total; `children_total` sums every session
+    /// whose `parent_session_id` is `parent_id`; `per_child` lists each child.
+    pub async fn cost_by_parent_session(&self, parent_id: &str) -> Result<ParentSessionCost> {
+        self.storage.cost_by_parent_session(parent_id).await
+    }
+
+    /// Everything spent since `since` (an RFC3339 UTC instant), USD.
+    ///
+    /// Summed from `cost_ledger` rather than from the `sessions` rollups: the
+    /// rollups are per-session lifetime totals, so adding them up would charge
+    /// today for a session that started last week. `ts` is written as
+    /// `Utc::now().to_rfc3339()`, whose fixed-width date prefix makes
+    /// lexicographic order chronological order — the comparison the
+    /// `idx_cost_ledger_ts` index serves.
+    pub async fn spend_since(&self, since: &str) -> Result<f64> {
+        self.storage.spend_since(since).await
+    }
+
+    /// The most recent ledger row's provider, model, and whether its cost was
+    /// estimated rather than priced.
+    ///
+    /// The meter names what is spending the money. `sessions` records the
+    /// session's configured model, which is not necessarily the one that served
+    /// the last turn — a routing decision or a fallback can differ from it, and
+    /// a meter that names the wrong model is worse than one that names none.
+    ///
+    /// `is_estimated` travels with them because it changes what the number
+    /// MEANS. A model with no published rate is billed at `worst_case_pricing`
+    /// — deliberately the most expensive rate in the registry, so the spend cap
+    /// fires early rather than late — and showing that as a plain dollar figure
+    /// presents a safety margin as a fact. Today `zai/glm-5.3`, the coding
+    /// harness's own model, has no row in the canonical table or in
+    /// `published_prices`, so this is the common case on the very surface that
+    /// reported the bug.
+    pub async fn last_call_facts(&self, session_id: &str) -> Result<Option<LastCall>> {
+        self.storage.last_call_facts(session_id).await
     }
 
     pub async fn add_message(&self, id: &str, message: &Message) -> Result<()> {
@@ -612,6 +722,7 @@ impl Default for Session {
             model_config: None,
             goose_mode: GooseMode::default(),
             thread_id: None,
+            parent_session_id: None,
         }
     }
 }
@@ -698,6 +809,7 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Session {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or_default(),
             thread_id: row.try_get("thread_id").ok().flatten(),
+            parent_session_id: row.try_get("parent_session_id").ok().flatten(),
         })
     }
 }
@@ -1172,6 +1284,27 @@ impl SessionStorage {
                     if version < 49 {
                         spectral_schema::migrate_v48_to_v49(&self.pool).await?;
                     }
+                    // v50: person merge/delete bookkeeping — `person_aliases`
+                    // (identifiers a survivor absorbed) and `person_merge_log`
+                    // (the undo snapshot). New tables + indexes, additive and
+                    // base-independent.
+                    if version < 50 {
+                        spectral_schema::migrate_v49_to_v50(&self.pool).await?;
+                    }
+                    // v51: sessions.parent_session_id — durable link from a
+                    // SubAgent / fan-out child back to the spawning session so
+                    // cost-ledger rows and the parent rollup can attribute
+                    // delegated spend. PRAGMA-guarded ADD COLUMN + index.
+                    if version < 51 {
+                        spectral_schema::migrate_v50_to_v51(&self.pool).await?;
+                    }
+                    // v52: the RLM control-plane context store — durable,
+                    // versioned evaluation context that outlives an LLM turn
+                    // and a daemon restart. New table + index, additive and
+                    // base-independent.
+                    if version < 52 {
+                        spectral_schema::migrate_v51_to_v52(&self.pool).await?;
+                    }
                     // Version-independent safety net for recognition columns.
                     // The always-on v23 above can stamp schema_version past the
                     // cfg-gated `version < 22` migration, leaving a feature-off DB
@@ -1180,6 +1313,13 @@ impl SessionStorage {
                     // run on every boot, regardless of the feature that writes them.
                     // Idempotent — a steady-state boot adds nothing.
                     spectral_schema::apply_recognition_v22_columns(&self.pool).await?;
+
+                    // Version-independent: the RLM control-plane store. Applied
+                    // on every boot for the same reason as the recognition
+                    // columns above — a version gate is exactly how those went
+                    // missing in production, and a missing rlm_context table
+                    // silently costs every worker its recovered state.
+                    spectral_schema::apply_rlm_context_schema(&self.pool).await?;
 
                     // Version-independent: ensure the skills.skill_path index
                     // column exists on any DB regardless of the recorded schema
@@ -1192,6 +1332,11 @@ impl SessionStorage {
                     // columns above — a version gate is exactly how that one
                     // went missing in production.
                     spectral_schema::apply_briefings_schema(&self.pool).await?;
+
+                    // Version-independent: Council tables. Applied by table
+                    // existence every boot so a DB already past v50 still
+                    // grows the tables without waiting on a stamp.
+                    spectral_schema::apply_council_schema(&self.pool).await?;
 
                     spectral_schema::apply_skill_path_column(&self.pool).await?;
 
@@ -1234,6 +1379,11 @@ impl SessionStorage {
                     // turn write, and a `version < N` gate is exactly how the
                     // last three schema repairs went missing in production.
                     spectral_schema::apply_session_project_hint_schema(&self.pool).await?;
+
+                    // Parent-session link for subagent cost rollup. Same
+                    // version-independent posture: a missing column here
+                    // silently drops parent attribution on every child spawn.
+                    spectral_schema::apply_session_parent_schema(&self.pool).await?;
                 } else {
                     info!("Initializing Spectral schema at {:?}", self.db_path);
                     spectral_schema::init_spectral_db(&self.pool).await?;
@@ -1253,6 +1403,7 @@ impl SessionStorage {
 
     async fn create_session(
         &self,
+        parent_session_id: Option<&str>,
         working_dir: PathBuf,
         name: String,
         session_type: SessionType,
@@ -1264,7 +1415,7 @@ impl SessionStorage {
         let today = chrono::Utc::now().format("%Y%m%d").to_string();
         let session = sqlx::query_as(
             r#"
-                INSERT INTO sessions (id, user_id, name, user_set_name, session_type, working_dir, extension_data, goose_mode)
+                INSERT INTO sessions (id, user_id, name, user_set_name, session_type, working_dir, extension_data, goose_mode, parent_session_id)
                 VALUES (
                     ? || '_' || CAST(COALESCE((
                         SELECT MAX(CAST(SUBSTR(id, 10) AS INTEGER))
@@ -1277,6 +1428,7 @@ impl SessionStorage {
                     ?,
                     ?,
                     '{}',
+                    ?,
                     ?
                 )
                 RETURNING *
@@ -1289,6 +1441,7 @@ impl SessionStorage {
             .bind(session_type.to_string())
             .bind(&*working_dir.to_string_lossy())
             .bind(goose_mode.to_string())
+            .bind(parent_session_id)
             .fetch_one(&mut *tx)
             .await?;
 
@@ -1308,7 +1461,7 @@ impl SessionStorage {
                cost_usd, accumulated_cost_usd, accumulated_cache_read_tokens,
                accumulated_cache_write_tokens, accumulated_cache_savings_usd,
                schedule_id, recipe_json, user_recipe_values_json,
-               provider_name, model_config_json, goose_mode, thread_id
+               provider_name, model_config_json, goose_mode, thread_id, parent_session_id
         FROM sessions
         WHERE id = ?
     "#,
@@ -1483,6 +1636,42 @@ impl SessionStorage {
     /// Insert one cost-ledger row and advance the session's O(1) cost rollup in a
     /// single `BEGIN IMMEDIATE` transaction. `turn_index` is computed atomically
     /// as the count of prior rows for the session (0-based).
+    /// See [`SessionManager::spend_since`].
+    async fn spend_since(&self, since: &str) -> Result<f64> {
+        let pool = self.pool().await?;
+        let total: Option<f64> =
+            sqlx::query_scalar("SELECT SUM(cost_usd) FROM cost_ledger WHERE ts >= ?")
+                .bind(since)
+                .fetch_one(pool)
+                .await?;
+        // SUM over no rows is NULL, not 0 — a day with no calls has spent
+        // nothing, which is a number, not an absence.
+        Ok(total.unwrap_or(0.0))
+    }
+
+    /// See [`SessionManager::last_call_facts`].
+    async fn last_call_facts(&self, session_id: &str) -> Result<Option<LastCall>> {
+        let pool = self.pool().await?;
+        // `provider` and `model` are NULLABLE columns (`CostLedgerRow` carries
+        // them as `Option`), so they are decoded as options. Decoding straight
+        // into `String` would make a single row with a null provider fail the
+        // whole query — and this runs on the meter's per-turn path, so that
+        // failure would present as the meter going quiet rather than as an
+        // error anyone could see.
+        Ok(sqlx::query_as::<_, (Option<String>, Option<String>, i64)>(
+            "SELECT provider, model, is_estimated FROM cost_ledger
+                  WHERE session_id = ? ORDER BY ts DESC LIMIT 1",
+        )
+        .bind(session_id)
+        .fetch_optional(pool)
+        .await?
+        .map(|(provider, model, estimated)| LastCall {
+            provider,
+            model,
+            estimated: estimated != 0,
+        }))
+    }
+
     async fn append_cost_ledger(&self, row: &CostLedgerRow) -> Result<()> {
         let pool = self.pool().await?;
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -1550,6 +1739,54 @@ impl SessionStorage {
 
         tx.commit().await?;
         Ok(())
+    }
+
+    async fn cost_by_parent_session(&self, parent_id: &str) -> Result<ParentSessionCost> {
+        let pool = self.pool().await?;
+
+        // Own spend: prefer the O(1) session rollup; fall back to a ledger SUM
+        // so a session that somehow lost its rollup columns still answers.
+        let own: f64 = sqlx::query_scalar(
+            "SELECT COALESCE(
+                (SELECT accumulated_cost_usd FROM sessions WHERE id = ?),
+                (SELECT SUM(cost_usd) FROM cost_ledger WHERE session_id = ?),
+                0
+             )",
+        )
+        .bind(parent_id)
+        .bind(parent_id)
+        .fetch_one(pool)
+        .await?;
+
+        let rows: Vec<(String, f64)> = sqlx::query_as(
+            "SELECT id,
+                    COALESCE(
+                        accumulated_cost_usd,
+                        (SELECT SUM(cost_usd) FROM cost_ledger WHERE session_id = sessions.id),
+                        0
+                    ) AS cost_usd
+             FROM sessions
+             WHERE parent_session_id = ?
+             ORDER BY created_at ASC, id ASC",
+        )
+        .bind(parent_id)
+        .fetch_all(pool)
+        .await?;
+
+        let per_child: Vec<ChildSessionCost> = rows
+            .into_iter()
+            .map(|(session_id, cost_usd)| ChildSessionCost {
+                session_id,
+                cost_usd,
+            })
+            .collect();
+        let children_total = per_child.iter().map(|c| c.cost_usd).sum();
+
+        Ok(ParentSessionCost {
+            own,
+            children_total,
+            per_child,
+        })
     }
 
     async fn get_conversation(&self, session_id: &str) -> Result<Conversation> {
@@ -1926,6 +2163,7 @@ impl SessionStorage {
 
         let session = self
             .create_session(
+                None,
                 import.working_dir.clone(),
                 import.name.clone(),
                 session_type_override.unwrap_or(import.session_type),
@@ -1970,6 +2208,7 @@ impl SessionStorage {
 
         let new_session = self
             .create_session(
+                None,
                 original_session.working_dir.clone(),
                 new_name,
                 original_session.session_type,
@@ -3088,5 +3327,179 @@ mod tests {
         assert_eq!(reread.accumulated_cache_read_tokens, Some(200));
         assert_eq!(reread.accumulated_cache_write_tokens, Some(300));
         assert!((reread.accumulated_cache_savings_usd.unwrap() - 0.000_54).abs() < 1e-12);
+    }
+
+    /// `sessions.parent_session_id` (v51) must exist after a fresh init AND
+    /// survive re-running the migration / apply guard against an already-
+    /// migrated DB — same idempotency posture as migrate_v48_to_v49.
+    #[tokio::test]
+    async fn parent_session_id_migration_is_idempotent() {
+        async fn column_present(pool: &Pool<Sqlite>) -> bool {
+            let n: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'parent_session_id'",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            n == 1
+        }
+
+        let temp_dir = TempDir::new().unwrap();
+        let db_dir = temp_dir.path().to_path_buf();
+
+        {
+            let sm = SessionManager::new(db_dir.clone());
+            let pool = sm.storage().pool().await.expect("fresh-DB init");
+            assert!(column_present(pool).await);
+        }
+
+        let sm2 = SessionManager::new(db_dir);
+        let pool2 = sm2
+            .storage()
+            .pool()
+            .await
+            .expect("re-running the migration ladder must be idempotent");
+        assert!(column_present(pool2).await);
+
+        crate::session::spectral_schema::migrate_v50_to_v51(pool2)
+            .await
+            .expect("migrate_v50_to_v51 once more");
+        crate::session::spectral_schema::migrate_v50_to_v51(pool2)
+            .await
+            .expect("migrate_v50_to_v51 twice in a row");
+        crate::session::spectral_schema::apply_session_parent_schema(pool2)
+            .await
+            .expect("apply_session_parent_schema once more");
+        assert!(column_present(pool2).await);
+    }
+
+    /// A SubAgent created via `create_session_with_parent` (the summon /
+    /// goal_engine spawn path) persists the parent id on the session row.
+    #[tokio::test]
+    async fn create_session_with_parent_records_parent() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let parent = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "parent".to_string(),
+                SessionType::User,
+                GooseMode::default(),
+            )
+            .await
+            .unwrap();
+
+        let child = sm
+            .create_session_with_parent(
+                Some(&parent.id),
+                temp_dir.path().to_path_buf(),
+                "Delegated task".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(child.parent_session_id.as_deref(), Some(parent.id.as_str()));
+        let reread = sm.get_session(&child.id, false).await.unwrap();
+        assert_eq!(
+            reread.parent_session_id.as_deref(),
+            Some(parent.id.as_str())
+        );
+        assert_eq!(reread.session_type, SessionType::SubAgent);
+    }
+
+    /// Ledger rows carry the session's parent_session_id, and
+    /// `cost_by_parent_session` sums own + each child's spend.
+    #[tokio::test]
+    async fn cost_by_parent_session_rolls_up_children() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let parent = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "parent".to_string(),
+                SessionType::User,
+                GooseMode::default(),
+            )
+            .await
+            .unwrap();
+        let child_a = sm
+            .create_session_with_parent(
+                Some(&parent.id),
+                temp_dir.path().to_path_buf(),
+                "child-a".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let child_b = sm
+            .create_session_with_parent(
+                Some(&parent.id),
+                temp_dir.path().to_path_buf(),
+                "child-b".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+
+        let mk =
+            |call_id: &str, session_id: &str, parent_id: Option<&str>, cost: f64| CostLedgerRow {
+                call_id: call_id.to_string(),
+                ts: "2026-08-25T00:00:00Z".to_string(),
+                session_id: session_id.to_string(),
+                parent_session_id: parent_id.map(|s| s.to_string()),
+                task_id: None,
+                goal_id: None,
+                subagent_id: None,
+                provider: Some("anthropic".to_string()),
+                model: Some("claude-sonnet-4".to_string()),
+                cost_tier: CostTier::PaidApi,
+                is_headless: false,
+                input_tokens: 10,
+                output_tokens: 5,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                input_cost: cost,
+                output_cost: 0.0,
+                cache_read_cost: 0.0,
+                cache_write_cost: 0.0,
+                cost_usd: cost,
+                cache_savings_usd: 0.0,
+                is_estimated: false,
+            };
+
+        sm.append_cost_ledger(&mk("p1", &parent.id, None, 0.40))
+            .await
+            .unwrap();
+        sm.append_cost_ledger(&mk("a1", &child_a.id, Some(&parent.id), 0.10))
+            .await
+            .unwrap();
+        sm.append_cost_ledger(&mk("b1", &child_b.id, Some(&parent.id), 0.07))
+            .await
+            .unwrap();
+
+        let pool = sm.storage().pool().await.unwrap();
+        let stored_parent: Option<String> =
+            sqlx::query_scalar("SELECT parent_session_id FROM cost_ledger WHERE call_id = 'a1'")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(stored_parent.as_deref(), Some(parent.id.as_str()));
+
+        let rollup = sm.cost_by_parent_session(&parent.id).await.unwrap();
+        assert!((rollup.own - 0.40).abs() < 1e-12);
+        assert!((rollup.children_total - 0.17).abs() < 1e-12);
+        assert_eq!(rollup.per_child.len(), 2);
+        assert!((rollup.total() - 0.57).abs() < 1e-12);
+        let by_id: std::collections::HashMap<_, _> = rollup
+            .per_child
+            .iter()
+            .map(|c| (c.session_id.as_str(), c.cost_usd))
+            .collect();
+        assert!((by_id[child_a.id.as_str()] - 0.10).abs() < 1e-12);
+        assert!((by_id[child_b.id.as_str()] - 0.07).abs() < 1e-12);
     }
 }

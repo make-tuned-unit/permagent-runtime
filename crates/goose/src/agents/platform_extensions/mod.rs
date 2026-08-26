@@ -8,6 +8,7 @@ pub mod chatrecall;
 #[cfg(feature = "code-mode")]
 pub mod code_execution;
 pub(crate) mod code_map;
+pub mod council;
 pub mod dashboard;
 pub mod desktop;
 pub mod developer;
@@ -15,6 +16,7 @@ pub mod dispatch_brief;
 pub mod dispatch_scope;
 pub mod execution_receipt;
 pub mod ext_manager;
+pub mod fanout;
 pub mod file_to_project;
 pub mod finance;
 pub mod forecaster;
@@ -454,7 +456,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: summon::EXTENSION_NAME,
                 display_name: "Summon",
-                description: "Load knowledge into your context — subrecipes, recipes, agents, and background-task results (load) — and delegate tasks to subagents that run independently, in parallel or in the background (delegate)",
+                description: "Load knowledge into your context — subrecipes, recipes, agents, and background-task results (load) — and delegate tasks to subagents that run independently, in parallel or in the background (delegate), or fan out to several at once under a concurrency cap (delegate_many)",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
@@ -550,7 +552,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: orchestrator::EXTENSION_NAME,
                 display_name: "Orchestrator",
                 description:
-                    "Orchestrate work across agent sessions: list, view, start, message, and interrupt them (list_sessions, view_session, start_agent, send_message, interrupt_agent); inspect available workers (list_workers, check_worker); plan objectives and dispatch roadmap goals to worker agents, optionally narrowing extensions for an in-process dispatch while refusing that scope for CLI workers (decompose_roadmap, create_roadmap, goal_advance, goal_status, steer_goal, pause_roadmap, resume_roadmap); run a packaged executable skill by name (run_executable_skill); send a structured agent-to-agent message between InProgress goal workers (message_goal); and surface decisions in the Decision Inbox for supervised approval (escalate)",
+                    "Orchestrate work across agent sessions: list, view, start, message, and interrupt them (list_sessions, view_session, start_agent, send_message, interrupt_agent); inspect available workers (list_workers, check_worker); plan objectives and dispatch roadmap goals to worker agents, optionally narrowing extensions for an in-process dispatch while refusing that scope for CLI workers (decompose_roadmap, create_roadmap, goal_advance, goal_status, steer_goal, pause_roadmap, resume_roadmap); run a packaged executable skill by name (run_executable_skill); keep durable state across turns and restarts (context_set, context_get, context_list, context_delete); send a structured agent-to-agent message between InProgress goal workers (message_goal); and surface decisions in the Decision Inbox for supervised approval (escalate)",
                 default_enabled: true,
                 unprefixed_tools: false,
                 hidden: false,
@@ -794,6 +796,24 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
         );
 
         map.insert(
+            council::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: council::EXTENSION_NAME,
+                display_name: "Deliberate",
+                description:
+                    "Brief every connected chat-completion provider on the current state of the work, run a two-round debate, and chair a weekly report (council_convene); live-query on/off, seats, last headline and open inbox actions (council_status); read the latest or a named report including per-model dissent (council_report). Spends every seated provider. Actions land as Decision Inbox proposals — approve files a board card, reject dismisses. Off until council_enabled is on under Settings → Features. council_status and council_report work while the flag is off; council_convene refuses until it is on",
+                default_enabled: true,
+                unprefixed_tools: true,
+                hidden: false,
+                why_it_matters:
+                    "Several models looking at the same brief, then at each other, surface the project that needs attention and the pattern you are missing — as a digest you can act on.",
+                required_secrets: &[],
+                teaching: &[],
+                client_factory: |ctx| Box::new(council::CouncilClient::new(ctx).unwrap()),
+            },
+        );
+
+        map.insert(
             storage_health::EXTENSION_NAME,
             PlatformExtensionDef {
                 name: storage_health::EXTENSION_NAME,
@@ -857,12 +877,12 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: people::EXTENSION_NAME,
                 display_name: "People",
                 description:
-                    "Create people and associate them with projects (create_person, associate_person_with_project) — minting a durable graph entity plus a CRM directory row in one deterministic step — enrich a person's professional details (enrich_person, propose_enrichment), and log a meeting against their profile (log_person_meeting) so it shows on the People tab, optionally on a project, with a dated follow-up, and writes through Apple Calendar onto the Home tab. Read the directory with observe_app surface people; open someone with navigate_app tab People and state { person: \"<display name>\" }",
+                    "Create people and associate them with projects (create_person, associate_person_with_project) — minting a durable graph entity plus a CRM directory row in one deterministic step — enrich a person's professional details (enrich_person, propose_enrichment), and log a meeting against their profile (log_person_meeting) so it shows on the People tab, optionally on a project, with a dated follow-up, and writes through Apple Calendar onto the Home tab. Fold a duplicate contact into the one to keep, or remove someone from the directory (merge_people, delete_person) — both file an approval card rather than acting. Read the directory with observe_app surface people; open someone with navigate_app tab People and state { person: \"<display name>\" }",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,
                 why_it_matters:
-                    "When the user says \"add <name>\" or \"associate <name> with <project>\", do it directly — you create and link people, you do not just remember them as a note. When they ask to enrich or refresh a contact's details, start with enrich_person — nothing is written until they approve the proposal. When they had a meeting with someone, call log_person_meeting rather than leaving it as a chat note; pass a follow-up date when they should check in. Open the People tab with navigate_app when they want to see someone.",
+                    "When the user says \"add <name>\" or \"associate <name> with <project>\", do it directly — you create and link people, you do not just remember them as a note. When they ask to enrich or refresh a contact's details, start with enrich_person — nothing is written until they approve the proposal. When they had a meeting with someone, call log_person_meeting rather than leaving it as a chat note; pass a follow-up date when they should check in. When the same person is in the directory twice, propose merge_people — prefer it over delete_person, which throws the history away; both wait for the user's approval, so say the card is waiting rather than that it is done. Open the People tab with navigate_app when they want to see someone.",
                 required_secrets: &[],
                 teaching: &[
                     crate::agents::self_knowledge::TeachingStep {

@@ -9,6 +9,7 @@ pub mod goose_mode;
 #[cfg(test)]
 mod identity_name_guard;
 mod migrations;
+pub mod model_roles;
 pub mod paths;
 pub mod permission;
 pub mod search_path;
@@ -17,6 +18,7 @@ pub mod secure_fs;
 pub mod signup_nanogpt;
 pub mod signup_openrouter;
 pub mod signup_tetrate;
+pub mod voice_model;
 pub mod worker_probe;
 
 pub use crate::agents::ExtensionConfig;
@@ -30,11 +32,19 @@ pub use extensions::{
     resolve_extensions_for_new_session, set_extension, set_extension_enabled, ExtensionEntry,
 };
 pub use goose_mode::GooseMode;
+pub use model_roles::{
+    resolve_role_model, role_model_from_config, ModelRole, RoleModel, RoleModelSource,
+    RoleResolution,
+};
 pub use permission::PermissionManager;
 pub use secret_source::{SecretSource, SecretSourceError};
 pub use signup_nanogpt::configure_nanogpt;
 pub use signup_openrouter::configure_openrouter;
 pub use signup_tetrate::configure_tetrate;
+pub use voice_model::{
+    default_voice_model, voice_model_from_config, VoiceModel, VoiceModelSource,
+    DEFAULT_VOICE_MODEL_ID, DEFAULT_VOICE_PROVIDER_ID, VOICE_MODEL_KEY, VOICE_PROVIDER_KEY,
+};
 
 pub use extensions::DEFAULT_DISPLAY_NAME;
 pub use extensions::DEFAULT_EXTENSION;

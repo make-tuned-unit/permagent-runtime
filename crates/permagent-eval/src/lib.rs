@@ -19,6 +19,8 @@
 //! - [`oracle`] — turning a test process exit code into pass/fail.
 //! - [`cost`] — reading the total USD cost of a run from an isolated cost-ledger
 //!   SQLite database, behind a [`cost::CostReader`] trait so it can be mocked.
+//! - [`harness_log`] — best-effort tool-call / rate-limit / turn-limit signal
+//!   extraction from the harness's captured stdout+stderr log.
 //! - [`metrics`] — aggregation: pass-rate, $/solved, median $/task, with all the
 //!   awkward edge cases (0 solved, all solved, unknown/estimated costs).
 //! - [`report`] — deterministic text / markdown / JSON rendering.
@@ -27,6 +29,7 @@
 //!   with mocks).
 
 pub mod cost;
+pub mod harness_log;
 pub mod invocation;
 pub mod metrics;
 pub mod oracle;
@@ -37,7 +40,8 @@ pub mod task;
 pub mod tier;
 
 pub use cost::{CostReader, CostReading, LedgerCostReader};
-pub use invocation::{build_invocation, Invocation};
+pub use harness_log::{scan as scan_harness_log, LogSignals};
+pub use invocation::{build_invocation, recipe_with_prompt, Invocation};
 pub use metrics::{aggregate, Aggregate, TaskResult};
 pub use oracle::{outcome_from_exit, OracleOutcome};
 pub use task::{Task, TaskSpec};

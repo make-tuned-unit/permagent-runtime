@@ -1,0 +1,215 @@
+{
+  "turns": [
+    {
+      "id": "c01",
+      "kind": "conversational",
+      "prompt": "Hey, good morning",
+      "expect_tool": null,
+      "rubric": "Must greet back warmly and briefly, in a sentence or two, with no unnecessary preamble."
+    },
+    {
+      "id": "c02",
+      "kind": "conversational",
+      "prompt": "How's everything going today",
+      "expect_tool": null,
+      "rubric": "Must give a brief, natural status update in a couple of sentences, not a long report."
+    },
+    {
+      "id": "c03",
+      "kind": "conversational",
+      "prompt": "What's on the agenda for today",
+      "expect_tool": null,
+      "rubric": "Must answer conversationally and briefly, inviting a follow-up rather than dumping a long list."
+    },
+    {
+      "id": "c04",
+      "kind": "conversational",
+      "prompt": "Can you say a bit more about that",
+      "expect_tool": null,
+      "rubric": "Must expand on the immediately prior point briefly, staying on the same topic without restarting it."
+    },
+    {
+      "id": "c05",
+      "kind": "conversational",
+      "prompt": "What do you mean by that exactly",
+      "expect_tool": null,
+      "rubric": "Must clarify the prior statement in plain language without simply repeating it verbatim."
+    },
+    {
+      "id": "c06",
+      "kind": "conversational",
+      "prompt": "Thanks so much, that's really helpful",
+      "expect_tool": null,
+      "rubric": "Must acknowledge the thanks briefly and warmly without over-explaining or restating prior content."
+    },
+    {
+      "id": "c07",
+      "kind": "conversational",
+      "prompt": "Actually, never mind, forget I asked",
+      "expect_tool": null,
+      "rubric": "Must drop the prior request gracefully and briefly without asking why or re-raising it."
+    },
+    {
+      "id": "c08",
+      "kind": "conversational",
+      "prompt": "Can you give me the short version of that",
+      "expect_tool": null,
+      "rubric": "Must condense the prior answer's core point into noticeably fewer words."
+    },
+    {
+      "id": "c09",
+      "kind": "conversational",
+      "prompt": "Is there anything happening this afternoon",
+      "expect_tool": null,
+      "rubric": "Must answer directly and briefly whether or not anything is happening this afternoon."
+    },
+    {
+      "id": "c10",
+      "kind": "conversational",
+      "prompt": "What should I prioritize for the rest of today",
+      "expect_tool": null,
+      "rubric": "Must give one or two concrete, brief suggestions, not a long list padded with filler."
+    },
+    {
+      "id": "c11",
+      "kind": "conversational",
+      "prompt": "Are you still there",
+      "expect_tool": null,
+      "rubric": "Must confirm presence briefly in a single short sentence without over-explaining."
+    },
+    {
+      "id": "c12",
+      "kind": "conversational",
+      "prompt": "That's all for now, thanks",
+      "expect_tool": null,
+      "rubric": "Must close the conversation warmly and briefly without asking a new question."
+    },
+    {
+      "id": "c13",
+      "kind": "conversational",
+      "prompt": "What's the weather like where I am",
+      "expect_tool": null,
+      "rubric": "Must answer using whatever weather context is available, or say plainly that it does not have that information, in one or two sentences."
+    },
+    {
+      "id": "c14",
+      "kind": "conversational",
+      "prompt": "Can you remind me what we were just talking about",
+      "expect_tool": null,
+      "rubric": "Must briefly summarize the immediately prior topic in one or two sentences without inventing anything not discussed."
+    },
+    {
+      "id": "c15",
+      "kind": "conversational",
+      "prompt": "Good night",
+      "expect_tool": null,
+      "rubric": "Must close warmly and briefly in a short sentence without asking a new question."
+    },
+    {
+      "id": "c16",
+      "kind": "tool",
+      "prompt": "What projects do I have going on right now",
+      "expect_tool": "project_list",
+      "rubric": "Must call the project list tool and then summarize the returned project names briefly, not dump raw data."
+    },
+    {
+      "id": "c17",
+      "kind": "tool",
+      "prompt": "What's waiting for my approval right now",
+      "expect_tool": "list_pending_decisions",
+      "rubric": "Must call the decision inbox tool and then summarize what is waiting in a brief, grouped answer."
+    },
+    {
+      "id": "c18",
+      "kind": "tool",
+      "prompt": "What does my dashboard say right now",
+      "expect_tool": "read_dashboard",
+      "rubric": "Must call the dashboard tool once and then read back what it found in one or two sentences."
+    },
+    {
+      "id": "c19",
+      "kind": "tool",
+      "prompt": "What's on my to-do list today",
+      "expect_tool": "card_due_list",
+      "rubric": "Must call the to-do list tool and then read back the soonest-due items briefly in order."
+    },
+    {
+      "id": "c20",
+      "kind": "tool",
+      "prompt": "Start a new project called the demo project",
+      "expect_tool": "project_create",
+      "rubric": "Must call the project creation tool with that name and then confirm briefly that it was created."
+    },
+    {
+      "id": "c21",
+      "kind": "tool",
+      "prompt": "Add a card to the sample repo board to review the changelog",
+      "expect_tool": "card_create",
+      "rubric": "Must call the card creation tool with a reasonable title and then confirm briefly that it was added."
+    },
+    {
+      "id": "c22",
+      "kind": "tool",
+      "prompt": "What automations do I have scheduled",
+      "expect_tool": "list_recipes",
+      "rubric": "Must call the automations list tool and then summarize the schedules briefly."
+    },
+    {
+      "id": "c23",
+      "kind": "tool",
+      "prompt": "What skills have you saved so far",
+      "expect_tool": "list_skills",
+      "rubric": "Must call the skills list tool and then summarize what is saved briefly."
+    },
+    {
+      "id": "c24",
+      "kind": "tool",
+      "prompt": "How much have I spent this month",
+      "expect_tool": "observe_app",
+      "rubric": "Must call the app-observation tool for spend and then state the figure briefly and plainly."
+    },
+    {
+      "id": "c25",
+      "kind": "tool",
+      "prompt": "Give me a summary of all my project boards",
+      "expect_tool": "board_summary",
+      "rubric": "Must call the board summary tool and then summarize the state of the boards briefly, not dump raw card data."
+    },
+    {
+      "id": "c26",
+      "kind": "reasoning",
+      "prompt": "I have three errands today: the bank, the pharmacy, and the grocery store. The pharmacy closes at five and the other two are open until nine. What order should I do them in?",
+      "expect_tool": null,
+      "rubric": "Must identify that the pharmacy should be done first because it is the only one with an early closing constraint, then the other two in any order."
+    },
+    {
+      "id": "c27",
+      "kind": "reasoning",
+      "prompt": "I have a two hour task due by Friday, and I only have one free hour today and one free hour tomorrow to work on it. How should I split my time?",
+      "expect_tool": null,
+      "rubric": "Must recommend splitting the task evenly across the two available hours, one hour each day, since that is the only way to finish by the deadline."
+    },
+    {
+      "id": "c28",
+      "kind": "reasoning",
+      "prompt": "My phone needs an hour to charge and I'm leaving in ninety minutes. Should I start charging it now or do something else first?",
+      "expect_tool": null,
+      "rubric": "Must say to start charging immediately since it runs in the background, freeing the remaining time for other things."
+    },
+    {
+      "id": "c29",
+      "kind": "reasoning",
+      "prompt": "I have three tasks: one due today, one due in a week, and one with no deadline at all. I only have time for one of them right now. Which should I do first and why?",
+      "expect_tool": null,
+      "rubric": "Must recommend the task due today first because it has the nearest deadline, and briefly explain that the others can wait."
+    },
+    {
+      "id": "c30",
+      "kind": "reasoning",
+      "prompt": "I have a hundred dollars to split between two sample projects. Project A needs at least thirty dollars to do anything useful, and project B can make good use of any amount. How should I split it?",
+      "expect_tool": null,
+      "rubric": "Must recommend giving project A at least its thirty dollar minimum and putting the remainder toward project B, briefly explaining why."
+    }
+  ],
+  "volatile_system_block": "# Live Status (this turn)\n\n## Briefings from your agents\n- Steward: overnight housekeeping pass finished clean, no drift found in config, storage health, or scheduled-task wiring, next pass scheduled for the usual overnight window as before.\n- Forecaster: no new signal since the last check-in, holding the prior outlook steady, will flag it clearly if the picture changes materially before the next scheduled cycle runs.\n- Retrospect: one small process note queued from yesterday's session, nothing urgent or time sensitive, will surface it if asked directly, otherwise folding it quietly into the weekly rollup summary.\n- Librarian: nightly indexing pass completed without incident, a handful of low-confidence entries were held back for review rather than merged automatically, no action needed from you right now.\n- Orchestrator: current turn budget is well within normal range, no throttling or degraded mode in effect, all platform extensions reporting healthy and reachable as of this turn.\n\n## Workers you can dispatch goals to\n- researcher-a: general web and document research, good for open-ended lookups or fact gathering, currently idle and ready to take a new goal immediately.\n- builder-a: implementation and code changes in an isolated sandboxed worktree, currently idle, best suited for well-scoped tasks that have a clear, checkable acceptance condition.\n- reviewer-a: reads a diff or a written plan and reports gaps or risks before work starts, currently idle, most useful before committing to a larger effort.\n- planner-a: breaks a fuzzy goal into an ordered list of concrete steps with rough effort estimates, currently idle, good for scoping before dispatching other workers.\n\n## Background worker status\n- nightly-sync: last run completed without error, next run scheduled for the standard overnight window, nothing pending on it right now that needs review.\n- watchlist-scan: last scan completed cleanly, no threshold was crossed, holding steady until the next scheduled scan runs, nothing here needs your attention.\n- decision-drain: queue is currently empty, nothing waiting to be drained, will pick up new items automatically as they are enqueued during the day.\n- effect-outbox: no stuck entries, last drain cycle cleared everything it found, next automatic drain follows the usual periodic schedule without any manual step.\n\n## Sample projects on the board (fabricated, for this bench only)\n- the demo project: 4 open cards, 1 in review, last activity earlier today, no blockers reported.\n- the sample repo: 2 open cards, 0 in review, last activity yesterday, one low-priority note queued.\n- the scratch workspace: 1 open card, idle for a few days, no blockers reported.\n\n# Turn-specific Instructions\nKeep this turn's reply concise and natural, as if written for someone reading it in a chat window rather than a long document. Do not dump raw tool output verbatim; summarize it in plain language instead. A short list is fine when the user is asking for several distinct items, but prefer prose for anything else. If nothing here needs the user's attention, say so briefly instead of padding the answer with unnecessary detail. This block is regenerated fresh on every single turn and is deliberately not cached, so treat any counts, names, or statuses listed above as valid only for this exact turn and nothing beyond it."
+}

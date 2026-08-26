@@ -1,4 +1,4 @@
-//! Periodic WAL checkpoint (durability F4).
+//! Periodic WAL checkpoint (durability F4) + RLM context TTL sweep.
 //!
 //! Both SQLite databases — the Brain's `memory.db` and Spectral's `permagent.db`
 //! — run in WAL mode. SQLite's passive autocheckpoint (default 1000 pages) only
@@ -53,6 +53,29 @@ pub async fn wal_checkpoint_loop(spectral_pool: Pool<Sqlite>) {
         ticker.tick().await;
         checkpoint_brain().await;
         checkpoint_spectral(&spectral_pool).await;
+        sweep_rlm_context(&spectral_pool).await;
+    }
+}
+
+/// Delete expired RLM control-plane cells.
+///
+/// Rides this timer rather than running a loop of its own: it is the same
+/// hourly cadence, on the same pool, and one durability timer is easier to
+/// reason about than two. Expired cells already read as absent
+/// (`permagent::rlm::get` filters on `expires_at`), so this is reclaiming
+/// space, never a correctness boundary — a failed sweep is harmless.
+async fn sweep_rlm_context(pool: &Pool<Sqlite>) {
+    match permagent::rlm::gc_expired(pool).await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(
+            target: "durability",
+            removed = n,
+            "RLM context sweep removed expired cells"
+        ),
+        Err(e) => tracing::warn!(
+            target: "durability",
+            "RLM context sweep failed; will retry next tick: {e}"
+        ),
     }
 }
 

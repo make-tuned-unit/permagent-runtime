@@ -2,7 +2,7 @@ use super::api_client::{ApiClient, AuthMethod};
 use super::base::{ConfigKey, ModelInfo, Provider, ProviderDef, ProviderMetadata};
 use super::embedding::{EmbeddingCapable, EmbeddingRequest, EmbeddingResponse};
 use super::errors::ProviderError;
-use super::formats::openai::{create_request, get_usage, response_to_message};
+use super::formats::openai::{create_request_split, get_usage, response_to_message};
 use super::formats::openai_responses::{
     create_responses_request, get_responses_usage, responses_api_to_message,
     responses_api_to_streaming_message, ResponsesApiResponse,
@@ -15,6 +15,7 @@ use super::retry::ProviderRetry;
 use super::utils::ImageFormat;
 use crate::config::declarative_providers::DeclarativeProviderConfig;
 use crate::conversation::message::Message;
+use crate::cost_router::cache::SystemPromptParts;
 use anyhow::Result;
 use async_stream::try_stream;
 use async_trait::async_trait;
@@ -562,6 +563,52 @@ impl Provider for OpenAiProvider {
         messages: &[Message],
         tools: &[Tool],
     ) -> Result<MessageStream, ProviderError> {
+        self.stream_parts(
+            model_config,
+            session_id,
+            &SystemPromptParts::all_stable(system.to_string()),
+            messages,
+            tools,
+        )
+        .await
+    }
+
+    /// Overridden so the turn-volatile tail lands AFTER the conversation instead
+    /// of inside the leading system message.
+    ///
+    /// This impl serves OpenAI itself AND every declarative provider whose
+    /// engine is `openai` — DeepSeek among them (see
+    /// `config::declarative_providers::register_declarative_provider`). All of
+    /// them cache automatically on an exact prompt prefix, so a volatile block
+    /// concatenated into the system message evicts the tool schemas and the
+    /// whole conversation from that cache every turn. See
+    /// `formats::openai::create_request_split`.
+    ///
+    /// Only the chat/completions branch can act on the split; the responses API
+    /// takes a single `instructions` string, so that path flattens exactly as
+    /// before.
+    async fn stream_split(
+        &self,
+        model_config: &ModelConfig,
+        session_id: &str,
+        system: &SystemPromptParts,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<MessageStream, ProviderError> {
+        self.stream_parts(model_config, session_id, system, messages, tools)
+            .await
+    }
+}
+
+impl OpenAiProvider {
+    async fn stream_parts(
+        &self,
+        model_config: &ModelConfig,
+        session_id: &str,
+        system: &SystemPromptParts,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<MessageStream, ProviderError> {
         let use_responses =
             Self::should_use_responses_api(&model_config.model_name, &self.base_path);
         tracing::info!(
@@ -578,7 +625,8 @@ impl Provider for OpenAiProvider {
             );
         }
         if use_responses {
-            let mut payload = create_responses_request(model_config, system, messages, tools)?;
+            let mut payload =
+                create_responses_request(model_config, &system.render(), messages, tools)?;
             payload["stream"] = serde_json::Value::Bool(self.supports_streaming);
 
             let mut log = RequestLog::start(model_config, &payload)?;
@@ -646,7 +694,7 @@ impl Provider for OpenAiProvider {
                 Ok(super::base::stream_from_single_message(message, usage))
             }
         } else {
-            let payload = create_request(
+            let payload = create_request_split(
                 model_config,
                 system,
                 messages,

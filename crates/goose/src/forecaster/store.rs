@@ -376,15 +376,17 @@ pub async fn load_points(pool: &Pool<Sqlite>, series_id: &str) -> Result<Vec<Poi
         .collect()
 }
 
-/// Record that a collector ran. `error` is stored rather than logged and
-/// dropped, because a silently dead collector reads exactly like a flat market.
+/// Record that a collector ran at the caller's injected `now`. `error` is
+/// stored rather than logged and dropped, because a silently dead collector
+/// reads exactly like a flat market.
 pub async fn mark_collected(
     pool: &Pool<Sqlite>,
     series_id: &str,
     error: Option<&str>,
+    now: chrono::DateTime<chrono::Utc>,
 ) -> Result<(), String> {
     sqlx::query("UPDATE forecaster_series SET last_collected_at = ?, last_error = ? WHERE id = ?")
-        .bind(now_iso())
+        .bind(now.to_rfc3339())
         .bind(error)
         .bind(series_id)
         .execute(pool)
@@ -642,7 +644,7 @@ mod tests {
         assert!(matches!(summary.verdict, Verdict::CollectorStale { .. }));
 
         // 3. Fresh and long enough.
-        mark_collected(&pool, &s.id, None).await.unwrap();
+        mark_collected(&pool, &s.id, None, now).await.unwrap();
         let summary = &summarize(&pool, Some("p1"), now).await.unwrap()[0];
         assert_eq!(summary.verdict, Verdict::Forecastable);
         assert_eq!(summary.span_days, 199);
@@ -662,7 +664,7 @@ mod tests {
         set_status(&pool, &s.id, SeriesStatus::Active)
             .await
             .unwrap();
-        mark_collected(&pool, &s.id, None).await.unwrap();
+        mark_collected(&pool, &s.id, None, now).await.unwrap();
         append_points(
             &pool,
             &s.id,

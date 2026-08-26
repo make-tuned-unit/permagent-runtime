@@ -41,8 +41,9 @@ import { useCommandCenter } from '../../lib/store';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
 import { ease, font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
-import type { Person, PersonActivity, PersonAssociation, PersonMeeting, PersonProject, PersonRelationship } from './types';
+import type { DeleteReport, MergeReport, Person, PersonActivity, PersonAssociation, PersonMeeting, PersonProject, PersonRelationship, UndoReport } from './types';
 import { PersonFace } from '../people/PersonFace';
+import { MergePersonPanel } from '../people/MergePersonPanel';
 
 function pad2(n: number): string { return String(n).padStart(2, '0'); }
 
@@ -187,6 +188,28 @@ export function PersonDetailModal({
   const [removing, setRemoving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [enriching, setEnriching] = useState(false);
+
+  // Merge (duplicate-cleanup epic): `merging` swaps the modal body for
+  // MergePersonPanel; on success the panel hands back a MergeReport, which
+  // renders as a persistent summary card (with Undo) ABOVE the normal body —
+  // not a replacement — so the user can keep working the profile after seeing
+  // it. Undo is only ever a component-state affordance: it does not need to
+  // survive a close, per the spec.
+  const [merging, setMerging] = useState(false);
+  const [mergeReport, setMergeReport] = useState<MergeReport | null>(null);
+  const [undoing, setUndoing] = useState(false);
+  const [undoReport, setUndoReport] = useState<UndoReport | null>(null);
+  const [undoError, setUndoError] = useState<string | null>(null);
+
+  // Delete: a real two-step confirm (`deleteStep`) naming the person and
+  // listing counts already loaded in this modal (meetings.length,
+  // personProjects.length) — never invented numbers. On success the body
+  // swaps to a terminal "deleted" card showing `retained` verbatim; the
+  // profile fields are moot once the person is gone, so nothing else renders.
+  const [deleteStep, setDeleteStep] = useState<0 | 1>(0);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deletedReport, setDeletedReport] = useState<DeleteReport | null>(null);
 
   // Local view of the person: seeded from the prop, updated optimistically on a
   // field edit and reconciled from the PATCH response (the graph's own truth).
@@ -439,7 +462,10 @@ export function PersonDetailModal({
   };
 
   const handleClose = async () => {
-    if (dirty) {
+    // The person no longer exists once deleted — a field PATCH here would
+    // just 404. Close directly (the DeletedCard's own Close button is the
+    // normal path; this covers Escape / the shell's X button too).
+    if (!deletedReport && dirty) {
       const ok = await saveEdit();
       if (!ok) return;
     }
@@ -466,11 +492,59 @@ export function PersonDetailModal({
     }
   };
 
+  const handleMergeDone = (report: MergeReport) => {
+    setMerging(false);
+    setMergeReport(report);
+    setUndoReport(null);
+    setUndoError(null);
+    bumpPeople();
+  };
+
+  const undoMerge = async () => {
+    if (!mergeReport) return;
+    setUndoing(true);
+    setUndoError(null);
+    try {
+      const report = await apiFetch<UndoReport>(
+        `/api/people/merges/${encodeURIComponent(mergeReport.merge_id)}/undo`,
+        { method: 'POST' },
+      );
+      setUndoReport(report);
+      bumpPeople();
+    } catch (e) {
+      const err = e as Error & { status?: number };
+      setUndoError(`Couldn't undo: ${err.status ? `${err.status} ` : ''}${err.message || 'request failed'}`);
+    } finally {
+      setUndoing(false);
+    }
+  };
+
+  const doDelete = async () => {
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const report = await apiFetch<DeleteReport>(
+        `/api/people/${encodeURIComponent(view.entity_uuid)}`,
+        { method: 'DELETE', body: JSON.stringify({ confirm: true }) },
+      );
+      bumpPeople();
+      setDeletedReport(report);
+    } catch (e) {
+      const err = e as Error & { status?: number };
+      setDeleteError(`Couldn't delete ${view.display_name}: ${err.status ? `${err.status} ` : ''}${err.message || 'request failed'}`);
+      setDeleting(false);
+    }
+  };
+
   const badge = association?.project_role
     ? { label: association.project_role, color: colors.cyan, bg: colors.cyanSoft }
     : null;
 
-  const footer = confirming ? (
+  // Terminal states (merging the panel, or the person just got deleted) take
+  // over the whole modal — a Save/Remove footer over a gone-or-mid-merge
+  // record would be dead UI, so the footer is entirely suppressed for them;
+  // both MergePersonPanel and the deleted card carry their own actions.
+  const footer = deletedReport ? undefined : merging ? undefined : confirming ? (
     <>
       <span style={{ flex: 1, fontSize: 12, color: colors.textMuted }}>
         Remove {view.display_name} from this project?
@@ -482,6 +556,10 @@ export function PersonDetailModal({
         {removing ? 'Removing…' : 'Confirm remove'}
       </button>
     </>
+  ) : deleteStep === 1 ? (
+    <span style={{ flex: 1, fontSize: 12, color: colors.textMuted }}>
+      Confirm below to delete {view.display_name}.
+    </span>
   ) : (
     <>
       <button onClick={requestEnrichment} disabled={enriching} style={ghostBtn(colors)}>
@@ -491,9 +569,19 @@ export function PersonDetailModal({
         {saving ? 'Saving…' : 'Save'}
       </button>
       <span style={{ flex: 1 }} />
+      {view.entity_uuid && (
+        <button onClick={() => setMerging(true)} style={ghostBtn(colors)}>
+          Merge into…
+        </button>
+      )}
       {projectId && (
         <button onClick={() => setConfirming(true)} style={dangerBtn(colors)}>
           Remove from project
+        </button>
+      )}
+      {view.entity_uuid && (
+        <button onClick={() => { setDeleteStep(1); setDeleteError(null); }} style={dangerBtn(colors)}>
+          Delete person
         </button>
       )}
     </>
@@ -502,68 +590,208 @@ export function PersonDetailModal({
   return (
     <PersonDetailShell variant={variant} title={view.display_name} badge={badge} onClose={handleClose} footer={footer}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <EditForm
-          colors={colors}
-          personName={view.display_name}
-          draft={draft}
-          onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))}
-        />
-        {association && (
-          <div style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono }}>
-            {association.project_role ? `${association.project_role} · ` : ''}Associated {fmtTime(association.associated_at)}
-          </div>
-        )}
-        <RelatedPeople colors={colors} rows={relationships} people={allPeople} status={relatedStatus}
-          adding={addingRelationship} targetId={targetId} predicate={predicate}
-          onStart={() => setAddingRelationship(true)} onCancel={() => setAddingRelationship(false)}
-          onTarget={setTargetId} onPredicate={setPredicate} onAdd={addRelationship} onRemove={removeRelationship} />
-        <MeetingsSection
-          colors={colors}
-          personName={view.display_name}
-          rows={meetings}
-          projects={personProjects}
-          status={meetingsStatus}
-          adding={addingMeeting}
-          title={meetingTitle}
-          starts={meetingStarts}
-          notes={meetingNotes}
-          projectId={meetingProjectId}
-          followUp={followUp}
-          followUpAt={followUpAt}
-          followUpNote={followUpNote}
-          saving={savingMeeting}
-          onStart={() => {
-            setAddingMeeting(true);
-            setFollowUpAt(plusDaysLocal(meetingStarts || localDateTimeValue(), 7));
-          }}
-          onCancel={() => setAddingMeeting(false)}
-          onTitle={setMeetingTitle}
-          onStarts={v => {
-            setMeetingStarts(v);
-            if (followUp) setFollowUpAt(plusDaysLocal(v, 7));
-          }}
-          onNotes={setMeetingNotes}
-          onProject={setMeetingProjectId}
-          onFollowUp={setFollowUp}
-          onFollowUpAt={setFollowUpAt}
-          onFollowUpNote={setFollowUpNote}
-          onAdd={addMeeting}
-          onRetry={loadMeetings}
-          onFollowUpDone={markFollowUpDone}
-        />
-        <PersonActivityTimeline colors={colors} rows={activity} status={activityStatus} onRetry={loadActivity} />
+        {deletedReport ? (
+          <DeletedCard colors={colors} report={deletedReport} onClose={onClose} />
+        ) : merging ? (
+          <MergePersonPanel person={view} onDone={handleMergeDone} onCancel={() => setMerging(false)} />
+        ) : (
+          <>
+            {mergeReport && (
+              <MergeResultCard
+                colors={colors}
+                report={mergeReport}
+                undoing={undoing}
+                undoReport={undoReport}
+                undoError={undoError}
+                onUndo={undoMerge}
+              />
+            )}
+            {deleteStep === 1 && (
+              <DeleteWarningCard
+                colors={colors}
+                name={view.display_name}
+                meetingsCount={meetings.length}
+                projectsCount={personProjects.length}
+                deleting={deleting}
+                error={deleteError}
+                onCancel={() => { setDeleteStep(0); setDeleteError(null); }}
+                onConfirm={doDelete}
+              />
+            )}
+            <EditForm
+              colors={colors}
+              personName={view.display_name}
+              draft={draft}
+              onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))}
+            />
+            {association && (
+              <div style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono }}>
+                {association.project_role ? `${association.project_role} · ` : ''}Associated {fmtTime(association.associated_at)}
+              </div>
+            )}
+            <RelatedPeople colors={colors} rows={relationships} people={allPeople} status={relatedStatus}
+              adding={addingRelationship} targetId={targetId} predicate={predicate}
+              onStart={() => setAddingRelationship(true)} onCancel={() => setAddingRelationship(false)}
+              onTarget={setTargetId} onPredicate={setPredicate} onAdd={addRelationship} onRemove={removeRelationship} />
+            <MeetingsSection
+              colors={colors}
+              personName={view.display_name}
+              rows={meetings}
+              projects={personProjects}
+              status={meetingsStatus}
+              adding={addingMeeting}
+              title={meetingTitle}
+              starts={meetingStarts}
+              notes={meetingNotes}
+              projectId={meetingProjectId}
+              followUp={followUp}
+              followUpAt={followUpAt}
+              followUpNote={followUpNote}
+              saving={savingMeeting}
+              onStart={() => {
+                setAddingMeeting(true);
+                setFollowUpAt(plusDaysLocal(meetingStarts || localDateTimeValue(), 7));
+              }}
+              onCancel={() => setAddingMeeting(false)}
+              onTitle={setMeetingTitle}
+              onStarts={v => {
+                setMeetingStarts(v);
+                if (followUp) setFollowUpAt(plusDaysLocal(v, 7));
+              }}
+              onNotes={setMeetingNotes}
+              onProject={setMeetingProjectId}
+              onFollowUp={setFollowUp}
+              onFollowUpAt={setFollowUpAt}
+              onFollowUpNote={setFollowUpNote}
+              onAdd={addMeeting}
+              onRetry={loadMeetings}
+              onFollowUpDone={markFollowUpDone}
+            />
+            <PersonActivityTimeline colors={colors} rows={activity} status={activityStatus} onRetry={loadActivity} />
 
-        {error && (
-          <div style={{
-            fontSize: 12, color: colors.danger,
-            borderRadius: radius.md, border: `1px solid ${colors.danger}`,
-            background: colors.danger + '14', padding: '8px 12px',
-          }}>
-            {error}
-          </div>
+            {error && (
+              <div style={{
+                fontSize: 12, color: colors.danger,
+                borderRadius: radius.md, border: `1px solid ${colors.danger}`,
+                background: colors.danger + '14', padding: '8px 12px',
+              }}>
+                {error}
+              </div>
+            )}
+          </>
         )}
       </div>
     </PersonDetailShell>
+  );
+}
+
+/** Merge success: the summary the daemon returned, plus Undo — live only as
+ *  long as this component instance stays mounted (the spec's "undoable for
+ *  the session"; it does not need to survive a close). */
+function MergeResultCard({ colors, report, undoing, undoReport, undoError, onUndo }: {
+  colors: ReturnType<typeof useTheme>['colors'];
+  report: MergeReport;
+  undoing: boolean;
+  undoReport: UndoReport | null;
+  undoError: string | null;
+  onUndo: () => void;
+}) {
+  return (
+    <div style={{
+      display: 'flex', flexDirection: 'column', gap: 6,
+      borderRadius: radius.md, border: `1px solid ${colors.cyan}`,
+      background: colors.cyanSoft, padding: '10px 12px',
+    }}>
+      <div style={{ fontSize: 12, color: colors.text }}>{report.summary}</div>
+      {undoReport ? (
+        <div style={{ fontSize: 11, color: colors.textMuted }}>
+          Undone — restored {undoReport.restored_name} ({undoReport.meetings_restored} meeting{undoReport.meetings_restored === 1 ? '' : 's'},{' '}
+          {undoReport.project_links_restored} project link{undoReport.project_links_restored === 1 ? '' : 's'}).
+          {undoReport.not_reverted.length > 0 && (
+            <div style={{ marginTop: 4 }}>
+              Not reverted: {undoReport.not_reverted.join(', ')}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <button onClick={onUndo} disabled={undoing} style={miniBtn(colors)}>
+            {undoing ? 'Undoing…' : 'Undo merge'}
+          </button>
+          {undoError && <span style={{ fontSize: 11, color: colors.danger }}>{undoError}</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Two-step delete confirm, in the modal body (not the footer) so the "what
+ *  will be deleted" list has room. Counts come from data this modal already
+ *  loaded (meetings, personProjects) — never invented. */
+function DeleteWarningCard({ colors, name, meetingsCount, projectsCount, deleting, error, onCancel, onConfirm }: {
+  colors: ReturnType<typeof useTheme>['colors'];
+  name: string;
+  meetingsCount: number;
+  projectsCount: number;
+  deleting: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div style={{
+      display: 'flex', flexDirection: 'column', gap: 8,
+      borderRadius: radius.md, border: `1px solid ${colors.danger}`,
+      background: colors.danger + '14', padding: '10px 12px',
+    }}>
+      <div style={{ fontSize: 12, color: colors.text, fontWeight: 600 }}>
+        Delete {name}? This can't be undone.
+      </div>
+      <div style={{ fontSize: 11, color: colors.textMuted }}>
+        This deletes {meetingsCount} logged meeting{meetingsCount === 1 ? '' : 's'} and {projectsCount} project link{projectsCount === 1 ? '' : 's'} for {name}.
+      </div>
+      {error && <div style={{ fontSize: 11, color: colors.danger }}>{error}</div>}
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button onClick={onCancel} disabled={deleting} style={ghostBtn(colors)}>Keep</button>
+        <button onClick={onConfirm} disabled={deleting} style={dangerBtn(colors)}>
+          {deleting ? 'Deleting…' : `Confirm delete ${name}`}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Terminal delete state: the person is gone, so nothing else in this modal
+ *  is meaningful — show what the daemon actually deleted plus `retained`
+ *  verbatim, and let the user dismiss on their own terms. */
+function DeletedCard({ colors, report, onClose }: {
+  colors: ReturnType<typeof useTheme>['colors'];
+  report: DeleteReport;
+  onClose: () => void;
+}) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ fontSize: 13, color: colors.text }}>
+        Deleted {report.display_name}: {report.meetings_deleted} meeting{report.meetings_deleted === 1 ? '' : 's'},{' '}
+        {report.project_links_deleted} project link{report.project_links_deleted === 1 ? '' : 's'},{' '}
+        {report.graph_edges_deleted} graph edge{report.graph_edges_deleted === 1 ? '' : 's'},{' '}
+        {report.aliases_deleted} alias{report.aliases_deleted === 1 ? '' : 'es'}.
+      </div>
+      {report.retained.length > 0 && (
+        <div style={{
+          fontSize: 11, color: colors.textMuted, borderRadius: radius.md,
+          border: `1px solid ${colors.border}`, padding: '8px 10px',
+        }}>
+          <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 4 }}>
+            What stays put
+          </div>
+          {report.retained.map((line, i) => <div key={i}>{line}</div>)}
+        </div>
+      )}
+      <div>
+        <button onClick={onClose} style={primaryBtn(colors)}>Close</button>
+      </div>
+    </div>
   );
 }
 

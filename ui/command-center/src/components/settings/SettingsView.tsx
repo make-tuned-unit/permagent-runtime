@@ -32,6 +32,7 @@ import { useDecisions } from '../dashboard/decisions/useDecisions';
 import { DecisionInbox } from '../dashboard/decisions/DecisionInbox';
 import { formatAge } from '../dashboard/decisions/format';
 import { getOpenOnLaunch, setOpenOnLaunch, OPEN_ON_LAUNCH_OPTIONS, type OpenOnLaunch } from '../../lib/openOnLaunch';
+import { RoleRoutingPrompt } from '../chat/RoleRoutingPrompt';
 
 // The PreviewBadge/PreviewNotice machinery (2026-07-10 audit) is gone: every
 // preview-only control has been either wired to real state or removed
@@ -53,6 +54,28 @@ const selectStyle = (colors: C): React.CSSProperties => ({
   color: colors.text, fontFamily: font.body, fontSize: 13,
   minWidth: 240, cursor: 'pointer',
 });
+
+// ── Voice model route readout ────────────────────────────────────────
+// Mirrors crates/goose/src/config/voice_model.rs::resolve_voice_model — this
+// is a DISPLAY-ONLY mirror of that precedence (disabled > configured >
+// half-configured/default), not the source of truth. The daemon resolves the
+// real route from config.yaml; this just tells the operator what to expect.
+const VOICE_DISABLE_VALUES = new Set(['session', 'off', 'none']);
+const DEFAULT_VOICE_PROVIDER_ID = 'custom_deepseek';
+const DEFAULT_VOICE_MODEL_ID = 'deepseek-chat';
+
+function describeVoiceRoute(provider: string | null, model: string | null): string {
+  const providerVal = (provider ?? '').trim();
+  const modelVal = (model ?? '').trim();
+  const isDisabled = (v: string) => VOICE_DISABLE_VALUES.has(v.toLowerCase());
+  if ((providerVal && isDisabled(providerVal)) || (modelVal && isDisabled(modelVal))) {
+    return 'session model';
+  }
+  if (providerVal && modelVal) {
+    return `${providerVal} / ${modelVal}`;
+  }
+  return `${DEFAULT_VOICE_PROVIDER_ID} / ${DEFAULT_VOICE_MODEL_ID} (default)`;
+}
 
 // ── Nav rail categories ──────────────────────────────────────────────
 
@@ -571,6 +594,164 @@ function ModelStateBadge({ state }: { state: 'running' | 'installed' | 'missing'
   );
 }
 
+// ── Chat / Voice / Harness role table ──────────────────────────────────
+// Mirrors crates/goose/src/config/model_roles.rs's resolve_role_model
+// precedence: role keys (chat_provider/chat_model, harness_provider/
+// harness_model) > the session model (GOOSE_PROVIDER/GOOSE_MODEL) > the
+// measured default (which this UI does not know the id of and does not try
+// to guess — it just says "(default)"). Read that module's doc comment
+// before touching this: the layers above config (CLI flag, a resumed
+// session's own saved model, a recipe's settings block) are real but this
+// panel neither sees nor needs to represent them.
+const ROLE_DISABLE_VALUES = ['session', 'off', 'none'];
+const isRoleDisableValue = (v: string): boolean => ROLE_DISABLE_VALUES.includes(v.trim().toLowerCase());
+const trimmedOrNull = (v: string | null | undefined): string | null => {
+  if (typeof v !== 'string') return null;
+  const t = v.trim();
+  return t === '' ? null : t;
+};
+/** `api.readConfig` answers the bare JSON value or `null` — narrow to string. */
+const asConfigString = (v: unknown): string | null => (typeof v === 'string' ? v : null);
+
+type RoleEffective = { display: string; suffix: string | null };
+
+/** Effective model for one role + where it came from. Pure and read-only —
+ *  the whole point (per the bug this replaces) is that a user can look at
+ *  this and know which model actually answered. `modelKeyLabel` is the
+ *  role's model config key (e.g. `chat_model`), used only to word the
+ *  "from …" suffix. */
+function computeRoleEffective(
+  provider: string | null, model: string | null,
+  sessionProvider: string | null, sessionModel: string | null,
+  modelKeyLabel: string,
+): RoleEffective {
+  const p = trimmedOrNull(provider);
+  const m = trimmedOrNull(model);
+  // A `session`/`off`/`none` value in EITHER key disables the role override,
+  // regardless of what the other key holds (even a stale leftover model id) —
+  // resolve_role_model checks each key independently for this, on purpose:
+  // "back to one model for everything" should not depend on tidying up the
+  // partner key too.
+  if ((p !== null && isRoleDisableValue(p)) || (m !== null && isRoleDisableValue(m))) {
+    return { display: 'session model (explicit)', suffix: null };
+  }
+  if (p !== null && m !== null) {
+    return { display: `${p} / ${m}`, suffix: `from ${modelKeyLabel}` };
+  }
+  // Zero or exactly one role key set: resolves as if neither were — a half
+  // pair is a typo, not an intention (RoleModelSource::HalfConfigured).
+  const sp = trimmedOrNull(sessionProvider);
+  const sm = trimmedOrNull(sessionModel);
+  if (sp !== null && sm !== null) {
+    return { display: `${sp} / ${sm}`, suffix: 'from GOOSE_MODEL' };
+  }
+  return { display: '(default)', suffix: 'built-in default' };
+}
+
+/** One editable role row — Chat or Harness. Voice is rendered by hand in
+ *  ModelsPanel instead, because it resolves through voice_model.rs, whose
+ *  precedence differs (see the comment on that row). */
+function RoleModelRow({
+  label, testId, hint, providerKey, modelKey, provider, model,
+  sessionProvider, sessionModel, onSaved,
+}: {
+  label: string; testId: string; hint: string; providerKey: string; modelKey: string;
+  provider: string | null; model: string | null;
+  sessionProvider: string | null; sessionModel: string | null;
+  onSaved: (provider: string | null, model: string | null) => void;
+}) {
+  const { colors } = useThemeHook();
+  const [providerInput, setProviderInput] = useState(provider ?? '');
+  const [modelInput, setModelInput] = useState(model ?? '');
+  const [warn, setWarn] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Reflect a config load (or another surface's write) that lands after this
+  // row already mounted with empty/stale inputs.
+  useEffect(() => { setProviderInput(provider ?? ''); }, [provider]);
+  useEffect(() => { setModelInput(model ?? ''); }, [model]);
+
+  const effective = computeRoleEffective(provider, model, sessionProvider, sessionModel, modelKey);
+
+  const handleSave = async () => {
+    const p = providerInput.trim();
+    const m = modelInput.trim();
+    setWarn(false);
+    setError(null);
+    const bothEmpty = p === '' && m === '';
+    const bothSet = p !== '' && m !== '';
+    const pDisable = p !== '' && isRoleDisableValue(p);
+    const mDisable = m !== '' && isRoleDisableValue(m);
+    if (!bothEmpty && !bothSet && !pDisable && !mDisable) {
+      // Exactly one filled, and it is not a session/off/none shorthand — a
+      // half pair. Warn and write nothing (mirrors HalfConfigured).
+      setWarn(true);
+      return;
+    }
+    setSaving(true);
+    try {
+      if (bothEmpty) {
+        // Both cleared: write both keys empty rather than leaving one behind.
+        await api.upsertConfig(providerKey, '');
+        await api.upsertConfig(modelKey, '');
+        onSaved(null, null);
+      } else if (bothSet) {
+        await api.upsertConfig(providerKey, p);
+        await api.upsertConfig(modelKey, m);
+        onSaved(p, m);
+      } else {
+        // Exactly one filled and it is a disable shorthand (e.g. provider =
+        // "session", model left blank) — write just that key.
+        if (p !== '') await api.upsertConfig(providerKey, p);
+        if (m !== '') await api.upsertConfig(modelKey, m);
+        onSaved(p || null, m || null);
+      }
+    } catch (err) {
+      setError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    setSaving(false);
+  };
+
+  return (
+    <Row label={label} hint={hint}>
+      <div data-testid={testId}>
+      <div style={{ fontFamily: font.mono, fontSize: 13, color: colors.text, marginBottom: 10 }}>
+        {effective.display}
+        {effective.suffix && (
+          <span style={{ fontFamily: font.body, fontSize: 11, color: colors.textMuted, marginLeft: 8 }}>
+            · {effective.suffix}
+          </span>
+        )}
+      </div>
+      {warn && (
+        <div style={{ fontSize: 11, color: colors.danger, marginBottom: 8 }}>
+          provider and model must be set together, or neither
+        </div>
+      )}
+      {error && <div style={{ fontSize: 11, color: colors.danger, marginBottom: 8 }}>{error}</div>}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div style={{ width: 160 }}>
+          <TextInput
+            value={providerInput}
+            onChange={v => { setProviderInput(v); setWarn(false); }}
+            placeholder="provider"
+          />
+        </div>
+        <div style={{ flex: 1 }}>
+          <TextInput
+            value={modelInput}
+            onChange={v => { setModelInput(v); setWarn(false); }}
+            placeholder="model id, or session / off / none"
+          />
+        </div>
+        <SaveButton onClick={() => { void handleSave(); }} disabled={saving} saving={saving} />
+      </div>
+      </div>
+    </Row>
+  );
+}
+
 export function ModelsPanel({ goto }: PanelProps) {
   const { colors } = useThemeHook();
   const [ollama, setOllama] = useState<OllamaStatus | null>(null);
@@ -593,6 +774,87 @@ export function ModelsPanel({ goto }: PanelProps) {
         provider: (map['GOOSE_PROVIDER'] as string) ?? null,
         mode: ((cfg as Record<string, unknown>)['effective_goose_mode'] as string) ?? null,
       });
+    }).catch(() => {});
+    return () => { active = false; };
+  }, []);
+
+  // Voice model (crates/goose/src/config/voice_model.rs) — which model
+  // answers a SPOKEN turn; chat is unaffected. Both `voice_provider` and
+  // `voice_model` set together override the measured default; either one set
+  // to session/off/none turns the feature off and voice rides the session
+  // model. Read on mount only — writes happen on Save / "Use the session
+  // model", never as a side effect of loading the panel.
+  const [voiceProvider, setVoiceProvider] = useState<string | null>(null);
+  const [voiceModel, setVoiceModel] = useState<string | null>(null);
+  const [voiceProviderInput, setVoiceProviderInput] = useState('');
+  const [voiceModelInput, setVoiceModelInput] = useState('');
+  const [voiceSaving, setVoiceSaving] = useState(false);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    Promise.all([api.readConfig('voice_provider'), api.readConfig('voice_model')])
+      .then(([p, m]) => {
+        if (!active) return;
+        const provider = typeof p === 'string' ? p : null;
+        const model = typeof m === 'string' ? m : null;
+        setVoiceProvider(provider);
+        setVoiceModel(model);
+        setVoiceProviderInput(provider ?? '');
+        setVoiceModelInput(model ?? '');
+      })
+      .catch(() => {});
+    return () => { active = false; };
+  }, []);
+  const saveVoiceModel = () => {
+    const prevProvider = voiceProvider;
+    const prevModel = voiceModel;
+    const nextProvider = voiceProviderInput;
+    const nextModel = voiceModelInput;
+    setVoiceProvider(nextProvider);
+    setVoiceModel(nextModel);
+    setVoiceError(null);
+    setVoiceSaving(true);
+    Promise.all([
+      api.upsertConfig('voice_provider', nextProvider),
+      api.upsertConfig('voice_model', nextModel),
+    ])
+      .catch(err => {
+        setVoiceProvider(prevProvider);
+        setVoiceModel(prevModel);
+        setVoiceProviderInput(prevProvider ?? '');
+        setVoiceModelInput(prevModel ?? '');
+        setVoiceError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
+      })
+      .finally(() => setVoiceSaving(false));
+  };
+  const useSessionVoiceModel = () => {
+    const prevModel = voiceModel;
+    setVoiceModel('session');
+    setVoiceModelInput('session');
+    setVoiceError(null);
+    api.upsertConfig('voice_model', 'session').catch(err => {
+      setVoiceModel(prevModel);
+      setVoiceModelInput(prevModel ?? '');
+      setVoiceError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  };
+
+  // Chat / Harness role table (crates/goose/src/config/model_roles.rs). Voice
+  // is the third row of the same table but keeps its OWN state above, because
+  // its precedence genuinely differs: the voice default outranks GOOSE_MODEL
+  // (a spoken turn on a reasoning model is ten seconds of silence), while chat
+  // and harness fall through to it. One table, two resolvers, on purpose.
+  const [chatCfg, setChatCfg] = useState<{ provider: string | null; model: string | null } | null>(null);
+  const [harnessCfg, setHarnessCfg] = useState<{ provider: string | null; model: string | null } | null>(null);
+  useEffect(() => {
+    let active = true;
+    Promise.all([
+      api.readConfig('chat_provider'), api.readConfig('chat_model'),
+      api.readConfig('harness_provider'), api.readConfig('harness_model'),
+    ]).then(([cp, cm, hp, hm]) => {
+      if (!active) return;
+      setChatCfg({ provider: asConfigString(cp), model: asConfigString(cm) });
+      setHarnessCfg({ provider: asConfigString(hp), model: asConfigString(hm) });
     }).catch(() => {});
     return () => { active = false; };
   }, []);
@@ -726,6 +988,7 @@ export function ModelsPanel({ goto }: PanelProps) {
   return (
     <div>
       <H1 sub="Pick the brains behind the agent. Use stronger models when stakes are high; cheaper for routine work.">Models</H1>
+      <RoleRoutingPrompt variant="settings" />
       <Section title="Providers" sub="Provider credentials live in the API keys tab — add or update a key there, then route to it below.">
         {/* One-line primary readout (condensed from Governance → Models; the
             full editor is redundant with the provider modal on API keys). */}
@@ -739,6 +1002,74 @@ export function ModelsPanel({ goto }: PanelProps) {
       {/* The old Routing/Behavior selects were decorative — hardcoded options
           wired to nothing (2026-07-10 settings audit). The real model/default
           switch lives in the provider modal on the API keys tab. */}
+
+      {/* ── Chat / Voice / Harness role table ───────────────────────
+          One concept, one place: which model answers each job, and where
+          that answer came from. See crates/goose/src/config/model_roles.rs
+          for the precedence this mirrors. */}
+      <Section
+        title="Chat, Voice and Harness"
+        sub="Which model runs each job. Set both boxes together, or neither — a stray half pair is treated as unset. Type session, off, or none in either box to pin a job back to the session model above."
+      >
+        <RoleModelRow
+          label="Chat"
+          testId="role-row-chat"
+          hint="typed turns in the Command Center"
+          providerKey="chat_provider"
+          modelKey="chat_model"
+          provider={chatCfg?.provider ?? null}
+          model={chatCfg?.model ?? null}
+          sessionProvider={primary?.provider ?? null}
+          sessionModel={primary?.model ?? null}
+          onSaved={(p, m) => setChatCfg({ provider: p, model: m })}
+        />
+        {/* Voice is the one row whose precedence is NOT model_roles.rs's.
+            `resolve_voice_model` puts the measured voice default ABOVE
+            GOOSE_MODEL, so an operator who set a session model and never
+            thought about voice still gets a model that does not stop to think
+            before speaking. `describeVoiceRoute` mirrors that, and mirroring
+            the wrong resolver here would tell the operator the wrong thing. */}
+        <Row label="Voice" hint="spoken turns">
+          <div data-testid="role-row-voice">
+            <div style={{ fontFamily: font.mono, fontSize: 13, color: colors.text, marginBottom: 10 }}>
+              {describeVoiceRoute(voiceProvider, voiceModel)}
+            </div>
+            {voiceError && <div style={{ fontSize: 11, color: colors.danger, marginBottom: 8 }}>{voiceError}</div>}
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <div style={{ width: 160 }}>
+                <TextInput
+                  value={voiceProviderInput}
+                  onChange={setVoiceProviderInput}
+                  placeholder={DEFAULT_VOICE_PROVIDER_ID}
+                  mono
+                />
+              </div>
+              <div style={{ flex: 1 }}>
+                <TextInput
+                  value={voiceModelInput}
+                  onChange={setVoiceModelInput}
+                  placeholder={DEFAULT_VOICE_MODEL_ID}
+                  mono
+                />
+              </div>
+              <SaveButton onClick={saveVoiceModel} disabled={voiceSaving} saving={voiceSaving} />
+              <button style={ghost(colors)} onClick={useSessionVoiceModel}>Use the session model</button>
+            </div>
+          </div>
+        </Row>
+        <RoleModelRow
+          label="Harness"
+          testId="role-row-harness"
+          hint="the coding harness in the Build tab"
+          providerKey="harness_provider"
+          modelKey="harness_model"
+          provider={harnessCfg?.provider ?? null}
+          model={harnessCfg?.model ?? null}
+          sessionProvider={primary?.provider ?? null}
+          sessionModel={primary?.model ?? null}
+          onSaved={(p, m) => setHarnessCfg({ provider: p, model: m })}
+        />
+      </Section>
 
       {/* ── Roster pointer ───────────────────────────────────────── */}
       {/* The per-role roster used to be duplicated here off GET /api/agent/workers
@@ -982,8 +1313,8 @@ export function ModelsPanel({ goto }: PanelProps) {
 function KeysPanel() {
   return (
     <div>
-      <H1 sub="Bring your own keys for the providers you use. Add, replace, or remove a key here — keys are encrypted in your system keychain and never leave your device.">API keys</H1>
-      <Section title="Providers">
+      <H1 sub="Bring your own keys for the providers you use. Connected keys sit at the top; the rest of the catalogue stays on Providers. Add, replace, or remove a key here — keys are encrypted in your system keychain and never leave your device.">API keys</H1>
+      <Section title="Keys">
         <ProvidersSection />
       </Section>
     </div>

@@ -79,6 +79,25 @@ struct ProposeEnrichmentParams {
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct MergePeopleParams {
+    /// The person to KEEP — display name or directory entity_uuid. Their id
+    /// survives, so anything already referencing them keeps working.
+    keep: String,
+    /// The duplicate to absorb and then delete — display name or entity_uuid.
+    absorb: String,
+    /// Why these are the same person (shown on the approval card).
+    reason: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct DeletePersonParams {
+    /// The person to delete: display name or directory entity_uuid.
+    person: String,
+    /// Why they should be removed (shown on the approval card).
+    reason: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct LogPersonMeetingParams {
     /// The person the meeting was with: display name or directory entity_uuid.
     person: String,
@@ -144,6 +163,14 @@ impl PeopleClient {
                 pass follow_up_at (RFC-3339 or YYYY-MM-DD) and an optional
                 follow_up_note ("send recap", "check in in 7 days"). Pass project
                 to also show the 1:1 on that project's People panel.
+
+                Use `merge_people` when the directory holds one person twice
+                ("these are the same person", "Mel and Melanie are duplicates").
+                Use `delete_person` when someone should not be in the directory at
+                all — but prefer a merge for a duplicate; a delete throws the
+                history away. NEITHER tool acts: both file an approval card and
+                say so, because both destroy a person's row. Tell the user the
+                card is waiting rather than reporting the job done.
 
                 Names are resolved against the directory. If a name is ambiguous the
                 tool returns the candidates instead of guessing — ask the user which
@@ -650,6 +677,159 @@ impl PeopleClient {
         ))])
     }
 
+    /// File a merge as a Decision Inbox card. The tool never merges: a merge
+    /// deletes a person, and the model is not the one who gets to decide that.
+    /// The preview is computed here so the card says what will actually happen,
+    /// not what the model guessed.
+    async fn handle_merge_people(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let params: MergePeopleParams = serde_json::from_value(serde_json::Value::Object(args))
+            .map_err(|e| format!("Invalid arguments: {e}"))?;
+        let pool = self.pool().await?;
+        let survivor = Self::resolve_person_strict(&pool, &params.keep).await?;
+        let duplicate = Self::resolve_person_strict(&pool, &params.absorb).await?;
+        if survivor.entity_uuid == duplicate.entity_uuid {
+            return Err(format!(
+                "\"{}\" and \"{}\" resolve to the same directory row — there is nothing to merge.",
+                params.keep, params.absorb
+            ));
+        }
+
+        let brain = crate::agents::platform_extensions::get_global_brain();
+        let preview = crate::people_merge::preview_merge(
+            &pool,
+            brain.as_ref(),
+            &survivor.entity_uuid,
+            &duplicate.entity_uuid,
+        )
+        .await?;
+        let moving = format!(
+            "{} meeting(s) ({} with an open follow-up), {} project link(s), {} field(s), \
+             {} graph edge(s) move onto {}.",
+            preview.meetings,
+            preview.open_follow_ups,
+            preview
+                .project_links
+                .iter()
+                .filter(|l| !l.survivor_already_linked)
+                .count(),
+            preview.fields.len(),
+            preview.graph_edges,
+            survivor.display_name
+        );
+        let detail = format!(
+            "Keep \"{}\" ({}). Absorb and delete \"{}\" ({}).\n\n{}\n\n{}\n\nWhat stays put:\n- {}",
+            survivor.display_name,
+            survivor.entity_uuid,
+            duplicate.display_name,
+            duplicate.entity_uuid,
+            params.reason.as_deref().unwrap_or("No reason given."),
+            moving,
+            preview.retained.join("\n- ")
+        );
+
+        let payload = crate::decisions::PersonMergeProposalPayload {
+            survivor_uuid: survivor.entity_uuid.clone(),
+            survivor_name: survivor.display_name.clone(),
+            duplicate_uuid: duplicate.entity_uuid.clone(),
+            duplicate_name: duplicate.display_name.clone(),
+            preview: moving,
+        };
+        let decision = crate::decisions::create_decision(
+            &pool,
+            crate::decisions::NewDecision {
+                kind: "person_merge_proposal".to_string(),
+                headline: Some(crate::decisions::truncate_for_headline(&format!(
+                    "Merge \"{}\" into \"{}\"?",
+                    duplicate.display_name, survivor.display_name
+                ))),
+                detail: Some(detail),
+                payload: serde_json::to_value(&payload).map_err(|e| e.to_string())?,
+                ..Default::default()
+            },
+        )
+        .await?;
+        if decision.kind == "malformed" {
+            return Err(format!(
+                "The merge proposal was rejected as malformed: {}",
+                decision.detail
+            ));
+        }
+
+        Ok(vec![Content::text(format!(
+            "Merging deletes a person, so it waits for approval — decision {} is open. Ask them \
+             to approve it here in chat (or tap Approve on the card). Nothing has changed yet.",
+            decision.id
+        ))])
+    }
+
+    /// File a delete as a Decision Inbox card. Same gate as the merge.
+    async fn handle_delete_person(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let args = arguments.ok_or("Missing arguments")?;
+        let params: DeletePersonParams = serde_json::from_value(serde_json::Value::Object(args))
+            .map_err(|e| format!("Invalid arguments: {e}"))?;
+        let pool = self.pool().await?;
+        let person = Self::resolve_person_strict(&pool, &params.person).await?;
+
+        let meetings: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM person_meetings WHERE entity_uuid = ?")
+                .bind(&person.entity_uuid)
+                .fetch_one(&pool)
+                .await
+                .map_err(|e| e.to_string())?;
+        let links: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM project_people WHERE entity_uuid = ?")
+                .bind(&person.entity_uuid)
+                .fetch_one(&pool)
+                .await
+                .map_err(|e| e.to_string())?;
+
+        let payload = crate::decisions::PersonDeleteProposalPayload {
+            entity_uuid: person.entity_uuid.clone(),
+            display_name: person.display_name.clone(),
+            reason: params.reason.clone().unwrap_or_default(),
+        };
+        let decision = crate::decisions::create_decision(
+            &pool,
+            crate::decisions::NewDecision {
+                kind: "person_delete_proposal".to_string(),
+                headline: Some(crate::decisions::truncate_for_headline(&format!(
+                    "Delete \"{}\" from the directory?",
+                    person.display_name
+                ))),
+                detail: Some(format!(
+                    "Deleting \"{}\" ({}) also deletes {meetings} logged meeting(s) and \
+                     removes them from {links} project(s).\n\n{}\n\nTheir graph entity and any \
+                     Brain memories that mention them stay — those record things that happened.",
+                    person.display_name,
+                    person.entity_uuid,
+                    params.reason.as_deref().unwrap_or("No reason given.")
+                )),
+                payload: serde_json::to_value(&payload).map_err(|e| e.to_string())?,
+                ..Default::default()
+            },
+        )
+        .await?;
+        if decision.kind == "malformed" {
+            return Err(format!(
+                "The delete proposal was rejected as malformed: {}",
+                decision.detail
+            ));
+        }
+
+        Ok(vec![Content::text(format!(
+            "Deleting a person is not something I do on my own — decision {} is open for \
+             approval. Nothing has been removed yet.",
+            decision.id
+        ))])
+    }
+
     pub(crate) fn get_tools() -> Vec<Tool> {
         let create_schema = serde_json::to_value(schema_for!(CreatePersonParams)).unwrap();
         let associate_schema = serde_json::to_value(schema_for!(AssociatePersonParams)).unwrap();
@@ -744,6 +924,57 @@ impl PeopleClient {
                 Some(false),
             )),
             Tool::new(
+                "merge_people".to_string(),
+                indoc! {r#"
+                Propose merging two directory entries that are the same person.
+                Use when the user says two contacts are duplicates, or when you
+                spot the same person twice. `keep` survives (their id is stable);
+                `absorb` is deleted and their meetings, follow-ups, project
+                links and contact details move onto `keep`.
+
+                THIS DOES NOT MERGE. It files an approval card with a computed
+                preview and waits for the user — merging deletes a person.
+            "#}
+                .to_string(),
+                serde_json::to_value(schema_for!(MergePeopleParams))
+                    .unwrap()
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Merge People".to_string()),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+            )),
+            Tool::new(
+                "delete_person".to_string(),
+                indoc! {r#"
+                Propose removing someone from the directory. Deletes their
+                profile, their logged meetings and follow-ups, and their project
+                associations. Their Brain memories and graph entity stay.
+
+                THIS DOES NOT DELETE. It files an approval card and waits for
+                the user. Prefer merge_people when the person is a duplicate
+                rather than a mistake.
+            "#}
+                .to_string(),
+                serde_json::to_value(schema_for!(DeletePersonParams))
+                    .unwrap()
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("Delete Person".to_string()),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+            )),
+            Tool::new(
                 "log_person_meeting".to_string(),
                 indoc! {r#"
                 Log a meeting against a CRM person's profile. It shows on their
@@ -809,6 +1040,8 @@ impl McpClientTrait for PeopleClient {
             "enrich_person" => self.handle_enrich_person(arguments).await,
             "propose_enrichment" => self.handle_propose_enrichment(arguments).await,
             "log_person_meeting" => self.handle_log_meeting(arguments).await,
+            "merge_people" => self.handle_merge_people(arguments).await,
+            "delete_person" => self.handle_delete_person(arguments).await,
             _ => Err(format!("Unknown tool: {name}")),
         };
         match content {

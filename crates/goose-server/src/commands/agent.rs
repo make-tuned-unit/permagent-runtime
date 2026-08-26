@@ -174,6 +174,10 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
     // human has approved.
     crate::forecaster_sweep::spawn(app_state.clone());
 
+    // The Council's weekly debate. No-ops unless `council_enabled` is set;
+    // re-reads the flag every tick so a Settings flip needs no restart.
+    crate::council_sweep::spawn(app_state.clone());
+
     // The Concierge (#640): flag-gated (`concierge_enabled`, default OFF),
     // draft-only, local-tier inbox triage. The loop always spawns and re-reads
     // the flag every tick, so a Settings → Features flip needs no restart.

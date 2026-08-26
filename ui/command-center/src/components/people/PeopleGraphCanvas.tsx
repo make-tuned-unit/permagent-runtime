@@ -17,18 +17,32 @@ import { useTheme } from '../../styles/useTheme';
 import type { DirectoryPerson } from '../projects/types';
 import { isBridge, isYou, layoutPeopleGraph, type GraphNode } from './peopleGraph';
 import { PersonFace } from './PersonFace';
+import { shouldShowLabel } from './peopleFace';
 import { isQuiet } from './contactAge';
 
 type Status = 'loading' | 'error' | 'ready';
 
 export function PeopleGraph() {
-  const { colors, gradient } = useTheme();
+  const { colors, gradient, reduceMotion } = useTheme();
   const openPersonDetail = useCommandCenter(s => s.openPersonDetail);
+  const personDetail = useCommandCenter(s => s.personDetail);
   const peopleRev = useCommandCenter(s => s.peopleRev);
   const [people, setPeople] = useState<DirectoryPerson[]>([]);
   const [status, setStatus] = useState<Status>('loading');
   const [query, setQuery] = useState('');
   const [hovered, setHovered] = useState<string | null>(null);
+  /** Keyboard focus on a person's face — tabbing lights a node up like hover. */
+  const [focusedId, setFocusedId] = useState<string | null>(null);
+  /** The person whose detail modal is open, from the same `openPersonDetail(null, …)`
+   *  call this graph makes on click (PeopleView.tsx applies the same
+   *  `projectId == null` filter before rendering its modal — a person opened
+   *  from a project's People panel has projectId set and is a different
+   *  surface, not this graph's own selection). */
+  const selectedId = personDetail && personDetail.projectId == null ? personDetail.person.entity_uuid : null;
+  const activeIds = useMemo(
+    () => new Set([hovered, focusedId, selectedId].filter((id): id is string => id != null)),
+    [hovered, focusedId, selectedId],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -117,14 +131,18 @@ export function PeopleGraph() {
             const to = byId.get(edge.to);
             if (!from || !to) return null;
             const ego = edge.kind === 'ego';
+            // An edge touching the active person (hovered, keyboard-focused,
+            // or selected) reads as "this connects to them" — brighter and
+            // thicker than the baseline ego/project treatment.
+            const active = activeIds.has(edge.from) || activeIds.has(edge.to);
             return (
               <Line
                 key={`${edge.from}|${edge.to}|${edge.via}`}
                 points={[[from.x, from.y, from.z], [to.x, to.y, to.z]]}
-                color={ego ? colors.cyan : colors.textMuted}
+                color={active ? colors.cyan : ego ? colors.cyan : colors.textMuted}
                 transparent
-                opacity={ego ? 0.4 : 0.18}
-                lineWidth={ego ? 1.4 : 1}
+                opacity={active ? 0.75 : ego ? 0.4 : 0.18}
+                lineWidth={active ? 2 : ego ? 1.4 : 1}
               />
             );
           })}
@@ -149,7 +167,11 @@ export function PeopleGraph() {
               accent={colors.cyan}
               muted={colors.textMuted}
               hovered={hovered === node.id}
+              focused={focusedId === node.id}
+              selected={selectedId === node.id}
+              reducedMotion={reduceMotion}
               onHover={setHovered}
+              onFocusChange={setFocusedId}
               onOpen={isYou(node) ? undefined : () => {
                 const person = people.find(p => p.entity_uuid === node.id);
                 if (person) openPersonDetail(null, person);
@@ -167,20 +189,31 @@ function PersonNode({
   accent,
   muted,
   hovered,
+  focused,
+  selected,
+  reducedMotion,
   onHover,
+  onFocusChange,
   onOpen,
 }: {
   node: GraphNode;
   accent: string;
   muted: string;
   hovered: boolean;
+  focused: boolean;
+  selected: boolean;
+  reducedMotion: boolean;
   onHover: (id: string | null) => void;
+  onFocusChange: (id: string | null) => void;
   onOpen?: () => void;
 }) {
   const you = isYou(node);
   const bridge = isBridge(node);
-  const color = you || bridge || hovered ? accent : muted;
-  const showLabel = you || hovered || bridge;
+  // "active" — hovered, keyboard-focused, or the selected (detail-open)
+  // person — lights up the disc and, below, shows the name pill.
+  const active = hovered || focused || selected;
+  const color = you || bridge || active ? accent : muted;
+  const pillVisible = shouldShowLabel({ isYou: you, hovered, focused, selected });
   const radius = you ? 0.32 : bridge ? 0.22 : 0.16;
   if (you) {
     return (
@@ -209,7 +242,7 @@ function PersonNode({
       </group>
     );
   }
-  const size = hovered || bridge ? 48 : 40;
+  const size = active || bridge ? 48 : 40;
   return (
     <group position={[node.x, node.y, node.z]}>
       <Html
@@ -221,20 +254,19 @@ function PersonNode({
         <div
           onPointerOver={e => { e.stopPropagation(); onHover(node.id); }}
           onPointerOut={() => onHover(null)}
+          style={{ position: 'relative' }}
         >
-          <PersonFace
-            name={node.name}
-            photoUrl={node.photoUrl}
-            size={size}
-            accent={color}
-            dimmed={isQuiet(node.lastContactAt)}
-            onClick={onOpen}
-          />
-        </div>
-      </Html>
-      {showLabel && (
-        <Html center sprite style={{ pointerEvents: 'none', transform: 'translateY(-36px)' }}>
+          {/* The name pill rides INSIDE the face's <Html>, not in a second one.
+              Always mounted so the opacity change is a real ~120ms fade rather
+              than a mount pop-in — and one <Html> per node instead of two,
+              which matters: drei re-projects every <Html> each frame, so a
+              second one per person doubled that cost for a directory of any
+              size. Reduced motion keeps this fade; it is opacity, not motion. */}
           <div style={{
+            position: 'absolute',
+            left: '50%',
+            bottom: '100%',
+            transform: 'translate(-50%, -8px)',
             fontFamily: font.body,
             fontSize: 11,
             fontWeight: 600,
@@ -243,11 +275,25 @@ function PersonNode({
             borderRadius: 4,
             padding: '2px 6px',
             whiteSpace: 'nowrap',
+            pointerEvents: 'none',
+            opacity: pillVisible ? 1 : 0,
+            transition: 'opacity 120ms ease',
           }}>
             {node.name}
           </div>
-        </Html>
-      )}
+          <PersonFace
+            name={node.name}
+            photoUrl={node.photoUrl}
+            size={size}
+            accent={color}
+            dimmed={isQuiet(node.lastContactAt)}
+            active={active}
+            reducedMotion={reducedMotion}
+            onClick={onOpen}
+            onFocusChange={isFocused => onFocusChange(isFocused ? node.id : null)}
+          />
+        </div>
+      </Html>
     </group>
   );
 }

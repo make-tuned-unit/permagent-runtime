@@ -55,13 +55,14 @@ const DETAIL_MAX: usize = 300;
 /// The closed set of journaled kinds. The `kind` filter on [`page`] is
 /// validated against this list (unknown values simply match nothing), and the
 /// frontend's filter chips are built from the same names.
-pub const KNOWN_KINDS: [&str; 6] = [
+pub const KNOWN_KINDS: [&str; 7] = [
     "goal_state_changed",
     "decision_created",
     "decision_resolved",
     "librarian_describe_completed",
     "proactive_nudge",
     "task_failed",
+    "a2a_message",
 ];
 
 /// A roster agent id. The inner `String` is private to this module so that
@@ -250,6 +251,47 @@ pub fn entry_from_event(event: &PermagentEvent) -> Option<NewEntry> {
                 Some(detail),
                 Some("goal"),
                 goal_id.map(str::to_string),
+            )
+        }
+        PermagentEventType::A2aMessage => {
+            let from_goal = payload_str(event, "from_goal").unwrap_or("a goal");
+            let to_goal = payload_str(event, "to_goal");
+            let len = event.payload.get("body_len").and_then(|v| v.as_u64());
+            let steered = event
+                .payload
+                .get("steered")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            // Fingerprint only. The body lives in the recipient's `a2a_inbox`,
+            // which is where it was addressed; the journal proves the message
+            // happened, it does not republish what one agent told another.
+            // A plain prefix, not `truncate`: an ellipsis inside a hash reads
+            // as part of the hash and makes the prefix unmatchable.
+            let digest = payload_str(event, "body_sha256")
+                .map(|h| h.chars().take(12).collect::<String>())
+                .unwrap_or_else(|| "unhashed".to_string());
+            let detail = format!(
+                "A2A from {} · {} chars · sha256 {} · {}",
+                truncate(from_goal, 8),
+                len.unwrap_or(0),
+                digest,
+                if steered {
+                    "delivered to a live worker"
+                } else {
+                    "queued in the inbox"
+                }
+            );
+            (
+                "a2a_message",
+                Actor::resolve(payload_str(event, "actor").unwrap_or("system")),
+                // Placeholder; record_event upgrades it to the RECIPIENT card's
+                // title, which is the goal a reader wants to open.
+                to_goal
+                    .map(|id| format!("Goal {}", truncate(id, 8)))
+                    .unwrap_or_else(|| "Goal".to_string()),
+                Some(detail),
+                Some("goal"),
+                to_goal.map(str::to_string),
             )
         }
         PermagentEventType::DecisionCreated => {
@@ -724,6 +766,7 @@ mod tests {
             ),
             events::task_failed("t", "boom"),
             events::proactive_nudge("project_news", "s", "m", 1, "now", None, None),
+            events::a2a_message("g1", "g2", "deadbeef", 12, true, "claude-code"),
         ];
         let allowed: std::collections::HashSet<String> =
             ["system", "jesse", "henry", "henry-policy"]
@@ -740,7 +783,7 @@ mod tests {
             .iter()
             .map(|event| entry_from_event(event).unwrap())
             .collect();
-        // Fails when a seventh kind is journaled without being covered here.
+        // Fails when an eighth kind is journaled without being covered here.
         assert_eq!(
             entries
                 .iter()

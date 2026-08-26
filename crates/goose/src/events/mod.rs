@@ -372,6 +372,13 @@ pub enum PermagentEventType {
     TerminalGateCleared,
     // Goal lifecycle (create / transition / park / requeue / failure / delete)
     GoalStateChanged,
+    /// One goal worker sent another an agent-to-agent message (Prime A2A).
+    /// The payload carries WHO and HOW MUCH — from/to goal ids, the body's
+    /// SHA-256 and its length — and deliberately not the body: an audit trail
+    /// for instructions passing between agents has to prove the message
+    /// existed without republishing what it said.
+    #[serde(rename = "a2a_message")]
+    A2aMessage,
     // Echo/Watcher — the agent proactively resurfaces something worth your
     // attention (a dormant Brain thread today; project news/analytics later).
     ProactiveNudge,
@@ -388,6 +395,11 @@ pub enum PermagentEventType {
     /// memories-assoc / documents / notes) changed. Payload's `change` names
     /// the collection so clients can refresh narrowly.
     ProjectChanged,
+    /// Two directory people were merged into one. Payload carries the
+    /// survivor, the duplicate that is now gone, and the merge id (the undo
+    /// handle). Clients drop the duplicate from any open view rather than
+    /// waiting for a refetch to 404.
+    PersonMerged,
     /// A person's project association changed (associate / disassociate).
     PersonChanged,
     /// The agent's primary persona was edited (PUT /api/agent/identity).
@@ -399,6 +411,7 @@ pub enum PermagentEventType {
     /// to this instead of polling `/schedule/list` on a tight interval —
     /// added for the 2026-08-25 "schedule polling storm" health-review fix.
     ScheduleChanged,
+    SessionSpendChanged,
 }
 
 // ── Convenience constructors ────────────────────────────────────────────────
@@ -418,6 +431,30 @@ pub fn daemon_stopped(reason: &str) -> PermagentEvent {
     PermagentEvent::new(
         PermagentEventType::DaemonStopped,
         serde_json::json!({ "reason": reason }),
+    )
+}
+
+/// One agent-to-agent message, delivered. `body_sha256` and `body_len`
+/// fingerprint the body; the body itself is NOT carried. `actor` is the worker
+/// the sending goal is assigned to, or "system".
+pub fn a2a_message(
+    from_goal: &str,
+    to_goal: &str,
+    body_sha256: &str,
+    body_len: usize,
+    steered: bool,
+    actor: &str,
+) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::A2aMessage,
+        serde_json::json!({
+            "from_goal": from_goal,
+            "to_goal": to_goal,
+            "body_sha256": body_sha256,
+            "body_len": body_len,
+            "steered": steered,
+            "actor": actor,
+        }),
     )
 }
 
@@ -988,7 +1025,8 @@ pub fn project_changed(project_id: &str, change: &str) -> PermagentEvent {
     )
 }
 
-/// A person changed. `change` ∈ `associated|disassociated|created|updated|meeting`.
+/// A person changed. `change` ∈
+/// `associated|disassociated|created|updated|meeting|merged|deleted`.
 pub fn person_changed(project_id: &str, entity_uuid: &str, change: &str) -> PermagentEvent {
     PermagentEvent::new(
         PermagentEventType::PersonChanged,
@@ -996,6 +1034,20 @@ pub fn person_changed(project_id: &str, entity_uuid: &str, change: &str) -> Perm
             "project_id": project_id,
             "entity_uuid": entity_uuid,
             "change": change,
+        }),
+    )
+}
+
+/// Two people were merged. `survivor_uuid` is the id that lives on;
+/// `duplicate_uuid` no longer resolves. `merge_id` is the undo handle
+/// (`POST /api/people/merges/{merge_id}/undo`).
+pub fn person_merged(survivor_uuid: &str, duplicate_uuid: &str, merge_id: &str) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::PersonMerged,
+        serde_json::json!({
+            "survivor_uuid": survivor_uuid,
+            "duplicate_uuid": duplicate_uuid,
+            "merge_id": merge_id,
         }),
     )
 }
@@ -1019,6 +1071,67 @@ pub fn session_changed(session_id: &str, change: &str) -> PermagentEvent {
             "change": change,
         }),
     )
+}
+
+/// A session's running spend moved. Payload carries the figures themselves
+/// rather than ids alone — the one documented exception to this bus's "clients
+/// refetch, the bus doesn't carry state" rule, and it is deliberate.
+///
+/// The rule exists so a frame cannot go stale between emit and read. These
+/// numbers cannot: they are a monotonic rollup already committed to
+/// `cost_ledger`, and the emitter has just read them from it. Refetching
+/// instead would mean the Build meter issues an HTTP round trip per turn for a
+/// number the frame was holding, on the surface whose entire complaint was that
+/// it does not move while the user works.
+///
+/// `session_id` is the CLI harness's OWN session — the one that owns the ledger
+/// rows — not the browser's chat session. Those have always been different ids,
+/// which is why a meter wired to the chat session read $0.00 for a whole day of
+/// coding.
+///
+/// `final_turn` marks the announcement made as the session closes, so the meter
+/// can keep showing a finished session's total instead of decaying to nothing.
+pub fn session_spend_changed(spend: SessionSpend<'_>) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::SessionSpendChanged,
+        serde_json::json!({
+            "session_id": spend.session_id,
+            "turn_usd": spend.turn_usd,
+            "session_usd": spend.session_usd,
+            "today_usd": spend.today_usd,
+            "total_tokens": spend.total_tokens,
+            "provider": spend.provider,
+            "model": spend.model,
+            "working_dir": spend.working_dir,
+            "estimated": spend.estimated,
+            "final_turn": spend.final_turn,
+        }),
+    )
+}
+
+/// The figures one [`session_spend_changed`] announcement carries.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SessionSpend<'a> {
+    pub session_id: &'a str,
+    /// The most recent turn's cost, USD.
+    pub turn_usd: f64,
+    /// The session's running total, USD — `SUM(cost_ledger.cost_usd)`.
+    pub session_usd: f64,
+    /// Every session's spend since UTC midnight, USD.
+    pub today_usd: f64,
+    pub total_tokens: i64,
+    pub provider: Option<&'a str>,
+    pub model: Option<&'a str>,
+    pub working_dir: Option<&'a str>,
+    /// The last call's cost was a fail-closed estimate, not a published rate.
+    ///
+    /// The meter must say so. `worst_case_pricing` charges the most expensive
+    /// rate in the whole registry when a model has no row, which is the right
+    /// way to fail — the spend cap fires early — and the wrong thing to render
+    /// as a bare dollar amount, because the user would read a safety margin as
+    /// a bill.
+    pub estimated: bool,
+    pub final_turn: bool,
 }
 
 /// A scheduled job changed. `change` ∈

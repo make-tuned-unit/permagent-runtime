@@ -187,6 +187,98 @@ export interface NamedPersonMeeting {
 }
 
 /**
+ * One candidate pair from `GET /api/people/duplicates?limit=…` — best score
+ * first. `score` is 0..1 (render as a percentage); `reasons` are plain-language
+ * signals the daemon matched on ("same email", "same company + similar name").
+ */
+export interface DuplicateSuggestion {
+  survivor_uuid: string;
+  survivor_name: string;
+  duplicate_uuid: string;
+  duplicate_name: string;
+  score: number;
+  reasons: string[];
+}
+
+/** One project link a merge preview shows moving (or not) onto the survivor. */
+export interface MergePreviewProjectLink {
+  project_id: string;
+  project_name: string;
+  role: string | null;
+  /** True when the survivor is already linked to this project — the duplicate's
+   *  link is dropped rather than duplicated. */
+  survivor_already_linked: boolean;
+}
+
+/** One field the merge would copy onto the survivor, with its source. */
+export interface MergePreviewField {
+  field_name: string;
+  value: string;
+  source: string;
+}
+
+/**
+ * `GET /api/people/{survivorId}/merge-preview?duplicate_id={dupId}` — the full
+ * honest preview of what a merge would do. `retained` is the plain-language
+ * statement of what does NOT move — render it verbatim, never paraphrased.
+ */
+export interface MergePreview {
+  survivor: Person;
+  duplicate: Person;
+  meetings: number;
+  open_follow_ups: number;
+  project_links: MergePreviewProjectLink[];
+  fields: MergePreviewField[];
+  fields_kept_from_survivor: string[];
+  aliases: string[];
+  graph_edges: number;
+  retained: string[];
+}
+
+/** `POST /api/people/{survivorId}/merge` body `{ duplicate_id, confirm: true }`
+ *  response — the record of what actually moved. */
+export interface MergeReport {
+  merge_id: string;
+  survivor_uuid: string;
+  survivor_name: string;
+  duplicate_uuid: string;
+  duplicate_name: string;
+  meetings_moved: number;
+  project_links_moved: number;
+  project_links_dropped: number;
+  fields_copied: number;
+  graph_edges_moved: number;
+  aliases_recorded: number;
+  summary: string;
+}
+
+/** `DELETE /api/people/{id}` body `{ confirm: true }` response. `retained` is
+ *  what the delete deliberately keeps — render verbatim. */
+export interface DeleteReport {
+  entity_uuid: string;
+  display_name: string;
+  log_id: string;
+  meetings_deleted: number;
+  project_links_deleted: number;
+  graph_edges_deleted: number;
+  aliases_deleted: number;
+  retained: string[];
+}
+
+/** `POST /api/people/merges/{merge_id}/undo` response. `not_reverted` lists
+ *  anything the undo could not restore — render verbatim. */
+export interface UndoReport {
+  merge_id: string;
+  restored_uuid: string;
+  restored_name: string;
+  meetings_restored: number;
+  project_links_restored: number;
+  graph_edges_restored: number;
+  aliases_removed: number;
+  not_reverted: string[];
+}
+
+/**
  * A document attached to a project (#471 Layer 2,
  * `GET /api/projects/{id}/documents`). Serialized **snake_case** (the backend
  * `ProjectDocument` struct carries no `rename_all`) — match the wire exactly.

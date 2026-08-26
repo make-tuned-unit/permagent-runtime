@@ -1,0 +1,145 @@
+{
+  "turns": [
+    {
+      "id": "t01",
+      "kind": "conversational",
+      "prompt": "Hey there, good morning",
+      "expect_tool": null,
+      "rubric": "Must greet back warmly and briefly, in one short spoken sentence with no lists or headers."
+    },
+    {
+      "id": "t02",
+      "kind": "conversational",
+      "prompt": "How's it going today",
+      "expect_tool": null,
+      "rubric": "Must give a brief, natural spoken status update in one or two short sentences, not a list."
+    },
+    {
+      "id": "t03",
+      "kind": "conversational",
+      "prompt": "What have you got planned for me today",
+      "expect_tool": null,
+      "rubric": "Must answer conversationally and briefly, inviting a follow-up rather than reading a long report."
+    },
+    {
+      "id": "t04",
+      "kind": "conversational",
+      "prompt": "Can you say a bit more about that",
+      "expect_tool": null,
+      "rubric": "Must expand on the immediately prior point briefly, staying on the same topic without restarting it."
+    },
+    {
+      "id": "t05",
+      "kind": "conversational",
+      "prompt": "What do you mean by that exactly",
+      "expect_tool": null,
+      "rubric": "Must clarify the prior statement in plain, short spoken language without repeating it verbatim."
+    },
+    {
+      "id": "t06",
+      "kind": "conversational",
+      "prompt": "Thanks so much, that's really helpful",
+      "expect_tool": null,
+      "rubric": "Must acknowledge the thanks briefly and warmly without over-explaining or restating prior content."
+    },
+    {
+      "id": "t07",
+      "kind": "conversational",
+      "prompt": "Actually, never mind, forget I asked",
+      "expect_tool": null,
+      "rubric": "Must drop the prior request gracefully and briefly without asking why or re-raising it."
+    },
+    {
+      "id": "t08",
+      "kind": "conversational",
+      "prompt": "Can you say that again but shorter",
+      "expect_tool": null,
+      "rubric": "Must repeat the prior answer's core point in noticeably fewer words, spoken naturally."
+    },
+    {
+      "id": "t09",
+      "kind": "conversational",
+      "prompt": "Do I have anything going on this afternoon",
+      "expect_tool": null,
+      "rubric": "Must answer directly and briefly whether or not anything is happening this afternoon."
+    },
+    {
+      "id": "t10",
+      "kind": "conversational",
+      "prompt": "What should I focus on for the rest of today",
+      "expect_tool": null,
+      "rubric": "Must give one or two concrete, brief suggestions spoken naturally, not a long list."
+    },
+    {
+      "id": "t11",
+      "kind": "conversational",
+      "prompt": "You still there",
+      "expect_tool": null,
+      "rubric": "Must confirm presence briefly and naturally in a single short spoken sentence."
+    },
+    {
+      "id": "t12",
+      "kind": "conversational",
+      "prompt": "Alright, that's all for now, thanks",
+      "expect_tool": null,
+      "rubric": "Must close the conversation warmly and briefly without asking a new question."
+    },
+    {
+      "id": "t13",
+      "kind": "tool",
+      "prompt": "What projects do I have going on right now",
+      "expect_tool": "project_list",
+      "rubric": "Must call the project tool and then summarize the returned project names briefly in spoken form, not read raw data."
+    },
+    {
+      "id": "t14",
+      "kind": "tool",
+      "prompt": "What's in my inbox right now",
+      "expect_tool": "list_pending_decisions",
+      "rubric": "Must call the decision inbox tool and then summarize what is waiting in a brief, grouped spoken sentence."
+    },
+    {
+      "id": "t15",
+      "kind": "tool",
+      "prompt": "What does my dashboard say right now",
+      "expect_tool": "read_dashboard",
+      "rubric": "Must call the dashboard tool once and then read back what it found in one or two spoken sentences."
+    },
+    {
+      "id": "t16",
+      "kind": "tool",
+      "prompt": "What's on my to-do list today",
+      "expect_tool": "card_due_list",
+      "rubric": "Must call the to-do tool and then read back the soonest-due items briefly in spoken order."
+    },
+    {
+      "id": "t17",
+      "kind": "tool",
+      "prompt": "Start a new project called weekend garden",
+      "expect_tool": "project_create",
+      "rubric": "Must call the project creation tool with that name and then confirm briefly that it was created."
+    },
+    {
+      "id": "t18",
+      "kind": "reasoning",
+      "prompt": "I have three errands today: the bank, the pharmacy, and the grocery store. The pharmacy closes at five and the other two are open until nine. What order should I do them in?",
+      "expect_tool": null,
+      "rubric": "Must identify that the pharmacy should be done first because it is the only one with an early closing constraint, then the other two in any order."
+    },
+    {
+      "id": "t19",
+      "kind": "reasoning",
+      "prompt": "I have a two hour task due by Friday, and I only have one free hour today and one free hour tomorrow to work on it. How should I split my time?",
+      "expect_tool": null,
+      "rubric": "Must recommend splitting the task evenly across the two available hours, one hour each day, since that is the only way to finish by the deadline."
+    },
+    {
+      "id": "t20",
+      "kind": "reasoning",
+      "prompt": "My phone needs an hour to charge and I'm leaving in ninety minutes. Should I start charging it now or do something else first?",
+      "expect_tool": null,
+      "rubric": "Must say to start charging immediately since it runs in the background, freeing the remaining time for other things."
+    }
+  ],
+  "volatile_system_block": "# Live Status (this turn)\n\n## Briefings from your agents\n- Steward: overnight housekeeping pass finished clean, no drift found in config, storage health, or scheduled-task wiring, next pass scheduled for the usual overnight window as before.\n- Forecaster: no new signal since the last check-in, holding the prior outlook steady, will flag it clearly if the picture changes materially before the next scheduled cycle runs.\n- Retrospect: one small process note queued from yesterday's session, nothing urgent or time sensitive, will surface it if asked directly, otherwise folding it quietly into the weekly rollup summary.\n- Librarian: nightly indexing pass completed without incident, a handful of low-confidence entries were held back for review rather than merged automatically, no action needed from you right now.\n- Orchestrator: current turn budget is well within normal range, no throttling or degraded mode in effect, all platform extensions reporting healthy and reachable as of this turn.\n\n## Workers you can dispatch goals to\n- researcher-a: general web and document research, good for open-ended lookups or fact gathering, currently idle and ready to take a new goal immediately.\n- builder-a: implementation and code changes in an isolated sandboxed worktree, currently idle, best suited for well-scoped tasks that have a clear, checkable acceptance condition.\n- reviewer-a: reads a diff or a written plan and reports gaps or risks before work starts, currently idle, most useful before committing to a larger effort.\n- planner-a: breaks a fuzzy goal into an ordered list of concrete steps with rough effort estimates, currently idle, good for scoping before dispatching other workers.\n\n## Background worker status\n- nightly-sync: last run completed without error, next run scheduled for the standard overnight window, nothing pending on it right now that needs review.\n- watchlist-scan: last scan completed cleanly, no threshold was crossed, holding steady until the next scheduled scan runs, nothing here needs your attention.\n- decision-drain: queue is currently empty, nothing waiting to be drained, will pick up new items automatically as they are enqueued during the day.\n- effect-outbox: no stuck entries, last drain cycle cleared everything it found, next automatic drain follows the usual periodic schedule without any manual step.\n\n# Turn-specific Instructions\nKeep this turn's spoken reply short and natural, as if it were said out loud rather than written down for reading. Do not read raw tool output verbatim; summarize it in plain, conversational speech instead. If nothing here needs the user's attention, say so briefly instead of padding the answer with unnecessary detail. Prefer one or two short sentences over a bulleted list unless the user specifically asked for a list of items. This block is regenerated fresh on every single turn and is deliberately not cached, so treat any counts, names, or statuses listed above as valid only for this exact turn and nothing beyond it."
+}

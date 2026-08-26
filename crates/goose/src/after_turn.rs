@@ -314,6 +314,376 @@ impl AfterTurn for PrematureDoneGuard {
     }
 }
 
+// ── Second implementor: the independent-reviewer mandate ───────────────────
+
+/// Config key for [`ReviewerMandate`]. Default ON (unlike the opt-in
+/// `strix_enabled`-style flags): a coding harness that mandates review in its
+/// own recipe prose should not need a second switch to make that real. Read via
+/// `Config::global().get_param::<bool>(REVIEWER_MANDATE_KEY)`, which — the house
+/// pattern — also honours the `REVIEWER_MANDATE` env var automatically.
+pub const REVIEWER_MANDATE_KEY: &str = "reviewer_mandate";
+
+/// Prefix stamped on every [`AfterTurnAction::Park`] reason this hook raises.
+/// `goose-cli::session::output::render_review_notice` matches this prefix to
+/// render the "no independent review" notice as its own labelled block instead
+/// of plain assistant text — see that module. Keep the two in sync.
+pub const REVIEW_PARK_PREFIX: &str = "independent review did not run: ";
+
+/// Opening sentence of the injected ask. Written once, then recognised again on
+/// the next pass through [`ReviewerMandate::after_turn`], which is how this hook
+/// counts ITS OWN holds.
+///
+/// It cannot use `AfterTurnContext::prior_holds` for that: the reply loop keeps
+/// ONE counter for all hooks, so a hold [`PrematureDoneGuard`] spent sending the
+/// model back to verify would read here as "I already asked for a review" and
+/// the mandate would go quiet for the rest of the turn — reinstating exactly the
+/// silence this hook exists to end. The injected message is a user message in
+/// the conversation, so looking for it is both hook-local and durable.
+const REVIEW_ASK_OPENING: &str =
+    "Before finishing: this turn changed files and has not been independently reviewed yet.";
+
+/// Enforces the `permagent-coding` recipe's "summon the reviewer before you
+/// finish" mandate — prose the model could, and per a 20-run benchmark DID,
+/// simply skip. Where [`PrematureDoneGuard`] refuses to end a turn that edited
+/// files without a passing verify, this refuses to end a turn that edited files
+/// and verified WITHOUT having asked an independent, cross-family model to
+/// review the diff.
+///
+/// Enforcement is by injection, not by inventing a second execution path: the
+/// hook tells the model to call the SAME `delegate` tool the recipe already
+/// names, with `worker_persona: "reviewer"`. That routes through
+/// `summon::resolve_provider`'s existing `WorkflowRole::Review` handling —
+/// `cost_router::reviewer_dispatch` — so the reviewer's provider pick is the
+/// same cross-family, cost-capped, fail-closed choice PR #1106 already ships,
+/// and the review's own cost lands in the ledger under ITS OWN (subagent)
+/// session, not silently folded into the author's. What this hook adds is
+/// narrower and honest about its limit: the turn cannot end without the
+/// delegation having been MADE, or a [`AfterTurnAction::Park`] that says
+/// plainly why it was not. It cannot make the reviewer answer well — a model
+/// can still rubber-stamp or hallucinate a verdict — only that asking it
+/// happened.
+///
+/// Mirrors [`PrematureDoneGuard`]'s split: the live async half
+/// ([`ReviewerMandate::assess`]) does the one database read and the one
+/// best-effort `git diff --shortstat` needed to pick a reviewer and price it;
+/// the actual decision ([`decide`]) is a pure function of already-resolved
+/// inputs, exercised directly by the unit tests below so they never touch a
+/// database — `ReviewerAvailability` there is built from the SAME pure
+/// `cost_router::select_reviewer` / `reviewer_spend_gate` the live path calls.
+pub struct ReviewerMandate;
+
+impl ReviewerMandate {
+    pub fn new() -> Self {
+        Self
+    }
+
+    fn enabled_by_config() -> bool {
+        crate::config::Config::global()
+            .get_param::<bool>(REVIEWER_MANDATE_KEY)
+            .unwrap_or(true)
+    }
+
+    /// The live half: read this session's record for its author (provider,
+    /// model) and working dir, size the pending change, then run the SAME
+    /// reviewer selection + spend gate the goal path's `select_for_goal` /
+    /// `spend_for_goal` compose (`goose-server::verification::review`) — that
+    /// module cannot be called from here (this crate does not depend on
+    /// `goose-server`, and does not want to: that IS problem #2 this feature
+    /// exists to fix for the CLI), so the same small composition of
+    /// `cost_router` primitives is repeated here rather than reached for.
+    async fn assess(session_id: &str) -> ReviewerAvailability {
+        let manager = crate::session::SessionManager::instance();
+        let session = match manager.get_session(session_id, false).await {
+            Ok(s) => s,
+            Err(e) => {
+                return ReviewerAvailability::Unavailable {
+                    reason: format!(
+                        "this session's record could not be read to pick an independent \
+                         reviewer ({e})"
+                    ),
+                }
+            }
+        };
+
+        let worker = match (
+            session.provider_name.as_deref(),
+            session.model_config.as_ref().map(|m| m.model_name.as_str()),
+        ) {
+            (Some(p), Some(m)) if !p.is_empty() && !m.is_empty() => {
+                Some((p.to_string(), m.to_string()))
+            }
+            _ => None,
+        };
+        let lines = changed_lines(&session.working_dir).await;
+
+        let configured = crate::cost_router::role_model(crate::cost_router::WorkflowRole::Review);
+        let derived_map = crate::cost_router::derived_role_map().await;
+        let derived = derived_map
+            .get(crate::cost_router::WorkflowRole::Review)
+            .map(|(rm, _)| rm.clone());
+        let available = crate::cost_router::discover_available_models_async().await;
+
+        let selection = crate::cost_router::select_reviewer(
+            worker.as_ref().map(|(p, m)| (p.as_str(), m.as_str())),
+            configured.as_ref(),
+            derived.as_ref(),
+            &available,
+            lines,
+        );
+
+        let pick = match selection {
+            crate::cost_router::ReviewerSelection::Unavailable { reason } => {
+                return ReviewerAvailability::Unavailable { reason }
+            }
+            crate::cost_router::ReviewerSelection::Reviewer(pick) => pick,
+        };
+
+        // Same-scope spend the goal path uses: the AUTHOR session's own running
+        // cost against both ceilings (there is no separate "task" scope for an
+        // interactive session, so — like `spend_for_goal` — one figure serves
+        // both budget scopes `reviewer_spend_gate` checks).
+        let spent = session.accumulated_cost_usd.unwrap_or(0.0);
+        let cfg = crate::cost_router::budget::load_budget_config();
+        let verdict = crate::cost_router::budget_verdict(spent, spent, &cfg);
+        match crate::cost_router::reviewer_spend_gate(&pick, &verdict) {
+            crate::cost_router::SpendDecision::Allow => ReviewerAvailability::Ready(pick),
+            // `reason` already names the refused reviewer (`reviewer_spend_gate`
+            // formats it as "the reviewer (provider/model) has no published
+            // price…" / the budget-band message) — nothing else to carry.
+            crate::cost_router::SpendDecision::Refuse { reason } => {
+                ReviewerAvailability::SpendRefused { reason }
+            }
+        }
+    }
+}
+
+impl Default for ReviewerMandate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// What [`ReviewerMandate::assess`] found when it asked whether an independent
+/// review can run right now, and — if it can — whether it may be paid for.
+/// Tests build this directly (from the real, pure `select_reviewer` /
+/// `reviewer_spend_gate`), so [`decide`] is exercised without a database.
+#[derive(Debug, Clone)]
+enum ReviewerAvailability {
+    /// A reviewer was chosen and its spend is allowed.
+    Ready(Box<crate::cost_router::ReviewerPick>),
+    /// A reviewer was chosen but its spend must be refused (unpriced, or a
+    /// Gate/Hard budget band) — never billed as free, never run anyway.
+    SpendRefused { reason: String },
+    /// No reviewer could be chosen at all (no cross-family model available).
+    Unavailable { reason: String },
+}
+
+/// Best-effort "how big is the pending change" signal for `select_reviewer`'s
+/// capability floor: `git diff --shortstat HEAD` in the session's working dir,
+/// summed insertions+deletions. Mirrors `orchestrator::capture_worktree_diff`'s
+/// discipline (bounded, best-effort, a non-repo or git error is never fatal) —
+/// a failure here yields `0`, the SMALL-diff floor, which is the LENIENT
+/// default: worst case the mandate asks for a slightly weaker reviewer than an
+/// exact count would, never a reason to block the review outright.
+async fn changed_lines(working_dir: &std::path::Path) -> usize {
+    let output = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(working_dir)
+        .args(["diff", "--shortstat", "HEAD"])
+        .output()
+        .await;
+    match output {
+        Ok(o) if o.status.success() => parse_shortstat(&String::from_utf8_lossy(&o.stdout)),
+        _ => 0,
+    }
+}
+
+/// Parse `git diff --shortstat`'s one-line summary (e.g. "3 files changed, 12
+/// insertions(+), 4 deletions(-)") into a total changed-line count. A clause
+/// that does not parse (or a rename-only diff missing one clause entirely)
+/// simply contributes 0 rather than failing the whole parse.
+fn parse_shortstat(text: &str) -> usize {
+    let mut total = 0usize;
+    for clause in text.split(',') {
+        let clause = clause.trim();
+        let number_part = clause
+            .strip_suffix("insertions(+)")
+            .or_else(|| clause.strip_suffix("insertion(+)"))
+            .or_else(|| clause.strip_suffix("deletions(-)"))
+            .or_else(|| clause.strip_suffix("deletion(-)"));
+        if let Some(n) = number_part.and_then(|n| n.trim().parse::<usize>().ok()) {
+            total += n;
+        }
+    }
+    total
+}
+
+/// True when a `delegate` (or `*__delegate`) call carrying
+/// `worker_persona: "reviewer"` (case-insensitive) appears anywhere after
+/// `after_position` — the SAME flattened-conversation position scheme
+/// [`scan_verify_positions`] uses, so "after the last mutation" means the same
+/// thing here as it does there. The REQUEST alone is enough evidence the
+/// delegation happened: by the time `after_turn` runs, the turn has already
+/// finished, so every tool request in `messages` has already been answered.
+fn reviewer_delegation_ran_after(messages: &[Message], after_position: usize) -> bool {
+    use crate::conversation::message::MessageContent;
+
+    let mut index = 0usize;
+    for msg in messages {
+        for content in &msg.content {
+            index += 1;
+            if index <= after_position {
+                continue;
+            }
+            if let MessageContent::ToolRequest(req) = content {
+                if let Ok(call) = req.tool_call.as_ref() {
+                    if is_reviewer_delegation(call) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Does this tool call delegate to the `reviewer` worker persona?
+fn is_reviewer_delegation(call: &rmcp::model::CallToolRequestParams) -> bool {
+    let base = call.name.rsplit("__").next().unwrap_or(call.name.as_ref());
+    if base != "delegate" {
+        return false;
+    }
+    call.arguments
+        .as_ref()
+        .and_then(|args| args.get("worker_persona"))
+        .and_then(|v| v.as_str())
+        .is_some_and(|p| p.eq_ignore_ascii_case("reviewer"))
+}
+
+/// True when this hook's own ask has already been injected after
+/// `after_position` — one ask per changed-files turn, whether or not the model
+/// obliged. Without this the hook would re-ask every time the model finished
+/// again, which is a loop.
+fn reviewer_ask_pending(messages: &[Message], after_position: usize) -> bool {
+    use crate::conversation::message::MessageContent;
+
+    let mut index = 0usize;
+    for msg in messages {
+        for content in &msg.content {
+            index += 1;
+            if index <= after_position {
+                continue;
+            }
+            if let MessageContent::Text(text) = content {
+                if text.text.contains(REVIEW_ASK_OPENING) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// The imperative instruction injected to re-enter the model loop: names the
+/// concrete reviewer, the tool, the persona, the data-fence format the recipe
+/// already specifies, and the strict verdict tokens — so the model has exactly
+/// what it needs to make the delegation in one shot.
+fn reviewer_inject_text(pick: &crate::cost_router::ReviewerPick) -> String {
+    let warning = pick
+        .warning
+        .as_ref()
+        .map(|w| format!("\n\nNote: {w}"))
+        .unwrap_or_default();
+    format!(
+        "{REVIEW_ASK_OPENING} Call the `delegate` tool now with `worker_persona: \"reviewer\"` \
+         (it will run on {label}, a different model from yours). Give it the task \
+         spec, the diff, and the verify output, fenced exactly as the recipe \
+         specifies:\n\
+         BEGIN_TASK_SPEC\n<what was asked for>\nEND_TASK_SPEC\n\
+         BEGIN_DIFF\n<the diff>\nEND_DIFF\n\
+         BEGIN_VERIFY_OUTPUT\n<the verify output>\nEND_VERIFY_OUTPUT\n\
+         Then report the reviewer's verdict — APPROVE, REQUEST_CHANGES, or \
+         UNCERTAIN — before ending the turn. Do not end the turn until the \
+         reviewer has answered.{warning}",
+        label = pick.label(),
+    )
+}
+
+/// Pure: what the mandate does once mutation/delegation/hold state and reviewer
+/// availability are already known. See [`ReviewerMandate::after_turn`] for the
+/// live gating order this mirrors — `mutated`, then `delegation_already_ran`,
+/// then `already_asked`, and ONLY THEN `availability`, so a turn that never
+/// needed a reviewer (or already got one, or was already asked once) never has
+/// to have `availability` computed at all.
+fn decide(
+    mutated: bool,
+    delegation_already_ran: bool,
+    already_asked: bool,
+    availability: &ReviewerAvailability,
+) -> AfterTurnAction {
+    if !mutated || delegation_already_ran || already_asked {
+        return AfterTurnAction::Allow;
+    }
+    match availability {
+        ReviewerAvailability::Ready(pick) => AfterTurnAction::Continue {
+            inject: reviewer_inject_text(pick),
+        },
+        ReviewerAvailability::SpendRefused { reason } => AfterTurnAction::Park {
+            reason: format!("{REVIEW_PARK_PREFIX}{reason}"),
+        },
+        ReviewerAvailability::Unavailable { reason } => AfterTurnAction::Park {
+            reason: format!("{REVIEW_PARK_PREFIX}{reason}"),
+        },
+    }
+}
+
+#[async_trait]
+impl AfterTurn for ReviewerMandate {
+    fn name(&self) -> &'static str {
+        "reviewer_mandate"
+    }
+
+    fn is_enabled(&self) -> bool {
+        Self::enabled_by_config()
+    }
+
+    async fn after_turn(&self, ctx: &AfterTurnContext<'_>) -> AfterTurnAction {
+        let positions = scan_verify_positions(ctx.messages);
+        let Some(last_mutation) = positions.last_mutation else {
+            // The applicability gate, same as `PrematureDoneGuard`: nothing was
+            // written, so there is nothing to have reviewed. No reviewer
+            // selection is attempted — ordinary conversation never pays for it.
+            return AfterTurnAction::Allow;
+        };
+        // The recipe mandates review "once verify PASSES on a non-trivial
+        // change", and deferring until then is also what keeps the two hooks
+        // from fighting. `AfterTurnManager` folds their answers worst-wins
+        // (Allow < Continue < Park), so a `Park` raised here because no reviewer
+        // is available would OUTRANK `PrematureDoneGuard`'s `Continue` and end
+        // the turn in place of sending the model back to verify. While edits are
+        // unverified this is the guard's turn to speak; the mandate fires on the
+        // pass after verify goes green.
+        if positions.unverified_edits() {
+            return AfterTurnAction::Allow;
+        }
+
+        let delegation_already_ran = reviewer_delegation_ran_after(ctx.messages, last_mutation);
+        // `prior_holds` is a shared, all-hooks counter and cannot answer "did I
+        // already ask?" (see `REVIEW_ASK_OPENING`); it serves only as a hard
+        // backstop against an unbounded loop if the injected ask ever stopped
+        // being findable. 2, not 1, because the guard may legitimately have
+        // spent one hold on verify before this hook ever ran.
+        let already_asked =
+            reviewer_ask_pending(ctx.messages, last_mutation) || ctx.prior_holds >= 2;
+        if delegation_already_ran || already_asked {
+            return AfterTurnAction::Allow;
+        }
+
+        let availability = Self::assess(ctx.session_id).await;
+        decide(true, delegation_already_ran, already_asked, &availability)
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -596,5 +966,292 @@ mod tests {
         let mut m = AfterTurnManager::new();
         m.add_hook(Box::new(Off));
         assert_eq!(m.after_turn(&ctx(&[], 0)).await, AfterTurnAction::Allow);
+    }
+
+    // ── ReviewerMandate ──────────────────────────────────────────────────────
+
+    fn delegate_exchange(id: &str, worker_persona: &str) -> Message {
+        let call = CallToolRequestParams::new("delegate".to_string()).with_arguments(
+            serde_json::Map::from_iter([(
+                "worker_persona".to_string(),
+                serde_json::Value::String(worker_persona.to_string()),
+            )]),
+        );
+        Message::new(
+            Role::Assistant,
+            0,
+            vec![
+                MessageContent::tool_request(id, Ok(call)),
+                MessageContent::tool_response(
+                    id,
+                    Ok(CallToolResult::success(vec![Content::text("APPROVE")])),
+                ),
+            ],
+        )
+    }
+
+    /// Two KB rows from different families — mirrors
+    /// `cost_router::reviewer_pick`'s own test fixture so this suite never
+    /// hard-codes a vendor.
+    fn two_families() -> (
+        &'static crate::cost_router::ModelKnowledge,
+        &'static crate::cost_router::ModelKnowledge,
+    ) {
+        let a = crate::cost_router::KNOWN_MODELS
+            .first()
+            .expect("knowledge base is not empty");
+        let b = crate::cost_router::KNOWN_MODELS
+            .iter()
+            .find(|m| m.family != a.family)
+            .expect("knowledge base has at least two families");
+        (a, b)
+    }
+
+    /// A real `Ready` pick over the full knowledge base, for tests that need the
+    /// injected text rather than the decision.
+    fn ready_pick() -> Box<crate::cost_router::ReviewerPick> {
+        let (worker, _) = two_families();
+        let available: Vec<crate::cost_router::AvailableModel> = crate::cost_router::KNOWN_MODELS
+            .iter()
+            .map(|m| crate::cost_router::AvailableModel::new(m.provider, m.model))
+            .collect();
+        match crate::cost_router::select_reviewer(
+            Some((worker.provider, worker.model)),
+            None,
+            None,
+            &available,
+            10,
+        ) {
+            crate::cost_router::ReviewerSelection::Reviewer(p) => p,
+            other => panic!("expected a reviewer, got {other:?}"),
+        }
+    }
+
+    /// Case 1 — No mutating tool call → Allow, and no reviewer selection is
+    /// attempted (the applicability gate returns before `assess` runs, so this
+    /// is safe to exercise through the real, DB-touching `after_turn`).
+    #[tokio::test]
+    async fn no_mutation_allows_without_attempting_a_reviewer_pick() {
+        let mandate = ReviewerMandate::new();
+        let plain = vec![Message::assistant().with_text("Here is the answer.")];
+        assert_eq!(
+            mandate.after_turn(&ctx(&plain, 0)).await,
+            AfterTurnAction::Allow
+        );
+
+        let read_only = vec![tool_exchange("developer__search", "a", true)];
+        assert_eq!(
+            mandate.after_turn(&ctx(&read_only, 0)).await,
+            AfterTurnAction::Allow
+        );
+    }
+
+    /// Case 2 — A mutation with no reviewer delegation yet → `Continue`, naming the
+    /// `delegate` tool and the `reviewer` persona. Exercises the pure `decide`
+    /// directly with a `Ready` availability built from the real
+    /// `select_reviewer`, so this never touches a database.
+    #[test]
+    fn a_mutation_with_no_delegation_yet_asks_for_one() {
+        // The full known-models catalog, like `reviewer_pick`'s own
+        // `best_fit_picks_the_cheapest_capable_different_family_model` test —
+        // a two-candidate list risks neither clearing the capability floor.
+        let (worker, _) = two_families();
+        let available: Vec<crate::cost_router::AvailableModel> = crate::cost_router::KNOWN_MODELS
+            .iter()
+            .map(|m| crate::cost_router::AvailableModel::new(m.provider, m.model))
+            .collect();
+        let selection = crate::cost_router::select_reviewer(
+            Some((worker.provider, worker.model)),
+            None,
+            None,
+            &available,
+            10,
+        );
+        let pick = match selection {
+            crate::cost_router::ReviewerSelection::Reviewer(p) => p,
+            other => panic!("expected a reviewer, got {other:?}"),
+        };
+        let availability = ReviewerAvailability::Ready(pick);
+        match decide(true, false, false, &availability) {
+            AfterTurnAction::Continue { inject } => {
+                assert!(inject.contains("delegate"), "inject was {inject:?}");
+                let lower = inject.to_ascii_lowercase();
+                assert!(lower.contains("worker_persona"), "{inject:?}");
+                assert!(lower.contains("reviewer"), "{inject:?}");
+            }
+            other => panic!("expected Continue, got {other:?}"),
+        }
+    }
+
+    /// Case 3 — A mutation FOLLOWED BY a `delegate` call carrying
+    /// `worker_persona: "reviewer"` → Allow — satisfied, fires once, no loop.
+    /// Short-circuits before `assess`, so safe through the real `after_turn`.
+    #[tokio::test]
+    async fn a_completed_reviewer_delegation_satisfies_the_mandate() {
+        let mandate = ReviewerMandate::new();
+        let turn = vec![
+            tool_exchange("developer__edit", "e1", true),
+            tool_exchange("developer__verify", "v1", true),
+            delegate_exchange("d1", "reviewer"),
+        ];
+        assert_eq!(
+            mandate.after_turn(&ctx(&turn, 0)).await,
+            AfterTurnAction::Allow
+        );
+
+        // Case-insensitive, and a persona named after the fact still counts.
+        let turn = vec![
+            tool_exchange("developer__edit", "e1", true),
+            tool_exchange("developer__verify", "v1", true),
+            delegate_exchange("d1", "Reviewer"),
+        ];
+        assert_eq!(
+            mandate.after_turn(&ctx(&turn, 0)).await,
+            AfterTurnAction::Allow
+        );
+    }
+
+    /// Case 4 — The ask is made ONCE per changed-files turn, whether or not the model
+    /// obliged — the injected message is its own record. Short-circuits before
+    /// `assess`, so safe through the real `after_turn`.
+    #[tokio::test]
+    async fn an_ask_already_injected_is_never_repeated() {
+        let mandate = ReviewerMandate::new();
+        let asked = vec![
+            tool_exchange("developer__edit", "e1", true),
+            tool_exchange("developer__verify", "v1", true),
+            Message::user().with_text(reviewer_inject_text(&ready_pick())),
+            Message::assistant().with_text("I would rather not."),
+        ];
+        assert_eq!(
+            mandate.after_turn(&ctx(&asked, 0)).await,
+            AfterTurnAction::Allow,
+            "the mandate asks once; it does not nag"
+        );
+
+        // And the shared counter is a backstop only, at 2 — one hold belongs to
+        // `PrematureDoneGuard`.
+        let verified = vec![
+            tool_exchange("developer__edit", "e1", true),
+            tool_exchange("developer__verify", "v1", true),
+        ];
+        assert_eq!(
+            mandate.after_turn(&ctx(&verified, 2)).await,
+            AfterTurnAction::Allow
+        );
+    }
+
+    /// The two hooks do not fight. While edits are unverified the mandate stays
+    /// silent so `PrematureDoneGuard` can send the model back — a `Park` here
+    /// would outrank the guard's `Continue` and end the turn instead.
+    #[tokio::test]
+    async fn an_unverified_edit_is_left_to_the_verify_guard() {
+        let edited = vec![tool_exchange("developer__edit", "e1", true)];
+        assert_eq!(
+            ReviewerMandate::new().after_turn(&ctx(&edited, 0)).await,
+            AfterTurnAction::Allow,
+            "the mandate must not pre-empt the verify hold"
+        );
+        assert!(
+            matches!(
+                PrematureDoneGuard::new().after_turn(&ctx(&edited, 0)).await,
+                AfterTurnAction::Continue { .. }
+            ),
+            "and the guard must still be the one that speaks"
+        );
+    }
+
+    /// Case 5 — No reviewer available, or one available but unpriced → `Park`, and
+    /// the reason says review did NOT run (via the shared prefix the CLI
+    /// renderer matches on).
+    #[test]
+    fn no_reviewer_or_an_unpriced_one_parks_saying_so() {
+        // No cross-family model at all.
+        let (worker, _) = two_families();
+        let available = vec![crate::cost_router::AvailableModel::new(
+            worker.provider,
+            worker.model,
+        )];
+        let selection = crate::cost_router::select_reviewer(
+            Some((worker.provider, worker.model)),
+            None,
+            None,
+            &available,
+            10,
+        );
+        let reason = match selection {
+            crate::cost_router::ReviewerSelection::Unavailable { reason } => reason,
+            other => panic!("expected Unavailable, got {other:?}"),
+        };
+        let availability = ReviewerAvailability::Unavailable { reason };
+        match decide(true, false, false, &availability) {
+            AfterTurnAction::Park { reason } => {
+                assert!(
+                    reason.starts_with(REVIEW_PARK_PREFIX),
+                    "reason was {reason:?}"
+                );
+            }
+            other => panic!("expected Park, got {other:?}"),
+        }
+
+        // A reviewer WAS chosen, but it is unpriced — fail closed, never
+        // billed as $0.00.
+        let pick = Box::new(crate::cost_router::ReviewerPick {
+            provider: "someco".into(),
+            model: "some-1".into(),
+            family: "someco".into(),
+            worker_family: "otherco".into(),
+            source: crate::cost_router::ReviewerSource::BestFit,
+            cross_family: true,
+            cost_hint_per_mtok: 1.0,
+            input_usd_per_mtok: 1.0,
+            output_usd_per_mtok: 3.0,
+            priced: false,
+            is_local: false,
+            why: String::new(),
+            warning: None,
+        });
+        let verdict = crate::cost_router::BudgetVerdict {
+            band: crate::cost_router::BudgetBand::Ok,
+            scope: crate::cost_router::BudgetScope::Task,
+            spent: 0.0,
+            crossed: 0.0,
+            unpriced_calls: 0,
+        };
+        let spend_reason = match crate::cost_router::reviewer_spend_gate(&pick, &verdict) {
+            crate::cost_router::SpendDecision::Refuse { reason } => reason,
+            other => panic!("expected a refusal, got {other:?}"),
+        };
+        let availability = ReviewerAvailability::SpendRefused {
+            reason: spend_reason,
+        };
+        match decide(true, false, false, &availability) {
+            AfterTurnAction::Park { reason } => {
+                assert!(reason.starts_with(REVIEW_PARK_PREFIX), "{reason:?}");
+                assert!(reason.contains("no published price"), "{reason:?}");
+            }
+            other => panic!("expected Park, got {other:?}"),
+        }
+    }
+
+    /// Case 6 — The config knob, honoured via the `REVIEWER_MANDATE` env var — the
+    /// house `get_param::<bool>` pattern, same as `strix_enabled`.
+    #[tokio::test]
+    async fn the_config_knob_disables_the_mandate_and_defaults_on() {
+        {
+            let _g = env_lock::lock_env([("REVIEWER_MANDATE", Some("false"))]);
+            assert!(!ReviewerMandate::new().is_enabled());
+        }
+        {
+            let _g = env_lock::lock_env([("REVIEWER_MANDATE", Some("true"))]);
+            assert!(ReviewerMandate::new().is_enabled());
+        }
+        {
+            let _g = env_lock::lock_env([("REVIEWER_MANDATE", None::<&str>)]);
+            assert!(
+                ReviewerMandate::new().is_enabled(),
+                "unset means on — mandated review should not need a second opt-in"
+            );
+        }
     }
 }
