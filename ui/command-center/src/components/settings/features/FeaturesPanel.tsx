@@ -1,9 +1,9 @@
 /**
  * Settings → Features — the switches for the off-by-default workers:
  * Initiative, the Decision Playbook, the Concierge, the Steward's git-health
- * sweep and the Guard's security sweep. Each is one boolean config key; the
- * daemon loop behind it always runs and re-reads the flag every tick, so a flip
- * here lands at the next tick with no restart.
+ * sweep, the Guard's security sweep, and The Council. Each is one boolean
+ * config key; the daemon loop behind it always runs and re-reads the flag every
+ * tick, so a flip here lands at the next tick with no restart.
  *
  * The same key is written by the agent's own page under Settings → Agents (and,
  * for the Guard, by the Models pane) through this same `/config/upsert` call.

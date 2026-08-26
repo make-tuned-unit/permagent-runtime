@@ -33,6 +33,9 @@ struct ReportParams {
     session_id: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct StatusParams {}
+
 pub struct CouncilClient {
     info: InitializeResult,
     context: PlatformExtensionContext,
@@ -48,10 +51,13 @@ impl CouncilClient {
             .with_instructions(
                 "The Council briefs every connected chat-completion provider on the \
                  current state of the work, they debate, and you chair a weekly report. \
-                 council_convene runs a session (it spends every connected provider). \
+                 council_status is the cheap live query (on/off, seats, last headline, \
+                 open inbox actions) — use it when asked how the Council is doing. \
                  council_report reads the latest (or a named) report including per-model \
-                 dissent. Actions land in the Decision Inbox as proposals — you do not \
-                 impersonate the other models and you do not act on the report yourself.",
+                 dissent. council_convene runs a session (it spends every connected \
+                 provider) — never convene just to check status. Actions land in the \
+                 Decision Inbox as proposals — you do not impersonate the other models \
+                 and you do not act on the report yourself.",
             );
         Ok(Self { info, context })
     }
@@ -75,7 +81,17 @@ impl CouncilClient {
             .as_object()
             .unwrap()
             .clone();
+        let status_schema = serde_json::to_value(schema_for!(StatusParams))
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .clone();
         vec![
+            Tool::new(
+                "council_status".to_string(),
+                "Live query: whether The Council is on, which chat-completion providers sit, the last headline, and how many Decision Inbox actions are still open. Cheap — does not run a debate. Works while the flag is off. Use this when asked how the Council is doing; do not council_convene just to check.".to_string(),
+                status_schema,
+            ),
             Tool::new(
                 "council_convene".to_string(),
                 "Brief every connected chat provider on the current state of the work, run a two-round debate, and chair a weekly report. Optional question is added to the brief. Spends API credits on every seated model. Actions land as Decision Inbox proposals.".to_string(),
@@ -87,6 +103,12 @@ impl CouncilClient {
                 report_schema,
             ),
         ]
+    }
+
+    async fn handle_status(&self) -> std::result::Result<CallToolResult, String> {
+        let pool = self.pool().await.ok();
+        let text = council::format_status(pool.as_ref()).await;
+        Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 
     async fn handle_convene(
@@ -175,6 +197,10 @@ impl McpClientTrait for CouncilClient {
         _cancel_token: CancellationToken,
     ) -> Result<CallToolResult, Error> {
         match name {
+            "council_status" => match self.handle_status().await {
+                Ok(r) => Ok(r),
+                Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
+            },
             "council_convene" => match self.handle_convene(arguments).await {
                 Ok(r) => Ok(r),
                 Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),

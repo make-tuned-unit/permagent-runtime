@@ -801,7 +801,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: council::EXTENSION_NAME,
                 display_name: "Deliberate",
                 description:
-                    "Brief every connected chat-completion provider on the current state of the work, run a two-round debate, and chair a weekly report (council_convene); read the latest or a named report including per-model dissent (council_report). Spends every seated provider. Actions land as Decision Inbox proposals — approve files a board card, reject dismisses. Off until council_enabled is on under Settings → Features",
+                    "Brief every connected chat-completion provider on the current state of the work, run a two-round debate, and chair a weekly report (council_convene); live-query on/off, seats, last headline and open inbox actions (council_status); read the latest or a named report including per-model dissent (council_report). Spends every seated provider. Actions land as Decision Inbox proposals — approve files a board card, reject dismisses. Off until council_enabled is on under Settings → Features. council_status and council_report work while the flag is off; council_convene refuses until it is on",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,

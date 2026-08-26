@@ -71,7 +71,8 @@ tabs:
       Inbox, Activity/trace, Spend) and the sovereign controls — spend and
       budget, the sovereignty data boundary with its egress audit log, the
       worker roster, the Guard's security-sweep toggle, and the Features
-      switches for the off-by-default workers.
+      switches for the off-by-default workers (Initiative, Playbook, Concierge,
+      Steward git-health, The Guard, The Council).
     affords:
       - Configure AI provider (Anthropic, OpenAI, Ollama)
       - Adjust appearance / theme
@@ -79,12 +80,12 @@ tabs:
       - Review spend per project/session and set budget caps (Spend section)
       - Toggle the data boundary and read the egress audit log (Sovereignty section)
       - Enable or disable the Guard's security sweeps (Models section)
-      - Switch on or off Initiative, the Decision Playbook, the Concierge and the Steward's git-health sweep (Features section)
+      - Switch on or off Initiative, the Decision Playbook, the Concierge, the Steward's git-health sweep, The Guard, and The Council (Features section)
     suggest_when:
       - User asks how to configure a provider, change model, or adjust the Librarian
       - User asks what something is costing, wants a spend cap, or worries about a bill
       - User asks what data has left the machine or wants to audit egress
-      - User asks how to turn on the Concierge, the Playbook, Initiative or the git-health sweep
+      - User asks how to turn on the Concierge, the Playbook, Initiative, the git-health sweep, The Guard, or The Council
     customizable_layout: false
 
   - name: Projects
@@ -130,14 +131,18 @@ tabs:
     panel_type: workspace
     reads: overview_aggregate
     description: >-
-      The Dashboard is the home view — a customizable surface showing the user's
-      most important real-time information. Layout customization coming in PR 1.6.E.
+      The Dashboard is the home view — a customizable card layout of what matters
+      now: Decision Inbox proposals waiting for approve or reject, activity,
+      calendar from People meetings, and (when enabled) The Council's weekly
+      report. Drag cards to rearrange.
     affords:
-      - View current agent activity at a glance
-      - (Customizable component layout — coming soon)
+      - View Decision Inbox items waiting for approve or reject
+      - See The Council's latest weekly report when that worker is on
+      - Rearrange home cards
     suggest_when:
       - User asks "what's happening" or wants a summary
-      - User asks about customizing their home view
+      - User asks about the Decision Inbox, Home, or customizing their home view
+      - User asks about The Council's weekly report
     customizable_layout: true
 
   - name: Grow

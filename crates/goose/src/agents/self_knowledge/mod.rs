@@ -338,9 +338,9 @@ pub fn worker_live_state_for(
             "off (strix_enabled=false)".to_string()
         }),
         "council" => Some(if flags.council_enabled {
-            "on — weekly Sunday-night debate across connected chat providers; Henry can council_convene anytime".to_string()
+            "on — weekly Sunday-night debate across connected chat providers; council_status is the live query, council_report the last digest, council_convene to run one".to_string()
         } else {
-            "off (council_enabled=false)".to_string()
+            "off (council_enabled=false) — flip Settings → Features; council_status still answers seats and the last report".to_string()
         }),
         _ => None,
     }
@@ -1837,6 +1837,14 @@ mod tests {
         assert!(
             brief.contains("council_convene") && brief.contains("Decision Inbox"),
             "the rendered council descriptor must name convene and the inbox"
+        );
+        assert!(
+            brief.contains("council_status") && brief.contains("council_report"),
+            "the rendered council descriptor must name the live-query tools"
+        );
+        assert!(
+            brief.contains("council_status is the live query"),
+            "the live-state line must point Henry at council_status, not only convene"
         );
     }
 

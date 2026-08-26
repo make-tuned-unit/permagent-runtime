@@ -1,8 +1,9 @@
 //! The Council — a weekly multi-provider debate about the state of the work.
 //!
 //! Identity and the debate loop live here. The Sunday sweep lives in the
-//! daemon (`council_sweep`). Henry convenes on demand via the `deliberate`
-//! platform extension. Default OFF: it spends every connected chat provider.
+//! daemon (`council_sweep`). Henry live-queries with `council_status` /
+//! `council_report` and convenes on demand via the `deliberate` platform
+//! extension. Default OFF: convene spends every connected chat provider.
 
 use std::sync::OnceLock;
 
@@ -38,8 +39,10 @@ pub const SELF_KNOWLEDGE_FEATURE: FeatureDescriptor = FeatureDescriptor {
         "Briefs every connected chat-completion provider on the current state of the work — \
          projects, boards, due cards, activity, analytics, Watcher insights, Forecaster \
          direction, open decisions — then runs a two-round debate and chairs a weekly report. \
-         Henry convenes it with council_convene; a Sunday-night sweep runs the same session \
-         when council_enabled is on. Actions land as Decision Inbox proposals (council_action): \
+         Live-query with council_status (on or off, seated models, last headline, open inbox \
+         actions) and council_report (the full digest including per-model dissent). Henry \
+         convenes it with council_convene; a Sunday-night sweep runs the same session when \
+         council_enabled is on. Actions land as Decision Inbox proposals (council_action): \
          approve files a board card, reject dismisses. It only ever proposes",
     why_it_matters:
         "One model is a take. Several models, looking at the same brief and then at each other, \
@@ -48,10 +51,13 @@ pub const SELF_KNOWLEDGE_FEATURE: FeatureDescriptor = FeatureDescriptor {
     state_source: StateSource::Queryable,
     teaching: &[
         TeachingStep {
-            title: "He briefs; he does not impersonate",
-            body: "The Council briefs every connected chat-completion model on the same \
-                   portfolio snapshot. You convene and chair; you do not pretend to be \
-                   those other models.",
+            title: "The user flips the switch",
+            body: "The Council is off until the user turns on council_enabled under \
+                   Settings → Features. A scanner of every connected chat model is \
+                   switched on by them, never by you. Coding CLIs are not seats; \
+                   membership checkboxes on that same Features row exclude a provider. \
+                   Tell them plainly that each session spends API credits on every \
+                   seated model.",
             open_surface: Some(SurfaceRef {
                 tab: "Settings",
                 section: Some("features"),
@@ -59,12 +65,33 @@ pub const SELF_KNOWLEDGE_FEATURE: FeatureDescriptor = FeatureDescriptor {
             confirm: None,
         },
         TeachingStep {
-            title: "Weekly on Sunday night",
-            body: "When council_enabled is on, a Sunday 22:00 local sweep runs the same \
-                   session. You can also council_convene on demand. Actions land as \
-                   Decision Inbox proposals — approve files a board card, reject dismisses.",
+            title: "Live-query; do not convene to peek",
+            body: "Ask how it is doing with council_status — that is the cheap live \
+                   query (on or off, who sits, last headline, open Decision Inbox \
+                   actions). Read the last digest with council_report (omit the \
+                   session id for latest, or pass one). Never council_convene just \
+                   to check status: that spends every seated provider.",
+            open_surface: None,
+            confirm: None,
+        },
+        TeachingStep {
+            title: "Convene or wait for Sunday night",
+            body: "Once council_enabled is on, council_convene runs a session now \
+                   (optional question is added to the portfolio brief). A Sunday \
+                   22:00 local sweep runs the same session; Monday still catches a \
+                   missed Sunday. You chair the synthesis; you do not impersonate \
+                   the other models.",
+            open_surface: None,
+            confirm: None,
+        },
+        TeachingStep {
+            title: "Actions land in the Inbox; the report lands on Dashboard",
+            body: "Up to five recommendations file as Decision Inbox council_action \
+                   cards — approve files a board card on the named project, reject \
+                   dismisses. The weekly report is the Council card on Dashboard. \
+                   You do not act on the report yourself.",
             open_surface: Some(SurfaceRef {
-                tab: "Home",
+                tab: "Dashboard",
                 section: None,
             }),
             confirm: None,
@@ -319,6 +346,122 @@ pub async fn format_report(
     Ok(out)
 }
 
+/// Cheap live query: on/off, who sits, last headline, open inbox actions.
+/// Works while the flag is off — convene is the call that spends.
+pub async fn format_status(pool: Option<&Pool<Sqlite>>) -> String {
+    let seats = membership::resolve_seats().await;
+    let seated: Vec<String> = seats
+        .iter()
+        .filter(|s| s.eligible())
+        .map(|s| format!("{} / {} ({})", s.display_name, s.model, s.provider))
+        .collect();
+    let mut last_session = None;
+    let mut last_headline = None;
+    let mut last_status = None;
+    let mut last_started = None;
+    let mut running = false;
+    let mut open_actions = 0i64;
+    let db_reachable = pool.is_some();
+    if let Some(pool) = pool {
+        running = store::has_running(pool).await.unwrap_or(false);
+        open_actions = store::open_council_action_count(pool).await.unwrap_or(0);
+        if let Ok(Some((session, report))) = store::latest_finished(pool).await {
+            last_session = Some(session.id);
+            last_status = Some(session.status.as_str().to_string());
+            last_started = Some(session.started_at);
+            last_headline = report.map(|r| r.headline);
+        }
+    }
+    render_status(&StatusView {
+        enabled: is_enabled(),
+        seated,
+        running,
+        last_session,
+        last_headline,
+        last_status,
+        last_started,
+        open_actions,
+        db_reachable,
+    })
+}
+
+#[derive(Debug)]
+struct StatusView {
+    enabled: bool,
+    seated: Vec<String>,
+    running: bool,
+    last_session: Option<String>,
+    last_headline: Option<String>,
+    last_status: Option<String>,
+    last_started: Option<String>,
+    open_actions: i64,
+    db_reachable: bool,
+}
+
+fn render_status(view: &StatusView) -> String {
+    let mut out = String::new();
+    if view.enabled {
+        out.push_str("The Council is ON (council_enabled).\n");
+    } else {
+        out.push_str(
+            "The Council is OFF (council_enabled=false). Flip Settings → Features to turn it on. \
+             council_status and council_report still work; council_convene refuses until the flag is on.\n",
+        );
+    }
+    if view.seated.is_empty() {
+        out.push_str(
+            "Seated: none — connect a chat-completion provider key, or un-exclude a seat \
+             under Settings → Features. Coding CLIs are not seats.\n",
+        );
+    } else {
+        out.push_str(&format!(
+            "Seated: {} chat-completion provider(s)\n",
+            view.seated.len()
+        ));
+        for s in &view.seated {
+            out.push_str(&format!("- {s}\n"));
+        }
+    }
+    if !view.db_reachable {
+        out.push_str("Session store: unreachable — last report and open actions are unknown.\n");
+    } else if view.running {
+        out.push_str("Session: a debate is running now.\n");
+    } else {
+        out.push_str("Session: idle.\n");
+    }
+    match (
+        &view.last_session,
+        &view.last_headline,
+        &view.last_status,
+        &view.last_started,
+    ) {
+        (Some(id), headline, status, started) => {
+            let h = headline.as_deref().unwrap_or("(no headline)");
+            out.push_str(&format!(
+                "Last report: \"{h}\" ({}, session {id}, started {})\n",
+                status.as_deref().unwrap_or("unknown"),
+                started.as_deref().unwrap_or("unknown")
+            ));
+        }
+        _ if view.db_reachable => out.push_str("Last report: none yet.\n"),
+        _ => {}
+    }
+    if view.db_reachable {
+        out.push_str(&format!(
+            "Open Decision Inbox actions: {}\n",
+            view.open_actions
+        ));
+    }
+    out.push_str(
+        "\nLive query: this is council_status. Call council_report (no args) for the full digest \
+         including per-model dissent; pass a session id to read an older one. Call council_convene \
+         to run a new debate (spends every seated provider; optional question is added to the \
+         brief). Do not convene just to check status. Do not impersonate the other models. Do not \
+         act on the report — actions are Decision Inbox proposals the user approves or rejects.\n",
+    );
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,5 +469,69 @@ mod tests {
     #[test]
     fn disabled_by_default() {
         assert!(!is_enabled());
+    }
+
+    #[test]
+    fn status_render_names_the_live_query_and_does_not_spend() {
+        let off = render_status(&StatusView {
+            enabled: false,
+            seated: vec!["Anthropic / haiku (anthropic)".into()],
+            running: false,
+            last_session: None,
+            last_headline: None,
+            last_status: None,
+            last_started: None,
+            open_actions: 0,
+            db_reachable: true,
+        });
+        assert!(off.contains("OFF"));
+        assert!(off.contains("council_status"));
+        assert!(off.contains("council_report"));
+        assert!(off.contains("council_convene refuses"));
+        assert!(off.contains("Do not convene just to check status"));
+        assert!(off.contains("Anthropic / haiku"));
+
+        let on = render_status(&StatusView {
+            enabled: true,
+            seated: vec!["OpenAI / gpt-4.1 (openai)".into()],
+            running: false,
+            last_session: Some("sess-1".into()),
+            last_headline: Some("Ship the card".into()),
+            last_status: Some("complete".into()),
+            last_started: Some("2026-08-23".into()),
+            open_actions: 2,
+            db_reachable: true,
+        });
+        assert!(on.contains("The Council is ON"));
+        assert!(on.contains("Ship the card"));
+        assert!(on.contains("sess-1"));
+        assert!(on.contains("Open Decision Inbox actions: 2"));
+        assert!(!on.contains("convene refuses"));
+    }
+
+    #[test]
+    fn teaching_walks_enable_live_query_and_dashboard_not_home() {
+        let steps = SELF_KNOWLEDGE_FEATURE.teaching;
+        assert!(steps.len() >= 4);
+        let tabs: Vec<&str> = steps
+            .iter()
+            .filter_map(|s| s.open_surface.map(|t| t.tab))
+            .collect();
+        assert!(tabs.contains(&"Settings"));
+        assert!(tabs.contains(&"Dashboard"));
+        assert!(
+            !tabs.contains(&"Home"),
+            "Home is not a catalog tab — Dashboard is"
+        );
+        let lesson = steps
+            .iter()
+            .map(|s| format!("{} {}", s.title, s.body))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(lesson.contains("council_status"));
+        assert!(lesson.contains("council_report"));
+        assert!(lesson.contains("council_convene"));
+        assert!(lesson.contains("council_enabled"));
+        assert!(lesson.contains("Settings → Features"));
     }
 }

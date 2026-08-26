@@ -345,6 +345,16 @@ pub async fn has_running(pool: &Pool<Sqlite>) -> Result<bool, String> {
     Ok(n > 0)
 }
 
+/// Open Decision Inbox cards filed from a council report.
+pub async fn open_council_action_count(pool: &Pool<Sqlite>) -> Result<i64, String> {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM decisions WHERE kind = 'council_action' AND status = 'open'",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
