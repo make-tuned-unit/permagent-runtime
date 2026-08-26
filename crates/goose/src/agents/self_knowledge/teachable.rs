@@ -87,6 +87,13 @@ pub static TEACHABLE: &[TeachableFeature] = &[
         },
     },
     TeachableFeature {
+        id: "cost_optimizer",
+        surface: SurfaceRef {
+            tab: "Settings",
+            section: Some("models"),
+        },
+    },
+    TeachableFeature {
         id: "scheduler",
         surface: SurfaceRef {
             tab: "Automate",
@@ -348,6 +355,13 @@ mod tests {
 
         // Everything engaged → empty learn-next.
         assert!(learn_next_given(|_| true).is_empty());
+    }
+
+    #[test]
+    fn cost_optimizer_is_teachable() {
+        let t = find_teachable("cost_optimizer").expect("cost_optimizer must be in TEACHABLE");
+        assert_eq!(t.surface.tab, "Settings");
+        assert_eq!(t.surface.section, Some("models"));
     }
 
     #[test]

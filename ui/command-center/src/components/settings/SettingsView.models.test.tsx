@@ -15,6 +15,8 @@ const allowed = vi.hoisted(() => ({
   getLibrarianSchedule: vi.fn(),
   setLibrarianSchedule: vi.fn(),
   runLibrarianNow: vi.fn(),
+  getPacks: vi.fn(),
+  applyPacks: vi.fn(),
 }));
 
 vi.mock('../../lib/api', () => ({
@@ -47,6 +49,12 @@ beforeEach(() => {
   allowed.upsertConfig.mockReset().mockResolvedValue({} as never);
   allowed.getOllamaStatus.mockReset().mockResolvedValue({ reachable: false } as never);
   allowed.getLibrarianSchedule.mockReset().mockResolvedValue(null as never);
+  allowed.getPacks.mockReset().mockResolvedValue({
+    prompt: false,
+    configured: [],
+    recommendation: { recommendations: [], considered: [] },
+  } as never);
+  allowed.applyPacks.mockReset().mockResolvedValue({ applied: [] } as never);
 });
 
 afterEach(() => {
@@ -125,5 +133,24 @@ describe('ModelsPanel roster pointer', () => {
     expect(open).toBeTruthy();
     await act(async () => { open.click(); });
     expect(goto).toHaveBeenCalledWith('agents');
+  });
+});
+
+describe('ModelsPanel role routing', () => {
+  it('surfaces Apply recommended routing as the first action when prompted', async () => {
+    allowed.getPacks.mockResolvedValue({
+      prompt: true,
+      configured: [],
+      recommendation: {
+        considered: ['openai/gpt-5.4', 'ollama/qwen3'],
+        recommendations: [
+          { role: 'edit', provider: 'openai', model: 'gpt-5.4' },
+          { role: 'mechanical', provider: 'ollama', model: 'qwen3' },
+        ],
+      },
+    } as never);
+
+    await mount(vi.fn());
+    expect(container.textContent).toContain('Apply recommended routing');
   });
 });

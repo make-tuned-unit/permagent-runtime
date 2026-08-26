@@ -160,6 +160,23 @@ pub fn mappings_to_persist(recs: &[RoleRecommendation]) -> Vec<(WorkflowRole, St
         .collect()
 }
 
+/// Whether the harness should prompt the user to Apply per-role routing.
+/// True only when nothing is configured yet AND the recommender named at least
+/// two distinct models — a single-model setup has nothing cheaper to apply.
+pub fn should_prompt_role_routing(configured_empty: bool, recs: &[RoleRecommendation]) -> bool {
+    if !configured_empty {
+        return false;
+    }
+    let mut distinct = std::collections::HashSet::new();
+    for r in recs {
+        if r.provider.is_empty() || r.model.is_empty() {
+            continue;
+        }
+        distinct.insert((r.provider.as_str(), r.model.as_str()));
+    }
+    distinct.len() >= 2
+}
+
 /// Pure: whether the live dispatch cache guard should warn — a cache-heavy role
 /// (`is_cache_heavy`) that the role map ACTUALLY selected the provider for
 /// (`role_applied`), routed to a provider WITHOUT prompt caching. Shared by both
@@ -454,6 +471,33 @@ mod tests {
             .iter()
             .any(|(r, p, m)| *r == WorkflowRole::Edit && p == "openai" && m == "gpt-5.6"));
         assert!(!persisted.iter().any(|(r, _, _)| *r == WorkflowRole::Local));
+    }
+
+    #[test]
+    fn should_prompt_when_unconfigured_and_two_distinct_models() {
+        let rec = |role, provider: &str, model: &str| RoleRecommendation {
+            role,
+            provider: provider.to_string(),
+            model: model.to_string(),
+            display_name: model.to_string(),
+            family: provider.to_string(),
+            blended_cost_per_mtok: 0.0,
+            reason: String::new(),
+            warnings: Vec::new(),
+            floor_met: true,
+        };
+        let two = vec![
+            rec(WorkflowRole::Edit, "openai", "gpt-5.4"),
+            rec(WorkflowRole::Mechanical, "ollama", "qwen3"),
+        ];
+        assert!(should_prompt_role_routing(true, &two));
+        assert!(!should_prompt_role_routing(false, &two));
+        let one = vec![
+            rec(WorkflowRole::Edit, "openai", "gpt-5.4"),
+            rec(WorkflowRole::Mechanical, "openai", "gpt-5.4"),
+        ];
+        assert!(!should_prompt_role_routing(true, &one));
+        assert!(!should_prompt_role_routing(true, &[]));
     }
 
     // ── Cache guard (dispatch) decision ──────────────────────────────────────

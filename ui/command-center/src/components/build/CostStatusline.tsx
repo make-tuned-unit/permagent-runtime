@@ -3,6 +3,7 @@ import { useTheme } from '../../styles/useTheme';
 import { font } from '../../styles/tokens';
 import { formatCostMeter } from '../../lib/costMeter';
 import { useLiveGoals } from '../../lib/useLiveGoals';
+import { RoleRoutingPrompt } from '../chat/RoleRoutingPrompt';
 
 /**
  * Always-on Build statusline: `$0.42 · 47k↑ 12k↓ · cache saved $0.28 · 31% ctx · <model>`.
@@ -77,6 +78,7 @@ export function CostStatusline() {
           <span style={{ color: colors.textMuted }}>{note}</span>
         </span>
       )}
+      <RoleRoutingPrompt variant="compact" />
     </div>
   );
 }

@@ -47,6 +47,7 @@ pub mod librarian;
 pub mod local_inference;
 pub mod ollama;
 pub mod onboarding;
+pub mod packs;
 pub mod people;
 pub mod projects;
 pub mod prompts;
@@ -77,7 +78,7 @@ pub mod world;
 
 use std::sync::Arc;
 
-use axum::{middleware, Router};
+use axum::{Router, middleware};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::middleware::auth::{
@@ -196,6 +197,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(findings::routes(state.clone()))
         .merge(storage::routes(state.clone()))
         .merge(ollama::routes(state.clone()))
+        .merge(packs::routes())
         .merge(librarian::routes(state.clone()))
         .merge(henry_status::routes(state.clone()))
         .merge(runs::routes(state.clone()))

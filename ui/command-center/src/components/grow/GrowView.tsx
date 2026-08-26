@@ -29,7 +29,7 @@ import {
 } from './calendarPosts';
 import { groupActionsByCategory } from './growActionTabs';
 import { codingAgentDirective } from './codingAgentDirective';
-import { CODING_AGENTS, codingAgentById } from './codingAgents';
+import { CODING_AGENTS, codingAgentById, codingAgentSelectLabel } from './codingAgents';
 import { GrowResults } from './GrowResults';
 
 // Appended to every Grow prompt that DRAFTS user-facing copy (value props,
@@ -2639,7 +2639,9 @@ function ActionCard({
               }}
             >
               {CODING_AGENTS.map((a) => (
-                <option key={a.id} value={a.id}>{a.label}</option>
+                <option key={a.id} value={a.id} title={a.tooltip}>
+                  {codingAgentSelectLabel(a)}
+                </option>
               ))}
             </select>
             <button

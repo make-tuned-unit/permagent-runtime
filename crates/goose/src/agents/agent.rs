@@ -4,9 +4,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use futures::stream::BoxStream;
-use futures::{stream, Stream, StreamExt, TryStreamExt};
+use futures::{Stream, StreamExt, TryStreamExt, stream};
 use tracing_futures::Instrument;
 use uuid::Uuid;
 
@@ -14,11 +14,11 @@ use super::container::Container;
 use super::final_output_tool::FinalOutputTool;
 use super::platform_tools;
 use super::tool_confirmation_router::ToolConfirmationRouter;
-use super::tool_execution::{ToolCallResult, CHAT_MODE_TOOL_SKIPPED_RESPONSE, DECLINED_RESPONSE};
+use super::tool_execution::{CHAT_MODE_TOOL_SKIPPED_RESPONSE, DECLINED_RESPONSE, ToolCallResult};
 use crate::action_required_manager::ActionRequiredManager;
 use crate::agents::extension::{ExtensionConfig, ExtensionResult, ToolInfo};
 use crate::agents::extension_manager::{
-    get_parameter_names, ExtensionManager, ExtensionManagerCapabilities,
+    ExtensionManager, ExtensionManagerCapabilities, get_parameter_names,
 };
 use crate::agents::final_output_tool::{FINAL_OUTPUT_CONTINUATION_MESSAGE, FINAL_OUTPUT_TOOL_NAME};
 use crate::agents::platform_extensions::MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE;
@@ -28,22 +28,22 @@ use crate::agents::prompt_manager::PromptManager;
 use crate::agents::retry::{RetryManager, RetryResult};
 use crate::agents::types::{FrontendTool, SessionConfig, SharedProvider, ToolResultReceiver};
 use crate::config::permission::PermissionManager;
-use crate::config::{get_enabled_extensions, Config, GooseMode};
+use crate::config::{Config, GooseMode, get_enabled_extensions};
 use crate::context_mgmt::{
-    check_if_compaction_needed, compact_messages, DEFAULT_COMPACTION_THRESHOLD,
+    DEFAULT_COMPACTION_THRESHOLD, check_if_compaction_needed, compact_messages,
 };
 use crate::conversation::message::{
     ActionRequiredData, Message, MessageContent, ProviderMetadata, SystemNotificationType,
     ToolRequest,
 };
 use crate::conversation::{
-    debug_conversation_fix, fix_conversation, merge_consecutive_messages, Conversation,
+    Conversation, debug_conversation_fix, fix_conversation, merge_consecutive_messages,
 };
 use crate::cost_router::cache::SystemPromptParts;
 use crate::mcp_utils::ToolResult;
+use crate::permission::PermissionConfirmation;
 use crate::permission::permission_inspector::PermissionInspector;
 use crate::permission::permission_judge::PermissionCheckResult;
-use crate::permission::PermissionConfirmation;
 use crate::providers::base::{PermissionRouting, Provider};
 use crate::providers::errors::ProviderError;
 use crate::recipe::{Author, Recipe, Response, Settings};
@@ -55,7 +55,7 @@ use crate::security::write_jail::WriteJailInspector;
 use crate::session::extension_data::{EnabledExtensionsState, ExtensionState};
 use crate::session::{Session, SessionManager};
 use crate::tool_inspection::ToolInspectionManager;
-use crate::tool_monitor::{assess_monologue, LoopAction, ProgressMonitor};
+use crate::tool_monitor::{LoopAction, ProgressMonitor, assess_monologue};
 use crate::utils::is_token_cancelled;
 use regex::Regex;
 use rmcp::model::{
@@ -63,7 +63,7 @@ use rmcp::model::{
     ServerNotification, Tool,
 };
 use serde_json::Value;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, warn};
 
@@ -1878,6 +1878,10 @@ impl Agent {
                 let mut tools_updated = false;
                 let mut did_recovery_compact_this_iteration = false;
                 let mut did_switch_provider_this_iteration = false;
+                // Tokens/tools shown to the user this stream: after this flips,
+                // a transient error must not silent-switch (the user already
+                // saw a partial answer). Billing/auth still announce.
+                let mut stream_committed = false;
                 let mut exit_chat = false;
 
                 // Track whether this provider turn has already emitted visible
@@ -1930,6 +1934,7 @@ impl Agent {
                             }
 
                             if let Some(response) = response {
+                                stream_committed = true;
                                 // Provider-side permission parks (claude-code /
                                 // ACP subprocesses in approve/smart_approve):
                                 // the provider has yielded an ActionRequired
@@ -2362,6 +2367,34 @@ impl Agent {
                             #[cfg(feature = "telemetry")]
                             crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
                             error!("Error: {}", provider_err);
+                            if crate::cost_router::fallback::may_silent_precommit_failover(
+                                stream_committed,
+                                provider_err,
+                            ) && !permanent_failure_fallback_used
+                            {
+                                let failed_provider = match self.provider().await {
+                                    Ok(p) => p.get_name().to_string(),
+                                    Err(_) => "the model provider".to_string(),
+                                };
+                                if self
+                                    .switch_to_permanent_failure_fallback(
+                                        &session_config.id,
+                                        &failed_provider,
+                                    )
+                                    .await
+                                    .is_some()
+                                {
+                                    tracing::info!(
+                                        target: "permagent::cost_router",
+                                        session_id = %session_config.id,
+                                        from_provider = %failed_provider,
+                                        "silent pre-commit failover after a transient network error"
+                                    );
+                                    permanent_failure_fallback_used = true;
+                                    did_switch_provider_this_iteration = true;
+                                    break;
+                                }
+                            }
                             yield AgentEvent::Message(
                                 Message::assistant().with_text(
                                     format!("{provider_err}\n\nPlease resend your message to try again.")
@@ -2453,6 +2486,34 @@ impl Agent {
                             #[cfg(feature = "telemetry")]
                             crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
                             error!("Error: {}", provider_err);
+                            if crate::cost_router::fallback::may_silent_precommit_failover(
+                                stream_committed,
+                                provider_err,
+                            ) && !permanent_failure_fallback_used
+                            {
+                                let failed_provider = match self.provider().await {
+                                    Ok(p) => p.get_name().to_string(),
+                                    Err(_) => "the model provider".to_string(),
+                                };
+                                if self
+                                    .switch_to_permanent_failure_fallback(
+                                        &session_config.id,
+                                        &failed_provider,
+                                    )
+                                    .await
+                                    .is_some()
+                                {
+                                    tracing::info!(
+                                        target: "permagent::cost_router",
+                                        session_id = %session_config.id,
+                                        from_provider = %failed_provider,
+                                        "silent pre-commit failover after a transient provider error"
+                                    );
+                                    permanent_failure_fallback_used = true;
+                                    did_switch_provider_this_iteration = true;
+                                    break;
+                                }
+                            }
                             let message = Message::assistant().with_text(
                                 format!("Ran into this error: {provider_err}.\n\nPlease retry if you think this is a transient or recoverable error.")
                             );

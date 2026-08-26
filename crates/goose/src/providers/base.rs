@@ -1,17 +1,17 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use futures::future::BoxFuture;
 use futures::Stream;
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 
-use super::canonical::{map_to_canonical_model, CanonicalModelRegistry};
+use super::canonical::{CanonicalModelRegistry, map_to_canonical_model};
 use super::errors::ProviderError;
-use super::inventory::{default_inventory_identity, InventoryIdentityInput};
+use super::inventory::{InventoryIdentityInput, default_inventory_identity};
 use super::retry::RetryConfig;
 use crate::config::base::ConfigValue;
 use crate::config::{Config, ExtensionConfig, GooseMode};
-use crate::conversation::message::{Message, MessageContent};
 use crate::conversation::Conversation;
+use crate::conversation::message::{Message, MessageContent};
 use crate::cost_router::cache::SystemPromptParts;
 use crate::model::ModelConfig;
 use crate::permission::PermissionConfirmation;
@@ -34,6 +34,26 @@ fn strip_xml_tags(text: &str) -> String {
         LazyLock::new(|| Regex::new(r"</?[a-zA-Z][a-zA-Z0-9_]*[^>]*>").unwrap());
     let pass1 = BLOCK_RE.replace_all(text, "");
     TAG_RE.replace_all(&pass1, "").into_owned()
+}
+
+/// Derive a session title from the first user lines without calling a model.
+/// Housekeeping must not pay: titles are local unless there is no usable text.
+pub fn local_session_title(messages: &Conversation) -> Option<String> {
+    let joined = messages
+        .iter()
+        .filter(|m| m.role == rmcp::model::Role::User)
+        .take(MSG_COUNT_FOR_SESSION_NAME_GENERATION)
+        .map(|m| m.as_concat_text())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let cleaned = strip_xml_tags(&joined)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if cleaned.is_empty() {
+        return None;
+    }
+    Some(safe_truncate(&extract_short_title(&cleaned), 100))
 }
 
 fn extract_short_title(text: &str) -> String {
@@ -784,6 +804,9 @@ pub trait Provider: Send + Sync {
         session_id: &str,
         messages: &Conversation,
     ) -> Result<String, ProviderError> {
+        if let Some(title) = local_session_title(messages) {
+            return Ok(title);
+        }
         let context = self.get_initial_user_messages(messages);
         let system = crate::prompt_template::render_template(
             "session_name.md",
@@ -957,6 +980,34 @@ mod tests {
             strip_xml_tags("<think>\nline1\nline2\n</think>result"),
             "result"
         );
+    }
+
+    #[test]
+    fn local_session_title_from_first_user_lines() {
+        let conv = Conversation::new_unvalidated(vec![
+            Message::user().with_text("fix the login bug please and also"),
+        ]);
+        let title = local_session_title(&conv).expect("user text must yield a local title");
+        assert!(title.to_lowercase().contains("login"));
+        assert!(title.len() <= 100);
+        assert!(!title.contains('<'), "xml must be stripped: {title}");
+    }
+
+    #[test]
+    fn local_session_title_none_when_user_text_empty() {
+        let conv = Conversation::new_unvalidated(vec![Message::user().with_text("   ")]);
+        assert_eq!(local_session_title(&conv), None);
+    }
+
+    #[test]
+    fn local_session_title_strips_xml_and_truncates() {
+        let conv = Conversation::new_unvalidated(vec![Message::user().with_text(
+            "please <think>ignore this</think> rewrite the authentication middleware for the public api",
+        )]);
+        let title = local_session_title(&conv).expect("stripped xml still has words");
+        assert!(!title.contains('<'), "{title}");
+        assert!(!title.contains("think"), "{title}");
+        assert!(title.len() <= 100);
     }
 
     #[test]
