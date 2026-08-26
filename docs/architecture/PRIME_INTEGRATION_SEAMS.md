@@ -13,7 +13,7 @@ the inventory (goal 0). Feature work lives in the numbered follow-on goals.
 | Async subagents | `crates/goose/src/agents/subagent_handler.rs` `run_subagent_task` (awaited); `goal_engine::InternalSubagentEngine` returns a `JoinHandle` for *goal* workers, not generic subagent work | **partial** — goal engines spawn, but review/audit helpers cannot fan out two in-process subagents without blocking | 1 (spawn+join API), 2 (parallel review fan-out) |
 | Executable skills | `skill_md.rs` + `platform_extensions/skills.rs` load **markdown** `SKILL.md` folders (agentskills.io). No runner that execs a package and returns structured stdout | **missing** — skills are prompts, not runnable artifacts | 5 (package + runner), 6 (`run_executable_skill` tool) |
 | Goal threading (resume with prior attempt context) | `resume_in_progress_goals` / `resume_single_goal` (`orchestrator.rs`); `requeue_goal` preserves `attempt_count` + `last_error`; dispatch brief does **not** re-inject them (W4/W5) | **partial** — metadata survives; the next worker starts cold; dead-session resume can still fabricate Review success if a re-attached session goes idle | 7 |
-| Bounded refinement | `goal_transition::goal_budget` attempt/token/wallclock caps; verify-loop escalation (`cost_router`); completion checks run in `goose-server` verification *after* Review | **partial** — caps park the goal; there is no distinct check-failure rework budget that auto-requeues with check stdout | 8 |
+| Bounded refinement | `goal_refinement.rs` rework budget (config `verifier.json` → `refinement_budget`, default 3; per-goal override) wired into `goose-server` verification; separate from `goal_transition::goal_budget` and from `cost_router::hold_done` | **closed** — a failing check auto-requeues to Ready with the check stdout/stderr, placeholder findings and check lint as the corrective plan, leaves a routing snapshot per round, and parks with the full history at exhaustion | 8 |
 | A2A messaging | `send_message` (session id) and `steer_goal` (live CLI worker). No goal-to-goal API; Complete/Cancelled are not explicitly refused as A2A targets | **partial** — the pipes exist; they are not addressed by goal id, not audited as A2A, and do not write through to RLM | 9 (deliver+refuse), 10 (feedback → RLM → next brief) |
 
 Related existing spine (not a Prime gap, but the DAG this inventory rides on):
@@ -31,7 +31,16 @@ Landed by the Prime DAG implementation (goals 0–11):
 - **Parallel review fan-out** — `review_fanout` module; opt-in via goal or project metadata `review_fanout: true`. Security + debugger briefs fold into `approve_review` detail.
 - **Executable skills** — `crates/goose/src/executable_skills.rs` plus `skills/examples/hello-json/`. Orchestrator tool `run_executable_skill` refuses paths outside the skills root.
 - **Goal threading** — dispatch briefs on `attempt_count > 0` include `last_error`, RLM snapshot, A2A inbox, and worktree pointer. Resume never promotes a dead session to Review without worktree evidence (W5).
-- **Bounded refinement** — `crates/goose/src/goal_refinement.rs`. Metadata `refinement_budget` caps auto-rework after completion-check failure; exhaustion parks with `unblock`.
+- **Bounded refinement** — `crates/goose/src/goal_refinement.rs`. A check-failure
+  rework budget distinct from the attempt/token/wallclock caps and from the
+  premature-done hold. The cap comes from `verifier.json`'s `refinement_budget`
+  (default 3) unless the goal declares its own; an explicit `0` on either opts
+  out. Within budget the goal returns to Ready with the failing check's
+  stdout/stderr tail, the placeholder-scan findings and the gameable-check lint
+  as its corrective plan (the `retry_context_block` shape), and each round
+  leaves a `routing_snapshot` receipt plus a `refinement_history` entry.
+  Exhaustion parks with an `unblock` decision carrying every round, not just the
+  last.
 - **A2A** — orchestrator tool `message_goal` (`from_goal`, `to_goal`, `body`). InProgress only; writes RLM + card metadata; steers a live worker when one exists.
 - **E2E smoke** — `trigger_roadmap_dispatch` 2-goal promote path (lib test) plus this Shipped section.
 

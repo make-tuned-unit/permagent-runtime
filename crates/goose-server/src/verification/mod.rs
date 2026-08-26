@@ -446,7 +446,12 @@ pub async fn run_for_goal_with_review(
         (single, Vec::new())
     };
 
-    let check_fail_output = format_failing_checks(&check_results);
+    // The corrective plan the next worker gets: every failing check with its
+    // stdout/stderr tail, the placeholder-scan findings (a synthesized check
+    // row, so it is already in the list above), and the gameable-check lint —
+    // a check that could not have failed is exactly what a rework round has to
+    // fix, and until now that finding was only ever logged.
+    let check_fail_output = corrective_plan(&check_results, &lint_report.notes);
 
     // ── 4. Deterministic aggregation + machine-check clamps ──
     let mut record = aggregate_record(
@@ -680,6 +685,7 @@ pub async fn run_for_goal_with_review(
                 &card.title,
                 &meta_value,
                 &check_fail_output,
+                cfg.refinement_budget,
             )
             .await
         };
@@ -1312,6 +1318,25 @@ fn error_result(index: usize, check_type: &str, message: &str) -> CheckResult {
         lint: None,
         // A check that never got as far as the gate has nothing to record.
         approval: None,
+    }
+}
+
+/// Failing checks plus the check lint, as one block of DATA for the next brief.
+fn corrective_plan(results: &[CheckResult], lint_notes: &[String]) -> String {
+    let failing = format_failing_checks(results);
+    if lint_notes.is_empty() {
+        return failing;
+    }
+    let lint = lint_notes
+        .iter()
+        .map(|n| format!("- {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let lint = format!("Completion-check lint (these checks do not count as evidence):\n{lint}");
+    if failing.is_empty() {
+        lint
+    } else {
+        format!("{failing}\n\n{lint}")
     }
 }
 
@@ -2180,6 +2205,61 @@ mod tests {
     use super::*;
 
     const GOOD_PASS: &str = "Q1_INTENT: PASS\nQ2_EVIDENCE: PASS\nQ3_CHECKS: PASS\nQ4_PATHS: PASS\nRATIONALE: Everything checks out.";
+
+    // ── The corrective plan a rework round gets ─────────────────────────────
+
+    fn failing_result(index: usize, stdout: &str, stderr: &str) -> CheckResult {
+        CheckResult {
+            check_index: index,
+            check_type: "command_exit_zero".to_string(),
+            status: CheckStatus::Fail,
+            started_at: chrono::Utc::now().to_rfc3339(),
+            duration_ms: 1,
+            evidence: checks::CheckEvidence {
+                message: Some("exit 101".to_string()),
+                stdout_tail: Some(stdout.to_string()),
+                stderr_tail: Some(stderr.to_string()),
+                ..Default::default()
+            },
+            truncated: false,
+            summary: None,
+            lint: None,
+            approval: None,
+        }
+    }
+
+    #[test]
+    fn corrective_plan_carries_stdout_stderr_and_the_lint() {
+        let results = vec![failing_result(
+            0,
+            "test tests::works ... FAILED",
+            "assertion exploded",
+        )];
+        let plan = corrective_plan(
+            &results,
+            &["check 2 greps a file it also wrote".to_string()],
+        );
+        assert!(plan.contains("test tests::works ... FAILED"), "{plan}");
+        assert!(plan.contains("assertion exploded"), "{plan}");
+        assert!(
+            plan.contains("check 2 greps a file it also wrote"),
+            "the gameable-check lint is part of what a rework round must fix: {plan}"
+        );
+    }
+
+    #[test]
+    fn corrective_plan_is_lint_alone_when_every_check_passed() {
+        let plan = corrective_plan(&[], &["check 0 always passes".to_string()]);
+        assert!(plan.starts_with("Completion-check lint"), "{plan}");
+        assert!(plan.contains("check 0 always passes"), "{plan}");
+    }
+
+    #[test]
+    fn corrective_plan_is_empty_when_there_is_nothing_to_say() {
+        // An empty plan must stay empty: `goal_refinement::decide` reads that
+        // as "nothing for the next worker to fix" and spends no rework round.
+        assert!(corrective_plan(&[], &[]).is_empty());
+    }
 
     async fn test_pool() -> Pool<Sqlite> {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
