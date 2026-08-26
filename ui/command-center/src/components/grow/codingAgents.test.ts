@@ -15,7 +15,7 @@ describe('CODING_AGENTS', () => {
       'codex',
       'cursor',
     ]);
-    expect(CODING_AGENTS.at(-1)?.costTier).toBe('cheap_api');
+    expect(CODING_AGENTS[CODING_AGENTS.length - 1]?.costTier).toBe('cheap_api');
   });
 
   it('names subscription cost in Claude and Codex tooltips so users do not have to dig', () => {
@@ -37,6 +37,6 @@ describe('CODING_AGENTS', () => {
 
   it('Grow select labels subscription CLIs as $0 extra and Permagent as routed', () => {
     expect(codingAgentSelectLabel(CODING_AGENTS[0])).toBe('Claude · $0 extra');
-    expect(codingAgentSelectLabel(CODING_AGENTS.at(-1)!)).toBe('Permagent · routed');
+    expect(codingAgentSelectLabel(CODING_AGENTS[CODING_AGENTS.length - 1]!)).toBe('Permagent · routed');
   });
 });

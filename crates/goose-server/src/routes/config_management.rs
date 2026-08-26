@@ -4,26 +4,26 @@ use crate::state::AppState;
 use axum::http::StatusCode;
 use axum::routing::put;
 use axum::{
-    Json, Router,
     extract::Path,
     routing::{delete, get, post},
+    Json, Router,
 };
-use permagent::config::ExtensionEntry;
 use permagent::config::declarative_providers::LoadedProvider;
 use permagent::config::paths::Paths;
+use permagent::config::ExtensionEntry;
 use permagent::config::{Config, ConfigError};
 use permagent::model::ModelConfig;
 use permagent::providers::base::{ProviderMetadata, ProviderType};
 use permagent::providers::canonical::maybe_get_canonical_model;
 use permagent::providers::catalog::{
-    ProviderCatalogEntry, ProviderFormat, ProviderTemplate, get_provider_template,
-    get_providers_by_format,
+    get_provider_template, get_providers_by_format, ProviderCatalogEntry, ProviderFormat,
+    ProviderTemplate,
 };
 use permagent::providers::create_with_default_model;
 use permagent::providers::get_from_registry;
 use permagent::providers::providers as get_providers;
 use permagent::{
-    agents::ExtensionConfig, agents::execute_commands, config::permission::PermissionLevel,
+    agents::execute_commands, agents::ExtensionConfig, config::permission::PermissionLevel,
     slash_commands,
 };
 use serde::{Deserialize, Serialize};

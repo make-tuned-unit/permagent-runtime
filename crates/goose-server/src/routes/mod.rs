@@ -78,7 +78,7 @@ pub mod world;
 
 use std::sync::Arc;
 
-use axum::{Router, middleware};
+use axum::{middleware, Router};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::middleware::auth::{

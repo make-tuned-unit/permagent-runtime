@@ -1,17 +1,17 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use futures::Stream;
 use futures::future::BoxFuture;
+use futures::Stream;
 use serde::{Deserialize, Serialize};
 
-use super::canonical::{CanonicalModelRegistry, map_to_canonical_model};
+use super::canonical::{map_to_canonical_model, CanonicalModelRegistry};
 use super::errors::ProviderError;
-use super::inventory::{InventoryIdentityInput, default_inventory_identity};
+use super::inventory::{default_inventory_identity, InventoryIdentityInput};
 use super::retry::RetryConfig;
 use crate::config::base::ConfigValue;
 use crate::config::{Config, ExtensionConfig, GooseMode};
-use crate::conversation::Conversation;
 use crate::conversation::message::{Message, MessageContent};
+use crate::conversation::Conversation;
 use crate::cost_router::cache::SystemPromptParts;
 use crate::model::ModelConfig;
 use crate::permission::PermissionConfirmation;
@@ -985,7 +985,7 @@ mod tests {
     #[test]
     fn local_session_title_from_first_user_lines() {
         let conv = Conversation::new_unvalidated(vec![
-            Message::user().with_text("fix the login bug please and also"),
+            Message::user().with_text("fix the login bug please and also")
         ]);
         let title = local_session_title(&conv).expect("user text must yield a local title");
         assert!(title.to_lowercase().contains("login"));
