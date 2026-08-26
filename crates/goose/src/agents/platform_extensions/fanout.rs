@@ -281,7 +281,12 @@ mod tests {
     }
 
     impl FakeProvider {
-        async fn run(&self, index: usize, label: String, cancel: CancellationToken) -> ChildOutcome {
+        async fn run(
+            &self,
+            index: usize,
+            label: String,
+            cancel: CancellationToken,
+        ) -> ChildOutcome {
             self.started.fetch_add(1, Ordering::SeqCst);
             let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
             self.peak.fetch_max(now, Ordering::SeqCst);
@@ -313,10 +318,15 @@ mod tests {
     async fn children_run_concurrently_but_never_past_the_cap() {
         let fake = FakeProvider::default();
         let f = fake.clone();
-        let outcomes = run_bounded(labels(6), 2, CancellationToken::new(), move |i, label, tok| {
-            let f = f.clone();
-            async move { f.run(i, label, tok).await }
-        })
+        let outcomes = run_bounded(
+            labels(6),
+            2,
+            CancellationToken::new(),
+            move |i, label, tok| {
+                let f = f.clone();
+                async move { f.run(i, label, tok).await }
+            },
+        )
         .await;
 
         assert_eq!(outcomes.len(), 6);
@@ -339,10 +349,15 @@ mod tests {
     async fn a_cap_of_one_serialises() {
         let fake = FakeProvider::default();
         let f = fake.clone();
-        let outcomes = run_bounded(labels(3), 1, CancellationToken::new(), move |i, label, tok| {
-            let f = f.clone();
-            async move { f.run(i, label, tok).await }
-        })
+        let outcomes = run_bounded(
+            labels(3),
+            1,
+            CancellationToken::new(),
+            move |i, label, tok| {
+                let f = f.clone();
+                async move { f.run(i, label, tok).await }
+            },
+        )
         .await;
         assert_eq!(outcomes.len(), 3);
         assert_eq!(fake.peak.load(Ordering::SeqCst), 1);
@@ -392,7 +407,11 @@ mod tests {
         })
         .await;
 
-        assert_eq!(outcomes.len(), 6, "a cancelled fan-out still answers for all");
+        assert_eq!(
+            outcomes.len(),
+            6,
+            "a cancelled fan-out still answers for all"
+        );
         assert!(
             outcomes.iter().all(|o| o.status == ChildStatus::Cancelled),
             "running children see the cancel, queued children never start: {:?}",
@@ -500,6 +519,9 @@ mod tests {
         assert!(rendered.contains("subagent sub-0"), "{rendered}");
         assert!(rendered.contains("$1.0000"), "{rendered}");
         assert!(rendered.contains("$0.1000"), "{rendered}");
-        assert!(rendered.contains("$1.1000"), "the total is still shown: {rendered}");
+        assert!(
+            rendered.contains("$1.1000"),
+            "the total is still shown: {rendered}"
+        );
     }
 }

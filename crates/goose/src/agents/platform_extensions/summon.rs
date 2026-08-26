@@ -1,7 +1,7 @@
 use super::{parse_frontmatter, Source, SourceKind};
-use crate::agents::platform_extensions::fanout;
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
+use crate::agents::platform_extensions::fanout;
 use crate::agents::subagent_handler::{run_subagent_task, OnMessageCallback, SubagentRunParams};
 use crate::agents::subagent_task_config::{TaskConfig, DEFAULT_SUBAGENT_MAX_TURNS};
 use crate::agents::tool_execution::ToolCallContext;
@@ -640,7 +640,9 @@ impl SummonClient {
             let (task_config, routing) = self
                 .build_task_config(&child, &recipe, &session)
                 .await
-                .map_err(|e| format!("child {index} ({label}): failed to build task config: {e}"))?;
+                .map_err(|e| {
+                    format!("child {index} ({label}): failed to build task config: {e}")
+                })?;
 
             prepared.push(PreparedChild {
                 label,
@@ -743,7 +745,10 @@ impl SummonClient {
                         Err(e) if token.is_cancelled() => {
                             (fanout::ChildStatus::Cancelled, format!("cancelled: {e}"))
                         }
-                        Err(e) => (fanout::ChildStatus::Failed, format!("delegation failed: {e}")),
+                        Err(e) => (
+                            fanout::ChildStatus::Failed,
+                            format!("delegation failed: {e}"),
+                        ),
                     };
                     fanout::ChildOutcome {
                         index,
@@ -3105,7 +3110,10 @@ You review code."#;
         assert_eq!(parsed.max_concurrent, Some(2));
         assert_eq!(parsed.tasks[0].label.as_deref(), Some("security"));
         assert_eq!(parsed.tasks[0].delegate.provider.as_deref(), Some("ollama"));
-        assert_eq!(parsed.tasks[0].delegate.model.as_deref(), Some("qwen3-coder"));
+        assert_eq!(
+            parsed.tasks[0].delegate.model.as_deref(),
+            Some("qwen3-coder")
+        );
         assert_eq!(
             parsed.tasks[1].delegate.worker_persona.as_deref(),
             Some("debugger")
