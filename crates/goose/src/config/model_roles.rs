@@ -127,36 +127,32 @@ impl ModelRole {
 
 /// Provider id of the chat default. See
 /// `docs/research/MODEL_DEFAULTS_BENCH_2026-08-25.md`.
-pub const DEFAULT_CHAT_PROVIDER_ID: &str = "anthropic";
-/// Model id of the chat default: Claude Haiku 4.5. It does not emit a reasoning
-/// block before a one-line social reply, has full prompt-cache support on the
-/// path the daemon already uses, and the chat bench confirmed it against the
-/// stated bar (p90 time-to-first-token under 2.5 s at no meaningful quality
-/// cost). The voice path lands on the same model in #1116, which is the point:
-/// one model answers the person in front of you, whether they typed or spoke.
-pub const DEFAULT_CHAT_MODEL_ID: &str = "claude-haiku-4-5-20251001";
+pub const DEFAULT_CHAT_PROVIDER_ID: &str = "custom_deepseek";
+/// Model id of the chat default: DeepSeek Chat (`deepseek-chat`, billed as
+/// `deepseek-v4-flash` on 2026-08-25).
+///
+/// The original chat bar was p90 time-to-first-token under 2.5 s. DeepSeek is
+/// the only candidate that cleared it (median 1.83 s, p90 2.06 s). Haiku was
+/// first on quality-with-silence-as-zero and never went wordless, but its p90
+/// was 7.5 s — the code comment that said it met the bar was false on the same
+/// table. GPT-5.4-mini picked the right tool on 1 of 10 tool turns, so it is
+/// not a chat default. Voice uses this same model so typed and spoken turns
+/// land on one family.
+pub const DEFAULT_CHAT_MODEL_ID: &str = "deepseek-chat";
 
 /// Provider id of the measured coding-harness default. See
 /// `docs/research/MODEL_DEFAULTS_BENCH_2026-08-25.md`.
-pub const DEFAULT_HARNESS_PROVIDER_ID: &str = "anthropic";
-/// Model id of the measured coding-harness default: Claude Haiku 4.5.
+pub const DEFAULT_HARNESS_PROVIDER_ID: &str = "openai";
+/// Model id of the coding-harness default: GPT-5.4-mini.
 ///
-/// Six candidates ran the real harness on the same tasks. Every one of them
-/// solved every task, so pass rate decided nothing at this sample size; cost per
-/// solved task and wall time decided it. Haiku was cheapest ($0.25/solved
-/// against $0.27 for gpt-5.4-mini, $0.32 for deepseek, $0.69 for the incumbent
-/// GLM-5.3 and $1.16 for Sonnet 5) AND fastest by 2–12x (41 s median against
-/// 90 s, 84 s, 489 s and 355 s). On the hardest task measured — an API signature
-/// change threaded through two call sites — it was 25 s and $0.14 while GLM-5.3
-/// took 401 s.
-///
-/// **This default is provisional and says so on purpose.** Haiku is the only
-/// candidate whose prompt cache works on the harness path today (79% cache-read
-/// share; the OpenAI-format candidates got 0% because of a prefix-stability bug
-/// fixed separately). Corrected for that bug, deepseek and gpt-5.4-mini project
-/// CHEAPER than Haiku. Re-run the bench once that fix lands before treating this
-/// as settled.
-pub const DEFAULT_HARNESS_MODEL_ID: &str = "claude-haiku-4-5-20251001";
+/// Six candidates solved every task they ran (n ≤ 3), so pass rate ranked
+/// nothing. Raw $/solved favoured Haiku only because it was the sole model
+/// whose prompt cache worked (79% vs 0% on every OpenAI-format candidate).
+/// That prefix-stability bug is fixed in #1122. Cache-corrected, DeepSeek
+/// ($0.17) and GPT-5.4-mini ($0.18) beat Haiku ($0.44). Mini is the coding
+/// default: near-cheapest after the fix, a different family from chat/voice,
+/// and the id the harness already knows how to pin.
+pub const DEFAULT_HARNESS_MODEL_ID: &str = "gpt-5.4-mini";
 
 /// A resolved route: the concrete provider+model a role's turn goes to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

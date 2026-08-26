@@ -235,6 +235,55 @@ pub static KNOWN_MODELS: &[ModelKnowledge] = &[
         context_window: 1_000_000,
         is_local: false,
     },
+    ModelKnowledge {
+        provider: "openai",
+        model: "gpt-5.4-mini",
+        display_name: "GPT-5.4 mini",
+        family: "openai",
+        // pricing: canonical table $0.75/$4.50 (cache_read $0.075), 2026-03-17.
+        // orch 0.62: mini / coding-harness estimate — clears the small-review
+        // floor, below the large-diff strong floor. No SWE-bench Verified row.
+        edit_format_reliability: 0.885,
+        orchestration_strength: 0.62,
+        input_usd_per_mtok: 0.75,
+        output_usd_per_mtok: 4.50,
+        cache_support: true,
+        context_window: 400_000,
+        is_local: false,
+    },
+    // ── DeepSeek — peak list price (api-docs.deepseek.com, 2026-08-24) ───────
+    // Provider id is the configured declarative name (`custom_deepseek`).
+    // `deepseek-chat` aliases to `deepseek-v4-flash` on the live API.
+    ModelKnowledge {
+        provider: "custom_deepseek",
+        model: "deepseek-chat",
+        display_name: "DeepSeek Chat",
+        family: "deepseek",
+        // edit 0.905: V3-class proxy (aider). orch 0.62: flash / cheap-rung
+        // estimate — clears the small-review floor. Peak rate; off-peak is half.
+        edit_format_reliability: 0.905,
+        orchestration_strength: 0.62,
+        input_usd_per_mtok: 0.44,
+        output_usd_per_mtok: 1.32,
+        cache_support: true,
+        context_window: 128_000,
+        is_local: false,
+    },
+    ModelKnowledge {
+        provider: "custom_deepseek",
+        model: "deepseek-v4-flash",
+        display_name: "DeepSeek V4 Flash",
+        family: "deepseek",
+        // Same billed model as `deepseek-chat` on 2026-08-25. Peak $0.44/$1.32
+        // from published_prices.rs (the 2026-08-24 $0.00-ledger hole).
+        edit_format_reliability: 0.905,
+        orchestration_strength: 0.62,
+        input_usd_per_mtok: 0.44,
+        output_usd_per_mtok: 1.32,
+        cache_support: true,
+        context_window: 128_000,
+        is_local: false,
+    },
     // ── xAI — approximate ────────────────────────────────────────────────────
     ModelKnowledge {
         provider: "xai",
@@ -562,6 +611,19 @@ mod tests {
         assert!(lookup("ANTHROPIC", "Claude-Sonnet-5").is_some());
         // Unknown → None (reported, never silently priced).
         assert!(lookup("acme", "no-such-model").is_none());
+    }
+
+    #[test]
+    fn deepseek_and_gpt54_mini_resolve_with_published_prices() {
+        let chat = lookup("custom_deepseek", "deepseek-chat").expect("deepseek-chat must resolve");
+        let flash =
+            lookup("custom_deepseek", "deepseek-v4-flash").expect("deepseek-v4-flash must resolve");
+        assert_eq!(chat.family, "deepseek");
+        assert_eq!(flash.family, "deepseek");
+        assert!((chat.input_usd_per_mtok - 0.44).abs() < 1e-9);
+        let mini = lookup("openai", "gpt-5.4-mini").expect("gpt-5.4-mini must resolve");
+        assert_eq!(mini.family, "openai");
+        assert!(mini.orchestration_strength >= 0.60);
     }
 
     #[test]
