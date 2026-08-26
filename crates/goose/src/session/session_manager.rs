@@ -1298,6 +1298,13 @@ impl SessionStorage {
                     if version < 51 {
                         spectral_schema::migrate_v50_to_v51(&self.pool).await?;
                     }
+                    // v52: the RLM control-plane context store — durable,
+                    // versioned evaluation context that outlives an LLM turn
+                    // and a daemon restart. New table + index, additive and
+                    // base-independent.
+                    if version < 52 {
+                        spectral_schema::migrate_v51_to_v52(&self.pool).await?;
+                    }
                     // Version-independent safety net for recognition columns.
                     // The always-on v23 above can stamp schema_version past the
                     // cfg-gated `version < 22` migration, leaving a feature-off DB
@@ -1306,6 +1313,13 @@ impl SessionStorage {
                     // run on every boot, regardless of the feature that writes them.
                     // Idempotent — a steady-state boot adds nothing.
                     spectral_schema::apply_recognition_v22_columns(&self.pool).await?;
+
+                    // Version-independent: the RLM control-plane store. Applied
+                    // on every boot for the same reason as the recognition
+                    // columns above — a version gate is exactly how those went
+                    // missing in production, and a missing rlm_context table
+                    // silently costs every worker its recovered state.
+                    spectral_schema::apply_rlm_context_schema(&self.pool).await?;
 
                     // Version-independent: ensure the skills.skill_path index
                     // column exists on any DB regardless of the recorded schema

@@ -399,6 +399,36 @@ impl AppState {
             permagent::agents::platform_extensions::set_global_brain(b.clone());
         }
 
+        // Wire the RLM control plane's write-through mirror to the Brain.
+        //
+        // The store in `permagent.db` stays the source of truth — recall is
+        // ranked and probabilistic, so it can never be the read path for exact
+        // control-plane state. The mirror exists so a goal's state is also
+        // recallable in conversation and outlives the goal itself. Best-effort
+        // in both directions: the hook returns immediately (Brain ingest is
+        // expensive and must not block a `context_set`), and a failed mirror is
+        // logged, never surfaced as a failed write.
+        if let Some(ref b) = brain {
+            let mirror_brain = b.clone();
+            permagent::rlm::register_mirror(move |key, content| {
+                let brain = mirror_brain.clone();
+                tokio::spawn(async move {
+                    let opts = spectral::RememberOpts {
+                        source: Some("rlm".to_string()),
+                        visibility: spectral::Visibility::Private,
+                        ..Default::default()
+                    };
+                    if let Err(e) = brain.remember_with(&key, &content, opts).await {
+                        tracing::debug!(
+                            target: "permagentd::rlm",
+                            memory_key = %key,
+                            "RLM Brain mirror skipped: {e}"
+                        );
+                    }
+                });
+            });
+        }
+
         // Make scheduler available to platform extensions (RecipeAuthor).
         permagent::agents::platform_extensions::recipe_author::set_global_scheduler(
             agent_manager.scheduler(),

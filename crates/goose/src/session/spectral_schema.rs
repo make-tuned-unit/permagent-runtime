@@ -79,6 +79,12 @@ use tracing::{info, warn};
 /// guarded ADD COLUMN + index, additive and base-independent.
 /// `migrate_v50_to_v51` applies it.
 ///
+/// v52 = RLM control-plane context store (`rlm_context`) — the durable
+/// replacement for the in-process RLM DashMap, so evaluation context survives a
+/// daemon restart. New table + partial index, additive and base-independent.
+/// `migrate_v51_to_v52` applies it; `apply_rlm_context_schema` also runs on
+/// every boot, version-independent.
+///
 /// NOTE on the version drift: this constant intentionally stays at 14 even though
 /// the migration chain now runs to v19 (`migrate_v14_to_v15` … `migrate_v18_to_v19`).
 /// It is the stamp `init_spectral_db` applies to a *fresh* DB — those later steps
@@ -851,6 +857,11 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // already in the CREATE TABLE above on fresh installs; the guarded ADD is a
     // no-op there and fills it in on older DBs that never ran the version step.
     apply_session_parent_schema(pool).await?;
+
+    // RLM control-plane store (schema v52). Fresh installs never run the
+    // version ladder, and a missing table silently costs every worker its
+    // recovered state after a restart.
+    apply_rlm_context_schema(pool).await?;
 
     info!(
         "Spectral schema v{} initialized successfully",
@@ -1839,6 +1850,61 @@ pub async fn migrate_v50_to_v51(pool: &Pool<Sqlite>) -> Result<()> {
         .execute(pool)
         .await?;
     info!("Spectral schema migrated to v51 (sessions.parent_session_id)");
+    Ok(())
+}
+
+/// Apply the RLM control-plane context store (`rlm_context`).
+///
+/// The durable replacement for the process-local `DashMap` that used to be the
+/// whole of [`crate::rlm`]: a transactional, versioned, exactly-read key/value
+/// store scoped by session or goal, so evaluation context outlives an LLM turn
+/// AND a daemon restart. It lives here rather than in the Brain because recall
+/// is ranked and probabilistic — a control plane must read back exactly what it
+/// wrote — and rather than in `cards.metadata_json` because that is an
+/// unversioned blob whose read-modify-write loses concurrent updates.
+///
+/// `permagent.db` already runs in WAL with a checkpoint timer and is already in
+/// the hourly backup snapshot set as `DbTarget::Spectral`, so this table
+/// inherits its durability rather than inventing any.
+///
+/// Fully idempotent (`CREATE TABLE / INDEX IF NOT EXISTS`) and applied on every
+/// boot, not only behind the version gate: a version-gated schema step is
+/// exactly how the recognition columns and the finance tables went missing in
+/// production (see the notes in `SessionManager`).
+pub async fn apply_rlm_context_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS rlm_context (
+            scope      TEXT    NOT NULL CHECK (scope IN ('session','goal')),
+            scope_id   TEXT    NOT NULL,
+            key        TEXT    NOT NULL,
+            value_json TEXT    NOT NULL,
+            version    INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT    NOT NULL,
+            updated_at TEXT    NOT NULL,
+            expires_at TEXT,
+            PRIMARY KEY (scope, scope_id, key)
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_rlm_context_expiry \
+         ON rlm_context(expires_at) WHERE expires_at IS NOT NULL",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// v52: the RLM control-plane context store. New table + partial index only —
+/// additive and base-independent, so it applies cleanly over any earlier base.
+pub async fn migrate_v51_to_v52(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v51 -> v52 (RLM control-plane context store)");
+    apply_rlm_context_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (52)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v52 (RLM control-plane context store)");
     Ok(())
 }
 
