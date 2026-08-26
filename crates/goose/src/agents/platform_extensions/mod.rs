@@ -8,6 +8,7 @@ pub mod chatrecall;
 #[cfg(feature = "code-mode")]
 pub mod code_execution;
 pub(crate) mod code_map;
+pub mod council;
 pub mod dashboard;
 pub mod desktop;
 pub mod developer;
@@ -791,6 +792,24 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 required_secrets: &[],
                 teaching: &[],
                 client_factory: |ctx| Box::new(forecaster::ForecasterClient::new(ctx).unwrap()),
+            },
+        );
+
+        map.insert(
+            council::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: council::EXTENSION_NAME,
+                display_name: "The Council",
+                description:
+                    "Brief every connected chat-completion provider on the current state of the work, run a two-round debate, and chair a weekly report (council_convene); read the latest or a named report including per-model dissent (council_report). Spends every seated provider. Actions land as Decision Inbox proposals — approve files a board card, reject dismisses. Off until council_enabled is on under Settings → Features",
+                default_enabled: true,
+                unprefixed_tools: true,
+                hidden: false,
+                why_it_matters:
+                    "Several models looking at the same brief, then at each other, surface the project that needs attention and the pattern you are missing — as a digest you can act on.",
+                required_secrets: &[],
+                teaching: &[],
+                client_factory: |ctx| Box::new(council::CouncilClient::new(ctx).unwrap()),
             },
         );
 

@@ -18,7 +18,7 @@ vi.mock('../../../lib/notifications', () => ({ toast: () => undefined }));
 vi.mock('../../settings/useSettings', () => ({ usePersona: () => ({ data: null }) }));
 vi.mock('./client', () => ({ decisionsClient: {} }));
 
-import { pushedRejectWarning, toolArgumentsText } from './DecisionItem';
+import { pushedRejectWarning, toolArgumentsText, effectTextFor } from './DecisionItem';
 import type { Decision } from './types';
 
 function decision(overrides: Partial<Decision>): Decision {
@@ -146,5 +146,12 @@ describe('toolArgumentsText — session_gate', () => {
     expect(toolArgumentsText(sessionGateDecision({ payload: null }))).toBeNull();
     expect(toolArgumentsText(sessionGateDecision({ payload: {} }))).toBeNull();
     expect(toolArgumentsText(sessionGateDecision({ payload: { input: null } }))).toBeNull();
+  });
+});
+
+describe('effectTextFor council_action', () => {
+  it('says approve files a board card and reject dismisses', () => {
+    expect(effectTextFor('council_action', 'approve', 'Henry')).toContain('board card');
+    expect(effectTextFor('council_action', 'reject', 'Henry')).toMatch(/dismiss/i);
   });
 });

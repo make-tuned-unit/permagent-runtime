@@ -163,6 +163,10 @@ pub static WORKER_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::strix::SELF_KNOWLEDGE_FEATURE,
     crate::agents::platform_extensions::finance::SELF_KNOWLEDGE_FEATURE,
     crate::agents::platform_extensions::forecaster::SELF_KNOWLEDGE_FEATURE,
+    // Render-gated on `council_enabled` (Settings → Features, default OFF): a
+    // multi-provider debate that spends every connected chat model is switched
+    // on deliberately, and until then the brief stays byte-for-byte identical.
+    crate::council::SELF_KNOWLEDGE_FEATURE,
 ];
 
 /// The Git Steward's worker-descriptor id. The descriptor itself spells the id
@@ -220,6 +224,7 @@ impl WorkerGate {
             "strix_enabled" => flags.strix_enabled,
             "initiative_enabled" => flags.initiative_enabled,
             STEWARD_SCAN_ENABLED_KEY => flags.steward_scan_enabled,
+            "council_enabled" => flags.council_enabled,
             _ => false,
         }
     }
@@ -242,6 +247,7 @@ pub fn worker_gate(descriptor_id: &str) -> Option<WorkerGate> {
         id if id == crate::playbook::PLAYBOOK_FEATURE_ID => gate("playbook_enabled", true),
         id if id == crate::concierge::CONCIERGE_FEATURE_ID => gate("concierge_enabled", true),
         id if id == crate::strix::STRIX_FEATURE_ID => gate("strix_enabled", true),
+        id if id == crate::council::AGENT_ID => gate("council_enabled", true),
         // These two are ALWAYS described: their descriptors report the real
         // on/off switch as a state label, which is honest without hiding them.
         INITIATIVE_FEATURE_ID => gate("initiative_enabled", false),
@@ -331,6 +337,11 @@ pub fn worker_live_state_for(
         } else {
             "off (strix_enabled=false)".to_string()
         }),
+        "council" => Some(if flags.council_enabled {
+            "on — weekly Sunday-night debate across connected chat providers; Henry can council_convene anytime".to_string()
+        } else {
+            "off (council_enabled=false)".to_string()
+        }),
         _ => None,
     }
 }
@@ -406,6 +417,7 @@ pub struct FeatureFlags {
     /// live-state line would move the line counts the canonical snapshot tests
     /// pin.
     pub steward_scan_enabled: bool,
+    pub council_enabled: bool,
 }
 
 impl FeatureFlags {
@@ -423,6 +435,7 @@ impl FeatureFlags {
             steward_scan_enabled: crate::config::Config::global()
                 .get_param::<bool>(STEWARD_SCAN_ENABLED_KEY)
                 .unwrap_or(false),
+            council_enabled: crate::council::is_enabled(),
         }
     }
 }
@@ -882,7 +895,7 @@ fn confirm_hint(c: &ConfirmCheck) -> String {
 mod tests {
     use super::*;
 
-    /// All five gates, on. Written once so a test asserting the ON half cannot
+    /// All six gates, on. Written once so a test asserting the ON half cannot
     /// silently stop covering a newly added gate.
     fn all_flags_on() -> FeatureFlags {
         FeatureFlags {
@@ -891,6 +904,7 @@ mod tests {
             strix_enabled: true,
             initiative_enabled: true,
             steward_scan_enabled: true,
+            council_enabled: true,
         }
     }
 
@@ -912,7 +926,7 @@ mod tests {
             .map(|d| d.id)
             .collect();
         hidden.sort_unstable();
-        assert_eq!(hidden, vec!["concierge", "playbook", "strix"]);
+        assert_eq!(hidden, vec!["concierge", "council", "playbook", "strix"]);
 
         // With every flag on nothing is withheld — which is also what makes the
         // `_ => false` arm of `is_on` safe to have.
@@ -937,8 +951,8 @@ mod tests {
             .collect();
         assert_eq!(
             gates.len(),
-            5,
-            "expected five gated workers, found {gates:?}"
+            6,
+            "expected six gated workers, found {gates:?}"
         );
         for gate in gates {
             assert!(
@@ -974,6 +988,7 @@ mod tests {
             crate::strix::STRIX_FEATURE_ID,
             crate::playbook::PLAYBOOK_FEATURE_ID,
             crate::concierge::CONCIERGE_FEATURE_ID,
+            crate::council::AGENT_ID,
         ] {
             assert!(worker_gate(id).is_some(), "{id} lost its gate");
             assert!(
@@ -1074,6 +1089,7 @@ mod tests {
             keys,
             vec![
                 "concierge_enabled",
+                "council_enabled",
                 "initiative_enabled",
                 "playbook_enabled",
                 "steward_scan_enabled",
@@ -1154,6 +1170,7 @@ mod tests {
         "strix",
         "financier",
         "forecaster",
+        "council",
     ];
     /// Every known surface id must have exactly one descriptor.
     const KNOWN_SURFACE_IDS: &[&str] = &[
@@ -1637,6 +1654,7 @@ mod tests {
         // in BOTH halves — a worker hidden from the inventory must not reappear
         // as a live-status line behind the cache breakpoint.
         assert!(!off.contains("The Guard"));
+        assert!(!off.contains("The Council"));
         assert!(off.contains("off (initiative_enabled=false)"));
 
         assert!(guard_on.contains("**The Guard**"));
@@ -1776,6 +1794,49 @@ mod tests {
         assert!(
             brief.contains("draft") && brief.contains("read-only") && brief.contains("local"),
             "the rendered concierge descriptor must convey draft-only, read-only, local-tier"
+        );
+    }
+
+    #[test]
+    fn council_descriptor_hidden_when_flag_off() {
+        let brief = SelfKnowledgeBuilder {
+            agent_display_name: "Aria".to_string(),
+            scheduled_job_count: None,
+            flags: FeatureFlags::default(),
+            dispatchable_workers: Vec::new(),
+            agent_briefings: None,
+            declared_extensions: None,
+        }
+        .build();
+
+        assert!(
+            !brief.contains("The Council"),
+            "council descriptor must be hidden from the brief when the flag is off"
+        );
+    }
+
+    #[test]
+    fn council_descriptor_shown_when_flag_on() {
+        let brief = SelfKnowledgeBuilder {
+            agent_display_name: "Aria".to_string(),
+            scheduled_job_count: None,
+            flags: FeatureFlags {
+                council_enabled: true,
+                ..FeatureFlags::default()
+            },
+            dispatchable_workers: Vec::new(),
+            agent_briefings: None,
+            declared_extensions: None,
+        }
+        .build();
+
+        assert!(
+            brief.contains("**The Council**"),
+            "council descriptor must render in the brief when the flag is on"
+        );
+        assert!(
+            brief.contains("council_convene") && brief.contains("Decision Inbox"),
+            "the rendered council descriptor must name convene and the inbox"
         );
     }
 
@@ -2135,10 +2196,10 @@ mod tests {
     ///   branch lands here automatically.
     fn extension_tool_inventories() -> Vec<(&'static str, Vec<rmcp::model::Tool>)> {
         use crate::agents::platform_extensions::{
-            analyze, app_conductor, app_perception, apps, browser, chatrecall, dashboard, desktop,
-            developer, ext_manager, file_to_project, finance, forecaster, inbox_tools, listen,
-            model_manager, orchestrator, people, project_manager, pronunciation, recipe_author,
-            retrospect, skills, storage_health, summarize, summon, todo,
+            analyze, app_conductor, app_perception, apps, browser, chatrecall, council, dashboard,
+            desktop, developer, ext_manager, file_to_project, finance, forecaster, inbox_tools,
+            listen, model_manager, orchestrator, people, project_manager, pronunciation,
+            recipe_author, retrospect, skills, storage_health, summarize, summon, todo,
         };
 
         let mut project_manager_tools = project_manager::ProjectManagerClient::get_tools();
@@ -2178,6 +2239,7 @@ mod tests {
                 chatrecall::EXTENSION_NAME,
                 chatrecall::ChatRecallClient::get_tools(),
             ),
+            (council::EXTENSION_NAME, council::CouncilClient::get_tools()),
             (
                 dashboard::EXTENSION_NAME,
                 dashboard::DashboardClient::get_tools(),

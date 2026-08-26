@@ -25,6 +25,7 @@ pub mod context_layers;
 pub mod context_mgmt;
 pub mod conversation;
 pub mod cost_router;
+pub mod council;
 pub mod decision_inbox;
 pub mod decisions;
 pub mod decisions_effects;

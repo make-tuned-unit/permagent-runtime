@@ -8,6 +8,7 @@ import { TimelineCard } from './TimelineCard';
 import { TodosCard } from './TodosCard';
 import { ManifestCard } from './ManifestCard';
 import { GrowthResultsCard } from './GrowthResultsCard';
+import { CouncilCard } from './CouncilCard';
 
 /**
  * Dashboard card registration mechanism (issue #182).
@@ -98,6 +99,7 @@ export const CARD_REGISTRY: Record<string, CardRegistryEntry> = {
   timeline:  { component: TimelineCard, name: 'Timeline',        description: 'What your agents did, day by day', defaultSize: { w: 12, h: 6 } },
   todos:     { component: TodosCard,    name: 'To-dos',          description: 'Dated cards from every board, soonest first', defaultSize: { w: 5, h: 6 } },
   growth_results: { component: GrowthResultsCard, name: 'Growth', description: 'Growth actions across all projects — trendline and per-project performance', defaultSize: { w: 12, h: 6 } },
+  council: { component: CouncilCard, name: 'Council', description: 'Weekly debate across your connected models, with actions in the Decision Inbox', defaultSize: { w: 12, h: 6 } },
 };
 
 /** Turn a declarative manifest into a registry entry backed by ManifestCard. */

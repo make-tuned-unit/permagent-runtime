@@ -9,6 +9,7 @@ mod chat_model;
 mod commands;
 mod concierge;
 mod configuration;
+mod council_sweep;
 mod device_registry;
 mod error;
 mod event_at_backfill;

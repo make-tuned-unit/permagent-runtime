@@ -20,7 +20,8 @@ export type FeatureKey =
   | 'playbook_enabled'
   | 'concierge_enabled'
   | 'steward_scan_enabled'
-  | 'strix_enabled';
+  | 'strix_enabled'
+  | 'council_enabled';
 
 export type FeatureRow = {
   key: FeatureKey;
@@ -62,6 +63,12 @@ export const FEATURE_ROWS: readonly FeatureRow[] = [
     label: 'The Guard (security sweeps)',
     what: 'Sweeps ONE of your own projects per pass — rotating, least-recently-scanned first — for exposed secrets, vulnerable dependencies, injection and access-control weaknesses, and files a security report with a fix plan as a note on that project. It reports only: it never edits code to fix what it found. Needs the external `strix` scanner and Docker, locally or on the host in `strix_docker_ssh`, and each sweep spends your API credits.',
     effect: 'Off by default. Takes effect within about 15 minutes, no restart. Sweep cadence is a cost dial under Settings → Models.',
+  },
+  {
+    key: 'council_enabled',
+    label: 'The Council',
+    what: 'Briefs every connected chat model on the state of your work, they debate, and a weekly report lands on Home with actions in the Decision Inbox. It spends every seated provider. Approve an action to file it as a board card.',
+    effect: 'Off by default. Weekly pass prefers Sunday 22:00 local; a flip takes effect at the next hourly tick, no restart. Henry can also convene one on demand once this is on.',
   },
 ];
 
