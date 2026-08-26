@@ -10,10 +10,10 @@ the inventory (goal 0). Feature work lives in the numbered follow-on goals.
 | Prime concept | Current Permagent file/API | Gap | Proposed goal id |
 | --- | --- | --- | --- |
 | RLM kernel (persistent eval context across turns) | `crates/goose/src/rlm.rs` over the `rlm_context` table in `permagent.db` (`spectral_schema.rs:1807` `apply_rlm_context_schema`) | **done** — transactional, versioned, TTL'd get/set/list/delete that survives a daemon restart; tools `context_set/get/list/delete` (`orchestrator.rs:3439`); brief injection via `dispatch_brief.rs:51` | 3, 4 |
-| Async subagents | `crates/goose/src/agents/subagent_handler.rs` `run_subagent_task` (awaited); `goal_engine::InternalSubagentEngine` returns a `JoinHandle` for *goal* workers, not generic subagent work | **partial** — goal engines spawn, but review/audit helpers cannot fan out two in-process subagents without blocking | 1 (spawn+join API), 2 (parallel review fan-out) |
+| Async subagents | `agents/platform_extensions/fanout.rs` (`run_bounded`, `subagent_cost`) behind the `delegate_many` tool; `subagent_handler::spawn_subagent_task` / `spawn_subagent_work` for a single handle | **closed** — N children run with a configured cap on how many are in flight (`PERMAGENT_FANOUT_CONCURRENCY`, default 2), each routed on its own through `cost_router::delegate`'s precedence, results joined in request order with per-child ledger cost by `subagent_id`, and a parent cancel reaching every child | 1 (spawn+join API), 2 (parallel review fan-out) |
 | Executable skills | `skill_md.rs` + `platform_extensions/skills.rs` load **markdown** `SKILL.md` folders (agentskills.io). No runner that execs a package and returns structured stdout | **missing** — skills are prompts, not runnable artifacts | 5 (package + runner), 6 (`run_executable_skill` tool) |
 | Goal threading (resume with prior attempt context) | `resume_in_progress_goals` / `resume_single_goal` (`orchestrator.rs`); `requeue_goal` preserves `attempt_count` + `last_error`; dispatch brief does **not** re-inject them (W4/W5) | **partial** — metadata survives; the next worker starts cold; dead-session resume can still fabricate Review success if a re-attached session goes idle | 7 |
-| Bounded refinement | `goal_transition::goal_budget` attempt/token/wallclock caps; verify-loop escalation (`cost_router`); completion checks run in `goose-server` verification *after* Review | **partial** — caps park the goal; there is no distinct check-failure rework budget that auto-requeues with check stdout | 8 |
+| Bounded refinement | `goal_refinement.rs` rework budget (config `verifier.json` → `refinement_budget`, default 3; per-goal override) wired into `goose-server` verification; separate from `goal_transition::goal_budget` and from `cost_router::hold_done` | **closed** — a failing check auto-requeues to Ready with the check stdout/stderr, placeholder findings and check lint as the corrective plan, leaves a routing snapshot per round, and parks with the full history at exhaustion | 8 |
 | A2A messaging | `send_message` (session id) and `steer_goal` (live CLI worker). No goal-to-goal API; Complete/Cancelled are not explicitly refused as A2A targets | **partial** — the pipes exist; they are not addressed by goal id, not audited as A2A, and do not write through to RLM | 9 (deliver+refuse), 10 (feedback → RLM → next brief) |
 
 Related existing spine (not a Prime gap, but the DAG this inventory rides on):
@@ -41,6 +41,17 @@ see its note.
   (`state.rs:413`) so goal state is also recallable — the Brain is never the read
   path. Re-dispatch briefs quote recovered state as data-not-instructions.
 - **Async subagent spawn** — `spawn_subagent_task` / `spawn_subagent_work` in `subagent_handler.rs`. Two handles can be outstanding before either join.
+- **Bounded fan-out** — `agents/platform_extensions/fanout.rs`, behind the
+  orchestrator-side tool `delegate_many`. At most
+  `fanout::MAX_FANOUT_CHILDREN` children per call and at most
+  `PERMAGENT_FANOUT_CONCURRENCY` (default 2) in flight at once; each child is
+  resolved through the same `build_delegate_recipe` → `build_task_config` path a
+  single `delegate` takes, so `cost_router::delegate`'s precedence applies per
+  child and pins are honoured with no silent escalation. Results join in request
+  order, each carrying its own routing receipt, its own `subagent_id`, and the
+  spend read back from `cost_ledger` under that id. Every child runs on a token
+  derived from the caller's, so cancelling the fan-out cancels the children and a
+  child still queued never starts.
 - **Parallel review fan-out** — `review_fanout` module; opt-in via goal or project metadata `review_fanout: true`. Security + debugger briefs fold into `approve_review` detail.
 - **Executable skills** — *prototype → being replaced.* `crates/goose/src/executable_skills.rs`
   plus `skills/examples/hello-json/`. Orchestrator tool `run_executable_skill`
@@ -49,7 +60,16 @@ see its note.
   registry row and no receipt. Replaced by `skill_run` in the executable-skills
   PR; see `PRIME_RLM_AND_SKILLS.md`.
 - **Goal threading** — dispatch briefs on `attempt_count > 0` include `last_error`, RLM snapshot, A2A inbox, and worktree pointer. Resume never promotes a dead session to Review without worktree evidence (W5).
-- **Bounded refinement** — `crates/goose/src/goal_refinement.rs`. Metadata `refinement_budget` caps auto-rework after completion-check failure; exhaustion parks with `unblock`.
+- **Bounded refinement** — `crates/goose/src/goal_refinement.rs`. A check-failure
+  rework budget distinct from the attempt/token/wallclock caps and from the
+  premature-done hold. The cap comes from `verifier.json`'s `refinement_budget`
+  (default 3) unless the goal declares its own; an explicit `0` on either opts
+  out. Within budget the goal returns to Ready with the failing check's
+  stdout/stderr tail, the placeholder-scan findings and the gameable-check lint
+  as its corrective plan (the `retry_context_block` shape), and each round
+  leaves a `routing_snapshot` receipt plus a `refinement_history` entry.
+  Exhaustion parks with an `unblock` decision carrying every round, not just the
+  last.
 - **A2A** — orchestrator tool `message_goal` (`from_goal`, `to_goal`, `body`).
   InProgress only; steers a live worker when one exists. The control-plane write
   goes through `rlm::write_a2a_feedback` (`rlm.rs:636`), a bounded, version-checked

@@ -115,6 +115,20 @@ pub struct CostLedgerRow {
     pub is_estimated: bool,
 }
 
+/// What the most recent provider call on a session says about itself.
+///
+/// `provider`/`model` are `Option` because the ledger's columns are: a call
+/// recorded without them is unusual but legal, and the meter should name what
+/// it can rather than refuse to report. `estimated` is NOT optional and never
+/// inferred from the other two — it is the difference between a figure and a
+/// fail-closed ceiling, and it must survive a row whose model name is missing.
+#[derive(Debug, Clone)]
+pub struct LastCall {
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub estimated: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Session {
     pub id: String,
@@ -406,6 +420,38 @@ impl SessionManager {
     /// transaction. See [`CostLedgerRow`].
     pub async fn append_cost_ledger(&self, row: &CostLedgerRow) -> Result<()> {
         self.storage.append_cost_ledger(row).await
+    }
+
+    /// Everything spent since `since` (an RFC3339 UTC instant), USD.
+    ///
+    /// Summed from `cost_ledger` rather than from the `sessions` rollups: the
+    /// rollups are per-session lifetime totals, so adding them up would charge
+    /// today for a session that started last week. `ts` is written as
+    /// `Utc::now().to_rfc3339()`, whose fixed-width date prefix makes
+    /// lexicographic order chronological order — the comparison the
+    /// `idx_cost_ledger_ts` index serves.
+    pub async fn spend_since(&self, since: &str) -> Result<f64> {
+        self.storage.spend_since(since).await
+    }
+
+    /// The most recent ledger row's provider, model, and whether its cost was
+    /// estimated rather than priced.
+    ///
+    /// The meter names what is spending the money. `sessions` records the
+    /// session's configured model, which is not necessarily the one that served
+    /// the last turn — a routing decision or a fallback can differ from it, and
+    /// a meter that names the wrong model is worse than one that names none.
+    ///
+    /// `is_estimated` travels with them because it changes what the number
+    /// MEANS. A model with no published rate is billed at `worst_case_pricing`
+    /// — deliberately the most expensive rate in the registry, so the spend cap
+    /// fires early rather than late — and showing that as a plain dollar figure
+    /// presents a safety margin as a fact. Today `zai/glm-5.3`, the coding
+    /// harness's own model, has no row in the canonical table or in
+    /// `published_prices`, so this is the common case on the very surface that
+    /// reported the bug.
+    pub async fn last_call_facts(&self, session_id: &str) -> Result<Option<LastCall>> {
+        self.storage.last_call_facts(session_id).await
     }
 
     pub async fn add_message(&self, id: &str, message: &Message) -> Result<()> {
@@ -1504,6 +1550,42 @@ impl SessionStorage {
     /// Insert one cost-ledger row and advance the session's O(1) cost rollup in a
     /// single `BEGIN IMMEDIATE` transaction. `turn_index` is computed atomically
     /// as the count of prior rows for the session (0-based).
+    /// See [`SessionManager::spend_since`].
+    async fn spend_since(&self, since: &str) -> Result<f64> {
+        let pool = self.pool().await?;
+        let total: Option<f64> =
+            sqlx::query_scalar("SELECT SUM(cost_usd) FROM cost_ledger WHERE ts >= ?")
+                .bind(since)
+                .fetch_one(pool)
+                .await?;
+        // SUM over no rows is NULL, not 0 — a day with no calls has spent
+        // nothing, which is a number, not an absence.
+        Ok(total.unwrap_or(0.0))
+    }
+
+    /// See [`SessionManager::last_call_facts`].
+    async fn last_call_facts(&self, session_id: &str) -> Result<Option<LastCall>> {
+        let pool = self.pool().await?;
+        // `provider` and `model` are NULLABLE columns (`CostLedgerRow` carries
+        // them as `Option`), so they are decoded as options. Decoding straight
+        // into `String` would make a single row with a null provider fail the
+        // whole query — and this runs on the meter's per-turn path, so that
+        // failure would present as the meter going quiet rather than as an
+        // error anyone could see.
+        Ok(sqlx::query_as::<_, (Option<String>, Option<String>, i64)>(
+            "SELECT provider, model, is_estimated FROM cost_ledger
+                  WHERE session_id = ? ORDER BY ts DESC LIMIT 1",
+        )
+        .bind(session_id)
+        .fetch_optional(pool)
+        .await?
+        .map(|(provider, model, estimated)| LastCall {
+            provider,
+            model,
+            estimated: estimated != 0,
+        }))
+    }
+
     async fn append_cost_ledger(&self, row: &CostLedgerRow) -> Result<()> {
         let pool = self.pool().await?;
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;

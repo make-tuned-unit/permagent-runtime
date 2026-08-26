@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { api, apiFetch, extractText, extractThinking, fileToBase64, hasToolActivity, readerIngest } from './api';
 import { emitActivity, type ActivityEventName, type ActivitySourceSurface } from './emitActivity';
 import type { SessionSummary, DaemonMessage, SSEEvent, AppContextPayload, TokenState } from './api';
-import { costFromFrame } from './costMeter';
+import { costFromFrame, type CodingSpend } from './costMeter';
 import { maybeSpeakReply, replyDedupeKey } from './speakReplies';
 import { readLiveConversation } from './voiceHandoff';
 import { appendTraceRecord, sessionFrameToRecord } from './traceEvents';
@@ -281,6 +281,23 @@ interface CommandCenterStore {
    * this; it is the live, single-sourced $ with no extra endpoint.
    */
   liveTokens: TokenState | null;
+  /**
+   * Latest spend announcement from the CODING HARNESS's own session — arrives
+   * via the daemon's `session_spend_changed` bus frame on the SAME /events
+   * socket livenessSync.ts already consumes (see livenessSync.ts's
+   * APPLY_BY_TYPE lane), not the chat SSE stream. This is deliberately a
+   * SEPARATE slice from `liveTokens`, not a merge into it: `liveTokens` is the
+   * browser CHAT session's ledger, `codingSpend` is the CLI harness's
+   * (`permagent run --recipe permagent-coding --interactive`) — they have
+   * always been two different sessions with two different ids, and the Build
+   * meter reading `liveTokens` while the user coded (a stream that stays idle
+   * the whole time) is exactly the bug this field exists to fix: the meter
+   * was reading a real number off the wrong account. Collapsing the two
+   * into one field would resurrect that bug the moment either session was
+   * momentarily idle.
+   */
+  codingSpend: CodingSpend | null;
+  setCodingSpend: (spend: CodingSpend) => void;
   sendMessage: (text: string, files?: File[]) => Promise<void>;
   /** Interrupt the in-flight turn: POST /sessions/{id}/cancel with the active
    *  request_id. Returns true when the daemon confirmed a live request was
@@ -981,6 +998,8 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   // Streaming
   isStreaming: false,
   liveTokens: null,
+  codingSpend: null,
+  setCodingSpend: (spend) => set({ codingSpend: spend }),
   _activeRequestId: null,
 
   /**

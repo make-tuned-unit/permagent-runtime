@@ -71,6 +71,16 @@ pub struct GrowthActionRow {
     pub status: String,
     pub verified_by: Option<String>,
     pub verified_at: Option<String>,
+    /// The full sha of the commit that earned a `git` verification, when one
+    /// did. `None` for every other strategy and for every row verified before
+    /// the column existed — a completed action with no commit is honest, an
+    /// invented one is not.
+    pub verified_commit: Option<String>,
+    /// The passing check's own sentence, verbatim. Stored rather than
+    /// re-derived because re-running the check later searches
+    /// `--since=created_at` and can legitimately name a different, later
+    /// commit than the one that actually earned the verification.
+    pub verified_detail: Option<String>,
     pub created_at: String,
 }
 
@@ -517,29 +527,102 @@ pub async fn set_status(
     get(pool, project_id, action_id).await
 }
 
+/// Everything a verification knows about itself: which strategy confirmed the
+/// change, when, the metric snapshot frozen at that moment, and — when the
+/// strategy was `git` — the commit and the sentence the check gave as its
+/// evidence.
+///
+/// A struct rather than five more positional parameters because the last two
+/// are both `Option<&str>` and adjacent: transposing them at a call site would
+/// compile and silently file a commit sha as prose.
+#[derive(Debug, Clone, Copy)]
+pub struct VerificationEvidence<'a> {
+    pub verified_by: &'a str,
+    pub verified_at: &'a str,
+    pub baseline_json: Option<&'a str>,
+    /// Full sha of the commit that earned a `git` verification.
+    pub commit: Option<&'a str>,
+    /// The passing check's own sentence, verbatim.
+    pub detail: Option<&'a str>,
+}
+
+impl<'a> VerificationEvidence<'a> {
+    /// The minimum a verification can carry: a strategy and a moment.
+    pub fn new(verified_by: &'a str, verified_at: &'a str) -> Self {
+        Self {
+            verified_by,
+            verified_at,
+            baseline_json: None,
+            commit: None,
+            detail: None,
+        }
+    }
+}
+
 /// Record that a change was confirmed to have landed, how, and what the metric
 /// looked like at that moment.
+///
+/// `commit`/`detail` COALESCE like `baseline_json`, for the same reason: a
+/// re-verification must not overwrite the evidence of the verification that
+/// actually froze the baseline. `verify_mode` already refuses to re-stamp a
+/// judged row, and this is the second line of that defence.
 pub async fn record_verification(
     pool: &Pool<Sqlite>,
     project_id: &str,
     action_id: &str,
-    verified_by: &str,
-    verified_at: &str,
-    baseline_json: Option<&str>,
+    evidence: VerificationEvidence<'_>,
 ) -> anyhow::Result<Option<GrowthActionRow>> {
     sqlx::query(
         "UPDATE growth_actions
-            SET status        = 'verified',
-                verified_by   = ?3,
-                verified_at   = ?4,
-                baseline_json = coalesce(?5, baseline_json)
+            SET status          = 'verified',
+                verified_by     = ?3,
+                verified_at     = ?4,
+                baseline_json   = coalesce(?5, baseline_json),
+                verified_commit = coalesce(?6, verified_commit),
+                verified_detail = coalesce(?7, verified_detail)
           WHERE project_id = ?1 AND id = ?2",
     )
     .bind(project_id)
     .bind(action_id)
-    .bind(verified_by)
-    .bind(verified_at)
-    .bind(baseline_json)
+    .bind(evidence.verified_by)
+    .bind(evidence.verified_at)
+    .bind(evidence.baseline_json)
+    .bind(evidence.commit)
+    .bind(evidence.detail)
+    .execute(pool)
+    .await?;
+    get(pool, project_id, action_id).await
+}
+
+/// Withdraw a verification and put the action back on the board as `suggested`.
+///
+/// This is the ONLY writer that clears `verified_at`, and it does so
+/// deliberately: `verified_at` is the pivot every comparison window is measured
+/// from (`metrics::pivot_date`), so an action whose "this shipped" claim has
+/// been withdrawn must not keep a pivot the sweep would go on measuring
+/// against. The frozen baseline goes with it — a baseline is a snapshot taken
+/// AT that pivot, and keeping one whose pivot no longer exists would let a
+/// later re-verification compare a fresh window against a stale before.
+///
+/// The caller is responsible for refusing this on an action that already has
+/// judged outcomes; a finished experiment is history, not a draft.
+pub async fn reopen(
+    pool: &Pool<Sqlite>,
+    project_id: &str,
+    action_id: &str,
+) -> anyhow::Result<Option<GrowthActionRow>> {
+    sqlx::query(
+        "UPDATE growth_actions
+            SET status          = 'suggested',
+                verified_by     = NULL,
+                verified_at     = NULL,
+                verified_commit = NULL,
+                verified_detail = NULL,
+                baseline_json   = NULL
+          WHERE project_id = ?1 AND id = ?2",
+    )
+    .bind(project_id)
+    .bind(action_id)
     .execute(pool)
     .await?;
     get(pool, project_id, action_id).await
@@ -955,9 +1038,14 @@ mod tests {
             (&outside, "p1", "2026-08-30T09:00:00Z"),
             (&elsewhere, "p2", "2026-08-15T09:00:00Z"),
         ] {
-            record_verification(&pool, project, &row.id, VERIFIED_BY_GIT, at, None)
-                .await
-                .unwrap();
+            record_verification(
+                &pool,
+                project,
+                &row.id,
+                VerificationEvidence::new(VERIFIED_BY_GIT, at),
+            )
+            .await
+            .unwrap();
         }
 
         let found = verified_between(&pool, "p1", "2026-08-12", "2026-08-19", &mine.id)
@@ -993,9 +1081,7 @@ mod tests {
             &pool,
             "p1",
             &unregistered.id,
-            VERIFIED_BY_SELF,
-            "2026-08-12T00:00:00Z",
-            None,
+            VerificationEvidence::new(VERIFIED_BY_SELF, "2026-08-12T00:00:00Z"),
         )
         .await
         .unwrap();
@@ -1016,9 +1102,7 @@ mod tests {
             &pool,
             "p1",
             &ready.id,
-            VERIFIED_BY_GIT,
-            "2026-08-12T00:00:00Z",
-            None,
+            VerificationEvidence::new(VERIFIED_BY_GIT, "2026-08-12T00:00:00Z"),
         )
         .await
         .unwrap();
@@ -1044,9 +1128,7 @@ mod tests {
                 &pool,
                 "p1",
                 &row.id,
-                VERIFIED_BY_GIT,
-                "2026-08-12T00:00:00Z",
-                None,
+                VerificationEvidence::new(VERIFIED_BY_GIT, "2026-08-12T00:00:00Z"),
             )
             .await
             .unwrap();
@@ -1080,9 +1162,7 @@ mod tests {
             &pool,
             "p1",
             &row.id,
-            VERIFIED_BY_GIT,
-            "2026-08-12T00:00:00Z",
-            None,
+            VerificationEvidence::new(VERIFIED_BY_GIT, "2026-08-12T00:00:00Z"),
         )
         .await
         .unwrap();
@@ -1122,6 +1202,8 @@ mod tests {
             status: STATUS_MEASURING.into(),
             verified_by: Some(VERIFIED_BY_GIT.into()),
             verified_at: Some("2026-08-14T00:00:00Z".into()),
+            verified_commit: None,
+            verified_detail: None,
             created_at: "2026-08-14T00:00:00Z".into(),
         }
     }
@@ -1402,9 +1484,7 @@ mod tests {
             &pool,
             "p1",
             &row.id,
-            VERIFIED_BY_GIT,
-            "2026-08-12T00:00:00Z",
-            None,
+            VerificationEvidence::new(VERIFIED_BY_GIT, "2026-08-12T00:00:00Z"),
         )
         .await
         .unwrap();
@@ -1450,9 +1530,7 @@ mod tests {
             &pool,
             "p1",
             &row.id,
-            VERIFIED_BY_GIT,
-            "2026-08-12T00:00:00Z",
-            None,
+            VerificationEvidence::new(VERIFIED_BY_GIT, "2026-08-12T00:00:00Z"),
         )
         .await
         .unwrap();
@@ -1495,9 +1573,7 @@ mod tests {
             &pool,
             "p1",
             &row.id,
-            VERIFIED_BY_GIT,
-            "2026-08-12T00:00:00Z",
-            None,
+            VerificationEvidence::new(VERIFIED_BY_GIT, "2026-08-12T00:00:00Z"),
         )
         .await
         .unwrap();

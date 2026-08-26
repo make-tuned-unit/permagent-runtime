@@ -2553,6 +2553,15 @@ pub async fn apply_cost_ledger_schema(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_cost_ledger_task ON cost_ledger(task_id, ts)")
         .execute(&mut *tx)
         .await?;
+    // "What have I spent today, across everything?" has no session or task to
+    // key on, so neither index above serves it and the query degrades to a full
+    // scan of every call ever made. The Build meter asks it once per turn while
+    // the user codes, which is exactly the shape of the Automate tab's polling
+    // storm (an unindexed `WHERE schedule_id = ?` on `sessions`, 1-3.7s a poll)
+    // — cheap to prevent here, expensive to discover later.
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_cost_ledger_ts ON cost_ledger(ts)")
+        .execute(&mut *tx)
+        .await?;
 
     // PRAGMA-guarded rollup columns on `sessions` (idempotent ADD COLUMN).
     for (col, ddl) in [
@@ -3707,6 +3716,8 @@ pub async fn apply_growth_actions_schema(pool: &Pool<Sqlite>) -> Result<()> {
             status         TEXT NOT NULL,
             verified_by    TEXT,
             verified_at    TEXT,
+            verified_commit TEXT,
+            verified_detail TEXT,
             created_at     TEXT NOT NULL,
             UNIQUE(project_id, fingerprint)
         )",
@@ -3722,6 +3733,47 @@ pub async fn apply_growth_actions_schema(pool: &Pool<Sqlite>) -> Result<()> {
     )
     .execute(pool)
     .await?;
+
+    // PERSISTED VERIFICATION EVIDENCE. `verified_by` records only WHICH
+    // strategy confirmed the change ("git"), never WHAT it found, so the
+    // commit that earned the verification lived for exactly one HTTP response
+    // — in the `checks[].detail` prose of the verify reply — and was gone on
+    // the next board load. A completed action that cannot name the commit it
+    // shipped in is a claim without a receipt, and re-running the check later
+    // cannot recover it: `verify_git` searches `--since=created_at` and would
+    // happily name a DIFFERENT, later commit.
+    //
+    // `verified_commit` is the full sha (the UI shortens it); `verified_detail`
+    // is the passing check's own sentence, stored verbatim so the card shows
+    // the evidence the check actually gave rather than a re-derived summary.
+    // Both are nullable: every row verified before this column existed, and
+    // every non-git strategy, legitimately has no commit.
+    //
+    // PRAGMA-guarded ADD COLUMN, applied here rather than in a version-gated
+    // migration because `apply_growth_actions_schema` already runs on EVERY
+    // boot (session_manager.rs) — the same version-independent safety net the
+    // recognition columns use, and the reason a stamped-but-missing column
+    // cannot strand the Grow board.
+    for (col, ddl) in [
+        (
+            "verified_commit",
+            "ALTER TABLE growth_actions ADD COLUMN verified_commit TEXT",
+        ),
+        (
+            "verified_detail",
+            "ALTER TABLE growth_actions ADD COLUMN verified_detail TEXT",
+        ),
+    ] {
+        let has_column: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('growth_actions') WHERE name = ?",
+        )
+        .bind(col)
+        .fetch_one(pool)
+        .await?;
+        if has_column == 0 {
+            sqlx::query(ddl).execute(pool).await?;
+        }
+    }
 
     // PRIMARY KEY(action_id, window_days): the proposal measures the same
     // action over several whole-week windows (7/14/28) and a nightly job
