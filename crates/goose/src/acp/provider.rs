@@ -980,8 +980,13 @@ async fn handle_requests(
 
                 match response {
                     Ok(r) => {
+                        // sacp 11 still compiles against schema 0.11. Workspace
+                        // 0.12 does not unify with that copy, so
+                        // `PromptResponse.usage` (feature `unstable` on 0.11)
+                        // is not on this type. Token totals for the turn are
+                        // None until sacp moves to 0.12.
                         log_undelivered(
-                            response_tx.try_send(AcpUpdate::Complete(r.stop_reason, r.usage)),
+                            response_tx.try_send(AcpUpdate::Complete(r.stop_reason, None)),
                             AGENT_METHOD_NAMES.session_prompt,
                         );
                     }
