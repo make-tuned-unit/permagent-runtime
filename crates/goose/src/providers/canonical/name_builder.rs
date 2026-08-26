@@ -87,6 +87,21 @@ pub fn map_to_canonical_model(
         // If direct lookup failed, fall through to inference logic below
     }
 
+    // Provider SDKs may report the canonical, provider-qualified id as the
+    // usage model (for example provider `zai`, model `zai/glm-5.3`). Look that
+    // id up by its own two parts instead of treating the whole string as the
+    // model name under the configured provider.
+    if let Some((qualified_provider, qualified_model)) = model.split_once('/') {
+        let qualified_provider = map_provider_name(qualified_provider);
+        let normalized_model = strip_version_suffix(qualified_model);
+        if let Some(canonical) = registry.get(qualified_provider, &normalized_model) {
+            return Some(canonical.id.clone());
+        }
+        if let Some(canonical) = registry.get(qualified_provider, qualified_model) {
+            return Some(canonical.id.clone());
+        }
+    }
+
     // For hosting/meta-providers (or unknown providers), do string matching magic to figure out the real provider and model
     let model_stripped = strip_common_prefixes(model);
 
@@ -535,5 +550,17 @@ mod tests {
             map_to_canonical_model("gcp_vertex_ai", "claude-haiku-4-5@20251001", r),
             Some("anthropic/claude-haiku-4.5".to_string())
         );
+    }
+
+    #[test]
+    fn qualified_zai_glm_5_3_resolves_published_pricing_without_estimation() {
+        let pricing = super::super::maybe_get_pricing("zai", "zai/glm-5.3");
+        let pricing = pricing.expect("the bundled canonical registry publishes glm-5.3 pricing");
+        let usage = crate::providers::base::Usage::new(Some(1_000_000), Some(1_000_000), None);
+        let is_estimated = super::super::cost_breakdown(&usage, &pricing).is_none();
+
+        assert_eq!(pricing.input, Some(1.4));
+        assert_eq!(pricing.output, Some(4.4));
+        assert!(!is_estimated);
     }
 }

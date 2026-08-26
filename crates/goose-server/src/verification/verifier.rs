@@ -56,6 +56,17 @@ pub struct VerifierConfig {
     /// (`independent_review` in its metadata).
     #[serde(default = "default_true")]
     pub independent_review: bool,
+    /// How many check-failure rework rounds a goal gets before it parks for a
+    /// person. This is the *rework* budget — distinct from the attempt/token/
+    /// wallclock caps and from the premature-done hold. A goal may override it
+    /// with its own `refinement_budget` metadata, and an explicit `0` there (or
+    /// here) turns autonomous rework off entirely.
+    #[serde(default = "default_refinement_budget")]
+    pub refinement_budget: u64,
+}
+
+fn default_refinement_budget() -> u64 {
+    permagent::goal_refinement::DEFAULT_REFINEMENT_BUDGET
 }
 
 fn default_true() -> bool {
@@ -70,6 +81,7 @@ impl Default for VerifierConfig {
             auto_approve_goal_types: Vec::new(),
             panel_models: Vec::new(),
             independent_review: true,
+            refinement_budget: permagent::goal_refinement::DEFAULT_REFINEMENT_BUDGET,
         }
     }
 }
