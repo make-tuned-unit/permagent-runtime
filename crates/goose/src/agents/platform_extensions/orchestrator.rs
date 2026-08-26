@@ -2506,7 +2506,18 @@ impl OrchestratorClient {
             .pool_clone()
             .await
             .map_err(|e| e.to_string())?;
-        let delivery = super::goal_a2a::send_goal_a2a(&pool, &from_goal, &to_goal, &body).await?;
+        // A refusal is typed on the way out so the model is told WHICH no it
+        // got: a terminal target is never worth another attempt, a target that
+        // is not running yet usually is.
+        let delivery = super::goal_a2a::send_goal_a2a(&pool, &from_goal, &to_goal, &body)
+            .await
+            .map_err(|refusal| {
+                if refusal.is_permanent() {
+                    format!("{refusal} (this refusal is permanent — do not retry)")
+                } else {
+                    refusal.to_string()
+                }
+            })?;
         Ok(CallToolResult::success(vec![Content::text(format!(
             "A2A delivered from {} to {} (steered={}). Payload: from_goal/to_goal/body.",
             delivery.message.from_goal, delivery.message.to_goal, delivery.steered
@@ -3184,9 +3195,14 @@ impl OrchestratorClient {
             Tool::new(
                 "message_goal".to_string(),
                 "Send a structured agent-to-agent message from one goal worker to another \
-                 InProgress goal (payload: from_goal, to_goal, body). Refused for \
-                 Complete/Cancelled/non-InProgress targets. Lands in the target's RLM \
-                 state and next dispatch/steer brief; steers a live CLI worker when one exists."
+                 InProgress goal (payload: from_goal, to_goal, body). A refusal says which \
+                 kind of no it is: a Complete or Cancelled target is refused PERMANENTLY \
+                 (open a new goal instead of retrying), while a Triage/Ready/Review/Failed \
+                 target is refused only for now and may accept the same message once it is \
+                 running. Lands in the target's RLM state and next dispatch/steer brief; \
+                 steers a live CLI worker when one exists. Every delivery is audited on the \
+                 activity timeline by sender, recipient, length and body hash — never the \
+                 body text."
                     .to_string(),
                 schema::<MessageGoalParams>(),
             ),

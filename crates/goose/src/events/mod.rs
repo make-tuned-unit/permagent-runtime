@@ -372,6 +372,13 @@ pub enum PermagentEventType {
     TerminalGateCleared,
     // Goal lifecycle (create / transition / park / requeue / failure / delete)
     GoalStateChanged,
+    /// One goal worker sent another an agent-to-agent message (Prime A2A).
+    /// The payload carries WHO and HOW MUCH — from/to goal ids, the body's
+    /// SHA-256 and its length — and deliberately not the body: an audit trail
+    /// for instructions passing between agents has to prove the message
+    /// existed without republishing what it said.
+    #[serde(rename = "a2a_message")]
+    A2aMessage,
     // Echo/Watcher — the agent proactively resurfaces something worth your
     // attention (a dormant Brain thread today; project news/analytics later).
     ProactiveNudge,
@@ -423,6 +430,30 @@ pub fn daemon_stopped(reason: &str) -> PermagentEvent {
     PermagentEvent::new(
         PermagentEventType::DaemonStopped,
         serde_json::json!({ "reason": reason }),
+    )
+}
+
+/// One agent-to-agent message, delivered. `body_sha256` and `body_len`
+/// fingerprint the body; the body itself is NOT carried. `actor` is the worker
+/// the sending goal is assigned to, or "system".
+pub fn a2a_message(
+    from_goal: &str,
+    to_goal: &str,
+    body_sha256: &str,
+    body_len: usize,
+    steered: bool,
+    actor: &str,
+) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::A2aMessage,
+        serde_json::json!({
+            "from_goal": from_goal,
+            "to_goal": to_goal,
+            "body_sha256": body_sha256,
+            "body_len": body_len,
+            "steered": steered,
+            "actor": actor,
+        }),
     )
 }
 
