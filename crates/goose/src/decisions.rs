@@ -40,6 +40,7 @@ const OUTBOX_ELIGIBLE_KINDS: &[&str] = &[
     "model_upgrade",
     "person_merge_proposal",
     "person_delete_proposal",
+    "council_action",
 ];
 
 /// Payload marker for the review-fail → debugger-dispatch proposal (a `choice`
@@ -401,6 +402,21 @@ pub struct EnrichmentProposalPayload {
     #[serde(default)]
     pub entity_uuid: Option<String>,
     pub fields: Vec<ProposedEnrichmentField>,
+}
+
+/// Payload for `kind='council_action'` — a weekly-report recommendation.
+/// Approve files a board card on the named project; reject dismisses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CouncilActionPayload {
+    pub session_id: String,
+    #[serde(default)]
+    pub project_id: String,
+    #[serde(default)]
+    pub project_name: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
 }
 
 /// One cited ecosystem or competitive-intelligence finding proposed for a
@@ -1060,6 +1076,7 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
         "regression_proposal",
         "person_merge_proposal",
         "person_delete_proposal",
+        "council_action",
     ]
     .contains(&req.kind.as_str())
     {
@@ -1118,6 +1135,13 @@ fn validate_new_decision(req: &NewDecision) -> Result<(), String> {
         "person_delete_proposal" => {
             match serde_json::from_value::<PersonDeleteProposalPayload>(req.payload.clone()) {
                 Ok(p) => validate_person_delete_payload(&p),
+                Err(e) => Err(e.to_string()),
+            }
+        }
+        "council_action" => {
+            match serde_json::from_value::<CouncilActionPayload>(req.payload.clone()) {
+                Ok(p) if !p.title.trim().is_empty() && !p.session_id.trim().is_empty() => Ok(()),
+                Ok(_) => Err("council_action requires title and session_id".to_string()),
                 Err(e) => Err(e.to_string()),
             }
         }
@@ -1747,6 +1771,7 @@ fn answer_allowed_for_kind(kind: &str, answer: &str) -> bool {
         | "session_gate"
         | "person_merge_proposal"
         | "person_delete_proposal"
+        | "council_action"
         | "malformed" => matches!(answer, "approve" | "reject"),
         "unblock" => matches!(answer, "approve" | "reject" | "input"),
         "choice" => matches!(answer, "choice" | "reject"),

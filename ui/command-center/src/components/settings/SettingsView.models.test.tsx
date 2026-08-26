@@ -15,6 +15,8 @@ const allowed = vi.hoisted(() => ({
   getLibrarianSchedule: vi.fn(),
   setLibrarianSchedule: vi.fn(),
   runLibrarianNow: vi.fn(),
+  getPacks: vi.fn(),
+  applyPacks: vi.fn(),
 }));
 
 vi.mock('../../lib/api', () => ({
@@ -47,6 +49,12 @@ beforeEach(() => {
   allowed.upsertConfig.mockReset().mockResolvedValue({} as never);
   allowed.getOllamaStatus.mockReset().mockResolvedValue({ reachable: false } as never);
   allowed.getLibrarianSchedule.mockReset().mockResolvedValue(null as never);
+  allowed.getPacks.mockReset().mockResolvedValue({
+    prompt: false,
+    configured: [],
+    recommendation: { recommendations: [], considered: [] },
+  } as never);
+  allowed.applyPacks.mockReset().mockResolvedValue({ applied: [] } as never);
 });
 
 afterEach(() => {
@@ -127,7 +135,7 @@ describe('ModelsPanel Chat/Voice/Harness role table', () => {
     // measured pair, because voice_model.rs resolves it above GOOSE_MODEL.
     expect(roleRow('chat').textContent).toContain('built-in default');
     expect(roleRow('harness').textContent).toContain('built-in default');
-    expect(roleRow('voice').textContent).toContain('anthropic / claude-haiku-4-5-20251001 (default)');
+    expect(roleRow('voice').textContent).toContain('custom_deepseek / deepseek-chat (default)');
     expect(container.textContent).not.toContain('from GOOSE_MODEL');
   });
 
@@ -143,7 +151,7 @@ describe('ModelsPanel Chat/Voice/Harness role table', () => {
     expect(roleRow('harness').textContent).toContain('zai / glm-5.3');
     expect(roleRow('harness').textContent).toContain('from GOOSE_MODEL');
     expect(roleRow('voice').textContent).not.toContain('zai / glm-5.3');
-    expect(roleRow('voice').textContent).toContain('anthropic / claude-haiku-4-5-20251001 (default)');
+    expect(roleRow('voice').textContent).toContain('custom_deepseek / deepseek-chat (default)');
   });
 
   it('separates Chat from Harness and Voice when only chat_* is set', async () => {
@@ -247,11 +255,30 @@ describe('ModelsPanel roster pointer', () => {
   });
 });
 
+describe('ModelsPanel role routing', () => {
+  it('surfaces Apply recommended routing as the first action when prompted', async () => {
+    allowed.getPacks.mockResolvedValue({
+      prompt: true,
+      configured: [],
+      recommendation: {
+        considered: ['openai/gpt-5.4', 'ollama/qwen3'],
+        recommendations: [
+          { role: 'edit', provider: 'openai', model: 'gpt-5.4' },
+          { role: 'mechanical', provider: 'ollama', model: 'qwen3' },
+        ],
+      },
+    } as never);
+
+    await mount(vi.fn());
+    expect(container.textContent).toContain('Apply recommended routing');
+  });
+});
+
 /**
  * The voice model route (crates/goose/src/config/voice_model.rs): which
  * model answers a SPOKEN turn, separate from the main GOOSE_MODEL that
  * answers chat. `voice_provider` and `voice_model` set together override a
- * measured default (anthropic / claude-haiku-4-5-20251001); either key set to
+ * measured default (custom_deepseek / deepseek-chat); either key set to
  * session/off/none turns the feature off. This block checks the panel's
  * display mirrors that precedence and that it writes only on user action —
  * never as a side effect of mounting (the Guard test above already tripwires
@@ -263,11 +290,11 @@ describe('ModelsPanel voice model row', () => {
   // table (one concept, one place), so every query here scopes to that row —
   // there are now three Save buttons on the pane and the first is Chat's.
   function providerInput(): HTMLInputElement {
-    return roleRow('voice').querySelector('input[placeholder="anthropic"]') as HTMLInputElement;
+    return roleRow('voice').querySelector('input[placeholder="custom_deepseek"]') as HTMLInputElement;
   }
   function modelInput(): HTMLInputElement {
     return roleRow('voice').querySelector(
-      'input[placeholder="claude-haiku-4-5-20251001"]',
+      'input[placeholder="deepseek-chat"]',
     ) as HTMLInputElement;
   }
   async function typeInto(input: HTMLInputElement, value: string) {
@@ -288,18 +315,18 @@ describe('ModelsPanel voice model row', () => {
 
   it('shows the measured default when neither key is set', async () => {
     await mount(vi.fn());
-    expect(roleRow('voice').textContent).toContain('anthropic / claude-haiku-4-5-20251001 (default)');
+    expect(roleRow('voice').textContent).toContain('custom_deepseek / deepseek-chat (default)');
   });
 
   it('shows the configured route when both keys are set', async () => {
     allowed.readConfig.mockImplementation(async (k: string) =>
-      (k === 'voice_provider' ? 'custom_deepseek' : k === 'voice_model' ? 'deepseek-chat' : null) as never,
+      (k === 'voice_provider' ? 'minimax' : k === 'voice_model' ? 'MiniMax-M2.7' : null) as never,
     );
     await mount(vi.fn());
     // Deliberately NOT the default pair — otherwise this passes on the default
     // readout and proves nothing about reading the configured keys. Scoped to
     // the row: Chat and Harness are unset here and legitimately say "(default)".
-    expect(roleRow('voice').textContent).toContain('custom_deepseek / deepseek-chat');
+    expect(roleRow('voice').textContent).toContain('minimax / MiniMax-M2.7');
     expect(roleRow('voice').textContent).not.toContain('(default)');
   });
 

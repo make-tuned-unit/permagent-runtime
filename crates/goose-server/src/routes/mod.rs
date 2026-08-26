@@ -17,6 +17,7 @@ pub mod browser_state;
 pub mod cards;
 pub mod coding_session;
 pub mod config_management;
+pub mod council;
 pub mod dashboard;
 pub mod dashboard_cards;
 pub mod decisions;
@@ -47,6 +48,7 @@ pub mod librarian;
 pub mod local_inference;
 pub mod ollama;
 pub mod onboarding;
+pub mod packs;
 pub mod people;
 pub mod projects;
 pub mod prompts;
@@ -191,11 +193,13 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(inbox::routes(state.clone()))
         .merge(dashboard::routes(state.clone()))
         .merge(dashboard_cards::routes(state.clone()))
+        .merge(council::routes(state.clone()))
         .merge(identity::routes(state.clone()))
         .merge(workers::routes(state.clone()))
         .merge(findings::routes(state.clone()))
         .merge(storage::routes(state.clone()))
         .merge(ollama::routes(state.clone()))
+        .merge(packs::routes())
         .merge(librarian::routes(state.clone()))
         .merge(henry_status::routes(state.clone()))
         .merge(runs::routes(state.clone()))

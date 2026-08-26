@@ -156,6 +156,27 @@ pub const NO_REVIEWER_AVAILABLE: &str =
      model from another vendor (see `permagent packs recommend`), or turn the \
      independent review off for this project if you accept unreviewed completions.";
 
+/// Anthropic API ids that 404 as of 2026-08. A configured REVIEW pin of one of
+/// these was honouring the operator's mapping by calling a dead model, which
+/// took the independent-review gate down (`claude-3-5-sonnet-20241022`).
+/// Skipping them lets best-fit (or a live configured model) take over.
+const RETIRED_ANTHROPIC_REVIEW_MODELS: &[&str] = &[
+    "claude-3-5-sonnet-20241022",
+    "claude-3-5-sonnet-20240620",
+    "claude-3-5-haiku-20241022",
+    "claude-3-opus-20240229",
+    "claude-3-sonnet-20240229",
+    "claude-3-haiku-20240307",
+];
+
+/// True when this (provider, model) will 404 if the reviewer actually calls it.
+pub fn model_is_retired(provider: &str, model: &str) -> bool {
+    provider.trim().eq_ignore_ascii_case("anthropic")
+        && RETIRED_ANTHROPIC_REVIEW_MODELS
+            .iter()
+            .any(|id| id.eq_ignore_ascii_case(model.trim()))
+}
+
 /// Build a pick from a concrete (provider, model), resolving its family and
 /// price from the knowledge base.
 fn pick_from(
@@ -222,8 +243,9 @@ pub fn select_reviewer(
 
     // 1. The operator's explicit mapping wins — even same-family, which is then
     //    recorded (never silently rerouted, and never silently called independent).
+    //    A retired id is not honoured: calling it 404s the gate.
     if let Some(rm) = configured {
-        if diverse(&rm.provider, &rm.model) {
+        if !model_is_retired(&rm.provider, &rm.model) && diverse(&rm.provider, &rm.model) {
             return ReviewerSelection::Reviewer(Box::new(pick_from(
                 &rm.provider,
                 &rm.model,
@@ -238,7 +260,7 @@ pub fn select_reviewer(
 
     // 2. The recommender-derived REVIEW entry, when it is genuinely diverse.
     if let Some(rm) = derived {
-        if diverse(&rm.provider, &rm.model) {
+        if !model_is_retired(&rm.provider, &rm.model) && diverse(&rm.provider, &rm.model) {
             return ReviewerSelection::Reviewer(Box::new(pick_from(
                 &rm.provider,
                 &rm.model,
@@ -301,16 +323,19 @@ pub fn select_reviewer(
     // 4. Last resort: an explicitly-configured reviewer that happens to share the
     //    author's family is still a second opinion, and honouring the operator's
     //    mapping beats refusing outright — but it is recorded as same-family.
+    //    Retired ids are still skipped: a 404 is not a second opinion.
     if let Some(rm) = configured {
-        return ReviewerSelection::Reviewer(Box::new(pick_from(
-            &rm.provider,
-            &rm.model,
-            &worker_family,
-            ReviewerSource::Configured,
-            "the model you mapped to the REVIEW role — no different-family model is \
-             available, so this review is not cross-family"
-                .to_string(),
-        )));
+        if !model_is_retired(&rm.provider, &rm.model) {
+            return ReviewerSelection::Reviewer(Box::new(pick_from(
+                &rm.provider,
+                &rm.model,
+                &worker_family,
+                ReviewerSource::Configured,
+                "the model you mapped to the REVIEW role — no different-family model is \
+                 available, so this review is not cross-family"
+                    .to_string(),
+            )));
+        }
     }
 
     ReviewerSelection::Unavailable {
@@ -442,6 +467,42 @@ mod tests {
         assert!(pick.cross_family, "must be recorded as cross-family");
         assert_ne!(pick.family, pick.worker_family);
         assert!(pick.warning.is_none());
+    }
+
+    #[test]
+    fn a_retired_configured_reviewer_is_skipped_so_best_fit_can_run() {
+        let worker = lookup_model("openai", "gpt-5.4-mini").expect("gpt-5.4-mini is in the KB");
+        let available: Vec<AvailableModel> = KNOWN_MODELS
+            .iter()
+            .map(|m| AvailableModel::new(m.provider, m.model))
+            .collect();
+        let sel = select_reviewer(
+            Some((worker.provider, worker.model)),
+            Some(&rm("anthropic", "claude-3-5-sonnet-20241022")),
+            None,
+            &available,
+            10,
+        );
+        let pick = sel.pick().expect("best-fit must replace the dead pin");
+        assert_ne!(pick.model, "claude-3-5-sonnet-20241022");
+        assert_eq!(pick.source, ReviewerSource::BestFit);
+        assert!(pick.cross_family);
+    }
+
+    #[test]
+    fn a_retired_configured_reviewer_with_no_alternative_is_unavailable() {
+        let worker = lookup_model("openai", "gpt-5.4-mini").expect("gpt-5.4-mini is in the KB");
+        let sel = select_reviewer(
+            Some((worker.provider, worker.model)),
+            Some(&rm("anthropic", "claude-3-5-sonnet-20241022")),
+            None,
+            &[],
+            10,
+        );
+        assert!(
+            matches!(sel, ReviewerSelection::Unavailable { .. }),
+            "a 404 pin must not be called as a last resort, got {sel:?}"
+        );
     }
 
     #[test]

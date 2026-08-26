@@ -44,7 +44,7 @@ and outlives the goal, without putting the Brain on the read path. Idempotent by
 `WriteOutcome::Inserted` only for genuinely new content — exactly the assertion for the "mirrored once per key
 change" test. A mirror failure logs, never fails the SQLite write.
 
-## Schema (ladder step v51, additive + base-independent)
+## Schema (ladder step v52, additive + base-independent)
 
 ```sql
 CREATE TABLE IF NOT EXISTS rlm_context (
@@ -185,7 +185,7 @@ front-matter (`skill_md.rs:85-92`). `skill_run` on a `prompt` skill returns the 
 
 # Delivery
 
-**PR 1 `feat/prime-rlm-kernel`** — v51 migration; `rlm.rs` over SQLite with the DashMap demoted to a read-through
+**PR 1 `feat/prime-rlm-kernel`** — v52 migration; `rlm.rs` over SQLite with the DashMap demoted to a read-through
 cache; `context_*` tools; `write_a2a_feedback`; TTL sweep on the WAL timer. Tests: survives a simulated restart
 (drop cache, re-read from a reopened pool); version-conflict rejection; TTL GC deletes only expired rows; mirror
 fires once per version change (assert `WriteOutcome`); a credential-shaped value is refused and no row lands.

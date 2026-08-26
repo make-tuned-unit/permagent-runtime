@@ -319,6 +319,13 @@ export interface TokenState {
   model: string;
 }
 
+/** Parent + direct-child cost rollup from GET /api/sessions/{id}/cost. */
+export interface SessionCostRollup {
+  own: number;
+  childrenTotal: number;
+  perChild: Array<{ sessionId: string; costUsd: number }>;
+}
+
 export interface Skill {
   id: string;
   name: string;
@@ -332,6 +339,24 @@ export interface Skill {
   version?: string;
   created_at?: string;
   updated_at?: string;
+}
+
+export interface PacksRoleRec {
+  role: string;
+  provider: string;
+  model: string;
+  display_name?: string;
+  blended_cost_per_mtok?: number;
+  reason?: string;
+}
+
+export interface PacksResponse {
+  prompt: boolean;
+  configured: Array<{ role: string; provider: string; model: string }>;
+  recommendation: {
+    recommendations: PacksRoleRec[];
+    considered: string[];
+  };
 }
 
 export interface PermagentConfig {
@@ -884,6 +909,66 @@ export interface BudgetPatch {
   task?: Partial<Ceilings>;
 }
 
+export interface CouncilSeat {
+  provider: string;
+  display_name: string;
+  model: string;
+  configured: boolean;
+  excluded: boolean;
+  cli_or_acp: boolean;
+}
+
+export interface CouncilMembers {
+  enabled: boolean;
+  exclude: string[];
+  seats: CouncilSeat[];
+}
+
+export interface CouncilReport {
+  id: string;
+  session_id: string;
+  generated_at: string;
+  headline: string;
+  markdown: string;
+  consensus: string[];
+  dissent: unknown[];
+  actions: unknown[];
+  chair_provider: string | null;
+  chair_model: string | null;
+}
+
+export interface CouncilSession {
+  id: string;
+  started_at: string;
+  finished_at: string | null;
+  trigger: string;
+  extra_question: string | null;
+  chair_provider: string | null;
+  chair_model: string | null;
+  brief_json: string;
+  status: string;
+  error: string | null;
+}
+
+export interface CouncilPosition {
+  id: string;
+  session_id: string;
+  round: number;
+  provider: string;
+  model: string;
+  status: string;
+  raw_text: string | null;
+  parsed_json: unknown;
+  error: string | null;
+}
+
+export interface CouncilLatest {
+  session: CouncilSession | null;
+  report: CouncilReport | null;
+  positions: CouncilPosition[];
+  openActions: number;
+}
+
 export const api = {
   // Health
   getHealth: () => apiFetch<{ status: string }>('/status'),
@@ -946,6 +1031,10 @@ export const api = {
   // Session detail — GET /api/sessions/{id} returns Session with conversation
   getSession: (id: string) =>
     apiFetch<Session>(`/api/sessions/${encodeURIComponent(id)}`),
+
+  /** Parent + child cost rollup — GET /api/sessions/{id}/cost */
+  getSessionCost: (id: string) =>
+    apiFetch<SessionCostRollup>(`/api/sessions/${encodeURIComponent(id)}/cost`),
 
   // Delete session — DELETE /api/sessions/{id}. apiFetch, not raw fetch: a raw
   // fetch RESOLVES on a 5xx, so the store treated a failed delete as success
@@ -1160,6 +1249,18 @@ export const api = {
       body: JSON.stringify({ key, value, is_secret: isSecret ?? false }),
     }),
 
+  getCouncilLatest: () =>
+    apiFetch<CouncilLatest>('/api/council/latest'),
+
+  getCouncilMembers: () =>
+    apiFetch<CouncilMembers>('/api/council/members'),
+
+  putCouncilMembers: (exclude: string[]) =>
+    apiFetch<CouncilMembers>('/api/council/members', {
+      method: 'PUT',
+      body: JSON.stringify({ exclude }),
+    }),
+
   /** Delete a config key (secret keys are removed from the keychain). The
    *  upsert-empty-string trick this replaces left providers looking
    *  'Connected' with a dead key. */
@@ -1344,17 +1445,26 @@ export const api = {
     }
   },
 
-  /** Validate a provider against its current stored config: confirms the daemon
-   *  can construct it (registered + required secrets present + well-formed URL /
-   *  headers). Resolves on success; rejects with the daemon's reason on failure.
-   *  Note: this is a config/constructibility check, not a guaranteed live API
-   *  round-trip for every provider. POST /config/check_provider returns an empty
-   *  200 body on success — apiFetch handles that (returns undefined). */
-  checkProvider: (provider: string): Promise<void> =>
+  /** Validate a provider against stored config, optionally overlaying a typed
+   *  key for validate-without-save. The overlay is not persisted; a stored
+   *  keychain value still wins. Resolves on success; rejects on failure.
+   *  POST /config/check_provider returns an empty 200 body on success. */
+  checkProvider: (provider: string, apiKey?: string): Promise<void> =>
     apiFetch<void>('/config/check_provider', {
       method: 'POST',
-      body: JSON.stringify({ provider }),
+      body: JSON.stringify({
+        provider,
+        ...(apiKey ? { api_key: apiKey } : {}),
+      }),
     }),
+
+  /** Objective per-role recommendation + whether to prompt Apply. */
+  getPacks: (): Promise<PacksResponse> =>
+    apiFetch<PacksResponse>('/api/packs'),
+
+  /** Persist the recommended role→model map (same triples as `permagent packs apply`). */
+  applyPacks: (): Promise<{ applied: Array<{ role: string; provider: string; model: string }> }> =>
+    apiFetch('/api/packs/apply', { method: 'POST' }),
 
   /** Create a user-defined custom provider (writes a declarative provider
    *  definition + stores its API key, then hot-registers it). The new provider

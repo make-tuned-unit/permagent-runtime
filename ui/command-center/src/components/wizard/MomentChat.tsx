@@ -84,11 +84,18 @@ export function MomentChat({ persona, onComplete }: Props) {
       {/* Footer — enter app */}
       <div style={{
         padding: '16px 24px', borderTop: `1px solid ${colors.border}`,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
       }}>
         <PrimaryButton onClick={onComplete} style={{ padding: '12px 32px' }}>
           Enter Permagent
         </PrimaryButton>
+        <p style={{
+          fontFamily: font.body, fontSize: 12, color: colors.textMuted,
+          margin: '12px 0 0', textAlign: 'center', maxWidth: 420, lineHeight: 1.5,
+        }}>
+          Ask for a short tour anytime — {persona.name || 'your agent'} will walk you
+          through Home, Brain, Projects, and the rest, one surface at a time.
+        </p>
       </div>
 
       <style>{`

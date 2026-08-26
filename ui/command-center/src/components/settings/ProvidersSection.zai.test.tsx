@@ -134,3 +134,47 @@ describe('Z.AI in the Settings provider list', () => {
     expect(keyInput, 'the API key must be entered in a masked field').not.toBeNull();
   });
 });
+
+const OPENAI_CONNECTED = {
+  name: 'openai',
+  is_configured: true,
+  is_default: true,
+  provider_type: 'Builtin',
+  metadata: {
+    display_name: 'OpenAI',
+    description: 'GPT models',
+    default_model: 'gpt-4o',
+    known_models: [{ name: 'gpt-4o' }],
+    config_keys: [{ name: 'OPENAI_API_KEY', required: true, secret: true }],
+  },
+};
+
+describe('Connected vs Providers tabs', () => {
+  it('opens on Connected when a key is already in, and hides the catalogue', async () => {
+    allowed.getProviders.mockResolvedValue([OPENAI_CONNECTED, ZAI_PROVIDER] as never);
+    await render();
+
+    expect(container.textContent).toContain('OpenAI');
+    expect(container.textContent).toContain('Connected');
+    expect(container.textContent).not.toContain('Z.AI');
+
+    const connected = container.querySelector('[data-testid="providers-tab-connected"]') as HTMLButtonElement;
+    const catalogue = container.querySelector('[data-testid="providers-tab-providers"]') as HTMLButtonElement;
+    expect(connected.getAttribute('aria-selected')).toBe('true');
+    expect(catalogue.textContent).toContain('(1)');
+  });
+
+  it('moves a connected provider off the Providers tab', async () => {
+    allowed.getProviders.mockResolvedValue([OPENAI_CONNECTED, ZAI_PROVIDER] as never);
+    await render();
+
+    const catalogue = container.querySelector('[data-testid="providers-tab-providers"]') as HTMLButtonElement;
+    await act(async () => {
+      catalogue.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain('Z.AI');
+    expect(container.textContent).not.toContain('OpenAI');
+  });
+});
+

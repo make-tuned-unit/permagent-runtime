@@ -65,12 +65,6 @@ use tracing::{info, warn};
 /// third-party dependency). New table + index, additive and idempotent.
 /// `migrate_v37_to_v38` applies it.
 ///
-/// v51 = RLM control-plane context store (`rlm_context`) — the durable
-/// replacement for the in-process RLM DashMap, so evaluation context survives a
-/// daemon restart. New table + partial index, additive and base-independent.
-/// `migrate_v50_to_v51` applies it; `apply_rlm_context_schema` also runs on
-/// every boot, version-independent.
-///
 /// v42 = durable growth actions + pre-registered outcomes (`growth_actions`,
 /// `growth_action_outcomes`; docs/proposals/grow-action-outcome-loop.md). Until
 /// this existed a growth action had no identity — it was recomputed on every
@@ -78,6 +72,18 @@ use tracing::{info, warn};
 /// key (crates/goose-server/src/routes/growth_actions.rs:44), so nothing could
 /// be attached to it. New tables + index only, additive and base-independent.
 /// `migrate_v41_to_v42` applies it.
+///
+/// v51 = `sessions.parent_session_id` — durable link from a SubAgent (or other
+/// fan-out child) session back to the session that spawned it, so cost-ledger
+/// rows and the parent cost rollup can attribute delegated spend. PRAGMA-
+/// guarded ADD COLUMN + index, additive and base-independent.
+/// `migrate_v50_to_v51` applies it.
+///
+/// v52 = RLM control-plane context store (`rlm_context`) — the durable
+/// replacement for the in-process RLM DashMap, so evaluation context survives a
+/// daemon restart. New table + partial index, additive and base-independent.
+/// `migrate_v51_to_v52` applies it; `apply_rlm_context_schema` also runs on
+/// every boot, version-independent.
 ///
 /// NOTE on the version drift: this constant intentionally stays at 14 even though
 /// the migration chain now runs to v19 (`migrate_v14_to_v15` … `migrate_v18_to_v19`).
@@ -176,7 +182,10 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
             project_hint_wing TEXT,
             -- When this session last wrote a chat turn. A hint does not survive
             -- a long silence: see `permagent::session_wing::HINT_GAP_SECONDS`.
-            project_hint_last_turn_at TEXT
+            project_hint_last_turn_at TEXT,
+            -- Session that spawned this one (SubAgent / fan-out child). NULL for
+            -- top-level chats. See `apply_session_parent_schema` / v51.
+            parent_session_id TEXT
         )",
     )
     .execute(&mut *tx)
@@ -199,6 +208,9 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // `apply_sessions_schedule_id_index` / migrate_v48_to_v49 for the upgrade
     // path (this fresh-init copy keeps a brand-new DB from ever missing it).
     sqlx::query("CREATE INDEX idx_sessions_schedule_id ON sessions(schedule_id)")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("CREATE INDEX idx_sessions_parent ON sessions(parent_session_id)")
         .execute(&mut *tx)
         .await?;
 
@@ -824,6 +836,11 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // `no such table: forecaster_series` until the second daemon boot.
     apply_forecaster_schema(pool).await?;
 
+    // The Council's debate sessions, per-model positions, and weekly reports.
+    // Version-independent (same reason as briefings): fresh installs never run
+    // the version ladder, and a DB already past v51 still needs the tables.
+    apply_council_schema(pool).await?;
+
     // Failure-learning incident capture. Version-independent, additive, and
     // idempotent so the pinned fresh-init base stamp remains unchanged.
     apply_incidents_schema(pool).await?;
@@ -835,6 +852,16 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // it would silently stop recording which signal winged each turn — the one
     // number this whole change is measured by.
     apply_session_project_hint_schema(pool).await?;
+
+    // Parent-session link for subagent cost rollup (schema v51). The column is
+    // already in the CREATE TABLE above on fresh installs; the guarded ADD is a
+    // no-op there and fills it in on older DBs that never ran the version step.
+    apply_session_parent_schema(pool).await?;
+
+    // RLM control-plane store (schema v52). Fresh installs never run the
+    // version ladder, and a missing table silently costs every worker its
+    // recovered state after a restart.
+    apply_rlm_context_schema(pool).await?;
 
     info!(
         "Spectral schema v{} initialized successfully",
@@ -1786,6 +1813,46 @@ pub async fn migrate_v49_to_v50(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
+/// Apply `sessions.parent_session_id` (schema v51): durable link from a child
+/// (SubAgent / fan-out) session back to the session that spawned it, so the
+/// cost ledger and parent rollup can attribute delegated spend.
+///
+/// PRAGMA-guarded `ADD COLUMN` + `CREATE INDEX IF NOT EXISTS`: additive,
+/// base-version independent, and safe on every boot. Shared by
+/// `migrate_v50_to_v51` and `init_spectral_db`.
+pub async fn apply_session_parent_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut tx = pool.begin().await?;
+
+    let has_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'parent_session_id'",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if has_column == 0 {
+        sqlx::query("ALTER TABLE sessions ADD COLUMN parent_session_id TEXT")
+            .execute(&mut *tx)
+            .await?;
+    }
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id)")
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// v51: `sessions.parent_session_id` for subagent cost rollup attribution.
+pub async fn migrate_v50_to_v51(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v50 -> v51 (sessions.parent_session_id)");
+    apply_session_parent_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (51)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v51 (sessions.parent_session_id)");
+    Ok(())
+}
+
 /// Apply the RLM control-plane context store (`rlm_context`).
 ///
 /// The durable replacement for the process-local `DashMap` that used to be the
@@ -1829,15 +1896,86 @@ pub async fn apply_rlm_context_schema(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
-/// v51: the RLM control-plane context store. New table + partial index only —
+/// v52: the RLM control-plane context store. New table + partial index only —
 /// additive and base-independent, so it applies cleanly over any earlier base.
-pub async fn migrate_v50_to_v51(pool: &Pool<Sqlite>) -> Result<()> {
-    info!("Migrating Spectral schema v50 -> v51 (RLM control-plane context store)");
+pub async fn migrate_v51_to_v52(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v51 -> v52 (RLM control-plane context store)");
     apply_rlm_context_schema(pool).await?;
-    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (51)")
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (52)")
         .execute(pool)
         .await?;
-    info!("Spectral schema migrated to v51 (RLM control-plane context store)");
+    info!("Spectral schema migrated to v52 (RLM control-plane context store)");
+    Ok(())
+}
+
+/// The Council of LLMs: one debate session, the per-member positions across
+/// two rounds, and the chair's synthesised weekly report. New tables + indexes
+/// only — additive, idempotent, and base-independent so it can run on every
+/// boot (the same reason briefings and the Forecaster are version-independent).
+pub async fn apply_council_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS council_sessions (
+            id              TEXT PRIMARY KEY,
+            started_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            finished_at     TEXT,
+            trigger         TEXT NOT NULL CHECK (trigger IN ('weekly','on_demand')),
+            extra_question  TEXT,
+            chair_provider  TEXT,
+            chair_model     TEXT,
+            brief_json      TEXT NOT NULL DEFAULT '{}',
+            status          TEXT NOT NULL DEFAULT 'running'
+                            CHECK (status IN ('running','complete','failed','partial')),
+            error           TEXT
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_council_sessions_started
+         ON council_sessions (started_at DESC)",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS council_positions (
+            id           TEXT PRIMARY KEY,
+            session_id   TEXT NOT NULL REFERENCES council_sessions(id) ON DELETE CASCADE,
+            round        INTEGER NOT NULL CHECK (round IN (1, 2)),
+            provider     TEXT NOT NULL,
+            model        TEXT NOT NULL,
+            status       TEXT NOT NULL CHECK (status IN ('ok','timeout','error')),
+            raw_text     TEXT,
+            parsed_json  TEXT,
+            error        TEXT,
+            created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_council_positions_session
+         ON council_positions (session_id, round, provider)",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS council_reports (
+            id              TEXT PRIMARY KEY,
+            session_id      TEXT NOT NULL UNIQUE REFERENCES council_sessions(id) ON DELETE CASCADE,
+            generated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            headline        TEXT NOT NULL DEFAULT '',
+            markdown        TEXT NOT NULL DEFAULT '',
+            consensus_json  TEXT NOT NULL DEFAULT '[]',
+            dissent_json    TEXT NOT NULL DEFAULT '[]',
+            actions_json    TEXT NOT NULL DEFAULT '[]',
+            chair_provider  TEXT,
+            chair_model     TEXT
+        )",
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -3240,7 +3378,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS decisions (
             id            TEXT PRIMARY KEY,
             kind          TEXT NOT NULL CHECK (kind IN
-                            ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','project_intel_proposal','file_to_project','model_upgrade','tool_approval','session_gate','capability_gap','regression_proposal','malformed')),
+                            ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','project_intel_proposal','file_to_project','model_upgrade','tool_approval','session_gate','capability_gap','regression_proposal','council_action','malformed')),
             goal_id       TEXT REFERENCES cards(id) ON DELETE SET NULL,
             project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,
             tier          INTEGER NOT NULL CHECK (tier IN (0,1,2)),
@@ -3315,6 +3453,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
                 || !sql.contains("model_upgrade")
                 || !sql.contains("capability_gap")
                 || !sql.contains("regression_proposal")
+                || !sql.contains("council_action")
         })
         .unwrap_or(false)
     {
@@ -3342,7 +3481,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
             "CREATE TABLE decisions_new (
                 id            TEXT PRIMARY KEY,
                 kind          TEXT NOT NULL CHECK (kind IN
-                                ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','project_intel_proposal','file_to_project','model_upgrade','tool_approval','session_gate','capability_gap','regression_proposal','malformed')),
+                                ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','project_intel_proposal','file_to_project','model_upgrade','tool_approval','session_gate','capability_gap','regression_proposal','council_action','malformed')),
                 goal_id       TEXT REFERENCES cards(id) ON DELETE SET NULL,
                 project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,
                 tier          INTEGER NOT NULL CHECK (tier IN (0,1,2)),

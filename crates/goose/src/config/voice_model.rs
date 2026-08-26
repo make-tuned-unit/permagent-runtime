@@ -32,10 +32,10 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Config key holding the voice provider id (e.g. `anthropic`).
+/// Config key holding the voice provider id (e.g. `custom_deepseek`).
 pub const VOICE_PROVIDER_KEY: &str = "voice_provider";
 
-/// Config key holding the voice model id (e.g. `claude-haiku-4-5-20251001`).
+/// Config key holding the voice model id (e.g. `deepseek-chat`).
 pub const VOICE_MODEL_KEY: &str = "voice_model";
 
 /// Values that mean "no separate voice model — use the session model".
@@ -49,26 +49,23 @@ pub struct VoiceModel {
 }
 
 /// Provider id of the measured default. See [`default_voice_model`].
-pub const DEFAULT_VOICE_PROVIDER_ID: &str = "anthropic";
+pub const DEFAULT_VOICE_PROVIDER_ID: &str = "custom_deepseek";
 /// Model id of the measured default. See [`default_voice_model`].
-pub const DEFAULT_VOICE_MODEL_ID: &str = "claude-haiku-4-5-20251001";
+pub const DEFAULT_VOICE_MODEL_ID: &str = "deepseek-chat";
 
-/// The bench winner (2026-08-25). Of seven candidates measured on the real prompt
-/// and the real 124 tool schemas, only two emitted no reasoning block on a single
-/// turn — and those two were the only fast ones. This is the faster of them, by a
-/// distance: warm, an 856 ms median time-to-first-token and a 1070 ms p90 (the
-/// MiniMax reasoning model the voice path used before: 3202 ms / 4363 ms), a
-/// speakable first sentence at 1136 ms, 100 % prompt-cache hit rate, and — alone
-/// in the slate — **zero** turns in 40 that opened with a bare tool call and no
-/// spoken words, where the others managed 1 to 7.
+/// The cost-honest voice default (2026-08-25, re-read independently of the
+/// Anthropic-authored flip). Of seven candidates, only DeepSeek Chat and Claude
+/// Haiku 4.5 skipped a reasoning block. Haiku is faster (warm p90 1070 ms vs
+/// 1885 ms) and had zero silent turns in 40 against DeepSeek's one, but it costs
+/// 4.1× per turn — past the ~2× gate the same bench originally held. The first
+/// write-up therefore made Haiku an opt-in; a follow-up flipped the default to
+/// Haiku. This constant restores the gate the measurement was held to.
 ///
-/// It is not the cheapest. At $0.0074/turn it is ~4× `custom_deepseek` /
-/// `deepseek-chat`, which is the documented alternative for anyone who wants the
-/// bill smaller than the wait short (1580 ms / 1885 ms, $0.0018/turn):
+/// Haiku remains one config edit away if the wait matters more than the bill:
 ///
 /// ```yaml
-/// voice_provider: custom_deepseek
-/// voice_model: deepseek-chat
+/// voice_provider: anthropic
+/// voice_model: claude-haiku-4-5-20251001
 /// ```
 ///
 /// See `docs/research/VOICE_MODEL_BENCH_2026-08-25.md`.
@@ -254,7 +251,7 @@ mod tests {
     fn the_default_is_the_bench_winner() {
         // Guards the doc: if someone changes the default they must change the
         // research note that justifies it.
-        assert_eq!(default_voice_model().provider, "anthropic");
-        assert_eq!(default_voice_model().model, "claude-haiku-4-5-20251001");
+        assert_eq!(default_voice_model().provider, "custom_deepseek");
+        assert_eq!(default_voice_model().model, "deepseek-chat");
     }
 }

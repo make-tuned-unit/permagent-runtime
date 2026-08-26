@@ -17,16 +17,20 @@
 //!
 //! ## Where a fallback comes from
 //!
-//! There is no dedicated "fallback chain" config, and inventing a second model
-//! list would give the routing tables a rival source of truth. So the fallback
-//! is derived from what is already configured, in strict precedence:
+//! Strict precedence, so the routing tables stay one source of truth:
 //!
 //! 1. `PERMAGENT_FALLBACK_PROVIDER` + `PERMAGENT_FALLBACK_MODEL` — an explicit
 //!    operator override. Both must be set; a half-set pair is treated as unset,
 //!    matching [`super::role_map::resolve_role_model`].
-//! 2. The first configured role→model mapping (in [`WorkflowRole::all`] order)
+//! 2. `PERMAGENT_FALLBACKS` — an ordered `provider/model,provider/model` list.
+//!    The first entry whose provider differs from the one that just failed.
+//! 3. The first configured role→model mapping (in [`WorkflowRole::all`] order)
 //!    whose provider differs from the one that just failed. A role mapped to the
 //!    SAME provider is useless here: the same account is out of credit.
+//!
+//! Permanent (billing/auth) failures skip same-provider list/role entries.
+//! Transient pre-commit failures may silent-switch via the same chain
+//! ([`may_silent_precommit_failover`]).
 //!
 //! `None` means "no fallback is configured" — which the reply path must then say
 //! plainly rather than retrying into the same wall.
@@ -39,6 +43,48 @@ use crate::providers::errors::ProviderError;
 pub const KEY_FALLBACK_PROVIDER: &str = "PERMAGENT_FALLBACK_PROVIDER";
 /// Explicit operator override for the model to fall back to.
 pub const KEY_FALLBACK_MODEL: &str = "PERMAGENT_FALLBACK_MODEL";
+/// Ordered `provider/model,provider/model` list. Consulted after the explicit
+/// pair, before role mappings. Same-provider entries are skipped for
+/// permanent (billing/auth) failures.
+pub const KEY_FALLBACKS: &str = "PERMAGENT_FALLBACKS";
+
+/// Parse `provider/model,provider/model`. Segments without `/` or with an
+/// empty side are skipped so a typo does not disable the rest of the list.
+pub fn parse_fallback_list(raw: &str) -> Vec<RoleModel> {
+    raw.split(',')
+        .filter_map(|seg| {
+            let seg = seg.trim();
+            if seg.is_empty() {
+                return None;
+            }
+            let (provider, model) = seg.split_once('/')?;
+            let provider = provider.trim();
+            let model = model.trim();
+            if provider.is_empty() || model.is_empty() {
+                return None;
+            }
+            Some(RoleModel {
+                provider: provider.to_string(),
+                model: model.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Whether a stream error may silent-switch to the next model: only before any
+/// assistant response was committed, and only for transient reachability
+/// failures. Billing/auth stay on the announced path.
+pub fn may_silent_precommit_failover(committed: bool, err: &ProviderError) -> bool {
+    if committed || err.is_permanent() {
+        return false;
+    }
+    matches!(
+        err,
+        ProviderError::NetworkError(_)
+            | ProviderError::ServerError(_)
+            | ProviderError::RateLimitExceeded { .. }
+    )
+}
 
 /// Pure: resolve the fallback for a provider that was permanently rejected.
 ///
@@ -64,6 +110,15 @@ pub fn resolve_permanent_failure_fallback(
         non_empty(KEY_FALLBACK_MODEL),
     ) {
         return Some(RoleModel { provider, model });
+    }
+
+    // 1b. Ordered list — first entry whose provider is genuinely different.
+    if let Some(raw) = non_empty(KEY_FALLBACKS) {
+        for rm in parse_fallback_list(&raw) {
+            if differs(&rm.provider) {
+                return Some(rm);
+            }
+        }
     }
 
     // 2. First configured role whose provider is genuinely different.
@@ -278,5 +333,64 @@ mod tests {
         assert!(!reply.contains("sk-ant"), "leaked a key fragment: {reply}");
         assert!(!reply.contains("401"), "{reply}");
         assert!(reply.contains("API key"), "{reply}");
+    }
+
+    #[test]
+    fn parse_fallback_list_skips_garbage_and_keeps_valid_pairs() {
+        let out = parse_fallback_list(" deepseek/deepseek-chat , not-a-pair, /empty, openai/ ");
+        assert_eq!(
+            out,
+            vec![RoleModel {
+                provider: "deepseek".into(),
+                model: "deepseek-chat".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn ordered_list_is_consulted_after_explicit_override() {
+        let r = reader(&[
+            (KEY_FALLBACKS, "openai/gpt-5.4,ollama/qwen3"),
+            ("PERMAGENT_ROLE_EDIT_PROVIDER", "custom_deepseek"),
+            ("PERMAGENT_ROLE_EDIT_MODEL", "deepseek-v4-flash"),
+        ]);
+        assert_eq!(
+            resolve_permanent_failure_fallback("anthropic", r),
+            Some(RoleModel {
+                provider: "openai".into(),
+                model: "gpt-5.4".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn ordered_list_skips_the_failed_provider() {
+        let r = reader(&[(KEY_FALLBACKS, "anthropic/claude-haiku-4-5,openai/gpt-5.4")]);
+        assert_eq!(
+            resolve_permanent_failure_fallback("anthropic", r),
+            Some(RoleModel {
+                provider: "openai".into(),
+                model: "gpt-5.4".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn silent_precommit_only_for_uncommitted_transient_errors() {
+        let net = ProviderError::NetworkError("connection reset".into());
+        let server = ProviderError::ServerError("503".into());
+        let rate = ProviderError::RateLimitExceeded {
+            details: "slow down".into(),
+            retry_delay: None,
+        };
+        assert!(may_silent_precommit_failover(false, &net));
+        assert!(may_silent_precommit_failover(false, &server));
+        assert!(may_silent_precommit_failover(false, &rate));
+        assert!(!may_silent_precommit_failover(true, &net));
+        assert!(!may_silent_precommit_failover(false, &billing_error()));
+        assert!(!may_silent_precommit_failover(
+            false,
+            &ProviderError::Authentication("nope".into())
+        ));
     }
 }

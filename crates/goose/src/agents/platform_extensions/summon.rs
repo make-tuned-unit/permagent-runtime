@@ -1316,7 +1316,8 @@ impl SummonClient {
         let subagent_session = self
             .context
             .session_manager
-            .create_session(
+            .create_session_with_parent(
+                Some(session_id),
                 working_dir,
                 "Delegated task".to_string(),
                 SessionType::SubAgent,
@@ -2095,7 +2096,8 @@ impl SummonClient {
         let subagent_session = self
             .context
             .session_manager
-            .create_session(
+            .create_session_with_parent(
+                Some(session_id),
                 working_dir,
                 description.clone(),
                 SessionType::SubAgent,

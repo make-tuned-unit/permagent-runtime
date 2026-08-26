@@ -115,14 +115,14 @@ pub use review_gate::{
 };
 pub use review_gate::{build_rubric_prompt, REVIEW_RUBRIC_SYSTEM_PROMPT};
 pub use reviewer_pick::{
-    family_of, reviewer_spend_gate, select_reviewer, ReviewerPick, ReviewerSelection,
-    ReviewerSource, SpendDecision, NO_REVIEWER_AVAILABLE, REVIEWER_MIN_ORCHESTRATION,
-    REVIEWER_STRONG_ORCHESTRATION, SMALL_DIFF_LINES,
+    family_of, model_is_retired, reviewer_spend_gate, select_reviewer, ReviewerPick,
+    ReviewerSelection, ReviewerSource, SpendDecision, NO_REVIEWER_AVAILABLE,
+    REVIEWER_MIN_ORCHESTRATION, REVIEWER_STRONG_ORCHESTRATION, SMALL_DIFF_LINES,
 };
 pub use role_map::{
     cache_guard_should_warn, clear_role_model, configured as configured_role_models, derive_role,
     mappings_to_persist, resolve_role_model, resolve_role_model_or_derived, role_model,
-    role_model_or_derived, set_role_model, RoleModel,
+    role_model_or_derived, set_role_model, should_prompt_role_routing, RoleModel,
 };
 pub use snapshot::{RoutingSnapshot, ROUTING_SNAPSHOT_KEY};
 pub use tier::{
@@ -218,10 +218,15 @@ pub const COST_OPTIMIZER_FEATURE: crate::agents::self_knowledge::FeatureDescript
                        when nothing clears it — never a built-in vendor default. The pick comes \
                        from an objective recommender using measured reliability and price, not \
                        vendor preference, and each goal card's routing receipt says whether the \
-                       model was configured or derived. Point them at `permagent packs recommend` \
-                       to see the best-fit-per-role suggestion, and `permagent packs set` / \
-                       `apply` to pin a role by hand.",
-                open_surface: None,
+                       model was configured or derived. Point them at the Apply recommended \
+                       routing button — it appears in chat, on the Build cost line, and as the \
+                       first section of Settings → Models — so they do not have to know \
+                       `permagent packs apply` exists. The CLI (`permagent packs set` / `apply`) \
+                       is still there for operators who prefer it.",
+                open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                    tab: "Settings",
+                    section: Some("models"),
+                }),
                 confirm: None,
             },
         ],

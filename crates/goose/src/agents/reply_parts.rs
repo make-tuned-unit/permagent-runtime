@@ -765,28 +765,17 @@ impl Agent {
 
         let tok = |t: Option<i32>| t.unwrap_or(0).max(0) as i64;
         // `subagent_id`: a SubAgent session IS the subagent — its own id is the
-        // identity a "cost run inside a subagent" query needs, so this is
-        // populated directly rather than left NULL for every row (2026-08-25,
-        // see permagent-runtime issue on dead ledger attribution).
-        //
-        // `parent_session_id` is NOT populated: the subagent's parent is never
-        // persisted anywhere on the `Session` record. `SessionManager::
-        // create_session` takes no parent parameter, and its one
-        // `SessionType::SubAgent` call site
-        // (`agents::platform_extensions::summon::SummonClient::handle_delegate`,
-        // around line 1001) does not pass or record the delegating session's id
-        // either. Threading it through needs a schema/API change to both of
-        // those (outside this change's file scope) — so this stays `None`
-        // rather than a guessed value. `task_id`/`goal_id` are unrelated to this
-        // fix and remain unwired for the same reason they always were: goal
-        // association lives in card metadata, not threaded here.
+        // identity a "cost run inside a subagent" query needs.
+        // `parent_session_id` comes from the session row (set at spawn via
+        // `create_session_with_parent`); ledger rows copy it so parent rollups
+        // do not need a join back to `sessions`.
         let subagent_id =
             matches!(session.session_type, SessionType::SubAgent).then(|| session.id.clone());
         let row = CostLedgerRow {
             call_id: uuid::Uuid::new_v4().to_string(),
             ts: chrono::Utc::now().to_rfc3339(),
             session_id: session_id.to_string(),
-            parent_session_id: None,
+            parent_session_id: session.parent_session_id.clone(),
             task_id: None,
             goal_id: None,
             subagent_id,

@@ -1884,6 +1884,10 @@ impl Agent {
                 let mut tools_updated = false;
                 let mut did_recovery_compact_this_iteration = false;
                 let mut did_switch_provider_this_iteration = false;
+                // Tokens/tools shown to the user this stream: after this flips,
+                // a transient error must not silent-switch (the user already
+                // saw a partial answer). Billing/auth still announce.
+                let mut stream_committed = false;
                 let mut exit_chat = false;
 
                 // Track whether this provider turn has already emitted visible
@@ -1936,6 +1940,7 @@ impl Agent {
                             }
 
                             if let Some(response) = response {
+                                stream_committed = true;
                                 // Provider-side permission parks (claude-code /
                                 // ACP subprocesses in approve/smart_approve):
                                 // the provider has yielded an ActionRequired
@@ -2368,6 +2373,34 @@ impl Agent {
                             #[cfg(feature = "telemetry")]
                             crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
                             error!("Error: {}", provider_err);
+                            if crate::cost_router::fallback::may_silent_precommit_failover(
+                                stream_committed,
+                                provider_err,
+                            ) && !permanent_failure_fallback_used
+                            {
+                                let failed_provider = match self.provider().await {
+                                    Ok(p) => p.get_name().to_string(),
+                                    Err(_) => "the model provider".to_string(),
+                                };
+                                if self
+                                    .switch_to_permanent_failure_fallback(
+                                        &session_config.id,
+                                        &failed_provider,
+                                    )
+                                    .await
+                                    .is_some()
+                                {
+                                    tracing::info!(
+                                        target: "permagent::cost_router",
+                                        session_id = %session_config.id,
+                                        from_provider = %failed_provider,
+                                        "silent pre-commit failover after a transient network error"
+                                    );
+                                    permanent_failure_fallback_used = true;
+                                    did_switch_provider_this_iteration = true;
+                                    break;
+                                }
+                            }
                             yield AgentEvent::Message(
                                 Message::assistant().with_text(
                                     format!("{provider_err}\n\nPlease resend your message to try again.")
@@ -2492,6 +2525,34 @@ impl Agent {
                             #[cfg(feature = "telemetry")]
                             crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
                             error!("Error: {}", provider_err);
+                            if crate::cost_router::fallback::may_silent_precommit_failover(
+                                stream_committed,
+                                provider_err,
+                            ) && !permanent_failure_fallback_used
+                            {
+                                let failed_provider = match self.provider().await {
+                                    Ok(p) => p.get_name().to_string(),
+                                    Err(_) => "the model provider".to_string(),
+                                };
+                                if self
+                                    .switch_to_permanent_failure_fallback(
+                                        &session_config.id,
+                                        &failed_provider,
+                                    )
+                                    .await
+                                    .is_some()
+                                {
+                                    tracing::info!(
+                                        target: "permagent::cost_router",
+                                        session_id = %session_config.id,
+                                        from_provider = %failed_provider,
+                                        "silent pre-commit failover after a transient provider error"
+                                    );
+                                    permanent_failure_fallback_used = true;
+                                    did_switch_provider_this_iteration = true;
+                                    break;
+                                }
+                            }
                             let message = Message::assistant().with_text(
                                 format!("Ran into this error: {provider_err}.\n\nPlease retry if you think this is a transient or recoverable error.")
                             );

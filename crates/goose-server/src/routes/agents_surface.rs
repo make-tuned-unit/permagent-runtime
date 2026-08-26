@@ -1318,6 +1318,7 @@ mod tests {
                 strix_enabled: true,
                 initiative_enabled: true,
                 steward_scan_enabled: true,
+                council_enabled: true,
             },
         ] {
             let rows = background_workers(Some(0), flags);
