@@ -60,8 +60,8 @@ const selectStyle = (colors: C): React.CSSProperties => ({
 // half-configured/default), not the source of truth. The daemon resolves the
 // real route from config.yaml; this just tells the operator what to expect.
 const VOICE_DISABLE_VALUES = new Set(['session', 'off', 'none']);
-const DEFAULT_VOICE_PROVIDER_ID = 'anthropic';
-const DEFAULT_VOICE_MODEL_ID = 'claude-haiku-4-5-20251001';
+const DEFAULT_VOICE_PROVIDER_ID = 'custom_deepseek';
+const DEFAULT_VOICE_MODEL_ID = 'deepseek-chat';
 
 function describeVoiceRoute(provider: string | null, model: string | null): string {
   const providerVal = (provider ?? '').trim();
@@ -1311,8 +1311,8 @@ export function ModelsPanel({ goto }: PanelProps) {
 function KeysPanel() {
   return (
     <div>
-      <H1 sub="Bring your own keys for the providers you use. Add, replace, or remove a key here — keys are encrypted in your system keychain and never leave your device.">API keys</H1>
-      <Section title="Providers">
+      <H1 sub="Bring your own keys for the providers you use. Connected keys sit at the top; the rest of the catalogue stays on Providers. Add, replace, or remove a key here — keys are encrypted in your system keychain and never leave your device.">API keys</H1>
+      <Section title="Keys">
         <ProvidersSection />
       </Section>
     </div>
