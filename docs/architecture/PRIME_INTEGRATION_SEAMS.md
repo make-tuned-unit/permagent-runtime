@@ -14,7 +14,7 @@ the inventory (goal 0). Feature work lives in the numbered follow-on goals.
 | Executable skills | `skill_md.rs` + `platform_extensions/skills.rs` load **markdown** `SKILL.md` folders (agentskills.io). No runner that execs a package and returns structured stdout | **missing** — skills are prompts, not runnable artifacts | 5 (package + runner), 6 (`run_executable_skill` tool) |
 | Goal threading (resume with prior attempt context) | `resume_in_progress_goals` / `resume_single_goal` (`orchestrator.rs`); `requeue_goal` preserves `attempt_count` + `last_error`; dispatch brief does **not** re-inject them (W4/W5) | **partial** — metadata survives; the next worker starts cold; dead-session resume can still fabricate Review success if a re-attached session goes idle | 7 |
 | Bounded refinement | `goal_refinement.rs` rework budget (config `verifier.json` → `refinement_budget`, default 3; per-goal override) wired into `goose-server` verification; separate from `goal_transition::goal_budget` and from `cost_router::hold_done` | **closed** — a failing check auto-requeues to Ready with the check stdout/stderr, placeholder findings and check lint as the corrective plan, leaves a routing snapshot per round, and parks with the full history at exhaustion | 8 |
-| A2A messaging | `send_message` (session id) and `steer_goal` (live CLI worker). No goal-to-goal API; Complete/Cancelled are not explicitly refused as A2A targets | **partial** — the pipes exist; they are not addressed by goal id, not audited as A2A, and do not write through to RLM | 9 (deliver+refuse), 10 (feedback → RLM → next brief) |
+| A2A messaging | `agents/platform_extensions/goal_a2a.rs` — `message_goal` addressed by goal id, resolving card → live state → live worker; typed [`A2aRefusal`]; `events::a2a_message` → activity journal | **closed** — goal-id addressed, Complete/Cancelled refused explicitly as PERMANENT (distinct from a not-yet-running target), every delivery audited on the timeline by sender/recipient/length/body-hash and never by body text, and written through to RLM | 9 (deliver+refuse), 10 (feedback → RLM → next brief) |
 
 Related existing spine (not a Prime gap, but the DAG this inventory rides on):
 
@@ -52,7 +52,19 @@ Landed by the Prime DAG implementation (goals 0–11):
   leaves a `routing_snapshot` receipt plus a `refinement_history` entry.
   Exhaustion parks with an `unblock` decision carrying every round, not just the
   last.
-- **A2A** — orchestrator tool `message_goal` (`from_goal`, `to_goal`, `body`). InProgress only; writes RLM + card metadata; steers a live worker when one exists.
+- **A2A** — orchestrator tool `message_goal` (`from_goal`, `to_goal`, `body`),
+  addressed by GOAL ID: the id resolves to the card, its live state, and the
+  live worker steering it. InProgress only; writes RLM + card metadata; steers a
+  live worker when one exists. Refusals are typed (`goal_a2a::A2aRefusal`) and
+  say which kind of no they are — a Complete or Cancelled target is
+  `Terminal` and permanent (`is_permanent()`), a Triage/Ready/Review/Failed one
+  is `NotRunning` and retryable. Every delivery emits `a2a_message`, which the
+  durable activity journal records with the sender, the recipient, the body's
+  length and its SHA-256 — and never the body: an audit trail for instructions
+  passing between agents must prove the message existed without republishing
+  what it said. RLM write-through is the in-memory `rlm::set` + metadata
+  snapshot; a `TODO(prime-rlm, #1129)` in `goal_a2a.rs` names
+  `rlm::write_a2a_feedback` as the durable replacement.
 - **E2E smoke** — `trigger_roadmap_dispatch` 2-goal promote path (lib test) plus this Shipped section.
 
 ### Live smoke (optional)
