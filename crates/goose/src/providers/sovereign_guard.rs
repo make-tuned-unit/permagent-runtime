@@ -143,6 +143,7 @@ impl Provider for SovereignGuardProvider {
         messages: &[Message],
         tools: &[Tool],
     ) -> Result<MessageStream, ProviderError> {
+        let inflight = crate::providers::inflight::acquire(self.get_name()).await;
         if self.locality == DataLocality::Cloud {
             let prompt = if sovereignty::capture_prompts_enabled() {
                 Some(sovereignty::render_prompt(system, messages))
@@ -159,9 +160,11 @@ impl Provider for SovereignGuardProvider {
             )
             .await?;
         }
-        self.inner
+        let stream = self
+            .inner
             .stream(model_config, session_id, system, messages, tools)
-            .await
+            .await?;
+        Ok(crate::providers::inflight::hold_stream(stream, inflight))
     }
 
     /// Forwards the split to the wrapped provider. Without this override the
@@ -181,6 +184,7 @@ impl Provider for SovereignGuardProvider {
         messages: &[Message],
         tools: &[Tool],
     ) -> Result<MessageStream, ProviderError> {
+        let inflight = crate::providers::inflight::acquire(self.get_name()).await;
         if self.locality == DataLocality::Cloud {
             let rendered = system.render();
             let prompt = if sovereignty::capture_prompts_enabled() {
@@ -198,9 +202,11 @@ impl Provider for SovereignGuardProvider {
             )
             .await?;
         }
-        self.inner
+        let stream = self
+            .inner
             .stream_split(model_config, session_id, system, messages, tools)
-            .await
+            .await?;
+        Ok(crate::providers::inflight::hold_stream(stream, inflight))
     }
 
     async fn create_embeddings(
