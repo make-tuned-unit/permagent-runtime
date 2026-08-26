@@ -429,9 +429,7 @@ mod tests {
 
         let sent = cards::get_card(&pool, &from.id).await.unwrap().unwrap();
         assert_eq!(
-            sent.metadata_json[A2A_SENT_KEY]
-                .as_array()
-                .map(|a| a.len()),
+            sent.metadata_json[A2A_SENT_KEY].as_array().map(|a| a.len()),
             Some(1),
             "the sender keeps its own copy"
         );
@@ -486,10 +484,7 @@ mod tests {
             );
             assert_eq!(refusal.reason(), "target_not_running");
             assert!(!refusal.is_permanent(), "{state} may run later");
-            assert!(
-                refusal.to_string().contains("not permanent"),
-                "{refusal}"
-            );
+            assert!(refusal.to_string().contains("not permanent"), "{refusal}");
         }
     }
 
@@ -502,7 +497,9 @@ mod tests {
         const SECRET: &str = "rotate the staging key, it is in the shared vault";
         let mut bus = crate::events::subscribe();
 
-        send_goal_a2a(&pool, &from.id, &to.id, SECRET).await.unwrap();
+        send_goal_a2a(&pool, &from.id, &to.id, SECRET)
+            .await
+            .unwrap();
 
         let event = tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
@@ -523,7 +520,10 @@ mod tests {
         assert_eq!(event.payload["from_goal"], serde_json::json!(from.id));
         assert_eq!(event.payload["to_goal"], serde_json::json!(to.id));
         let (expected_hash, expected_len) = body_fingerprint(SECRET);
-        assert_eq!(event.payload["body_sha256"], serde_json::json!(expected_hash));
+        assert_eq!(
+            event.payload["body_sha256"],
+            serde_json::json!(expected_hash)
+        );
         assert_eq!(event.payload["body_len"], serde_json::json!(expected_len));
 
         // And nowhere does it say what.
@@ -546,7 +546,10 @@ mod tests {
             "the row points at the recipient goal"
         );
         let detail = entry.detail.unwrap_or_default();
-        assert!(detail.contains(&format!("{expected_len} chars")), "{detail}");
+        assert!(
+            detail.contains(&format!("{expected_len} chars")),
+            "{detail}"
+        );
         let digest_prefix: String = expected_hash.chars().take(12).collect();
         assert!(detail.contains(&digest_prefix), "{detail}");
         assert!(!detail.contains("rotate the staging key"), "{detail}");
@@ -582,8 +585,7 @@ mod tests {
     fn the_fingerprint_is_a_hash_and_a_character_count() {
         let (hash, len) = body_fingerprint("abc");
         assert_eq!(
-            hash,
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            hash, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
             "SHA-256 of \"abc\", so an auditor holding the original can verify it"
         );
         assert_eq!(len, 3);
