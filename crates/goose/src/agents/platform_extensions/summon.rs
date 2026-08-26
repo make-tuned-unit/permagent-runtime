@@ -1,4 +1,5 @@
 use super::{parse_frontmatter, Source, SourceKind};
+use crate::agents::platform_extensions::fanout;
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
 use crate::agents::subagent_handler::{run_subagent_task, OnMessageCallback, SubagentRunParams};
@@ -69,6 +70,36 @@ pub struct DelegateParams {
     /// If set and resolvable, the subagent identifies as this worker.
     #[serde(default)]
     pub worker_persona: Option<String>,
+}
+
+/// One child of a `delegate_many` fan-out: an ordinary delegate, plus a label
+/// so the aggregate can name it something better than "child 2".
+#[derive(Debug, Deserialize, Default)]
+pub struct FanoutChildParams {
+    #[serde(flatten)]
+    pub delegate: DelegateParams,
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct DelegateManyParams {
+    #[serde(default)]
+    pub tasks: Vec<FanoutChildParams>,
+    /// Children in flight at once. Defaults to
+    /// [`fanout::DEFAULT_FANOUT_CONCURRENCY`]; clamped to the configured cap so
+    /// a caller cannot talk the machine into running eight agents at once.
+    pub max_concurrent: Option<usize>,
+}
+
+/// Everything one child needs, resolved on the caller's side — recipe, routing,
+/// persona — so the concurrency gate holds nothing but the actual run.
+struct PreparedChild {
+    label: String,
+    working_dir: PathBuf,
+    recipe: Recipe,
+    task_config: TaskConfig,
+    routing_receipt: serde_json::Value,
+    persona_override: Option<(String, String)>,
 }
 
 pub struct BackgroundTask {
@@ -380,7 +411,11 @@ impl SummonClient {
     /// `self_knowledge::tests` additionally asserts a real `list_tools` run
     /// for a non-subagent session returns exactly these names.
     pub(crate) fn all_possible_tools() -> Vec<Tool> {
-        vec![Self::create_load_tool(), Self::create_delegate_tool()]
+        vec![
+            Self::create_load_tool(),
+            Self::create_delegate_tool(),
+            Self::create_delegate_many_tool(),
+        ]
     }
 
     fn create_load_tool() -> Tool {
@@ -482,6 +517,284 @@ impl SummonClient {
              Decompose → async delegates → load(taskId) for each → synthesize."
                 .to_string(),
             schema.as_object().unwrap().clone(),
+        )
+    }
+
+    fn create_delegate_many_tool() -> Tool {
+        let child = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "instructions": {"type": "string", "description": "What this child should do."},
+                "source": {"type": "string", "description": "Subrecipe / recipe / agent to run."},
+                "label": {"type": "string", "description": "Short name for this child in the aggregate (e.g. \"security\")."},
+                "parameters": {"type": "object", "description": "Parameters for a source."},
+                "extensions": {"type": "array", "items": {"type": "string"}, "description": "Narrow this child's extensions."},
+                "provider": {"type": "string", "description": "Override LLM provider for this child."},
+                "model": {"type": "string", "description": "Override model for this child."},
+                "temperature": {"type": "number"},
+                "max_turns": {"type": "integer", "minimum": 1},
+                "worker_persona": {"type": "string", "description": "Worker persona key from agent.yaml."}
+            }
+        });
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["tasks"],
+            "properties": {
+                "tasks": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": fanout::MAX_FANOUT_CHILDREN,
+                    "items": child,
+                    "description": "The children to run. Results come back in this order."
+                },
+                "max_concurrent": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "How many children run at once. Defaults to the configured fan-out concurrency."
+                }
+            }
+        });
+
+        Tool::new(
+            "delegate_many",
+            format!(
+                "Fan out to several subagents at once and get every answer back in one call.\n\n\
+                 Use this instead of N separate `delegate` calls when the work splits cleanly: \
+                 review lenses, audits, independent research questions.\n\n\
+                 - At most {} children per call, and only a few run at a time — the rest queue. \
+                 The cap protects the machine; asking for more does not make it faster.\n\
+                 - Results come back IN THE ORDER you listed them, each naming its own model, \
+                 its own subagent id, and what it spent.\n\
+                 - Children cannot coordinate. Partition files strictly, or keep them read-only.\n\
+                 - Cancelling this call cancels the children.",
+                fanout::MAX_FANOUT_CHILDREN
+            ),
+            schema.as_object().unwrap().clone(),
+        )
+    }
+
+    /// Fan out to N subagents with a bounded number in flight, join in order.
+    ///
+    /// Each child is resolved through the SAME path a single `delegate` takes —
+    /// `build_delegate_recipe` then `build_task_config` — so `cost_router::
+    /// delegate`'s precedence applies per child: an explicit provider/model on
+    /// that child wins, then its recipe, then the role pin, then the pack pin,
+    /// and escalation stays opt-in. Ten children do not become ten silent
+    /// escalations to the most expensive row in the knowledge base.
+    async fn handle_delegate_many(
+        &self,
+        session_id: &str,
+        arguments: Option<JsonObject>,
+        cancellation_token: CancellationToken,
+    ) -> Result<CallToolResult, String> {
+        let params: DelegateManyParams = arguments
+            .map(|args| serde_json::from_value(serde_json::Value::Object(args)))
+            .transpose()
+            .map_err(|e| format!("Invalid parameters: {}", e))?
+            .unwrap_or_default();
+
+        if params.tasks.is_empty() {
+            return Err("'tasks' is empty — delegate_many needs at least one child".to_string());
+        }
+        if params.tasks.len() > fanout::MAX_FANOUT_CHILDREN {
+            return Err(format!(
+                "delegate_many takes at most {} children (got {}). More than that is a queue, \
+                 not a fan-out — run them in batches.",
+                fanout::MAX_FANOUT_CHILDREN,
+                params.tasks.len()
+            ));
+        }
+
+        let session = self
+            .context
+            .session_manager
+            .get_session(session_id, false)
+            .await
+            .map_err(|e| format!("Failed to get session: {}", e))?;
+
+        if session.session_type == SessionType::SubAgent {
+            return Err("Delegated tasks cannot spawn further delegations".to_string());
+        }
+
+        // Resolve every child BEFORE any of them runs: a fan-out that fails on
+        // child 7's bad parameters after paying for six children is worse than
+        // one that refuses up front.
+        let working_dir = session.working_dir.clone();
+        let mut prepared: Vec<PreparedChild> = Vec::with_capacity(params.tasks.len());
+        for (index, task) in params.tasks.into_iter().enumerate() {
+            let label = task
+                .label
+                .clone()
+                .unwrap_or_else(|| truncate(&Self::get_task_description(&task.delegate), 40));
+            let mut child = task.delegate;
+            // `async` is meaningless on a child: the fan-out itself is the
+            // asynchrony, and the caller joins here.
+            child.r#async = false;
+            self.validate_delegate_params(&child)
+                .map_err(|e| format!("child {index} ({label}): {e}"))?;
+
+            let recipe = self
+                .build_delegate_recipe(&child, session_id, &working_dir)
+                .await
+                .map_err(|e| format!("child {index} ({label}): {e}"))?;
+            let (task_config, routing) = self
+                .build_task_config(&child, &recipe, &session)
+                .await
+                .map_err(|e| format!("child {index} ({label}): failed to build task config: {e}"))?;
+
+            prepared.push(PreparedChild {
+                label,
+                working_dir: working_dir.clone(),
+                recipe,
+                task_config,
+                routing_receipt: routing.receipt_json(),
+                persona_override: Self::resolve_worker_persona(child.worker_persona.as_deref()),
+            });
+        }
+
+        let concurrency = params
+            .max_concurrent
+            .unwrap_or_else(fanout::fanout_concurrency)
+            .clamp(1, fanout::fanout_concurrency().max(1));
+
+        info!(
+            target: "permagentd::brain",
+            children = prepared.len(),
+            concurrency,
+            "delegate_many fan-out starting"
+        );
+
+        let session_manager = self.context.session_manager.clone();
+        let subscribers = Arc::clone(&self.notification_subscribers);
+        let outcomes = fanout::run_bounded(
+            prepared,
+            concurrency,
+            cancellation_token,
+            move |index, child, token| {
+                let session_manager = session_manager.clone();
+                let subscribers = Arc::clone(&subscribers);
+                async move {
+                    let PreparedChild {
+                        label,
+                        working_dir,
+                        recipe,
+                        task_config,
+                        routing_receipt,
+                        persona_override,
+                    } = child;
+
+                    let subagent_session = match session_manager
+                        .create_session(
+                            working_dir,
+                            format!("Fan-out [{index}] {label}"),
+                            SessionType::SubAgent,
+                            GooseMode::Auto,
+                        )
+                        .await
+                    {
+                        Ok(s) => s,
+                        Err(e) => {
+                            return fanout::ChildOutcome::failed(
+                                index,
+                                label,
+                                format!("could not create the subagent session: {e}"),
+                            )
+                        }
+                    };
+                    let subagent_id = subagent_session.id.clone();
+
+                    let (notif_tx, notif_rx) =
+                        tokio::sync::mpsc::unbounded_channel::<ServerNotification>();
+                    Self::spawn_notification_bridge(
+                        notif_rx,
+                        subscribers,
+                        Arc::new(Mutex::new(Vec::new())),
+                    );
+
+                    // Subagents run in Auto for the same reason the single
+                    // delegate path does: nothing forwards an approval prompt
+                    // to the parent, so any other mode hangs.
+                    let agent_config = AgentRunnerConfig::new(
+                        session_manager.clone(),
+                        crate::config::permission::PermissionManager::instance(),
+                        None,
+                        GooseMode::Auto,
+                        true,
+                        crate::agents::GoosePlatform::GooseCli,
+                    );
+
+                    let result = run_subagent_task(SubagentRunParams {
+                        config: agent_config,
+                        recipe,
+                        task_config,
+                        return_last_only: true,
+                        session_id: subagent_session.id,
+                        // The token is derived from the caller's: cancel the
+                        // fan-out and the running children stop too.
+                        cancellation_token: Some(token.clone()),
+                        on_message: None,
+                        notification_tx: Some(notif_tx),
+                        persona_override,
+                    })
+                    .await;
+
+                    let (status, text) = match result {
+                        Ok(text) => (fanout::ChildStatus::Ok, text),
+                        Err(e) if token.is_cancelled() => {
+                            (fanout::ChildStatus::Cancelled, format!("cancelled: {e}"))
+                        }
+                        Err(e) => (fanout::ChildStatus::Failed, format!("delegation failed: {e}")),
+                    };
+                    fanout::ChildOutcome {
+                        index,
+                        label,
+                        status,
+                        subagent_id: Some(subagent_id),
+                        model_routing: Some(routing_receipt),
+                        text,
+                    }
+                }
+            },
+        )
+        .await;
+
+        // Per-child spend, read back out of the ledger by each child's own id.
+        let pool = self.context.session_manager.pool_clone().await.ok();
+        let mut costs = Vec::with_capacity(outcomes.len());
+        for outcome in &outcomes {
+            let cost = match (pool.as_ref(), outcome.subagent_id.as_deref()) {
+                (Some(pool), Some(id)) => fanout::subagent_cost(pool, id).await,
+                _ => fanout::SubagentCost::default(),
+            };
+            costs.push(cost);
+        }
+
+        let children_meta: Vec<serde_json::Value> = outcomes
+            .iter()
+            .zip(costs.iter())
+            .map(|(o, c)| {
+                serde_json::json!({
+                    "index": o.index,
+                    "label": o.label,
+                    "status": o.status.as_str(),
+                    "subagent_id": o.subagent_id,
+                    "model_routing": o.model_routing,
+                    "cost": c,
+                })
+            })
+            .collect();
+
+        let mut meta = Meta::new();
+        meta.0.insert(
+            "fanout_children".to_string(),
+            serde_json::Value::Array(children_meta),
+        );
+
+        Ok(
+            CallToolResult::success(vec![Content::text(fanout::render_outcomes(
+                &outcomes, &costs,
+            ))])
+            .with_meta(Some(meta)),
         )
     }
 
@@ -1878,7 +2191,7 @@ impl McpClientTrait for SummonClient {
 
         if is_subagent {
             // Subagents must not recurse into further delegation.
-            tools.retain(|t| t.name.as_ref() != "delegate");
+            tools.retain(|t| t.name.as_ref() != "delegate" && t.name.as_ref() != "delegate_many");
         }
 
         Ok(ListToolsResult {
@@ -1904,6 +2217,18 @@ impl McpClientTrait for SummonClient {
                     error
                 ))])),
             },
+            "delegate_many" => {
+                match self
+                    .handle_delegate_many(session_id, arguments, cancellation_token)
+                    .await
+                {
+                    Ok(result) => Ok(result),
+                    Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Error: {}",
+                        error
+                    ))])),
+                }
+            }
             "delegate" => {
                 match self
                     .handle_delegate(session_id, arguments, cancellation_token)
@@ -2710,6 +3035,10 @@ You review code."#;
             .unwrap();
         let names: Vec<_> = result.tools.iter().map(|t| t.name.as_ref()).collect();
         assert!(names.contains(&"load") && names.contains(&"delegate"));
+        assert!(
+            names.contains(&"delegate_many"),
+            "the bounded fan-out must be offered next to the single delegate"
+        );
 
         let ctx = ToolCallContext::new("test".to_string(), None, None);
         let result = client
@@ -2717,6 +3046,70 @@ You review code."#;
             .await
             .unwrap();
         assert!(result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn delegate_many_refuses_more_children_than_the_cap() {
+        // Resolution happens before any child runs, so a fan-out that is too
+        // wide is refused without having paid for the ones that fit.
+        let client = SummonClient::new(create_test_context()).unwrap();
+        let tasks: Vec<serde_json::Value> = (0..(fanout::MAX_FANOUT_CHILDREN + 1))
+            .map(|i| {
+                serde_json::json!({
+                    "instructions": format!("review the {i}th module for swallowed errors"),
+                })
+            })
+            .collect();
+        let args = serde_json::json!({ "tasks": tasks })
+            .as_object()
+            .unwrap()
+            .clone();
+
+        let err = client
+            .handle_delegate_many("test", Some(args), CancellationToken::new())
+            .await
+            .expect_err("a fan-out past the cap must be refused");
+        assert!(err.contains("at most"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn delegate_many_refuses_an_empty_fan_out() {
+        let client = SummonClient::new(create_test_context()).unwrap();
+        let args = serde_json::json!({ "tasks": [] })
+            .as_object()
+            .unwrap()
+            .clone();
+        let err = client
+            .handle_delegate_many("test", Some(args), CancellationToken::new())
+            .await
+            .expect_err("zero children is not a fan-out");
+        assert!(err.contains("at least one child"), "{err}");
+    }
+
+    #[test]
+    fn a_child_carries_the_same_routing_knobs_as_a_single_delegate() {
+        // The per-child provider/model must survive parsing, because they are
+        // level 1 of `cost_router::delegate`'s precedence — the operator's
+        // explicit pin, and the thing a fan-out most easily loses.
+        let parsed: DelegateManyParams = serde_json::from_value(serde_json::json!({
+            "max_concurrent": 2,
+            "tasks": [
+                {"instructions": "audit the auth paths for authz gaps", "label": "security",
+                 "provider": "ollama", "model": "qwen3-coder", "async": true},
+                {"instructions": "look for swallowed errors and missing tests", "worker_persona": "debugger"}
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(parsed.tasks.len(), 2);
+        assert_eq!(parsed.max_concurrent, Some(2));
+        assert_eq!(parsed.tasks[0].label.as_deref(), Some("security"));
+        assert_eq!(parsed.tasks[0].delegate.provider.as_deref(), Some("ollama"));
+        assert_eq!(parsed.tasks[0].delegate.model.as_deref(), Some("qwen3-coder"));
+        assert_eq!(
+            parsed.tasks[1].delegate.worker_persona.as_deref(),
+            Some("debugger")
+        );
     }
 
     #[test]
