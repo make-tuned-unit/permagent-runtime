@@ -47,15 +47,32 @@ export interface SubagentCostIncl {
 }
 
 /**
- * Coding-harness spend (Build-tab PTY session). Present so the statusline can
- * prefer harness totals over chat `liveTokens` once the daemon announces them;
- * until then callers pass `null` and the meter stays on `TokenState`.
+ * Spend announcement from the CODING HARNESS's own session (`permagent run
+ * --recipe permagent-coding --interactive`, running as a PTY subprocess in the
+ * Build terminal). This is NOT the browser chat session `TokenState` above —
+ * the harness mints its own session id in its own process and writes correct
+ * cost-ledger rows under THAT id, which the browser chat SSE stream never
+ * carries. Arrives via the daemon's `session_spend_changed` bus frame
+ * (livenessSync.ts), snake_case on the wire, camelCased here at the boundary.
  */
 export interface CodingSpend {
   sessionId: string;
+  turnUsd: number;
   sessionUsd: number;
-  /** Optional child rollup for this coding session. */
-  subagents?: SubagentCostIncl | null;
+  todayUsd: number;
+  totalTokens: number;
+  provider: string | null;
+  model: string | null;
+  workingDir: string | null;
+  /** True when the last call had NO published price and was billed at the
+   *  fail-closed worst case (the most expensive rate in the registry) —
+   *  deliberately over-stated so a spend cap fires early. Rendering this
+   *  as a plain bill would present a safety margin as a fact, so the meter
+   *  must show it as an estimate, not a number to trust literally. */
+  estimated: boolean;
+  /** True on the session's closing announcement — the total is final, not
+   *  merely the value between two turns. */
+  finalTurn: boolean;
 }
 
 /** Rendered statusline model. `cost` is THE authoritative number; `segments`
@@ -87,22 +104,48 @@ function appendSubagentSegment(
 /**
  * Build the meter model from the latest {@link TokenState}, optional coding
  * harness {@link CodingSpend}, and optional child-subagent rollup.
- * `codingSpend` wins when present (Build-tab harness account); otherwise
- * `tokens` drives the figure. Subagent suffix is appended whenever children
- * exist on either source.
+ *
+ * When `coding` is non-null it is AUTHORITATIVE: it is the Build tab's own PTY
+ * session, and `tokens` (the browser chat session) is a different account
+ * entirely. Subagent suffix is appended whenever children exist on either
+ * source.
  */
 export function formatCostMeter(
   tokens: TokenState | null,
-  codingSpend: CodingSpend | null = null,
+  coding: CodingSpend | null = null,
   subagents: SubagentCostIncl | null = null,
 ): CostMeterModel {
-  const childIncl = codingSpend?.subagents ?? subagents;
+  if (coding) {
+    const sessionCost = fmtUsd(coding.sessionUsd);
+    // A fail-closed estimate rendered as a plain "$" reads as a bill the
+    // harness actually charged — the `~` is the difference between "this is
+    // what it cost" and "this is the worst case we're guarding against".
+    const cost = coding.estimated ? `~${sessionCost}` : sessionCost;
+    const todayCost = fmtUsd(coding.todayUsd);
 
-  if (codingSpend) {
-    const cost = fmtUsd(codingSpend.sessionUsd);
-    const segments: string[] = [];
-    const aria: string[] = [`Session cost ${cost}`];
-    appendSubagentSegment(segments, aria, childIncl);
+    const segments: string[] = [
+      `${fmtTokens(coding.totalTokens)} tokens`,
+      `+${fmtUsd(coding.turnUsd)} this turn`,
+      `today ${todayCost}`,
+    ];
+    const aria: string[] = [`Session cost ${sessionCost}`, `today ${todayCost}`];
+
+    if (coding.model) {
+      segments.push(coding.model);
+      aria.push(`model ${coding.model}`);
+    }
+    if (coding.estimated) {
+      // The segment text, not just the `~`, so the reason is on screen —
+      // a squiggle alone is easy to miss or mistake for a rounding mark.
+      segments.push('estimated — no published price');
+      aria.push('this figure is an estimate, not a final bill');
+    }
+    if (coding.finalTurn) {
+      segments.push('session ended');
+      aria.push('session ended');
+    }
+    appendSubagentSegment(segments, aria, subagents);
+
     return { cost, segments, ariaLabel: aria.join(', ') };
   }
 
@@ -138,7 +181,7 @@ export function formatCostMeter(
     aria.push(`model ${tokens.model}`);
   }
 
-  appendSubagentSegment(segments, aria, childIncl);
+  appendSubagentSegment(segments, aria, subagents);
 
   return { cost, segments, ariaLabel: aria.join(', ') };
 }

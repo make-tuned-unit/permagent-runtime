@@ -8,11 +8,22 @@ import { api } from '../../lib/api';
 
 /**
  * Always-on Build statusline: `$0.42 · 47k↑ 12k↓ · cache saved $0.28 · 31% ctx · <model>`
- * and, when the session has spawned children, `· incl. N subagents $X`.
+ * while chatting, or `~$0.03 · 13k tokens · +$0.0032 this turn · today $0.53 ·
+ * glm-5.3 · estimated — no published price` while the CLI coding harness runs,
+ * plus `· incl. N subagents $X` when the session has spawned children.
  *
- * Reads `liveTokens` (chat SSE) and `codingSpend` (harness announcement when
- * present). Child spend comes from `GET /api/sessions/{id}/cost` for the
- * active chat session (or the coding session id when that is the authority).
+ * The Build tab's terminal runs `permagent run --recipe permagent-coding
+ * --interactive` as its own PTY subprocess with its OWN session id — a
+ * completely different account from the browser chat session `liveTokens`
+ * tracks. Reading `liveTokens` alone (the old behavior) showed $0.00 the whole
+ * time the user coded, because that stream was idle: a real number off the
+ * wrong account. `codingSpend`, sourced from the daemon's
+ * `session_spend_changed` bus frame (see livenessSync.ts), is the harness's
+ * own ledger and — per {@link formatCostMeter} — is authoritative over
+ * `liveTokens` whenever it is present. Child spend comes from
+ * `GET /api/sessions/{id}/cost` for the coding session id when that is the
+ * authority, otherwise the active chat session. The rendered strings come
+ * verbatim from {@link formatCostMeter}, which is what the wiring test asserts.
  */
 export function CostStatusline() {
   const { colors } = useTheme();
@@ -83,6 +94,11 @@ export function CostStatusline() {
 
       {meter.segments.map((seg, i) => {
         const isSaving = seg.startsWith('cache saved');
+        // The fail-closed estimate disclosure needs to read as a caution, not
+        // as ordinary supporting context — colors.warning exists on the theme,
+        // so use it; a theme without one would fall back to textMuted rather
+        // than inventing a color that isn't part of the design system.
+        const isEstimated = seg === 'estimated — no published price';
         return (
           <span key={i} style={{ display: 'inline-flex', alignItems: 'center' }}>
             <span style={{ color: colors.textDim, margin: '0 7px' }} aria-hidden="true">
@@ -90,7 +106,11 @@ export function CostStatusline() {
             </span>
             <span
               style={{
-                color: isSaving ? colors.success : colors.textMuted,
+                color: isSaving
+                  ? colors.success
+                  : isEstimated
+                    ? (colors.warning ?? colors.textMuted)
+                    : colors.textMuted,
                 fontVariantNumeric: 'tabular-nums',
               }}
             >
