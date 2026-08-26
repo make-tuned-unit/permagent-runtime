@@ -36,6 +36,28 @@ export function fmtTokens(n: number): string {
   return `${Math.round(n)}`;
 }
 
+/**
+ * Direct-child subagent spend rolled into a parent session
+ * (`GET /api/sessions/{id}/cost`). When `count > 0`, the statusline appends
+ * `incl. N subagents $X`.
+ */
+export interface SubagentCostIncl {
+  count: number;
+  totalUsd: number;
+}
+
+/**
+ * Coding-harness spend (Build-tab PTY session). Present so the statusline can
+ * prefer harness totals over chat `liveTokens` once the daemon announces them;
+ * until then callers pass `null` and the meter stays on `TokenState`.
+ */
+export interface CodingSpend {
+  sessionId: string;
+  sessionUsd: number;
+  /** Optional child rollup for this coding session. */
+  subagents?: SubagentCostIncl | null;
+}
+
 /** Rendered statusline model. `cost` is THE authoritative number; `segments`
  *  are supporting context. Kept as plain strings so the component is a trivial,
  *  faithful renderer of this model (which is what the wiring test asserts). */
@@ -48,12 +70,42 @@ export interface CostMeterModel {
   ariaLabel: string;
 }
 
+function appendSubagentSegment(
+  segments: string[],
+  aria: string[],
+  subagents: SubagentCostIncl | null | undefined,
+): void {
+  if (!subagents || subagents.count <= 0) return;
+  const n = subagents.count;
+  const label = n === 1 ? 'subagent' : 'subagents';
+  const dollars = fmtUsd(subagents.totalUsd);
+  const seg = `incl. ${n} ${label} ${dollars}`;
+  segments.push(seg);
+  aria.push(seg);
+}
+
 /**
- * Build the meter model from the latest {@link TokenState}. Shows exactly ONE
- * cost-ish number (the running session $) to avoid the "Usage $ vs Spending %"
- * confusion; the cache figure is explicitly a *saving*, not a second spend.
+ * Build the meter model from the latest {@link TokenState}, optional coding
+ * harness {@link CodingSpend}, and optional child-subagent rollup.
+ * `codingSpend` wins when present (Build-tab harness account); otherwise
+ * `tokens` drives the figure. Subagent suffix is appended whenever children
+ * exist on either source.
  */
-export function formatCostMeter(tokens: TokenState | null): CostMeterModel {
+export function formatCostMeter(
+  tokens: TokenState | null,
+  codingSpend: CodingSpend | null = null,
+  subagents: SubagentCostIncl | null = null,
+): CostMeterModel {
+  const childIncl = codingSpend?.subagents ?? subagents;
+
+  if (codingSpend) {
+    const cost = fmtUsd(codingSpend.sessionUsd);
+    const segments: string[] = [];
+    const aria: string[] = [`Session cost ${cost}`];
+    appendSubagentSegment(segments, aria, childIncl);
+    return { cost, segments, ariaLabel: aria.join(', ') };
+  }
+
   if (!tokens) {
     return { cost: '$0.00', segments: [], ariaLabel: 'No cost recorded yet' };
   }
@@ -85,6 +137,8 @@ export function formatCostMeter(tokens: TokenState | null): CostMeterModel {
     segments.push(tokens.model);
     aria.push(`model ${tokens.model}`);
   }
+
+  appendSubagentSegment(segments, aria, childIncl);
 
   return { cost, segments, ariaLabel: aria.join(', ') };
 }

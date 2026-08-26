@@ -1,25 +1,55 @@
+import { useEffect, useState } from 'react';
 import { useCommandCenter } from '../../lib/store';
 import { useTheme } from '../../styles/useTheme';
 import { font } from '../../styles/tokens';
-import { formatCostMeter } from '../../lib/costMeter';
+import { formatCostMeter, type SubagentCostIncl } from '../../lib/costMeter';
 import { useLiveGoals } from '../../lib/useLiveGoals';
+import { api } from '../../lib/api';
 
 /**
- * Always-on Build statusline: `$0.42 · 47k↑ 12k↓ · cache saved $0.28 · 31% ctx · <model>`.
+ * Always-on Build statusline: `$0.42 · 47k↑ 12k↓ · cache saved $0.28 · 31% ctx · <model>`
+ * and, when the session has spawned children, `· incl. N subagents $X`.
  *
- * Reads the live {@link TokenState} the store captures off every SSE frame, so
- * the running-session dollar figure is real and single-sourced from the per-call
- * cost ledger (canonical `cost_of`) — never a stub. It shows exactly ONE
- * spend number (the bold `$`); the cache figure is explicitly a *saving*, so
- * there is no "Usage $ vs Spending %" ambiguity. The rendered strings come
- * verbatim from {@link formatCostMeter}, which is what the wiring test asserts.
+ * Reads `liveTokens` (chat SSE) and `codingSpend` (harness announcement when
+ * present). Child spend comes from `GET /api/sessions/{id}/cost` for the
+ * active chat session (or the coding session id when that is the authority).
  */
 export function CostStatusline() {
   const { colors } = useTheme();
   const liveTokens = useCommandCenter((s) => s.liveTokens);
+  const codingSpend = useCommandCenter((s) => s.codingSpend);
+  const chatSessionId = useCommandCenter((s) => s.chatSessionId);
   const { goals } = useLiveGoals();
-  const meter = formatCostMeter(liveTokens);
-  const routeNote = goals.find(g => g.routing_note || g.hold_note);
+  const [subagents, setSubagents] = useState<SubagentCostIncl | null>(null);
+
+  const rollupSessionId = codingSpend?.sessionId ?? chatSessionId;
+
+  useEffect(() => {
+    if (!rollupSessionId) {
+      setSubagents(null);
+      return;
+    }
+    let cancelled = false;
+    api
+      .getSessionCost(rollupSessionId)
+      .then((cost) => {
+        if (cancelled) return;
+        if (cost.perChild.length === 0) {
+          setSubagents(null);
+          return;
+        }
+        setSubagents({ count: cost.perChild.length, totalUsd: cost.childrenTotal });
+      })
+      .catch(() => {
+        if (!cancelled) setSubagents(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rollupSessionId, liveTokens?.accumulatedCostUsd, codingSpend?.sessionUsd]);
+
+  const meter = formatCostMeter(liveTokens, codingSpend, subagents);
+  const routeNote = goals.find((g) => g.routing_note || g.hold_note);
   const note = routeNote?.hold_note || routeNote?.routing_note;
 
   return (

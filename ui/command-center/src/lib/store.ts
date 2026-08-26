@@ -3,6 +3,7 @@ import { api, apiFetch, extractText, extractThinking, fileToBase64, hasToolActiv
 import { emitActivity, type ActivityEventName, type ActivitySourceSurface } from './emitActivity';
 import type { SessionSummary, DaemonMessage, SSEEvent, AppContextPayload, TokenState } from './api';
 import { costFromFrame } from './costMeter';
+import type { CodingSpend } from './costMeter';
 import { maybeSpeakReply, replyDedupeKey } from './speakReplies';
 import { readLiveConversation } from './voiceHandoff';
 import { appendTraceRecord, sessionFrameToRecord } from './traceEvents';
@@ -281,6 +282,13 @@ interface CommandCenterStore {
    * this; it is the live, single-sourced $ with no extra endpoint.
    */
   liveTokens: TokenState | null;
+  /**
+   * Coding-harness spend for the Build-tab PTY session (separate account from
+   * `liveTokens`). Null until a harness announcement lands; CostStatusline
+   * prefers it when present and still rolls child subagent spend under it.
+   */
+  codingSpend: CodingSpend | null;
+  setCodingSpend: (spend: CodingSpend | null) => void;
   sendMessage: (text: string, files?: File[]) => Promise<void>;
   /** Interrupt the in-flight turn: POST /sessions/{id}/cancel with the active
    *  request_id. Returns true when the daemon confirmed a live request was
@@ -981,6 +989,8 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   // Streaming
   isStreaming: false,
   liveTokens: null,
+  codingSpend: null,
+  setCodingSpend: (spend) => set({ codingSpend: spend }),
   _activeRequestId: null,
 
   /**

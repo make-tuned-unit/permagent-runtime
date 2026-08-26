@@ -184,6 +184,11 @@ pub struct GoalTask {
     /// tracker. External workers emit one event for every stdout read; engines
     /// without a byte stream leave this unused.
     pub output_tx: Option<mpsc::UnboundedSender<WorkerOutputEvent>>,
+    /// Chat / orchestrator session that dispatched this goal, when known.
+    /// Internal subagent engines record it as `sessions.parent_session_id` so
+    /// cost rolls up to the parent. `None` for headless / auto-dispatch with
+    /// no parent session in scope.
+    pub parent_session_id: Option<String>,
 }
 
 /// Timestamped evidence that an external worker produced stdout. The timestamp
@@ -383,7 +388,8 @@ impl GoalEngine for InternalSubagentEngine {
     async fn spawn(&self, task: GoalTask) -> Result<DispatchedWork, String> {
         let subagent_session = self
             .session_manager
-            .create_session(
+            .create_session_with_parent(
+                task.parent_session_id.as_deref(),
                 task.working_dir.clone(),
                 format!("Goal: {}", task.card_title),
                 SessionType::SubAgent,
@@ -2483,6 +2489,7 @@ mod tests {
             baseline_commit: None,
             timeout: Duration::from_secs(10),
             output_tx: None,
+            parent_session_id: None,
         };
         match engine.spawn(task).await {
             Err(err) => assert!(

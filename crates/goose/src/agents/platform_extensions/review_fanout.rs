@@ -6,6 +6,10 @@
 //! via [`crate::agents::subagent_handler::spawn_subagent_work`] and their
 //! summaries fold into the decision detail. Either failure degrades: the
 //! other summary still lands.
+//!
+//! These workers are in-process briefs — they do **not** mint `sessions` rows —
+//! so there is no `parent_session_id` to set here. Session-backed fan-out
+//! (delegate / goal_engine SubAgent) is what records the parent link.
 
 use crate::agents::subagent_handler::spawn_subagent_work;
 use crate::cards::Card;

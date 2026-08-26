@@ -75,6 +75,35 @@ describe('formatCostMeter', () => {
     // Only the token segment — no cache-saved (0), no ctx (null), no model ('').
     expect(m.segments).toEqual(['500↑ 100↓']);
   });
+
+  it('appends incl. N subagents $X when children exist', () => {
+    const m = formatCostMeter(
+      tokenState({ accumulatedCostUsd: 0.42, accumulatedInputTokens: 100, accumulatedOutputTokens: 10 }),
+      null,
+      { count: 2, totalUsd: 0.17 },
+    );
+    expect(m.cost).toBe('$0.42');
+    expect(m.segments).toContain('incl. 2 subagents $0.17');
+    expect(m.ariaLabel).toContain('incl. 2 subagents $0.17');
+  });
+
+  it('singularizes the subagent label for a single child', () => {
+    const m = formatCostMeter(
+      tokenState({ accumulatedCostUsd: 0.1 }),
+      null,
+      { count: 1, totalUsd: 0.05 },
+    );
+    expect(m.segments).toContain('incl. 1 subagent $0.05');
+  });
+
+  it('prefers codingSpend over liveTokens and still shows the subagent suffix', () => {
+    const m = formatCostMeter(
+      tokenState({ accumulatedCostUsd: 99 }),
+      { sessionId: 'harness-1', sessionUsd: 0.33, subagents: { count: 3, totalUsd: 0.12 } },
+    );
+    expect(m.cost).toBe('$0.33');
+    expect(m.segments).toEqual(['incl. 3 subagents $0.12']);
+  });
 });
 
 describe('costFromFrame', () => {

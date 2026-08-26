@@ -1175,6 +1175,7 @@ pub(crate) async fn dispatch_goal_fn(
         baseline_commit: baseline_commit.clone(),
         timeout: std::time::Duration::from_secs(timeout_secs),
         output_tx: Some(output_tx),
+        parent_session_id: context.session.as_ref().map(|s| s.id.clone()),
     };
 
     // Resolve once before engine construction so the scope is fixed for the
@@ -1954,7 +1955,13 @@ impl OrchestratorClient {
         let session = self
             .context
             .session_manager
-            .create_session(path, name.clone(), SessionType::User, mode)
+            .create_session_with_parent(
+                parent.map(|p| p.id.as_str()),
+                path,
+                name.clone(),
+                SessionType::User,
+                mode,
+            )
             .await
             .map_err(|e| format!("Failed to create session: {}", e))?;
 
