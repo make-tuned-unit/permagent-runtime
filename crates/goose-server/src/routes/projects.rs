@@ -1842,6 +1842,7 @@ pub async fn reindex_project_code(
         // indexes of one project stay one episode instead of being filed apart
         // by however long passed between them.
         episode_id: Some(memory_key.clone()),
+        wing: wing.map(str::to_string),
         ..Default::default()
     };
     brain

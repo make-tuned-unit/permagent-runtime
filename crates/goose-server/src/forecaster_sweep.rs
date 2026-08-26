@@ -155,6 +155,7 @@ pub async fn collect_due(
     };
     report.considered = series.len();
     let today = now.date_naive();
+    let collected_at = now.with_timezone(&chrono::Utc);
     for s in series {
         if !is_due(knobs.cadence, s.last_collected_at.as_deref(), now) {
             report.skipped_not_due += 1;
@@ -182,11 +183,11 @@ pub async fn collect_due(
                 Ok(n) => {
                     report.collected += 1;
                     report.points_added += n;
-                    let _ = store::mark_collected(pool, &s.id, None).await;
+                    let _ = store::mark_collected(pool, &s.id, None, collected_at).await;
                 }
                 Err(e) => {
                     report.errors.push(format!("{}: {e}", s.label));
-                    let _ = store::mark_collected(pool, &s.id, Some(&e)).await;
+                    let _ = store::mark_collected(pool, &s.id, Some(&e), collected_at).await;
                 }
             },
             Err(e) => {
@@ -194,7 +195,7 @@ pub async fn collect_due(
                 report.errors.push(format!("{}: {msg}", s.label));
                 // Recorded on the row, so `forecaster_series` and the Market
                 // card can say "collector stale" with the reason attached.
-                let _ = store::mark_collected(pool, &s.id, Some(&msg)).await;
+                let _ = store::mark_collected(pool, &s.id, Some(&msg), collected_at).await;
             }
         }
     }
@@ -475,18 +476,6 @@ mod tests {
         assert_eq!(report.collected, 1);
         assert_eq!(report.points_added, 2);
         assert!(report.errors.is_empty(), "{:?}", report.errors);
-
-        // `store::mark_collected` stamps `last_collected_at` from the real
-        // clock, not the `now` this test injects, so the simulated timeline
-        // has to be pinned here. Without this, "eight days on" below is
-        // measured from `Utc::now()` to a fixed 2026-09-01, which crosses the
-        // seven-day mark at 09:00 UTC and turns the test into a time bomb.
-        sqlx::query("UPDATE forecaster_series SET last_collected_at = ? WHERE id = ?")
-            .bind(now.to_rfc3339())
-            .bind(&approved.id)
-            .execute(&pool)
-            .await
-            .unwrap();
 
         // Same day again: weekly cadence, so nothing is due and nothing is
         // fetched. The tick is not the cadence.
