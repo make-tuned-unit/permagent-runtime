@@ -64,7 +64,7 @@ export function CouncilCard() {
         {data && !report && (
           <div style={{ fontSize: 13, color: colors.textMuted, lineHeight: 1.5 }}>
             No weekly report yet. Turn on The Council under Settings → Features;
-            Henry can also convene one on demand.
+            the chat agent can also convene one on demand.
           </div>
         )}
 

@@ -33,7 +33,7 @@ pub async fn assemble(
     sections.push(brain_section().await);
 
     if let Some(q) = extra_question.map(str::trim).filter(|s| !s.is_empty()) {
-        sections.push(format!("## Extra question from Henry\n\n{q}"));
+        sections.push(format!("## Extra question from the chat agent\n\n{q}"));
     }
 
     let markdown = sections

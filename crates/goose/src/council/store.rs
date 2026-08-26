@@ -137,50 +137,54 @@ pub async fn finish_session(
     Ok(())
 }
 
-pub async fn insert_position(
-    pool: &Pool<Sqlite>,
-    session_id: &str,
-    round: i64,
-    provider: &str,
-    model: &str,
-    status: &str,
-    raw_text: Option<&str>,
-    parsed: Option<&serde_json::Value>,
-    error: Option<&str>,
-) -> Result<(), String> {
+pub struct NewPosition<'a> {
+    pub session_id: &'a str,
+    pub round: i64,
+    pub provider: &'a str,
+    pub model: &'a str,
+    pub status: &'a str,
+    pub raw_text: Option<&'a str>,
+    pub parsed: Option<&'a serde_json::Value>,
+    pub error: Option<&'a str>,
+}
+
+pub async fn insert_position(pool: &Pool<Sqlite>, pos: NewPosition<'_>) -> Result<(), String> {
     let id = Uuid::new_v4().to_string();
-    let parsed_s = parsed.map(|v| serde_json::to_string(v).unwrap_or_else(|_| "{}".to_string()));
+    let parsed_s = pos
+        .parsed
+        .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "{}".to_string()));
     sqlx::query(
         "INSERT INTO council_positions
             (id, session_id, round, provider, model, status, raw_text, parsed_json, error)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
-    .bind(session_id)
-    .bind(round)
-    .bind(provider)
-    .bind(model)
-    .bind(status)
-    .bind(raw_text)
+    .bind(pos.session_id)
+    .bind(pos.round)
+    .bind(pos.provider)
+    .bind(pos.model)
+    .bind(pos.status)
+    .bind(pos.raw_text)
     .bind(parsed_s)
-    .bind(error)
+    .bind(pos.error)
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
     Ok(())
 }
 
-pub async fn insert_report(
-    pool: &Pool<Sqlite>,
-    session_id: &str,
-    headline: &str,
-    markdown: &str,
-    consensus: &[String],
-    dissent: &[serde_json::Value],
-    actions: &[serde_json::Value],
-    chair_provider: Option<&str>,
-    chair_model: Option<&str>,
-) -> Result<String, String> {
+pub struct NewReport<'a> {
+    pub session_id: &'a str,
+    pub headline: &'a str,
+    pub markdown: &'a str,
+    pub consensus: &'a [String],
+    pub dissent: &'a [serde_json::Value],
+    pub actions: &'a [serde_json::Value],
+    pub chair_provider: Option<&'a str>,
+    pub chair_model: Option<&'a str>,
+}
+
+pub async fn insert_report(pool: &Pool<Sqlite>, report: NewReport<'_>) -> Result<String, String> {
     let id = Uuid::new_v4().to_string();
     sqlx::query(
         "INSERT INTO council_reports
@@ -189,14 +193,14 @@ pub async fn insert_report(
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
-    .bind(session_id)
-    .bind(headline)
-    .bind(markdown)
-    .bind(serde_json::to_string(consensus).unwrap_or_else(|_| "[]".to_string()))
-    .bind(serde_json::to_string(dissent).unwrap_or_else(|_| "[]".to_string()))
-    .bind(serde_json::to_string(actions).unwrap_or_else(|_| "[]".to_string()))
-    .bind(chair_provider)
-    .bind(chair_model)
+    .bind(report.session_id)
+    .bind(report.headline)
+    .bind(report.markdown)
+    .bind(serde_json::to_string(report.consensus).unwrap_or_else(|_| "[]".to_string()))
+    .bind(serde_json::to_string(report.dissent).unwrap_or_else(|_| "[]".to_string()))
+    .bind(serde_json::to_string(report.actions).unwrap_or_else(|_| "[]".to_string()))
+    .bind(report.chair_provider)
+    .bind(report.chair_model)
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
@@ -385,27 +389,31 @@ mod tests {
         .unwrap();
         insert_position(
             &pool,
-            &id,
-            1,
-            "anthropic",
-            "claude-haiku",
-            "ok",
-            Some("{\"confidence\":0.7}"),
-            Some(&serde_json::json!({"confidence": 0.7})),
-            None,
+            NewPosition {
+                session_id: &id,
+                round: 1,
+                provider: "anthropic",
+                model: "claude-haiku",
+                status: "ok",
+                raw_text: Some("{\"confidence\":0.7}"),
+                parsed: Some(&serde_json::json!({"confidence": 0.7})),
+                error: None,
+            },
         )
         .await
         .unwrap();
         insert_report(
             &pool,
-            &id,
-            "Focus on Permagent",
-            "# Report\nDo the thing.",
-            &["focus".into()],
-            &[serde_json::json!({"model": "gpt", "claim": "wait"})],
-            &[serde_json::json!({"title": "Ship the council"})],
-            Some("anthropic"),
-            Some("claude-haiku"),
+            NewReport {
+                session_id: &id,
+                headline: "Focus on Permagent",
+                markdown: "# Report\nDo the thing.",
+                consensus: &["focus".into()],
+                dissent: &[serde_json::json!({"model": "gpt", "claim": "wait"})],
+                actions: &[serde_json::json!({"title": "Ship the council"})],
+                chair_provider: Some("anthropic"),
+                chair_model: Some("claude-haiku"),
+            },
         )
         .await
         .unwrap();

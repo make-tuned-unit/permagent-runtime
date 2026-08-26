@@ -72,7 +72,7 @@ pub fn excluded_providers() -> Vec<String> {
 
 pub fn set_excluded(names: &[String]) -> Result<(), String> {
     Config::global()
-        .set_param(EXCLUDE_KEY, &names.to_vec())
+        .set_param(EXCLUDE_KEY, names.to_vec())
         .map_err(|e| e.to_string())
 }
 

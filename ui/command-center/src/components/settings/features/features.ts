@@ -68,7 +68,7 @@ export const FEATURE_ROWS: readonly FeatureRow[] = [
     key: 'council_enabled',
     label: 'The Council',
     what: 'Briefs every connected chat model on the state of your work, they debate, and a weekly report lands on Home with actions in the Decision Inbox. It spends every seated provider. Approve an action to file it as a board card.',
-    effect: 'Off by default. Weekly pass prefers Sunday 22:00 local; a flip takes effect at the next hourly tick, no restart. Henry can also convene one on demand once this is on.',
+    effect: 'Off by default. Weekly pass prefers Sunday 22:00 local; a flip takes effect at the next hourly tick, no restart. The chat agent can also convene one on demand once this is on.',
   },
 ];
 

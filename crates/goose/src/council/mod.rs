@@ -40,8 +40,8 @@ pub const SELF_KNOWLEDGE_FEATURE: FeatureDescriptor = FeatureDescriptor {
          projects, boards, due cards, activity, analytics, Watcher insights, Forecaster \
          direction, open decisions — then runs a two-round debate and chairs a weekly report. \
          Live-query with council_status (on or off, seated models, last headline, open inbox \
-         actions) and council_report (the full digest including per-model dissent). Henry \
-         convenes it with council_convene; a Sunday-night sweep runs the same session when \
+         actions) and council_report (the full digest including per-model dissent). You \
+         convene it with council_convene; a Sunday-night sweep runs the same session when \
          council_enabled is on. Actions land as Decision Inbox proposals (council_action): \
          approve files a board card, reject dismisses. It only ever proposes",
     why_it_matters:
@@ -149,14 +149,16 @@ pub async fn convene(
     for r in &round1 {
         let _ = store::insert_position(
             pool,
-            &session_id,
-            1,
-            &r.member.provider,
-            &r.member.model,
-            &r.status,
-            r.raw.as_deref(),
-            r.parsed.as_ref(),
-            r.error.as_deref(),
+            store::NewPosition {
+                session_id: &session_id,
+                round: 1,
+                provider: &r.member.provider,
+                model: &r.member.model,
+                status: &r.status,
+                raw_text: r.raw.as_deref(),
+                parsed: r.parsed.as_ref(),
+                error: r.error.as_deref(),
+            },
         )
         .await;
     }
@@ -188,14 +190,16 @@ pub async fn convene(
     for r in &round2 {
         let _ = store::insert_position(
             pool,
-            &session_id,
-            2,
-            &r.member.provider,
-            &r.member.model,
-            &r.status,
-            r.raw.as_deref(),
-            r.parsed.as_ref(),
-            r.error.as_deref(),
+            store::NewPosition {
+                session_id: &session_id,
+                round: 2,
+                provider: &r.member.provider,
+                model: &r.member.model,
+                status: &r.status,
+                raw_text: r.raw.as_deref(),
+                parsed: r.parsed.as_ref(),
+                error: r.error.as_deref(),
+            },
         )
         .await;
     }
@@ -232,20 +236,23 @@ pub async fn convene(
         }
     };
 
+    let actions: Vec<serde_json::Value> = report
+        .actions
+        .iter()
+        .map(|a| serde_json::to_value(a).unwrap_or(serde_json::Value::Null))
+        .collect();
     let _ = store::insert_report(
         pool,
-        &session_id,
-        &report.headline,
-        &report.markdown,
-        &report.consensus,
-        &report.dissent,
-        &report
-            .actions
-            .iter()
-            .map(|a| serde_json::to_value(a).unwrap_or(serde_json::Value::Null))
-            .collect::<Vec<_>>(),
-        Some(&chair_provider),
-        Some(&chair_model),
+        store::NewReport {
+            session_id: &session_id,
+            headline: &report.headline,
+            markdown: &report.markdown,
+            consensus: &report.consensus,
+            dissent: &report.dissent,
+            actions: &actions,
+            chair_provider: Some(&chair_provider),
+            chair_model: Some(&chair_model),
+        },
     )
     .await;
 
