@@ -75,10 +75,15 @@ pub async fn send_goal_a2a(
     append_meta_array(pool, to_goal, A2A_INBOX_KEY, value.clone()).await?;
     append_meta_array(pool, from_goal, A2A_SENT_KEY, value.clone()).await?;
 
-    let key = rlm::session_key_for_goal(to_goal);
-    rlm::hydrate_from_metadata(&key, &to.metadata_json);
-    rlm::set(&key, "a2a_feedback", value.clone());
-    persist_rlm_snapshot(pool, to_goal, &key).await?;
+    // Durable RLM write-through. This is the ONLY way A2A touches the control
+    // plane: `write_a2a_feedback` appends into a bounded, version-checked ring
+    // in `rlm_context`, so two senders racing cannot clobber each other. The
+    // old path read-modify-wrote the whole `metadata_json` blob with no version
+    // guard, which silently lost any concurrent write to `attempt_count`,
+    // `last_error` or `worktree_path`.
+    rlm::write_a2a_feedback(pool, to_goal, &value)
+        .await
+        .map_err(|e| e.to_string())?;
 
     let steered = if let Some(handle) =
         crate::agents::platform_extensions::orchestrator::steer_handle_for(to_goal)
@@ -102,25 +107,6 @@ pub async fn send_goal_a2a(
         steered,
         message: msg,
     })
-}
-
-async fn persist_rlm_snapshot(
-    pool: &Pool<Sqlite>,
-    card_id: &str,
-    session_key: &str,
-) -> Result<(), String> {
-    let card = cards::get_card(pool, card_id)
-        .await?
-        .ok_or_else(|| format!("card '{card_id}' vanished"))?;
-    let mut meta = card.metadata_json.as_object().cloned().unwrap_or_default();
-    meta.insert("rlm_state".into(), rlm::snapshot(session_key));
-    sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
-        .bind(serde_json::to_string(&Value::Object(meta)).map_err(|e| e.to_string())?)
-        .bind(card_id)
-        .execute(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
 }
 
 async fn append_meta_array(
@@ -164,6 +150,9 @@ mod tests {
             .await
             .unwrap();
         init_spectral_db(&pool).await.unwrap();
+        crate::session::spectral_schema::apply_rlm_context_schema(&pool)
+            .await
+            .unwrap();
         pool
     }
 
@@ -213,11 +202,14 @@ mod tests {
             .expect("inbox");
         assert_eq!(inbox.len(), 1);
         assert_eq!(inbox[0]["body"], "watch the race");
-        assert!(updated.metadata_json.get("rlm_state").is_some());
-        assert_eq!(
-            rlm::get(&rlm::session_key_for_goal(&to.id), "a2a_feedback").unwrap()["body"],
-            "watch the race"
-        );
+        // A2A state is durable in `rlm_context`, not in the card's metadata blob.
+        let cell = rlm::get(&pool, rlm::Scope::Goal, &to.id, rlm::A2A_FEEDBACK_KEY)
+            .await
+            .unwrap()
+            .expect("a2a feedback is stored in the RLM control plane");
+        let ring = cell.value.as_array().expect("the feedback ring is an array");
+        assert_eq!(ring.len(), 1);
+        assert_eq!(ring[0]["body"], "watch the race");
 
         let err = send_goal_a2a(&pool, &from.id, &done.id, "too late")
             .await

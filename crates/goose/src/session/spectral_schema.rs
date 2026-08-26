@@ -65,6 +65,12 @@ use tracing::{info, warn};
 /// third-party dependency). New table + index, additive and idempotent.
 /// `migrate_v37_to_v38` applies it.
 ///
+/// v51 = RLM control-plane context store (`rlm_context`) — the durable
+/// replacement for the in-process RLM DashMap, so evaluation context survives a
+/// daemon restart. New table + partial index, additive and base-independent.
+/// `migrate_v50_to_v51` applies it; `apply_rlm_context_schema` also runs on
+/// every boot, version-independent.
+///
 /// v42 = durable growth actions + pre-registered outcomes (`growth_actions`,
 /// `growth_action_outcomes`; docs/proposals/grow-action-outcome-loop.md). Until
 /// this existed a growth action had no identity — it was recomputed on every
@@ -1777,6 +1783,61 @@ pub async fn migrate_v49_to_v50(pool: &Pool<Sqlite>) -> Result<()> {
         .execute(pool)
         .await?;
     info!("Spectral schema migrated to v50 (person aliases + merge log)");
+    Ok(())
+}
+
+/// Apply the RLM control-plane context store (`rlm_context`).
+///
+/// The durable replacement for the process-local `DashMap` that used to be the
+/// whole of [`crate::rlm`]: a transactional, versioned, exactly-read key/value
+/// store scoped by session or goal, so evaluation context outlives an LLM turn
+/// AND a daemon restart. It lives here rather than in the Brain because recall
+/// is ranked and probabilistic — a control plane must read back exactly what it
+/// wrote — and rather than in `cards.metadata_json` because that is an
+/// unversioned blob whose read-modify-write loses concurrent updates.
+///
+/// `permagent.db` already runs in WAL with a checkpoint timer and is already in
+/// the hourly backup snapshot set as `DbTarget::Spectral`, so this table
+/// inherits its durability rather than inventing any.
+///
+/// Fully idempotent (`CREATE TABLE / INDEX IF NOT EXISTS`) and applied on every
+/// boot, not only behind the version gate: a version-gated schema step is
+/// exactly how the recognition columns and the finance tables went missing in
+/// production (see the notes in `SessionManager`).
+pub async fn apply_rlm_context_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS rlm_context (
+            scope      TEXT    NOT NULL CHECK (scope IN ('session','goal')),
+            scope_id   TEXT    NOT NULL,
+            key        TEXT    NOT NULL,
+            value_json TEXT    NOT NULL,
+            version    INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT    NOT NULL,
+            updated_at TEXT    NOT NULL,
+            expires_at TEXT,
+            PRIMARY KEY (scope, scope_id, key)
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_rlm_context_expiry \
+         ON rlm_context(expires_at) WHERE expires_at IS NOT NULL",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// v51: the RLM control-plane context store. New table + partial index only —
+/// additive and base-independent, so it applies cleanly over any earlier base.
+pub async fn migrate_v50_to_v51(pool: &Pool<Sqlite>) -> Result<()> {
+    info!("Migrating Spectral schema v50 -> v51 (RLM control-plane context store)");
+    apply_rlm_context_schema(pool).await?;
+    sqlx::query("INSERT OR REPLACE INTO schema_version (version) VALUES (51)")
+        .execute(pool)
+        .await?;
+    info!("Spectral schema migrated to v51 (RLM control-plane context store)");
     Ok(())
 }
 

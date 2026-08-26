@@ -1,6 +1,6 @@
 # Prime RLM kernel and executable skills
 
-**Date:** 2026-08-25 · **Status:** design, pre-implementation · **Base:** `origin/main` @ `be058519`
+**Date:** 2026-08-25 · **Status:** Part A implemented (PR 1); Part B queued (PR 2) · **Base:** `origin/main` @ `be058519`
 **Closes:** the two rows marked **missing** in `PRIME_INTEGRATION_SEAMS.md`.
 
 Both primitives already exist on main as **in-process prototypes**, and that doc's "Shipped" section already
