@@ -909,6 +909,66 @@ export interface BudgetPatch {
   task?: Partial<Ceilings>;
 }
 
+export interface CouncilSeat {
+  provider: string;
+  display_name: string;
+  model: string;
+  configured: boolean;
+  excluded: boolean;
+  cli_or_acp: boolean;
+}
+
+export interface CouncilMembers {
+  enabled: boolean;
+  exclude: string[];
+  seats: CouncilSeat[];
+}
+
+export interface CouncilReport {
+  id: string;
+  session_id: string;
+  generated_at: string;
+  headline: string;
+  markdown: string;
+  consensus: string[];
+  dissent: unknown[];
+  actions: unknown[];
+  chair_provider: string | null;
+  chair_model: string | null;
+}
+
+export interface CouncilSession {
+  id: string;
+  started_at: string;
+  finished_at: string | null;
+  trigger: string;
+  extra_question: string | null;
+  chair_provider: string | null;
+  chair_model: string | null;
+  brief_json: string;
+  status: string;
+  error: string | null;
+}
+
+export interface CouncilPosition {
+  id: string;
+  session_id: string;
+  round: number;
+  provider: string;
+  model: string;
+  status: string;
+  raw_text: string | null;
+  parsed_json: unknown;
+  error: string | null;
+}
+
+export interface CouncilLatest {
+  session: CouncilSession | null;
+  report: CouncilReport | null;
+  positions: CouncilPosition[];
+  openActions: number;
+}
+
 export const api = {
   // Health
   getHealth: () => apiFetch<{ status: string }>('/status'),
@@ -1187,6 +1247,18 @@ export const api = {
     apiFetch<unknown>('/config/upsert', {
       method: 'POST',
       body: JSON.stringify({ key, value, is_secret: isSecret ?? false }),
+    }),
+
+  getCouncilLatest: () =>
+    apiFetch<CouncilLatest>('/api/council/latest'),
+
+  getCouncilMembers: () =>
+    apiFetch<CouncilMembers>('/api/council/members'),
+
+  putCouncilMembers: (exclude: string[]) =>
+    apiFetch<CouncilMembers>('/api/council/members', {
+      method: 'PUT',
+      body: JSON.stringify({ exclude }),
     }),
 
   /** Delete a config key (secret keys are removed from the keychain). The

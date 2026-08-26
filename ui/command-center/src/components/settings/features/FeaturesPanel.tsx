@@ -1,9 +1,9 @@
 /**
  * Settings → Features — the switches for the off-by-default workers:
  * Initiative, the Decision Playbook, the Concierge, the Steward's git-health
- * sweep and the Guard's security sweep. Each is one boolean config key; the
- * daemon loop behind it always runs and re-reads the flag every tick, so a flip
- * here lands at the next tick with no restart.
+ * sweep, the Guard's security sweep, and The Council. Each is one boolean
+ * config key; the daemon loop behind it always runs and re-reads the flag every
+ * tick, so a flip here lands at the next tick with no restart.
  *
  * The same key is written by the agent's own page under Settings → Agents (and,
  * for the Guard, by the Models pane) through this same `/config/upsert` call.
@@ -17,7 +17,7 @@
 
 import { useEffect, useState } from 'react';
 import { H1, Row, Section, Toggle } from '../atoms';
-import { api } from '../../../lib/api';
+import { api, type CouncilMembers, type CouncilSeat } from '../../../lib/api';
 import { font } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import {
@@ -45,6 +45,8 @@ export function FeaturesPanel({ goto }: PanelProps) {
   const [flags, setFlags] = useState<FlagState>(UNLOADED);
   const [errors, setErrors] = useState<Partial<Record<FeatureKey, string>>>({});
   const [integrations, setIntegrations] = useState<IntegrationStatus[] | null>(null);
+  const [members, setMembers] = useState<CouncilMembers | null>(null);
+  const [membersError, setMembersError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -58,6 +60,23 @@ export function FeaturesPanel({ goto }: PanelProps) {
       .catch(() => { if (active) setIntegrations([]); });
     return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    if (flags.council_enabled !== true) {
+      setMembers(null);
+      setMembersError(null);
+      return;
+    }
+    let active = true;
+    api.getCouncilMembers()
+      .then(m => { if (active) setMembers(m); })
+      .catch(err => {
+        if (active) {
+          setMembersError(err instanceof Error ? err.message : String(err));
+        }
+      });
+    return () => { active = false; };
+  }, [flags.council_enabled]);
 
   const save = (key: FeatureKey, v: boolean) => {
     const prev = flags[key];
@@ -116,6 +135,23 @@ export function FeaturesPanel({ goto }: PanelProps) {
         })}
       </Section>
 
+      {flags.council_enabled === true && (
+        <CouncilSeats
+          members={members}
+          error={membersError}
+          onSave={(next, prev) => {
+            setMembers(next);
+            setMembersError(null);
+            api.putCouncilMembers(next.exclude)
+              .then(saved => setMembers(saved))
+              .catch(err => {
+                setMembers(prev);
+                setMembersError(`Couldn't save seats: ${err instanceof Error ? err.message : String(err)}`);
+              });
+          }}
+        />
+      )}
+
       <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>
         Each worker is listed under{' '}
         <button
@@ -131,5 +167,82 @@ export function FeaturesPanel({ goto }: PanelProps) {
         its live state once it is on.
       </div>
     </div>
+  );
+}
+
+function seatedSeats(members: CouncilMembers): CouncilSeat[] {
+  return members.seats.filter(s => s.configured && !s.cli_or_acp);
+}
+
+function CouncilSeats({
+  members,
+  error,
+  onSave,
+}: {
+  members: CouncilMembers | null;
+  error: string | null;
+  onSave: (next: CouncilMembers, prev: CouncilMembers) => void;
+}) {
+  const { colors } = useTheme();
+  const seats = members ? seatedSeats(members) : [];
+
+  const toggle = (provider: string, seated: boolean) => {
+    if (!members) return;
+    const exclude = seated
+      ? members.exclude.filter(p => p.toLowerCase() !== provider.toLowerCase())
+      : [...members.exclude.filter(p => p.toLowerCase() !== provider.toLowerCase()), provider];
+    const next: CouncilMembers = {
+      ...members,
+      exclude,
+      seats: members.seats.map(s =>
+        s.provider === provider ? { ...s, excluded: !seated } : s,
+      ),
+    };
+    onSave(next, members);
+  };
+
+  return (
+    <Section
+      title="Council seats"
+      sub="Every connected chat-completion provider sits on the Council unless you drop it here. Coding CLIs (Claude Code, Cursor, Codex) are workers, not debate seats. Unchecking a toy local model keeps it from spending a seat next to Claude."
+    >
+      {!members && !error && (
+        <div style={{ fontSize: 12, color: colors.textDim }}>Loading seats…</div>
+      )}
+      {error && (
+        <div style={{ fontSize: 12, color: colors.danger }}>{error}</div>
+      )}
+      {members && seats.length === 0 && (
+        <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.5 }}>
+          No connected chat providers. Connect a key under Settings → Models, then they will appear here.
+        </div>
+      )}
+      {seats.map(seat => {
+        const on = !seat.excluded;
+        return (
+          <label
+            key={seat.provider}
+            data-testid={`council-seat-${seat.provider}`}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 10,
+              padding: '8px 0', borderTop: `1px solid ${colors.border}`,
+              fontSize: 13, color: colors.text, cursor: 'pointer',
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={on}
+              onChange={e => toggle(seat.provider, e.target.checked)}
+            />
+            <span style={{ flex: 1 }}>
+              {seat.display_name}
+              <span style={{ color: colors.textDim, marginLeft: 8, fontFamily: font.body, fontSize: 11 }}>
+                {seat.model}
+              </span>
+            </span>
+          </label>
+        );
+      })}
+    </Section>
   );
 }

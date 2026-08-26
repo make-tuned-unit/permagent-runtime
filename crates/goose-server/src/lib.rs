@@ -31,6 +31,7 @@ pub use permagent::backup;
 pub mod brain_ops;
 pub mod chat_model;
 pub mod configuration;
+pub mod council_sweep;
 pub mod device_registry;
 pub mod error;
 pub mod event_at_backfill;

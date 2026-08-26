@@ -830,6 +830,11 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // `no such table: forecaster_series` until the second daemon boot.
     apply_forecaster_schema(pool).await?;
 
+    // The Council's debate sessions, per-model positions, and weekly reports.
+    // Version-independent (same reason as briefings): fresh installs never run
+    // the version ladder, and a DB already past v51 still needs the tables.
+    apply_council_schema(pool).await?;
+
     // Failure-learning incident capture. Version-independent, additive, and
     // idempotent so the pinned fresh-init base stamp remains unchanged.
     apply_incidents_schema(pool).await?;
@@ -1834,6 +1839,77 @@ pub async fn migrate_v50_to_v51(pool: &Pool<Sqlite>) -> Result<()> {
         .execute(pool)
         .await?;
     info!("Spectral schema migrated to v51 (sessions.parent_session_id)");
+    Ok(())
+}
+
+/// The Council of LLMs: one debate session, the per-member positions across
+/// two rounds, and the chair's synthesised weekly report. New tables + indexes
+/// only — additive, idempotent, and base-independent so it can run on every
+/// boot (the same reason briefings and the Forecaster are version-independent).
+pub async fn apply_council_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS council_sessions (
+            id              TEXT PRIMARY KEY,
+            started_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            finished_at     TEXT,
+            trigger         TEXT NOT NULL CHECK (trigger IN ('weekly','on_demand')),
+            extra_question  TEXT,
+            chair_provider  TEXT,
+            chair_model     TEXT,
+            brief_json      TEXT NOT NULL DEFAULT '{}',
+            status          TEXT NOT NULL DEFAULT 'running'
+                            CHECK (status IN ('running','complete','failed','partial')),
+            error           TEXT
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_council_sessions_started
+         ON council_sessions (started_at DESC)",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS council_positions (
+            id           TEXT PRIMARY KEY,
+            session_id   TEXT NOT NULL REFERENCES council_sessions(id) ON DELETE CASCADE,
+            round        INTEGER NOT NULL CHECK (round IN (1, 2)),
+            provider     TEXT NOT NULL,
+            model        TEXT NOT NULL,
+            status       TEXT NOT NULL CHECK (status IN ('ok','timeout','error')),
+            raw_text     TEXT,
+            parsed_json  TEXT,
+            error        TEXT,
+            created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_council_positions_session
+         ON council_positions (session_id, round, provider)",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS council_reports (
+            id              TEXT PRIMARY KEY,
+            session_id      TEXT NOT NULL UNIQUE REFERENCES council_sessions(id) ON DELETE CASCADE,
+            generated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            headline        TEXT NOT NULL DEFAULT '',
+            markdown        TEXT NOT NULL DEFAULT '',
+            consensus_json  TEXT NOT NULL DEFAULT '[]',
+            dissent_json    TEXT NOT NULL DEFAULT '[]',
+            actions_json    TEXT NOT NULL DEFAULT '[]',
+            chair_provider  TEXT,
+            chair_model     TEXT
+        )",
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -3236,7 +3312,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS decisions (
             id            TEXT PRIMARY KEY,
             kind          TEXT NOT NULL CHECK (kind IN
-                            ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','project_intel_proposal','file_to_project','model_upgrade','tool_approval','session_gate','capability_gap','regression_proposal','malformed')),
+                            ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','project_intel_proposal','file_to_project','model_upgrade','tool_approval','session_gate','capability_gap','regression_proposal','council_action','malformed')),
             goal_id       TEXT REFERENCES cards(id) ON DELETE SET NULL,
             project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,
             tier          INTEGER NOT NULL CHECK (tier IN (0,1,2)),
@@ -3311,6 +3387,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
                 || !sql.contains("model_upgrade")
                 || !sql.contains("capability_gap")
                 || !sql.contains("regression_proposal")
+                || !sql.contains("council_action")
         })
         .unwrap_or(false)
     {
@@ -3338,7 +3415,7 @@ pub async fn apply_decision_inbox_schema(pool: &Pool<Sqlite>) -> Result<()> {
             "CREATE TABLE decisions_new (
                 id            TEXT PRIMARY KEY,
                 kind          TEXT NOT NULL CHECK (kind IN
-                                ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','project_intel_proposal','file_to_project','model_upgrade','tool_approval','session_gate','capability_gap','regression_proposal','malformed')),
+                                ('approve_review','unblock','choice','risk_gate','automation_proposal','enrichment_proposal','project_intel_proposal','file_to_project','model_upgrade','tool_approval','session_gate','capability_gap','regression_proposal','council_action','malformed')),
                 goal_id       TEXT REFERENCES cards(id) ON DELETE SET NULL,
                 project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,
                 tier          INTEGER NOT NULL CHECK (tier IN (0,1,2)),

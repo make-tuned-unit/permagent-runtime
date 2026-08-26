@@ -9,13 +9,14 @@ import {
 } from './features';
 
 describe('features helpers', () => {
-  it('names exactly the five daemon config keys, in display order', () => {
+  it('names exactly the six daemon config keys, in display order', () => {
     expect(FEATURE_KEYS).toEqual([
       'initiative_enabled',
       'playbook_enabled',
       'concierge_enabled',
       'steward_scan_enabled',
       'strix_enabled',
+      'council_enabled',
     ]);
   });
 
@@ -29,6 +30,14 @@ describe('features helpers', () => {
     expect(guard!.label).toMatch(/Guard/);
   });
 
+  it('lists the Council among the switches and says it spends connected providers', () => {
+    const council = FEATURE_ROWS.find(r => r.key === 'council_enabled');
+    expect(council).toBeDefined();
+    expect(council!.label).toMatch(/Council/);
+    expect(council!.what).toMatch(/spend/i);
+    expect(council!.what).toMatch(/Decision Inbox/);
+  });
+
   // A half-added row — key in the union, no copy, or copy that promises a
   // restart the daemon does not need — renders a switch the user cannot reason
   // about. FEATURE_KEYS is derived from FEATURE_ROWS, so a duplicate key would
@@ -36,7 +45,7 @@ describe('features helpers', () => {
   it('every switch states what it does and when it takes effect', () => {
     expect(FEATURE_KEYS).toEqual(FEATURE_ROWS.map(r => r.key));
     expect(new Set(FEATURE_KEYS).size).toBe(FEATURE_ROWS.length);
-    expect(FEATURE_ROWS).toHaveLength(5);
+    expect(FEATURE_ROWS).toHaveLength(6);
     for (const row of FEATURE_ROWS) {
       expect(row.what.length).toBeGreaterThan(0);
       expect(row.label.length).toBeGreaterThan(0);

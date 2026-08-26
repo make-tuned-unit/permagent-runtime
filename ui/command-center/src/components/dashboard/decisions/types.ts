@@ -38,6 +38,7 @@ export type DecisionKind =
   | 'file_to_project'
   | 'tool_approval'
   | 'session_gate'
+  | 'council_action'
   | 'malformed';
 
 /** One selectable option (decisions.rs:71-74 — {id, label} only). */

@@ -1319,6 +1319,11 @@ impl SessionStorage {
                     // went missing in production.
                     spectral_schema::apply_briefings_schema(&self.pool).await?;
 
+                    // Version-independent: Council tables. Applied by table
+                    // existence every boot so a DB already past v50 still
+                    // grows the tables without waiting on a stamp.
+                    spectral_schema::apply_council_schema(&self.pool).await?;
+
                     spectral_schema::apply_skill_path_column(&self.pool).await?;
 
                     // Version-independent: ensure the projects.graph_entity_id
