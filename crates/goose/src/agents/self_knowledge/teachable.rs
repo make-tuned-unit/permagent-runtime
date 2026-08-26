@@ -87,6 +87,13 @@ pub static TEACHABLE: &[TeachableFeature] = &[
         },
     },
     TeachableFeature {
+        id: "cost_optimizer",
+        surface: SurfaceRef {
+            tab: "Settings",
+            section: Some("models"),
+        },
+    },
+    TeachableFeature {
         id: "scheduler",
         surface: SurfaceRef {
             tab: "Automate",
@@ -186,6 +193,19 @@ pub static TEACHABLE: &[TeachableFeature] = &[
         surface: SurfaceRef {
             tab: "Settings",
             section: Some("models"),
+        },
+    },
+    TeachableFeature {
+        // The Council. Same discoverability contract as the Guard: the
+        // worker descriptor is hidden from the brief while council_enabled
+        // is off, so without a teachable entry nothing could ever offer it.
+        // The lesson walks them to Settings → Features (the enable toggle
+        // and seat checkboxes) and teaches the cheap live query
+        // (council_status / council_report) before the expensive convene.
+        id: "council",
+        surface: SurfaceRef {
+            tab: "Settings",
+            section: Some("features"),
         },
     },
 ];
@@ -348,6 +368,26 @@ mod tests {
 
         // Everything engaged → empty learn-next.
         assert!(learn_next_given(|_| true).is_empty());
+    }
+
+    #[test]
+    fn cost_optimizer_is_teachable() {
+        let t = find_teachable("cost_optimizer").expect("cost_optimizer must be in TEACHABLE");
+        assert_eq!(t.surface.tab, "Settings");
+        assert_eq!(t.surface.section, Some("models"));
+    }
+
+    #[test]
+    fn council_is_teachable_like_the_guard() {
+        let council = find_teachable("council").expect("Council must be in the curriculum");
+        assert_eq!(council.surface.tab, "Settings");
+        assert_eq!(council.surface.section, Some("features"));
+        assert!(
+            super::super::find_descriptor("council").is_some(),
+            "the lesson content is the real Council descriptor, flag or not"
+        );
+        // Last in value order: optional, cost-bearing, like the Guard.
+        assert_eq!(TEACHABLE.last().map(|t| t.id), Some("council"));
     }
 
     #[test]

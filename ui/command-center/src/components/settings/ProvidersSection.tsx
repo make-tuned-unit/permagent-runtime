@@ -1,13 +1,18 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { FiAlertTriangle, FiCheck, FiKey, FiPlus, FiSettings, FiStar, FiTrash2 } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import type { SecretSourcesResponse } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import type { ProviderInfo } from '../../lib/store';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { AddCustomProviderModal } from './AddCustomProviderModal';
 import { ConfigureProviderModal } from './ConfigureProviderModal';
+import {
+  initialProviderTab,
+  partitionProviders,
+  type ProviderTab,
+} from './providersList';
 import { findKeySource, keyStatusMessage } from './secretSource';
 
 export function ProvidersSection() {
@@ -20,7 +25,15 @@ export function ProvidersSection() {
   const [adding, setAdding] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState<ProviderTab | null>(null);
   const [secretSources, setSecretSources] = useState<SecretSourcesResponse | undefined>();
+
+  const { connected, available } = useMemo(
+    () => partitionProviders(providers),
+    [providers],
+  );
+  const activeTab = tab ?? initialProviderTab(connected.length);
+  const visible = activeTab === 'connected' ? connected : available;
 
   // Fetched here rather than in the modal so the card badge and the modal
   // cannot disagree about where a key comes from. Failure is silent on purpose:
@@ -58,11 +71,22 @@ export function ProvidersSection() {
     }
   }, [loadProviders]);
 
+  const closeConfigure = useCallback((provider: ProviderInfo) => {
+    const wasConfigured = provider.isConfigured;
+    setConfiguring(null);
+    void Promise.resolve(loadProviders()).then(() => {
+      const next = useCommandCenter.getState().providers.find(p => p.name === provider.name);
+      if (next?.isConfigured && !wasConfigured) setTab('connected');
+    });
+    loadSecretSources();
+  }, [loadProviders, loadSecretSources]);
+
   return (
     <div className="space-y-3">
       <div className="flex items-start justify-between gap-3">
-        <p className="text-xs" style={{ fontFamily: font.body, color: colors.textMuted }}>Configure LLM providers and API keys. The default provider is used for new chat sessions.</p>
+        <p className="text-xs" style={{ fontFamily: font.body, color: colors.textMuted }}>Configure LLM providers and API keys. Connected keys sit on their own tab so the catalogue does not bury them. The default provider is used for new chat sessions.</p>
         <button
+          type="button"
           onClick={() => setAdding(true)}
           className="flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded transition shrink-0"
           style={{ border: `1px solid ${colors.cyan}4D`, color: colors.cyan }}
@@ -73,6 +97,40 @@ export function ProvidersSection() {
         </button>
       </div>
 
+      {providers.length > 0 && (
+        <div
+          role="tablist"
+          aria-label="API key lists"
+          style={{ display: 'flex', gap: 2, background: colors.bgDeeper, borderRadius: radius.md, padding: 2, width: 'fit-content' }}
+        >
+          {([
+            ['connected', 'Connected', connected.length],
+            ['providers', 'Providers', available.length],
+          ] as const).map(([id, label, count]) => {
+            const selected = activeTab === id;
+            return (
+              <button
+                key={id}
+                type="button"
+                role="tab"
+                aria-selected={selected}
+                data-testid={`providers-tab-${id}`}
+                onClick={() => setTab(id)}
+                style={{
+                  fontSize: 12, fontFamily: font.body,
+                  padding: '5px 12px', borderRadius: radius.sm, cursor: 'pointer', border: 'none',
+                  background: selected ? colors.cyanSoft : 'transparent',
+                  color: selected ? colors.cyan : colors.textMuted,
+                  fontWeight: selected ? 600 : 500,
+                }}
+              >
+                {label} ({count})
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {providers.length === 0 && loading && (
         <div className="text-xs py-4 text-center" style={{ fontFamily: font.mono, color: colors.textMuted }}>Loading providers...</div>
       )}
@@ -81,6 +139,7 @@ export function ProvidersSection() {
         <div className="rounded-lg p-4 text-center space-y-2" style={{ backgroundColor: colors.surface, border: `1px solid ${colors.border}` }}>
           <div className="text-xs" style={{ fontFamily: font.body, color: colors.danger }}>Couldn't load providers. Check that the daemon is running.</div>
           <button
+            type="button"
             onClick={load}
             className="text-[11px] px-3 py-1.5 rounded transition"
             style={{ border: `1px solid ${colors.cyan}4D`, color: colors.cyan }}
@@ -96,7 +155,19 @@ export function ProvidersSection() {
         <div className="text-xs py-4 text-center" style={{ fontFamily: font.mono, color: colors.textMuted }}>No providers available.</div>
       )}
 
-      {providers.map(p => {
+      <div
+        role="tabpanel"
+        aria-label={activeTab === 'connected' ? 'Connected providers' : 'Available providers'}
+      >
+      {providers.length > 0 && visible.length === 0 && (
+        <div className="text-xs py-4 text-center" style={{ fontFamily: font.body, color: colors.textMuted }}>
+          {activeTab === 'connected'
+            ? 'No keys connected yet. Open Providers and add one — it moves here.'
+            : 'Every listed provider is already connected.'}
+        </div>
+      )}
+
+      {visible.map(p => {
         // The badge names the SOURCE only when it is not the keychain — the
         // default needs no label, and labelling it would bury the one case
         // worth noticing.
@@ -164,6 +235,7 @@ export function ProvidersSection() {
 
           <div className="flex items-center gap-2 mt-3">
             <button
+              type="button"
               onClick={() => setConfiguring(p)}
               className="flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded hover:bg-white/5 transition"
               style={{ border: `1px solid ${colors.border}`, color: colors.textMuted }}
@@ -174,6 +246,7 @@ export function ProvidersSection() {
             </button>
             {p.isConfigured && !p.isDefault && (
               <button
+                type="button"
                 onClick={() => setDefaultProvider(p.name, p.defaultModel)}
                 className="text-[11px] px-3 py-1.5 rounded transition"
                 style={{ border: `1px solid ${colors.cyan}4D`, color: colors.cyan }}
@@ -185,6 +258,7 @@ export function ProvidersSection() {
             )}
             {p.providerType === 'Custom' && (
               <button
+                type="button"
                 onClick={() => handleRemove(p)}
                 disabled={removing === p.name}
                 className="flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded transition disabled:opacity-50 ml-auto"
@@ -209,13 +283,14 @@ export function ProvidersSection() {
         </div>
         );
       })}
+      </div>
 
       {configuring && (
         <ConfigureProviderModal
           provider={configuring}
           secretSources={secretSources}
           onSourcesChanged={loadSecretSources}
-          onClose={() => { setConfiguring(null); loadProviders(); loadSecretSources(); }}
+          onClose={() => closeConfigure(configuring)}
         />
       )}
 

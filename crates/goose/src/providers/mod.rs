@@ -29,6 +29,7 @@ pub mod gemini_cli;
 pub mod gemini_oauth;
 pub mod githubcopilot;
 pub mod google;
+pub mod inflight;
 mod init;
 pub mod inventory;
 pub mod kimicode;
@@ -57,6 +58,7 @@ pub mod toolshim;
 pub mod usage_estimator;
 pub mod utils;
 pub mod venice;
+pub mod wait_status;
 pub mod xai;
 pub mod zai;
 

@@ -159,16 +159,7 @@ mod tests {
                 } else {
                     OracleOutcome::Fail
                 };
-                TaskResult::new(
-                    "t",
-                    "regression",
-                    outcome,
-                    CostReading {
-                        usd: None,
-                        estimated: false,
-                        ledger_rows: 0,
-                    },
-                )
+                TaskResult::new("t", "regression", outcome, CostReading::unknown())
             })
             .collect()
     }

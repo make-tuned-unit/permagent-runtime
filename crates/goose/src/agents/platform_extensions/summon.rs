@@ -1,6 +1,7 @@
 use super::{parse_frontmatter, Source, SourceKind};
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
+use crate::agents::platform_extensions::fanout;
 use crate::agents::subagent_handler::{run_subagent_task, OnMessageCallback, SubagentRunParams};
 use crate::agents::subagent_task_config::{TaskConfig, DEFAULT_SUBAGENT_MAX_TURNS};
 use crate::agents::tool_execution::ToolCallContext;
@@ -69,6 +70,36 @@ pub struct DelegateParams {
     /// If set and resolvable, the subagent identifies as this worker.
     #[serde(default)]
     pub worker_persona: Option<String>,
+}
+
+/// One child of a `delegate_many` fan-out: an ordinary delegate, plus a label
+/// so the aggregate can name it something better than "child 2".
+#[derive(Debug, Deserialize, Default)]
+pub struct FanoutChildParams {
+    #[serde(flatten)]
+    pub delegate: DelegateParams,
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct DelegateManyParams {
+    #[serde(default)]
+    pub tasks: Vec<FanoutChildParams>,
+    /// Children in flight at once. Defaults to
+    /// [`fanout::DEFAULT_FANOUT_CONCURRENCY`]; clamped to the configured cap so
+    /// a caller cannot talk the machine into running eight agents at once.
+    pub max_concurrent: Option<usize>,
+}
+
+/// Everything one child needs, resolved on the caller's side — recipe, routing,
+/// persona — so the concurrency gate holds nothing but the actual run.
+struct PreparedChild {
+    label: String,
+    working_dir: PathBuf,
+    recipe: Recipe,
+    task_config: TaskConfig,
+    routing_receipt: serde_json::Value,
+    persona_override: Option<(String, String)>,
 }
 
 pub struct BackgroundTask {
@@ -380,7 +411,11 @@ impl SummonClient {
     /// `self_knowledge::tests` additionally asserts a real `list_tools` run
     /// for a non-subagent session returns exactly these names.
     pub(crate) fn all_possible_tools() -> Vec<Tool> {
-        vec![Self::create_load_tool(), Self::create_delegate_tool()]
+        vec![
+            Self::create_load_tool(),
+            Self::create_delegate_tool(),
+            Self::create_delegate_many_tool(),
+        ]
     }
 
     fn create_load_tool() -> Tool {
@@ -482,6 +517,289 @@ impl SummonClient {
              Decompose → async delegates → load(taskId) for each → synthesize."
                 .to_string(),
             schema.as_object().unwrap().clone(),
+        )
+    }
+
+    fn create_delegate_many_tool() -> Tool {
+        let child = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "instructions": {"type": "string", "description": "What this child should do."},
+                "source": {"type": "string", "description": "Subrecipe / recipe / agent to run."},
+                "label": {"type": "string", "description": "Short name for this child in the aggregate (e.g. \"security\")."},
+                "parameters": {"type": "object", "description": "Parameters for a source."},
+                "extensions": {"type": "array", "items": {"type": "string"}, "description": "Narrow this child's extensions."},
+                "provider": {"type": "string", "description": "Override LLM provider for this child."},
+                "model": {"type": "string", "description": "Override model for this child."},
+                "temperature": {"type": "number"},
+                "max_turns": {"type": "integer", "minimum": 1},
+                "worker_persona": {"type": "string", "description": "Worker persona key from agent.yaml."}
+            }
+        });
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["tasks"],
+            "properties": {
+                "tasks": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": fanout::MAX_FANOUT_CHILDREN,
+                    "items": child,
+                    "description": "The children to run. Results come back in this order."
+                },
+                "max_concurrent": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "How many children run at once. Defaults to the configured fan-out concurrency."
+                }
+            }
+        });
+
+        Tool::new(
+            "delegate_many",
+            format!(
+                "Fan out to several subagents at once and get every answer back in one call.\n\n\
+                 Use this instead of N separate `delegate` calls when the work splits cleanly: \
+                 review lenses, audits, independent research questions.\n\n\
+                 - At most {} children per call, and only a few run at a time — the rest queue. \
+                 The cap protects the machine; asking for more does not make it faster.\n\
+                 - Results come back IN THE ORDER you listed them, each naming its own model, \
+                 its own subagent id, and what it spent.\n\
+                 - Children cannot coordinate. Partition files strictly, or keep them read-only.\n\
+                 - Cancelling this call cancels the children.",
+                fanout::MAX_FANOUT_CHILDREN
+            ),
+            schema.as_object().unwrap().clone(),
+        )
+    }
+
+    /// Fan out to N subagents with a bounded number in flight, join in order.
+    ///
+    /// Each child is resolved through the SAME path a single `delegate` takes —
+    /// `build_delegate_recipe` then `build_task_config` — so `cost_router::
+    /// delegate`'s precedence applies per child: an explicit provider/model on
+    /// that child wins, then its recipe, then the role pin, then the pack pin,
+    /// and escalation stays opt-in. Ten children do not become ten silent
+    /// escalations to the most expensive row in the knowledge base.
+    async fn handle_delegate_many(
+        &self,
+        session_id: &str,
+        arguments: Option<JsonObject>,
+        cancellation_token: CancellationToken,
+    ) -> Result<CallToolResult, String> {
+        let params: DelegateManyParams = arguments
+            .map(|args| serde_json::from_value(serde_json::Value::Object(args)))
+            .transpose()
+            .map_err(|e| format!("Invalid parameters: {}", e))?
+            .unwrap_or_default();
+
+        if params.tasks.is_empty() {
+            return Err("'tasks' is empty — delegate_many needs at least one child".to_string());
+        }
+        if params.tasks.len() > fanout::MAX_FANOUT_CHILDREN {
+            return Err(format!(
+                "delegate_many takes at most {} children (got {}). More than that is a queue, \
+                 not a fan-out — run them in batches.",
+                fanout::MAX_FANOUT_CHILDREN,
+                params.tasks.len()
+            ));
+        }
+
+        let session = self
+            .context
+            .session_manager
+            .get_session(session_id, false)
+            .await
+            .map_err(|e| format!("Failed to get session: {}", e))?;
+
+        if session.session_type == SessionType::SubAgent {
+            return Err("Delegated tasks cannot spawn further delegations".to_string());
+        }
+
+        // Resolve every child BEFORE any of them runs: a fan-out that fails on
+        // child 7's bad parameters after paying for six children is worse than
+        // one that refuses up front.
+        let working_dir = session.working_dir.clone();
+        let mut prepared: Vec<PreparedChild> = Vec::with_capacity(params.tasks.len());
+        for (index, task) in params.tasks.into_iter().enumerate() {
+            let label = task
+                .label
+                .clone()
+                .unwrap_or_else(|| truncate(&Self::get_task_description(&task.delegate), 40));
+            let mut child = task.delegate;
+            // `async` is meaningless on a child: the fan-out itself is the
+            // asynchrony, and the caller joins here.
+            child.r#async = false;
+            self.validate_delegate_params(&child)
+                .map_err(|e| format!("child {index} ({label}): {e}"))?;
+
+            let recipe = self
+                .build_delegate_recipe(&child, session_id, &working_dir)
+                .await
+                .map_err(|e| format!("child {index} ({label}): {e}"))?;
+            let (task_config, routing) = self
+                .build_task_config(&child, &recipe, &session)
+                .await
+                .map_err(|e| {
+                    format!("child {index} ({label}): failed to build task config: {e}")
+                })?;
+
+            prepared.push(PreparedChild {
+                label,
+                working_dir: working_dir.clone(),
+                recipe,
+                task_config,
+                routing_receipt: routing.receipt_json(),
+                persona_override: Self::resolve_worker_persona(child.worker_persona.as_deref()),
+            });
+        }
+
+        let concurrency = params
+            .max_concurrent
+            .unwrap_or_else(fanout::fanout_concurrency)
+            .clamp(1, fanout::fanout_concurrency().max(1));
+
+        info!(
+            target: "permagentd::brain",
+            children = prepared.len(),
+            concurrency,
+            "delegate_many fan-out starting"
+        );
+
+        let session_manager = self.context.session_manager.clone();
+        let subscribers = Arc::clone(&self.notification_subscribers);
+        let outcomes = fanout::run_bounded(
+            prepared,
+            concurrency,
+            cancellation_token,
+            move |index, child, token| {
+                let session_manager = session_manager.clone();
+                let subscribers = Arc::clone(&subscribers);
+                async move {
+                    let PreparedChild {
+                        label,
+                        working_dir,
+                        recipe,
+                        task_config,
+                        routing_receipt,
+                        persona_override,
+                    } = child;
+
+                    let subagent_session = match session_manager
+                        .create_session(
+                            working_dir,
+                            format!("Fan-out [{index}] {label}"),
+                            SessionType::SubAgent,
+                            GooseMode::Auto,
+                        )
+                        .await
+                    {
+                        Ok(s) => s,
+                        Err(e) => {
+                            return fanout::ChildOutcome::failed(
+                                index,
+                                label,
+                                format!("could not create the subagent session: {e}"),
+                            )
+                        }
+                    };
+                    let subagent_id = subagent_session.id.clone();
+
+                    let (notif_tx, notif_rx) =
+                        tokio::sync::mpsc::unbounded_channel::<ServerNotification>();
+                    Self::spawn_notification_bridge(
+                        notif_rx,
+                        subscribers,
+                        Arc::new(Mutex::new(Vec::new())),
+                    );
+
+                    // Subagents run in Auto for the same reason the single
+                    // delegate path does: nothing forwards an approval prompt
+                    // to the parent, so any other mode hangs.
+                    let agent_config = AgentRunnerConfig::new(
+                        session_manager.clone(),
+                        crate::config::permission::PermissionManager::instance(),
+                        None,
+                        GooseMode::Auto,
+                        true,
+                        crate::agents::GoosePlatform::GooseCli,
+                    );
+
+                    let result = run_subagent_task(SubagentRunParams {
+                        config: agent_config,
+                        recipe,
+                        task_config,
+                        return_last_only: true,
+                        session_id: subagent_session.id,
+                        // The token is derived from the caller's: cancel the
+                        // fan-out and the running children stop too.
+                        cancellation_token: Some(token.clone()),
+                        on_message: None,
+                        notification_tx: Some(notif_tx),
+                        persona_override,
+                    })
+                    .await;
+
+                    let (status, text) = match result {
+                        Ok(text) => (fanout::ChildStatus::Ok, text),
+                        Err(e) if token.is_cancelled() => {
+                            (fanout::ChildStatus::Cancelled, format!("cancelled: {e}"))
+                        }
+                        Err(e) => (
+                            fanout::ChildStatus::Failed,
+                            format!("delegation failed: {e}"),
+                        ),
+                    };
+                    fanout::ChildOutcome {
+                        index,
+                        label,
+                        status,
+                        subagent_id: Some(subagent_id),
+                        model_routing: Some(routing_receipt),
+                        text,
+                    }
+                }
+            },
+        )
+        .await;
+
+        // Per-child spend, read back out of the ledger by each child's own id.
+        let pool = self.context.session_manager.pool_clone().await.ok();
+        let mut costs = Vec::with_capacity(outcomes.len());
+        for outcome in &outcomes {
+            let cost = match (pool.as_ref(), outcome.subagent_id.as_deref()) {
+                (Some(pool), Some(id)) => fanout::subagent_cost(pool, id).await,
+                _ => fanout::SubagentCost::default(),
+            };
+            costs.push(cost);
+        }
+
+        let children_meta: Vec<serde_json::Value> = outcomes
+            .iter()
+            .zip(costs.iter())
+            .map(|(o, c)| {
+                serde_json::json!({
+                    "index": o.index,
+                    "label": o.label,
+                    "status": o.status.as_str(),
+                    "subagent_id": o.subagent_id,
+                    "model_routing": o.model_routing,
+                    "cost": c,
+                })
+            })
+            .collect();
+
+        let mut meta = Meta::new();
+        meta.0.insert(
+            "fanout_children".to_string(),
+            serde_json::Value::Array(children_meta),
+        );
+
+        Ok(
+            CallToolResult::success(vec![Content::text(fanout::render_outcomes(
+                &outcomes, &costs,
+            ))])
+            .with_meta(Some(meta)),
         )
     }
 
@@ -971,7 +1289,7 @@ impl SummonClient {
             .build_delegate_recipe(&params, session_id, &working_dir)
             .await?;
 
-        let task_config = self
+        let (task_config, routing) = self
             .build_task_config(&params, &recipe, &session)
             .await
             .map_err(|e| format!("Failed to build task config: {}", e))?;
@@ -998,7 +1316,8 @@ impl SummonClient {
         let subagent_session = self
             .context
             .session_manager
-            .create_session(
+            .create_session_with_parent(
+                Some(session_id),
                 working_dir,
                 "Delegated task".to_string(),
                 SessionType::SubAgent,
@@ -1034,6 +1353,10 @@ impl SummonClient {
             "subagent_session_id".to_string(),
             serde_json::Value::String(subagent_session_id),
         );
+        // The routing receipt travels with the result so a reader can say which
+        // model this subagent's tokens were billed to, and why it was that one.
+        meta.0
+            .insert("model_routing".to_string(), routing.receipt_json());
 
         match result {
             Ok(text) => {
@@ -1065,6 +1388,53 @@ impl SummonClient {
         }
     }
 
+    /// Instructions a worker cannot act on.
+    ///
+    /// Observed live on 2026-08-25: a GLM-5.3 harness session called
+    /// `delegate` with `{"async": true, "instructions": "placeholder"}` and the
+    /// daemon dutifully started a background task named "placeholder" — a whole
+    /// subagent, a whole session, and a share of the same rate-limited API key,
+    /// spent on nothing. A worker needs a task, and one word is not one.
+    ///
+    /// Deliberately narrow: it rejects the literal filler words and anything
+    /// too short to be a task, and nothing else. Guessing at whether a real
+    /// instruction is *good enough* is not this function's business.
+    fn unusable_instructions(instructions: &str) -> Option<String> {
+        const FILLER: &[&str] = &[
+            "placeholder",
+            "tbd",
+            "todo",
+            "test",
+            "n/a",
+            "none",
+            "...",
+            "instructions",
+            "your instructions here",
+        ];
+        /// Shorter than this is never a task a subagent can carry out.
+        const MIN_MEANINGFUL_CHARS: usize = 20;
+
+        let trimmed = instructions.trim();
+        let normalised = trimmed.trim_matches(|c: char| !c.is_alphanumeric());
+        let folded = normalised.to_ascii_lowercase();
+
+        if trimmed.is_empty() {
+            return Some("'instructions' is empty".to_string());
+        }
+        if FILLER.contains(&folded.as_str()) {
+            return Some(format!(
+                "'instructions' is placeholder text ({trimmed:?}), not a task"
+            ));
+        }
+        if normalised.chars().filter(|c| !c.is_whitespace()).count() < MIN_MEANINGFUL_CHARS {
+            return Some(format!(
+                "'instructions' is too short to delegate ({trimmed:?}) — \
+                 say what the worker should do, in a sentence"
+            ));
+        }
+        None
+    }
+
     fn validate_delegate_params(&self, params: &DelegateParams) -> Result<(), String> {
         if params.instructions.is_none() && params.source.is_none() {
             return Err("Must provide 'instructions' or 'source' (or both)".to_string());
@@ -1077,6 +1447,19 @@ impl SummonClient {
         if let Some(max) = params.max_turns {
             if max < 1 {
                 return Err("'max_turns' must be at least 1".to_string());
+            }
+        }
+
+        // A `source` names a real recipe, which carries its own prompt — only
+        // ad-hoc instructions have to stand on their own.
+        if params.source.is_none() {
+            if let Some(instructions) = params.instructions.as_deref() {
+                if let Some(reason) = Self::unusable_instructions(instructions) {
+                    return Err(format!(
+                        "{reason}. Nothing was started. Send the delegate call again \
+                         with the actual task."
+                    ));
+                }
             }
         }
 
@@ -1280,8 +1663,8 @@ impl SummonClient {
         params: &DelegateParams,
         recipe: &Recipe,
         session: &crate::session::Session,
-    ) -> Result<TaskConfig, anyhow::Error> {
-        let provider = self.resolve_provider(params, recipe, session).await?;
+    ) -> Result<(TaskConfig, crate::cost_router::DelegateRouting), anyhow::Error> {
+        let (provider, routing) = self.resolve_provider(params, recipe, session).await?;
 
         let mut extensions = EnabledExtensionsState::extensions_or_default(
             Some(&session.extension_data),
@@ -1312,7 +1695,7 @@ impl SummonClient {
         let task_config = TaskConfig::new(provider, &session.id, &session.working_dir, extensions)
             .with_max_turns(Some(max_turns));
 
-        Ok(task_config)
+        Ok((task_config, routing))
     }
 
     /// The workflow role a delegate's worker persona plays, for cost routing.
@@ -1324,35 +1707,84 @@ impl SummonClient {
         config.workers.get(key).and_then(|w| w.routing_role())
     }
 
+    /// The spend band that gates a delegate ESCALATION.
+    ///
+    /// FAIL-CLOSED, and deliberately the opposite polarity to
+    /// [`crate::tool_monitor`]'s `budget_verdict_for`: that gate STOPS work, so a
+    /// transient fault must never fabricate a stop and it fails OPEN. This one
+    /// AUTHORIZES extra spend on a pricier model, and a band we cannot read is not
+    /// permission. `None` ⇒ no escalation.
+    async fn escalation_spend_band(
+        &self,
+        session: &crate::session::Session,
+    ) -> Option<crate::cost_router::BudgetBand> {
+        use crate::agents::platform_extensions::orchestrator as orch;
+        let pool = self.context.session_manager.pool_clone().await.ok()?;
+        let task_spent = orch::task_spent_usd(&pool, &session.id).await;
+        let session_spent = orch::session_spent_usd(&pool, &session.id).await;
+        let unpriced = orch::unpriced_calls_in_session(&pool, &session.id).await;
+        let cfg = crate::cost_router::budget::load_budget_config();
+        Some(
+            crate::cost_router::budget::budget_verdict_with_unpriced(
+                task_spent,
+                session_spent,
+                unpriced,
+                &cfg,
+            )
+            .band,
+        )
+    }
+
     async fn resolve_provider(
         &self,
         params: &DelegateParams,
         recipe: &Recipe,
         session: &crate::session::Session,
-    ) -> Result<Arc<dyn crate::providers::base::Provider>, anyhow::Error> {
-        // The objective role→model layer (#730 wiring). If the delegate carries a
-        // worker persona with a workflow role, route to that role's model — the
-        // hand-CONFIGURED mapping first, else the recommender-DERIVED best-fit
-        // pick (ruling 2026-08-18: the cheapest model the user actually
-        // has that clears the role's floor, local or cloud) — slotted after an
-        // explicit param / recipe setting, before the GOOSE_SUBAGENT_* fallback.
-        // Neither ⇒ `None` ⇒ fall through to the current single-model behaviour
-        // (parent/session model). It is NEVER a baked-in vendor default: the
-        // derived map is built only from keyed providers and installed local
-        // models; the tier-pack Opus/Sonnet/Haiku is not reachable from here.
-        // The derived map is only fetched when a role needs it (cached process-
-        // wide; the first fetch may probe the local Ollama daemon, bounded).
+    ) -> Result<
+        (
+            Arc<dyn crate::providers::base::Provider>,
+            crate::cost_router::DelegateRouting,
+        ),
+        anyhow::Error,
+    > {
+        // The role→model layer. If the delegate carries a worker persona with a
+        // workflow role, route to that role's model by the precedence in
+        // `cost_router::delegate`: role pin (`PERMAGENT_ROLE_*`) → pack pin
+        // (`PERMAGENT_PACK_*`) → cost-router escalation (OPT-IN only) → the
+        // session's own pair. Slotted after an explicit param / recipe setting and
+        // before the `GOOSE_SUBAGENT_*` fallback, as before.
+        //
+        // What changed on 2026-08-25 (measured; see the `delegate` module note):
+        // the `PERMAGENT_PACK_*` pins were not read here at all, and with no pin
+        // the DERIVED best-fit map silently escalated across providers — an
+        // `ANTHROPIC_API_KEY` alone was enough to route every EDIT/ORCHESTRATE/
+        // REVIEW delegate of a gpt-5.4-mini or glm-5.3 session onto
+        // `anthropic/claude-fable-5`, the priciest row in the knowledge base. A
+        // subagent must never silently run on a family the operator did not
+        // configure for this session, so escalation is now behind
+        // `PERMAGENT_DELEGATE_ALLOW_ESCALATION` (default off), bounded to
+        // configured providers, gated on the spend caps, and always on the record.
         let role = Self::role_for_persona(params.worker_persona.as_deref());
-        let role_model = match role {
-            Some(r) => match crate::cost_router::role_model(r) {
-                Some(rm) => Some((rm, crate::cost_router::RoleSource::Configured)),
-                None => crate::cost_router::derived_role_map()
-                    .await
-                    .get(r)
-                    .map(|(rm, _)| (rm.clone(), crate::cost_router::RoleSource::Derived)),
-            },
-            None => None,
+        let session_pair = session.provider_name.as_deref().map(|p| {
+            (
+                p,
+                session
+                    .model_config
+                    .as_ref()
+                    .map(|m| m.model_name.as_str())
+                    .unwrap_or("the session model"),
+            )
+        });
+        // The spend band is only read when it can change the answer: with
+        // escalation off the `Disabled` refusal fires first, and a pinned dispatch
+        // must not pay a DB round trip for a gate it will not reach.
+        let spend = if crate::cost_router::delegate_escalation_allowed() {
+            self.escalation_spend_band(session).await
+        } else {
+            None
         };
+        let routing = crate::cost_router::delegate_routing_live(role, spend, session_pair).await;
+        let role_model = routing.role_model.clone().map(|rm| (rm, routing.source));
 
         // The review gate's cross-vendor routing sits HERE for the `reviewer`
         // persona: `reviewer_dispatch` composes `reviewer_routing` with the
@@ -1378,16 +1810,33 @@ impl SummonClient {
                 .and_then(|rm| role_model.as_ref().map(|(_, source)| (rm, *source))),
             None => role_model,
         };
-        if let (Some(r), Some((rm, source))) = (role, role_model.as_ref()) {
-            tracing::debug!(
-                target: "permagentd::brain",
-                role = r.as_str(),
-                provider = %rm.provider,
-                model = %rm.model,
-                source = source.as_str(),
-                "subagent role→model resolved",
-            );
-        }
+        // The routing receipt (#1090's pattern): one line naming the model and
+        // WHY, at info — a delegate that changes model is a spend decision and
+        // must not be discoverable only at debug. The same line is returned to the
+        // caller in `DelegateRouting::receipt` and rides the tool result's `_meta`
+        // as `model_routing`, so the status row and the ledger reader can show it.
+        tracing::info!(
+            target: "permagentd::brain",
+            role = role.map(|r| r.as_str()).unwrap_or("none"),
+            source = routing.source.as_str(),
+            provider = routing
+                .role_model
+                .as_ref()
+                .map(|rm| rm.provider.as_str())
+                .unwrap_or_else(|| session.provider_name.as_deref().unwrap_or("session")),
+            model = routing
+                .role_model
+                .as_ref()
+                .map(|rm| rm.model.as_str())
+                .unwrap_or_else(|| session
+                    .model_config
+                    .as_ref()
+                    .map(|m| m.model_name.as_str())
+                    .unwrap_or("session")),
+            refused = routing.refused.as_ref().map(|(_, why)| why.as_str()),
+            "{}",
+            routing.receipt,
+        );
         let role_model = role_model.map(|(rm, _)| rm);
 
         let recipe_provider = recipe
@@ -1509,7 +1958,7 @@ impl SummonClient {
             }
         }
 
-        Ok(provider)
+        Ok((provider, routing))
     }
 
     fn resolve_max_turns(&self, session: &crate::session::Session) -> usize {
@@ -1618,7 +2067,7 @@ impl SummonClient {
             .build_delegate_recipe(&params, session_id, &working_dir)
             .await?;
 
-        let task_config = self
+        let (task_config, routing) = self
             .build_task_config(&params, &recipe, &session)
             .await
             .map_err(|e| format!("Failed to build task config: {}", e))?;
@@ -1647,7 +2096,8 @@ impl SummonClient {
         let subagent_session = self
             .context
             .session_manager
-            .create_session(
+            .create_session_with_parent(
+                Some(session_id),
                 working_dir,
                 description.clone(),
                 SessionType::SubAgent,
@@ -1712,10 +2162,13 @@ impl SummonClient {
             .await
             .insert(task_id.clone(), task);
 
+        // The routing receipt on the start line: a background delegate spends money
+        // on a model the caller never named, so the caller is told which one.
         let content = vec![Content::text(format!(
             "Task {} started in background: \"{}\"\n\
+             {}\n\
              Continue with other work. When you need the result, use load(source: \"{}\").",
-            task_id, description, task_id
+            task_id, description, routing.receipt, task_id
         ))];
         Ok((content, task_id))
     }
@@ -1745,7 +2198,7 @@ impl McpClientTrait for SummonClient {
 
         if is_subagent {
             // Subagents must not recurse into further delegation.
-            tools.retain(|t| t.name.as_ref() != "delegate");
+            tools.retain(|t| t.name.as_ref() != "delegate" && t.name.as_ref() != "delegate_many");
         }
 
         Ok(ListToolsResult {
@@ -1771,6 +2224,18 @@ impl McpClientTrait for SummonClient {
                     error
                 ))])),
             },
+            "delegate_many" => {
+                match self
+                    .handle_delegate_many(session_id, arguments, cancellation_token)
+                    .await
+                {
+                    Ok(result) => Ok(result),
+                    Err(error) => Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Error: {}",
+                        error
+                    ))])),
+                }
+            }
             "delegate" => {
                 match self
                     .handle_delegate(session_id, arguments, cancellation_token)
@@ -2028,6 +2493,69 @@ mod tests {
     use std::fs;
     use std::sync::Arc;
     use tempfile::TempDir;
+
+    /// The live call that started this: a whole background subagent spun up on
+    /// the word "placeholder".
+    #[test]
+    fn placeholder_instructions_are_refused() {
+        for filler in [
+            "placeholder",
+            "Placeholder",
+            "  placeholder  ",
+            "placeholder.",
+            "TBD",
+            "todo",
+            "n/a",
+            "...",
+            "",
+            "   ",
+            "fix it",
+        ] {
+            assert!(
+                SummonClient::unusable_instructions(filler).is_some(),
+                "{filler:?} should not start a worker"
+            );
+        }
+    }
+
+    /// A real task must still get through, including a short but specific one.
+    #[test]
+    fn a_real_task_is_delegated() {
+        for task in [
+            "Run the voice latency benchmark and report the p95",
+            "Update crates/goose/src/providers/zai.rs to map cached tokens",
+            "Read PR 1101 and summarise what its classifier changed",
+        ] {
+            assert_eq!(
+                SummonClient::unusable_instructions(task),
+                None,
+                "{task:?} should be delegated"
+            );
+        }
+    }
+
+    /// A recipe named by `source` carries its own prompt, so its instructions
+    /// field is free to be a note rather than the whole task.
+    #[test]
+    fn the_guard_only_applies_to_ad_hoc_instructions() {
+        let ext = SummonClient::new(create_test_context()).unwrap();
+        let with_source = DelegateParams {
+            instructions: Some("placeholder".to_string()),
+            source: Some("some-recipe".to_string()),
+            ..Default::default()
+        };
+        assert!(ext.validate_delegate_params(&with_source).is_ok());
+
+        let ad_hoc = DelegateParams {
+            instructions: Some("placeholder".to_string()),
+            ..Default::default()
+        };
+        let error = ext
+            .validate_delegate_params(&ad_hoc)
+            .expect_err("ad-hoc placeholder instructions must be refused");
+        assert!(error.contains("placeholder text"), "{error}");
+        assert!(error.contains("Nothing was started"), "{error}");
+    }
 
     fn create_test_context() -> PlatformExtensionContext {
         PlatformExtensionContext {
@@ -2514,6 +3042,10 @@ You review code."#;
             .unwrap();
         let names: Vec<_> = result.tools.iter().map(|t| t.name.as_ref()).collect();
         assert!(names.contains(&"load") && names.contains(&"delegate"));
+        assert!(
+            names.contains(&"delegate_many"),
+            "the bounded fan-out must be offered next to the single delegate"
+        );
 
         let ctx = ToolCallContext::new("test".to_string(), None, None);
         let result = client
@@ -2521,6 +3053,73 @@ You review code."#;
             .await
             .unwrap();
         assert!(result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn delegate_many_refuses_more_children_than_the_cap() {
+        // Resolution happens before any child runs, so a fan-out that is too
+        // wide is refused without having paid for the ones that fit.
+        let client = SummonClient::new(create_test_context()).unwrap();
+        let tasks: Vec<serde_json::Value> = (0..(fanout::MAX_FANOUT_CHILDREN + 1))
+            .map(|i| {
+                serde_json::json!({
+                    "instructions": format!("review the {i}th module for swallowed errors"),
+                })
+            })
+            .collect();
+        let args = serde_json::json!({ "tasks": tasks })
+            .as_object()
+            .unwrap()
+            .clone();
+
+        let err = client
+            .handle_delegate_many("test", Some(args), CancellationToken::new())
+            .await
+            .expect_err("a fan-out past the cap must be refused");
+        assert!(err.contains("at most"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn delegate_many_refuses_an_empty_fan_out() {
+        let client = SummonClient::new(create_test_context()).unwrap();
+        let args = serde_json::json!({ "tasks": [] })
+            .as_object()
+            .unwrap()
+            .clone();
+        let err = client
+            .handle_delegate_many("test", Some(args), CancellationToken::new())
+            .await
+            .expect_err("zero children is not a fan-out");
+        assert!(err.contains("at least one child"), "{err}");
+    }
+
+    #[test]
+    fn a_child_carries_the_same_routing_knobs_as_a_single_delegate() {
+        // The per-child provider/model must survive parsing, because they are
+        // level 1 of `cost_router::delegate`'s precedence — the operator's
+        // explicit pin, and the thing a fan-out most easily loses.
+        let parsed: DelegateManyParams = serde_json::from_value(serde_json::json!({
+            "max_concurrent": 2,
+            "tasks": [
+                {"instructions": "audit the auth paths for authz gaps", "label": "security",
+                 "provider": "ollama", "model": "qwen3-coder", "async": true},
+                {"instructions": "look for swallowed errors and missing tests", "worker_persona": "debugger"}
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(parsed.tasks.len(), 2);
+        assert_eq!(parsed.max_concurrent, Some(2));
+        assert_eq!(parsed.tasks[0].label.as_deref(), Some("security"));
+        assert_eq!(parsed.tasks[0].delegate.provider.as_deref(), Some("ollama"));
+        assert_eq!(
+            parsed.tasks[0].delegate.model.as_deref(),
+            Some("qwen3-coder")
+        );
+        assert_eq!(
+            parsed.tasks[1].delegate.worker_persona.as_deref(),
+            Some("debugger")
+        );
     }
 
     #[test]
@@ -2566,7 +3165,7 @@ You review code."#;
         let client = SummonClient::new(context).unwrap();
 
         let params = DelegateParams {
-            instructions: Some("do something".to_string()),
+            instructions: Some("run the full test suite and report failures".to_string()),
             max_turns: Some(0),
             ..Default::default()
         };
@@ -2580,7 +3179,7 @@ You review code."#;
         let client = SummonClient::new(context).unwrap();
 
         let params = DelegateParams {
-            instructions: Some("do something".to_string()),
+            instructions: Some("run the full test suite and report failures".to_string()),
             max_turns: Some(5),
             ..Default::default()
         };

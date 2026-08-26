@@ -435,9 +435,15 @@ impl Agent {
     /// `cost_router::decide_hold` — the same pure decision goal dispatch makes.
     /// Safe on ordinary conversation because the guard only consults that
     /// decision when the session actually wrote something.
+    ///
+    /// `ReviewerMandate` runs second: it refuses to let a turn that changed
+    /// files end without an independent, cross-family reviewer having been
+    /// asked (or a `Park` explaining why none could be). Same applicability
+    /// gate as `PrematureDoneGuard` — ordinary conversation never triggers it.
     fn create_after_turn_manager() -> crate::after_turn::AfterTurnManager {
         let mut manager = crate::after_turn::AfterTurnManager::new();
         manager.add_hook(Box::new(crate::after_turn::PrematureDoneGuard::new()));
+        manager.add_hook(Box::new(crate::after_turn::ReviewerMandate::new()));
         manager
     }
 
@@ -1878,6 +1884,10 @@ impl Agent {
                 let mut tools_updated = false;
                 let mut did_recovery_compact_this_iteration = false;
                 let mut did_switch_provider_this_iteration = false;
+                // Tokens/tools shown to the user this stream: after this flips,
+                // a transient error must not silent-switch (the user already
+                // saw a partial answer). Billing/auth still announce.
+                let mut stream_committed = false;
                 let mut exit_chat = false;
 
                 // Track whether this provider turn has already emitted visible
@@ -1930,6 +1940,7 @@ impl Agent {
                             }
 
                             if let Some(response) = response {
+                                stream_committed = true;
                                 // Provider-side permission parks (claude-code /
                                 // ACP subprocesses in approve/smart_approve):
                                 // the provider has yielded an ActionRequired
@@ -2362,6 +2373,34 @@ impl Agent {
                             #[cfg(feature = "telemetry")]
                             crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
                             error!("Error: {}", provider_err);
+                            if crate::cost_router::fallback::may_silent_precommit_failover(
+                                stream_committed,
+                                provider_err,
+                            ) && !permanent_failure_fallback_used
+                            {
+                                let failed_provider = match self.provider().await {
+                                    Ok(p) => p.get_name().to_string(),
+                                    Err(_) => "the model provider".to_string(),
+                                };
+                                if self
+                                    .switch_to_permanent_failure_fallback(
+                                        &session_config.id,
+                                        &failed_provider,
+                                    )
+                                    .await
+                                    .is_some()
+                                {
+                                    tracing::info!(
+                                        target: "permagent::cost_router",
+                                        session_id = %session_config.id,
+                                        from_provider = %failed_provider,
+                                        "silent pre-commit failover after a transient network error"
+                                    );
+                                    permanent_failure_fallback_used = true;
+                                    did_switch_provider_this_iteration = true;
+                                    break;
+                                }
+                            }
                             yield AgentEvent::Message(
                                 Message::assistant().with_text(
                                     format!("{provider_err}\n\nPlease resend your message to try again.")
@@ -2433,6 +2472,39 @@ impl Agent {
                             state_guard.mark_error();
                             break;
                         }
+                        Err(ref provider_err @ ProviderError::RateLimitExceeded { .. }) => {
+                            #[cfg(feature = "telemetry")]
+                            crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
+                            error!("Error: {}", provider_err);
+                            // By the time this arm runs the retry layer has already
+                            // waited out its whole budget (see
+                            // `providers::retry::RATE_LIMIT_MAX_RETRIES`), so there is
+                            // nothing left to try automatically.
+                            //
+                            // What it must NOT do is answer as the assistant. Until
+                            // 2026-08-25 a spent rate limit became "Ran into this
+                            // error: …" in the assistant's own voice, which is wrong
+                            // twice over: it reads as the model speaking, and it is
+                            // then fed back into the model's context on the next turn
+                            // as something the model said. A system notification says
+                            // the same thing to the user and is dropped at format time.
+                            let provider_id = match self.provider().await {
+                                Ok(provider) => provider.get_name().to_string(),
+                                Err(_) => String::new(),
+                            };
+                            let message = Message::assistant().with_system_notification(
+                                SystemNotificationType::InlineMessage,
+                                format!(
+                                    "{} — waited and retried, and it is still limited. \
+                                     Your message was not sent; send it again when the limit clears.",
+                                    crate::providers::wait_status::rate_limit_headline(&provider_id),
+                                ),
+                            );
+                            persist_turn_ending_message(&session_manager, &session_config.id, &message).await;
+                            yield AgentEvent::Message(message);
+                            state_guard.mark_error();
+                            break;
+                        }
                         Err(ref provider_err @ ProviderError::RequestFailed(_)) => {
                             #[cfg(feature = "telemetry")]
                             crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
@@ -2453,6 +2525,34 @@ impl Agent {
                             #[cfg(feature = "telemetry")]
                             crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
                             error!("Error: {}", provider_err);
+                            if crate::cost_router::fallback::may_silent_precommit_failover(
+                                stream_committed,
+                                provider_err,
+                            ) && !permanent_failure_fallback_used
+                            {
+                                let failed_provider = match self.provider().await {
+                                    Ok(p) => p.get_name().to_string(),
+                                    Err(_) => "the model provider".to_string(),
+                                };
+                                if self
+                                    .switch_to_permanent_failure_fallback(
+                                        &session_config.id,
+                                        &failed_provider,
+                                    )
+                                    .await
+                                    .is_some()
+                                {
+                                    tracing::info!(
+                                        target: "permagent::cost_router",
+                                        session_id = %session_config.id,
+                                        from_provider = %failed_provider,
+                                        "silent pre-commit failover after a transient provider error"
+                                    );
+                                    permanent_failure_fallback_used = true;
+                                    did_switch_provider_this_iteration = true;
+                                    break;
+                                }
+                            }
                             let message = Message::assistant().with_text(
                                 format!("Ran into this error: {provider_err}.\n\nPlease retry if you think this is a transient or recoverable error.")
                             );

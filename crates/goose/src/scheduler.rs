@@ -1966,6 +1966,28 @@ async fn execute_job(
     persona: Option<crate::config::agent_identity::SharedPersona>,
     agent_config: Option<crate::config::agent_identity::SharedAgentConfig>,
 ) -> Result<String> {
+    crate::providers::inflight::background(execute_job_inner(
+        job,
+        jobs,
+        job_id,
+        cancel_token,
+        brain,
+        persona,
+        agent_config,
+    ))
+    .await
+}
+
+#[allow(clippy::too_many_lines)]
+async fn execute_job_inner(
+    job: ScheduledJob,
+    jobs: Arc<Mutex<JobsMap>>,
+    job_id: String,
+    cancel_token: CancellationToken,
+    brain: Option<crate::brain_handle::SafeBrain>,
+    persona: Option<crate::config::agent_identity::SharedPersona>,
+    agent_config: Option<crate::config::agent_identity::SharedAgentConfig>,
+) -> Result<String> {
     if job.source.is_empty() {
         return Ok(job.id.to_string());
     }

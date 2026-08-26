@@ -100,6 +100,22 @@ describe('the verify control', () => {
     expect(v).toContain('Could not run the check');
     expect(v).toMatch(/\.finally\(\(\) => setBusy\(false\)\)/);
   });
+
+  // REGRESSION. A pass moves the card between two lists (Actions →
+  // Completed), so `verify()` patching only its own `result` state left a
+  // verified card visibly stuck in the suggestion list — the daemon had the
+  // right answer and nothing on screen ever asked for it again. Mirrors "the
+  // archive" describe's pin on `move()`'s `onChanged()` below.
+  it('refetches the board on a pass, the same way move() does', () => {
+    const v = fn('ActionVerify');
+    const verify = v.slice(v.indexOf('const verify = useCallback'));
+    const body = verify.slice(0, verify.indexOf('}, [projectId'));
+    expect(body).toContain('onChanged()');
+    // Not unconditional: a failed or self-attest-eligible check leaves the
+    // card exactly where it is, so a fetch that did not verify has nothing to
+    // refetch for.
+    expect(body).toMatch(/if \(res\.verified\) onChanged\(\)/);
+  });
 });
 
 describe('how it was verified is shown, not just that it was', () => {

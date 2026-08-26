@@ -23,10 +23,21 @@ use std::path::Path;
 use std::process::Stdio;
 
 /// What the verify pass concluded.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct VerifyOutcome {
     /// `None` when nothing could confirm the change.
     pub verified_by: Option<&'static str>,
+    /// The full sha of the commit that earned a `git` verification.
+    ///
+    /// Carried out of the check as DATA rather than left inside its prose,
+    /// because the caller persists it: a sha that exists only inside a rendered
+    /// English sentence cannot be stored, linked, or compared, and re-running
+    /// the check later searches `--since=created_at` and can honestly name a
+    /// different, later commit than the one that actually verified the action.
+    pub commit: Option<String>,
+    /// The passing check's own sentence, verbatim — the evidence the card shows
+    /// under a completed action.
+    pub detail: Option<String>,
     pub checks: Vec<Check>,
 }
 
@@ -542,28 +553,39 @@ fn missing_detail(commits: &[Commit], named: &[String]) -> String {
 }
 
 /// `prompt` actions: a commit in the project's repo since the action was issued.
-async fn verify_git(project: &Project, action: &GrowthActionRow) -> Check {
+///
+/// Returns the check AND, when it passed, the full sha of the commit that made
+/// it pass — the caller persists that sha, and re-deriving it from the check's
+/// prose later would be parsing English to recover a fact this function already
+/// had.
+async fn verify_git(project: &Project, action: &GrowthActionRow) -> (Check, Option<String>) {
     const ID: &str = "git_commit";
     const LABEL: &str = "A commit in this project's repo since the action was issued";
 
     let Some(root) = project.root_path.as_deref().filter(|p| !p.is_empty()) else {
-        return fail(
-            ID,
-            LABEL,
-            "This project has no root path, so there is no repo to read. Set the project's local \
-             folder, or verify another way.",
+        return (
+            fail(
+                ID,
+                LABEL,
+                "This project has no root path, so there is no repo to read. Set the project's \
+                 local folder, or verify another way.",
+            ),
+            None,
         );
     };
     let root = Path::new(root);
     // "not a repo" must render as CANNOT VERIFY, never as NOT DONE.
     if git(root, &["rev-parse", "--git-dir"]).await.is_none() {
-        return fail(
-            ID,
-            LABEL,
-            format!(
-                "{} is not a git repository, so commits cannot be read.",
-                root.display()
+        return (
+            fail(
+                ID,
+                LABEL,
+                format!(
+                    "{} is not a git repository, so commits cannot be read.",
+                    root.display()
+                ),
             ),
+            None,
         );
     }
 
@@ -576,18 +598,24 @@ async fn verify_git(project: &Project, action: &GrowthActionRow) -> Check {
     )
     .await
     else {
-        return fail(ID, LABEL, "git log failed, so commits could not be read.");
+        return (
+            fail(ID, LABEL, "git log failed, so commits could not be read."),
+            None,
+        );
     };
     let commits = parse_commits(&raw);
     if commits.is_empty() {
-        return fail(
-            ID,
-            LABEL,
-            format!(
-                "No commits in {} since the action was issued ({}).",
-                root.display(),
-                action.created_at
+        return (
+            fail(
+                ID,
+                LABEL,
+                format!(
+                    "No commits in {} since the action was issued ({}).",
+                    root.display(),
+                    action.created_at
+                ),
             ),
+            None,
         );
     }
 
@@ -597,16 +625,23 @@ async fn verify_git(project: &Project, action: &GrowthActionRow) -> Check {
         action.artifact.as_deref().unwrap_or_default()
     ));
     if named.is_empty() {
-        // Honest about the weaker claim: any commit, not a targeted one.
-        return pass(ID, LABEL, untargeted_detail(&commits));
+        // Honest about the weaker claim: any commit, not a targeted one — but
+        // the commit it IS about is still named, so the card can link it.
+        return (
+            pass(ID, LABEL, untargeted_detail(&commits)),
+            Some(commits[0].sha.clone()),
+        );
     }
 
     match touches_named_path(&commits, &named) {
         // A pass has to say what it found. A bare green tick is indistinguishable
         // from a check that matched the wrong thing, and the user cannot audit a
         // verification whose evidence it never shows them.
-        Some((commit, want, got)) => pass(ID, LABEL, passing_detail(commit, &want, &got)),
-        None => fail(ID, LABEL, missing_detail(&commits, &named)),
+        Some((commit, want, got)) => (
+            pass(ID, LABEL, passing_detail(commit, &want, &got)),
+            Some(commit.sha.clone()),
+        ),
+        None => (fail(ID, LABEL, missing_detail(&commits, &named)), None),
     }
 }
 
@@ -794,37 +829,50 @@ pub async fn verify(
 
     let mut checks = Vec::new();
     let mut verified_by = None;
+    let mut commit = None;
+    let mut detail = None;
     for strategy in order {
         if *strategy == VERIFIED_BY_CONTENT && !can_check_content(expect_substring) {
             continue;
         }
-        let check = match *strategy {
+        let (check, sha) = match *strategy {
             VERIFIED_BY_GIT => verify_git(project, action).await,
-            VERIFIED_BY_EVENT => verify_event(pool, &project.id, action).await,
-            _ => verify_content(project, expect_substring).await,
+            VERIFIED_BY_EVENT => (verify_event(pool, &project.id, action).await, None),
+            _ => (verify_content(project, expect_substring).await, None),
         };
+        // FIRST pass wins, and it wins for the evidence too. The strategies are
+        // tried in preference order, so a later one that also passes is a
+        // weaker corroboration, not the thing that verified the action — and
+        // recording its sentence would attribute the verification to the wrong
+        // check.
         if check.passed && verified_by.is_none() {
             verified_by = Some(match *strategy {
                 VERIFIED_BY_GIT => VERIFIED_BY_GIT,
                 VERIFIED_BY_EVENT => VERIFIED_BY_EVENT,
                 _ => VERIFIED_BY_CONTENT,
             });
+            commit = sha;
+            detail = Some(check.detail.clone());
         }
         checks.push(check);
     }
 
     if verified_by.is_none() && self_attested {
-        checks.push(pass(
+        let attestation = pass(
             "self_attested",
             "You told me it landed",
             "Nothing could be confirmed automatically, so this is recorded as your word. The card \
              says so, and it is a weaker claim than a commit or a live-page match.",
-        ));
+        );
+        detail = Some(attestation.detail.clone());
+        checks.push(attestation);
         verified_by = Some(VERIFIED_BY_SELF);
     }
 
     VerifyOutcome {
         verified_by,
+        commit,
+        detail,
         checks,
     }
 }

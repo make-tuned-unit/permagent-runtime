@@ -718,6 +718,7 @@ mod tests {
             baseline_commit: baseline,
             timeout,
             output_tx: None,
+            parent_session_id: None,
         }
     }
 

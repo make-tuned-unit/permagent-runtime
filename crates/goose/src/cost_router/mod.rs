@@ -40,6 +40,7 @@ pub mod best_of_n;
 pub mod budget;
 pub mod cache;
 pub mod cheap;
+pub mod delegate;
 pub mod derived;
 pub mod escalation;
 pub mod fallback;
@@ -73,6 +74,11 @@ pub use cheap::{
     build_ladder, default_anchor, discover_priced_candidates, is_key_configured, load_ladder,
     reference_cost_for, CheapCandidate, CheapLadder, PricedCandidate,
 };
+pub use delegate::{
+    decide_delegate_model, delegate_routing, delegate_routing_live,
+    escalation_allowed as delegate_escalation_allowed, DelegateRouting, DelegateSource,
+    EscalationRefusal, KEY_ALLOW_ESCALATION,
+};
 pub use derived::{
     config_key_affects_derived_map, derive_role_map, derived_role_map, invalidate_derived_role_map,
     model_routing_receipt, DerivedRoleMap, Provenance, RoleSource, DERIVED_ROLE_MAP_TTL,
@@ -91,7 +97,8 @@ pub use mesh::{
     gate as mesh_gate, MeshGateInputs, MeshIneligible, MeshRoute, MeshWorkload, PoolHealth,
 };
 pub use packs::{
-    load_packs, packs_from, resolve as resolve_model, role_for_tier, ModelPack, ModelPacks, Role,
+    configured_pack_pin, load_packs, pack_pin, pack_role_for_workflow_role, packs_from,
+    resolve as resolve_model, role_for_tier, ModelPack, ModelPacks, Role,
 };
 pub use recommend::{
     available_from, discover_available_models, discover_available_models_async,
@@ -108,14 +115,14 @@ pub use review_gate::{
 };
 pub use review_gate::{build_rubric_prompt, REVIEW_RUBRIC_SYSTEM_PROMPT};
 pub use reviewer_pick::{
-    family_of, reviewer_spend_gate, select_reviewer, ReviewerPick, ReviewerSelection,
-    ReviewerSource, SpendDecision, NO_REVIEWER_AVAILABLE, REVIEWER_MIN_ORCHESTRATION,
-    REVIEWER_STRONG_ORCHESTRATION, SMALL_DIFF_LINES,
+    family_of, model_is_retired, reviewer_spend_gate, select_reviewer, ReviewerPick,
+    ReviewerSelection, ReviewerSource, SpendDecision, NO_REVIEWER_AVAILABLE,
+    REVIEWER_MIN_ORCHESTRATION, REVIEWER_STRONG_ORCHESTRATION, SMALL_DIFF_LINES,
 };
 pub use role_map::{
     cache_guard_should_warn, clear_role_model, configured as configured_role_models, derive_role,
     mappings_to_persist, resolve_role_model, resolve_role_model_or_derived, role_model,
-    role_model_or_derived, set_role_model, RoleModel,
+    role_model_or_derived, set_role_model, should_prompt_role_routing, RoleModel,
 };
 pub use snapshot::{RoutingSnapshot, ROUTING_SNAPSHOT_KEY};
 pub use tier::{
@@ -211,10 +218,15 @@ pub const COST_OPTIMIZER_FEATURE: crate::agents::self_knowledge::FeatureDescript
                        when nothing clears it — never a built-in vendor default. The pick comes \
                        from an objective recommender using measured reliability and price, not \
                        vendor preference, and each goal card's routing receipt says whether the \
-                       model was configured or derived. Point them at `permagent packs recommend` \
-                       to see the best-fit-per-role suggestion, and `permagent packs set` / \
-                       `apply` to pin a role by hand.",
-                open_surface: None,
+                       model was configured or derived. Point them at the Apply recommended \
+                       routing button — it appears in chat, on the Build cost line, and as the \
+                       first section of Settings → Models — so they do not have to know \
+                       `permagent packs apply` exists. The CLI (`permagent packs set` / `apply`) \
+                       is still there for operators who prefer it.",
+                open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
+                    tab: "Settings",
+                    section: Some("models"),
+                }),
                 confirm: None,
             },
         ],

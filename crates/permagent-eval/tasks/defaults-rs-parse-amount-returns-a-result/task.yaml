@@ -1,0 +1,17 @@
+id: defaults-rs-parse-amount-returns-a-result
+title: "parse_amount returns a Result instead of panicking"
+category: model-defaults-rs
+max_turns: 25
+harness_timeout_secs: 600
+oracle_timeout_secs: 180
+test: [bash, oracle_check.sh]
+# The oracle is a shell script, so the Python/Node import allowlist does
+# not apply; the overlay still makes it untamperable by the agent.
+deliverables: []
+# lang=rs difficulty=hard needs_repo_map=false needs_test_run=false
+prompt: |
+  `parse_amount` panics on bad input instead of letting its callers handle the
+  problem, which means a single malformed amount anywhere in an order can take
+  down the whole request. Change it to return a `Result` instead of panicking,
+  and update `total_order_cents` and `price_after_discount` (and anything else
+  that calls it) so a bad amount turns into an error result instead of a crash.

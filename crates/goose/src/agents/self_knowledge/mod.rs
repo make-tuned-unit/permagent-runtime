@@ -163,6 +163,10 @@ pub static WORKER_DESCRIPTORS: &[FeatureDescriptor] = &[
     crate::strix::SELF_KNOWLEDGE_FEATURE,
     crate::agents::platform_extensions::finance::SELF_KNOWLEDGE_FEATURE,
     crate::agents::platform_extensions::forecaster::SELF_KNOWLEDGE_FEATURE,
+    // Render-gated on `council_enabled` (Settings → Features, default OFF): a
+    // multi-provider debate that spends every connected chat model is switched
+    // on deliberately, and until then the brief stays byte-for-byte identical.
+    crate::council::SELF_KNOWLEDGE_FEATURE,
 ];
 
 /// The Git Steward's worker-descriptor id. The descriptor itself spells the id
@@ -220,6 +224,7 @@ impl WorkerGate {
             "strix_enabled" => flags.strix_enabled,
             "initiative_enabled" => flags.initiative_enabled,
             STEWARD_SCAN_ENABLED_KEY => flags.steward_scan_enabled,
+            "council_enabled" => flags.council_enabled,
             _ => false,
         }
     }
@@ -242,6 +247,7 @@ pub fn worker_gate(descriptor_id: &str) -> Option<WorkerGate> {
         id if id == crate::playbook::PLAYBOOK_FEATURE_ID => gate("playbook_enabled", true),
         id if id == crate::concierge::CONCIERGE_FEATURE_ID => gate("concierge_enabled", true),
         id if id == crate::strix::STRIX_FEATURE_ID => gate("strix_enabled", true),
+        id if id == crate::council::AGENT_ID => gate("council_enabled", true),
         // These two are ALWAYS described: their descriptors report the real
         // on/off switch as a state label, which is honest without hiding them.
         INITIATIVE_FEATURE_ID => gate("initiative_enabled", false),
@@ -331,6 +337,11 @@ pub fn worker_live_state_for(
         } else {
             "off (strix_enabled=false)".to_string()
         }),
+        "council" => Some(if flags.council_enabled {
+            "on — weekly Sunday-night debate across connected chat providers; council_status is the live query, council_report the last digest, council_convene to run one".to_string()
+        } else {
+            "off (council_enabled=false) — flip Settings → Features; council_status still answers seats and the last report".to_string()
+        }),
         _ => None,
     }
 }
@@ -406,6 +417,7 @@ pub struct FeatureFlags {
     /// live-state line would move the line counts the canonical snapshot tests
     /// pin.
     pub steward_scan_enabled: bool,
+    pub council_enabled: bool,
 }
 
 impl FeatureFlags {
@@ -423,6 +435,7 @@ impl FeatureFlags {
             steward_scan_enabled: crate::config::Config::global()
                 .get_param::<bool>(STEWARD_SCAN_ENABLED_KEY)
                 .unwrap_or(false),
+            council_enabled: crate::council::is_enabled(),
         }
     }
 }
@@ -452,6 +465,19 @@ pub struct SelfKnowledgeBuilder {
     /// read is indistinguishable from a clean slate, and Henry would tell the
     /// user "nothing to report" on the strength of a query that never ran.
     pub agent_briefings: Option<Vec<BriefingLine>>,
+    /// The extensions THIS session actually declared, when it declared an
+    /// explicit list at all. `Some(names)` scopes the `## Tools you can call`
+    /// section to those names — a recipe/CLI session (e.g. the coding harness
+    /// with 2 extensions) gets an inventory sized to what it can reach,
+    /// instead of all ~33 registered platform extensions. `None` renders the
+    /// full inventory, unfiltered — this is the default and it is what every
+    /// daemon (`GoosePlatform::GooseDesktop`) session gets: Aria's resident
+    /// chat is a product contract to describe everything Permagent can do,
+    /// not just what happens to be loaded this turn. See #1090 — a captured
+    /// coding-harness prompt buried its repo map at 91% depth behind a
+    /// 69KB inventory of tools (finance, voice, 31 others) the session had
+    /// never loaded.
+    pub declared_extensions: Option<Vec<String>>,
 }
 
 /// One unread briefing, flattened for rendering. Deliberately a display-only
@@ -571,6 +597,16 @@ impl SelfKnowledgeBuilder {
         let mut tools: Vec<&PlatformExtensionDef> = PLATFORM_EXTENSIONS
             .values()
             .filter(|d| !d.hidden && !TOOL_IDS_RENDERED_ELSEWHERE.contains(&d.name))
+            // A `Some` list means this session declared an explicit
+            // extension set (recipe/CLI — see `declared_extensions`'s doc
+            // comment); scope the inventory to it. `None` — the daemon's
+            // default — keeps every registered tool, exactly as before this
+            // field existed.
+            .filter(|d| {
+                self.declared_extensions
+                    .as_ref()
+                    .is_none_or(|names| names.iter().any(|n| n == d.name))
+            })
             .collect();
         tools.sort_by(|a, b| a.name.cmp(b.name));
         for def in tools {
@@ -588,6 +624,19 @@ impl SelfKnowledgeBuilder {
                 out,
                 "- **{}** [{}] — {}. {}",
                 desc.display_name, state, desc.what_it_does, desc.why_it_matters
+            )
+            .ok();
+        }
+        // The pointer, not an enumeration: a scoped session (e.g. the coding
+        // harness's 2 extensions) must not read this list as the whole of
+        // Permagent — #1090 was exactly that, a session that had 2 tools and
+        // a 69KB brief describing 33. Say where the rest lives; do not name it.
+        if self.declared_extensions.is_some() {
+            writeln!(
+                out,
+                "\nThis session only loaded the extensions listed above. The rest of the \
+                 Permagent runtime's capabilities exist in the main agent conversation — point \
+                 the user there rather than assuming this session can reach them."
             )
             .ok();
         }
@@ -846,7 +895,7 @@ fn confirm_hint(c: &ConfirmCheck) -> String {
 mod tests {
     use super::*;
 
-    /// All five gates, on. Written once so a test asserting the ON half cannot
+    /// All six gates, on. Written once so a test asserting the ON half cannot
     /// silently stop covering a newly added gate.
     fn all_flags_on() -> FeatureFlags {
         FeatureFlags {
@@ -855,6 +904,7 @@ mod tests {
             strix_enabled: true,
             initiative_enabled: true,
             steward_scan_enabled: true,
+            council_enabled: true,
         }
     }
 
@@ -876,7 +926,7 @@ mod tests {
             .map(|d| d.id)
             .collect();
         hidden.sort_unstable();
-        assert_eq!(hidden, vec!["concierge", "playbook", "strix"]);
+        assert_eq!(hidden, vec!["concierge", "council", "playbook", "strix"]);
 
         // With every flag on nothing is withheld — which is also what makes the
         // `_ => false` arm of `is_on` safe to have.
@@ -901,8 +951,8 @@ mod tests {
             .collect();
         assert_eq!(
             gates.len(),
-            5,
-            "expected five gated workers, found {gates:?}"
+            6,
+            "expected six gated workers, found {gates:?}"
         );
         for gate in gates {
             assert!(
@@ -938,6 +988,7 @@ mod tests {
             crate::strix::STRIX_FEATURE_ID,
             crate::playbook::PLAYBOOK_FEATURE_ID,
             crate::concierge::CONCIERGE_FEATURE_ID,
+            crate::council::AGENT_ID,
         ] {
             assert!(worker_gate(id).is_some(), "{id} lost its gate");
             assert!(
@@ -1038,6 +1089,7 @@ mod tests {
             keys,
             vec![
                 "concierge_enabled",
+                "council_enabled",
                 "initiative_enabled",
                 "playbook_enabled",
                 "steward_scan_enabled",
@@ -1118,6 +1170,7 @@ mod tests {
         "strix",
         "financier",
         "forecaster",
+        "council",
     ];
     /// Every known surface id must have exactly one descriptor.
     const KNOWN_SURFACE_IDS: &[&str] = &[
@@ -1394,6 +1447,7 @@ mod tests {
             flags: FeatureFlags::default(),
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
+            declared_extensions: None,
         }
         .build();
         assert!(brief.contains("## Guardrails you operate under"));
@@ -1541,6 +1595,7 @@ mod tests {
             flags: FeatureFlags::default(),
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
+            declared_extensions: None,
         }
         .build();
 
@@ -1577,6 +1632,7 @@ mod tests {
                 flags,
                 dispatchable_workers: Vec::new(),
                 agent_briefings: None,
+                declared_extensions: None,
             }
             .build_parts()
         };
@@ -1598,6 +1654,7 @@ mod tests {
         // in BOTH halves — a worker hidden from the inventory must not reappear
         // as a live-status line behind the cache breakpoint.
         assert!(!off.contains("The Guard"));
+        assert!(!off.contains("The Council"));
         assert!(off.contains("off (initiative_enabled=false)"));
 
         assert!(guard_on.contains("**The Guard**"));
@@ -1648,6 +1705,7 @@ mod tests {
             flags: FeatureFlags::default(),
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
+            declared_extensions: None,
         }
         .build();
 
@@ -1672,6 +1730,7 @@ mod tests {
             },
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
+            declared_extensions: None,
         }
         .build();
 
@@ -1698,6 +1757,7 @@ mod tests {
             flags: FeatureFlags::default(),
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
+            declared_extensions: None,
         }
         .build();
 
@@ -1722,6 +1782,7 @@ mod tests {
             },
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
+            declared_extensions: None,
         }
         .build();
 
@@ -1737,6 +1798,57 @@ mod tests {
     }
 
     #[test]
+    fn council_descriptor_hidden_when_flag_off() {
+        let brief = SelfKnowledgeBuilder {
+            agent_display_name: "Aria".to_string(),
+            scheduled_job_count: None,
+            flags: FeatureFlags::default(),
+            dispatchable_workers: Vec::new(),
+            agent_briefings: None,
+            declared_extensions: None,
+        }
+        .build();
+
+        assert!(
+            !brief.contains("The Council"),
+            "council descriptor must be hidden from the brief when the flag is off"
+        );
+    }
+
+    #[test]
+    fn council_descriptor_shown_when_flag_on() {
+        let brief = SelfKnowledgeBuilder {
+            agent_display_name: "Aria".to_string(),
+            scheduled_job_count: None,
+            flags: FeatureFlags {
+                council_enabled: true,
+                ..FeatureFlags::default()
+            },
+            dispatchable_workers: Vec::new(),
+            agent_briefings: None,
+            declared_extensions: None,
+        }
+        .build();
+
+        assert!(
+            brief.contains("**The Council**"),
+            "council descriptor must render in the brief when the flag is on"
+        );
+        assert!(
+            brief.contains("council_convene") && brief.contains("Decision Inbox"),
+            "the rendered council descriptor must name convene and the inbox"
+        );
+        assert!(
+            brief.contains("council_status") && brief.contains("council_report"),
+            "the rendered council descriptor must name the live-query tools"
+        );
+        assert!(
+            brief.contains("council_status is the live query"),
+            "the live-state line must point Henry at council_status, not only convene"
+        );
+    }
+
+    #[test]
     fn librarian_is_not_double_listed_as_a_tool() {
         let (inventory, live) = SelfKnowledgeBuilder {
             agent_display_name: "Aria".to_string(),
@@ -1744,6 +1856,7 @@ mod tests {
             flags: FeatureFlags::default(),
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
+            declared_extensions: None,
         }
         .build_parts();
         // It appears once in the inventory (under workers, not also under
@@ -1771,6 +1884,7 @@ mod tests {
             flags: FeatureFlags::default(),
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
+            declared_extensions: None,
         }
         .build();
         // Rendered once, under Tools (it is a platform extension, not hidden).
@@ -1803,6 +1917,7 @@ mod tests {
             flags: FeatureFlags::default(),
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
+            declared_extensions: None,
         }
         .build();
         assert!(!empty.contains("Workers you can dispatch goals to"));
@@ -1823,6 +1938,7 @@ mod tests {
                 },
             ],
             agent_briefings: None,
+            declared_extensions: None,
         }
         .build();
         assert!(brief.contains("## Workers you can dispatch goals to"));
@@ -1843,6 +1959,7 @@ mod tests {
                 flags: FeatureFlags::default(),
                 dispatchable_workers: Vec::new(),
                 agent_briefings: briefings,
+                declared_extensions: None,
             }
             .build()
         };
@@ -1934,6 +2051,7 @@ mod tests {
             flags: FeatureFlags::default(),
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
+            declared_extensions: None,
         }
         .build();
         // The harness + cost optimizer render under Surfaces and self-describe
@@ -2009,6 +2127,7 @@ mod tests {
             flags: FeatureFlags::default(),
             dispatchable_workers: Vec::new(),
             agent_briefings: None,
+            declared_extensions: None,
         }
         .build();
         assert!(brief.contains("**Grow tab**"));
@@ -2085,10 +2204,10 @@ mod tests {
     ///   branch lands here automatically.
     fn extension_tool_inventories() -> Vec<(&'static str, Vec<rmcp::model::Tool>)> {
         use crate::agents::platform_extensions::{
-            analyze, app_conductor, app_perception, apps, browser, chatrecall, dashboard, desktop,
-            developer, ext_manager, file_to_project, finance, forecaster, inbox_tools, listen,
-            model_manager, orchestrator, people, project_manager, pronunciation, recipe_author,
-            retrospect, skills, storage_health, summarize, summon, todo,
+            analyze, app_conductor, app_perception, apps, browser, chatrecall, council, dashboard,
+            desktop, developer, ext_manager, file_to_project, finance, forecaster, inbox_tools,
+            listen, model_manager, orchestrator, people, project_manager, pronunciation,
+            recipe_author, retrospect, skills, storage_health, summarize, summon, todo,
         };
 
         let mut project_manager_tools = project_manager::ProjectManagerClient::get_tools();
@@ -2128,6 +2247,7 @@ mod tests {
                 chatrecall::EXTENSION_NAME,
                 chatrecall::ChatRecallClient::get_tools(),
             ),
+            (council::EXTENSION_NAME, council::CouncilClient::get_tools()),
             (
                 dashboard::EXTENSION_NAME,
                 dashboard::DashboardClient::get_tools(),
@@ -2536,6 +2656,12 @@ mod tests {
     // unless the prose distinguishes them. Its sibling aspects (`grow`, `trace`,
     // `brain`, …) need no entry only because they are single words the
     // tool-shaped-token scan never sees.
+    // `council_enabled` is the Council's config flag (~/.permagent/config.yaml),
+    // named in the council worker descriptor so the agent can tell the user which
+    // Features switch turns the weekly debate on — a setting, not a tool.
+    // `council_action` is a Decision Inbox kind (approve files a board card),
+    // named in the same descriptor so the agent does not invent a tool for filing
+    // those proposals.
     const NON_TOOL_PROSE_TOKENS: &[&str] = &[
         "sub_recipes",
         "worker_persona",
@@ -2544,6 +2670,8 @@ mod tests {
         "steward_scan_enabled",
         "recipe_author",
         "decision_inbox",
+        "council_enabled",
+        "council_action",
     ];
 
     /// Every tool name that exists in the runtime: the statically-derived
@@ -2746,6 +2874,96 @@ mod tests {
             "user-facing 'goose' branding leak(s) found — rebrand to Permagent \
              (or allowlist if genuinely internal):\n{}",
             leaks.join("\n")
+        );
+    }
+
+    // ── Declared-extension scoping (#1090) ──────────────────────────────
+    //
+    // A captured coding-harness prompt (`permagent run --recipe
+    // permagent-coding`) had loaded 2 extensions (analyze, developer) but its
+    // `## Tools you can call` section listed all 33 registered platform
+    // extensions — 69KB, 76% of the whole prompt — burying the repo map the
+    // recipe tells the model to read first at 91% depth. These three tests
+    // pin the fix: a session that DECLARES its extensions gets an inventory
+    // scoped to them, plus a pointer to where the rest lives; a session that
+    // declares nothing (the daemon's product contract) is untouched.
+
+    #[test]
+    fn declared_extensions_scope_the_tool_inventory_and_exclude_the_rest() {
+        let brief = SelfKnowledgeBuilder {
+            agent_display_name: "Aria".to_string(),
+            scheduled_job_count: None,
+            flags: FeatureFlags::default(),
+            dispatchable_workers: Vec::new(),
+            agent_briefings: None,
+            declared_extensions: Some(vec!["analyze".to_string(), "browser".to_string()]),
+        }
+        .build();
+
+        assert!(
+            brief.contains("**Analyze**"),
+            "a declared extension must still be listed"
+        );
+        assert!(
+            brief.contains("**Browser**"),
+            "a declared extension must still be listed"
+        );
+        // Finance was never declared for this session — it must not appear,
+        // unmistakably, anywhere the model could read it as available.
+        assert!(
+            !brief.contains("**Finance**"),
+            "an undeclared extension must not appear in a scoped inventory"
+        );
+    }
+
+    /// The product-contract guard: the daemon's resident chat sessions never
+    /// declare an explicit extension list, and MUST keep describing
+    /// everything Permagent can do — narrowing that to whatever happens to be
+    /// loaded this turn would make Aria under-report her own capabilities,
+    /// which is the exact "core gap" #353 (this module's own opening doc
+    /// comment) exists to close.
+    #[test]
+    fn no_declared_extensions_keeps_the_full_product_contract_inventory() {
+        let brief = SelfKnowledgeBuilder {
+            agent_display_name: "Aria".to_string(),
+            scheduled_job_count: None,
+            flags: FeatureFlags::default(),
+            dispatchable_workers: Vec::new(),
+            agent_briefings: None,
+            declared_extensions: None,
+        }
+        .build();
+
+        for name in ["**Analyze**", "**Browser**", "**Finance**"] {
+            assert!(
+                brief.contains(name),
+                "with no declared list, the full inventory must be unfiltered — \
+                 missing {name:?}"
+            );
+        }
+        assert!(
+            !brief.contains("main agent conversation"),
+            "the pointer line is specific to a scoped session and must not \
+             appear when the inventory was not filtered"
+        );
+    }
+
+    #[test]
+    fn scoped_inventory_points_the_model_at_the_main_agent() {
+        let brief = SelfKnowledgeBuilder {
+            agent_display_name: "Aria".to_string(),
+            scheduled_job_count: None,
+            flags: FeatureFlags::default(),
+            dispatchable_workers: Vec::new(),
+            agent_briefings: None,
+            declared_extensions: Some(vec!["analyze".to_string()]),
+        }
+        .build();
+
+        assert!(
+            brief.contains("main agent conversation"),
+            "a scoped session must point the model at where the rest of \
+             Permagent's capabilities live, not just go silent about them"
         );
     }
 }

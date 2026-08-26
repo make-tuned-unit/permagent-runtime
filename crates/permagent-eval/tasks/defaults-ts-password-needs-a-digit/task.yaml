@@ -1,0 +1,15 @@
+id: defaults-ts-password-needs-a-digit
+title: "Passwords must contain a digit"
+category: model-defaults-ts
+max_turns: 25
+harness_timeout_secs: 600
+oracle_timeout_secs: 180
+test: [bash, oracle_check.sh]
+# The oracle is a shell script, so the Python/Node import allowlist does
+# not apply; the overlay still makes it untamperable by the agent.
+deliverables: []
+# lang=ts difficulty=medium needs_repo_map=false needs_test_run=false
+prompt: |
+  Signup is letting people set passwords with no digits at all, like
+  "passwordpassword". Tighten up password validation so a password needs at
+  least one number in it, on top of the existing length check.

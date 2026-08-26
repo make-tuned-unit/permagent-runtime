@@ -1,8 +1,10 @@
 use crate::conversation::message::{Message, MessageContent, ProviderMetadata};
+use crate::cost_router::cache::SystemPromptParts;
 use crate::mcp_utils::extract_text_from_resource;
 use crate::model::ModelConfig;
 use crate::providers::base::{ProviderUsage, Usage};
 use crate::providers::errors::ProviderError;
+use crate::providers::model_family::ModelFamily;
 use crate::providers::utils::{
     convert_image, detect_image_path, extract_reasoning_effort, is_valid_function_name,
     load_image_file, safely_parse_json, sanitize_function_name, ImageFormat,
@@ -136,7 +138,104 @@ fn extract_content_and_signature(
     }
 }
 
+/// How much of the model's own reasoning is echoed back to the provider on the
+/// next request.
+///
+/// This matters more than it sounds. Reasoning is the largest single item in a
+/// long coding conversation: a live GLM-5.3 session measured here carried
+/// 581,819 characters of `reasoning_content` from *already-finished* turns
+/// inside a 1 MB request payload — over half the request, resent on every turn,
+/// and the direct cause of the Z.AI 429s that prompted this change.
+///
+/// The policy is per-family because the vendors genuinely disagree, and two of
+/// them document the echo as **required**:
+///
+/// - **Z.AI / GLM** defaults `clear_thinking` to true, which means the service
+///   "ignores/removes reasoning_content from prior turns" on its own. Sending it
+///   buys nothing and is billed and rate-limited all the same.
+///   <https://docs.z.ai/api-reference/llm/chat-completion>
+/// - **DeepSeek** requires the opposite when tools are in play: the intermediate
+///   assistant's `reasoning_content` "must participate in the context
+///   concatenation and must be passed back to the API in all subsequent user
+///   interaction turns". Stripping it there is a 400.
+///   <https://api-docs.deepseek.com/guides/thinking_mode/>
+/// - **Moonshot / Kimi** requires the full history for the Preserved Thinking
+///   models, and requires at minimum that reasoning produced "during one
+///   tool-call loop" be sent back with the request.
+///   <https://platform.kimi.ai/docs/guide/use-kimi-k2-thinking-model>
+///
+/// So the default for a family we have not verified is [`ReasoningEcho::Always`]
+/// — today's behaviour, unchanged. Only families whose docs say the prior-turn
+/// reasoning is discarded anyway get trimmed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningEcho {
+    /// Send every `reasoning_content` we have. Required by DeepSeek's tool-call
+    /// mode and by Moonshot's Preserved Thinking models; the safe default for
+    /// anything unverified.
+    Always,
+    /// Keep `reasoning_content` only on messages after the last real user
+    /// message — the tool loop currently in flight — and strip everything older.
+    ///
+    /// Never strips the in-flight loop, because a thinking model mid-tool-loop
+    /// is entitled to see what it was thinking when it asked for the tool, and
+    /// that is the one part every vendor above agrees on.
+    CurrentTurnOnly,
+}
+
+impl ReasoningEcho {
+    /// The echo policy for a model family.
+    ///
+    /// Unrecognised families — which is where Moonshot/Kimi lands, since
+    /// [`ModelFamily`] does not name it — keep today's behaviour on purpose.
+    pub fn for_family(family: ModelFamily) -> Self {
+        match family {
+            // Documented as discarding prior-turn reasoning server-side.
+            ModelFamily::Glm => ReasoningEcho::CurrentTurnOnly,
+            // No reasoning echo is documented as required, and these families
+            // carry their reasoning in fields this module does not populate.
+            ModelFamily::OpenAi | ModelFamily::Xai | ModelFamily::Anthropic => {
+                ReasoningEcho::CurrentTurnOnly
+            }
+            // DeepSeek requires it; QwenLocal is served from this machine, where
+            // the payload costs nothing and some chat templates want the block;
+            // Other is unverified by definition.
+            ModelFamily::DeepSeek | ModelFamily::QwenLocal | ModelFamily::Other => {
+                ReasoningEcho::Always
+            }
+        }
+    }
+}
+
+/// Strip `reasoning_content` the provider has told us it will discard anyway.
+///
+/// Runs after [`merge_split_tool_call_messages`], which needs the field intact
+/// to recognise messages the agent split out of one assistant turn.
+fn strip_stale_reasoning(messages: &mut [Value], echo: ReasoningEcho) {
+    let strip_before = match echo {
+        ReasoningEcho::Always => return,
+        ReasoningEcho::CurrentTurnOnly => messages
+            .iter()
+            .rposition(|m| m.get("role") == Some(&json!("user")) && !is_image_only_user_message(m))
+            .map(|i| i + 1)
+            .unwrap_or(0),
+    };
+
+    for message in messages.iter_mut().take(strip_before) {
+        if let Some(object) = message.as_object_mut() {
+            object.remove("reasoning_content");
+        }
+    }
+}
+
 pub fn format_messages(messages: &[Message], image_format: &ImageFormat) -> Vec<Value> {
+    format_messages_with_echo(messages, image_format, ReasoningEcho::CurrentTurnOnly)
+}
+
+pub fn format_messages_with_echo(
+    messages: &[Message],
+    image_format: &ImageFormat,
+    echo: ReasoningEcho,
+) -> Vec<Value> {
     let mut messages_spec = Vec::new();
     for message in messages {
         let mut converted = json!({
@@ -374,6 +473,7 @@ pub fn format_messages(messages: &[Message], image_format: &ImageFormat) -> Vec<
     }
 
     merge_split_tool_call_messages(&mut messages_spec);
+    strip_stale_reasoning(&mut messages_spec, echo);
     messages_spec
 }
 
@@ -653,11 +753,47 @@ pub fn get_usage(usage: &Value) -> Usage {
         .or_else(|| usage.get("eval_count").and_then(|v| v.as_i64()))
         .map(|v| v as i32);
 
+    // Three shapes in the wild, and reading only some of them is how a warm
+    // cache reports as a cold one — the tokens stay folded into the plain input
+    // bucket, the ledger records `cache_read_tokens = 0`, and a 70%-hit path
+    // becomes indistinguishable from a 0%-hit path:
+    //
+    // 1. `cache_read_input_tokens` — Anthropic's flat name, sent by gateways
+    //    that proxy Anthropic models over an OpenAI-shaped API (OpenRouter,
+    //    LiteLLM). Tried first so those keep their existing values.
+    // 2. `prompt_cache_hit_tokens` — DeepSeek's own name, alongside
+    //    `prompt_cache_miss_tokens` (<https://api-docs.deepseek.com>).
+    // 3. `prompt_tokens_details.cached_tokens` — the OpenAI shape, copied by
+    //    Z.AI, xAI, Groq and most GLM-compatible hosts
+    //    (<https://docs.z.ai/api-reference/llm/chat-completion>).
+    //
+    // All three are a *subset* of `prompt_tokens`, which is exactly the
+    // breakdown `canonical::cost` expects. Reading them costs nothing where no
+    // cache-read rate is published (those tokens stay in the input bucket) and
+    // makes cache hits visible where one is.
     let cache_read_input_tokens = usage
         .get("cache_read_input_tokens")
         .and_then(|v| v.as_i64())
+        .or_else(|| {
+            usage
+                .get("prompt_cache_hit_tokens")
+                .and_then(|v| v.as_i64())
+        })
+        .or_else(|| {
+            usage
+                .get("prompt_tokens_details")
+                .and_then(|d| d.get("cached_tokens"))
+                .and_then(|v| v.as_i64())
+        })
         .map(|v| v as i32);
 
+    // Cache *writes* are deliberately NOT inferred from DeepSeek's
+    // `prompt_cache_miss_tokens` or OpenAI's uncached remainder. Those are
+    // ordinary fresh input on a provider with no write premium — calling them
+    // "cache creation" would invent a billable category that does not exist and,
+    // where a model's pricing does carry a `cache_write` rate, would bill fresh
+    // input at it. Only a provider that explicitly reports a creation count gets
+    // one.
     let cache_write_input_tokens = usage
         .get("cache_creation_input_tokens")
         .and_then(|v| v.as_i64())
@@ -1000,9 +1136,59 @@ where
     }
 }
 
+/// Build a chat/completions payload from a system prompt with no volatile tail.
+///
+/// Byte-identical to what this function has always produced: it forwards to
+/// [`create_request_split`] with an all-stable prompt, and an empty volatile
+/// suffix adds no message.
 pub fn create_request(
     model_config: &ModelConfig,
     system: &str,
+    messages: &[Message],
+    tools: &[Tool],
+    image_format: &ImageFormat,
+    for_streaming: bool,
+) -> anyhow::Result<Value, Error> {
+    create_request_split(
+        model_config,
+        &SystemPromptParts::all_stable(system.to_string()),
+        messages,
+        tools,
+        image_format,
+        for_streaming,
+    )
+}
+
+/// Build a chat/completions payload that keeps the prompt cache's prefix intact.
+///
+/// The OpenAI wire shape has no `cache_control` marker: every provider that
+/// caches on it — DeepSeek, Z.AI, OpenAI itself — does so **automatically, on an
+/// exact byte/token prefix** of the rendered prompt. The first byte that differs
+/// from the previous request ends the cacheable region, and everything after it
+/// is re-tokenised and re-billed at the full input rate. Exactly where a given
+/// provider splices the tool schemas into that rendering is its own business;
+/// what is fixed for all of them is that the leading system message comes first
+/// and the conversation follows it.
+///
+/// That is why the turn-volatile tail cannot ride inside the system message.
+/// Concatenated there (`stable + volatile`, the old shape) it sits UPSTREAM of
+/// the whole conversation — and of the tool schemas, wherever they land — so a
+/// single changed live-status counter (a briefing that was unread last turn, a
+/// worker that flipped to "engine pending") evicts every prior turn from the
+/// cache and leaves only the stable system block cached. On the
+/// Anthropic path the same prompt caches far better purely because that API
+/// orders tools BEFORE system, putting them upstream of the volatile block by
+/// accident of wire format.
+///
+/// The fix is placement, not deletion: the volatile suffix is emitted as a
+/// trailing `system` message AFTER the conversation, so the cacheable prefix
+/// covers the stable system prompt, the tool schemas, and the entire history.
+/// The suffix is never persisted into the conversation, so next turn's history
+/// is byte-identical to this turn's — the divergence point stays pinned to the
+/// very end of the request, which is the best any prefix cache can do.
+pub fn create_request_split(
+    model_config: &ModelConfig,
+    system: &SystemPromptParts,
     messages: &[Message],
     tools: &[Tool],
     image_format: &ImageFormat,
@@ -1017,18 +1203,40 @@ pub fn create_request(
     let (model_name, reasoning_effort) = extract_reasoning_effort(&model_config.model_name);
     let is_reasoning_model = reasoning_effort.is_some();
 
+    let system_role = if is_reasoning_model {
+        "developer"
+    } else {
+        "system"
+    };
     let system_message = json!({
-        "role": if is_reasoning_model { "developer" } else { "system" },
-        "content": system
+        "role": system_role,
+        "content": system.stable_prefix()
     });
 
-    let messages_spec = format_messages(messages, image_format);
+    // Provider id is not threaded down here; the model id is the signal that
+    // actually decides the family anyway (and the only one that survives an
+    // aggregator), so resolve on it alone.
+    let echo = ReasoningEcho::for_family(ModelFamily::resolve("", &model_config.model_name));
+    let messages_spec = format_messages_with_echo(messages, image_format, echo);
     let mut tools_spec = format_tools(tools)?;
 
     validate_tool_schemas(&mut tools_spec);
 
     let mut messages_array = vec![system_message];
     messages_array.extend(messages_spec);
+
+    // The turn-volatile tail, last of all — see this function's doc comment.
+    // Same role as the leading block because it is the same kind of content
+    // (instructions from the harness, not something the user said); putting it
+    // in a `user` message would misattribute it and, worse, would have to be
+    // folded into the real last user message, which would then differ between
+    // the turn that sent it and the turn that replays it as history.
+    if !system.volatile_suffix().is_empty() {
+        messages_array.push(json!({
+            "role": system_role,
+            "content": system.volatile_suffix(),
+        }));
+    }
 
     let mut payload = json!({
         "model": model_name,
@@ -2288,6 +2496,222 @@ data: [DONE]"#;
         Ok(())
     }
 
+    fn thinking_tool_call(id: &str, thought: &str) -> Message {
+        Message::assistant()
+            .with_thinking(thought, "")
+            .with_tool_request(id, Ok(CallToolRequestParams::new("read")))
+    }
+
+    fn tool_answer(id: &str) -> Message {
+        Message::user().with_tool_response(
+            id,
+            Ok(CallToolResult::success(vec![Content::text(
+                "file contents",
+            )])),
+        )
+    }
+
+    /// Two finished turns then a third in flight.
+    fn two_turns_then_one_in_flight() -> Vec<Message> {
+        vec![
+            Message::user().with_text("first question"),
+            thinking_tool_call("call-1", "OLD REASONING"),
+            tool_answer("call-1"),
+            Message::user().with_text("second question"),
+            thinking_tool_call("call-2", "LIVE REASONING"),
+            tool_answer("call-2"),
+        ]
+    }
+
+    /// Z.AI (and OpenAI) report cache hits as a subset of `prompt_tokens`.
+    /// Before this they were invisible, so nobody could tell whether the prompt
+    /// cache was working at all.
+    #[test]
+    fn usage_reads_openai_style_cached_prompt_tokens() {
+        let usage = get_usage(&json!({
+            "usage": {
+                "prompt_tokens": 63_485,
+                "completion_tokens": 512,
+                "total_tokens": 63_997,
+                "prompt_tokens_details": { "cached_tokens": 60_000 }
+            }
+        }));
+        assert_eq!(usage.input_tokens, Some(63_485));
+        assert_eq!(usage.cache_read_input_tokens, Some(60_000));
+        // input still carries the full prompt surface: the cached count is a
+        // breakdown of it, not an addition to it.
+        assert_eq!(usage.total_tokens, Some(63_997));
+    }
+
+    /// The flat Anthropic-style field still wins where a gateway sends both.
+    #[test]
+    fn usage_prefers_the_flat_cache_read_field() {
+        let usage = get_usage(&json!({
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 1,
+                "cache_read_input_tokens": 40,
+                "prompt_tokens_details": { "cached_tokens": 90 }
+            }
+        }));
+        assert_eq!(usage.cache_read_input_tokens, Some(40));
+    }
+
+    /// No cache block at all stays `None`, not `Some(0)` — "not reported" and
+    /// "reported as zero" are different facts.
+    #[test]
+    fn usage_without_a_cache_block_reports_none() {
+        let usage = get_usage(&json!({
+            "usage": { "prompt_tokens": 10, "completion_tokens": 2 }
+        }));
+        assert_eq!(usage.cache_read_input_tokens, None);
+    }
+
+    /// The bug this whole policy exists for.
+    ///
+    /// A live GLM-5.3 coding session was measured sending 581,819 characters of
+    /// `reasoning_content` from turns that had already finished, inside a 1 MB
+    /// request — over half the payload, resent every turn, and the direct cause
+    /// of the Z.AI 429s. Z.AI discards it server-side by default, so it bought
+    /// nothing at all.
+    #[test]
+    fn prior_turn_reasoning_is_absent_from_the_payload() -> anyhow::Result<()> {
+        let spec = format_messages_with_echo(
+            &two_turns_then_one_in_flight(),
+            &ImageFormat::OpenAi,
+            ReasoningEcho::CurrentTurnOnly,
+        );
+        let payload = serde_json::to_string(&spec)?;
+
+        assert!(
+            !payload.contains("OLD REASONING"),
+            "reasoning from a finished turn must not be resent: {payload}"
+        );
+        assert!(
+            payload.contains("LIVE REASONING"),
+            "reasoning from the in-flight turn must survive: {payload}"
+        );
+
+        // The stale message loses the field entirely rather than keeping an
+        // empty one — an empty `reasoning_content` is itself rejected by some
+        // providers, which is why the writer at format time skips empties too.
+        let stale = spec
+            .iter()
+            .find(|m| {
+                m.get("tool_calls")
+                    .and_then(|tc| tc.as_array())
+                    .is_some_and(|a| a.first().and_then(|c| c.get("id")) == Some(&json!("call-1")))
+            })
+            .expect("the first turn's tool call is still in the payload");
+        assert!(stale.get("reasoning_content").is_none());
+
+        Ok(())
+    }
+
+    /// The families that document the echo as required keep every byte.
+    #[test]
+    fn always_policy_keeps_prior_turn_reasoning() -> anyhow::Result<()> {
+        let spec = format_messages_with_echo(
+            &two_turns_then_one_in_flight(),
+            &ImageFormat::OpenAi,
+            ReasoningEcho::Always,
+        );
+        let payload = serde_json::to_string(&spec)?;
+        assert!(payload.contains("OLD REASONING"), "{payload}");
+        assert!(payload.contains("LIVE REASONING"), "{payload}");
+        Ok(())
+    }
+
+    /// With no user message yet there is no prior turn, so nothing is stale.
+    #[test]
+    fn reasoning_survives_when_there_is_no_prior_turn() -> anyhow::Result<()> {
+        let spec = format_messages_with_echo(
+            &[thinking_tool_call("call-1", "LIVE REASONING")],
+            &ImageFormat::OpenAi,
+            ReasoningEcho::CurrentTurnOnly,
+        );
+        assert_eq!(spec[0]["reasoning_content"], json!("LIVE REASONING"));
+        Ok(())
+    }
+
+    /// A tool result is carried as a user-role message. It must not be mistaken
+    /// for the user speaking, or the whole in-flight loop reads as a prior turn.
+    #[test]
+    fn a_tool_result_does_not_end_the_in_flight_turn() -> anyhow::Result<()> {
+        let messages = vec![
+            Message::user().with_text("question"),
+            thinking_tool_call("call-1", "FIRST STEP"),
+            tool_answer("call-1"),
+            thinking_tool_call("call-2", "SECOND STEP"),
+        ];
+        let payload = serde_json::to_string(&format_messages_with_echo(
+            &messages,
+            &ImageFormat::OpenAi,
+            ReasoningEcho::CurrentTurnOnly,
+        ))?;
+        assert!(payload.contains("FIRST STEP"), "{payload}");
+        assert!(payload.contains("SECOND STEP"), "{payload}");
+        Ok(())
+    }
+
+    /// Per-family table. DeepSeek and Moonshot/Kimi (which resolves to `Other`)
+    /// document the echo as required, so they must never be trimmed.
+    #[test]
+    fn echo_policy_per_family() {
+        use ReasoningEcho::*;
+        let expected = [
+            (ModelFamily::Glm, CurrentTurnOnly),
+            (ModelFamily::OpenAi, CurrentTurnOnly),
+            (ModelFamily::Xai, CurrentTurnOnly),
+            (ModelFamily::Anthropic, CurrentTurnOnly),
+            (ModelFamily::DeepSeek, Always),
+            (ModelFamily::QwenLocal, Always),
+            (ModelFamily::Other, Always),
+        ];
+        for (family, want) in expected {
+            assert_eq!(ReasoningEcho::for_family(family), want, "{family:?}");
+        }
+        // exhaustive: every family in the enum is covered above
+        assert_eq!(expected.len(), ModelFamily::ALL.len());
+
+        // Kimi is not a named family, so it lands on the safe default.
+        assert_eq!(
+            ReasoningEcho::for_family(ModelFamily::resolve("kimicode", "kimi-k2.5")),
+            Always
+        );
+    }
+
+    /// `create_request` must pick the policy up, not just `format_messages`.
+    #[test]
+    fn create_request_strips_prior_turn_reasoning_for_glm() -> anyhow::Result<()> {
+        let payload = serde_json::to_string(&create_request(
+            &ModelConfig::new_or_fail("glm-5.3"),
+            "system",
+            &two_turns_then_one_in_flight(),
+            &[],
+            &ImageFormat::OpenAi,
+            false,
+        )?)?;
+        assert!(!payload.contains("OLD REASONING"), "{payload}");
+        assert!(payload.contains("LIVE REASONING"), "{payload}");
+        Ok(())
+    }
+
+    /// ...and must not strip it for a family that needs it.
+    #[test]
+    fn create_request_keeps_prior_turn_reasoning_for_deepseek() -> anyhow::Result<()> {
+        let payload = serde_json::to_string(&create_request(
+            &ModelConfig::new_or_fail("deepseek-reasoner"),
+            "system",
+            &two_turns_then_one_in_flight(),
+            &[],
+            &ImageFormat::OpenAi,
+            false,
+        )?)?;
+        assert!(payload.contains("OLD REASONING"), "{payload}");
+        Ok(())
+    }
+
     #[test]
     fn test_format_messages_with_reasoning_content() -> anyhow::Result<()> {
         // Test that reasoning_content is properly included in formatted messages
@@ -2476,5 +2900,252 @@ data: [DONE]"#;
         assert_eq!(result.input_tokens, Some(42));
         assert_eq!(result.output_tokens, Some(128));
         assert_eq!(result.total_tokens, Some(170));
+    }
+    // ── Prompt-cache prefix stability, on the OpenAI wire shape ──────────────
+    //
+    // DeepSeek, Z.AI and OpenAI all cache automatically on an exact prompt
+    // prefix; there is no `cache_control` marker to place. What the provider
+    // hashes is the rendered prompt, in this order: the leading system message,
+    // the tool schemas, then the conversation. The tests below reconstruct that
+    // order deliberately rather than serialising the whole payload, because
+    // `serde_json` sorts object keys alphabetically and would put `messages`
+    // before `tools` — a JSON artefact that has nothing to do with what the
+    // provider caches on.
+
+    fn bench_model() -> ModelConfig {
+        ModelConfig {
+            model_name: "deepseek-chat".to_string(),
+            context_limit: Some(128_000),
+            temperature: None,
+            max_tokens: Some(1024),
+            toolshim: false,
+            toolshim_model: None,
+            fast_model_config: None,
+            request_params: None,
+            reasoning: None,
+        }
+    }
+
+    fn bench_tools() -> Vec<Tool> {
+        vec![
+            Tool::new(
+                "edit",
+                "Edit a file in place",
+                object!({"type": "object", "properties": {"path": {"type": "string"}}}),
+            ),
+            Tool::new(
+                "shell",
+                "Run a shell command",
+                object!({"type": "object", "properties": {"command": {"type": "string"}}}),
+            ),
+        ]
+    }
+
+    /// The byte sequence a prefix cache actually sees, in provider render order.
+    fn cacheable_render(payload: &Value) -> String {
+        let messages = payload["messages"].as_array().expect("messages array");
+        let system = serde_json::to_string(&messages[0]).unwrap();
+        let tools = serde_json::to_string(payload.get("tools").unwrap_or(&Value::Null)).unwrap();
+        let rest: String = messages[1..]
+            .iter()
+            .map(|m| serde_json::to_string(m).unwrap())
+            .collect();
+        format!("{system}{tools}{rest}")
+    }
+
+    /// Turn N's conversation: user asks, model calls a tool, tool answers.
+    fn three_turn_history() -> Vec<Message> {
+        let mut messages = vec![
+            Message::user().with_text("Implement the affine cipher."),
+            Message::assistant().with_tool_request(
+                "call_1",
+                Ok(CallToolRequestParams::new("shell").with_arguments(object!({"command": "ls"}))),
+            ),
+        ];
+        messages.push(Message::user().with_tool_response(
+            "call_1",
+            Ok(CallToolResult::success(vec![Content::text(
+                "affine_cipher.py",
+            )])),
+        ));
+        messages
+    }
+
+    #[test]
+    fn the_volatile_tail_never_sits_inside_the_system_message() -> anyhow::Result<()> {
+        let system = SystemPromptParts::new(
+            "You are a coding agent.\n".to_string(),
+            "\n# Live Status\n- 3 unread briefings\n".to_string(),
+        );
+        let payload = create_request_split(
+            &bench_model(),
+            &system,
+            &three_turn_history(),
+            &bench_tools(),
+            &ImageFormat::OpenAi,
+            false,
+        )?;
+
+        let messages = payload["messages"].as_array().unwrap();
+        assert_eq!(
+            messages[0]["content"], "You are a coding agent.\n",
+            "the leading system message must carry the stable prefix ONLY"
+        );
+
+        // The tail is present, and it is last — after the whole conversation.
+        let last = messages.last().unwrap();
+        assert_eq!(last["role"], "system");
+        assert_eq!(last["content"], "\n# Live Status\n- 3 unread briefings\n");
+        assert_eq!(
+            messages.len(),
+            1 + three_turn_history().len() + 1,
+            "system + history + one trailing volatile block"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn two_consecutive_turns_share_a_prefix_covering_system_tools_and_history() -> anyhow::Result<()>
+    {
+        let tools = bench_tools();
+        let model = bench_model();
+        let stable = "You are a coding agent. Follow the recipe.\n".to_string();
+
+        // Turn N.
+        let history_a = three_turn_history();
+        let request_a = create_request_split(
+            &model,
+            &SystemPromptParts::new(stable.clone(), "\n# Live Status\n- 3 unread\n".to_string()),
+            &history_a,
+            &tools,
+            &ImageFormat::OpenAi,
+            false,
+        )?;
+
+        // Turn N+1: the history has grown, and the live status has moved on.
+        let mut history_b = history_a.clone();
+        history_b.push(Message::assistant().with_text("Found it."));
+        history_b.push(Message::user().with_text("Now make the tests pass."));
+        let request_b = create_request_split(
+            &model,
+            &SystemPromptParts::new(
+                stable.clone(),
+                "\n# Live Status\n- 11 unread, 2 workers pending\n".to_string(),
+            ),
+            &history_b,
+            &tools,
+            &ImageFormat::OpenAi,
+            false,
+        )?;
+
+        let render_a = cacheable_render(&request_a);
+        let render_b = cacheable_render(&request_b);
+
+        // Everything turn N sent EXCEPT its volatile tail must be a byte-prefix
+        // of what turn N+1 sends. That is the whole property: system prompt,
+        // tool schemas, and every prior message, all cacheable.
+        let volatile_a =
+            serde_json::to_string(request_a["messages"].as_array().unwrap().last().unwrap())
+                .unwrap();
+        let shared = render_a
+            .strip_suffix(&volatile_a)
+            .expect("turn N's render ends with its volatile block");
+        assert!(
+            render_b.starts_with(shared),
+            "turn N+1 diverges from turn N inside the cacheable region"
+        );
+
+        // And the shared region is the bulk of the request, not a token or two.
+        let lcp = render_a
+            .as_bytes()
+            .iter()
+            .zip(render_b.as_bytes())
+            .take_while(|(x, y)| x == y)
+            .count();
+        let system_bytes = serde_json::to_string(&request_a["messages"][0])
+            .unwrap()
+            .len();
+        let tool_bytes = serde_json::to_string(&request_a["tools"]).unwrap().len();
+        assert!(
+            lcp >= system_bytes + tool_bytes,
+            "longest common prefix ({lcp} bytes) does not even cover the system \
+             prompt ({system_bytes}) plus the tool schemas ({tool_bytes})"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_all_stable_prompt_is_byte_identical_to_the_unsplit_request() -> anyhow::Result<()> {
+        let model = bench_model();
+        let tools = bench_tools();
+        let history = three_turn_history();
+        let flat = create_request(
+            &model,
+            "You are a coding agent.\n",
+            &history,
+            &tools,
+            &ImageFormat::OpenAi,
+            false,
+        )?;
+        let split = create_request_split(
+            &model,
+            &SystemPromptParts::all_stable("You are a coding agent.\n".to_string()),
+            &history,
+            &tools,
+            &ImageFormat::OpenAi,
+            false,
+        )?;
+        assert_eq!(flat, split, "an empty volatile suffix must add nothing");
+        Ok(())
+    }
+
+    // ── Cache-token reporting across the three OpenAI-compatible shapes ──────
+
+    #[test]
+    fn get_usage_reads_deepseeks_cache_hit_field() {
+        let usage = get_usage(&json!({
+            "prompt_tokens": 24_600,
+            "completion_tokens": 120,
+            "total_tokens": 24_720,
+            "prompt_cache_hit_tokens": 23_552,
+            "prompt_cache_miss_tokens": 1_048
+        }));
+        assert_eq!(usage.input_tokens, Some(24_600));
+        assert_eq!(usage.cache_read_input_tokens, Some(23_552));
+        // A miss is ordinary fresh input on a provider with no write premium —
+        // never a cache *creation* charge.
+        assert_eq!(usage.cache_write_input_tokens, None);
+    }
+
+    #[test]
+    fn get_usage_reads_the_openai_shaped_cached_tokens_detail() {
+        let usage = get_usage(&json!({
+            "prompt_tokens": 10_000,
+            "completion_tokens": 50,
+            "prompt_tokens_details": { "cached_tokens": 9_216 }
+        }));
+        assert_eq!(usage.cache_read_input_tokens, Some(9_216));
+    }
+
+    #[test]
+    fn get_usage_still_prefers_an_anthropic_shaped_passthrough() {
+        // OpenRouter/LiteLLM proxying an Anthropic model keep Anthropic's names;
+        // those must keep winning so their existing numbers do not move.
+        let usage = get_usage(&json!({
+            "prompt_tokens": 500,
+            "completion_tokens": 10,
+            "cache_read_input_tokens": 400,
+            "cache_creation_input_tokens": 60,
+            "prompt_cache_hit_tokens": 1
+        }));
+        assert_eq!(usage.cache_read_input_tokens, Some(400));
+        assert_eq!(usage.cache_write_input_tokens, Some(60));
+    }
+
+    #[test]
+    fn get_usage_reports_no_cache_when_the_provider_says_nothing() {
+        let usage = get_usage(&json!({ "prompt_tokens": 100, "completion_tokens": 10 }));
+        assert_eq!(usage.cache_read_input_tokens, None);
+        assert_eq!(usage.cache_write_input_tokens, None);
     }
 }

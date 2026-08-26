@@ -12,7 +12,7 @@ use axum::{
 use permagent::agents::ExtensionConfig;
 use permagent::recipe::Recipe;
 use permagent::session::session_manager::{SessionInsights, SessionType};
-use permagent::session::{EnabledExtensionsState, Session, SessionSummary};
+use permagent::session::{EnabledExtensionsState, ParentSessionCost, Session, SessionSummary};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -150,6 +150,44 @@ async fn get_session(
 
     Ok(Json(session))
 }
+
+#[utoipa::path(
+    get,
+    path = "/sessions/{session_id}/cost",
+    params(
+        ("session_id" = String, Path, description = "Unique identifier for the session")
+    ),
+    responses(
+        (status = 200, description = "Parent cost rollup (own + direct children)", body = ParentSessionCost),
+        (status = 401, description = "Unauthorized - missing or invalid bearer token"),
+        (status = 404, description = "Session not found"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(
+        ("api_key" = [])
+    ),
+    tag = "Session Management"
+)]
+async fn get_session_cost(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+) -> Result<Json<ParentSessionCost>, StatusCode> {
+    // Confirm the session exists so a missing id is 404 rather than an empty rollup.
+    state
+        .session_manager()
+        .get_session(&session_id, false)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+
+    let rollup = state
+        .session_manager()
+        .cost_by_parent_session(&session_id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(Json(rollup))
+}
+
 #[utoipa::path(
     get,
     path = "/sessions/insights",
@@ -632,6 +670,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/api/sessions/search", get(search_sessions))
         .route("/api/sessions/{session_id}", get(get_session))
         .route("/api/sessions/{session_id}", delete(delete_session))
+        .route("/api/sessions/{session_id}/cost", get(get_session_cost))
         .route("/api/sessions/{session_id}/export", get(export_session))
         .route(
             "/api/sessions/import",
@@ -653,6 +692,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/sessions/search", get(search_sessions))
         .route("/sessions/{session_id}", get(get_session))
         .route("/sessions/{session_id}", delete(delete_session))
+        .route("/sessions/{session_id}/cost", get(get_session_cost))
         .route("/sessions/{session_id}/export", get(export_session))
         .route(
             "/sessions/import",

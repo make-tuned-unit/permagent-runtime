@@ -51,6 +51,7 @@ const KIND_CHIPS: { label: string; kinds: string[] | null }[] = [
   { label: 'Librarian', kinds: ['librarian_describe_completed'] },
   { label: 'Watcher', kinds: ['proactive_nudge'] },
   { label: 'Failures', kinds: ['task_failed'] },
+  { label: 'A2A', kinds: ['a2a_message'] },
 ];
 
 function journalUrl(kinds: string[] | null, actor: string | null, before?: string): string {

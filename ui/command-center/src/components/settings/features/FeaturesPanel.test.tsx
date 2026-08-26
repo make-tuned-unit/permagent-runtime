@@ -16,6 +16,8 @@ vi.mock('../../../lib/api', () => ({
     readConfig: vi.fn(),
     upsertConfig: vi.fn(),
     getIntegrations: vi.fn(),
+    getCouncilMembers: vi.fn(),
+    putCouncilMembers: vi.fn(),
   },
 }));
 
@@ -28,6 +30,8 @@ import { GMAIL_CONNECT_COMMAND } from './features';
 const readConfig = vi.mocked(api.readConfig);
 const upsertConfig = vi.mocked(api.upsertConfig);
 const getIntegrations = vi.mocked(api.getIntegrations);
+const getCouncilMembers = vi.mocked(api.getCouncilMembers);
+const putCouncilMembers = vi.mocked(api.putCouncilMembers);
 
 let container: HTMLDivElement;
 let root: Root;
@@ -55,8 +59,12 @@ beforeEach(() => {
   readConfig.mockReset();
   upsertConfig.mockReset();
   getIntegrations.mockReset();
+  getCouncilMembers.mockReset();
+  putCouncilMembers.mockReset();
   readConfig.mockImplementation(async (key: string) => key === 'initiative_enabled');
   upsertConfig.mockResolvedValue({});
+  getCouncilMembers.mockResolvedValue({ enabled: false, exclude: [], seats: [] });
+  putCouncilMembers.mockResolvedValue({ enabled: false, exclude: [], seats: [] });
   getIntegrations.mockResolvedValue([
     { provider: 'gmail', connected: false, token_present: false },
     { provider: 'slack', connected: false, token_present: false },
@@ -77,17 +85,20 @@ describe('FeaturesPanel', () => {
     const keys = readConfig.mock.calls.map(c => c[0]).sort();
     expect(keys).toEqual([
       'concierge_enabled',
+      'council_enabled',
       'initiative_enabled',
       'playbook_enabled',
       'steward_scan_enabled',
       'strix_enabled',
     ]);
-    expect(toggles()).toHaveLength(5);
+    expect(toggles()).toHaveLength(6);
+    expect(getCouncilMembers).not.toHaveBeenCalled();
     expect(container.textContent).toContain('Initiative');
     expect(container.textContent).toContain('Decision Playbook');
     expect(container.textContent).toContain('Concierge');
     expect(container.textContent).toContain('Steward git-health');
     expect(container.textContent).toContain('The Guard');
+    expect(container.textContent).toContain('The Council');
     // The read-back value is honoured: initiative on, the rest off.
     expect(toggles()[0].style.transform).toBe('');
     const knob = (t: HTMLButtonElement) => (t.firstElementChild as HTMLElement).style.transform;
@@ -140,7 +151,7 @@ describe('FeaturesPanel', () => {
   // toggles()[4] did not exist.
   it('flipping the Guard row writes strix_enabled and nothing else', async () => {
     await mount();
-    expect(toggles()).toHaveLength(5);
+    expect(toggles()).toHaveLength(6);
     await act(async () => { toggles()[4].click(); });
     await flush();
     expect(upsertConfig).toHaveBeenCalledTimes(1);
@@ -159,7 +170,7 @@ describe('FeaturesPanel', () => {
         : Promise.resolve(key === 'initiative_enabled'),
     );
     await mount();
-    expect(toggles()).toHaveLength(4);
+    expect(toggles()).toHaveLength(5);
     expect(container.textContent).toContain('Loading…');
   });
 
@@ -170,5 +181,40 @@ describe('FeaturesPanel', () => {
     expect(link).toBeTruthy();
     await act(async () => { link!.click(); });
     expect(goto).toHaveBeenCalledWith('agents');
+  });
+
+  it('lists connected chat seats when the Council is on, and unchecking excludes one', async () => {
+    readConfig.mockImplementation(async (key: string) => key === 'council_enabled');
+    getCouncilMembers.mockResolvedValue({
+      enabled: true,
+      exclude: [],
+      seats: [
+        { provider: 'anthropic', display_name: 'Anthropic', model: 'claude-haiku', configured: true, excluded: false, cli_or_acp: false },
+        { provider: 'ollama', display_name: 'Ollama', model: 'qwen', configured: true, excluded: false, cli_or_acp: false },
+        { provider: 'claude_code', display_name: 'Claude Code', model: 'opus', configured: true, excluded: false, cli_or_acp: true },
+      ],
+    });
+    putCouncilMembers.mockResolvedValue({
+      enabled: true,
+      exclude: ['ollama'],
+      seats: [
+        { provider: 'anthropic', display_name: 'Anthropic', model: 'claude-haiku', configured: true, excluded: false, cli_or_acp: false },
+        { provider: 'ollama', display_name: 'Ollama', model: 'qwen', configured: true, excluded: true, cli_or_acp: false },
+        { provider: 'claude_code', display_name: 'Claude Code', model: 'opus', configured: true, excluded: false, cli_or_acp: true },
+      ],
+    });
+    await mount();
+    await flush();
+    expect(getCouncilMembers).toHaveBeenCalled();
+    expect(container.textContent).toContain('Council seats');
+    expect(container.textContent).toContain('Anthropic');
+    expect(container.querySelector('[data-testid="council-seat-anthropic"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="council-seat-ollama"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="council-seat-claude_code"]')).toBeNull();
+    const boxes = Array.from(container.querySelectorAll('input[type="checkbox"]')) as HTMLInputElement[];
+    expect(boxes).toHaveLength(2);
+    await act(async () => { boxes[1].click(); });
+    await flush();
+    expect(putCouncilMembers).toHaveBeenCalledWith(['ollama']);
   });
 });

@@ -218,17 +218,22 @@ export function ConfigureProviderModal({
     onClose();
   };
 
-  // Validate the provider against the daemon. check_provider reads *stored*
-  // config, so persist a freshly-typed key (or a changed source) first —
-  // otherwise "enter key → Test" would check the old/absent credential.
+  // Validate without saving a typed key. Keychain wins over env, so a typed
+  // replacement for an already-stored key must persist first (Save & test).
+  const typedKey = apiKey.trim();
+  const mustPersistToTest = !!(typedKey && provider.isConfigured && !usesManager);
   const handleTest = async () => {
     setTesting(true);
     setError(null);
     setTestResult(null);
     try {
-      await persistSource();
-      if (!usesManager) await persistKey();
-      await api.checkProvider(provider.name);
+      if (mustPersistToTest) {
+        await persistSource();
+        await persistKey();
+        await api.checkProvider(provider.name);
+      } else {
+        await api.checkProvider(provider.name, typedKey || undefined);
+      }
       setTestResult({ ok: true, message: 'Provider is configured and ready.' });
     } catch (e) {
       setTestResult({ ok: false, message: e instanceof Error ? e.message : 'Connection test failed.' });
@@ -527,7 +532,7 @@ export function ConfigureProviderModal({
               onMouseEnter={e => { e.currentTarget.style.backgroundColor = colors.cyanSoft; }}
               onMouseLeave={e => { e.currentTarget.style.backgroundColor = ''; }}
             >
-              {testing ? 'Testing…' : 'Test connection'}
+              {testing ? 'Testing…' : mustPersistToTest ? 'Save & test' : 'Test connection'}
             </button>
             {/* Hidden while a manager owns the key: there is no stored value to
                 remove, and offering the button would imply the reference lives

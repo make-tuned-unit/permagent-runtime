@@ -62,7 +62,7 @@ interface PendingAnswer {
  * documented gated effect (routes/decisions.rs:176-334) — never derived from
  * decision content (A1).
  */
-function effectTextFor(
+export function effectTextFor(
   kind: string,
   answer: 'approve' | 'reject',
   agentName: string,
@@ -115,6 +115,11 @@ function effectTextFor(
     return answer === 'approve'
       ? `Confirm approve — ${agentName} will run this tool and continue the turn.`
       : `Confirm reject — ${agentName} will skip this tool and continue the turn.`;
+  }
+  if (kind === 'council_action') {
+    return answer === 'approve'
+      ? `Confirm approve — ${agentName} will file this as a board card on the named project.`
+      : 'Confirm reject — this council action is dismissed; nothing is filed on the board.';
   }
   if (kind === 'session_gate') {
     // Honest pre-S5 contract (routes/decisions.rs session_gate arm): the
@@ -252,7 +257,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
     d.kind === 'enrichment_proposal' || d.kind === 'project_intel_proposal' ||
     d.kind === 'automation_proposal' ||
     d.kind === 'file_to_project' || d.kind === 'tool_approval' ||
-    d.kind === 'session_gate';
+    d.kind === 'session_gate' || d.kind === 'council_action';
   // The agent's original draft, when this decision carries one (payload.draft):
   // enables "approve with edits" — revise the text, then accept (answer='edit').
   const draft = draftText(d);
@@ -715,6 +720,7 @@ function badgeFor(d: Decision, colors: ReturnType<typeof useTheme>['colors']) {
     case 'enrichment_proposal': return { label: 'enrichment', color: colors.purpleBright, bg: colors.purpleSoft };
     case 'project_intel_proposal': return { label: 'project intel', color: colors.purpleBright, bg: colors.purpleSoft };
     case 'file_to_project': return { label: 'file note', color: colors.cyan, bg: colors.cyanSoft };
+    case 'council_action': return { label: 'council', color: colors.purpleBright, bg: colors.purpleSoft };
     case 'malformed': return { label: 'review', color: colors.warning, bg: colors.warning + '24' };
     default: return { label: 'approval', color: colors.cyan, bg: colors.cyanSoft };
   }

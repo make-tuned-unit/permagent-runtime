@@ -20,10 +20,11 @@ export const DEFAULT_LAYOUT: DashboardLayoutData = {
     { id: 'decisions', type: 'decisions', position: { x: 7, y: 0 }, size: { w: 5, h: 4 }, visible: true },
     { id: 'stats', type: 'stats', position: { x: 0, y: 4 }, size: { w: 5, h: 4 }, visible: true },
     { id: 'calendar', type: 'calendar', position: { x: 5, y: 4 }, size: { w: 7, h: 4 }, visible: true },
-    { id: 'in_flight', type: 'in_flight', position: { x: 0, y: 8 }, size: { w: 12, h: 3 }, visible: true },
-    { id: 'growth_results', type: 'growth_results', position: { x: 0, y: 11 }, size: { w: 12, h: 6 }, visible: true },
-    { id: 'recent', type: 'recent', position: { x: 0, y: 17 }, size: { w: 12, h: 4 }, visible: true },
-    { id: 'timeline', type: 'timeline', position: { x: 0, y: 21 }, size: { w: 12, h: 6 }, visible: true },
+    { id: 'council', type: 'council', position: { x: 0, y: 8 }, size: { w: 12, h: 6 }, visible: true },
+    { id: 'in_flight', type: 'in_flight', position: { x: 0, y: 14 }, size: { w: 12, h: 3 }, visible: true },
+    { id: 'growth_results', type: 'growth_results', position: { x: 0, y: 17 }, size: { w: 12, h: 6 }, visible: true },
+    { id: 'recent', type: 'recent', position: { x: 0, y: 23 }, size: { w: 12, h: 4 }, visible: true },
+    { id: 'timeline', type: 'timeline', position: { x: 0, y: 27 }, size: { w: 12, h: 6 }, visible: true },
   ],
 };
 
@@ -70,6 +71,7 @@ const COMPACT_SIZES: Record<string, CardSize> = {
   calendar: { w: 4, h: 5 },
   recent: { w: 8, h: 5 },
   timeline: { w: 12, h: 5 },
+  council: { w: 12, h: 5 },
 };
 
 /**
@@ -82,6 +84,7 @@ const COMPACT_PASS_KEY = 'permagent.dashboard.compactPass.v1';
 const GROWTH_CARD_PASS_KEY = 'permagent.dashboard.growthResultsCard.v1';
 const GROWTH_CARD_TALL_PASS_KEY = 'permagent.dashboard.growthResultsCard.tall.v1';
 const CALENDAR_PASS_KEY = 'permagent.dashboard.calendarPass.v1';
+const COUNCIL_CARD_PASS_KEY = 'permagent.dashboard.councilCard.v1';
 
 export function hasRunGrowthCardPass(): boolean {
   try { return localStorage.getItem(GROWTH_CARD_PASS_KEY) === '1'; } catch { return false; }
@@ -175,6 +178,30 @@ export function ensureCalendarCard(
   };
 }
 
+export function hasRunCouncilCardPass(): boolean {
+  try { return localStorage.getItem(COUNCIL_CARD_PASS_KEY) === '1'; } catch { return false; }
+}
+
+export function markCouncilCardPassDone(): void {
+  try { localStorage.setItem(COUNCIL_CARD_PASS_KEY, '1'); } catch { /* private mode — retry next load */ }
+}
+
+/** Insert the Council card once if the persisted layout never had one. */
+export function ensureCouncilCard(
+  layout: DashboardLayoutData,
+): { layout: DashboardLayoutData; changed: boolean } {
+  if (layout.cards.some(c => c.type === 'council')) return { layout, changed: false };
+  return {
+    layout: {
+      cards: reflow([
+        ...layout.cards,
+        { id: 'council', type: 'council', position: { x: 0, y: 0 }, size: { w: 12, h: 6 }, visible: true },
+      ]),
+    },
+    changed: true,
+  };
+}
+
 /**
  * Shrink oversized cards to their compact ceiling, once.
  *
@@ -232,11 +259,17 @@ export function useLayout() {
           normalized = calendar.layout;
           changed = changed || calendar.changed;
         }
+        if (!hasRunCouncilCardPass()) {
+          const council = ensureCouncilCard(normalized);
+          normalized = council.layout;
+          changed = changed || council.changed;
+        }
         setLayout(normalized);
         markCompactPassDone();
         markGrowthCardPassDone();
         markGrowthCardTallPassDone();
         markCalendarPassDone();
+        markCouncilCardPassDone();
         if (changed) {
           apiFetch<DashboardLayoutData>('/api/dashboard/layout', {
             method: 'PUT',

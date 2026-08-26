@@ -60,4 +60,9 @@ describe('mergeRegistry', () => {
     const merged = mergeRegistry(CARD_REGISTRY, []);
     expect(Object.keys(merged).sort()).toEqual(Object.keys(CARD_REGISTRY).sort());
   });
+
+  it('ships the first-party Council card', () => {
+    expect(CARD_REGISTRY.council).toBeDefined();
+    expect(CARD_REGISTRY.council.name).toBe('Council');
+  });
 });

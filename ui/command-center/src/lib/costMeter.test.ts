@@ -11,7 +11,7 @@
 
 import { describe, expect, it } from 'vitest';
 import type { SSEEvent, TokenState } from './api';
-import { costFromFrame, formatCostMeter, fmtUsd, fmtTokens } from './costMeter';
+import { costFromFrame, formatCostMeter, fmtUsd, fmtTokens, type CodingSpend } from './costMeter';
 
 function tokenState(overrides: Partial<TokenState> = {}): TokenState {
   return {
@@ -26,6 +26,22 @@ function tokenState(overrides: Partial<TokenState> = {}): TokenState {
     cacheSavingsUsd: 0,
     contextPercent: null,
     model: '',
+    ...overrides,
+  };
+}
+
+function codingSpend(overrides: Partial<CodingSpend> = {}): CodingSpend {
+  return {
+    sessionId: 'harness-1',
+    turnUsd: 0.0032,
+    sessionUsd: 0.0332,
+    todayUsd: 0.5332,
+    totalTokens: 12800,
+    provider: 'zai',
+    model: 'glm-5.3',
+    workingDir: '/tmp/proj',
+    estimated: false,
+    finalTurn: false,
     ...overrides,
   };
 }
@@ -74,6 +90,86 @@ describe('formatCostMeter', () => {
     expect(m.cost).toBe('$0.01');
     // Only the token segment — no cache-saved (0), no ctx (null), no model ('').
     expect(m.segments).toEqual(['500↑ 100↓']);
+  });
+
+  it('appends incl. N subagents $X when children exist', () => {
+    const m = formatCostMeter(
+      tokenState({ accumulatedCostUsd: 0.42, accumulatedInputTokens: 100, accumulatedOutputTokens: 10 }),
+      null,
+      { count: 2, totalUsd: 0.17 },
+    );
+    expect(m.cost).toBe('$0.42');
+    expect(m.segments).toContain('incl. 2 subagents $0.17');
+    expect(m.ariaLabel).toContain('incl. 2 subagents $0.17');
+  });
+
+  it('singularizes the subagent label for a single child', () => {
+    const m = formatCostMeter(
+      tokenState({ accumulatedCostUsd: 0.1 }),
+      null,
+      { count: 1, totalUsd: 0.05 },
+    );
+    expect(m.segments).toContain('incl. 1 subagent $0.05');
+  });
+
+  it('prefers codingSpend over liveTokens and still shows the subagent suffix', () => {
+    const m = formatCostMeter(
+      tokenState({ accumulatedCostUsd: 99 }),
+      codingSpend({ sessionUsd: 0.33 }),
+      { count: 3, totalUsd: 0.12 },
+    );
+    expect(m.cost).toBe('$0.33');
+    expect(m.segments).toContain('incl. 3 subagents $0.12');
+  });
+});
+
+describe('formatCostMeter with a coding-harness spend (the Build tab PTY session)', () => {
+  it('renders the session total, the turn delta, today\'s total, and the model', () => {
+    const m = formatCostMeter(null, codingSpend());
+    expect(m.cost).toBe('$0.03');
+    expect(m.segments).toEqual([
+      '13k tokens',
+      '+$0.0032 this turn',
+      'today $0.53',
+      'glm-5.3',
+    ]);
+    expect(m.ariaLabel).toContain('Session cost $0.03');
+    expect(m.ariaLabel).toContain('today $0.53');
+  });
+
+  it('renders a ~ prefix and the disclosure segment for a fail-closed estimate, and says so in the aria label', () => {
+    // This is the test that stops a fail-closed worst case being shown as a
+    // bill: `estimated: true` must never render as a plain "$0.12".
+    const m = formatCostMeter(null, codingSpend({ estimated: true, sessionUsd: 0.12 }));
+    expect(m.cost).toBe('~$0.12');
+    expect(m.segments).toContain('estimated — no published price');
+    expect(m.ariaLabel.toLowerCase()).toContain('estimate');
+  });
+
+  it('adds a "session ended" segment when finalTurn is true', () => {
+    const m = formatCostMeter(null, codingSpend({ finalTurn: true }));
+    expect(m.segments).toContain('session ended');
+  });
+
+  it('keeps the tokens-only rendering byte-identical when coding is null (regression guard)', () => {
+    const overrides: Partial<TokenState> = {
+      accumulatedInputTokens: 47000,
+      accumulatedOutputTokens: 12000,
+      accumulatedCostUsd: 0.42,
+      cacheSavingsUsd: 0.28,
+      contextPercent: 31.2,
+      model: 'claude-sonnet-4',
+    };
+    const withDefaultArg = formatCostMeter(tokenState(overrides));
+    const withExplicitNull = formatCostMeter(tokenState(overrides), null);
+    expect(withExplicitNull).toEqual(withDefaultArg);
+    expect(withExplicitNull.cost).toBe('$0.42');
+    expect(withExplicitNull.segments).toEqual([
+      '47k↑ 12k↓',
+      'cache saved $0.28',
+      '31% ctx',
+      'claude-sonnet-4',
+    ]);
   });
 });
 

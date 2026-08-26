@@ -255,6 +255,23 @@ impl Agent {
             .extension_manager
             .get_extensions_info(working_dir)
             .await;
+
+        // The self-knowledge capability inventory is scoped to this list only
+        // for a session that DECLARED an explicit extension set — recipe/CLI
+        // runs (`GoosePlatform::GooseCli`, e.g. `permagent run --recipe`),
+        // which load a fixed, small roster and never add to it. The daemon's
+        // resident chat sessions (`GoosePlatform::GooseDesktop` — Aria) always
+        // pass `None` here regardless of how many extensions happen to be
+        // active this turn: describing everything Permagent can do is a
+        // product contract for that agent, not something a smaller loaded set
+        // should narrow. See #1090 — a coding-harness session with 2
+        // extensions got a 69KB inventory of all 33 registered ones.
+        let declared_extensions = matches!(
+            self.config.goose_platform,
+            crate::agents::GoosePlatform::GooseCli
+        )
+        .then(|| extensions_info.iter().map(|e| e.name.clone()).collect());
+
         let (extension_count, tool_count) = self
             .extension_manager
             .get_extension_and_tool_counts(session_id)
@@ -352,6 +369,7 @@ impl Agent {
             .with_scheduled_job_count(scheduled_job_count)
             .with_dispatchable_workers(dispatchable_workers)
             .with_agent_briefings(agent_briefings)
+            .with_declared_extensions(declared_extensions)
             // Tool-calling discipline is a per-family concern, so the family
             // that will actually answer picks its own short overlay rather than
             // every model paying for the weakest reader's patches.
@@ -746,16 +764,21 @@ impl Agent {
         );
 
         let tok = |t: Option<i32>| t.unwrap_or(0).max(0) as i64;
+        // `subagent_id`: a SubAgent session IS the subagent — its own id is the
+        // identity a "cost run inside a subagent" query needs.
+        // `parent_session_id` comes from the session row (set at spawn via
+        // `create_session_with_parent`); ledger rows copy it so parent rollups
+        // do not need a join back to `sessions`.
+        let subagent_id =
+            matches!(session.session_type, SessionType::SubAgent).then(|| session.id.clone());
         let row = CostLedgerRow {
             call_id: uuid::Uuid::new_v4().to_string(),
             ts: chrono::Utc::now().to_rfc3339(),
             session_id: session_id.to_string(),
-            // Deeper attribution keys are columns awaiting their wiring seam
-            // (goal/task association lives in card metadata, not threaded here).
-            parent_session_id: None,
+            parent_session_id: session.parent_session_id.clone(),
             task_id: None,
             goal_id: None,
-            subagent_id: None,
+            subagent_id,
             provider,
             model: Some(model),
             cost_tier,

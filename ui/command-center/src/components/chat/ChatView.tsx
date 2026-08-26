@@ -5,6 +5,7 @@ import { MessageList } from './MessageList';
 import { ChatInput } from './ChatInput';
 import type { ChatInputHandle } from './ChatInput';
 import { SkillPromptBanner } from './SkillPromptBanner';
+import { RoleRoutingPrompt } from './RoleRoutingPrompt';
 import { ModelPicker } from './ModelPicker';
 import { SessionPicker } from './SessionPicker';
 import { VoiceOrb } from '../voice/VoiceOrb';
@@ -73,6 +74,7 @@ export function ChatView() {
 
       <MessageList />
       <SkillPromptBanner />
+      <RoleRoutingPrompt />
       {/* Meeting-recorder dock slot: MeetingRecorder portals its live panel
           here while the dock is open (state stays in the Sidebar mount).
           Zero-height when empty; content-sized, capped, scrollable when not. */}

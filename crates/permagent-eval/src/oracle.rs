@@ -13,6 +13,11 @@ pub enum OracleOutcome {
     Fail,
     /// The oracle could not produce a verdict (timeout, signal, spawn failure).
     Errored,
+    /// The task was never launched — e.g. a `--budget-usd` cap was exceeded by
+    /// an earlier task in the session. A distinct state, NOT a fail: it must
+    /// not count against pass-rate (whose denominator is attempted tasks
+    /// only) and must not be conflated with a real, graded failure.
+    NotRun,
 }
 
 impl OracleOutcome {
@@ -27,6 +32,7 @@ impl OracleOutcome {
             OracleOutcome::Pass => "pass",
             OracleOutcome::Fail => "fail",
             OracleOutcome::Errored => "errored",
+            OracleOutcome::NotRun => "not_run",
         }
     }
 }
@@ -66,5 +72,13 @@ mod tests {
         assert_eq!(o, OracleOutcome::Errored);
         assert!(!o.solved());
         assert_eq!(o.label(), "errored");
+    }
+
+    #[test]
+    fn not_run_is_not_solved_and_is_distinct_from_fail() {
+        let o = OracleOutcome::NotRun;
+        assert!(!o.solved());
+        assert_eq!(o.label(), "not_run");
+        assert_ne!(OracleOutcome::NotRun, OracleOutcome::Fail);
     }
 }

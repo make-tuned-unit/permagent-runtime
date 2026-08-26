@@ -96,6 +96,8 @@ beforeEach(() => {
     sessions: [],
     workspaces: [],
     activeWorkspaceId: null,
+    personDetail: null,
+    codingSpend: null,
   });
 });
 
@@ -125,6 +127,33 @@ describe('person_changed → People panel refetch', () => {
     route(frame('person_changed', { project_id: 'p1', entity_uuid: 'e1', change: 'associated' }));
     await flush();
     expect(useCommandCenter.getState().peopleRev).toBe(1);
+  });
+});
+
+describe('person_merged → people refetch + open-detail reconciliation', () => {
+  it('bumps peopleRev so the directory/graph refetch', async () => {
+    route(frame('person_merged', { survivor_uuid: 's1', duplicate_uuid: 'd1', merge_id: 'm1' }));
+    await flush();
+    expect(useCommandCenter.getState().peopleRev).toBe(1);
+  });
+
+  it('closes the open person detail when it is the duplicate that got absorbed', async () => {
+    useCommandCenter.setState({
+      personDetail: { projectId: null, person: { entity_uuid: 'd1', display_name: 'Dup' } as never, association: null },
+    });
+    route(frame('person_merged', { survivor_uuid: 's1', duplicate_uuid: 'd1', merge_id: 'm1' }));
+    await flush();
+    expect(useCommandCenter.getState().personDetail).toBeNull();
+    expect(useCommandCenter.getState().peopleRev).toBe(1);
+  });
+
+  it('leaves an unrelated open person detail alone', async () => {
+    useCommandCenter.setState({
+      personDetail: { projectId: null, person: { entity_uuid: 'other', display_name: 'Other' } as never, association: null },
+    });
+    route(frame('person_merged', { survivor_uuid: 's1', duplicate_uuid: 'd1', merge_id: 'm1' }));
+    await flush();
+    expect(useCommandCenter.getState().personDetail?.person.entity_uuid).toBe('other');
   });
 });
 
@@ -196,6 +225,48 @@ describe('identity_changed → identity consumers re-read', () => {
     const s = useCommandCenter.getState();
     expect(s.agentName).toBe('Henry');
     expect(s.identityRev).toBe(0);
+  });
+});
+
+describe('session_spend_changed → codingSpend applies immediately (not debounced)', () => {
+  const rawPayload = {
+    session_id: 'harness-1',
+    turn_usd: 0.0032,
+    session_usd: 0.0332,
+    today_usd: 0.5332,
+    total_tokens: 12800,
+    provider: 'zai',
+    model: 'glm-5.3',
+    working_dir: '/tmp/proj',
+    estimated: true,
+    final_turn: false,
+  };
+
+  it('camelCases a raw daemon frame into store.codingSpend synchronously, with no debounce wait', () => {
+    // Exactly as the daemon serializes it: snake_case payload keys, applied
+    // via applyLivenessFrame directly (this lane is not driven through
+    // routeGlobalFrame's nav-only stub in this file's `route` helper).
+    applyLivenessFrame(frame('session_spend_changed', rawPayload), EPOCH);
+
+    // No `await flush()` — the APPLY_BY_TYPE lane is synchronous by design
+    // (see livenessSync.ts module doc), so the store must already reflect it.
+    expect(useCommandCenter.getState().codingSpend).toEqual({
+      sessionId: 'harness-1',
+      turnUsd: 0.0032,
+      sessionUsd: 0.0332,
+      todayUsd: 0.5332,
+      totalTokens: 12800,
+      provider: 'zai',
+      model: 'glm-5.3',
+      workingDir: '/tmp/proj',
+      estimated: true,
+      finalTurn: false,
+    });
+  });
+
+  it('ignores a replayed spend frame — a reconnect burst must not stomp a live total', () => {
+    applyLivenessFrame(frame('session_spend_changed', rawPayload, { replayed: true }), EPOCH);
+    expect(useCommandCenter.getState().codingSpend).toBeNull();
   });
 });
 

@@ -726,9 +726,62 @@ pub async fn apply_decision_effect(
         ("enrichment_proposal", Some("reject")) => {
             persist_find_online_hints_on_reject(decision).await
         }
+        // Approved person merge (#1073 follow-up). The tool never merges
+        // directly — it files this card and a person approves it. Everything
+        // the merge does, and everything it deliberately keeps, lives in
+        // `people_merge`; this arm only carries the approval across.
+        ("person_merge_proposal", Some("approve")) => {
+            let payload: decisions::PersonMergeProposalPayload =
+                serde_json::from_value(decision.payload.clone()).map_err(|e| {
+                    GuardError::Invalid(format!("stored person merge payload unreadable: {e}"))
+                })?;
+            let brain = crate::agents::platform_extensions::get_global_brain();
+            let report = crate::people_merge::merge_people(
+                pool,
+                brain.as_ref(),
+                &payload.survivor_uuid,
+                &payload.duplicate_uuid,
+            )
+            .await
+            .map_err(GuardError::Db)?;
+            already_applied(format!(
+                "{} — undo with merge id {}",
+                report.summary, report.merge_id
+            ))
+        }
+        ("person_merge_proposal", Some("reject")) => {
+            already_applied("merge declined; both people are unchanged")
+        }
+        // Approved person delete. Same gate, same reasoning.
+        ("person_delete_proposal", Some("approve")) => {
+            let payload: decisions::PersonDeleteProposalPayload =
+                serde_json::from_value(decision.payload.clone()).map_err(|e| {
+                    GuardError::Invalid(format!("stored person delete payload unreadable: {e}"))
+                })?;
+            let brain = crate::agents::platform_extensions::get_global_brain();
+            let report =
+                crate::people_merge::delete_person(pool, brain.as_ref(), &payload.entity_uuid)
+                    .await
+                    .map_err(GuardError::Db)?;
+            already_applied(format!(
+                "deleted \"{}\": {} meeting(s), {} project link(s), {} graph edge(s). {}",
+                report.display_name,
+                report.meetings_deleted,
+                report.project_links_deleted,
+                report.graph_edges_deleted,
+                report.retained.join(" ")
+            ))
+        }
+        ("person_delete_proposal", Some("reject")) => {
+            already_applied("delete declined; the person is unchanged")
+        }
         ("project_intel_proposal", Some("approve")) => apply_project_intel(pool, decision).await,
         ("project_intel_proposal", Some("reject")) => {
             already_applied("project intelligence proposal declined; nothing was written")
+        }
+        ("council_action", Some("approve")) => apply_council_action(pool, decision).await,
+        ("council_action", Some("reject")) => {
+            already_applied("council action dismissed; nothing was filed on the board")
         }
         ("file_to_project", Some("approve")) => apply_file_to_project(pool, decision).await,
         ("file_to_project", Some("reject")) => {
@@ -885,6 +938,69 @@ async fn apply_model_upgrade(decision: &Decision) -> Result<EffectResult, GuardE
         Some(format!("active model switched to \"{}\"", payload.model_id)),
         None,
     ))
+}
+
+async fn apply_council_action(
+    pool: &Pool<Sqlite>,
+    decision: &Decision,
+) -> Result<EffectResult, GuardError> {
+    let payload: decisions::CouncilActionPayload = serde_json::from_value(decision.payload.clone())
+        .map_err(|e| {
+            GuardError::Invalid(format!("stored council_action payload unreadable: {e}"))
+        })?;
+    let project_id = decision
+        .project_id
+        .clone()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            let id = payload.project_id.trim();
+            if id.is_empty() {
+                None
+            } else {
+                Some(id.to_string())
+            }
+        })
+        .ok_or_else(|| {
+            GuardError::Invalid("council_action has no project to file a card on".to_string())
+        })?;
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?)")
+        .bind(&project_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| GuardError::Db(format!("check project exists: {e}")))?;
+    if !exists {
+        return already_applied(format!(
+            "project \"{}\" no longer exists; nothing was filed",
+            if payload.project_name.is_empty() {
+                project_id
+            } else {
+                payload.project_name.clone()
+            }
+        ));
+    }
+    let title = if payload.title.trim().is_empty() {
+        decision.headline.clone()
+    } else {
+        payload.title.clone()
+    };
+    let card = crate::cards::create_card(
+        pool,
+        crate::cards::CreateCard {
+            project_id,
+            title,
+            description: Some(payload.description.clone()),
+            card_type: Some("standard".to_string()),
+            column_id: None,
+            created_by: Some("henry".to_string()),
+            metadata_json: Some(serde_json::json!({
+                "from": "council",
+                "council_session_id": payload.session_id,
+            })),
+        },
+    )
+    .await
+    .map_err(|e| GuardError::Db(format!("file council card: {e}")))?;
+    Ok((Some(format!("filed board card \"{}\"", card.title)), None))
 }
 
 async fn apply_project_intel(
