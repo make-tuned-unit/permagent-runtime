@@ -190,20 +190,24 @@ struct Correction {
 /// Try to correct a single token against single-word entity names.
 /// Returns None if no confident correction is found.
 fn try_correct_token(token: &str, dict: &EntityDictionary) -> Option<Correction> {
-    // Strip trailing punctuation for matching (e.g. "Kinrows." → "Kinrows")
-    let stripped = token.trim_end_matches(|c: char| c.is_ascii_punctuation());
-    if stripped.chars().count() < MIN_TOKEN_LENGTH {
+    // Strip trailing punctuation for matching (e.g. "Kinrows." → "Kinrows").
+    // Apostrophes stay: they are the possessive we must not drop.
+    let stripped = token.trim_end_matches(|c: char| c.is_ascii_punctuation() && c != '\'');
+    let punct = &token[stripped.len()..];
+    let (core, inflection) = split_possessive(stripped);
+    if core.chars().count() < MIN_TOKEN_LENGTH {
         return None;
     }
 
-    if is_common_word(stripped) {
+    if is_common_word(core) {
         return None;
     }
 
-    let token_lower = stripped.to_lowercase();
+    let token_lower = core.to_lowercase();
     let token_char_count = token_lower.chars().count();
 
-    // Exact match (case-insensitive) — no correction needed
+    // Exact match on the core (case-insensitive) — keep the original token
+    // so `Pigkeeper's` is not rewritten to `Pigkeeper`.
     if dict.entries.iter().any(|(_, lower)| *lower == token_lower) {
         return None;
     }
@@ -253,9 +257,29 @@ fn try_correct_token(token: &str, dict: &EntityDictionary) -> Option<Correction>
     }
 
     best_name.map(|name| Correction {
-        name: name.to_string(),
+        name: format!("{name}{inflection}{punct}"),
         score: best_score,
     })
+}
+
+/// Split a trailing English possessive (`'s` / `'`) off a token that has
+/// already had end punctuation stripped. `Pigkeeper's` → (`Pigkeeper`, `'s`).
+fn split_possessive(stripped: &str) -> (&str, &str) {
+    let b = stripped.as_bytes();
+    if stripped.len() >= 2 {
+        let last = b[b.len() - 1];
+        let prev = b[b.len() - 2];
+        if prev == b'\'' && (last == b's' || last == b'S') {
+            return (
+                &stripped[..stripped.len() - 2],
+                &stripped[stripped.len() - 2..],
+            );
+        }
+    }
+    if stripped.ends_with('\'') {
+        return (&stripped[..stripped.len() - 1], "'");
+    }
+    (stripped, "")
 }
 
 fn is_common_word(token: &str) -> bool {
