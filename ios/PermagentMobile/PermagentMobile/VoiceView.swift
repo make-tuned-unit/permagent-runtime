@@ -49,8 +49,8 @@ private final class MicPipe: @unchecked Sendable {
         inFormat = inputFormat
     }
 
-    /// Convert one tap buffer; returns (f32le bytes @16 kHz, RMS of the frame).
-    func convert(_ buffer: AVAudioPCMBuffer) -> (Data, Float) {
+    /// Convert one tap buffer; returns (f32le bytes @16 kHz, RMS, voice-like).
+    func convert(_ buffer: AVAudioPCMBuffer) -> (Data, Float, Bool) {
         // A route change mid-session (AirPods connecting, a call arriving, the
         // speaker engaging) re-formats the input node while the tap keeps
         // delivering. Feeding an AVAudioConverter a buffer that does not match
@@ -59,7 +59,7 @@ private final class MicPipe: @unchecked Sendable {
         // frame; the engine's restart path re-makes the pipe.
         guard buffer.format.sampleRate == inFormat.sampleRate,
               buffer.format.channelCount == inFormat.channelCount else {
-            return (Data(), 0)
+            return (Data(), 0, true)
         }
         // `AVAudioFrameCount` is UInt32, and converting a NaN or infinite Double
         // to an integer type is a FATAL Swift trap, not a wrong number — the
@@ -67,14 +67,14 @@ private final class MicPipe: @unchecked Sendable {
         // makes `ratio` infinite, and a zero rate is exactly what a
         // deactivated or mid-reconfiguration session reports.
         let sourceRate = buffer.format.sampleRate
-        guard sourceRate > 0 else { return (Data(), 0) }
+        guard sourceRate > 0 else { return (Data(), 0, true) }
         let scaled = Double(buffer.frameLength) * (outFormat.sampleRate / sourceRate)
         guard scaled.isFinite, scaled >= 0, scaled < Double(UInt32.max - 16) else {
-            return (Data(), 0)
+            return (Data(), 0, true)
         }
         let capacity = AVAudioFrameCount(scaled) + 16
         guard let out = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: capacity) else {
-            return (Data(), 0)
+            return (Data(), 0, true)
         }
         // One-shot feed box: the input block is @Sendable in the SDK, so the
         // single source buffer rides in an @unchecked Sendable box (the block
@@ -91,13 +91,15 @@ private final class MicPipe: @unchecked Sendable {
             return b
         }
         guard status != .error, let ch = out.floatChannelData, out.frameLength > 0 else {
-            return (Data(), 0)
+            return (Data(), 0, true)
         }
         let n = Int(out.frameLength)
         var sum: Float = 0
         for i in 0..<n { sum += ch[0][i] * ch[0][i] }
         let rms = (sum / Float(n)).squareRoot()
-        return (Data(bytes: ch[0], count: n * MemoryLayout<Float>.size), rms)
+        let bins = VoiceSpectrum.byteBins(samples: ch[0], count: n)
+        let voiceLike = VoiceSpectrum.looksLikeVoice(bins)
+        return (Data(bytes: ch[0], count: n * MemoryLayout<Float>.size), rms, voiceLike)
     }
 }
 
@@ -390,12 +392,12 @@ final class VoiceEngine: ObservableObject {
         // thread, and the only main-actor work hops explicitly via Task.
         input.installTap(onBus: 0, bufferSize: 4096, format: inFormat) { @Sendable [weak self] buffer, _ in
             guard let self else { return }
-            let (data, rms) = pipe.convert(buffer)
+            let (data, rms, voiceLike) = pipe.convert(buffer)
             guard !data.isEmpty else {
                 Task { @MainActor in self.noteDroppedTap() }
                 return
             }
-            Task { @MainActor in self.handleMicFrame(data, rms: rms) }
+            Task { @MainActor in self.handleMicFrame(data, rms: rms, voiceLike: voiceLike) }
         }
         // Playback tap — the orb's TRUTH while the agent speaks. The level used
         // to be pulsed once per delivered TTS chunk, but the daemon synthesizes
@@ -574,7 +576,7 @@ final class VoiceEngine: ObservableObject {
         }
     }
 
-    private func handleMicFrame(_ data: Data, rms: Float) {
+    private func handleMicFrame(_ data: Data, rms: Float, voiceLike: Bool) {
         droppedTapStreak = 0
         if let cfg = pendingVADConfig, state != .listening {
             vad = VoiceVAD(config: cfg)
@@ -592,12 +594,12 @@ final class VoiceEngine: ObservableObject {
         if state != .listening && state != .speaking && state != .ready {
             if level > 0.001 { level = max(0, level * 0.9) }
         }
-        if handsFree { vadStep(rms: rms) }
+        if handsFree { vadStep(rms: rms, voiceLike: voiceLike) }
     }
 
     // ── VAD (hands-free): the state machine itself is VoiceVAD, unit-tested ──
 
-    private func vadStep(rms: Float) {
+    private func vadStep(rms: Float, voiceLike: Bool) {
         let phase: VoiceVAD.Phase
         switch state {
         case .ready: phase = .ready
@@ -606,7 +608,7 @@ final class VoiceEngine: ObservableObject {
         case .speaking: phase = .speaking
         default: phase = .inactive
         }
-        switch vad.step(rms: rms, phase: phase, now: Date().timeIntervalSince1970) {
+        switch vad.step(rms: rms, phase: phase, now: Date().timeIntervalSince1970, voiceLike: voiceLike) {
         case .beginTurn: enterListening()  // NOT beginTurn(): the VAD stamped its own clocks
         case .endTurn: endTurn()
         case .interrupt:

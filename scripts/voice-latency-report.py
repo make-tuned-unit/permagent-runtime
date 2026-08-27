@@ -154,7 +154,21 @@ def percentile(values: list[float], p: float) -> Optional[float]:
 def summarize(turns: list[Turn]) -> dict:
     complete = [t for t in turns if t.complete]
     incomplete = len(turns) - len(complete)
-    summary = {"n_turns": len(turns), "n_complete": len(complete), "n_incomplete": incomplete}
+    summary = {
+        "n_turns": len(turns),
+        "n_complete": len(complete),
+        "n_incomplete": incomplete,
+        # 60 s (or cap) recordings that STT'd empty — kitchen music holding
+        # Listening until maxTurnMs. Distinct from a barged-in incomplete.
+        "n_empty_stt_cap": sum(
+            1
+            for t in turns
+            if not t.complete
+            and t.audio_s is not None
+            and t.audio_s >= 59.5
+            and t.stt_ms is not None
+        ),
+    }
     for metric in METRICS:
         vals = [getattr(t, metric) for t in complete if getattr(t, metric) is not None]
         summary[metric] = {
