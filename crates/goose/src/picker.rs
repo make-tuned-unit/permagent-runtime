@@ -27,6 +27,61 @@ pub const PICKER_URL_KEY: &str = "picker_url";
 /// Explicit override for the Picker checkout location, for a layout the
 /// conventional search below does not cover.
 pub const PICKER_ROOT_KEY: &str = "picker_root";
+/// Off until the user turns Picker on from the Finance tab. The ranked list
+/// and scanner card stay hidden without this — other people should not inherit
+/// someone else's stock desk.
+pub const PICKER_ENABLED_KEY: &str = "picker_enabled";
+/// User-supplied ticker universe. Comma, space, or newline separated.
+/// When set, a scan ranks these names rather than a checkout-specific list.
+pub const PICKER_UNIVERSE_KEY: &str = "picker_universe";
+/// Cap so a pasted dump cannot fan out into hundreds of Yahoo + loop calls.
+pub const MAX_UNIVERSE: usize = 80;
+
+/// True only when the user has opted in. Missing key is off.
+pub fn is_enabled() -> bool {
+    crate::config::Config::global()
+        .get_param::<bool>(PICKER_ENABLED_KEY)
+        .unwrap_or(false)
+}
+
+/// Tickers the user listed. Empty means "use the scanner's own universe if it
+/// is running" — never a silent default list of someone else's ideas.
+pub fn universe() -> Vec<String> {
+    crate::config::Config::global()
+        .get_param::<String>(PICKER_UNIVERSE_KEY)
+        .ok()
+        .map(|s| parse_universe(&s))
+        .unwrap_or_default()
+}
+
+/// Split a pasted universe into unique uppercase tickers.
+pub fn parse_universe(raw: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for token in raw.split(|c: char| c == ',' || c == ';' || c.is_whitespace()) {
+        let t = token.trim().trim_start_matches('$').to_uppercase();
+        if !is_ticker(&t) {
+            continue;
+        }
+        if out.iter().any(|s| s == &t) {
+            continue;
+        }
+        out.push(t);
+        if out.len() >= MAX_UNIVERSE {
+            break;
+        }
+    }
+    out
+}
+
+fn is_ticker(s: &str) -> bool {
+    let len = s.chars().count();
+    if len == 0 || len > 12 {
+        return false;
+    }
+    s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+        && s.chars().any(|c| c.is_ascii_alphabetic())
+}
 
 /// Loopback by default. The service has no authentication and its API can
 /// modify the trade history and start expensive scans, so it should not be
@@ -222,11 +277,25 @@ pub async fn top_picks() -> Result<Vec<serde_json::Value>, String> {
 /// Ask the scanner to run. Returns as soon as the scan is ACCEPTED — a full
 /// scan takes many minutes, so waiting for it here would block a tool call
 /// past any sensible bound. Poll [`status`] for progress.
+///
+/// When the user has listed a ticker universe, that list is sent on the body
+/// so a checkout-specific default is not silently scanned instead. A scanner
+/// that ignores unknown fields still starts its own universe — the Finance
+/// tab then ranks the user's list via Yahoo + the loop gate.
 pub async fn start_scan() -> Result<String, String> {
+    start_scan_with(&universe()).await
+}
+
+pub async fn start_scan_with(tickers: &[String]) -> Result<String, String> {
     let base = base_url();
+    let body = if tickers.is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::json!({ "tickers": tickers })
+    };
     let resp = client(CALL_TIMEOUT)?
         .post(format!("{base}/api/scan"))
-        .json(&serde_json::json!({}))
+        .json(&body)
         .send()
         .await
         .map_err(|e| unreachable_msg(&e))?;
@@ -886,6 +955,19 @@ mod tests {
         assert!(!is_iso_date(""));
         assert!(!is_iso_date("2026-8-7"));
         assert!(!is_iso_date("2026-08-07T00:00:00Z"));
+    }
+
+    #[test]
+    fn universe_parses_mixed_separators_and_dedupes() {
+        let got = parse_universe("aapl, SHOP.TO\nbrk.b; $msft  aapl");
+        assert_eq!(got, vec!["AAPL", "SHOP.TO", "BRK.B", "MSFT"]);
+    }
+
+    #[test]
+    fn universe_drops_non_tickers() {
+        assert!(parse_universe("!!! 123").is_empty());
+        assert_eq!(parse_universe("OK"), vec!["OK"]);
+        assert!(parse_universe("123").is_empty());
     }
 
     fn valid_trade() -> TradeEntry {
