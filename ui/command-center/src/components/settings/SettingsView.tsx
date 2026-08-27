@@ -1328,7 +1328,7 @@ function SearchPanel() {
       <Section title="Search providers">
         <SearchToolsSection />
       </Section>
-      <Section title="Polybot" sub="Polymarket credentials for the user's prediction-market bot. The Finance tab Start button reads these from the keychain.">
+      <Section title="Polybot" sub="Polymarket credentials. Off until you turn Polybot on from the Finance tab (risk disclaimer). Start reads these from the keychain.">
         <PolybotKeys />
       </Section>
     </div>

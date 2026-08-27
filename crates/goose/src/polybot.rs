@@ -21,6 +21,16 @@ pub const POLYBOT_ROOT_KEY: &str = "polybot_root";
 /// Optional path to the env file Polybot should load. Same key the bot reads
 /// as `POLYBOT_VAULT`.
 pub const POLYBOT_VAULT_KEY: &str = "polybot_vault";
+/// Off until the user turns Polybot on from the Finance tab, after the risk
+/// disclaimer. The card and Start path stay dark without this.
+pub const POLYBOT_ENABLED_KEY: &str = "polybot_enabled";
+
+/// True only when the user has opted in. Missing key is off.
+pub fn is_enabled() -> bool {
+    crate::config::Config::global()
+        .get_param::<bool>(POLYBOT_ENABLED_KEY)
+        .unwrap_or(false)
+}
 
 pub const LAUNCH_LABEL: &str = "com.polybot.bot";
 const FULL_SCAN_FILE: &str = ".full_scan_trigger";
@@ -423,6 +433,11 @@ fn is_quiet_hours() -> bool {
 
 /// Clear the kill switch and bring the bot up through launchd.
 pub async fn start() -> Result<String, String> {
+    if !is_enabled() {
+        return Err(
+            "Polybot is off — turn it on from the Finance tab (risk disclaimer) first".into(),
+        );
+    }
     let root = require_root()?;
     let paused = root.join("PAUSED");
     if paused.is_file() {

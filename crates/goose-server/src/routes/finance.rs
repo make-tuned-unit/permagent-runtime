@@ -1,10 +1,10 @@
 //! Finance tab — the money board.
 //!
-//! `GET /api/finance` is Polybot status, holdings with live marks, Picker
-//! picks run through a Yahoo + financialdatasets + loop-engineering gate,
-//! household spend, and research notes. Quotes are never persisted.
-//! Polybot start/pause/scan drive the user's bot; that bot can place orders.
-//! Keys stay in the keychain.
+//! `GET /api/finance` is holdings with live marks, household spend, research
+//! notes, and — only after the user opts in — Polybot status and Picker picks
+//! run through a Yahoo + loop-engineering gate. Quotes are never persisted.
+//! Polybot start/pause/scan drive that user's bot; that bot can place orders.
+//! Keys stay in the keychain. Picker ranks the ticker universe the user lists.
 
 use crate::state::AppState;
 use axum::{
@@ -246,11 +246,14 @@ struct HouseholdView {
 #[serde(rename_all = "camelCase")]
 struct FinanceBoard {
     polybot: permagent::polybot::PolybotStatus,
+    polybot_enabled: bool,
     holdings: HoldingsView,
     watchlist: Vec<WatchlistRow>,
     notes: Vec<finance_ledger::FinanceNote>,
     positions: Vec<finance_ledger::Position>,
     picker: PickerView,
+    picker_enabled: bool,
+    picker_universe: Vec<String>,
     picks: Vec<ValidatedPick>,
     sell_signals: Vec<SellSignal>,
     rsi_threshold: f64,
@@ -321,12 +324,23 @@ async fn get_board(State(state): State<Arc<AppState>>) -> Result<Json<FinanceBoa
     let positions = finance_ledger::list_positions(&pool)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let picker_enabled = picker::is_enabled();
+    let picker_universe = picker::universe();
     let picker = PickerView::from(picker::status().await);
+    let polybot_enabled = permagent::polybot::is_enabled();
     let polybot = permagent::polybot::status();
 
     let (holdings, sell_signals) = assemble_holdings(&positions, rsi_threshold()).await;
-    let picks = assemble_picks(&picker).await;
-    let daily_pick = financier_close::latest(&pool).await.ok().flatten();
+    let picks = if picker_enabled {
+        assemble_picks(&picker, &picker_universe).await
+    } else {
+        Vec::new()
+    };
+    let daily_pick = if picker_enabled {
+        financier_close::latest(&pool).await.ok().flatten()
+    } else {
+        None
+    };
 
     let recent = finance_ledger::list_transactions(&pool, 80)
         .await
@@ -346,11 +360,14 @@ async fn get_board(State(state): State<Arc<AppState>>) -> Result<Json<FinanceBoa
 
     Ok(Json(FinanceBoard {
         polybot,
+        polybot_enabled,
         holdings,
         watchlist,
         notes,
         positions,
         picker,
+        picker_enabled,
+        picker_universe,
         picks,
         sell_signals,
         rsi_threshold: rsi_threshold(),
@@ -532,25 +549,45 @@ impl HoldingSeed {
     }
 }
 
-async fn assemble_picks(picker: &PickerView) -> Vec<ValidatedPick> {
-    if !picker.reachable || picker.scan_in_progress {
+async fn assemble_picks(picker: &PickerView, universe: &[String]) -> Vec<ValidatedPick> {
+    if picker.scan_in_progress {
         return Vec::new();
     }
-    let Ok(raw) = picker::top_picks().await else {
+
+    let mut scanner_by_ticker = HashMap::new();
+    let mut scanner_order = Vec::new();
+    if picker.reachable {
+        if let Ok(raw) = picker::top_picks().await {
+            for v in raw {
+                if let Some(ticker) = v
+                    .get("ticker")
+                    .or_else(|| v.get("symbol"))
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.trim().to_uppercase())
+                    .filter(|s| !s.is_empty())
+                {
+                    if scanner_by_ticker.insert(ticker.clone(), v).is_none() {
+                        scanner_order.push(ticker);
+                    }
+                }
+            }
+        }
+    }
+
+    let tickers: Vec<String> = if !universe.is_empty() {
+        universe.iter().take(MAX_PICKS).cloned().collect()
+    } else if !scanner_order.is_empty() {
+        scanner_order.into_iter().take(MAX_PICKS).collect()
+    } else {
         return Vec::new();
     };
-    let batch = raw.len().min(MAX_PICKS);
+
+    let batch = tickers.len();
     let mut out = Vec::new();
-    for (i, v) in raw.into_iter().take(MAX_PICKS).enumerate() {
-        let Some(ticker) = v
-            .get("ticker")
-            .or_else(|| v.get("symbol"))
-            .and_then(|s| s.as_str())
-            .map(|s| s.trim().to_uppercase())
-            .filter(|s| !s.is_empty())
-        else {
-            continue;
-        };
+    for (i, ticker) in tickers.into_iter().enumerate() {
+        let v = scanner_by_ticker
+            .remove(&ticker)
+            .unwrap_or(serde_json::Value::Null);
         let picker_price = json_num(&v, &["price", "close"]);
         let quote = market_data::quote(&ticker).await;
         let (quote, quote_error) = match quote {
@@ -579,6 +616,7 @@ async fn assemble_picks(picker: &PickerView) -> Vec<ValidatedPick> {
                 error: None,
             }
         };
+        let company_from_quote = quote.as_ref().and_then(|q| q.name.clone());
         out.push(ValidatedPick {
             ticker,
             company_name: v
@@ -586,7 +624,8 @@ async fn assemble_picks(picker: &PickerView) -> Vec<ValidatedPick> {
                 .or_else(|| v.get("companyName"))
                 .or_else(|| v.get("name"))
                 .and_then(|s| s.as_str())
-                .map(str::to_string),
+                .map(str::to_string)
+                .or(company_from_quote),
             rank: v.get("rank").and_then(|n| n.as_i64()),
             score: json_num(&v, &["total_score", "score"]),
             tier: v.get("tier").and_then(|s| s.as_str()).map(str::to_string),
@@ -819,6 +858,13 @@ struct PickerAction {
 }
 
 async fn start_picker() -> Result<Json<PickerAction>, ApiError> {
+    if !picker::is_enabled() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Picker is off — turn it on from the Finance tab first".into(),
+        )
+            .into());
+    }
     picker::ensure_running()
         .await
         .map(|detail| Json(PickerAction { detail }))
@@ -826,29 +872,49 @@ async fn start_picker() -> Result<Json<PickerAction>, ApiError> {
 }
 
 async fn scan_picker() -> Result<Json<PickerAction>, ApiError> {
-    let s = picker::status().await;
-    if !s.reachable {
+    if !picker::is_enabled() {
         return Err((
-            StatusCode::BAD_GATEWAY,
-            format!(
-                "the scanner is not running at {} — start it from this tab first",
-                s.base_url
-            ),
+            StatusCode::FORBIDDEN,
+            "Picker is off — turn it on from the Finance tab first".into(),
         )
             .into());
     }
+    let universe = picker::universe();
+    let s = picker::status().await;
     if s.scan_in_progress {
         return Ok(Json(PickerAction {
             detail: "a scan is already running".into(),
         }));
     }
-    picker::start_scan()
-        .await
-        .map(|detail| Json(PickerAction { detail }))
-        .map_err(|e| (StatusCode::BAD_GATEWAY, e).into())
+    if s.reachable {
+        return picker::start_scan()
+            .await
+            .map(|detail| Json(PickerAction { detail }))
+            .map_err(|e| (StatusCode::BAD_GATEWAY, e).into());
+    }
+    if universe.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "add tickers to your universe, or start the local scanner".into(),
+        )
+            .into());
+    }
+    Ok(Json(PickerAction {
+        detail: format!(
+            "no local scanner — ranking {} tickers you listed via Yahoo + the loop gate",
+            universe.len()
+        ),
+    }))
 }
 
 async fn start_polybot() -> Result<Json<PickerAction>, ApiError> {
+    if !polybot::is_enabled() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Polybot is off — turn it on from the Finance tab first".into(),
+        )
+            .into());
+    }
     polybot::start()
         .await
         .map(|detail| Json(PickerAction { detail }))
@@ -856,12 +922,21 @@ async fn start_polybot() -> Result<Json<PickerAction>, ApiError> {
 }
 
 async fn pause_polybot() -> Result<Json<PickerAction>, ApiError> {
+    // Pause stays available after the card is turned off so a running bot
+    // can still be stopped without re-accepting the disclaimer.
     polybot::pause()
         .map(|detail| Json(PickerAction { detail }))
         .map_err(|e| (StatusCode::BAD_GATEWAY, e).into())
 }
 
 async fn scan_polybot() -> Result<Json<PickerAction>, ApiError> {
+    if !polybot::is_enabled() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Polybot is off — turn it on from the Finance tab first".into(),
+        )
+            .into());
+    }
     polybot::request_scan()
         .await
         .map(|detail| Json(PickerAction { detail }))
