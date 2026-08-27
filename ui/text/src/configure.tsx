@@ -13,6 +13,11 @@ import {
 import { Spinner, SPINNER_FRAMES } from "./components/Spinner.js";
 import { ErrorScreen } from "./components/ErrorScreen.js";
 import { ProviderSelector, ProviderConfigurator } from "./onboarding.js";
+import {
+  filterPickerModels,
+  modelsFromConfiguredProviders,
+  type PickerModel,
+} from "./modelPicker.js";
 
 const LOAD_MODELS_TIMEOUT_MS = 30000;
 
@@ -22,6 +27,7 @@ type Phase =
   | "configure"
   | "loading_models"
   | "select_model"
+  | "select_model_all"
   | "saving"
   | "error";
 
@@ -74,13 +80,27 @@ const ModelSelector = React.memo(function ModelSelector({
       try {
         setLoading(true);
         setError(null);
-        const resp = await client.goose.GooseProvidersModels({
-          providerName: provider.name,
-        });
+        const known = (provider.knownModels ?? []).map((m) =>
+          typeof m === "string" ? m : m.name,
+        );
+        let listed: string[] = [];
+        try {
+          const resp = await client.goose.GooseProvidersModels({
+            providerName: provider.name,
+          });
+          listed = resp.models;
+        } catch {
+          listed = [];
+        }
         if (!cancelled) {
-          setModels(resp.models);
-          const defaultIdx = resp.models.findIndex((m) => m === provider.defaultModel);
-          setSelectedIdx(defaultIdx >= 0 ? defaultIdx : 0);
+          const models = listed.length > 0 ? listed : known;
+          if (models.length === 0) {
+            setError("No models listed for this provider.");
+          } else {
+            setModels(models);
+            const defaultIdx = models.findIndex((m) => m === provider.defaultModel);
+            setSelectedIdx(defaultIdx >= 0 ? defaultIdx : 0);
+          }
           setLoading(false);
           clearTimeout(timeoutId);
         }
@@ -350,6 +370,113 @@ const ModelSelector = React.memo(function ModelSelector({
   );
 });
 
+const AllModelsSelector = React.memo(function AllModelsSelector({
+  entries,
+  height,
+  onSelect,
+  onBack,
+}: {
+  entries: PickerModel[];
+  height: number;
+  onSelect: (providerName: string, model: string) => void;
+  onBack: () => void;
+}) {
+  const [selectedIdx, setSelectedIdx] = useState(0);
+  const [searchQuery, setSearchQuery] = useState("");
+  const { stdout } = useStdout();
+  const columns = stdout?.columns ?? 80;
+  const filtered = filterPickerModels(entries, searchQuery);
+  const maxWidth = Math.min(columns - 4, 80);
+  const listHeight = Math.max(height - 12, 3);
+  const [scrollOffset, setScrollOffset] = useState(0);
+
+  useEffect(() => {
+    if (selectedIdx < scrollOffset) {
+      setScrollOffset(selectedIdx);
+    } else if (selectedIdx >= scrollOffset + listHeight) {
+      setScrollOffset(selectedIdx - listHeight + 1);
+    }
+  }, [selectedIdx, scrollOffset, listHeight]);
+
+  useInput((ch, key) => {
+    if (key.escape) {
+      if (searchQuery) {
+        setSearchQuery("");
+        setSelectedIdx(0);
+        setScrollOffset(0);
+        return;
+      }
+      onBack();
+      return;
+    }
+    if (key.upArrow) {
+      setSelectedIdx((i) => Math.max(i - 1, 0));
+      return;
+    }
+    if (key.downArrow) {
+      setSelectedIdx((i) => Math.min(i + 1, Math.max(filtered.length - 1, 0)));
+      return;
+    }
+    if (key.return) {
+      const m = filtered[selectedIdx];
+      if (m) onSelect(m.providerName, m.model);
+      return;
+    }
+    if (key.backspace || key.delete) {
+      setSearchQuery((q) => q.slice(0, -1));
+      setSelectedIdx(0);
+      setScrollOffset(0);
+      return;
+    }
+    if (ch && ch.length === 1 && !key.ctrl && !key.meta) {
+      setSearchQuery((q) => q + ch);
+      setSelectedIdx(0);
+      setScrollOffset(0);
+    }
+  });
+
+  const visible = filtered.slice(scrollOffset, scrollOffset + listHeight);
+
+  return (
+    <Box flexDirection="column" height={height} width={columns} paddingX={2}>
+      <Box marginTop={1} />
+      <Box justifyContent="center" marginBottom={1}>
+        <Text color={TEXT_PRIMARY} bold>◆ Select model ◆</Text>
+      </Box>
+      <Box justifyContent="center" marginBottom={1}>
+        <Text color={TEXT_DIM}>All configured providers — type to filter</Text>
+      </Box>
+      <Box justifyContent="center" marginBottom={1}>
+        <Text color={TEXT_DIM}>{searchQuery || "search models…"}</Text>
+      </Box>
+      <Box flexDirection="column" flexGrow={1}>
+        {filtered.length === 0 ? (
+          <Box justifyContent="center">
+            <Text color={TEXT_DIM}>No matching models</Text>
+          </Box>
+        ) : (
+          visible.map((m, vi) => {
+            const idx = scrollOffset + vi;
+            const selected = idx === selectedIdx;
+            return (
+              <Box key={`${m.providerName}-${m.model}`} width={maxWidth}>
+                <Text color={selected ? TEAL : TEXT_PRIMARY} bold={selected}>
+                  {selected ? "❯ " : "  "}
+                  {m.model}
+                </Text>
+                <Text color={TEXT_DIM}>  {m.displayName}</Text>
+              </Box>
+            );
+          })
+        )}
+      </Box>
+      <Box justifyContent="center" marginTop={1}>
+        <Text color={TEXT_DIM}>↑↓ navigate · enter select · esc back</Text>
+      </Box>
+    </Box>
+  );
+});
+
 export default function ConfigureScreen({
   client,
   sessionId,
@@ -390,19 +517,8 @@ export default function ConfigureScreen({
         setProviders(sorted);
 
         if (initialIntent === "model") {
-          try {
-            const cfg = await client.goose.GooseConfigRead({ key: "GOOSE_PROVIDER" });
-            if (cancelled) return;
-            const current = sorted.find((p) => p.name === cfg.value);
-            if (current) {
-              setSelectedProvider(current);
-              setPendingConfigValues({});
-              setPhase("select_model");
-              return;
-            }
-          } catch {
-            // fall through to provider selector
-          }
+          setPhase("select_model_all");
+          return;
         }
 
         if (!cancelled) setPhase("select_provider");
@@ -488,6 +604,15 @@ export default function ConfigureScreen({
     setPhase("loading");
   }, []);
 
+  const handleAllModelSelected = useCallback(
+    (providerName: string, model: string) => {
+      const provider = providers.find((p) => p.name === providerName);
+      if (!provider) return;
+      applyProviderModel(provider, model, {});
+    },
+    [providers, applyProviderModel],
+  );
+
   if (phase === "loading" || phase === "loading_models" || phase === "saving") {
     const label = 
       phase === "loading" ? "Loading providers…" : 
@@ -531,6 +656,17 @@ export default function ConfigureScreen({
           setSelectedProvider(null);
           setPhase("select_provider");
         }}
+      />
+    );
+  }
+
+  if (phase === "select_model_all") {
+    return (
+      <AllModelsSelector
+        entries={modelsFromConfiguredProviders(providers)}
+        height={height}
+        onSelect={handleAllModelSelected}
+        onBack={onCancel}
       />
     );
   }

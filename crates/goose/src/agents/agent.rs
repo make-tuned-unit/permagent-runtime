@@ -2369,6 +2369,50 @@ impl Agent {
                             state_guard.mark_error();
                             break;
                         }
+                        Err(ref provider_err) if provider_err.is_stream_decode() => {
+                            #[cfg(feature = "telemetry")]
+                            crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
+                            error!("Error: {}", provider_err);
+                            // A dropped SSE body is transient. Before any assistant
+                            // text was committed, silent-failover to the next model
+                            // the same way a connect failure does. After commit, ask
+                            // the user to resend — never "rejected as invalid".
+                            if crate::cost_router::fallback::may_silent_precommit_failover(
+                                stream_committed,
+                                provider_err,
+                            ) && !permanent_failure_fallback_used
+                            {
+                                let failed_provider = match self.provider().await {
+                                    Ok(p) => p.get_name().to_string(),
+                                    Err(_) => "the model provider".to_string(),
+                                };
+                                if self
+                                    .switch_to_permanent_failure_fallback(
+                                        &session_config.id,
+                                        &failed_provider,
+                                    )
+                                    .await
+                                    .is_some()
+                                {
+                                    tracing::info!(
+                                        target: "permagent::cost_router",
+                                        session_id = %session_config.id,
+                                        from_provider = %failed_provider,
+                                        "silent pre-commit failover after a stream decode error"
+                                    );
+                                    permanent_failure_fallback_used = true;
+                                    did_switch_provider_this_iteration = true;
+                                    break;
+                                }
+                            }
+                            yield AgentEvent::Message(
+                                Message::assistant().with_text(
+                                    "The model stream dropped before the reply finished.\n\nPlease resend your message to try again."
+                                )
+                            );
+                            state_guard.mark_error();
+                            break;
+                        }
                         Err(ref provider_err @ ProviderError::NetworkError(_)) => {
                             #[cfg(feature = "telemetry")]
                             crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());

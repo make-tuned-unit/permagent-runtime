@@ -809,7 +809,11 @@ impl Agent {
 
 fn is_local_provider(provider: &str) -> bool {
     let provider = provider.to_ascii_lowercase();
-    provider == "local" || provider.contains("ollama")
+    provider == "local"
+        || provider.contains("ollama")
+        || provider == "lmstudio"
+        || provider == "llama_swap"
+        || provider == "qwen38_split"
 }
 
 /// Check whether a tool should be callable by an app based on MCP Apps visibility metadata.
@@ -916,6 +920,7 @@ mod tests {
         assert!(is_local_provider("local"));
         assert!(is_local_provider("ollama"));
         assert!(is_local_provider("remote-ollama"));
+        assert!(is_local_provider("qwen38_split"));
         assert!(!is_local_provider("anthropic"));
     }
 

@@ -443,6 +443,24 @@ pub static KNOWN_MODELS: &[ModelKnowledge] = &[
         context_window: 40_960,
         is_local: true,
     },
+    // Two-machine llama-server split (Librarian endpoint :8081). Q4_K_M 27B;
+    // the server is launched with -c 4096, so the harness must treat that as
+    // the real window, not the model's paper spec.
+    ModelKnowledge {
+        provider: "qwen38_split",
+        model: "qwen3.8-27b",
+        display_name: "Qwen3.8-27B (split)",
+        family: "qwen",
+        // edit 0.84 / orch 0.52: local-27B estimates between qwen3-coder (0.86)
+        // and small qwen3 (0.76). No public aider/SWE-bench row for this GGUF.
+        edit_format_reliability: 0.840,
+        orchestration_strength: 0.52,
+        input_usd_per_mtok: 0.0,
+        output_usd_per_mtok: 0.0,
+        cache_support: false,
+        context_window: 4_096,
+        is_local: true,
+    },
 ];
 
 /// Strip a trailing `-YYYYMMDD` 8-digit date suffix from a model id — e.g. the
@@ -578,6 +596,15 @@ mod tests {
         let local = lookup("ollama", "qwen3").unwrap();
         assert!(local.blended_cost_per_mtok().abs() < 1e-9);
         assert!(local.is_local);
+    }
+
+    #[test]
+    fn qwen38_split_is_a_local_free_row_with_the_split_context() {
+        let row = lookup("qwen38_split", "qwen3.8-27b").expect("qwen3.8-27b must resolve");
+        assert!(row.is_local);
+        assert!(row.blended_cost_per_mtok().abs() < 1e-9);
+        assert_eq!(row.context_window, 4_096);
+        assert_eq!(row.display_name, "Qwen3.8-27B (split)");
     }
 
     /// Z.AI is selectable by the router: its rows resolve, carry the published

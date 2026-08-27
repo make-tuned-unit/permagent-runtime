@@ -478,9 +478,7 @@ fn stream_ollama(response: Response, mut log: RequestLog) -> Result<MessageStrea
         pin!(message_stream);
 
         while let Some(message) = message_stream.next().await {
-            let (message, usage) = message.map_err(|e|
-                ProviderError::RequestFailed(format!("Stream decode error: {}", e))
-            )?;
+            let (message, usage) = message.map_err(ProviderError::stream_decode)?;
             log.write(&message, usage.as_ref().map(|f| f.usage).as_ref())?;
             yield (message, usage);
         }

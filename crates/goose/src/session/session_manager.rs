@@ -1384,6 +1384,16 @@ impl SessionStorage {
                     // version-independent posture: a missing column here
                     // silently drops parent attribution on every child spawn.
                     spectral_schema::apply_session_parent_schema(&self.pool).await?;
+
+                    // Growth actions + analytics events. Both apply functions
+                    // claimed to run on every boot; they only ran on fresh init
+                    // and their version-gated migrate. A DB already past v42
+                    // never got `verified_commit`, so Grow failed every read
+                    // with `no column found for name: verified_commit`
+                    // (health-watch 2026-08-27). Idempotent — a steady-state
+                    // boot adds nothing.
+                    spectral_schema::apply_growth_actions_schema(&self.pool).await?;
+                    spectral_schema::apply_analytics_events_schema(&self.pool).await?;
                 } else {
                     info!("Initializing Spectral schema at {:?}", self.db_path);
                     spectral_schema::init_spectral_db(&self.pool).await?;
