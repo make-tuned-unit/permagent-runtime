@@ -33,11 +33,7 @@ pub async fn inject_moim(
 
         let (fixed, issues) = fix_conversation(Conversation::new_unvalidated(messages));
 
-        let has_unexpected_issues = issues.iter().any(|issue| {
-            !issue.contains("Merged consecutive user messages")
-                && !issue.contains("Merged consecutive assistant messages")
-                && !issue.contains("Added placeholder to empty tool result")
-        });
+        let has_unexpected_issues = issues.iter().any(|issue| !is_expected_moim_issue(issue));
 
         if has_unexpected_issues {
             tracing::warn!(
@@ -105,6 +101,24 @@ pub async fn inject_moim(
 /// one consecutive-same-role pair. Anything beyond this was already in the
 /// conversation before MOIM touched it.
 const MAX_MERGES_CAUSED_BY_MOIM: usize = 1;
+
+/// `fix_conversation` reports every coalesce it performs. Most of those are
+/// lossless and happen on ordinary turns: MOIM's own insertion sits next to the
+/// last user message, streamed assistant text often has trailing whitespace,
+/// and adjacent text parts inside one message are joined in order.
+///
+/// Session 20260827_1 logged twelve `dropping the injection` warnings because
+/// `"Merged text content"` was treated as unexpected. That dropped Top-of-Mind
+/// on every turn of a healthy conversation. These strings are the expected
+/// set; anything else still drops the injection.
+fn is_expected_moim_issue(issue: &str) -> bool {
+    issue.contains("Merged consecutive user messages")
+        || issue.contains("Merged consecutive assistant messages")
+        || issue.contains("Added placeholder to empty tool result")
+        || issue.contains("Added placeholder user message to empty conversation")
+        || issue.contains("Merged text content")
+        || issue.contains("Trimmed trailing whitespace from assistant message")
+}
 
 #[cfg(test)]
 mod tests {
@@ -255,5 +269,120 @@ mod tests {
             has_moim,
             "MOIM should be in message before latest assistant message"
         );
+    }
+
+    fn conversation_has_moim(conv: &Conversation) -> bool {
+        conv.messages().iter().any(|m| {
+            m.content
+                .iter()
+                .any(|c| c.as_text().is_some_and(|t| t.contains("<info-msg>")))
+        })
+    }
+
+    /// Session 20260827_1's shape: the current turn ends on a user message,
+    /// the previous assistant has adjacent streamed text parts (coalesced as
+    /// `Merged text content`), and MOIM sits next to the prior user message
+    /// (`Merged consecutive user messages`). Coalesce only runs on assistant
+    /// content; a fixture that ends on assistant also trips
+    /// `Removed trailing assistant message` and drops the injection.
+    #[tokio::test]
+    async fn moim_keeps_injection_when_text_content_is_merged() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let em = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+        let working_dir = PathBuf::from("/test/dir");
+
+        let conv = Conversation::new_unvalidated(vec![
+            Message::user().with_text("first question"),
+            Message::assistant()
+                .with_text("first")
+                .with_text(" answer  "),
+            Message::user().with_text("second question"),
+        ]);
+
+        let issues = {
+            let mut messages = conv.messages().clone();
+            let idx = messages
+                .iter()
+                .rposition(|m| m.role == Role::Assistant)
+                .unwrap();
+            messages.insert(idx, Message::user().with_text("placeholder"));
+            let (_, issues) =
+                crate::conversation::fix_conversation(Conversation::new_unvalidated(messages));
+            issues
+        };
+        assert!(
+            issues.iter().any(|i| i.contains("Merged text content")),
+            "fixture must reproduce the 20260827_1 coalescing issue, got {issues:?}"
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.contains("Merged consecutive user messages")),
+            "fixture must reproduce the consecutive-user merge, got {issues:?}"
+        );
+        assert!(
+            issues.iter().all(|i| is_expected_moim_issue(i)),
+            "every issue in the 20260827_1 list must be expected, got {issues:?}"
+        );
+
+        let result = inject_moim("20260827_1", conv, &em, &working_dir).await;
+        assert!(
+            conversation_has_moim(&result),
+            "MOIM must not drop the injection for Merged text content"
+        );
+        let all_text: String = result
+            .messages()
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|c| c.as_text())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(all_text.contains("first question"));
+        assert!(all_text.contains("second question"));
+        assert!(all_text.contains("first") && all_text.contains("answer"));
+    }
+
+    /// Growing the conversation must not start dropping MOIM. Each turn of
+    /// session 20260827_1 re-ran the sanitizer on a longer history that still
+    /// ended on the user's current message. Ten turns with split assistant
+    /// text and trailing whitespace is the shape that used to warn.
+    #[tokio::test]
+    async fn moim_keeps_injection_across_ten_turns_with_coalescing() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let em = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+        let working_dir = PathBuf::from("/test/dir");
+
+        let mut messages = vec![Message::user().with_text("question 0")];
+        for turn in 0..10 {
+            let conv = Conversation::new_unvalidated(messages.clone());
+            let before = conv.messages().len();
+            let result = inject_moim("20260827_1", conv, &em, &working_dir).await;
+            assert!(
+                conversation_has_moim(&result),
+                "turn {turn} (messages_before={before}) dropped MOIM"
+            );
+            messages.push(
+                Message::assistant()
+                    .with_text(format!("answer {turn} part a"))
+                    .with_text(" part b  "),
+            );
+            messages.push(Message::user().with_text(format!("question {}", turn + 1)));
+        }
+    }
+
+    #[test]
+    fn expected_moim_issues_match_the_health_watch_list() {
+        for issue in [
+            "Merged text content",
+            "Merged consecutive user messages",
+            "Merged consecutive assistant messages",
+            "Added placeholder to empty tool result",
+            "Added placeholder user message to empty conversation",
+            "Trimmed trailing whitespace from assistant message",
+        ] {
+            assert!(is_expected_moim_issue(issue), "{issue}");
+        }
+        assert!(!is_expected_moim_issue("Removed empty message"));
+        assert!(!is_expected_moim_issue("Fixed lead/trail"));
     }
 }

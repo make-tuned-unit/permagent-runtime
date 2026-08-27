@@ -319,6 +319,17 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
             }
             announce("available");
         }
+        Err(e) if strix::is_empty_input_skip(&e) => {
+            // Empty tree / empty model input is a skip, not a scanner crash.
+            // last_scan stays unset (Overview honesty); last_attempt already
+            // advanced so this project cannot pin the rotation.
+            tracing::info!(
+                target: "permagentd::strix",
+                project = %project.name,
+                "scan skipped: no scannable files"
+            );
+            announce("available");
+        }
         Err(e) => {
             // A missing scanner is a stated fact, not a silent skip.
             tracing::warn!(
@@ -738,25 +749,17 @@ async fn rsync_to_remote(target: &std::path::Path, ssh_target: &str) -> Result<(
     let rel = remote_scan_rel(target);
     ssh_run(ssh_target, &format!("mkdir -p \"$HOME/{rel}\"")).await?;
     let mut cmd = tokio::process::Command::new("rsync");
-    cmd.args([
-        "-a",
-        "--delete",
-        "--exclude=.git",
-        "--exclude=target",
-        "--exclude=node_modules",
-        "--exclude=dist",
-        "--exclude=build",
-        "--exclude=.next",
-        "--exclude=__pycache__",
-        "-e",
-        &rsync_ssh_transport(),
-    ])
-    .arg(format!("{}/", target.display()))
-    .arg(format!("{ssh_target}:{rel}/"))
-    .stdin(Stdio::null())
-    .stdout(Stdio::piped())
-    .stderr(Stdio::piped())
-    .kill_on_drop(true);
+    cmd.args(["-a", "--delete"]);
+    for exclude in strix::SCAN_EXCLUDES {
+        cmd.arg(format!("--exclude={exclude}"));
+    }
+    cmd.args(["-e", &rsync_ssh_transport()])
+        .arg(format!("{}/", target.display()))
+        .arg(format!("{ssh_target}:{rel}/"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
     let output = tokio::time::timeout(RSYNC_TIMEOUT, cmd.output())
         .await
         .map_err(|_| "rsync to the scanner host timed out".to_string())?
@@ -991,6 +994,9 @@ async fn wait_supervised(
 }
 
 async fn scan_project(target: &std::path::Path) -> Result<Vec<Finding>, String> {
+    if !strix::has_scannable_files(target) {
+        return Err("no scannable files".into());
+    }
     if let Some(ssh) = strix::docker_ssh_target() {
         tracing::info!(
             target: "permagentd::strix",
@@ -1050,10 +1056,9 @@ async fn scan_project_remote(
     }
     let output = output?;
     if !output.status.success() {
-        return Err(format!(
-            "scanner exited {}: {}",
+        return Err(strix::classify_scanner_failure(
             output.status,
-            scanner_failure_detail(&output)
+            &scanner_failure_detail(&output),
         ));
     }
     rsync_strix_back(target, ssh_target).await?;
@@ -1104,10 +1109,9 @@ async fn scan_project_local(target: &std::path::Path) -> Result<Vec<Finding>, St
     )
     .await?;
     if !output.status.success() {
-        return Err(format!(
-            "scanner exited {}: {}",
+        return Err(strix::classify_scanner_failure(
             output.status,
-            scanner_failure_detail(&output)
+            &scanner_failure_detail(&output),
         ));
     }
     let sarif = find_sarif(target).ok_or_else(|| "scan produced no findings.sarif".to_string())?;

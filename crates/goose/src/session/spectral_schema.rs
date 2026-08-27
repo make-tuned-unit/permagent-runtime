@@ -3889,10 +3889,11 @@ pub async fn apply_growth_actions_schema(pool: &Pool<Sqlite>) -> Result<()> {
     // every non-git strategy, legitimately has no commit.
     //
     // PRAGMA-guarded ADD COLUMN, applied here rather than in a version-gated
-    // migration because `apply_growth_actions_schema` already runs on EVERY
-    // boot (session_manager.rs) — the same version-independent safety net the
-    // recognition columns use, and the reason a stamped-but-missing column
-    // cannot strand the Grow board.
+    // migration because `apply_growth_actions_schema` runs on EVERY boot
+    // (session_manager.rs, next to recognition / finance / briefings). A
+    // stamped-but-missing column cannot strand the Grow board: a DB already
+    // past v42 never re-ran migrate_v41_to_v42, which is how
+    // `verified_commit` went missing in production (health-watch 2026-08-27).
     for (col, ddl) in [
         (
             "verified_commit",

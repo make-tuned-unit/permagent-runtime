@@ -93,10 +93,35 @@ impl ProviderError {
         }
     }
 
+    /// Mid-stream body that could not be decoded. The HTTP request already
+    /// succeeded; the socket died, a proxy truncated the SSE, or the codec
+    /// saw garbage. Transient — not a 4xx rejection of the payload.
+    ///
+    /// Session 20260827_1 (2026-08-27): two `Stream decode error: error
+    /// decoding response body` failures at 04:26 and 04:36 UTC were typed as
+    /// `RequestFailed`, so the reply path told the user the provider
+    /// "rejected this request as invalid" and invited a model switch.
+    /// Resending would have worked.
+    pub fn stream_decode(err: impl std::fmt::Display) -> Self {
+        ProviderError::NetworkError(format!("Stream decode error: {err}"))
+    }
+
+    pub fn is_stream_decode(&self) -> bool {
+        match self {
+            ProviderError::NetworkError(msg) | ProviderError::RequestFailed(msg) => {
+                is_stream_decode_message(msg)
+            }
+            _ => false,
+        }
+    }
+
     /// A short, human sentence safe to show a user or read aloud — never the
     /// raw provider payload. `raw` bodies carry request ids, model ids, JSON
     /// braces and support URLs; session 20260823_4 read one of those out loud.
     pub fn user_facing_summary(&self) -> String {
+        if self.is_stream_decode() {
+            return "the model stream dropped before the reply finished".to_string();
+        }
         match self {
             ProviderError::CreditsExhausted { .. } => {
                 "the provider rejected the request for billing reasons (credit balance too low)"
@@ -207,11 +232,23 @@ fn is_permanent_client_message(msg: &str) -> bool {
         || m.contains("status 413")
 }
 
+fn is_stream_decode_message(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    m.contains("stream decode error") || m.contains("error decoding response body")
+}
+
 fn is_network_error(err: &reqwest::Error) -> bool {
-    err.is_connect() || err.is_timeout() || (err.status().is_none() && err.is_request())
+    err.is_connect()
+        || err.is_timeout()
+        || err.is_decode()
+        || err.is_body()
+        || (err.status().is_none() && err.is_request())
 }
 
 fn provider_error_from_reqwest(error: &reqwest::Error) -> ProviderError {
+    if error.is_decode() || error.is_body() {
+        return ProviderError::stream_decode(error);
+    }
     if is_network_error(error) {
         let msg = if error.is_timeout() {
             "Request timed out — check your network connection and try again.".to_string()
@@ -298,5 +335,37 @@ impl GoogleErrorCode {
             503 => Some(Self::ServiceUnavailable),
             _ => Some(Self::InternalServerError),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stream_decode_is_a_transient_network_error() {
+        let err = ProviderError::stream_decode("error decoding response body");
+        assert!(matches!(err, ProviderError::NetworkError(_)));
+        assert!(err.is_stream_decode());
+        assert!(!err.is_permanent());
+        let summary = err.user_facing_summary();
+        assert_eq!(
+            summary,
+            "the model stream dropped before the reply finished"
+        );
+        assert!(!summary.contains("decoding response body"));
+    }
+
+    #[test]
+    fn leftover_request_failed_stream_decode_is_still_detected() {
+        let err = ProviderError::RequestFailed(
+            "Stream decode error: error decoding response body".into(),
+        );
+        assert!(err.is_stream_decode());
+        assert!(!err.is_permanent());
+        assert_eq!(
+            err.user_facing_summary(),
+            "the model stream dropped before the reply finished"
+        );
     }
 }

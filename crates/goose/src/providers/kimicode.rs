@@ -427,7 +427,7 @@ impl Provider for KimiCodeProvider {
             pin!(message_stream);
             while let Some(message) = futures::StreamExt::next(&mut message_stream).await {
                 let (message, usage) = message.map_err(|e| {
-                    ProviderError::RequestFailed(format!("Stream decode error: {}", e))
+                    ProviderError::stream_decode(e)
                 })?;
                 log.write(&message, usage.as_ref().map(|f| f.usage).as_ref())?;
                 yield (message, usage);
