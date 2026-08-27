@@ -40,8 +40,13 @@ enum VoiceAudioRoute {
     struct Policy: Equatable {
         /// No headset/car output — capture is the phone's own speaker+mic.
         var speakerphone: Bool
-        /// AEC. MUST be false on speakerphone (it mutes the near-end mic)
-        /// and true on a headset (playback is in the ears).
+    /// AEC. MUST be false on speakerphone (it mutes the near-end mic)
+    /// and true on a headset (playback is in the ears).
+    ///
+    /// N2 (kitchen-voice): one-way dictation uses `.spokenAudio` for Voice
+    /// Isolation. The orb speakerphone path stays VP-off until a real iPhone
+    /// measurement shows setVoiceProcessingEnabled(true) still yields RMS
+    /// above onset (the 2026-08-21 mute). Do not flip this flag without that.
         var voiceProcessing: Bool
         var outputOverride: OutputOverride
     }
