@@ -998,6 +998,17 @@ fn enroll_status_msg(have: usize) -> ServerMessage {
     }
 }
 
+/// Re-place a parked word after reconnect. iOS barge-in closes the socket
+/// (this morning: teach at 11:14:29, close 1001 at 11:14:34) and the new
+/// socket used to never send `teach` again — Henry still spoke ASK_FIRST
+/// on the dying socket, then the orb came back empty.
+fn pending_teach_msg(session_id: &str) -> Option<ServerMessage> {
+    let pending = permagent::events::voice_pronounce::peek(session_id)?;
+    Some(ServerMessage::Teach {
+        word: permagent::events::voice_pronounce::display_word(&pending.word),
+    })
+}
+
 /// Push any captured clipboard bodies down this socket NOW. The caller
 /// still shows them on `reply_text` at turn end.
 async fn flush_voice_clipboard(
@@ -1078,6 +1089,14 @@ async fn handle_voice_socket(
             enrolled: crate::voice::speaker_print::load().is_some(),
         }))
         .await;
+    let remainder_key = session_id.as_deref().unwrap_or("voice-anon");
+    if let Some(teach) = pending_teach_msg(remainder_key) {
+        tracing::info!(
+            target: "permagentd::voice",
+            "replaying pending teach after connect"
+        );
+        let _ = socket.send(send_json(&teach)).await;
+    }
 
     // Load proper-noun dictionary from Brain for post-STT correction.
     let entity_dict = if let Some(ref brain) = state.brain {
@@ -1289,7 +1308,6 @@ async fn handle_voice_socket(
 
                         // Unspoken leftover from a spoken-budget cut. "Continue."
                         // last night started a cold agent turn and lost the story.
-                        let remainder_key = session_id.as_deref().unwrap_or("voice-anon");
 
                         // Listen-once: we asked how a name is said. This turn
                         // is the pronunciation, not a new story beat.
@@ -2930,6 +2948,19 @@ mod tests {
         })
         .unwrap();
         assert_eq!(taught["type"], "taught");
+    }
+
+    #[test]
+    fn reconnect_replays_a_parked_teach_word() {
+        let sid = "teach-replay-test";
+        permagent::events::voice_pronounce::clear(sid);
+        permagent::events::voice_pronounce::begin(sid, "Elspeth", None);
+        let msg = pending_teach_msg(sid).expect("parked teach");
+        let v = serde_json::to_value(msg).unwrap();
+        assert_eq!(v["type"], "teach");
+        assert_eq!(v["word"], "Elspeth");
+        permagent::events::voice_pronounce::clear(sid);
+        assert!(pending_teach_msg(sid).is_none());
     }
 
     #[test]

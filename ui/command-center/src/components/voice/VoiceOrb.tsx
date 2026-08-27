@@ -356,8 +356,10 @@ export function VoiceOrb({
                 fontSize: 28,
                 fontWeight: 600,
                 color: '#fff',
-                textShadow: '0 2px 18px rgba(0,0,0,0.55)',
                 lineHeight: 1.15,
+                background: 'rgba(0,0,0,0.72)',
+                borderRadius: 16,
+                padding: '12px 18px',
               }}
             >
               {teachWord}

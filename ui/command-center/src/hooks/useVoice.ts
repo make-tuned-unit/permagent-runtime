@@ -1103,7 +1103,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
         // buffers over the high bar) so TTS bleed can't self-interrupt.
         if (rms > VAD_BARGE) {
           vadBargeStreakRef.current += 1;
-          if (vadBargeStreakRef.current >= 2 && s === 'playing') {
+          if (vadBargeStreakRef.current >= 2 && s === 'playing' && !teachWordRef.current) {
             vadBargeStreakRef.current = 0;
             vadHeardSpeechRef.current = false;
             interruptRef.current?.();

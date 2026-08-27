@@ -143,19 +143,20 @@ struct VoiceOrbView: View {
             if let word = teachWord, !word.isEmpty {
                 VStack(spacing: 6) {
                     Text(word)
-                        .font(.system(size: diameter * 0.11, weight: .semibold, design: .rounded))
+                        .font(.system(size: max(18 as CGFloat, diameter * 0.13), weight: .semibold, design: .rounded))
                         .foregroundStyle(Color.white)
-                        .shadow(color: Color.black.opacity(0.55), radius: 8, y: 2)
-                        .minimumScaleFactor(0.5)
+                        .minimumScaleFactor(0.45)
                         .lineLimit(2)
                         .multilineTextAlignment(.center)
                     Text("SAY THIS")
-                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .font(.system(size: max(9 as CGFloat, diameter * 0.032), weight: .bold, design: .rounded))
                         .tracking(1.6)
-                        .foregroundStyle(Color.white.opacity(0.72))
+                        .foregroundStyle(Color.white.opacity(0.78))
                 }
-                .padding(.horizontal, 18)
-                .frame(maxWidth: diameter * 0.72)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .frame(maxWidth: diameter * 0.78)
+                .background(Color.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("Say \(word)")
             }

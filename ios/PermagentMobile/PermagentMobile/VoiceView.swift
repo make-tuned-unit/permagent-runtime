@@ -630,6 +630,10 @@ final class VoiceEngine: ObservableObject {
         case .beginTurn: enterListening()  // NOT beginTurn(): the VAD stamped its own clocks
         case .endTurn: endTurn()
         case .interrupt:
+            // Don't barge-in the teach prompt. Kitchen speakerphone hears
+            // ASK_FIRST and would reconnect, dropping the word off the orb
+            // (2026-08-27 11:14:29 teach → 11:14:34 close 1001).
+            if teachWord != nil { break }
             // Speakerphone without AEC: his TTS comes out the same speaker the
             // mic hears. Ignore barge while playback is actually coming out.
             if VoiceAudioRoute.ignoreBargeIn(
@@ -841,6 +845,12 @@ final class VoiceEngine: ObservableObject {
             case "teach":
                 if let word = msg.word, !word.isEmpty {
                     teachWord = word
+                    // Reconnect / replay: the word is already parked — open
+                    // the mic. First-time teach arrives before ASK_FIRST audio;
+                    // stay put so the prompt can play, then finishSpeaking listens.
+                    if state == .ready {
+                        enterListening()
+                    }
                 }
             case "taught":
                 teachWord = nil
@@ -1125,7 +1135,10 @@ struct VoiceView: View {
                         enrollPrompt: engine.enrollPrompt
                     )
                 )
-                    .onTapGesture { engine.interrupt() }
+                    .onTapGesture {
+                        if engine.teachWord != nil { return }
+                        engine.interrupt()
+                    }
                     .accessibilityLabel(orbAccessibility)
                     .accessibilityAddTraits(.isButton)
 
@@ -1176,6 +1189,16 @@ struct VoiceView: View {
 
     private var conversationText: some View {
         VStack(spacing: 10) {
+            if let word = engine.teachWord {
+                Text(word)
+                    .font(.brandTitle)
+                    .foregroundStyle(Brand.text)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(Brand.surfaceHi, in: Capsule())
+                    .accessibilityLabel("Say \(word)")
+            }
             if !engine.transcript.isEmpty {
                 Text(engine.transcript)
                     .font(.brandCaption)
