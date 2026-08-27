@@ -193,7 +193,7 @@ fn try_correct_token(token: &str, dict: &EntityDictionary) -> Option<Correction>
     // Strip trailing punctuation for matching (e.g. "Kinrows." → "Kinrows").
     // Apostrophes stay: they are the possessive we must not drop.
     let stripped = token.trim_end_matches(|c: char| c.is_ascii_punctuation() && c != '\'');
-    let punct = &token[stripped.len()..];
+    let punct = token.strip_prefix(stripped).unwrap_or("");
     let (core, inflection) = split_possessive(stripped);
     if core.chars().count() < MIN_TOKEN_LENGTH {
         return None;
@@ -265,19 +265,14 @@ fn try_correct_token(token: &str, dict: &EntityDictionary) -> Option<Correction>
 /// Split a trailing English possessive (`'s` / `'`) off a token that has
 /// already had end punctuation stripped. `Pigkeeper's` → (`Pigkeeper`, `'s`).
 fn split_possessive(stripped: &str) -> (&str, &str) {
-    let b = stripped.as_bytes();
-    if stripped.len() >= 2 {
-        let last = b[b.len() - 1];
-        let prev = b[b.len() - 2];
-        if prev == b'\'' && (last == b's' || last == b'S') {
-            return (
-                &stripped[..stripped.len() - 2],
-                &stripped[stripped.len() - 2..],
-            );
-        }
+    if let Some(core) = stripped.strip_suffix("'s") {
+        return (core, "'s");
     }
-    if stripped.ends_with('\'') {
-        return (&stripped[..stripped.len() - 1], "'");
+    if let Some(core) = stripped.strip_suffix("'S") {
+        return (core, "'S");
+    }
+    if let Some(core) = stripped.strip_suffix('\'') {
+        return (core, "'");
     }
     (stripped, "")
 }
