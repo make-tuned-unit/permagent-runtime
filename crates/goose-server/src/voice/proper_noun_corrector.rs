@@ -2187,4 +2187,18 @@ mod tests {
             assert!(!is_proper_noun_shaped(junk), "should be dropped: {junk}");
         }
     }
+
+    /// 2026-08-27 kitchen: STT produced `What's the Pigkeeper's name?` and the
+    /// corrector rewrote the possessive to `Pigkeeper` (Jaro-Winkler ~0.96
+    /// against the Brain entity). A known name in the possessive must keep `'s`.
+    #[test]
+    fn pigkeepers_possessive_is_not_stripped() {
+        let dict = EntityDictionary::new(["Pigkeeper".to_string()].into_iter().collect());
+        let input = "What's the Pigkeeper's name?";
+        let result = correct_proper_nouns(input, &dict);
+        assert!(
+            result.contains("Pigkeeper's"),
+            "possessive was stripped: {result}"
+        );
+    }
 }

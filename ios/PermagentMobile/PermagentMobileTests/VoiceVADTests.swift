@@ -370,4 +370,23 @@ final class VoiceVADTests: XCTestCase {
         XCTAssertEqual(end.action, .endTurn)
         XCTAssertLessThan(end.at, 0.85, "uncommitted abort drifted to +\(end.at)s")
     }
+
+    /// 2026-08-27 07:44–07:52 ADT: six speakerphone turns rode kitchen
+    /// music/hiss at *just above* keepalive (0.0055) all the way to maxTurnMs
+    /// 60 s, then STT came back empty. `testSpeakerphoneRoomHissDoesNotHoldTheTurn`
+    /// uses 0.0035 — *below* keepalive — and already passes. Music at cooking
+    /// volume sits *on* the floor, refreshes lastVoice, commits via
+    /// voicedAccumMs, and never looks like silence. Uncommitted keepalive-hiss
+    /// must abort on abortSilenceMs (~500 ms), not ride the minute cap.
+    func testSpeakerphoneKeepaliveHissAbortsUncommittedTurn() {
+        var vad = VoiceVAD(config: VoiceVAD.speakerphoneConfig)
+        var now: TimeInterval = 10_440
+        beginTurn(&vad, rms: 0.012, at: &now)
+        let hiss = VoiceVAD.speakerphoneConfig.keepalive + 0.0002
+        guard let end = run(&vad, rms: hiss, phase: .listening, duration: 3, from: &now) else {
+            return XCTFail("keepalive hiss rode the turn — kitchen music would sit to the 60 s cap")
+        }
+        XCTAssertEqual(end.action, .endTurn)
+        XCTAssertLessThan(end.at, 1.0, "hiss-held endpoint at +\(end.at)s — must abort uncommitted, not ride")
+    }
 }

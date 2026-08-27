@@ -1,0 +1,3 @@
+[err]   2026-08-27T10:44:05.470952Z  INFO permagentd::voice: Recording started, sample_rate=16000
+[err]   2026-08-27T10:45:05.539217Z  INFO permagentd::voice: Recording stopped, 963043 samples (60.2s audio)
+[err]   2026-08-27T10:45:06.126575Z  INFO permagentd::voice: TIMING STT: 587ms | transcript: ""

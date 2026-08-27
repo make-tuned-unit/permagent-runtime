@@ -341,6 +341,27 @@ mod tests {
         assert_eq!(display_word("taran"), "Taran");
     }
 
+    /// 2026-08-27 kitchen: STT heard `pinkiepper`, the user said
+    /// `You can't say the word "pig keeper"`, and `save_candidates` kept the
+    /// whole complaint as a respelling. A listen is a word or a short
+    /// sounds-like, not a sentence. Do not "fix" pronunciations.json here —
+    /// this tripwire must catch the save path.
+    #[test]
+    fn kitchen_complaint_is_not_a_respelling_of_pinkiepper() {
+        let c = save_candidates("pinkiepper", r#"You can't say the word "pig keeper""#);
+        assert!(
+            c.iter().all(|s| {
+                let lower = s.to_ascii_lowercase();
+                !lower.contains("can't say") && !lower.contains("cant say")
+            }),
+            "complaint leaked into save candidates: {c:?}"
+        );
+        assert!(
+            c.iter().all(|s| s.split_whitespace().count() <= 3),
+            "a full sentence is not a respelling: {c:?}"
+        );
+    }
+
     #[test]
     fn begin_take_is_one_listen() {
         let sid = "voice-pronounce-1";
