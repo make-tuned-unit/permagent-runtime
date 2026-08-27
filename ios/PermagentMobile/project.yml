@@ -241,6 +241,7 @@ targets:
       - path: PermagentMobile/VoiceIdle.swift
       - path: PermagentMobile/VoiceOrbDrive.swift
       - path: PermagentMobile/VoiceClipboard.swift
+      - path: PermagentMobile/VoiceEnroll.swift
       - path: PermagentMobile/ChatStream.swift
       # The meeting recorder's durable queue. Foundation-only on purpose, so
       # the state machine that decides when audio may be deleted is tested

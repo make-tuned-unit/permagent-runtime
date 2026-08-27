@@ -7,7 +7,16 @@
 //!     Text: {"type":"stop"}
 //!     Text: {"type":"wake_start","sample_rate":16000}   (hands-free: begin keyword spotting)
 //!     Text: {"type":"wake_stop"}
+//!     Text: {"type":"enroll_start"}
+//!     Text: {"type":"enroll_done"}
+//!     Text: {"type":"enroll_skip"}
+//!     Text: {"type":"enroll_clear"}
 //!   Server → Client:
+//!     Text: {"type":"voice_print","enrolled":true|false}  (after ready)
+//!     Text: {"type":"enroll_status","have":1,"need":3,"prompt":"..."}
+//!     Text: {"type":"enrolled"}
+//!     Text: {"type":"enroll_retry","reason":"..."}
+//!     Text: {"type":"enroll_cleared"}
 //!     Text: {"type":"transcript","text":"..."}
 //!     Text: {"type":"reply_start"}
 //!     Binary: [tts pcm_f32le audio]
@@ -27,6 +36,12 @@
 //! never off-machine. Detections come back as `wake` events; a stop phrase
 //! that lands while a reply is still being generated cancels the turn
 //! server-side and is announced with `stopped`.
+//!
+//! Speaker print (N3): after `ready` the hub sends `voice_print`. iOS is the
+//! enrollment UI (three orb sentences). Desktop/watch share the same print
+//! and fail OPEN when none exists. On `stop`, if a print exists and cosine
+//! is below threshold, the hub sends `idle` and skips STT — same as empty
+//! speech. Score is logged; audio is not.
 
 use crate::routes::errors::ErrorResponse;
 use crate::state::{build_kokoro_tts, AppState, SharedTts};
@@ -854,6 +869,14 @@ enum ClientMessage {
     WakeStart { sample_rate: Option<u32> },
     #[serde(rename = "wake_stop")]
     WakeStop,
+    #[serde(rename = "enroll_start")]
+    EnrollStart,
+    #[serde(rename = "enroll_done")]
+    EnrollDone,
+    #[serde(rename = "enroll_skip")]
+    EnrollSkip,
+    #[serde(rename = "enroll_clear")]
+    EnrollClear,
 }
 
 #[derive(Serialize)]
@@ -916,6 +939,20 @@ enum ServerMessage {
     /// The word was stored (or skipped). Clear the Orb placement.
     #[serde(rename = "taught")]
     Taught { word: String },
+    #[serde(rename = "voice_print")]
+    VoicePrint { enrolled: bool },
+    #[serde(rename = "enroll_status")]
+    EnrollStatus {
+        have: usize,
+        need: usize,
+        prompt: Option<String>,
+    },
+    #[serde(rename = "enrolled")]
+    Enrolled,
+    #[serde(rename = "enroll_retry")]
+    EnrollRetry { reason: String },
+    #[serde(rename = "enroll_cleared")]
+    EnrollCleared,
 }
 
 /// RAII cleanup for navigation interception: guarantees the session's entry is
@@ -951,6 +988,14 @@ impl Drop for VoiceOriginGuard {
 
 fn send_json(msg: &ServerMessage) -> Message {
     Message::Text(serde_json::to_string(msg).unwrap().into())
+}
+
+fn enroll_status_msg(have: usize) -> ServerMessage {
+    ServerMessage::EnrollStatus {
+        have,
+        need: crate::voice::speaker_print::NEED_UTTERANCES,
+        prompt: crate::voice::speaker_print::prompt_at(have).map(str::to_string),
+    }
 }
 
 /// Push any captured clipboard bodies down this socket NOW. The caller
@@ -1028,6 +1073,11 @@ async fn handle_voice_socket(
         tracing::warn!(target: "permagentd::voice", "Failed to send ready — client disconnected");
         return;
     }
+    let _ = socket
+        .send(send_json(&ServerMessage::VoicePrint {
+            enrolled: crate::voice::speaker_print::load().is_some(),
+        }))
+        .await;
 
     // Load proper-noun dictionary from Brain for post-STT correction.
     let entity_dict = if let Some(ref brain) = state.brain {
@@ -1055,6 +1105,9 @@ async fn handle_voice_socket(
     let mut audio_buffer: Vec<f32> = Vec::new();
     let mut recording = false;
     let mut client_sample_rate: u32 = 16000;
+    // Per-socket enrollment buffer. `Some` means Stop collects a print
+    // utterance and must not run STT or the pronunciation teach path.
+    let mut enroll: Option<Vec<Vec<f32>>> = None;
     // Cancellation flag: set when the socket closes to abort in-flight TTS work.
     // Prevents a stale handler from holding the TTS mutex while a new handler
     // starts on a reconnected socket.
@@ -1113,10 +1166,70 @@ async fn handle_voice_socket(
                             continue;
                         }
 
-                        // --- STT ---
-                        let stt_start = std::time::Instant::now();
                         let samples = std::mem::take(&mut audio_buffer);
                         let sr = client_sample_rate;
+
+                        // Enrollment collects a print. Never STT, never agent,
+                        // never pronunciation teach — those are a different orb.
+                        if let Some(ref mut collected) = enroll {
+                            match crate::voice::speaker_print::extract(&samples, sr) {
+                                Some(emb) => {
+                                    collected.push(emb);
+                                    let have = collected.len();
+                                    tracing::info!(
+                                        target: "permagentd::voice",
+                                        "speaker_print enroll have={have} need={}",
+                                        crate::voice::speaker_print::NEED_UTTERANCES
+                                    );
+                                    let _ = socket.send(send_json(&enroll_status_msg(have))).await;
+                                }
+                                None => {
+                                    let _ = socket
+                                        .send(send_json(&ServerMessage::EnrollRetry {
+                                            reason:
+                                                "That was too short — say the sentence on the orb."
+                                                    .into(),
+                                        }))
+                                        .await;
+                                }
+                            }
+                            let _ = socket.send(send_json(&ServerMessage::Idle)).await;
+                            continue;
+                        }
+
+                        // Gate other talkers before STT so a reject feels like
+                        // empty speech (idle), not a 4 s think. No print → open.
+                        let gate_start = std::time::Instant::now();
+                        let gate = match crate::voice::speaker_print::extract(&samples, sr) {
+                            Some(emb) => crate::voice::speaker_print::gate(&emb),
+                            None => crate::voice::speaker_print::Gate::Open,
+                        };
+                        let gate_ms = gate_start.elapsed().as_millis();
+                        match gate {
+                            crate::voice::speaker_print::Gate::Reject { score } => {
+                                tracing::info!(
+                                    target: "permagentd::voice",
+                                    "speaker_print reject score={score:.3} gate_ms={gate_ms}"
+                                );
+                                let _ = socket.send(send_json(&ServerMessage::Idle)).await;
+                                continue;
+                            }
+                            crate::voice::speaker_print::Gate::Admit { score } => {
+                                tracing::info!(
+                                    target: "permagentd::voice",
+                                    "speaker_print admit score={score:.3} gate_ms={gate_ms}"
+                                );
+                            }
+                            crate::voice::speaker_print::Gate::Open => {
+                                tracing::debug!(
+                                    target: "permagentd::voice",
+                                    "speaker_print open gate_ms={gate_ms}"
+                                );
+                            }
+                        }
+
+                        // --- STT ---
+                        let stt_start = std::time::Instant::now();
                         let stt_ref = stt.clone();
                         let transcript = tokio::task::spawn_blocking(move || {
                             stt_ref.transcribe(&samples, sr, &SttConfig::default())
@@ -1429,6 +1542,112 @@ async fn handle_voice_socket(
                     }
                     Ok(ClientMessage::WakeStop) => {
                         wake = None;
+                    }
+                    Ok(ClientMessage::EnrollStart) => {
+                        audio_buffer.clear();
+                        recording = false;
+                        enroll = Some(Vec::new());
+                        tracing::info!(
+                            target: "permagentd::voice",
+                            "speaker_print enroll start"
+                        );
+                        let _ = socket.send(send_json(&enroll_status_msg(0))).await;
+                    }
+                    Ok(ClientMessage::EnrollDone) => match enroll.take() {
+                        Some(collected)
+                            if collected.len() >= crate::voice::speaker_print::NEED_UTTERANCES =>
+                        {
+                            match crate::voice::speaker_print::from_utterances(&collected) {
+                                Some(print) => match crate::voice::speaker_print::save(&print) {
+                                    Ok(()) => {
+                                        tracing::info!(
+                                            target: "permagentd::voice",
+                                            "speaker_print enrolled n={}",
+                                            print.n_utterances
+                                        );
+                                        let _ =
+                                            socket.send(send_json(&ServerMessage::Enrolled)).await;
+                                        let _ = socket
+                                            .send(send_json(&ServerMessage::VoicePrint {
+                                                enrolled: true,
+                                            }))
+                                            .await;
+                                    }
+                                    Err(e) => {
+                                        enroll = Some(collected);
+                                        let _ = socket
+                                            .send(send_json(&ServerMessage::EnrollRetry {
+                                                reason: format!(
+                                                    "Couldn't save the voice print: {e}"
+                                                ),
+                                            }))
+                                            .await;
+                                    }
+                                },
+                                None => {
+                                    enroll = Some(collected);
+                                    let _ = socket
+                                        .send(send_json(&ServerMessage::EnrollRetry {
+                                            reason: "Those three takes didn't line up — try again."
+                                                .into(),
+                                        }))
+                                        .await;
+                                }
+                            }
+                        }
+                        Some(collected) => {
+                            let have = collected.len();
+                            enroll = Some(collected);
+                            let _ = socket
+                                .send(send_json(&ServerMessage::EnrollRetry {
+                                    reason: format!(
+                                        "Say all {} sentences first ({have} so far).",
+                                        crate::voice::speaker_print::NEED_UTTERANCES
+                                    ),
+                                }))
+                                .await;
+                            let _ = socket.send(send_json(&enroll_status_msg(have))).await;
+                        }
+                        None => {
+                            let _ = socket
+                                .send(send_json(&ServerMessage::EnrollRetry {
+                                    reason: "Start enrollment first.".into(),
+                                }))
+                                .await;
+                        }
+                    },
+                    Ok(ClientMessage::EnrollSkip) => {
+                        enroll = None;
+                        recording = false;
+                        audio_buffer.clear();
+                        tracing::info!(
+                            target: "permagentd::voice",
+                            "speaker_print enroll skip"
+                        );
+                        let _ = socket
+                            .send(send_json(&ServerMessage::VoicePrint {
+                                enrolled: crate::voice::speaker_print::load().is_some(),
+                            }))
+                            .await;
+                    }
+                    Ok(ClientMessage::EnrollClear) => {
+                        enroll = None;
+                        recording = false;
+                        audio_buffer.clear();
+                        if let Err(e) = crate::voice::speaker_print::clear() {
+                            tracing::warn!(
+                                target: "permagentd::voice",
+                                "speaker_print clear failed: {e}"
+                            );
+                        }
+                        tracing::info!(
+                            target: "permagentd::voice",
+                            "speaker_print enroll cleared"
+                        );
+                        let _ = socket.send(send_json(&ServerMessage::EnrollCleared)).await;
+                        let _ = socket
+                            .send(send_json(&ServerMessage::VoicePrint { enrolled: false }))
+                            .await;
                     }
                     Err(e) => {
                         tracing::warn!(target: "permagentd::voice", "Invalid voice message: {}", e);
@@ -2711,6 +2930,29 @@ mod tests {
         })
         .unwrap();
         assert_eq!(taught["type"], "taught");
+    }
+
+    #[test]
+    fn enroll_client_frames_deserialize() {
+        for ty in ["enroll_start", "enroll_done", "enroll_skip", "enroll_clear"] {
+            let raw = format!(r#"{{"type":"{ty}"}}"#);
+            serde_json::from_str::<ClientMessage>(&raw).unwrap_or_else(|e| panic!("{ty}: {e}"));
+        }
+    }
+
+    #[test]
+    fn enroll_server_frames_are_not_teach() {
+        let status = serde_json::to_value(enroll_status_msg(0)).unwrap();
+        assert_eq!(status["type"], "enroll_status");
+        assert_eq!(status["have"], 0);
+        assert_eq!(status["need"], 3);
+        assert_eq!(status["prompt"], crate::voice::speaker_print::PROMPTS[0]);
+        let enrolled = serde_json::to_value(ServerMessage::Enrolled).unwrap();
+        assert_eq!(enrolled["type"], "enrolled");
+        assert!(enrolled.get("word").is_none());
+        let print = serde_json::to_value(ServerMessage::VoicePrint { enrolled: false }).unwrap();
+        assert_eq!(print["type"], "voice_print");
+        assert_eq!(print["enrolled"], serde_json::json!(false));
     }
 
     /// 20260821_14: empty STT must serialize as `idle`, never the toast string.

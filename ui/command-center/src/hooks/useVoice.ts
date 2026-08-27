@@ -5,6 +5,10 @@
  * Mic: acquired at activation, released at deactivation. Recording start/stop
  *       is synchronous (no getUserMedia race on quick press-and-release).
  * State machine: idle → connecting → ready → recording → processing → playing → ready
+ *
+ * Speaker print lives on the hub (`voice_print` after ready). Enrollment UI is
+ * iOS-only; this desktop hook fails OPEN when no print exists and otherwise
+ * shares the same cosine gate — rejected speech arrives as `idle`, like empty STT.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getApiBaseUrl } from '../lib/api';
