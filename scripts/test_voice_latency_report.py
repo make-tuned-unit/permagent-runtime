@@ -58,6 +58,14 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+
+    n6 = os.path.join(ROOT, "check_kitchen_voice_n6.py")
+    import subprocess
+
+    r = subprocess.run([sys.executable, n6, FIXTURE], capture_output=True, text=True)
+    if r.returncode == 0:
+        print("FAIL: N6 checker must reject this morning's 60s empty-STT fixture", file=sys.stderr)
+        return 1
     return 0
 
 
