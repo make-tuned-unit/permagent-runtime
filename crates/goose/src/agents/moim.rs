@@ -24,13 +24,7 @@ pub async fn inject_moim(
         .await
     {
         let before_len = conversation.messages().len();
-        let mut messages = conversation.messages().clone();
-        let idx = messages
-            .iter()
-            .rposition(|m| m.role == Role::Assistant)
-            .unwrap_or(0);
-        messages.insert(idx, Message::user().with_text(moim));
-
+        let messages = with_moim_inserted(&conversation, moim);
         let (fixed, issues) = fix_conversation(Conversation::new_unvalidated(messages));
 
         let has_unexpected_issues = issues.iter().any(|issue| !is_expected_moim_issue(issue));
@@ -95,6 +89,28 @@ pub async fn inject_moim(
         return fixed;
     }
     conversation
+}
+
+/// Insert the synthetic MOIM user message in front of the last assistant
+/// turn. Adjacent text/thinking parts are coalesced *first* so historical
+/// streamed deltas do not show up as MOIM issues. Session 20260827_1's
+/// issue list grew by ~2 items per turn because `fix_conversation` reported
+/// one `"Merged text content"` per un-coalesced assistant message in the
+/// live in-memory history — not because a list was persisted or a merge ran
+/// recursively. Coalescing here keeps that list at MOIM's own insertion.
+fn with_moim_inserted(conversation: &Conversation, moim: String) -> Vec<Message> {
+    let mut messages: Vec<Message> = conversation
+        .messages()
+        .iter()
+        .cloned()
+        .map(Message::coalesce_adjacent_text_and_thinking)
+        .collect();
+    let idx = messages
+        .iter()
+        .rposition(|m| m.role == Role::Assistant)
+        .unwrap_or(0);
+    messages.insert(idx, Message::user().with_text(moim));
+    messages
 }
 
 /// MOIM inserts exactly ONE synthetic user message, so it can create at most
@@ -367,6 +383,48 @@ mod tests {
                     .with_text(" part b  "),
             );
             messages.push(Message::user().with_text(format!("question {}", turn + 1)));
+        }
+    }
+
+    /// The health-watch "runaway loop": issue count growing with turn count.
+    /// That list is recomputed each turn from un-coalesced history, not
+    /// persisted. Pre-coalescing must keep `"Merged text content"` at zero
+    /// even as the conversation lengthens.
+    #[test]
+    fn moim_issue_list_does_not_grow_with_split_text_history() {
+        let mut messages = vec![Message::user().with_text("question 0")];
+        let mut last_text_merges = None;
+        for turn in 0..10 {
+            messages.push(
+                Message::assistant()
+                    .with_text(format!("answer {turn} part a"))
+                    .with_text(" part b  "),
+            );
+            messages.push(Message::user().with_text(format!("question {}", turn + 1)));
+            let conv = Conversation::new_unvalidated(messages.clone());
+            let prepared = with_moim_inserted(&conv, "<info-msg>placeholder</info-msg>".into());
+            let (_, issues) =
+                crate::conversation::fix_conversation(Conversation::new_unvalidated(prepared));
+            let text_merges = issues
+                .iter()
+                .filter(|i| i.contains("Merged text content"))
+                .count();
+            assert_eq!(
+                text_merges, 0,
+                "turn {turn} re-reported historical coalesces: {issues:?}"
+            );
+            let consecutive = issues
+                .iter()
+                .filter(|i| i.contains("Merged consecutive"))
+                .count();
+            assert!(
+                consecutive <= MAX_MERGES_CAUSED_BY_MOIM,
+                "turn {turn} merged more than MOIM's own insertion: {issues:?}"
+            );
+            if let Some(prev) = last_text_merges {
+                assert_eq!(prev, text_merges, "issue count escalated at turn {turn}");
+            }
+            last_text_merges = Some(text_merges);
         }
     }
 
