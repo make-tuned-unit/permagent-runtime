@@ -360,7 +360,15 @@ where
 /// assistant turn as one message).
 pub(crate) fn coalesce_turn_messages(messages: Vec<Message>) -> (Vec<Message>, usize) {
     let (merged, issues) = merge_consecutive_messages(messages);
-    (merged, issues.len())
+    // Consecutive-role merge concatenates content arrays, which can leave
+    // adjacent Text/Thinking parts in one message — the same split-delta
+    // shape that made MOIM's issue list grow every turn of session
+    // 20260827_1. Fold those here so the persisted turn is already clean.
+    let folded: Vec<Message> = merged
+        .into_iter()
+        .map(Message::coalesce_adjacent_text_and_thinking)
+        .collect();
+    (folded, issues.len())
 }
 
 async fn persist_turn_ending_message(
@@ -3497,6 +3505,25 @@ mod tests {
         let (folded, merges) = coalesce_turn_messages(turn.clone());
         assert_eq!(merges, 0);
         assert_eq!(folded.len(), turn.len());
+    }
+
+    /// Session 20260827_1: one assistant turn arrived as two adjacent text
+    /// parts. Persisting them un-coalesced made every later MOIM inject
+    /// re-report `"Merged text content"` once per historical message.
+    #[test]
+    fn a_split_text_assistant_turn_is_persisted_as_one_part() {
+        let turn = vec![Message::assistant()
+            .with_text("first")
+            .with_text(" answer  ")];
+        let (folded, merges) = coalesce_turn_messages(turn);
+        assert_eq!(merges, 0, "one message, already alternating");
+        assert_eq!(folded.len(), 1);
+        assert_eq!(
+            folded[0].content.len(),
+            1,
+            "adjacent text parts must be one part before persist"
+        );
+        assert_eq!(folded[0].content[0].as_text().unwrap(), "first answer  ");
     }
 
     struct ActionRequiredProvider {

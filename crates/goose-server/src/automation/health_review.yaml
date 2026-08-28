@@ -129,6 +129,30 @@ prompt: |
 
   Rank the fix prompts by user-visible impact, not by how easy they look.
 
+  ## Known benign (do not escalate)
+
+  These have been misread as runaway bugs. They are not. Quote them only if
+  an issue string falls *outside* the expected set, or new evidence shows
+  the old bug still firing after the fix's deploy time.
+
+  - **MOIM `Merged text content` / `Merged consecutive user messages` /
+    `Trimmed trailing whitespace`.** `fix_conversation` reports one of these
+    per lossless coalesce. An `issues` list whose length grows with
+    `messages_before` is one report per un-coalesced historical message, not
+    a persisted or recursive merge. Session 20260827_1's 129 warnings were
+    the sanitizer dropping Top-of-Mind because `"Merged text content"` was
+    treated as unexpected; that string is now allow-listed in
+    `crates/goose/src/agents/moim.rs`. Do not file this as CRITICAL again
+    unless the injection is still being dropped, or an issue string is
+    outside that expected set.
+  - **Commands from this review.** Your own shell invocations are appended
+    to the live server log. Count only lines whose timestamp is before this
+    session started.
+  - **A previous report in {{ report_dir }} already diagnosed a finding
+    whose source comments name it as fixed.** Re-open it only with a log
+    line after that fix shipped (check `/Users/j/Documents/dev/permagent-runtime`
+    if present — read only, never clone, never edit).
+
   ## Boundaries
 
   - READ ONLY. Never edit code, never restart the daemon, never delete a log.

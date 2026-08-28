@@ -691,6 +691,15 @@ pub(crate) fn role_to_string(role: &Role) -> &'static str {
     }
 }
 
+/// Store the coalesced form so later turns do not re-discover the same
+/// split-delta text parts. Load already coalesces (Kimi UI-crash repair);
+/// persisting un-coalesced JSON is why MOIM's issue list grew every turn
+/// of a live session even though reload looked fine.
+fn persistable_content_json(message: &Message) -> Result<String> {
+    let coalesced = message.clone().coalesce_adjacent_text_and_thinking();
+    Ok(serde_json::to_string(&coalesced.content)?)
+}
+
 impl Default for Session {
     fn default() -> Self {
         Self {
@@ -1843,6 +1852,7 @@ impl SessionStorage {
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
 
         let metadata_json = serde_json::to_string(&message.metadata)?;
+        let content_json = persistable_content_json(message)?;
 
         let message_id = message
             .id
@@ -1858,7 +1868,7 @@ impl SessionStorage {
         .bind(message_id)
         .bind(session_id)
         .bind(role_to_string(&message.role))
-        .bind(serde_json::to_string(&message.content)?)
+        .bind(content_json)
         .bind(message.created)
         .bind(metadata_json)
         .execute(&mut *tx)
@@ -1887,6 +1897,7 @@ impl SessionStorage {
 
         for message in conversation.messages() {
             let metadata_json = serde_json::to_string(&message.metadata)?;
+            let content_json = persistable_content_json(message)?;
 
             let message_id = message
                 .id
@@ -1902,7 +1913,7 @@ impl SessionStorage {
             .bind(message_id)
             .bind(session_id)
             .bind(role_to_string(&message.role))
-            .bind(serde_json::to_string(&message.content)?)
+            .bind(content_json)
             .bind(message.created)
             .bind(metadata_json)
             .execute(&mut *tx)
@@ -2341,6 +2352,15 @@ mod tests {
     use test_case::test_case;
 
     const NUM_CONCURRENT_SESSIONS: i32 = 10;
+
+    #[test]
+    fn persistable_content_json_coalesces_split_text() {
+        let msg = Message::assistant().with_text("first").with_text(" answer");
+        let json = persistable_content_json(&msg).unwrap();
+        let content: Vec<MessageContent> = serde_json::from_str(&json).unwrap();
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0].as_text().unwrap(), "first answer");
+    }
 
     async fn run_lock_upgrade_attempt(
         pool: Pool<Sqlite>,

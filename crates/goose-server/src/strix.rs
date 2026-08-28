@@ -68,6 +68,10 @@ const FIRST_SWEEP_SETTLE: Duration = Duration::from_secs(15);
 const SCAN_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 /// Poll cadence for the mid-scan sovereignty re-check.
 const SOVEREIGN_POLL: Duration = Duration::from_secs(30);
+/// After SIGTERM, wait for strix to `docker rm` its own sandbox before
+/// SIGKILL. 500ms left containers behind on the 2026-08-27 Reckonize
+/// timeout — the scanner was killed before its handler ran.
+const SCAN_TERM_GRACE: Duration = Duration::from_secs(3);
 /// The default bucket is not a project Strix reports on.
 const PERSONAL_PROJECT_ID: &str = "00000000-0000-0000-0000-000000000001";
 
@@ -647,6 +651,18 @@ fn posix_single_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// Reap leftover `strix-sandbox` containers after a killed scan. The sweep
+/// is one project at a time, so this cannot take down a concurrent Guard
+/// scan. Remote Colima needs DOCKER_HOST; local Docker Desktop does not.
+const STRIX_SANDBOX_CLEANUP_REMOTE: &str = "export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; \
+     export DOCKER_HOST=unix://$HOME/.colima/default/docker.sock; \
+     ids=$(docker ps -a --format '{{.ID}} {{.Image}}' 2>/dev/null | awk '/strix-sandbox/ {print $1}'); \
+     if [ -n \"$ids\" ]; then docker rm -f $ids; fi";
+
+const STRIX_SANDBOX_CLEANUP_LOCAL: &str = "export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; \
+     ids=$(docker ps -a --format '{{.ID}} {{.Image}}' 2>/dev/null | awk '/strix-sandbox/ {print $1}'); \
+     if [ -n \"$ids\" ]; then docker rm -f $ids; fi";
+
 fn ssh_base_args() -> Vec<String> {
     let mut args = vec![
         "-o".into(),
@@ -743,6 +759,42 @@ async fn ssh_run(ssh_target: &str, remote: &str) -> Result<std::process::Output,
         ));
     }
     Ok(output)
+}
+
+async fn cleanup_strix_sandboxes(ssh_target: Option<&str>) {
+    if let Some(ssh) = ssh_target {
+        if let Err(e) = ssh_run(ssh, STRIX_SANDBOX_CLEANUP_REMOTE).await {
+            tracing::warn!(
+                target: "permagentd::strix",
+                "leftover strix sandbox cleanup failed: {e}"
+            );
+        }
+        return;
+    }
+    let mut cmd = tokio::process::Command::new("/bin/sh");
+    cmd.arg("-c")
+        .arg(STRIX_SANDBOX_CLEANUP_LOCAL)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    match tokio::time::timeout(Duration::from_secs(20), cmd.output()).await {
+        Ok(Ok(output)) if output.status.success() => {}
+        Ok(Ok(output)) => tracing::warn!(
+            target: "permagentd::strix",
+            "leftover strix sandbox cleanup exited {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ),
+        Ok(Err(e)) => tracing::warn!(
+            target: "permagentd::strix",
+            "leftover strix sandbox cleanup failed: {e}"
+        ),
+        Err(_) => tracing::warn!(
+            target: "permagentd::strix",
+            "leftover strix sandbox cleanup timed out"
+        ),
+    }
 }
 
 async fn rsync_to_remote(target: &std::path::Path, ssh_target: &str) -> Result<(), String> {
@@ -944,7 +996,7 @@ async fn kill_scan_tree(pid: u32) {
     // SAFETY: signalling a process group by pid; an already-dead group is a
     // harmless ESRCH.
     unsafe { libc::kill(group, libc::SIGTERM) };
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    tokio::time::sleep(SCAN_TERM_GRACE).await;
     unsafe { libc::kill(group, libc::SIGKILL) };
 }
 
@@ -973,8 +1025,8 @@ async fn wait_supervised(
                     kill_scan_tree(pid).await;
                 }
                 return Err(format!(
-                    "scan exceeded its {}-minute bound (scanner killed; a Docker container it \
-                     started may need `docker ps` cleanup)",
+                    "scan exceeded its {}-minute bound (scanner killed; leftover strix \
+                     sandbox containers were reaped if any remained)",
                     SCAN_TIMEOUT.as_secs() / 60
                 ));
             }
@@ -1053,6 +1105,7 @@ async fn scan_project_remote(
             &format!("pkill -f {} || true", posix_single_quote(&rel)),
         )
         .await;
+        cleanup_strix_sandboxes(Some(ssh_target)).await;
     }
     let output = output?;
     if !output.status.success() {
@@ -1107,7 +1160,11 @@ async fn scan_project_local(target: &std::path::Path) -> Result<Vec<Finding>, St
         permagent::sovereignty::global_sovereign_mode,
         SOVEREIGN_POLL,
     )
-    .await?;
+    .await;
+    if output.is_err() {
+        cleanup_strix_sandboxes(None).await;
+    }
+    let output = output?;
     if !output.status.success() {
         return Err(strix::classify_scanner_failure(
             output.status,
@@ -1495,7 +1552,7 @@ mod tests {
         // Assert through `wait` rather than `kill(pid, 0)`: a SIGKILLed leader
         // is still a group member until it is reaped, so a liveness probe
         // would flake.
-        let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+        let status = tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
             .await
             .expect("the killed scanner is reaped well inside its 300s sleep")
             .expect("wait succeeds");
@@ -1533,7 +1590,7 @@ mod tests {
         });
 
         let result = tokio::time::timeout(
-            Duration::from_secs(5),
+            Duration::from_secs(10),
             wait_supervised(
                 child,
                 || probe.load(Ordering::SeqCst),
@@ -1577,6 +1634,26 @@ mod tests {
         assert!(validate_ssh_target("host$(reboot)").is_err());
         assert!(validate_ssh_target("").is_err());
         assert!(validate_ssh_target("@m1").is_err());
+    }
+
+    #[test]
+    fn sandbox_cleanup_targets_only_strix_images() {
+        for script in [STRIX_SANDBOX_CLEANUP_REMOTE, STRIX_SANDBOX_CLEANUP_LOCAL] {
+            assert!(
+                script.contains("strix-sandbox"),
+                "must filter by the sandbox image family"
+            );
+            assert!(
+                script.contains("docker rm -f"),
+                "a SIGKILLed scanner leaves them running"
+            );
+            assert!(
+                !script.contains("docker rm -f $(docker ps"),
+                "must not rm every container on the host"
+            );
+        }
+        assert!(STRIX_SANDBOX_CLEANUP_REMOTE.contains("colima/default/docker.sock"));
+        assert!(!STRIX_SANDBOX_CLEANUP_LOCAL.contains("DOCKER_HOST"));
     }
 
     #[test]
