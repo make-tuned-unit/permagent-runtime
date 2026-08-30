@@ -16,6 +16,9 @@ import sys
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 FIXTURE = os.path.join(ROOT, "testdata", "voice_20260827_empty_60s.txt")
+BACKGROUND_FIXTURE = os.path.join(
+    ROOT, "testdata", "voice_20260827_enrollment_and_background.txt"
+)
 REPORT = os.path.join(ROOT, "voice-latency-report.py")
 
 # Recorded 2026-08-27 morning complete-turn median. Later nodes must stay ≤ this.
@@ -57,6 +60,37 @@ def main() -> int:
             f"(first-audio ceiling to keep: {FIRST_AUDIO_CEILING_MS} ms)",
             file=sys.stderr,
         )
+        return 1
+
+    # Tonight's enrollment recordings must not inflate turn counts or latency
+    # percentiles. A false-accepted 33.1s background turn must be visible as a
+    # long capture, and the new early learned-speaker reject must be classified
+    # as rejected even though no Stop frame follows it.
+    captures = report.parse_turns(BACKGROUND_FIXTURE)
+    summary = report.summarize(captures)
+    expected = {
+        "n_captures": 5,
+        "n_turns": 2,
+        "n_enrollment_captures": 3,
+        "n_audible": 1,
+        "n_complete": 1,
+        "n_rejected": 1,
+        "n_long_captures": 1,
+        "n_30s_captures": 1,
+    }
+    for key, want in expected.items():
+        if summary.get(key) != want:
+            print(
+                f"FAIL: background fixture {key}={summary.get(key)!r}, expected {want}",
+                file=sys.stderr,
+            )
+            return 1
+    statuses = [t.status for t in captures]
+    if statuses != ["enrollment", "enrollment", "enrollment", "complete", "rejected"]:
+        print(f"FAIL: capture classifications were {statuses}", file=sys.stderr)
+        return 1
+    if summary["speech_end_to_stream_ms"]["median"] != 621:
+        print("FAIL: speech_end_to_stream metric lost its real semantics", file=sys.stderr)
         return 1
 
     n6 = os.path.join(ROOT, "check_kitchen_voice_n6.py")

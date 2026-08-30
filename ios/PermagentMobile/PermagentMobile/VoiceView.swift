@@ -1,4 +1,4 @@
-// VoiceView — live voice conversation with Henry over the hub's /voice WebSocket.
+// VoiceView — live conversation with the configured agent over the hub's /voice WebSocket.
 //
 // Wire protocol (crates/goose-server/src/routes/voice.rs):
 //   connect  ws(s)://<hub>/voice?session_id=<id>&token=<bearer>&client=ios_voice
@@ -157,12 +157,16 @@ final class VoiceEngine: ObservableObject {
     @Published private(set) var notice: String?
     /// Word placed on the Orb for a listen-once pronunciation. Never spoken.
     @Published private(set) var teachWord: String?
-    /// Hub speaker print is on disk. Fail-open when false (fresh install).
+    /// Hub learned speaker print is on disk.
     @Published private(set) var printEnrolled = false
+    @Published private(set) var identityModelAvailable = false
+    @Published private(set) var identityModelDownloading = false
     /// Collecting the three enrollment sentences. Stop must not look like a chat turn.
     @Published private(set) var enrolling = false
     /// Next sentence to put on the orb. Nil when not enrolling or after the third take.
     @Published private(set) var enrollPrompt: String?
+    @Published private(set) var enrollHave = 0
+    @Published private(set) var enrollNeed = VoiceEnroll.need
     /// Live audio level 0…1 (mic while listening, TTS pulse while speaking).
     @Published private(set) var level: Float = 0
     /// ON by default: tapping the voice icon should drop you into a
@@ -185,9 +189,10 @@ final class VoiceEngine: ObservableObject {
     /// Voice processing is ON for headphones (AEC works) and OFF for the
     /// loudspeaker (AEC cancels the near-end mic — "Listening" heard nothing).
     private var captureUsesVoiceProcessing = false
-    /// Playback RMS while the agent is speaking — gates barge-in on speaker
+    /// Raw playback RMS while the agent is speaking — gates barge-in on speaker
     /// so his own voice from the same speaker is not treated as an interrupt.
     private var playbackRms: Float = 0
+    private var identityQuietGate = VoiceIdentityQuietGate()
 
     private var sessionId = ""
     private var active = false
@@ -288,6 +293,7 @@ final class VoiceEngine: ObservableObject {
         state = .idle
         enrolling = false
         enrollPrompt = nil
+        enrollHave = 0
         teachWord = nil
     }
 
@@ -445,7 +451,7 @@ final class VoiceEngine: ObservableObject {
             // Hub peak-normalizes TTS to -1 dBFS, so a 2× visual gain maps
             // typical speech RMS onto the orb without slamming the ceiling.
             let lvl = min(1, rms * 2)
-            Task { @MainActor in self.handlePlaybackLevel(lvl) }
+            Task { @MainActor in self.handlePlaybackLevel(rawRms: rms, orbLevel: lvl) }
         }
         engine.prepare()
         try engine.start()
@@ -560,10 +566,10 @@ final class VoiceEngine: ObservableObject {
     /// Publish a playback level for the orb. Ignored unless the agent is
     /// actually speaking, so a trailing tap callback can't light the orb after
     /// a barge-in.
-    private func handlePlaybackLevel(_ lvl: Float) {
-        playbackRms = lvl
+    private func handlePlaybackLevel(rawRms: Float, orbLevel: Float) {
+        playbackRms = rawRms
         guard state == .speaking else { return }
-        level = lvl
+        level = orbLevel
     }
 
     /// Rolling pre-roll of the most recent mic frames, kept while NOT
@@ -611,6 +617,12 @@ final class VoiceEngine: ObservableObject {
         }
         if state != .listening && state != .speaking && state != .ready {
             if level > 0.001 { level = max(0, level * 0.9) }
+        }
+        if identityQuietGate.observe(rms: rms) {
+            // Keep the pre-roll empty too: once quiet arrives, the next turn
+            // must not begin with the rejected background speaker's tail.
+            preRoll.removeAll(keepingCapacity: true)
+            return
         }
         if handsFree { vadStep(rms: rms, voiceLike: voiceLike) }
     }
@@ -767,6 +779,7 @@ final class VoiceEngine: ObservableObject {
         }
         let epoch = connectEpoch
         let task = URLSession.shared.webSocketTask(with: url)
+        task.maximumMessageSize = VoiceTransport.maximumIncomingMessageBytes
         wsTask = task
         replyEnded = false
         task.resume()
@@ -815,6 +828,8 @@ final class VoiceEngine: ObservableObject {
         let need: Int?
         let prompt: String?
         let enrolled: Bool?
+        let available: Bool?
+        let downloading: Bool?
         let reason: String?
     }
 
@@ -856,23 +871,34 @@ final class VoiceEngine: ObservableObject {
                 teachWord = nil
             case "voice_print":
                 printEnrolled = msg.enrolled ?? false
+                identityModelAvailable = msg.available ?? false
+                identityModelDownloading = msg.downloading ?? false
                 if !printEnrolled && !enrolling {
                     enrollPrompt = nil
                 }
             case "enroll_status":
                 let have = msg.have ?? 0
                 let need = msg.need ?? VoiceEnroll.need
+                enrollHave = have
+                enrollNeed = need
                 enrollPrompt = msg.prompt
                 enrolling = true
                 if have >= need {
                     enrolling = false
                     enrollPrompt = nil
                     sendText(#"{"type":"enroll_done"}"#)
+                } else if state == .ready {
+                    // The hub has confirmed the learned model is loaded and
+                    // enrollment mode is active. Only now open the mic; doing
+                    // it optimistically could send the setup sentence through
+                    // STT as a normal agent turn while the model downloads.
+                    enterListening()
                 }
             case "enrolled":
                 enrolling = false
                 enrollPrompt = nil
                 printEnrolled = true
+                enrollHave = enrollNeed
                 notice = "Voice saved — I'll ignore other talkers"
             case "enroll_retry":
                 notice = msg.reason ?? "Say the sentence on the orb again"
@@ -880,6 +906,19 @@ final class VoiceEngine: ObservableObject {
                 enrolling = false
                 enrollPrompt = nil
                 printEnrolled = false
+                enrollHave = 0
+            case "speaker_rejected":
+                // The server's learned identity check rejected this capture.
+                // Require actual quiet before hands-free re-arms or the same
+                // ambient talker immediately opens another recording.
+                vad.noteTurnEnded()
+                identityQuietGate.lock()
+                preRoll.removeAll(keepingCapacity: true)
+                level = 0
+                notice = nil
+                if state == .thinking || state == .listening || state == .speaking {
+                    state = .ready
+                }
             case "reply_end":
                 replyEnded = true
                 if pendingBuffers == 0, state == .speaking || state == .thinking {
@@ -996,17 +1035,17 @@ final class VoiceEngine: ObservableObject {
             state = .ready
         }
         enrolling = true
+        enrollHave = 0
+        enrollNeed = VoiceEnroll.need
         enrollPrompt = VoiceEnroll.prompt(have: 0)
         notice = nil
         sendText(#"{"type":"enroll_start"}"#)
-        if state == .ready {
-            enterListening()
-        }
     }
 
     func skipEnroll() {
         enrolling = false
         enrollPrompt = nil
+        enrollHave = 0
         if state == .listening {
             vad.noteTurnEnded()
             level = 0
@@ -1018,6 +1057,7 @@ final class VoiceEngine: ObservableObject {
     func clearEnroll() {
         enrolling = false
         enrollPrompt = nil
+        enrollHave = 0
         if state == .listening {
             vad.noteTurnEnded()
             level = 0
@@ -1128,12 +1168,8 @@ struct VoiceView: View {
                     thinking: engine.state == .thinking,
                     listening: engine.state == .listening
                         || (engine.state == .ready && engine.handsFree)
-                        || engine.teachWord != nil
-                        || engine.enrollPrompt != nil,
-                    teachWord: VoiceEnroll.orbText(
-                        teachWord: engine.teachWord,
-                        enrollPrompt: engine.enrollPrompt
-                    )
+                        || engine.teachWord != nil,
+                    teachWord: engine.teachWord
                 )
                     .onTapGesture {
                         if engine.teachWord != nil { return }
@@ -1266,35 +1302,6 @@ struct VoiceView: View {
             .disabled(!interactable)
             .animation(Motion.ease, value: engine.handsFree)
 
-            if engine.enrolling {
-                Button("Skip voice setup") {
-                    engine.skipEnroll()
-                }
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(Brand.textMuted)
-            } else if engine.printEnrolled {
-                HStack(spacing: 16) {
-                    Button("Redo my voice") {
-                        engine.beginEnroll()
-                    }
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Brand.textMuted)
-                    .disabled(!interactable)
-                    Button("Forget my voice") {
-                        engine.clearEnroll()
-                    }
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Brand.textMuted)
-                    .disabled(!interactable)
-                }
-            } else {
-                Button("Set up my voice") {
-                    engine.beginEnroll()
-                }
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(Brand.cyanInk)
-                .disabled(!interactable)
-            }
         }
         .padding(.bottom, 34)
     }
@@ -1346,9 +1353,6 @@ struct VoiceView: View {
             default: break
             }
         }
-        if engine.enrolling, engine.enrollPrompt != nil {
-            return "SAY THE SENTENCE ON THE ORB"
-        }
         switch engine.state {
         case .idle: return "STARTING…"
         case .connecting: return "CONNECTING…"
@@ -1372,9 +1376,6 @@ struct VoiceView: View {
     private var orbAccessibility: String {
         if let word = engine.teachWord {
             return "Say \(word). \(AgentIdentity.shared.nameCapitalized) is listening for the pronunciation."
-        }
-        if let prompt = engine.enrollPrompt {
-            return "Say \(prompt) to enroll your voice."
         }
         switch engine.state {
         case .speaking: return "\(AgentIdentity.shared.nameCapitalized) is speaking. Tap to interrupt."

@@ -327,10 +327,11 @@ final class VoiceVADTests: XCTestCase {
         XCTAssertEqual(bleed.step(rms: 0.035, phase: .speaking, now: 1), .none)
         XCTAssertEqual(bleed.step(rms: 0.035, phase: .speaking, now: 1.085), .none,
                        "speaker TTS bleed barged in — interrupting himself")
-        XCTAssertEqual(bleed.step(rms: 0.09, phase: .speaking, now: 2), .none)
-        XCTAssertEqual(bleed.step(rms: 0.09, phase: .speaking, now: 2.085), .none,
+        XCTAssertEqual(bleed.step(rms: 0.06, phase: .speaking, now: 2), .none)
+        XCTAssertEqual(bleed.step(rms: 0.06, phase: .speaking, now: 2.085), .none,
                        "speakerphone barge needs three frames so echo cannot cut him")
-        XCTAssertEqual(bleed.step(rms: 0.09, phase: .speaking, now: 2.17), .interrupt)
+        XCTAssertEqual(bleed.step(rms: 0.06, phase: .speaking, now: 2.17), .interrupt,
+                       "ordinary speech must interrupt without requiring a shout")
     }
 
     /// The built-in preset preserves the calibrated ratios: keepalive at

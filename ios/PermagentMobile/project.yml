@@ -167,8 +167,8 @@ targets:
       - path: Shared
       - path: PermagentMobile/MobiusView.swift
       - path: PermagentMobile/VoiceOrbView.swift
+      - path: PermagentMobile/VoiceOrbDrive.swift
       - path: PermagentMobile/Theme.swift
-      - path: PermagentMobile/VoiceOrbView.swift
       - path: PermagentMobile/MobiusFrames
       - path: PermagentMobile/Fonts
     settings:
@@ -196,11 +196,9 @@ targets:
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         WKApplication: true
         WKWatchOnly: false
-        # false = TestFlight/App Store treat this as a bundled companion, so
-        # installing the iPhone app installs the Watch app. true made it
-        # "installable separately". The Watch also cannot talk to the hub
-        # without the phone (no Tailscale), so independent was a lie.
-        WKRunsIndependentlyOfCompanionApp: false
+        # The Watch UI must launch and record without the iPhone app in the
+        # foreground. Network turns still relay through the paired phone.
+        WKRunsIndependentlyOfCompanionApp: true
         WKCompanionAppBundleIdentifier: ai.permagent.ios
         NSMicrophoneUsageDescription: Permagent uses the microphone so you can chat with your agent and dictate notes. Audio is transcribed on your Mac.
         ITSAppUsesNonExemptEncryption: false

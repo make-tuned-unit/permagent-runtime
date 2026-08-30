@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
+  beginVadTurn,
   endpointWindowMs,
+  shouldEndVadTurn,
+  VAD_MAX_TURN_MS,
   VAD_QUICK_SILENCE_MS,
   VAD_QUICK_TURN_SPEECH_MS,
   VAD_SILENCE_MS,
@@ -11,6 +14,32 @@ import {
   VOICE_WATCHDOG_MS,
   type VoiceState,
 } from './useVoice';
+
+describe('wake-word VAD turn timing', () => {
+  it('does not end a fresh wake turn before an audio buffer arrives', () => {
+    const detectedAt = 1_000_000;
+    const timing = beginVadTurn(detectedAt, false);
+
+    // The live failure stopped at 120 ms, before the 256 ms recording
+    // processor emitted its first frame.
+    expect(shouldEndVadTurn(timing, detectedAt + 120)).toBe(false);
+    expect(shouldEndVadTurn(timing, detectedAt + 256)).toBe(false);
+  });
+
+  it('endpoints normally after post-wake speech and trailing silence', () => {
+    const timing = beginVadTurn(5_000, false);
+    timing.heardSpeech = true;
+    timing.lastVoiceAt = 5_800;
+    expect(shouldEndVadTurn(timing, 6_200)).toBe(false);
+    expect(shouldEndVadTurn(timing, 6_301)).toBe(true);
+  });
+
+  it('retains the hard cap when no speech follows a wake phrase', () => {
+    const timing = beginVadTurn(10_000, false);
+    expect(shouldEndVadTurn(timing, 10_000 + VAD_MAX_TURN_MS)).toBe(false);
+    expect(shouldEndVadTurn(timing, 10_001 + VAD_MAX_TURN_MS)).toBe(true);
+  });
+});
 
 describe('isVoiceWedged', () => {
   const base = {

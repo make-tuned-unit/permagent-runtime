@@ -148,6 +148,42 @@ export function endpointWindowMs(
   return voicedMs < quickTurnMs ? quick : longMs;
 }
 
+/** Hard safety cap for a single hands-free utterance. */
+export const VAD_MAX_TURN_MS = 45_000;
+
+export interface VadTurnTiming {
+  heardSpeech: boolean;
+  lastVoiceAt: number;
+  turnStartedAt: number;
+}
+
+/**
+ * Initialize every clock used by hands-free endpointing.
+ *
+ * Wake-word turns and ordinary VAD turns must enter `recording` through this
+ * same seam. The old wake path left both timestamps at zero, so the first
+ * monitor callback computed `now - 0 > VAD_MAX_TURN_MS` and stopped recording
+ * before its 256 ms ScriptProcessor emitted a single buffer.
+ */
+export function beginVadTurn(now: number, heardSpeech: boolean): VadTurnTiming {
+  return { heardSpeech, lastVoiceAt: now, turnStartedAt: now };
+}
+
+/** Pure endpoint decision, kept outside the audio callback for regression tests. */
+export function shouldEndVadTurn(
+  timing: VadTurnTiming,
+  now: number,
+  opts: { maxTurnMs?: number } = {},
+): boolean {
+  const maxTurnMs = opts.maxTurnMs ?? VAD_MAX_TURN_MS;
+  const turnFor = Math.max(0, now - timing.turnStartedAt);
+  if (turnFor > maxTurnMs) return true;
+  if (!timing.heardSpeech) return false;
+  const silentFor = Math.max(0, now - timing.lastVoiceAt);
+  const voicedFor = Math.max(0, timing.lastVoiceAt - timing.turnStartedAt);
+  return silentFor > endpointWindowMs(voicedFor);
+}
+
 /** localStorage key for the wake-word preference (default: enabled). */
 export const WAKE_WORD_LS_KEY = 'voice:wakeWordEnabled';
 
@@ -255,6 +291,10 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const lastConvActivityRef = useRef(0);
   // Retry timer while the daemon reports the KWS model is still downloading.
   const wakeRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Third state between inactive and acknowledged-active. Socket-ready and
+  // setHandsFree can reconcile in the same activation; this prevents both
+  // from sending wake_start and resetting the spotter back-to-back.
+  const wakeStartPendingRef = useRef(false);
   const syncWakeModeRef = useRef<(() => void) | null>(null);
 
   const emit = useCallback((event: VoiceEvent) => {
@@ -383,6 +423,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
             syncWakeModeRef.current?.();
             break;
           case 'wake_status': {
+            wakeStartPendingRef.current = false;
             const active = !!msg.active;
             wakeActiveRef.current = active;
             setWakeActive(active);
@@ -410,6 +451,10 @@ export function useVoice(options: UseVoiceOptions = {}) {
               wakeGatedRef.current = false;
               setWakeGated(false);
               lastConvActivityRef.current = Date.now();
+              const timing = beginVadTurn(Date.now(), false);
+              vadHeardSpeechRef.current = timing.heardSpeech;
+              vadLastVoiceRef.current = timing.lastVoiceAt;
+              vadTurnStartRef.current = timing.turnStartedAt;
               startRecordingRef.current?.();
             } else if (action === 'halt-playback') {
               haltPlayback();
@@ -540,6 +585,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     // A new socket means a new daemon handler with no wake session; the
     // 'ready' handler re-requests it once the connection is up.
     wakeActiveRef.current = false;
+    wakeStartPendingRef.current = false;
     setWakeActive(false);
 
     setStateAndEmit('connecting');
@@ -821,6 +867,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
       wakeRetryRef.current = null;
     }
     wakeActiveRef.current = false;
+    wakeStartPendingRef.current = false;
     setWakeActive(false);
     wakeGatedRef.current = false;
     setWakeGated(false);
@@ -900,11 +947,13 @@ export function useVoice(options: UseVoiceOptions = {}) {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const want = handsFreeRef.current && wakeEnabledRef.current;
-    if (want && !wakeActiveRef.current) {
+    if (want && !wakeActiveRef.current && !wakeStartPendingRef.current) {
+      wakeStartPendingRef.current = true;
       ws.send(JSON.stringify({ type: 'wake_start', sample_rate: sampleRate }));
-    } else if (!want && wakeActiveRef.current) {
+    } else if (!want && (wakeActiveRef.current || wakeStartPendingRef.current)) {
       ws.send(JSON.stringify({ type: 'wake_stop' }));
       wakeActiveRef.current = false;
+      wakeStartPendingRef.current = false;
       setWakeActive(false);
       wakeGatedRef.current = false;
       setWakeGated(false);
@@ -961,7 +1010,6 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const VAD_ONSET = 0.025;
   const VAD_KEEPALIVE = 0.010;
   const VAD_BARGE = 0.05;
-  const VAD_MAX_TURN_MS = 45_000;
   /** Consecutive ~128ms buffers over onset before a turn starts. A mechanical
    *  keyboard click is a single-buffer transient; speech sustains — this was
    *  tripping recording on every keystroke (empty-transcript chatter in the
@@ -1068,9 +1116,10 @@ export function useVoice(options: UseVoiceOptions = {}) {
           vadOnsetStreakRef.current += 1;
           if (vadOnsetStreakRef.current >= VAD_ONSET_STREAK) {
             vadOnsetStreakRef.current = 0;
-            vadHeardSpeechRef.current = true;
-            vadLastVoiceRef.current = now;
-            vadTurnStartRef.current = now;
+            const timing = beginVadTurn(now, true);
+            vadHeardSpeechRef.current = timing.heardSpeech;
+            vadLastVoiceRef.current = timing.lastVoiceAt;
+            vadTurnStartRef.current = timing.turnStartedAt;
             startRecordingRef.current?.();
           }
         } else {
@@ -1086,15 +1135,11 @@ export function useVoice(options: UseVoiceOptions = {}) {
           vadHeardSpeechRef.current = true;
           vadLastVoiceRef.current = now;
         }
-        const spoke = vadHeardSpeechRef.current;
-        const silentFor = now - vadLastVoiceRef.current;
-        const turnFor = now - vadTurnStartRef.current;
-        // Adaptive endpoint, matching the iOS VAD: a short ask hands over on
-        // the tight window, a dictation keeps the patient one. Voiced duration
-        // (turn start → last voice) is the discriminator, so the silence being
-        // measured never counts against the classification.
-        const window = endpointWindowMs(vadLastVoiceRef.current - vadTurnStartRef.current);
-        if ((spoke && silentFor > window) || turnFor > VAD_MAX_TURN_MS) {
+        if (shouldEndVadTurn({
+          heardSpeech: vadHeardSpeechRef.current,
+          lastVoiceAt: vadLastVoiceRef.current,
+          turnStartedAt: vadTurnStartRef.current,
+        }, now)) {
           vadHeardSpeechRef.current = false;
           stopRecordingRef.current?.();
         }

@@ -217,6 +217,7 @@
 		D0869F4465AF6B0372722BC6 /* mobius_24.webp in Resources */ = {isa = PBXBuildFile; fileRef = 1BD65746168153E4927EA4BF /* mobius_24.webp */; };
 		D18A6856EBE158DF068E24E4 /* mobius_20.webp in Resources */ = {isa = PBXBuildFile; fileRef = E37A4053643D2CE4973B3F69 /* mobius_20.webp */; };
 		D50689448A84AD9315336677 /* mobius_23.webp in Resources */ = {isa = PBXBuildFile; fileRef = 032DBBA07506A4CB030698CA /* mobius_23.webp */; };
+		D5AFFD155E4F92A21F89DBE4 /* VoiceOrbDrive.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1155CC652ABB7AE0FF3AE807 /* VoiceOrbDrive.swift */; };
 		D5C4169CD16BE977B257EEA8 /* mobius_06.webp in Resources */ = {isa = PBXBuildFile; fileRef = FBB0FEA26280A6E401A0396B /* mobius_06.webp */; };
 		D608E7CD8B4A393517D8122E /* mobius_36.webp in Resources */ = {isa = PBXBuildFile; fileRef = DF52D5387FB44B148544B0D6 /* mobius_36.webp */; };
 		D6203DCC175CF8AF5BD5D154 /* mobius_52.webp in Resources */ = {isa = PBXBuildFile; fileRef = 96E3CD59C334F2231416D963 /* mobius_52.webp */; };
@@ -937,6 +938,7 @@
 				C443E4C76B83445AB7AA24AA /* PermagentWatchApp.swift in Sources */,
 				7899B4D912822426A2C06F81 /* TalkToAgentIntent.swift in Sources */,
 				3CC859A492AA97052054CD19 /* Theme.swift in Sources */,
+				D5AFFD155E4F92A21F89DBE4 /* VoiceOrbDrive.swift in Sources */,
 				B73C63B88616B56F42522D85 /* VoiceOrbView.swift in Sources */,
 				CDFB23A9541D83A8A0056AD7 /* WatchBridge.swift in Sources */,
 				0CD59DA1B934C4B413721DE0 /* WatchHomeView.swift in Sources */,

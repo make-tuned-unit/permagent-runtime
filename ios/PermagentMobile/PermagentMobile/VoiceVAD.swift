@@ -237,7 +237,10 @@ struct VoiceVAD {
     /// bleed does not cut the agent off.
     static var speakerphoneConfig: Config {
         var c = builtInMicConfig
-        c.barge = 0.055
+        // TTS bleed measured around 0.035 RMS. Keep headroom above it, then
+        // let VoiceAudioRoute's playback-aware echo gate decide. The previous
+        // 0.055 floor rejected ordinary interruption before that gate ran.
+        c.barge = 0.04
         c.bargeFrames = 3
         // Room hiss on speakerphone last night sat at ~0.0032 — exactly the
         // built-in keepalive — and held Listening for 30–40 s (e.g. start
@@ -388,4 +391,3 @@ enum VoiceSpectrum {
         return bins
     }
 }
-

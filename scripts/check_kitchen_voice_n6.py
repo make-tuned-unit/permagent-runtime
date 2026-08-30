@@ -57,9 +57,9 @@ def count_speaker_print(path: str, since: str | None) -> dict[str, int]:
             ts = line_ts(line)
             if since and ts and ts < since:
                 continue
-            if "speaker_print admit" in line:
+            if "speaker_print admit" in line or "speaker_print early_admit" in line:
                 counts["admit"] += 1
-            elif "speaker_print reject" in line:
+            elif "speaker_print reject" in line or "speaker_print early_reject" in line:
                 counts["reject"] += 1
             elif "speaker_print enrolled" in line:
                 counts["enrolled"] += 1
@@ -136,7 +136,10 @@ def main() -> int:
         )
         failed = True
 
-    print(f"turns={summary['n_turns']} complete={summary['n_complete']} empty_stt_cap={caps}")
+    print(
+        f"turns={summary['n_turns']} audible={summary.get('n_audible')} "
+        f"complete={summary['n_complete']} empty_stt_cap={caps}"
+    )
     print(f"first_audio_median_ms={median} ceiling_ms={FIRST_AUDIO_CEILING_MS}")
     print(f"stt_p90_ms={stt_p90}")
     print(

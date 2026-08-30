@@ -102,9 +102,10 @@ struct VoiceOrbView: View {
     var level: Double
     /// True while the agent is speaking; false while listening or thinking.
     var speaking: Bool
-    /// Thinking has no audio, so the orb swells on its own rather than flatlining.
+    /// Thinking has no audio; it rotates without a listening-style pulse.
     var thinking: Bool
-    /// Hands-free listening (or ready-and-armed). Must breathe even at RMS 0.
+    /// Hands-free listening (or ready-and-armed). This is the only state with
+    /// a synthetic pulse at RMS 0.
     var listening: Bool = false
     /// A word speech cannot say — shown on the Orb, never spoken.
     var teachWord: String? = nil
@@ -179,8 +180,8 @@ struct VoiceOrbView: View {
         let level = self.level.isFinite ? min(1.5, max(0, self.level)) : 0
 
         // Band targets live in VoiceOrbDrive so listening/speaking life can
-        // be regression-tested. Listening breathes at RMS 0; speaking keeps
-        // a residual pulse and swells harder than the old level-only path.
+        // be regression-tested. Only listening breathes at RMS 0; speaking
+        // follows the playback envelope and thinking turns without swelling.
         let bands = VoiceOrbDrive.bands(
             thinking: thinking,
             listening: listening,

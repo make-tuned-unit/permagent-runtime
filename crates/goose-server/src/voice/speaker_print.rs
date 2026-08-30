@@ -1,32 +1,37 @@
-//! Speaker print — a gate on `/voice`, not a better ear.
+//! Learned speaker verification for the `/voice` route.
 //!
-//! Kitchen music is supposed to die in VAD (N1). This module catches a
-//! *different talker* (radio host, singer, someone in the room) once Jesse
-//! has enrolled. No print → admit (fail open) so a fresh install still hears
-//! him. The vector is JSON under `~/.permagent/data/voice_print.json`. The
-//! enrollment WAVs are never written.
-//!
-//! Extract is a 32-band log-mel mean, L2-normalised — cheap enough to run
-//! before STT (budget: ≤ 80 ms; this is ~1 ms on an M4). It is a spectral
-//! envelope, not a neural x-vector: two voices of similar pitch can overlap.
-//! Swap the body of [`extract`] for an ONNX CAM++ / WeSpeaker forward when
-//! that model is on disk; the store and the cosine gate stay the same.
+//! The previous implementation averaged 32 log-mel bands. That can separate
+//! tones, but it is not a speaker embedding and admitted same-room speech in
+//! the 2026-08-27 kitchen session at 0.997–0.998. This module uses sherpa-onnx
+//! with the English CAM++ model from 3D-Speaker instead. Enrollment audio is
+//! processed in memory and never written to disk; only a normalized embedding
+//! is persisted.
 
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
+use sherpa_onnx::{SpeakerEmbeddingExtractor, SpeakerEmbeddingExtractorConfig};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Utterances required to enrol. Matches the three orb prompts.
 pub const NEED_UTTERANCES: usize = 3;
-/// Cosine at or above this admits. Tune in the kitchen (N6); too tight and
-/// Jesse vanishes while cooking, too loose and the radio still replies.
-pub const ADMIT_THRESHOLD: f32 = 0.62;
-const MEL_BINS: usize = 32;
-const FFT: usize = 256;
+/// sherpa-onnx's speaker-verification examples use 0.6 for CAM++.
+pub const ADMIT_THRESHOLD: f32 = 0.60;
+/// Prevent an enrollment assembled from multiple substantially different
+/// voices. This is deliberately lower than the runtime admission threshold so
+/// natural changes between the three prompted sentences still pass.
+const ENROLL_PAIR_THRESHOLD: f32 = 0.45;
+const STORE_SCHEMA: u32 = 2;
+pub const MODEL_ID: &str = "3dspeaker-campplus-en-voxceleb-16k";
+pub const MODEL_FILENAME: &str = "3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx";
+pub const MODEL_URL: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx";
+pub const MODEL_SHA256: &str = "357a834f702b80161e5b981182c038e18553c1f2ca752ed6cec2052365d4129b";
+pub const MODEL_BYTES: u64 = 29_596_978;
+pub const DOWNLOAD_ID: &str = "speaker-identity-campplus";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Gate {
-    /// No print on disk, or the vectors cannot be compared.
+    /// No identity has been enrolled yet.
     Open,
     Admit {
         score: f32,
@@ -34,14 +39,111 @@ pub enum Gate {
     Reject {
         score: f32,
     },
+    /// An enrolled identity exists but cannot safely be compared. Callers
+    /// must fail closed rather than treating this as an open installation.
+    Unavailable,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VoicePrint {
+    pub schema_version: u32,
+    pub model: String,
     pub dim: usize,
     pub vector: Vec<f32>,
     pub created_at: String,
     pub n_utterances: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct SpeakerModelPaths {
+    pub model_path: PathBuf,
+}
+
+impl SpeakerModelPaths {
+    pub fn default_paths() -> Self {
+        let base = dirs::data_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("permagent")
+            .join("models")
+            .join("voice")
+            .join("speaker");
+        Self {
+            model_path: base.join(MODEL_FILENAME),
+        }
+    }
+
+    pub fn models_exist(&self) -> bool {
+        self.model_path.is_file()
+    }
+}
+
+/// One shared extractor. Access is serialized because the native runtime's
+/// thread-safety guarantee covers a single object, not simultaneous calls on
+/// that object from multiple WebSocket blocking tasks.
+pub struct SpeakerVerifier {
+    extractor: Mutex<SpeakerEmbeddingExtractor>,
+    dim: usize,
+}
+
+impl SpeakerVerifier {
+    pub fn new(model_path: &Path) -> anyhow::Result<Self> {
+        if !model_path.is_file() {
+            anyhow::bail!("speaker model is missing: {}", model_path.display());
+        }
+        let config = SpeakerEmbeddingExtractorConfig {
+            model: Some(model_path.to_string_lossy().into_owned()),
+            num_threads: 2,
+            debug: false,
+            provider: Some("cpu".into()),
+        };
+        let extractor = SpeakerEmbeddingExtractor::create(&config)
+            .context("sherpa-onnx could not load the CAM++ speaker model")?;
+        let dim =
+            usize::try_from(extractor.dim()).context("invalid speaker embedding dimension")?;
+        if dim == 0 {
+            anyhow::bail!("speaker model returned a zero embedding dimension");
+        }
+        Ok(Self {
+            extractor: Mutex::new(extractor),
+            dim,
+        })
+    }
+
+    pub fn dim(&self) -> usize {
+        self.dim
+    }
+
+    /// Compute a learned embedding. CAM++ needs enough voiced context to be
+    /// meaningful, so sub-500ms captures are rejected before native inference.
+    pub fn extract(&self, samples: &[f32], sample_rate: u32) -> anyhow::Result<Option<Vec<f32>>> {
+        if sample_rate == 0 || samples.len() < sample_rate as usize / 2 {
+            return Ok(None);
+        }
+        let extractor = self
+            .extractor
+            .lock()
+            .map_err(|_| anyhow::anyhow!("speaker extractor lock poisoned"))?;
+        let stream = extractor
+            .create_stream()
+            .context("could not create speaker embedding stream")?;
+        stream.accept_waveform(sample_rate as i32, samples);
+        stream.input_finished();
+        if !extractor.is_ready(&stream) {
+            return Ok(None);
+        }
+        let mut embedding = extractor
+            .compute(&stream)
+            .context("speaker model returned no embedding")?;
+        if embedding.len() != self.dim {
+            anyhow::bail!(
+                "speaker model returned {} dimensions; expected {}",
+                embedding.len(),
+                self.dim
+            );
+        }
+        l2_normalize(&mut embedding)?;
+        Ok(Some(embedding))
+    }
 }
 
 pub fn store_path() -> PathBuf {
@@ -54,7 +156,18 @@ pub fn load() -> Option<VoicePrint> {
 
 fn load_from(path: &Path) -> Option<VoicePrint> {
     let raw = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&raw).ok()
+    let print: VoicePrint = serde_json::from_str(&raw).ok()?;
+    valid_print(&print).then_some(print)
+}
+
+fn valid_print(print: &VoicePrint) -> bool {
+    print.schema_version == STORE_SCHEMA
+        && print.model == MODEL_ID
+        && print.n_utterances >= NEED_UTTERANCES
+        && print.dim > 0
+        && print.vector.len() == print.dim
+        && print.vector.iter().all(|x| x.is_finite())
+        && print.vector.iter().map(|x| x * x).sum::<f32>() > 0.5
 }
 
 pub fn save(print: &VoicePrint) -> std::io::Result<()> {
@@ -62,6 +175,12 @@ pub fn save(print: &VoicePrint) -> std::io::Result<()> {
 }
 
 fn save_to(path: &Path, print: &VoicePrint) -> std::io::Result<()> {
+    if !valid_print(print) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "invalid or obsolete learned speaker print",
+        ));
+    }
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -86,33 +205,24 @@ pub fn cosine(a: &[f32], b: &[f32]) -> Option<f32> {
     if a.len() != b.len() || a.is_empty() {
         return None;
     }
-    let mut dot = 0.0f32;
-    let mut na = 0.0f32;
-    let mut nb = 0.0f32;
-    for (x, y) in a.iter().zip(b) {
-        dot += x * y;
-        na += x * x;
-        nb += y * y;
-    }
-    let d = na.sqrt() * nb.sqrt();
-    if d < 1e-9 {
-        return None;
-    }
-    Some((dot / d).clamp(-1.0, 1.0))
+    let dot = a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>();
+    let na = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let nb = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let denom = na * nb;
+    (denom >= 1e-9).then(|| (dot / denom).clamp(-1.0, 1.0))
 }
 
-pub fn gate(embedding: &[f32]) -> Gate {
-    gate_against(load().as_ref().map(|p| p.vector.as_slice()), embedding)
-}
-
-pub fn gate_against(print: Option<&[f32]>, embedding: &[f32]) -> Gate {
+pub fn gate_against(print: Option<&VoicePrint>, embedding: &[f32]) -> Gate {
     let Some(print) = print else {
         return Gate::Open;
     };
-    match cosine(print, embedding) {
+    if !valid_print(print) || embedding.len() != print.dim {
+        return Gate::Unavailable;
+    }
+    match cosine(&print.vector, embedding) {
         Some(score) if score >= ADMIT_THRESHOLD => Gate::Admit { score },
         Some(score) => Gate::Reject { score },
-        None => Gate::Open,
+        None => Gate::Unavailable,
     }
 }
 
@@ -121,15 +231,36 @@ pub fn mean_l2(vectors: &[Vec<f32>]) -> Option<Vec<f32>> {
     if dim == 0 || vectors.iter().any(|v| v.len() != dim) {
         return None;
     }
-    let n = vectors.len() as f32;
-    let mut acc = vec![0.0f32; dim];
+    let mut acc = vec![0.0; dim];
     for v in vectors {
-        for (a, x) in acc.iter_mut().zip(v) {
-            *a += *x / n;
+        for (slot, value) in acc.iter_mut().zip(v) {
+            *slot += *value / vectors.len() as f32;
         }
     }
-    l2_normalize(&mut acc);
+    l2_normalize(&mut acc).ok()?;
     Some(acc)
+}
+
+fn enrollment_is_coherent(vectors: &[Vec<f32>]) -> bool {
+    for i in 0..vectors.len() {
+        for j in i + 1..vectors.len() {
+            if cosine(&vectors[i], &vectors[j]).is_none_or(|score| score < ENROLL_PAIR_THRESHOLD) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn l2_normalize(vector: &mut [f32]) -> anyhow::Result<()> {
+    let norm = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if !norm.is_finite() || norm < 1e-9 {
+        anyhow::bail!("speaker model returned an empty embedding");
+    }
+    for value in vector {
+        *value /= norm;
+    }
+    Ok(())
 }
 
 pub fn now_rfc3339() -> String {
@@ -137,12 +268,17 @@ pub fn now_rfc3339() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    format!("{secs}")
+    secs.to_string()
 }
 
 pub fn from_utterances(vectors: &[Vec<f32>]) -> Option<VoicePrint> {
+    if vectors.len() < NEED_UTTERANCES || !enrollment_is_coherent(vectors) {
+        return None;
+    }
     let vector = mean_l2(vectors)?;
     Some(VoicePrint {
+        schema_version: STORE_SCHEMA,
+        model: MODEL_ID.into(),
         dim: vector.len(),
         n_utterances: vectors.len(),
         vector,
@@ -150,101 +286,11 @@ pub fn from_utterances(vectors: &[Vec<f32>]) -> Option<VoicePrint> {
     })
 }
 
-/// Log-mel mean of one utterance. `None` when the clip is too short to judge.
-/// Scores at most the last 2.5 s so a 60 s buffer cannot blow the 80 ms budget.
-pub fn extract(samples: &[f32], sample_rate: u32) -> Option<Vec<f32>> {
-    let min = (sample_rate as usize).saturating_mul(3) / 10; // 300 ms
-    if samples.len() < min || sample_rate == 0 {
-        return None;
-    }
-    let max = (sample_rate as usize).saturating_mul(5) / 2;
-    let samples = if samples.len() > max {
-        &samples[samples.len() - max..]
-    } else {
-        samples
-    };
-    let hop = (sample_rate as usize / 100).max(1); // 10 ms
-    let mut acc = vec![0.0f32; MEL_BINS];
-    let mut frames = 0u32;
-    let mut i = 0;
-    while i + FFT <= samples.len() {
-        let frame = &samples[i..i + FFT];
-        accumulate_mel(frame, sample_rate, &mut acc);
-        frames += 1;
-        i += hop;
-    }
-    if frames == 0 {
-        return None;
-    }
-    for x in &mut acc {
-        *x /= frames as f32;
-    }
-    l2_normalize(&mut acc);
-    Some(acc)
-}
-
-fn l2_normalize(v: &mut [f32]) {
-    let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if n < 1e-9 {
-        return;
-    }
-    for x in v {
-        *x /= n;
-    }
-}
-
-fn accumulate_mel(frame: &[f32], sample_rate: u32, acc: &mut [f32]) {
-    let n = frame.len();
-    let mut mags = vec![0.0f32; n / 2];
-    for k in 0..n / 2 {
-        let mut re = 0.0f32;
-        let mut im = 0.0f32;
-        for (i, &x) in frame.iter().enumerate() {
-            let w = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / (n as f32 - 1.0)).cos();
-            let ang = 2.0 * std::f32::consts::PI * k as f32 * i as f32 / n as f32;
-            re += x * w * ang.cos();
-            im -= x * w * ang.sin();
-        }
-        mags[k] = (re * re + im * im).sqrt();
-    }
-    let nyquist = sample_rate as f32 / 2.0;
-    for (b, slot) in acc.iter_mut().enumerate() {
-        let lo = mel_hz(b, MEL_BINS, nyquist);
-        let hi = mel_hz(b + 1, MEL_BINS, nyquist);
-        let mut e = 0.0f32;
-        let mut c = 0u32;
-        for (k, &m) in mags.iter().enumerate() {
-            let hz = k as f32 * nyquist / (n / 2) as f32;
-            if hz >= lo && hz < hi {
-                e += m;
-                c += 1;
-            }
-        }
-        let avg = if c == 0 { 0.0 } else { e / c as f32 };
-        *slot += (avg + 1e-9).ln();
-    }
-}
-
-fn mel_hz(band: usize, n_bands: usize, nyquist: f32) -> f32 {
-    let m_lo = hz_to_mel(80.0);
-    let m_hi = hz_to_mel(nyquist.min(7600.0));
-    let m = m_lo + (m_hi - m_lo) * band as f32 / n_bands as f32;
-    mel_to_hz(m)
-}
-
-fn hz_to_mel(hz: f32) -> f32 {
-    2595.0 * (1.0 + hz / 700.0).log10()
-}
-
-fn mel_to_hz(mel: f32) -> f32 {
-    700.0 * (10.0f32.powf(mel / 2595.0) - 1.0)
-}
-
-/// Orb prompts — same strings the iOS client shows. Server echoes the next
-/// one so a reconnect cannot desync the count.
+/// Setup prompts are deliberately agent-name-independent. The user's agent can
+/// be renamed at any time without invalidating the identity workflow.
 pub const PROMPTS: [&str; NEED_UTTERANCES] = [
     "What's on my board?",
-    "Henry, I'm in the kitchen.",
+    "This is the voice I want you to answer.",
     "Tell me something interesting.",
 ];
 
@@ -256,11 +302,15 @@ pub fn prompt_at(have: usize) -> Option<&'static str> {
 mod tests {
     use super::*;
 
-    fn tone(hz: f32, sr: u32, secs: f32) -> Vec<f32> {
-        let n = (sr as f32 * secs) as usize;
-        (0..n)
-            .map(|i| (2.0 * std::f32::consts::PI * hz * i as f32 / sr as f32).sin() * 0.2)
-            .collect()
+    fn print(vector: Vec<f32>) -> VoicePrint {
+        VoicePrint {
+            schema_version: STORE_SCHEMA,
+            model: MODEL_ID.into(),
+            dim: vector.len(),
+            vector,
+            created_at: "t0".into(),
+            n_utterances: NEED_UTTERANCES,
+        }
     }
 
     #[test]
@@ -269,55 +319,60 @@ mod tests {
     }
 
     #[test]
-    fn self_admits_and_other_rejects() {
-        let me = vec![1.0f32, 0.0, 0.0];
-        let also_me = vec![0.99, 0.01, 0.0];
-        let other = vec![0.0, 0.0, 1.0];
-        match gate_against(Some(&me), &also_me) {
-            Gate::Admit { score } => assert!(score > 0.9, "{score}"),
-            g => panic!("self must admit: {g:?}"),
-        }
-        match gate_against(Some(&me), &other) {
-            Gate::Reject { score } => assert!(score < 0.2, "{score}"),
-            g => panic!("other must reject: {g:?}"),
-        }
+    fn learned_embeddings_admit_self_and_reject_other() {
+        let me = print(vec![1.0, 0.0, 0.0]);
+        assert!(matches!(
+            gate_against(Some(&me), &[0.99, 0.01, 0.0]),
+            Gate::Admit { .. }
+        ));
+        assert!(matches!(
+            gate_against(Some(&me), &[0.0, 0.0, 1.0]),
+            Gate::Reject { .. }
+        ));
     }
 
     #[test]
-    fn dim_mismatch_fails_open() {
-        assert_eq!(
-            gate_against(Some(&[1.0, 0.0]), &[1.0, 0.0, 0.0]),
-            Gate::Open
-        );
+    fn enrolled_dimension_mismatch_fails_closed() {
+        let me = print(vec![1.0, 0.0]);
+        assert_eq!(gate_against(Some(&me), &[1.0, 0.0, 0.0]), Gate::Unavailable);
     }
 
     #[test]
-    fn two_sines_are_not_the_same_speaker() {
-        let a = extract(&tone(180.0, 16_000, 0.6), 16_000).expect("low");
-        let b = extract(&tone(420.0, 16_000, 0.6), 16_000).expect("high");
-        let score = cosine(&a, &b).unwrap();
-        assert!(
-            score < ADMIT_THRESHOLD,
-            "180 Hz vs 420 Hz must not admit ({score})"
-        );
+    fn incoherent_enrollment_is_rejected() {
+        assert!(from_utterances(&[
+            vec![1.0, 0.0, 0.0],
+            vec![0.99, 0.01, 0.0],
+            vec![0.0, 0.0, 1.0],
+        ])
+        .is_none());
     }
 
     #[test]
-    fn same_sine_admits() {
-        let a = extract(&tone(180.0, 16_000, 0.6), 16_000).unwrap();
-        let b = extract(&tone(180.0, 16_000, 0.7), 16_000).unwrap();
-        match gate_against(Some(&a), &b) {
-            Gate::Admit { .. } => {}
-            g => panic!("same tone must admit: {g:?}"),
-        }
+    fn three_coherent_utterances_make_versioned_print() {
+        let print = from_utterances(&[
+            vec![1.0, 0.0, 0.0],
+            vec![0.99, 0.01, 0.0],
+            vec![0.98, 0.02, 0.0],
+        ])
+        .unwrap();
+        assert_eq!(print.n_utterances, NEED_UTTERANCES);
+        assert_eq!(print.schema_version, STORE_SCHEMA);
+        assert_eq!(print.model, MODEL_ID);
     }
 
     #[test]
-    fn three_utterances_make_a_print() {
-        let v = extract(&tone(200.0, 16_000, 0.5), 16_000).unwrap();
-        let print = from_utterances(&[v.clone(), v.clone(), v]).unwrap();
-        assert_eq!(print.n_utterances, 3);
-        assert_eq!(print.dim, MEL_BINS);
+    fn obsolete_spectral_print_does_not_load() {
+        let dir = std::env::temp_dir().join(format!("voice-print-old-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("voice_print.json");
+        std::fs::write(
+            &path,
+            r#"{"dim":2,"vector":[0.6,0.8],"created_at":"t0","n_utterances":3}"#,
+        )
+        .unwrap();
+        assert!(load_from(&path).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -326,33 +381,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("voice_print.json");
-        let print = VoicePrint {
-            dim: 2,
-            vector: vec![0.6, 0.8],
-            created_at: "t0".into(),
-            n_utterances: 3,
-        };
+        let print = print(vec![0.6, 0.8]);
         save_to(&path, &print).unwrap();
-        let loaded = load_from(&path).unwrap();
-        assert_eq!(loaded, print);
+        assert_eq!(load_from(&path).unwrap(), print);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn too_short_does_not_extract() {
-        assert!(extract(&[0.1; 100], 16_000).is_none());
+    fn prompts_never_hardcode_an_agent_name() {
+        for prompt in PROMPTS {
+            assert!(!prompt.to_ascii_lowercase().contains("henry"));
+        }
     }
 
+    /// Opt-in integration gate for the pinned release asset. CI/unit runs do
+    /// not download 29.6MB; the audit invokes this with the verified /tmp file.
     #[test]
-    fn extract_stays_inside_the_score_budget() {
-        let clip = tone(180.0, 16_000, 2.5);
-        let t0 = std::time::Instant::now();
-        assert!(extract(&clip, 16_000).is_some());
-        let ms = t0.elapsed().as_millis();
-        let budget = if cfg!(debug_assertions) { 400 } else { 80 };
-        assert!(
-            ms <= budget,
-            "extract of 2.5 s must stay ≤ {budget} ms (80 ms in release, not on the LLM clock); took {ms} ms"
-        );
+    fn real_campp_model_loads_and_embeds_speech() {
+        let Ok(model) = std::env::var("PERMAGENT_SPEAKER_MODEL_TEST") else {
+            return;
+        };
+        let wav_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../goose/src/dictation/testdata/speech_mono_16k.wav");
+        let mut reader = hound::WavReader::open(wav_path).expect("open speech fixture");
+        let spec = reader.spec();
+        assert_eq!(spec.channels, 1);
+        let samples = reader
+            .samples::<i16>()
+            .map(|s| s.expect("wav sample") as f32 / i16::MAX as f32)
+            .collect::<Vec<_>>();
+
+        let verifier = SpeakerVerifier::new(Path::new(&model)).expect("load CAM++");
+        let first = verifier
+            .extract(&samples, spec.sample_rate)
+            .expect("run CAM++")
+            .expect("embedding ready");
+        let second = verifier
+            .extract(&samples, spec.sample_rate)
+            .expect("run CAM++ again")
+            .expect("embedding ready");
+        assert_eq!(first.len(), verifier.dim());
+        assert!(verifier.dim() >= 128);
+        assert!(cosine(&first, &second).unwrap() > 0.999);
     }
 }

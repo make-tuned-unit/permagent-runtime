@@ -5,7 +5,8 @@
 // speak the orb pulses with their voice; while the AGENT speaks it goes dynamic
 // and changes shape with the speech. The three states must read as three
 // different KINDS of motion, not one shape at three speeds — the convention every
-// shipped voice orb follows, and it is what makes a long think tolerable.
+// shipped voice orb follows. Only listening gets a synthetic pulse; thinking
+// turns without shape-pulsing, and speaking follows the real TTS envelope.
 //
 // Bands map onto geometry in VoiceOrbView: `low` → `amp`, the magnitude of the
 // noise-field displacement (the SHAPE change); `mid` → `spin`, the rotation
@@ -47,14 +48,12 @@ enum VoiceOrbDrive {
         let level = level.isFinite ? min(1.5, max(0, level)) : 0
 
         if thinking {
-            // Turning, not breathing. `low` is held almost flat so the surface
-            // does not pulse — the noise field still drifts on its own clock —
-            // while `mid` is pinned high so the orb visibly ROTATES. With a
+            // Turning, never breathing. Zero low band removes synthetic shape
+            // deformation while `mid` stays high so the orb visibly ROTATES. With a
             // multi-second wait in front of every reply this is the state the
             // user stares at, and it has to say "working", not "idle" and not
             // "listening".
-            let drift = 0.005 * sin(t * 0.9)
-            return Bands(low: 0.085 + drift, mid: 0.42 + 0.05 * sin(t * 0.7), high: 0.02)
+            return Bands(low: 0, mid: 0.42 + 0.05 * sin(t * 0.7), high: 0.02)
         }
 
         if listening {
@@ -81,16 +80,14 @@ enum VoiceOrbDrive {
             )
         }
 
-        let breath = 0.09 + 0.06 * (0.5 + 0.5 * sin(t * 1.5))
-        return Bands(
-            low: max(breath, level),
-            mid: max(breath * 0.65, level * 0.7),
-            high: max(breath * 0.35, level * 0.5)
-        )
+        // Idle/ready is calm. A synthetic breath here made the orb look as if
+        // it were listening even when hands-free was off.
+        return Bands(low: 0, mid: 0, high: 0)
     }
 
     static func amp(low: Double, speaking: Bool) -> Double {
-        speaking ? 0.055 + low * 0.50 : 0.045 + low * 0.34
+        if !speaking && low <= 0 { return 0 }
+        return speaking ? 0.055 + low * 0.50 : 0.045 + low * 0.34
     }
 
     static func spin(mid: Double, speaking: Bool) -> Double {

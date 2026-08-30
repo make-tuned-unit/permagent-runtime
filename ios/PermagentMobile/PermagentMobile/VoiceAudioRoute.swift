@@ -10,6 +10,14 @@
 import AVFoundation
 import Foundation
 
+enum VoiceTransport {
+    /// URLSessionWebSocketTask defaults to a 1 MiB incoming message. A 15.7 s
+    /// Float32 TTS chunk in the 2026-08-28 session was ~1.5 MiB and iOS closed
+    /// the otherwise healthy conversation with code 1009. Eight MiB carries
+    /// about 87 seconds at 24 kHz mono while still bounding one server frame.
+    static let maximumIncomingMessageBytes = 8 * 1024 * 1024
+}
+
 enum VoiceAudioRoute {
     /// Output ports that mean "do not use the loudspeaker". Taken from the
     /// SDK so a rename cannot silently drop AirPods back onto speakerphone.
@@ -89,10 +97,15 @@ enum VoiceAudioRoute {
 
     /// Speakerphone runs without AEC, so TTS from the same speaker looks like
     /// speech. Ignore barge-in only when the mic is NOT clearly louder than
-    /// playback — a blanket ignore while he talks made him uninterruptible.
+    /// the expected acoustic echo — a blanket ignore made him uninterruptible.
     /// Best practice (2026 duplex agents): stop immediately on a real barge,
     /// never on his own echo. Headphones keep AEC and never ignore.
     static let speakerPlaybackBargeFloor: Float = 0.05
+    /// The playback tap is measured before loudspeaker → room → microphone
+    /// attenuation. Live traces put 0.2 playback near 0.03 mic echo; comparing
+    /// the two values directly required an impossible shout over the digital
+    /// source rather than over the sound actually reaching the microphone.
+    static let speakerPlaybackToMicGain: Float = 0.15
 
     static func ignoreBargeIn(
         speakerphone: Bool,
@@ -101,7 +114,8 @@ enum VoiceAudioRoute {
     ) -> Bool {
         guard speakerphone else { return false }
         guard playbackRms > speakerPlaybackBargeFloor else { return false }
-        let floor = max(speakerPlaybackBargeFloor, playbackRms * 1.75)
+        let expectedEcho = playbackRms * speakerPlaybackToMicGain
+        let floor = max(speakerPlaybackBargeFloor, expectedEcho * 1.75)
         return micRms <= floor
     }
 }

@@ -110,6 +110,9 @@ pub struct AppState {
     /// Hot-swappable like TTS: `None` until the ~17MB model is downloaded, at
     /// which point the on-demand downloader loads it without a restart.
     pub wake_spotter: SharedWakeSpotter,
+    /// Learned CAM++ speaker verifier. Hot-swappable after the identity model
+    /// is downloaded from the one-time setup screen.
+    pub speaker_verifier: SharedSpeakerVerifier,
 }
 
 /// Hot-swappable TTS slot — `None` until Kokoro models are downloaded/loaded,
@@ -119,6 +122,9 @@ pub type SharedTts = Arc<tokio::sync::RwLock<Option<Arc<dyn crate::voice::TextTo
 /// Hot-swappable wake-word spotter slot, same lifecycle as [`SharedTts`].
 pub type SharedWakeSpotter =
     Arc<tokio::sync::RwLock<Option<Arc<crate::voice::kws::WakeWordSpotter>>>>;
+
+pub type SharedSpeakerVerifier =
+    Arc<tokio::sync::RwLock<Option<Arc<crate::voice::speaker_print::SpeakerVerifier>>>>;
 
 impl AppState {
     pub async fn new(tls: bool) -> anyhow::Result<Arc<AppState>> {
@@ -1013,6 +1019,7 @@ impl AppState {
             voice_stt,
             voice_tts: Arc::new(tokio::sync::RwLock::new(voice_tts)),
             wake_spotter: Arc::new(tokio::sync::RwLock::new(build_wake_spotter())),
+            speaker_verifier: Arc::new(tokio::sync::RwLock::new(build_speaker_verifier())),
         });
 
         // Agent runtime-state tick (#288 interim A): derive Henry's state from the
@@ -1226,6 +1233,32 @@ pub fn build_wake_spotter() -> Option<Arc<crate::voice::kws::WakeWordSpotter>> {
         }
         Err(e) => {
             tracing::error!(target: "permagentd::voice", "Wake-word spotter load failed: {}", e);
+            None
+        }
+    }
+}
+
+/// Build the learned speaker verifier when its pinned CAM++ model is present.
+pub fn build_speaker_verifier() -> Option<Arc<crate::voice::speaker_print::SpeakerVerifier>> {
+    let paths = crate::voice::speaker_print::SpeakerModelPaths::default_paths();
+    if !paths.models_exist() {
+        tracing::info!(
+            target: "permagentd::voice",
+            "Speaker identity model not found — enrollment unavailable until downloaded"
+        );
+        return None;
+    }
+    match crate::voice::speaker_print::SpeakerVerifier::new(&paths.model_path) {
+        Ok(verifier) => {
+            tracing::info!(
+                target: "permagentd::voice",
+                dim = verifier.dim(),
+                "Learned CAM++ speaker verifier loaded"
+            );
+            Some(Arc::new(verifier))
+        }
+        Err(e) => {
+            tracing::error!(target: "permagentd::voice", "Speaker verifier load failed: {e}");
             None
         }
     }

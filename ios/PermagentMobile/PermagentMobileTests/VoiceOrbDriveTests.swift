@@ -121,11 +121,22 @@ final class VoiceOrbDriveTests: XCTestCase {
             "thinking does not spin faster than a loud listening frame")
     }
 
-    /// Nothing on screen should be perfectly frozen.
-    func testThinkingStillHasItsOwnBreath() {
+    /// Thinking can turn, but only LISTENING is allowed a synthetic shape pulse.
+    func testThinkingHasNoSyntheticShapePulse() {
         let a = VoiceOrbDrive.bands(thinking: true, listening: false, speaking: false, level: 0, t: 0)
         let b = VoiceOrbDrive.bands(thinking: true, listening: false, speaking: false, level: 0, t: 1.0)
-        XCTAssertNotEqual(a.low, b.low, accuracy: 0.0005)
+        XCTAssertEqual(a.low, 0)
+        XCTAssertEqual(b.low, 0)
+        XCTAssertEqual(VoiceOrbDrive.amp(low: a.low, speaking: false), 0)
+        XCTAssertNotEqual(a.mid, b.mid, accuracy: 0.0005, "thinking should still turn")
+    }
+
+    func testIdleHasNoListeningPulse() {
+        let a = VoiceOrbDrive.bands(thinking: false, listening: false, speaking: false, level: 0, t: 0)
+        let b = VoiceOrbDrive.bands(thinking: false, listening: false, speaking: false, level: 0, t: 2)
+        XCTAssertEqual(a, .init(low: 0, mid: 0, high: 0))
+        XCTAssertEqual(b, a)
+        XCTAssertEqual(VoiceOrbDrive.amp(low: a.low, speaking: false), 0)
     }
 
     /// The mic tap can hand over NaN after a route change; a poisoned band
