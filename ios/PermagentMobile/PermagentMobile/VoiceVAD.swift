@@ -237,7 +237,10 @@ struct VoiceVAD {
     /// bleed does not cut the agent off.
     static var speakerphoneConfig: Config {
         var c = builtInMicConfig
-        c.barge = 0.055
+        // TTS bleed measured around 0.035 RMS. Keep headroom above it, then
+        // let VoiceAudioRoute's playback-aware echo gate decide. The previous
+        // 0.055 floor rejected ordinary interruption before that gate ran.
+        c.barge = 0.04
         c.bargeFrames = 3
         // Room hiss on speakerphone last night sat at ~0.0032 — exactly the
         // built-in keepalive — and held Listening for 30–40 s (e.g. start
@@ -247,13 +250,21 @@ struct VoiceVAD {
         return c
     }
 
-    /// Feed one mic frame's RMS. Returns the transition the engine should
-    /// perform, if any.
-    mutating func step(rms: Float, phase: Phase, now: TimeInterval) -> Action {
+    /// Feed one mic frame's RMS. `voiceLike` is the spectral veto from
+    /// `VoiceSpectrum.looksLikeVoice` — fail OPEN (`true`) when the analyser
+    /// has nothing to judge, so a missing FFT cannot kill the orb.
+    /// Kitchen music is loud enough to sit on keepalive but spectrally flat;
+    /// those frames must not refresh `lastVoice` or they ride to `maxTurnMs`.
+    mutating func step(
+        rms: Float,
+        phase: Phase,
+        now: TimeInterval,
+        voiceLike: Bool = true
+    ) -> Action {
         switch phase {
         case .ready:
             bargeStreak = 0
-            if rms > config.onset {
+            if rms > config.onset && voiceLike {
                 onsetStreak += 1
                 if onsetStreak >= config.onsetFrames {
                     onsetStreak = 0
@@ -270,7 +281,7 @@ struct VoiceVAD {
         case .listening:
             let frameMs = lastStep > 0 ? (now - lastStep) * 1_000 : 85
             lastStep = now
-            if rms > config.keepalive {
+            if rms > config.keepalive && voiceLike {
                 heardSpeech = true
                 lastVoice = now
                 voicedAccumMs += frameMs
@@ -315,5 +326,68 @@ struct VoiceVAD {
             break
         }
         return .none
+    }
+}
+
+/// Spectral voice/transient discriminator — port of
+/// `ui/command-center/src/hooks/vadSpectrum.ts`.
+///
+/// Band AVERAGES, not dB sums. The web's first version summed analyser bytes
+/// and required the low bins to hold 55% of that sum; on a dB scale the
+/// non-voice bins swamp the voice bins and real speech scores ~0.3, so the
+/// gate rejected essentially all speech. Comparing averages keeps the tilt
+/// meaningful. Fails OPEN whenever there is nothing to judge.
+enum VoiceSpectrum {
+    /// How much louder (byte-dB) the voice band must be than the bright band.
+    /// Close to 1.0: this is a VETO on obvious broadband, not a speech test.
+    static let voiceTilt: Float = 1.12
+    /// ~0–1.2 kHz at fftSize 64 on a 16 kHz frame.
+    static let lowFraction: Float = 0.16
+    /// Bright band start (~3 kHz+).
+    static let highFraction: Float = 0.38
+    static let fftSize = 64
+
+    static func looksLikeVoice(_ data: [Float]) -> Bool {
+        let n = data.count
+        if n < 8 { return true }
+        let lowEnd = max(1, Int((Float(n) * lowFraction).rounded()))
+        let highStart = max(lowEnd + 1, Int((Float(n) * highFraction).rounded()))
+        if highStart >= n { return true }
+        var low: Float = 0
+        for i in 0..<lowEnd { low += data[i] }
+        var high: Float = 0
+        for i in highStart..<n { high += data[i] }
+        let lowAvg = low / Float(lowEnd)
+        let highAvg = high / Float(n - highStart)
+        if lowAvg <= 1 { return true }
+        if highAvg <= 1 { return true }
+        return lowAvg >= highAvg * voiceTilt
+    }
+
+    /// Map a 16 kHz PCM frame to 32 byte-scale bins (fftSize 64). Short
+    /// frames return `[]`, which `looksLikeVoice` admits (fail-open).
+    static func byteBins(samples: UnsafePointer<Float>, count: Int) -> [Float] {
+        let nfft = fftSize
+        guard count >= nfft else { return [] }
+        let start = count - nfft
+        var windowed = [Float](repeating: 0, count: nfft)
+        for i in 0..<nfft {
+            let hann = 0.5 - 0.5 * cos(2 * Float.pi * Float(i) / Float(nfft - 1))
+            windowed[i] = samples[start + i] * hann
+        }
+        var bins = [Float](repeating: 0, count: nfft / 2)
+        for k in 0..<(nfft / 2) {
+            var re: Float = 0
+            var im: Float = 0
+            for n in 0..<nfft {
+                let ang = 2 * Float.pi * Float(k) * Float(n) / Float(nfft)
+                re += windowed[n] * Foundation.cos(ang)
+                im -= windowed[n] * Foundation.sin(ang)
+            }
+            let mag = (re * re + im * im).squareRoot() / Float(nfft)
+            let db = 20 * log10(mag + 1e-12)
+            bins[k] = max(0, min(255, (255 / 70) * (db + 100)))
+        }
+        return bins
     }
 }

@@ -159,12 +159,12 @@ final class VoiceAudioRouteTests: XCTestCase {
 
     func testSpeakerphoneIgnoresEchoButAllowsALouderInterrupt() {
         XCTAssertTrue(
-            VoiceAudioRoute.ignoreBargeIn(speakerphone: true, playbackRms: 0.2, micRms: 0.08),
+            VoiceAudioRoute.ignoreBargeIn(speakerphone: true, playbackRms: 0.2, micRms: 0.035),
             "his own voice in the room must not cut him off"
         )
         XCTAssertFalse(
-            VoiceAudioRoute.ignoreBargeIn(speakerphone: true, playbackRms: 0.2, micRms: 0.45),
-            "a real barge-in (user louder than playback) must interrupt"
+            VoiceAudioRoute.ignoreBargeIn(speakerphone: true, playbackRms: 0.2, micRms: 0.06),
+            "ordinary speech over playback must interrupt without a shout"
         )
         XCTAssertFalse(
             VoiceAudioRoute.ignoreBargeIn(speakerphone: true, playbackRms: 0, micRms: 0.08),
@@ -174,6 +174,15 @@ final class VoiceAudioRouteTests: XCTestCase {
 
     func testHeadphonesNeverIgnoreBargeBecauseOfSpeakerPlayback() {
         XCTAssertFalse(VoiceAudioRoute.ignoreBargeIn(speakerphone: false, playbackRms: 0.9, micRms: 0.03))
+    }
+
+    func testIncomingVoiceFrameLimitCarriesTheObservedLongChunk() {
+        let observedSamples = Int(15.7 * 24_000)
+        let observedBytes = observedSamples * MemoryLayout<Float>.size
+        XCTAssertGreaterThan(observedBytes, 1 * 1024 * 1024,
+                             "fixture must reproduce URLSession's old 1 MiB code-1009 close")
+        XCTAssertGreaterThan(VoiceTransport.maximumIncomingMessageBytes, observedBytes)
+        XCTAssertLessThanOrEqual(VoiceTransport.maximumIncomingMessageBytes, 8 * 1024 * 1024)
     }
 
     func testSpeakerphonePolicySelectsSpeakerphoneVAD() {

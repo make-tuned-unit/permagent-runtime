@@ -22,7 +22,16 @@ final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
     @Published var projects: [WatchProject] = []
 
     private var pendingNoteId: String?
-    private var queuedRecordings: [(url: URL, id: String, kind: String)] = []
+    private struct QueuedRecording: Codable, Equatable {
+        let path: String
+        let id: String
+        let kind: String
+    }
+
+    private static let pendingRecordingsKey = "watchRelay.pendingRecordings.v1"
+    private var queuedRecordings: [QueuedRecording] = []
+    private var activeTransferIds: Set<String> = []
+    private var responseWatchdog: Task<Void, Never>?
 
     func start() {
         guard WCSession.isSupported() else {
@@ -32,6 +41,8 @@ final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
         let session = WCSession.default
         session.delegate = self
         session.activate()
+        loadPendingRecordings()
+        flushQueue()
     }
 
     func ping() {
@@ -45,6 +56,7 @@ final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
         chatThinking = true
         chatText = ""
         notice = nil
+        armResponseWatchdog(kind: "chat")
         send(WatchRequest(op: .chat, id: UUID().uuidString, text: trimmed, projectId: nil))
     }
 
@@ -61,15 +73,12 @@ final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
             noteTranscript = ""
             noteSaved = nil
         }
-        let session = WCSession.default
-        if session.activationState == .activated {
-            session.transferFile(url, metadata: ["id": id, "kind": kind])
-        } else {
-            queuedRecordings.append((url, id, kind))
-            notice = "iPhone unreachable — queued until it is back."
-            chatBusy = false
-            chatThinking = false
-            noteBusy = false
+        queuedRecordings.append(QueuedRecording(path: url.path, id: id, kind: kind))
+        persistPendingRecordings()
+        armResponseWatchdog(kind: kind)
+        flushQueue()
+        if WCSession.default.activationState != .activated {
+            notice = "Waking your iPhone — the recording is safely queued."
         }
     }
 
@@ -126,6 +135,18 @@ final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
     }
 
     nonisolated func session(_ session: WCSession,
+                             didFinish fileTransfer: WCSessionFileTransfer,
+                             error: Error?) {
+        let id = fileTransfer.file.metadata?["id"] as? String
+        let kind = fileTransfer.file.metadata?["kind"] as? String
+        let path = fileTransfer.file.fileURL.path
+        let message = error?.localizedDescription
+        Task { @MainActor in
+            transferFinished(id: id, kind: kind, path: path, error: message)
+        }
+    }
+
+    nonisolated func session(_ session: WCSession,
                              didReceiveMessageData messageData: Data) {
         Task { @MainActor in apply(messageData) }
     }
@@ -164,7 +185,9 @@ final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
                 Task { @MainActor in
                     self?.notice = "Hold your iPhone nearby."
                     self?.chatBusy = false
+                    self?.chatThinking = false
                     self?.noteBusy = false
+                    self?.responseWatchdog?.cancel()
                 }
             })
         } else {
@@ -192,17 +215,19 @@ final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
             if let text = reply.text { chatText = text }
             chatThinking = reply.thinking ?? false
             if reply.done == true || reply.ok == false {
+                responseWatchdog?.cancel()
                 chatBusy = false
                 chatThinking = false
                 if let err = reply.error { notice = err }
             }
         case "transcript":
+            responseWatchdog?.cancel()
             noteBusy = false
             if let err = reply.error {
                 notice = err
             } else if let text = reply.text {
                 noteTranscript = text
-                if let project = resolvedProject {
+                if resolvedProject != nil {
                     saveNote()
                 } else if projects.isEmpty {
                     listProjects()
@@ -244,9 +269,69 @@ final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
     private func flushQueue() {
         let session = WCSession.default
         guard session.activationState == .activated else { return }
+        let priorCount = queuedRecordings.count
+        queuedRecordings.removeAll { !FileManager.default.fileExists(atPath: $0.path) }
+        if queuedRecordings.count != priorCount { persistPendingRecordings() }
         for item in queuedRecordings {
-            session.transferFile(item.url, metadata: ["id": item.id, "kind": item.kind])
+            guard !activeTransferIds.contains(item.id) else { continue }
+            let url = URL(fileURLWithPath: item.path)
+            activeTransferIds.insert(item.id)
+            session.transferFile(url, metadata: ["id": item.id, "kind": item.kind])
         }
-        queuedRecordings.removeAll()
+    }
+
+    private func transferFinished(id: String?, kind: String?, path: String, error: String?) {
+        let resolvedId = id ?? queuedRecordings.first(where: { $0.path == path })?.id
+        guard let resolvedId else { return }
+        activeTransferIds.remove(resolvedId)
+        if let error {
+            notice = "The recording could not reach iPhone: \(error)"
+            if kind == "chat" {
+                chatBusy = false
+                chatThinking = false
+            } else {
+                noteBusy = false
+            }
+            return
+        }
+        if let item = queuedRecordings.first(where: { $0.id == resolvedId }) {
+            try? FileManager.default.removeItem(atPath: item.path)
+        }
+        queuedRecordings.removeAll { $0.id == resolvedId }
+        persistPendingRecordings()
+    }
+
+    private func loadPendingRecordings() {
+        guard queuedRecordings.isEmpty,
+              let data = UserDefaults.standard.data(forKey: Self.pendingRecordingsKey),
+              let stored = try? JSONDecoder().decode([QueuedRecording].self, from: data) else {
+            return
+        }
+        queuedRecordings = stored.filter { FileManager.default.fileExists(atPath: $0.path) }
+        persistPendingRecordings()
+    }
+
+    private func persistPendingRecordings() {
+        if queuedRecordings.isEmpty {
+            UserDefaults.standard.removeObject(forKey: Self.pendingRecordingsKey)
+        } else if let data = try? JSONEncoder().encode(queuedRecordings) {
+            UserDefaults.standard.set(data, forKey: Self.pendingRecordingsKey)
+        }
+    }
+
+    private func armResponseWatchdog(kind: String) {
+        responseWatchdog?.cancel()
+        responseWatchdog = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(90))
+            guard !Task.isCancelled, let self else { return }
+            if kind == "chat", self.chatBusy {
+                self.chatBusy = false
+                self.chatThinking = false
+                self.notice = "The iPhone did not finish this turn. Your recording is saved; try again when it reconnects."
+            } else if kind != "chat", self.noteBusy {
+                self.noteBusy = false
+                self.notice = "The iPhone did not finish transcribing. Your recording is saved for retry."
+            }
+        }
     }
 }
