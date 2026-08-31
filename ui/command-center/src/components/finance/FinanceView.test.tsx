@@ -144,6 +144,27 @@ it('shows a Financier review badge on the approved pick and previews six rows', 
   expect((rows[0] as HTMLElement).getAttribute('data-approved')).toBe('true');
   expect(rows[0].textContent).toMatch(/NAK/);
   expect(container.textContent).toMatch(/Show 2 more/);
+
+  // The caption names the badge by its own words, not by a colour. It used to
+  // say "Gold means…" — a description that only works for readers who see that
+  // colour the same way, on a tag that has said "Agent approved" in words for
+  // some time now, across three themes.
+  const caption = container.querySelector('[data-testid="picks-caption"]')?.textContent ?? '';
+  expect(caption).toContain('Agent approved');
+  expect(caption).not.toMatch(/gold/i);
+  // And the badge itself explains what approval meant.
+  expect(container.querySelector('[data-testid="pick-financier-badge"]')?.getAttribute('title'))
+    .toMatch(/Financier/);
+});
+
+it('labels the cross-link with what it does, not with who lives there', async () => {
+  apiFetch.mockResolvedValue(board({ pickerEnabled: true, picks: [] }));
+  await act(async () => { root.render(<FinanceView />); });
+  await flush();
+  const link = container.querySelector('[data-testid="picks-world-link"]');
+  // A bare agent name says who, never what pressing it does.
+  expect(link?.textContent).toBe('View in World');
+  expect(link?.getAttribute('title')).toMatch(/Financier/);
 });
 
 it('separates the scanner pool from the tickers the user added', async () => {

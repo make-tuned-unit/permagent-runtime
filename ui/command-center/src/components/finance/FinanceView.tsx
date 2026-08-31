@@ -15,6 +15,7 @@ import { api, apiFetch, uploadFinanceStatement } from '../../lib/api';
 import { ViewHeader } from '../common/ViewHeader';
 import { Button, SUCCESS_FLASH_MS } from '../common/Button';
 import { navigateToTool } from '../../lib/store';
+import { GLOSSARY } from '../../lib/vocabulary';
 import { AGENT_TRIM } from '../world/shared/palette';
 import { PolybotKeys } from './PolybotKeys';
 import { FundamentalsKey } from './FundamentalsKey';
@@ -1279,19 +1280,35 @@ function PicksSection({
     <Card colors={colors} testId="finance-picks-card">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
         <SectionTitle colors={colors}>Picks</SectionTitle>
-        <Button colors={colors} type="button" onClick={() => navigateToTool('world')}>
-          Financier
+        {/* A bare agent name is not a label — it says who, never what pressing
+            it does. The app already gets this right elsewhere ("Security — from
+            the Guard"), so the cross-link takes a verb and names its
+            destination. */}
+        <Button
+          colors={colors}
+          type="button"
+          data-testid="picks-world-link"
+          title="Open the World view, where the Financier's panel lives"
+          onClick={() => navigateToTool('world')}
+        >
+          View in World
         </Button>
       </div>
       {/* The old caption said "your universe" even when the user had added
           nothing — in that case every row is the scanner's own ranking, so say
           so. The second line is the pipeline in one sentence: it is the only
-          place the words on the tags below get defined. */}
+          place the words on the tags below get defined.
+
+          The badge sentence names the badge's own words. It used to say "Gold
+          means…", which described the mark by its colour — across three themes,
+          on a tag that has said "Agent approved" in words since it was
+          rewritten. Naming a control by a colour only works for readers who see
+          that colour the same way, and only until the colour changes. */}
       <p style={{ ...type.caption, color: colors.textMuted, margin: '0 0 4px' }} data-testid="picks-caption">
         {(board.pickerUniverse?.length ?? 0) > 0
           ? 'Your tickers plus the scanner’s own ranking, priced from Yahoo.'
           : 'The scanner’s own ranking — you haven’t added tickers of your own yet.'}
-        {' '}Gold means the Financier approved it.
+        {' '}An “Agent approved” tag means the Financier approved that pick.
       </p>
       <p style={{ ...type.caption, color: colors.textMuted, margin: '0 0 10px', opacity: 0.85 }} data-testid="picks-legend">
         How a name gets here: scanner ranks it {'→'} Yahoo prices it {'→'} a
@@ -1404,6 +1421,7 @@ function PickRow({
         {approved && (
           <span
             data-testid="pick-financier-badge"
+            title={GLOSSARY.financierApproved}
             style={{
               ...type.micro,
               color: '#3d2e0a',
