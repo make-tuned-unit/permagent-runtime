@@ -4,6 +4,7 @@ use sqlx::{Pool, Sqlite};
 
 use super::debate::{ChairAction, ChairReport, MAX_ACTIONS};
 use crate::briefings::{self, NewBriefing, Severity};
+use crate::decision_inbox::negatives;
 use crate::decisions::{self, NewDecision};
 use crate::events;
 
@@ -59,6 +60,17 @@ pub async fn file_actions(
 ) -> Result<Vec<String>, String> {
     let mut ids = Vec::new();
     for action in report.actions.iter().take(MAX_ACTIONS) {
+        // Retained negative: the user already declined this exact
+        // recommendation. Re-filing it is re-litigation, so it is dropped here
+        // rather than queued for a second refusal — the Initiative layer's
+        // anti-nag guarantee, applied to the Council's actions.
+        if negatives::was_declined(pool, KIND, &action.title).await {
+            tracing::info!(
+                target: "permagent::council",
+                "action \"{}\" was already declined; not re-proposing", action.title
+            );
+            continue;
+        }
         match file_one(pool, session_id, action).await {
             Ok(id) => ids.push(id),
             Err(e) => tracing::warn!(target: "permagent::council", "action not filed: {e}"),
@@ -174,6 +186,38 @@ mod tests {
         let open = crate::decisions::list_open_decisions(&pool).await.unwrap();
         assert_eq!(open.len(), MAX_ACTIONS);
         assert!(open.iter().all(|i| i.decision.kind == KIND));
+    }
+
+    /// Retained negatives: a recommendation the user already declined is not
+    /// filed again, so the same argument is never re-litigated.
+    #[tokio::test]
+    async fn an_already_declined_action_is_not_re_proposed() {
+        let pool = pool().await;
+        let project_id = project(&pool).await;
+        let action = |title: &str| ChairAction {
+            project_id: project_id.clone(),
+            project_name: "Permagent".into(),
+            title: title.into(),
+            description: "why".into(),
+        };
+        negatives::record_decline(&pool, KIND, "Rewrite the homepage").await;
+
+        let ids = file_actions(
+            &pool,
+            "sess-2",
+            &report_with(vec![
+                // Different casing on purpose: the negative is case-folded.
+                action("rewrite the HOMEPAGE"),
+                action("Ship the pricing page"),
+            ]),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(ids.len(), 1, "the declined action must not be re-filed");
+        let open = crate::decisions::list_open_decisions(&pool).await.unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].decision.headline, "Ship the pricing page");
     }
 
     #[tokio::test]

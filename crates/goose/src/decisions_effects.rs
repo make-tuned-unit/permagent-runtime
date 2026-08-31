@@ -781,6 +781,20 @@ pub async fn apply_decision_effect(
         }
         ("council_action", Some("approve")) => apply_council_action(pool, decision).await,
         ("council_action", Some("reject")) => {
+            // Retained negative: the same extension point the Initiative layer
+            // uses for a declined automation, so a dismissed council
+            // recommendation is never re-pitched next Sunday. Keyed on the
+            // payload title (what `council::deliver` files from), falling back
+            // to the headline. The user's reason stays on the decision row,
+            // which is what the next brief assembly reads.
+            let subject = decision
+                .payload
+                .get("title")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&decision.headline);
+            crate::decision_inbox::negatives::record_decline(pool, "council_action", subject).await;
             already_applied("council action dismissed; nothing was filed on the board")
         }
         ("file_to_project", Some("approve")) => apply_file_to_project(pool, decision).await,
