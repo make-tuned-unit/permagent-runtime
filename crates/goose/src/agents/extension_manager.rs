@@ -1433,6 +1433,18 @@ impl ExtensionManager {
     ) -> Option<ErrorData> {
         let mode = ToolArgValidationMode::from_config();
         if mode == ToolArgValidationMode::Off {
+            // Same contract as a disabled ToolInspector (D34): the switch is
+            // an escape hatch, not a secret. Every call it waves through says
+            // so, under the one marker `permagent doctor` also reports.
+            warn!(
+                marker = crate::tool_inspection::SAFETY_DISABLE_MARKER,
+                inspector_name = "tool_argument_validation",
+                switch = "GOOSE_TOOL_ARG_VALIDATION",
+                tool = tool_name,
+                extension = extension_name,
+                session_id = %ctx.session_id,
+                "safety inspector disabled — tool arguments dispatched unchecked"
+            );
             return None;
         }
 

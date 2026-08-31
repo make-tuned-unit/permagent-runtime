@@ -28,8 +28,138 @@ pub async fn run_all() -> Vec<CheckResult> {
     results.push(check_backups());
     results.push(check_secret_env_shadowing());
     results.push(check_secret_split_brain());
+    results.push(check_safety_inspectors());
 
     results
+}
+
+// ── 18. safety-inspector break-glass switches (D34) ──
+
+/// Every way to switch a safety inspector off is an env var that
+/// `Config::get_param` reads before the config file — invisible in the config,
+/// absent from the UI, and inherited by every child process. The escape
+/// hatches stay (a dev machine needs them); this is what makes using one
+/// impossible to miss.
+///
+/// Two sources are read, because doctor is not the daemon: this process's own
+/// environment + config file, and the running daemon's environment (`ps eww`,
+/// the same trick `secret-env-shadowing` uses).
+fn check_safety_inspectors() -> CheckResult {
+    use permagent::tool_inspection::{active_safety_disables, SAFETY_SWITCHES};
+
+    let mut lines: Vec<String> = Vec::new();
+
+    for d in active_safety_disables() {
+        lines.push(format!(
+            "safety inspector {} disabled via {}={} — {}",
+            d.inspector, d.switch, d.value, d.loses
+        ));
+    }
+
+    let switch_names: Vec<&str> = SAFETY_SWITCHES.iter().map(|s| s.switch).collect();
+    for (key, value) in daemon_process_env_values(&switch_names) {
+        let Some(s) = SAFETY_SWITCHES.iter().find(|s| s.switch == key) else {
+            continue;
+        };
+        let disabling = match key.as_str() {
+            "SECURITY_PROMPT_LOG_ONLY" => value.eq_ignore_ascii_case("true") || value == "1",
+            "GOOSE_TOOL_ARG_VALIDATION" => value.eq_ignore_ascii_case("off"),
+            _ => value.eq_ignore_ascii_case("false") || value == "0",
+        };
+        if !disabling {
+            continue;
+        }
+        let line = format!(
+            "safety inspector {} disabled via {}={} in the RUNNING DAEMON's environment — {}",
+            s.inspector, key, value, s.loses
+        );
+        if !lines.iter().any(|l| l.contains(&key)) {
+            lines.push(line);
+        }
+    }
+
+    // The adversary reviewer is opt-in (a file, not a switch): its absence is
+    // the shipped default, not a disable. Reported, never as an alarm.
+    let adversary_md = permagent::config::paths::Paths::config_dir().join("adversary.md");
+    let adversary_note = if adversary_md.exists() {
+        format!("adversary reviewer active ({})", adversary_md.display())
+    } else {
+        format!(
+            "adversary reviewer inactive — optional, off by default until {} exists",
+            adversary_md.display()
+        )
+    };
+
+    if lines.is_empty() {
+        return CheckResult {
+            name: "safety-inspectors".into(),
+            status: CheckStatus::Info,
+            detail: format!("no safety inspector is switched off; {adversary_note}"),
+            remediation: None,
+        };
+    }
+
+    lines.push(adversary_note);
+    CheckResult {
+        name: "safety-inspectors".into(),
+        status: CheckStatus::Warn,
+        detail: lines.join("; "),
+        remediation: Some(format!(
+            "Unset the switch(es) above and restart the daemon to restore the inspector. \
+             While one is set, every tool call it skips logs at WARN under marker {}.",
+            permagent::tool_inspection::SAFETY_DISABLE_MARKER
+        )),
+    }
+}
+
+/// Read named environment variables out of the running daemon's process
+/// environment. Returns `(key, value)` for every requested key that is set.
+fn daemon_process_env_values(keys: &[&str]) -> Vec<(String, String)> {
+    let Ok(pgrep) = std::process::Command::new("pgrep")
+        .args(["-x", "permagentd"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !pgrep.status.success() {
+        return Vec::new();
+    }
+
+    let pids = String::from_utf8_lossy(&pgrep.stdout).to_string();
+    let mut found: Vec<(String, String)> = Vec::new();
+    for pid in pids.split_whitespace() {
+        let Ok(ps) = std::process::Command::new("ps")
+            .args(["eww", "-o", "command=", "-p", pid])
+            .output()
+        else {
+            continue;
+        };
+        if !ps.status.success() {
+            continue;
+        }
+        let listing = String::from_utf8_lossy(&ps.stdout).to_string();
+        for (key, value) in extract_env_values(&listing, keys) {
+            if !found.iter().any(|(k, _)| *k == key) {
+                found.push((key, value));
+            }
+        }
+    }
+    found
+}
+
+/// Pull `KEY=value` pairs for the requested keys out of a `ps eww` listing.
+/// Separated from the process call so it is testable.
+fn extract_env_values(listing: &str, keys: &[&str]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for token in listing.split_whitespace() {
+        let Some((key, value)) = token.split_once('=') else {
+            continue;
+        };
+        if keys.contains(&key) && !out.iter().any(|(k, _): &(String, String)| k == key) {
+            out.push((key.to_string(), value.to_string()));
+        }
+    }
+    out
 }
 
 // ── 1. launchd plist ──
@@ -1815,5 +1945,65 @@ mod tests {
         // Query against missing table should return None (error)
         let db_version = sqlite_scalar_i32(&conn, "SELECT MAX(version) FROM schema_version");
         assert!(db_version.is_none());
+    }
+
+    // ── D34: a break-glass disable must be visible to the operator ──
+
+    #[test]
+    fn the_safety_inspector_check_is_always_present_and_names_itself() {
+        let r = check_safety_inspectors();
+        assert_eq!(r.name, "safety-inspectors");
+        assert!(
+            matches!(r.status, CheckStatus::Info | CheckStatus::Warn),
+            "a disable is a WARN, a clean box is an INFO — never a silent PASS"
+        );
+        assert!(
+            r.detail.contains("adversary"),
+            "the opt-in reviewer's state is always stated: {}",
+            r.detail
+        );
+    }
+
+    #[test]
+    fn a_disabled_inspector_in_this_process_surfaces_as_a_named_warn() {
+        let _env = env_lock::lock_env([("SECURITY_WRITE_JAIL_ENABLED", Some("false"))]);
+        let r = check_safety_inspectors();
+        assert_eq!(r.status, CheckStatus::Warn);
+        assert!(
+            r.detail
+                .contains("safety inspector write_jail disabled via SECURITY_WRITE_JAIL_ENABLED"),
+            "doctor must name the inspector AND the env var: {}",
+            r.detail
+        );
+        assert!(
+            r.remediation
+                .as_deref()
+                .unwrap_or_default()
+                .contains("SAFETY_INSPECTOR_DISABLED"),
+            "the remediation points at the runtime marker to grep for"
+        );
+    }
+
+    /// The daemon runs in its own process, so doctor reads its environment out
+    /// of `ps eww` rather than trusting its own.
+    #[test]
+    fn switches_are_read_out_of_a_process_env_listing() {
+        let listing = "PATH=/usr/bin SECURITY_PROMPT_ENABLED=false HOME=/Users/j \
+                       GOOSE_TOOL_ARG_VALIDATION=off /usr/local/bin/permagentd";
+        let found = extract_env_values(
+            listing,
+            &["SECURITY_PROMPT_ENABLED", "GOOSE_TOOL_ARG_VALIDATION"],
+        );
+        assert_eq!(
+            found,
+            vec![
+                ("SECURITY_PROMPT_ENABLED".to_string(), "false".to_string()),
+                ("GOOSE_TOOL_ARG_VALIDATION".to_string(), "off".to_string()),
+            ]
+        );
+        assert!(
+            extract_env_values(listing, &["SECURITY_WRITE_JAIL_ENABLED"]).is_empty(),
+            "an unset switch must not be reported as disabled"
+        );
     }
 }

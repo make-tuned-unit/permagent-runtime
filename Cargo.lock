@@ -7597,6 +7597,7 @@ dependencies = [
  "dialoguer",
  "dirs",
  "dotenvy",
+ "env-lock",
  "etcetera",
  "futures",
  "hex",
