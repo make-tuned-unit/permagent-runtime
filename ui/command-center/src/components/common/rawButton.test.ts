@@ -48,8 +48,11 @@ const SRC = fileURLToPath(new URL('../..', import.meta.url));
 /** Directories whose controls are on the primitive. Grows one commit at a time. */
 const GATED = [
   'components/automate',
+  'components/chat',
+  'components/dashboard',
   'components/finance',
   'components/grow',
+  'components/projects',
   'components/sessions',
 ];
 
@@ -60,7 +63,32 @@ const GATED = [
  * reason, and the count is checked exactly: an entry that has stopped being
  * true fails, and so does a new raw button hiding behind an existing one.
  */
-const STANDING_EXCEPTIONS: Record<string, { count: number; why: string }> = {};
+const STANDING_EXCEPTIONS: Record<string, { count: number; why: string }> = {
+  'components/chat/ChatLauncher.tsx': {
+    count: 1,
+    why: 'the launcher pill lifts 2px on hover and settles on press — a transform '
+      + 'the primitive has no property for, and an inline one would beat its own',
+  },
+  'components/dashboard/AddCardPicker.tsx': {
+    count: 1,
+    why: 'the whole add-a-card row is the control: an icon tile beside a two-line '
+      + 'name and description',
+  },
+  'components/dashboard/cards/GrowthResultsCard.tsx': {
+    count: 1,
+    why: 'the whole project row is the control: truncating name, stats line and a '
+      + 'fixed-width sparkline',
+  },
+  'components/dashboard/cards/TodosCard.tsx': {
+    count: 1,
+    why: 'the whole todo row is the control: a two-line title and provenance block',
+  },
+  'components/projects/MemoriesPanel.tsx': {
+    count: 1,
+    why: 'the whole memory row is the control: a clamped two-line description above '
+      + 'a meta row, top-aligned',
+  },
+};
 
 function sourceFiles(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {

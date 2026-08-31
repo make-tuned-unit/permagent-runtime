@@ -7,9 +7,10 @@
  * anything else waiting while the user is already talking to Henry.
  */
 
-import { useState } from 'react';
+import { useState, type CSSProperties } from 'react';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { useDecisions } from '../dashboard/decisions/useDecisions';
 import { DecisionInbox } from '../dashboard/decisions/DecisionInbox';
 import type { AnswerBody, Decision } from '../dashboard/decisions/types';
@@ -60,16 +61,23 @@ export function ChatPendingDecisions({ overlay = false }: { overlay?: boolean })
         }}
       >
         <span>From your Decision Inbox</span>
-        <button
+        <Button
+          colors={colors}
+          variant="bare"
           type="button"
+          className="hover:underline"
           onClick={() => setInboxOpen(true)}
           style={{
-            background: 'none', border: 'none', padding: 0, cursor: 'pointer',
-            fontFamily: font.body, fontSize: 10, fontWeight: 600, color: colors.cyan,
-          }}
+            '--pa-btn-fg': colors.cyan,
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-pad': '0',
+            '--pa-btn-weight': 600,
+            fontFamily: font.body,
+            fontSize: 10,
+          } as CSSProperties}
         >
           {hidden > 0 ? `Open the Inbox · ${hidden} more waiting` : 'Open the Inbox'}
-        </button>
+        </Button>
       </div>
       {inboxOpen && <DecisionInbox inbox={inbox} onClose={() => setInboxOpen(false)} />}
       {decisions.slice(0, 3).map(d => (
@@ -145,47 +153,54 @@ function ChatDecisionCard({
           <span style={{ fontSize: 11, color: colors.textMuted }}>
             {pending.answer === 'reject' ? 'Confirm reject?' : 'Confirm approve?'}
           </span>
-          <button
+          <Button
+            colors={colors}
+            variant="ghostOn"
             type="button"
             disabled={busy}
             onClick={() => void submit(pending)}
             style={btn(colors, true)}
           >
             {busy ? 'Sending…' : 'Confirm'}
-          </button>
-          <button
+          </Button>
+          <Button
+            colors={colors}
             type="button"
             disabled={busy}
             onClick={() => setPending(null)}
             style={btn(colors, false)}
           >
             Cancel
-          </button>
+          </Button>
         </div>
       ) : (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {isBinary(d) && (
             <>
-              <button
+              <Button
+                colors={colors}
+                variant="ghostOn"
                 type="button"
                 disabled={busy}
                 onClick={() => askOrGo({ answer: 'approve' })}
                 style={btn(colors, true)}
               >
                 {busy ? '…' : 'Approve'}
-              </button>
-              <button
+              </Button>
+              <Button
+                colors={colors}
                 type="button"
                 disabled={busy}
                 onClick={() => askOrGo({ answer: 'reject' })}
                 style={btn(colors, false)}
               >
                 Reject
-              </button>
+              </Button>
             </>
           )}
           {options.map(opt => (
-            <button
+            <Button
+              colors={colors}
               key={opt.id}
               type="button"
               disabled={busy}
@@ -193,7 +208,7 @@ function ChatDecisionCard({
               style={btn(colors, false)}
             >
               {opt.label}
-            </button>
+            </Button>
           ))}
         </div>
       )}
@@ -201,16 +216,23 @@ function ChatDecisionCard({
   );
 }
 
-function btn(colors: ReturnType<typeof useTheme>['colors'], primary: boolean) {
+/** Card actions. `primary` rides the `ghostOn` variant (cyan hairline) with the
+ *  soft cyan wash it has always had; the rest are plain `ghost`. Everything the
+ *  eye sees goes through `--pa-btn-*` rather than inline `background`/`border`,
+ *  because an inline declaration outranks `.pa-btn:hover` and would leave these
+ *  as unpressable-looking as they were before. */
+function btn(colors: ReturnType<typeof useTheme>['colors'], primary: boolean): CSSProperties {
   return {
+    ...(primary
+      ? {
+        '--pa-btn-bg': colors.cyanSoft,
+        '--pa-btn-bg-hover': `${colors.cyan}33`,
+      }
+      : {}),
+    '--pa-btn-pad': '5px 10px',
+    '--pa-btn-radius': `${radius.sm}px`,
+    '--pa-btn-weight': 600,
     fontFamily: font.body,
     fontSize: 11,
-    fontWeight: 600,
-    padding: '5px 10px',
-    borderRadius: radius.sm,
-    cursor: 'pointer' as const,
-    border: `1px solid ${primary ? colors.cyan : colors.border}`,
-    background: primary ? colors.cyanSoft : 'transparent',
-    color: primary ? colors.cyan : colors.text,
-  };
+  } as CSSProperties;
 }

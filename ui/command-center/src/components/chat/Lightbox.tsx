@@ -1,5 +1,7 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, type CSSProperties } from 'react';
 import { FiX, FiChevronLeft, FiChevronRight } from 'react-icons/fi';
+import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 
 interface LightboxProps {
   images: string[];
@@ -7,7 +9,18 @@ interface LightboxProps {
   onClose: () => void;
 }
 
+/** The lightbox floats over its own black scrim, so its controls are white
+ *  regardless of theme — the palette below is deliberately not tokenised. */
+const overlayBtn: CSSProperties = {
+  '--pa-btn-fg': 'rgba(255,255,255,0.7)',
+  '--pa-btn-fg-hover': '#FFFFFF',
+  '--pa-btn-bg-hover': 'transparent',
+  '--pa-btn-bg-active': 'transparent',
+  '--pa-btn-pad': '0',
+} as CSSProperties;
+
 export function Lightbox({ images, startIndex, onClose }: LightboxProps) {
+  const { colors } = useTheme();
   const [index, setIndex] = useState(startIndex);
   const multi = images.length > 1;
 
@@ -29,27 +42,39 @@ export function Lightbox({ images, startIndex, onClose }: LightboxProps) {
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
       onClick={onClose}
     >
-      <button
+      <Button
+        colors={colors}
+        variant="bare"
         onClick={onClose}
-        className="absolute top-4 right-4 text-white/70 hover:text-white transition z-10"
+        aria-label="Close image viewer"
+        className="absolute top-4 right-4 z-10"
+        style={overlayBtn}
       >
         <FiX size={24} />
-      </button>
+      </Button>
 
       {multi && (
         <>
-          <button
+          <Button
+            colors={colors}
+            variant="bare"
             onClick={(e) => { e.stopPropagation(); prev(); }}
-            className="absolute left-4 text-white/70 hover:text-white transition z-10"
+            aria-label="Previous image"
+            className="absolute left-4 z-10"
+            style={overlayBtn}
           >
             <FiChevronLeft size={32} />
-          </button>
-          <button
+          </Button>
+          <Button
+            colors={colors}
+            variant="bare"
             onClick={(e) => { e.stopPropagation(); next(); }}
-            className="absolute right-4 text-white/70 hover:text-white transition z-10"
+            aria-label="Next image"
+            className="absolute right-4 z-10"
+            style={overlayBtn}
           >
             <FiChevronRight size={32} />
-          </button>
+          </Button>
         </>
       )}
 

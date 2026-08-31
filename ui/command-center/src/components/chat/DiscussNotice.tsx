@@ -14,9 +14,11 @@
  * user can act on it rather than only be reassured.
  */
 
+import { type CSSProperties } from 'react';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useCommandCenter } from '../../lib/store';
+import { Button } from '../common/Button';
 
 export function DiscussNotice() {
   const { colors } = useTheme();
@@ -47,17 +49,22 @@ export function DiscussNotice() {
       }}
     >
       <span style={{ flex: 1, minWidth: 0 }}>{notice.text}</span>
-      <button
+      <Button
+        colors={colors}
+        variant="bare"
         type="button"
         onClick={clear}
         aria-label="Dismiss"
         style={{
-          flexShrink: 0, background: 'none', border: 'none', padding: 0,
-          cursor: 'pointer', color: colors.textDim, fontSize: 13, lineHeight: 1,
-        }}
+          '--pa-btn-fg': colors.textDim,
+          '--pa-btn-fg-hover': colors.text,
+          '--pa-btn-bg-hover': 'transparent',
+          '--pa-btn-pad': '0',
+          flexShrink: 0, fontSize: 13, lineHeight: 1,
+        } as CSSProperties}
       >
         ×
-      </button>
+      </Button>
     </div>
   );
 }

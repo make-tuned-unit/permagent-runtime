@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react';
 import { FiCopy, FiCheck, FiAlertCircle } from 'react-icons/fi';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useCopyToClipboard } from '../../lib/clipboard';
+import { Button } from '../common/Button';
 
 /** How long a block must stop growing before it is worth re-colouring. Well
  *  under the gap between a stream ending and the reader's eye reaching the
@@ -67,20 +68,28 @@ export function CodeBlock({ language, code }: { language: string; code: string }
         style={{ backgroundColor: colors.surface, borderBottom: `1px solid ${colors.border}` }}
       >
         <span className="text-[10px]" style={{ fontFamily: font.mono, color: colors.textMuted }}>{language}</span>
-        <button
+        <Button
+          colors={colors}
+          variant="bare"
           onClick={handleCopy}
           aria-label={`Copy ${language} code`}
           // focus-visible keeps the button reachable by keyboard: opacity-0
           // alone made it tabbable-but-invisible, which is worse than absent.
-          className="flex items-center gap-1 text-[10px] transition opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-          style={{ fontFamily: font.mono, color: colors.textMuted }}
-          onMouseEnter={e => (e.currentTarget.style.color = colors.text)}
-          onMouseLeave={e => (e.currentTarget.style.color = colors.textMuted)}
+          className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+          style={{
+            '--pa-btn-fg': colors.textMuted,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-pad': '0',
+            fontFamily: font.mono,
+            fontSize: 10,
+            gap: 4,
+          } as CSSProperties}
         >
           {copyState === 'copied' ? <><FiCheck size={11} style={{ color: colors.success }} /> Copied</>
             : copyState === 'failed' ? <><FiAlertCircle size={11} style={{ color: colors.danger }} /> Copy failed</>
             : <><FiCopy size={11} /> Copy</>}
-        </button>
+        </Button>
       </div>
       {html ? (
         <div

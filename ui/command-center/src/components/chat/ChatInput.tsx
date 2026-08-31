@@ -1,10 +1,11 @@
-import { useState, useRef, useEffect, useCallback, useImperativeHandle, forwardRef } from 'react';
+import { useState, useRef, useEffect, useCallback, useImperativeHandle, forwardRef, type CSSProperties } from 'react';
 import { FiSend, FiLoader, FiPaperclip } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
 import { takeWizardIntent } from '../../lib/wizardIntent';
 import { ease, font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { AttachmentChip } from './AttachmentChip';
+import { Button } from '../common/Button';
 import { VoiceButton } from '../voice/VoiceButton';
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
@@ -141,21 +142,24 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
         </div>
       )}
       <div className="flex items-end" style={{ gap: 8 }}>
-        <button
+        <Button
+          colors={colors}
           onClick={() => fileInputRef.current?.click()}
           disabled={disabled}
           title="Attach files"
-          className="transition disabled:opacity-30"
+          aria-label="Attach files"
           style={{
-            width: 28, height: 28, borderRadius: radius.sm, flexShrink: 0,
-            display: 'grid', placeItems: 'center',
-            border: `1px solid ${colors.border}`,
-            backgroundColor: colors.inputBg,
-            color: colors.textMuted,
-          }}
+            '--pa-btn-bg': colors.inputBg,
+            '--pa-btn-fg': colors.textMuted,
+            '--pa-btn-border': colors.border,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-pad': '0',
+            '--pa-btn-radius': `${radius.sm}px`,
+            width: 28, height: 28, flexShrink: 0,
+          } as CSSProperties}
         >
           <FiPaperclip size={12} style={{ display: 'block' }} />
-        </button>
+        </Button>
         <VoiceButton />
         <input
           ref={fileInputRef}
@@ -203,43 +207,72 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
           // becomes a Stop button that cancels the in-flight request. Danger-
           // outlined so it reads as an interrupt and stays legible on every
           // theme (dark's coral + silver's red both contrast on the inset).
-          <button
-            onClick={handleStop}
+          <Button
+            key="stop"
+            colors={colors}
+            // Stop keeps its OWN in-flight state rather than handing the click's
+            // promise to the primitive. `stopping` is not "the click is in
+            // flight": it means a cancel was issued and we are waiting for the
+            // server's terminal Finish, and a cancel POST that fails clears it
+            // again on purpose so the turn stays cancellable. The primitive's
+            // pending floor would hold the button disabled past that re-arm,
+            // and its spinner would sit on top of the one already rendered
+            // below. `flashSuccess` is off for the same reason a tick would be
+            // wrong here at all: Stop is confirmed by the reply stopping.
+            onClick={() => { void handleStop(); }}
+            flashSuccess={false}
             disabled={stopping}
             title={stopFailed ? "Couldn't stop the reply — try again" : 'Stop generating'}
             aria-label="Stop generating"
-            className="transition disabled:opacity-50"
             style={{
-              width: 28, height: 28, borderRadius: radius.sm, flexShrink: 0,
-              display: 'grid', placeItems: 'center',
               // The failed attempt stays visible on the control itself until
               // the next press, not just in the line above it.
-              border: `1px solid ${colors.danger}`,
-              backgroundColor: stopFailed ? `${colors.danger}26` : colors.inputBg,
-              color: colors.danger,
-            }}
+              '--pa-btn-bg': stopFailed ? `${colors.danger}26` : colors.inputBg,
+              '--pa-btn-fg': colors.danger,
+              '--pa-btn-border': colors.danger,
+              '--pa-btn-bg-hover': `${colors.danger}33`,
+              '--pa-btn-border-hover': colors.danger,
+              '--pa-btn-bg-active': `${colors.danger}40`,
+              '--pa-btn-pad': '0',
+              '--pa-btn-radius': `${radius.sm}px`,
+              width: 28, height: 28, flexShrink: 0,
+            } as CSSProperties}
           >
             {stopping
               ? <FiLoader size={12} className="animate-spin" style={{ display: 'block' }} />
               : <span style={{ width: 9, height: 9, borderRadius: 2, backgroundColor: colors.danger, display: 'block' }} />}
-          </button>
+          </Button>
         ) : (
-          <button
+          <Button
+            // Distinct key from Stop: same component type in the same slot, so
+            // without one React would carry the Send button's in-flight state
+            // straight into the Stop button that replaces it mid-turn.
+            key="send"
+            colors={colors}
+            variant="primary"
             onClick={handleSend}
+            // The reply is the confirmation: by the time a tick could land, this
+            // button has already become Stop and the answer is streaming in.
+            flashSuccess={false}
             disabled={!input.trim() && pendingFiles.length === 0}
             title="Send message"
             aria-label="Send message"
-            className="transition disabled:opacity-30"
             style={{
-              width: 28, height: 28, borderRadius: radius.sm, flexShrink: 0,
-              display: 'grid', placeItems: 'center',
-              background: colors.ribbonGradient,
-              color: colors.textOnAccent,
-              fontWeight: 600,
-            }}
+              '--pa-btn-bg': colors.ribbonGradient,
+              '--pa-btn-fg': colors.textOnAccent,
+              '--pa-btn-bg-hover': colors.ribbonGradient,
+              '--pa-btn-bg-active': colors.ribbonGradient,
+              '--pa-btn-pad': '0',
+              '--pa-btn-radius': `${radius.sm}px`,
+              // `sendMessage` creates/verifies the session before the turn
+              // starts, so the spinner is real time, not decoration — and it
+              // shares a 26px box with the glyph, which the default 5px gap
+              // would overflow.
+              width: 28, height: 28, flexShrink: 0, gap: 0,
+            } as CSSProperties}
           >
             <FiSend size={12} />
-          </button>
+          </Button>
         )}
       </div>
     </div>
