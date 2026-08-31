@@ -48,6 +48,8 @@ export function FeaturesPanel({ goto }: PanelProps) {
   const [integrations, setIntegrations] = useState<IntegrationStatus[] | null>(null);
   const [members, setMembers] = useState<CouncilMembers | null>(null);
   const [membersError, setMembersError] = useState<string | null>(null);
+  /** The integrations read failed — see `conciergePreconditionCopy`. */
+  const [integrationsError, setIntegrationsError] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -57,8 +59,8 @@ export function FeaturesPanel({ goto }: PanelProps) {
         .catch(() => { if (active) setFlags(f => ({ ...f, [row.key]: false })); });
     }
     api.getIntegrations()
-      .then(list => { if (active) setIntegrations(list); })
-      .catch(() => { if (active) setIntegrations([]); });
+      .then(list => { if (active) { setIntegrations(list); setIntegrationsError(false); } })
+      .catch(() => { if (active) setIntegrationsError(true); });
     return () => { active = false; };
   }, []);
 
@@ -115,9 +117,9 @@ export function FeaturesPanel({ goto }: PanelProps) {
                   {isConcierge && (
                     <div
                       data-testid="concierge-precondition"
-                      style={{ marginTop: 4, color: gmailToken === false ? colors.text : colors.textMuted, fontFamily: font.body }}
+                      style={{ marginTop: 4, color: integrationsError ? colors.danger : gmailToken === false ? colors.text : colors.textMuted, fontFamily: font.body }}
                     >
-                      {conciergePreconditionCopy(gmailToken)}
+                      {conciergePreconditionCopy(gmailToken, integrationsError)}
                     </div>
                   )}
                 </div>

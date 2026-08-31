@@ -18,6 +18,7 @@ import {
 import { font, radius, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { Button } from '../../common/Button';
+import { StateBlock } from '../../common/StateBlock';
 import { SectionTitle } from '../atoms';
 import { apiFetch } from '../../../lib/api';
 import { useCommandCenter, navigateToTool } from '../../../lib/store';
@@ -68,6 +69,10 @@ function useActivityJournal(kinds: string[] | null, actor: string | null) {
   const [nextBefore, setNextBefore] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
+  /** A cold-load failure. The old catch said "stale data stays" — true on a
+   *  refresh, and false on the first fetch, where there is no stale data and a
+   *  dead daemon rendered as "No activity yet": the agent has done nothing. */
+  const [error, setError] = useState(false);
   // Guards against a slow response landing after the filter changed.
   const fetchSeq = useRef(0);
 
@@ -85,7 +90,13 @@ function useActivityJournal(kinds: string[] | null, actor: string | null) {
         return fresh.length > 0 ? [...fresh, ...prev] : prev;
       });
       if (initial) setNextBefore(page.next_before ?? null);
-    } catch { /* ignore — stale data stays, matching useDashboard */ }
+      if (seq === fetchSeq.current) setError(false);
+    } catch {
+      // A refresh that fails keeps the rows already on screen (useDashboard's
+      // rule) and says nothing. A first page that fails has nothing to keep,
+      // and that is the case the empty state used to lie about.
+      if (seq === fetchSeq.current && initial) setError(true);
+    }
     if (seq === fetchSeq.current) setLoading(false);
   }, [kinds, actor]);
 
@@ -96,6 +107,7 @@ function useActivityJournal(kinds: string[] | null, actor: string | null) {
     setNextBefore(null);
     setLoading(true);
     setLoadingMore(false);
+    setError(false);
     fetchFirstPage(true);
     const interval = setInterval(() => fetchFirstPage(false), 30_000);
     return () => clearInterval(interval);
@@ -117,7 +129,13 @@ function useActivityJournal(kinds: string[] | null, actor: string | null) {
     if (seq === fetchSeq.current) setLoadingMore(false);
   }, [nextBefore, loadingMore, kinds, actor]);
 
-  return { items, loading, loadMore, hasMore: nextBefore !== null, loadingMore };
+  const retry = useCallback(() => {
+    setLoading(true);
+    setError(false);
+    return fetchFirstPage(true);
+  }, [fetchFirstPage]);
+
+  return { items, loading, error, retry, loadMore, hasMore: nextBefore !== null, loadingMore };
 }
 
 function dayLabel(ts: string): string {
@@ -149,7 +167,7 @@ export function TimelineCard() {
   const { colors } = useTheme();
   const [chipIdx, setChipIdx] = useState(0);
   const [actor, setActor] = useState<string | null>(null);
-  const { items, loading, loadMore, hasMore, loadingMore } =
+  const { items, loading, error, retry, loadMore, hasMore, loadingMore } =
     useActivityJournal(KIND_CHIPS[chipIdx].kinds, actor);
   const [inboxOpen, setInboxOpen] = useState(false);
   // Actor options accumulate across pages and filters so the select doesn't
@@ -233,16 +251,24 @@ export function TimelineCard() {
         </div>
         {items.length === 0 ? (
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: textSize.small, color: colors.textMuted, marginBottom: 4 }}>
-                {loading ? 'Loading activity…' : filtered ? 'Nothing matches this filter' : 'No activity yet'}
-              </div>
-              {!loading && !filtered && (
-                <div style={{ fontSize: textSize.micro, color: colors.textDim }}>
-                  Goal moves, decisions, and librarian runs will appear here
-                </div>
-              )}
-            </div>
+            {loading ? (
+              <div style={{ fontSize: textSize.small, color: colors.textMuted }}>Loading activity…</div>
+            ) : error ? (
+              <StateBlock
+                tone="error"
+                compact
+                title="Couldn't reach the activity journal."
+                detail="This is a connection problem, not a quiet day — the agent may well have been busy."
+                onRetry={() => { void retry(); }}
+              />
+            ) : (
+              <StateBlock
+                tone="empty"
+                compact
+                title={filtered ? 'Nothing matches this filter' : 'No activity yet'}
+                detail={filtered ? undefined : 'Goal moves, decisions, and librarian runs will appear here'}
+              />
+            )}
           </div>
         ) : (
           <div style={{ flex: 1, overflow: 'auto' }}>

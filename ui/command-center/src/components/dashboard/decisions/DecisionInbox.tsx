@@ -14,6 +14,7 @@ import { font, radius, ease, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { Button } from '../../common/Button';
 import { DetailModal } from '../../common/DetailModal';
+import { StateBlock } from '../../common/StateBlock';
 import type { useDecisions } from './useDecisions';
 import type { HistoryItem } from './types';
 import { resolutionText } from './types';
@@ -34,13 +35,28 @@ export function DecisionInbox({ inbox, onClose }: Props) {
   const agentName = persona?.display_name ?? 'your agent';
   const [view, setView] = useState<'list' | 'history'>('list');
   const [history, setHistory] = useState<HistoryItem[] | null>(null);
+  /** The history read failed. It used to be `catch { setHistory([]) }`, which
+   *  moved the failure into the empty branch by hand: a daemon that never
+   *  answered rendered as "Nothing here yet" — i.e. as an audit trail saying
+   *  nothing had ever been decided. */
+  const [historyError, setHistoryError] = useState(false);
   const [tier1Open, setTier1Open] = useState(false);
   const tier1Id = useId();
+
+  const loadHistory = useCallback(async () => {
+    setHistoryError(false);
+    try {
+      setHistory(await inbox.loadHistory());
+    } catch { setHistoryError(true); }
+  }, [inbox]);
 
   const openHistory = useCallback(async () => {
     setView('history');
     if (history === null) {
-      try { setHistory(await inbox.loadHistory()); } catch { setHistory([]); }
+      try {
+        setHistory(await inbox.loadHistory());
+        setHistoryError(false);
+      } catch { setHistoryError(true); }
     }
   }, [history, inbox]);
 
@@ -48,7 +64,10 @@ export function DecisionInbox({ inbox, onClose }: Props) {
     const next = !tier1Open;
     setTier1Open(next);
     if (next && history === null) {
-      try { setHistory(await inbox.loadHistory()); } catch { setHistory([]); }
+      try {
+        setHistory(await inbox.loadHistory());
+        setHistoryError(false);
+      } catch { setHistoryError(true); }
     }
   }, [tier1Open, history, inbox]);
 
@@ -120,7 +139,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
     >
       <div data-testid="inbox-body">
           {view === 'history' ? (
-            <HistoryList items={history} />
+            <HistoryList items={history} failed={historyError} onRetry={loadHistory} />
           ) : loading && !data ? (
             <div style={{ padding: '48px 18px', textAlign: 'center', fontSize: textSize.caption, color: colors.textDim }}>
               Checking with {agentName}…
@@ -356,10 +375,25 @@ export function DecisionInbox({ inbox, onClose }: Props) {
 }
 
 /** Read-only audit list: every resolved decision, incl. Tier-1 auto-handled. */
-function HistoryList({ items }: { items: HistoryItem[] | null }) {
+function HistoryList({ items, failed, onRetry }: {
+  items: HistoryItem[] | null;
+  failed: boolean;
+  onRetry: () => void;
+}) {
   const { colors } = useTheme();
   const { data: persona } = usePersona();
   const agentName = persona?.display_name ?? 'your agent';
+  if (failed) {
+    return (
+      <StateBlock
+        tone="error"
+        compact
+        title="Couldn't load the decision history."
+        detail="This is a connection problem, not an empty record — decisions you have already answered are still there."
+        onRetry={onRetry}
+      />
+    );
+  }
   if (items === null) {
     return (
       <div style={{ padding: '32px 18px', textAlign: 'center', fontSize: textSize.caption, color: colors.textDim }}>
@@ -368,11 +402,7 @@ function HistoryList({ items }: { items: HistoryItem[] | null }) {
     );
   }
   if (items.length === 0) {
-    return (
-      <div style={{ padding: '32px 18px', textAlign: 'center', fontSize: textSize.caption, color: colors.textDim }}>
-        Nothing here yet.
-      </div>
-    );
+    return <StateBlock tone="empty" compact title="Nothing here yet." />;
   }
   return (
     <div>

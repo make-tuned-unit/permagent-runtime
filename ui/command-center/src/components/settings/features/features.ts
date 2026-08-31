@@ -91,7 +91,14 @@ export function gmailTokenPresent(list: IntegrationStatus[] | null): boolean | n
  * loop is inert without a token, so enabling early is harmless — but the copy
  * says plainly what is missing.
  */
-export function conciergePreconditionCopy(tokenPresent: boolean | null): string {
+export function conciergePreconditionCopy(
+  tokenPresent: boolean | null,
+  /** The integrations read failed. Distinct from "no token": the old catch set
+   *  the list to `[]`, which `gmailTokenPresent` reads as `false`, so a dead
+   *  daemon told the user to go and run a command they may not need. */
+  unreadable = false,
+): string {
+  if (unreadable) return "Couldn't check for a Gmail token — the daemon didn't answer.";
   if (tokenPresent === true) return 'Gmail token present.';
   if (tokenPresent === false) return `Needs a Gmail token: run \`${GMAIL_CONNECT_COMMAND}\`. Until then the loop stays idle.`;
   return 'Checking for a Gmail token…';

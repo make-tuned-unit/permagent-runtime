@@ -64,6 +64,12 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
   const [files, setFiles] = useState<InboxFile[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[] | null>(null);
+  /** The project list failed to load. Both catches used to `setProjects([])`,
+   *  which the picker then read as "No projects yet" — telling a user with a
+   *  dozen boards that they have none, in the one control they need to file a
+   *  file. The `error` state two lines up already does this correctly for
+   *  `files`; this is the second fetch in the same file. */
+  const [projectsError, setProjectsError] = useState(false);
   const [pick, setPick] = useState<PendingPick | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [results, setResults] = useState<Record<string, RowResult>>({});
@@ -90,8 +96,8 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
   useEffect(() => {
     let active = true;
     fetchRoutableProjects()
-      .then(rows => { if (active) setProjects(rows); })
-      .catch(() => { if (active) setProjects([]); });
+      .then(rows => { if (active) { setProjects(rows); setProjectsError(false); } })
+      .catch(() => { if (active) setProjectsError(true); });
     return () => { active = false; };
   }, []);
 
@@ -106,8 +112,8 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
   const ensureProjects = useCallback(() => {
     if (projects !== null) return;
     fetchRoutableProjects()
-      .then(setProjects)
-      .catch(() => setProjects([]));
+      .then(rows => { setProjects(rows); setProjectsError(false); })
+      .catch(() => setProjectsError(true));
   }, [projects]);
 
   // Resolves whether the route actually landed. The catch below turns a failure
@@ -252,7 +258,11 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
                         style={{ height: 26, borderRadius: radius.sm, background: 'transparent', border: `1px solid ${colors.border}`, color: colors.text, fontFamily: font.body, fontSize: textSize.caption, maxWidth: 280 }}
                       >
                         <option value="" disabled>
-                          {projects === null ? 'Loading projects…' : projects.length === 0 ? 'No projects yet' : 'Choose a project'}
+                          {projectsError
+                            ? "Couldn't load your projects"
+                            : projects === null ? 'Loading projects…'
+                            : projects.length === 0 ? 'No projects yet'
+                            : 'Choose a project'}
                         </option>
                         {(projects ?? []).map(p => (
                           <option key={p.id} value={p.id}>{p.name}</option>

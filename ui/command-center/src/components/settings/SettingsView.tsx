@@ -28,6 +28,7 @@ import { VoicePicker } from '../voice/VoicePicker';
 import { PronunciationSection } from '../voice/PronunciationSection';
 import { H1, Section, Row, TextInput, Chip, Slider, Kbd, SaveButton } from './atoms';
 import { Button } from '../common/Button';
+import { StateBlock } from '../common/StateBlock';
 import { Toggle } from '../common/Toggle';
 import { makeQrMatrix } from '../../lib/qrMatrix';
 import { SessionsList } from '../sessions/SessionsList';
@@ -1676,13 +1677,18 @@ function SovereigntyPanel() {
   const [status, setStatus] = useState<SovereigntyStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [log, setLog] = useState<EgressLogEntry[] | null>(null);
+  /** The read failed. It used to land in `setLog([])`, and the empty state
+   *  below is not an invitation — it is a PRIVACY GUARANTEE ("Nothing has left
+   *  this machine yet"). A network error was being rendered as a promise about
+   *  the user's data, on the one panel whose whole job is to be believed. */
+  const [logError, setLogError] = useState(false);
 
   const refreshLog = useCallback(() => {
     // Returns the round trip so the Refresh button can show it, and resolves
-    // `false` on the failure this already swallows so it cannot tick over one.
+    // `false` on a failure so it cannot tick over one.
     return api.getEgressLog(100)
-      .then(l => { setLog(l); return true; })
-      .catch(() => { setLog([]); return false; });
+      .then(l => { setLog(l); setLogError(false); return true; })
+      .catch(() => { setLogError(true); return false; });
   }, []);
 
   useEffect(() => {
@@ -1772,7 +1778,15 @@ function SovereigntyPanel() {
             } as CSSProperties}
           >Refresh</Button>
         </Row>
-        {log === null ? (
+        {logError ? (
+          <StateBlock
+            tone="error"
+            compact
+            title="Couldn't read the egress log."
+            detail="This says nothing about whether calls were made — only that the record could not be read. Do not take a silent panel as a guarantee."
+            onRetry={() => { void refreshLog(); }}
+          />
+        ) : log === null ? (
           <div style={{ fontSize: textSize.caption, color: colors.textDim, padding: '6px 0' }}>Loading audit log…</div>
         ) : log.length === 0 ? (
           <div style={{ fontSize: textSize.caption, color: colors.textDim, padding: '6px 0' }}>

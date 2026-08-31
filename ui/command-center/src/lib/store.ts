@@ -1467,8 +1467,13 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       if (!get().pendingSkillProposal && proposals.length > 0) {
         set({ pendingSkillProposal: proposals[0] });
       }
-    } catch {
-      set({ proposals: [] });
+    } catch (e) {
+      // NOT `set({ proposals: [] })`. `loadSkills` above already learned this:
+      // a failed refresh must not blank a list that loaded fine a minute ago,
+      // because "no proposals" and "we couldn't ask" look identical on screen
+      // and only one of them is true. Nothing here claims an empty list, so
+      // the honest failure is to keep what we have and say so in the log.
+      console.error('Failed to load skill proposals:', e);
     }
   },
   saveProposal: async (proposal: SkillProposal) => {

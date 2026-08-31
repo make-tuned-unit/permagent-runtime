@@ -11,7 +11,7 @@ import { ProjectWorkspace } from './ProjectWorkspace';
 import { CardDetailModal } from './CardDetailModal';
 import { PERSONAL_ID, CANCELLABLE_STATES, type Project, type BoardColumn, type Card } from './types';
 import { ViewHeader } from '../common/ViewHeader';
-import { StateBlock } from './StateBlock';
+import { StateBlock } from '../common/StateBlock';
 
 const LS_KEY = 'permagent-projects-last-opened';
 

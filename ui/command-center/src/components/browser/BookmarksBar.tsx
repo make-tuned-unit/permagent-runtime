@@ -40,6 +40,10 @@ export function BookmarksBar({
 }: BookmarksBarProps) {
   const { colors } = useTheme();
   const [bookmarks, setBookmarks] = useState<BrowserBookmark[]>([]);
+  /** The bookmark read failed. It used to be a `console.error` and an empty
+   *  bar, which says "No bookmarks yet" — a user who has saved a dozen may
+   *  reasonably conclude they lost them, and re-save. */
+  const [loadFailed, setLoadFailed] = useState(false);
   const [tabSets, setTabSets] = useState<BrowserTabSet[]>([]);
   const [setsOpen, setSetsOpen] = useState(false);
   const [saveName, setSaveName] = useState('');
@@ -53,9 +57,12 @@ export function BookmarksBar({
     api
       .getBrowserBookmarks()
       .then((r) => {
-        if (!cancelled) setBookmarks(r.bookmarks);
+        if (!cancelled) { setBookmarks(r.bookmarks); setLoadFailed(false); }
       })
-      .catch((err) => console.error('[bookmarks] load failed:', err));
+      .catch((err) => {
+        console.error('[bookmarks] load failed:', err);
+        if (!cancelled) setLoadFailed(true);
+      });
     api
       .getBrowserTabSets()
       .then((r) => {
@@ -187,9 +194,14 @@ export function BookmarksBar({
         {bookmarks.length === 0 ? (
           <span
             className="text-[10px] px-1 select-none"
-            style={{ fontFamily: font.body, color: colors.textMuted, opacity: 0.6 }}
+            role={loadFailed ? 'alert' : undefined}
+            style={{
+              fontFamily: font.body,
+              color: loadFailed ? colors.danger : colors.textMuted,
+              opacity: loadFailed ? 1 : 0.6,
+            }}
           >
-            No bookmarks yet
+            {loadFailed ? "Couldn't load your bookmarks — they're still saved." : 'No bookmarks yet'}
           </span>
         ) : (
           bookmarks.map((b) => (
