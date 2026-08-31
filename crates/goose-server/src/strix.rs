@@ -15,6 +15,11 @@
 //!   * `strix_last_scan` is stamped only on a finished scan — a failed attempt
 //!     advances rotation via `strix_last_attempt` so Overview cannot say
 //!     "scanned clean" for a skip;
+//!   * a per-project scan that stops working is said out loud ONCE, on the
+//!     transition out of a working state, and counted quietly thereafter. Only
+//!     whole-sweep preflight failures used to reach a surface, which is how the
+//!     Guard attempted a scan every day for twenty days, completed none, and
+//!     still read as healthy;
 //!   * when `strix_docker_ssh` is set, the scan runs on that host after rsync
 //!     (a forwarded Docker socket is not enough: Strix bind-mounts the local
 //!     path, which does not exist on the remote daemon);
@@ -40,6 +45,13 @@ const LAST_SCAN_KEY: &str = "strix_last_scan";
 /// Last sweep *attempt* (ISO-8601), including failures. Rotation uses this
 /// so one broken project cannot starve the rest, without lying that it scanned.
 const LAST_ATTEMPT_KEY: &str = "strix_last_attempt";
+/// Consecutive failed scans for this project; reset to 0 by a completed scan.
+/// 0 → 1 is the transition that briefs. Everything above 1 is digest-only.
+pub const FAILURE_STREAK_KEY: &str = "strix_failure_streak";
+/// When the current failure streak started failing (ISO-8601).
+pub const LAST_FAILURE_KEY: &str = "strix_last_failure";
+/// Why the last scan failed, in the scanner's own words.
+pub const LAST_ERROR_KEY: &str = "strix_last_error";
 /// Keep the most recent findings per project; older ones age out.
 const MAX_KEPT: usize = 40;
 /// How often the loop wakes to check the flag and whether a sweep is due.
@@ -341,6 +353,9 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
                 project = %project.name,
                 "scan did not run: {e}"
             );
+            if record_scan_failure(&pool, project, &e).await {
+                brief_scan_failure(&pool, project, &e).await;
+            }
             announce("error");
         }
     }
@@ -385,15 +400,74 @@ fn rotation_stamp_from_meta(meta: &serde_json::Value) -> String {
 }
 
 async fn stamp_last_scan(pool: &Pool<Sqlite>, project: &Project) -> Result<(), String> {
-    stamp_meta_key(pool, project, LAST_SCAN_KEY).await
+    // A completed scan ends the failure streak: the next breakage is news again.
+    write_meta(
+        pool,
+        project,
+        &[
+            (LAST_SCAN_KEY, now_value()),
+            (FAILURE_STREAK_KEY, serde_json::Value::from(0u64)),
+            (LAST_ERROR_KEY, serde_json::Value::Null),
+        ],
+    )
+    .await
 }
 
 async fn stamp_last_attempt(pool: &Pool<Sqlite>, project: &Project) -> Result<(), String> {
-    stamp_meta_key(pool, project, LAST_ATTEMPT_KEY).await
+    write_meta(pool, project, &[(LAST_ATTEMPT_KEY, now_value())]).await
 }
 
-/// Write one ISO-8601 stamp into project metadata without touching findings.
-async fn stamp_meta_key(pool: &Pool<Sqlite>, project: &Project, key: &str) -> Result<(), String> {
+fn now_value() -> serde_json::Value {
+    serde_json::Value::String(chrono::Utc::now().to_rfc3339())
+}
+
+/// Record a failed scan and report whether this is the TRANSITION into
+/// failure — the first miss after a run that worked.
+///
+/// The rule comes from dead-letter alerting doctrine (a CloudWatch alarm fires
+/// on the state change into ALARM, not per datapoint): push once on 0→nonzero,
+/// then go quiet and let the digest carry the standing state. A per-tick
+/// briefing for a project that fails every day is the fastest way to teach the
+/// reader to ignore the Guard entirely.
+async fn record_scan_failure(pool: &Pool<Sqlite>, project: &Project, error: &str) -> bool {
+    let fresh = projects::get_project_by_id_or_slug(pool, &project.id)
+        .await
+        .ok()
+        .flatten();
+    let prior = fresh
+        .as_ref()
+        .unwrap_or(project)
+        .metadata_json
+        .as_object()
+        .and_then(|m| m.get(FAILURE_STREAK_KEY))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let _ = write_meta(
+        pool,
+        project,
+        &[
+            (FAILURE_STREAK_KEY, serde_json::Value::from(prior + 1)),
+            (LAST_FAILURE_KEY, now_value()),
+            (LAST_ERROR_KEY, serde_json::Value::String(error.to_string())),
+        ],
+    )
+    .await;
+    scan_failure_should_brief(prior)
+}
+
+/// Pure transition gate, split out so the "brief once, then count quietly"
+/// rule is testable without a projects table.
+fn scan_failure_should_brief(prior_streak: u64) -> bool {
+    prior_streak == 0
+}
+
+/// Write ISO-8601 stamps / counters into project metadata without touching
+/// findings. A `Null` value removes the key.
+async fn write_meta(
+    pool: &Pool<Sqlite>,
+    project: &Project,
+    entries: &[(&str, serde_json::Value)],
+) -> Result<(), String> {
     // Re-read for the same reason `record_findings` does: `project` was
     // snapshotted before a scan that can run for twenty minutes, and
     // `update_project` replaces `metadata_json` wholesale. Writing the stale
@@ -428,6 +502,37 @@ async fn stamp_meta_key(pool: &Pool<Sqlite>, project: &Project, key: &str) -> Re
     )
     .await
     .map(|_| ())
+}
+
+/// File the one-per-transition briefing for a project whose scan stopped
+/// working. Mirrors the whole-sweep `preflight_failed` briefing that already
+/// exists — the gap this closes is that a PER-PROJECT failure had no surface
+/// at all, only a `tracing::warn`, which is how the Guard attempted a scan
+/// every day from 2026-08-11 to 2026-08-31, completed none, and still looked
+/// healthy from the Settings toggle.
+async fn brief_scan_failure(pool: &Pool<Sqlite>, project: &Project, error: &str) {
+    permagent::briefings::file_briefing(
+        pool,
+        permagent::briefings::NewBriefing {
+            from_agent: strix::STRIX_FEATURE_ID.to_string(),
+            kind: "scan_failed".to_string(),
+            severity: permagent::briefings::Severity::Attention,
+            summary: format!(
+                "The Guard's scan of {} stopped working: {error}",
+                project.name
+            ),
+            detail: Some(format!(
+                "This is the first failure since {} last completed a scan, so it is reported \
+                 once. Further failures are counted, not re-announced — the daily job digest \
+                 carries the standing state. Findings already on the project's Overview are \
+                 from the last scan that finished and are not being refreshed.",
+                project.name
+            )),
+            ref_kind: Some("project".to_string()),
+            ref_id: Some(project.id.clone()),
+        },
+    )
+    .await;
 }
 
 /// Re-read the project's current (merged) findings after recording.
@@ -1825,5 +1930,74 @@ mod tests {
             rotation_stamp_from_meta(&serde_json::Value::Object(only_scan)),
             "2026-08-11T00:00:00Z"
         );
+    }
+
+    fn fake_project(name: &str) -> Project {
+        Project {
+            id: "p1".into(),
+            user_id: "u1".into(),
+            slug: name.to_lowercase(),
+            name: name.into(),
+            description: String::new(),
+            status: "active".into(),
+            root_path: Some("/tmp/p1".into()),
+            site_url: None,
+            repo_url: None,
+            notes: String::new(),
+            metadata_json: serde_json::json!({}),
+            graph_entity_id: None,
+            tags: Vec::new(),
+            created_at: String::new(),
+            updated_at: String::new(),
+            last_opened_at: String::new(),
+        }
+    }
+
+    /// A per-project scan failure had NO surface — only `tracing::warn` — which
+    /// is how twenty days of zero completed scans looked healthy. It must brief
+    /// on the transition into failure, and only on the transition: a project
+    /// that fails every day for a fortnight must not file a briefing a day.
+    #[test]
+    fn scan_failure_briefs_on_the_transition_not_every_tick() {
+        assert!(
+            scan_failure_should_brief(0),
+            "the first failure after a completed scan is the news"
+        );
+        for streak in 1..=20u64 {
+            assert!(
+                !scan_failure_should_brief(streak),
+                "failure #{} must be counted, not re-announced",
+                streak + 1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn scan_failure_briefing_names_the_project_and_the_error() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        permagent::session::spectral_schema::apply_briefings_schema(&pool)
+            .await
+            .unwrap();
+
+        let project = fake_project("Atlas Atlantic");
+        brief_scan_failure(&pool, &project, "scanner aborted with an empty model input").await;
+
+        let (kind, severity, summary, ref_id): (String, String, String, Option<String>) =
+            sqlx::query_as(
+                "SELECT kind, severity, summary, ref_id FROM agent_briefings \
+                 WHERE from_agent = 'strix'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(kind, "scan_failed");
+        assert_eq!(severity, "attention");
+        assert!(summary.contains("Atlas Atlantic"), "{summary}");
+        assert!(summary.contains("empty model input"), "{summary}");
+        assert_eq!(ref_id.as_deref(), Some("p1"));
     }
 }
