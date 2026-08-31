@@ -719,6 +719,7 @@ mod tests {
             timeout,
             output_tx: None,
             parent_session_id: None,
+            project_id: None,
         }
     }
 

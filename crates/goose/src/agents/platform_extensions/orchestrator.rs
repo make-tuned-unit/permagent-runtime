@@ -1280,6 +1280,7 @@ pub(crate) async fn dispatch_goal_fn(
         timeout: std::time::Duration::from_secs(timeout_secs),
         output_tx: Some(output_tx),
         parent_session_id: context.session.as_ref().map(|s| s.id.clone()),
+        project_id: Some(project.id.clone()),
     };
 
     // Resolve once before engine construction so the scope is fixed for the

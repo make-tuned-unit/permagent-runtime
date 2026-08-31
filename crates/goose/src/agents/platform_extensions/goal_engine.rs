@@ -189,6 +189,12 @@ pub struct GoalTask {
     /// cost rolls up to the parent. `None` for headless / auto-dispatch with
     /// no parent session in scope.
     pub parent_session_id: Option<String>,
+    /// The dispatching goal's project. External-CLI workers get a read-only MCP
+    /// bridge ([`super::goal_context_mcp`]) scoped to exactly this id — it is
+    /// the whole enforcement boundary, so it is carried explicitly rather than
+    /// re-derived inside the engine from a working dir that may be a worktree.
+    /// `None` leaves the worker with no bridge, as before.
+    pub project_id: Option<String>,
 }
 
 /// Timestamped evidence that an external worker produced stdout. The timestamp
@@ -613,6 +619,30 @@ impl GoalEngine for ExternalCliEngine {
                         error = %e,
                         "worker policy hook not installed; worker runs unguarded",
                     );
+                }
+            }
+
+            // Read-only context bridge: until now an external-CLI worker had NO
+            // tool that reached back into Permagent — it could not see the board
+            // it was working from, and more injection was the only lever left.
+            // The server is this same binary re-invoked in a bridge mode
+            // (`current_exe`, so it cannot resolve to a different build on
+            // PATH), scoped to the dispatching project. Best-effort: a worker
+            // without the bridge runs exactly as it did before.
+            if let Some(project_id) = task.project_id.as_deref() {
+                match write_mcp_bridge_config(&worktree, project_id).await {
+                    Ok(config_path) => {
+                        args.push("--mcp-config".to_string());
+                        args.push(config_path);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "permagentd::brain",
+                            error = %e,
+                            "goal-context bridge not installed; worker runs without live \
+                             Permagent reads",
+                        );
+                    }
                 }
             }
         }
@@ -1124,6 +1154,51 @@ async fn write_worker_policy_settings(worktree: &Path) -> Result<String, String>
     .map_err(|e| format!("write {}: {e}", settings_path.display()))?;
 
     Ok(settings_path.to_string_lossy().into_owned())
+}
+
+/// The `--mcp-config` document declaring the read-only goal-context bridge, as
+/// a pure function of the server path and the project id.
+///
+/// Pure so the ONE security-relevant property — the served project is pinned in
+/// the command line, never left for the worker to choose — is testable without
+/// spawning anything.
+pub(crate) fn mcp_bridge_config(server_bin: &str, project_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "mcpServers": {
+            "permagent": {
+                "type": "stdio",
+                "command": server_bin,
+                "args": ["goal-context-mcp", "--project", project_id],
+                "env": {}
+            }
+        }
+    })
+}
+
+/// Write the bridge config into the worker's worktree and return its path.
+///
+/// The server binary is `current_exe()` — the dispatching daemon re-invoking
+/// itself — rather than a name looked up on PATH: a bridge that resolves to
+/// whatever `permagentd` a worker's PATH happens to find is a bridge into an
+/// unknown build's database.
+async fn write_mcp_bridge_config(worktree: &Path, project_id: &str) -> Result<String, String> {
+    let server_bin = std::env::current_exe()
+        .map_err(|e| format!("cannot resolve the bridge server binary: {e}"))?
+        .to_string_lossy()
+        .into_owned();
+    let dir = worktree.join(".permagent");
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let path = dir.join("mcp-bridge.json");
+    tokio::fs::write(
+        &path,
+        serde_json::to_string_pretty(&mcp_bridge_config(&server_bin, project_id))
+            .unwrap_or_default(),
+    )
+    .await
+    .map_err(|e| format!("write {}: {e}", path.display()))?;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 fn build_cli_command(bin: &str, args: &[String], working_dir: &Path, steerable: bool) -> Command {
@@ -1781,6 +1856,43 @@ fn redact_secrets(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The dispatched project is PINNED in the server's argv. Everything about
+    /// the bridge's isolation rests on this: the worker holds the config file
+    /// in its own worktree and can read it, so if the project were a runtime
+    /// choice rather than a launch argument, "scoped to this project" would be
+    /// a suggestion.
+    #[test]
+    fn the_bridge_config_pins_the_project_in_the_server_argv() {
+        let cfg = mcp_bridge_config("/opt/permagentd", "proj-123");
+        let server = &cfg["mcpServers"]["permagent"];
+        assert_eq!(server["type"], "stdio");
+        assert_eq!(server["command"], "/opt/permagentd");
+        let args: Vec<&str> = server["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a.as_str().unwrap())
+            .collect();
+        assert_eq!(args, ["goal-context-mcp", "--project", "proj-123"]);
+    }
+
+    /// The config lands inside the worker's own worktree (beside the policy
+    /// settings), not in a shared location another worker could read or edit.
+    #[tokio::test]
+    async fn the_bridge_config_is_written_into_the_workers_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_mcp_bridge_config(tmp.path(), "proj-abc")
+            .await
+            .unwrap();
+        assert!(path.starts_with(tmp.path().to_str().unwrap()), "{path}");
+        let written: serde_json::Value =
+            serde_json::from_str(&tokio::fs::read_to_string(&path).await.unwrap()).unwrap();
+        assert_eq!(
+            written["mcpServers"]["permagent"]["args"][2],
+            serde_json::json!("proj-abc")
+        );
+    }
 
     /// The worker policy hook must block exactly the incident classes it was
     /// written for — and nothing else. Exercised through a real sh, the same
@@ -2490,6 +2602,7 @@ mod tests {
             timeout: Duration::from_secs(10),
             output_tx: None,
             parent_session_id: None,
+            project_id: None,
         };
         match engine.spawn(task).await {
             Err(err) => assert!(

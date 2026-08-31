@@ -23,6 +23,7 @@ pub mod finance;
 pub mod forecaster;
 pub mod gate_classifier;
 pub mod goal_a2a;
+pub mod goal_context_mcp;
 pub mod goal_engine;
 pub mod inbox_tools;
 pub mod librarian;
