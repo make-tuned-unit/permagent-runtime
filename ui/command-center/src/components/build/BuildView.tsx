@@ -208,25 +208,53 @@ export function BuildView() {
             )}
             <span style={{ flexShrink: 0 }}>
               {activeTask ? '· ' : ''}{agentName} · {hasActive ? 'thinking' : 'idle'}
+              {/* Idle Build said only "idle" — true, and no help at all to
+                  someone who has just arrived and is looking at an empty
+                  terminal. One clause on the line that is already there. */}
+              {!hasActive && !activeTask && ' — the terminal below runs your coding agent'}
             </span>
           </span>
         }
         actions={<>
         {/* Progress rail — driven by the daemon's per-task progress estimate
             (dashboard in_flight[].progress, 0..0.95). Previously hardcoded to
-            step 3 whenever anything ran (2026-07 wiring audit). */}
-        <div style={{ display: 'flex', gap: 6 }} aria-hidden={!hasActive}>
-          {[1, 2, 3, 4, 5].map(n => {
-            const step = progressRailStep(activeTask?.progress);
-            return (
-              <div key={n} style={{
-                width: 26, height: 4, borderRadius: 2,
-                background: n < step ? colors.success : n === step ? colors.cyan : colors.border,
-                boxShadow: n === step ? `0 0 6px ${colors.cyanGlow}` : 'none',
-              }} />
-            );
-          })}
-        </div>
+            step 3 whenever anything ran (2026-07 wiring audit).
+
+            It used to render permanently: five flat grey bars sitting in the
+            header of an idle Build tab, with no label, no title and no adjacent
+            text. A shape that never changes and never says anything is
+            decoration wearing an instrument's clothes — and worse, a reader who
+            eventually saw it move had no way to know what it had been measuring
+            all along. It now appears when there is progress to show, and says
+            what it is measuring while it does. */}
+        {hasActive && (
+          <div
+            data-testid="build-progress-rail"
+            role="progressbar"
+            aria-label={`Progress on ${activeTask?.title ?? 'the current task'}`}
+            aria-valuemin={0}
+            aria-valuemax={5}
+            aria-valuenow={progressRailStep(activeTask?.progress)}
+            title={`Step ${progressRailStep(activeTask?.progress)} of 5 — the daemon's own estimate of how far along this task is`}
+            style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+          >
+            <span style={{ fontSize: 10, color: colors.textDim, fontFamily: font.body, whiteSpace: 'nowrap' }}>
+              Step {progressRailStep(activeTask?.progress)} of 5
+            </span>
+            <span style={{ display: 'flex', gap: 6 }}>
+              {[1, 2, 3, 4, 5].map(n => {
+                const step = progressRailStep(activeTask?.progress);
+                return (
+                  <span key={n} style={{
+                    width: 26, height: 4, borderRadius: 2,
+                    background: n < step ? colors.success : n === step ? colors.cyan : colors.border,
+                    boxShadow: n === step ? `0 0 6px ${colors.cyanGlow}` : 'none',
+                  }} />
+                );
+              })}
+            </span>
+          </div>
+        )}
 
         {/* Pane visibility: hide one pane to give the other the full canvas.
             The store guarantees both are never hidden at once. Each chip is a
