@@ -13,7 +13,7 @@
  */
 
 import { useEffect, useId, useRef } from 'react';
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { FiX } from 'react-icons/fi';
 import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
@@ -25,6 +25,25 @@ interface Props {
   onClose: () => void;
   /** Pinned action row at the bottom (e.g. Cancel goal). */
   footer?: ReactNode;
+  /** Panel width. The default is the house size; the four sizes that already
+   *  existed in the app's hand-rolled shells are 340 (a picker), 480 (a form),
+   *  720 (the decision inbox) and 1000 (a document). A shell that cannot be
+   *  the size its content needs is a shell people write around. */
+  width?: number | string;
+  /** Panel height, for a body that must fill rather than hug (a PDF frame). */
+  height?: number | string;
+  /** Ahead of the title in the header — a back arrow, a breadcrumb. */
+  headerLeft?: ReactNode;
+  /** After the title, before the close — a meta line, a Download. */
+  headerRight?: ReactNode;
+  /** Overrides on the body box, for a body that draws its own surface (an
+   *  image viewer's dark mat) or wants no padding of its own. */
+  bodyStyle?: CSSProperties;
+  /** Stop Escape here. For a modal opened from a surface that ALSO closes on
+   *  Escape — Settings, Automate — where one keypress otherwise dismisses the
+   *  dialog and the page behind it together. Those surfaces listen on `window`
+   *  and this listens on `document`, so stopping propagation is enough. */
+  stopEscapePropagation?: boolean;
   children: ReactNode;
 }
 
@@ -35,7 +54,10 @@ const FOCUSABLE = [
   'input:not([disabled])', 'select:not([disabled])', '[tabindex]:not([tabindex="-1"])',
 ].join(',');
 
-export function DetailModal({ title, badge, onClose, footer, children }: Props) {
+export function DetailModal({
+  title, badge, onClose, footer, children,
+  width = 'min(560px, 92vw)', height, headerLeft, headerRight, bodyStyle, stopEscapePropagation,
+}: Props) {
   const { colors } = useTheme();
   const panelRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
@@ -55,7 +77,11 @@ export function DetailModal({ title, badge, onClose, footer, children }: Props) 
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { onClose(); return; }
+      if (e.key === 'Escape') {
+        if (stopEscapePropagation) e.stopPropagation();
+        onClose();
+        return;
+      }
       if (e.key !== 'Tab') return;
 
       // Tab containment. A modal that lets focus walk out to the page behind it
@@ -76,7 +102,7 @@ export function DetailModal({ title, badge, onClose, footer, children }: Props) 
     };
     document.addEventListener('keydown', handleKey);
     return () => document.removeEventListener('keydown', handleKey);
-  }, [onClose]);
+  }, [onClose, stopEscapePropagation]);
 
   return (
     <div
@@ -95,7 +121,9 @@ export function DetailModal({ title, badge, onClose, footer, children }: Props) 
         tabIndex={-1}
         onClick={e => e.stopPropagation()}
         style={{
-          width: 'min(560px, 92vw)', maxHeight: '86vh',
+          // An explicit height is the cap too, or the default 86vh silently
+          // shortens a viewer that asked for more.
+          width, height, maxHeight: height ?? '86vh',
           borderRadius: radius.lg,
           background: colors.surface,
           border: `1px solid ${colors.border}`,
@@ -110,6 +138,7 @@ export function DetailModal({ title, badge, onClose, footer, children }: Props) 
           padding: '14px 18px',
           borderBottom: `1px solid ${colors.border}`,
         }}>
+          {headerLeft}
           <span id={titleId} style={{
             fontFamily: font.display, fontSize: textSize.body, fontWeight: 600,
             color: colors.text, flex: 1, minWidth: 0,
@@ -126,6 +155,7 @@ export function DetailModal({ title, badge, onClose, footer, children }: Props) 
               {badge.label}
             </span>
           )}
+          {headerRight}
           <button
             onClick={onClose}
             title="Close"
@@ -139,7 +169,7 @@ export function DetailModal({ title, badge, onClose, footer, children }: Props) 
         </div>
 
         {/* Body */}
-        <div style={{ overflow: 'auto', padding: '16px 18px', flex: 1 }}>
+        <div style={{ overflow: 'auto', padding: '16px 18px', flex: 1, ...bodyStyle }}>
           {children}
         </div>
 

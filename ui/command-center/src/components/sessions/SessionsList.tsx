@@ -2,10 +2,10 @@ import { useEffect, useState, useRef, type CSSProperties } from 'react';
 import { FiPlus, FiTrash2, FiMessageSquare, FiX } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
 import { api } from '../../lib/api';
-import { toast } from '../../lib/notifications';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
+import { ConfirmDialog } from '../common/ConfirmDialog';
 
 function timeAgo(dateStr: string): string {
   const now = Date.now();
@@ -134,15 +134,13 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
     setActivePanel('chat');
   };
 
+  // The failure sentence is `ConfirmDialog`'s now, not a toast's: the daemon
+  // refusing (or never hearing) the delete leaves the session on screen, and
+  // the dialog that asked the question is where that belongs. It stays open,
+  // saying why, instead of closing as though the delete had happened.
   const handleDelete = async (sessionId: string) => {
+    await deleteSession(sessionId);
     setConfirmDelete(null);
-    try {
-      await deleteSession(sessionId);
-    } catch (e) {
-      // The daemon refused (or never heard) the delete — the session still
-      // exists and the store kept the open conversation intact; say so.
-      toast("Couldn't delete session", e instanceof Error ? e.message : String(e));
-    }
   };
 
   return (
@@ -305,51 +303,18 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
         })}
       </div>
 
-      {/* Delete confirmation */}
+      {/* Deleting a conversation has no undo, which is the tier that earns a
+          full-attention modal. It used to be hand-rolled chrome with no focus
+          trap, no dialog role and no way back to the button that opened it. */}
       {confirmDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setConfirmDelete(null)}>
-          <div
-            className="rounded-xl p-5 max-w-sm"
-            style={{ backgroundColor: colors.surface, border: `1px solid ${colors.border}`, boxShadow: colors.cardShadow }}
-            onClick={e => e.stopPropagation()}
-          >
-            <h3 className="mb-2" style={{ fontFamily: font.display, fontWeight: 600, color: colors.text }}>Delete session?</h3>
-            <p className="text-xs mb-4" style={{ fontFamily: font.body, color: colors.textMuted }}>This will permanently delete this session and its messages.</p>
-            <div className="flex justify-end gap-2">
-              <Button
-                colors={colors}
-                onClick={() => setConfirmDelete(null)}
-                style={{
-                  '--pa-btn-fg': colors.textMuted,
-                  '--pa-btn-border': colors.border,
-                  '--pa-btn-border-hover': colors.border,
-                  '--pa-btn-bg-hover': 'rgba(255,255,255,0.05)',
-                  '--pa-btn-pad': '6px 12px',
-                  '--pa-btn-radius': `${radius.xs}px`,
-                  fontSize: textSize.body,
-                } as CSSProperties}
-              >
-                Cancel
-              </Button>
-              <Button
-                colors={colors}
-                onClick={() => handleDelete(confirmDelete)}
-                style={{
-                  '--pa-btn-bg': `${colors.danger}33`,
-                  '--pa-btn-fg': colors.danger,
-                  '--pa-btn-border': 'transparent',
-                  '--pa-btn-bg-hover': `${colors.danger}4D`,
-                  '--pa-btn-border-hover': 'transparent',
-                  '--pa-btn-pad': '6px 12px',
-                  '--pa-btn-radius': `${radius.xs}px`,
-                  fontSize: textSize.body,
-                } as CSSProperties}
-              >
-                Delete
-              </Button>
-            </div>
-          </div>
-        </div>
+        <ConfirmDialog
+          title="Delete session?"
+          consequence="This permanently deletes the conversation and every message in it. There is no undo."
+          confirmLabel="Delete"
+          failureLabel="Couldn't delete the session"
+          onConfirm={() => handleDelete(confirmDelete)}
+          onCancel={() => setConfirmDelete(null)}
+        />
       )}
     </div>
   );

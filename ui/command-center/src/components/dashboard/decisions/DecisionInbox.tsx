@@ -1,18 +1,19 @@
 /**
  * Decision Inbox — overlay (Lane L4).
  *
- * Full-screen scrim overlay rendered from inside dashboard/ (AddCardPicker
- * pattern) so the workspaces/ mount point stays untouched. Ranked Tier-2 +
- * unblock items, "+M more" overflow, collapsed Tier-1 group, history view.
+ * Rendered from inside dashboard/ so the workspaces/ mount point stays
+ * untouched, on `DetailModal` — the app's one modal shell — rather than on a
+ * copy of it. Ranked Tier-2 + unblock items, "+M more" overflow, collapsed
+ * Tier-1 group, history view.
  * Zero batch/multi-select affordances anywhere — answers are one at a time.
  */
 
 import { useState, useCallback, useId, type CSSProperties } from 'react';
 import { useLiveGoals } from '../../../lib/useLiveGoals';
-import { FiX } from 'react-icons/fi';
 import { font, radius, ease, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { Button } from '../../common/Button';
+import { DetailModal } from '../../common/DetailModal';
 import type { useDecisions } from './useDecisions';
 import type { HistoryItem } from './types';
 import { resolutionText } from './types';
@@ -63,83 +64,61 @@ export function DecisionInbox({ inbox, onClose }: Props) {
   const tier1Rows = (history ?? []).filter(d => d.tier === 1);
 
   return (
-    <div
-      onClick={onClose}
-      style={{
-        position: 'fixed', inset: 0, zIndex: 100,
-        background: 'rgba(0,0,0,0.5)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-      }}
+    // The chrome is `DetailModal`'s. It used to be a byte-for-byte copy of that
+    // shell — the same `radius.lg`, the same shadow pair, the same 86vh — with
+    // none of its keyboard floor: no focus trap, no Escape, no `role="dialog"`,
+    // and focus abandoned wherever it was when the inbox opened. On the surface
+    // that exists to be checked several times a day.
+    <DetailModal
+      title={view === 'history' ? 'History' : 'Decision inbox'}
+      onClose={onClose}
+      width="min(720px, 92vw)"
+      badge={view === 'list' && total > 0
+        ? { label: `${total} pending`, color: colors.cyan, bg: colors.cyanSoft }
+        : null}
+      headerLeft={view === 'history' ? (
+        <Button
+          colors={colors}
+          variant="bare"
+          type="button"
+          onClick={() => setView('list')}
+          style={{
+            '--pa-btn-fg': colors.textMuted,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-bg-hover': colors.border,
+            '--pa-btn-pad': '2px 4px',
+            '--pa-btn-radius': `${radius.xs}px`,
+            '--pa-btn-weight': 400,
+            fontFamily: font.body, fontSize: textSize.caption,
+          } as CSSProperties}
+        >
+          ← Back
+        </Button>
+      ) : undefined}
+      bodyStyle={{ padding: '6px 0' }}
+      footer={view === 'list' ? (
+        <Button
+          colors={colors}
+          variant="bare"
+          type="button"
+          className="hover:underline"
+          onClick={openHistory}
+          style={{
+            '--pa-btn-fg': colors.textDim,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-bg-active': 'transparent',
+            '--pa-btn-pad': '0',
+            '--pa-btn-radius': '0',
+            '--pa-btn-weight': 400,
+            fontSize: textSize.caption, fontFamily: font.body,
+          } as CSSProperties}
+        >
+          History →
+        </Button>
+      ) : undefined}
     >
-      <div
-        onClick={e => e.stopPropagation()}
-        style={{
-          width: 'min(720px, 92vw)', maxHeight: '86vh',
-          borderRadius: radius.lg,
-          background: colors.surface,
-          border: `1px solid ${colors.border}`,
-          boxShadow: [colors.cardShadow, colors.cardHighlight].filter(Boolean).join(', '),
-          overflow: 'hidden',
-          display: 'flex', flexDirection: 'column',
-        }}
-      >
-        {/* Header */}
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 10,
-          padding: '14px 18px',
-          borderBottom: `1px solid ${colors.border}`,
-        }}>
-          {view === 'history' && (
-            <Button
-              colors={colors}
-              variant="bare"
-              type="button"
-              onClick={() => setView('list')}
-              style={{
-                '--pa-btn-fg': colors.textMuted,
-                '--pa-btn-fg-hover': colors.text,
-                '--pa-btn-bg-hover': colors.border,
-                '--pa-btn-pad': '2px 4px',
-                '--pa-btn-radius': `${radius.xs}px`,
-                '--pa-btn-weight': 400,
-                fontFamily: font.body, fontSize: textSize.caption,
-              } as CSSProperties}
-            >
-              ← Back
-            </Button>
-          )}
-          <span style={{ fontFamily: font.display, fontSize: textSize.body, fontWeight: 600, color: colors.text, flex: 1 }}>
-            {view === 'history' ? 'History' : 'Decision inbox'}
-          </span>
-          {view === 'list' && total > 0 && (
-            <span style={{
-              fontFamily: font.mono, fontSize: textSize.micro, color: colors.cyan,
-              background: colors.cyanSoft, borderRadius: radius.pill, padding: '2px 8px',
-            }}>
-              {total} pending
-            </span>
-          )}
-          <Button
-            colors={colors}
-            variant="bare"
-            type="button"
-            onClick={onClose}
-            title="Close"
-            aria-label="Close"
-            style={{
-              '--pa-btn-fg': colors.textMuted,
-              '--pa-btn-fg-hover': colors.text,
-              '--pa-btn-bg-hover': colors.border,
-              '--pa-btn-pad': '4px',
-              '--pa-btn-radius': `${radius.xs}px`,
-            } as CSSProperties}
-          >
-            <FiX size={16} />
-          </Button>
-        </div>
-
-        {/* Body */}
-        <div data-testid="inbox-body" style={{ overflow: 'auto', padding: '6px 0', flex: 1 }}>
+      <div data-testid="inbox-body">
           {view === 'history' ? (
             <HistoryList items={history} />
           ) : loading && !data ? (
@@ -371,37 +350,8 @@ export function DecisionInbox({ inbox, onClose }: Props) {
               )}
             </>
           )}
-        </div>
-
-        {/* Footer */}
-        {view === 'list' && (
-          <div style={{
-            padding: '10px 18px', borderTop: `1px solid ${colors.border}`,
-            display: 'flex', justifyContent: 'flex-end',
-          }}>
-            <Button
-              colors={colors}
-              variant="bare"
-              type="button"
-              className="hover:underline"
-              onClick={openHistory}
-              style={{
-                '--pa-btn-fg': colors.textDim,
-                '--pa-btn-fg-hover': colors.text,
-                '--pa-btn-bg-hover': 'transparent',
-                '--pa-btn-bg-active': 'transparent',
-                '--pa-btn-pad': '0',
-                '--pa-btn-radius': '0',
-                '--pa-btn-weight': 400,
-                fontSize: textSize.caption, fontFamily: font.body,
-              } as CSSProperties}
-            >
-              History →
-            </Button>
-          </div>
-        )}
       </div>
-    </div>
+    </DetailModal>
   );
 }
 

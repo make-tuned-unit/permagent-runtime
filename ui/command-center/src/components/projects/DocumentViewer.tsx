@@ -10,18 +10,20 @@
  * rework. That is the leverage: capabilities surface through one renderer.
  *
  * The bytes are fetched once (authed) into an object URL; `<img>`/`<iframe>`
- * render that URL directly, text renderers read `blob.text()`. The overlay
- * mirrors the DetailModal scrim/Escape convention but is sized wide for
- * documents (a deck needs room a 560px modal can't give).
+ * render that URL directly, text renderers read `blob.text()`. The overlay IS
+ * `DetailModal` now, sized wide for documents — it used to only "mirror the
+ * DetailModal convention", which in practice meant a copy of the scrim and the
+ * Escape key without the focus trap, the dialog role or the focus return.
  */
 
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { FiDownload, FiX } from 'react-icons/fi';
+import { FiDownload } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
+import { DetailModal } from '../common/DetailModal';
 import type { ProjectDocument } from './types';
 
 // ── The single dispatch point ────────────────────────────────────────────────
@@ -57,13 +59,6 @@ export function DocumentViewer({ projectId, doc, onClose }: {
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
   const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  // Escape closes.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [onClose]);
 
   // Fetch the bytes once. 'fallback' does not preview, so it skips the fetch.
   useEffect(() => {
@@ -106,51 +101,31 @@ export function DocumentViewer({ projectId, doc, onClose }: {
   };
 
   return (
-    <div
-      onClick={onClose}
-      style={{
-        position: 'fixed', inset: 0, zIndex: 130, background: 'rgba(0,0,0,0.6)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
+    // The shell is `DetailModal`'s, sized wide: a deck needs room a 560px modal
+    // cannot give, which is why this used to carry its own scrim — and with it
+    // its own Escape and no focus trap, no dialog role and no focus return.
+    // The body draws its own surface (an image sits on a dark mat) and its own
+    // padding, since each renderer pads differently.
+    <DetailModal
+      title={doc.filename}
+      onClose={onClose}
+      width="min(1000px, 94vw)"
+      height="88vh"
+      headerRight={<>
+        <span style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, flexShrink: 0 }}>
+          {doc.mime_type} · {formatSize(doc.size_bytes)}
+        </span>
+        <IconButton title="Download" onClick={download} colors={colors}><FiDownload size={15} /></IconButton>
+      </>}
+      bodyStyle={{
+        padding: 0, minHeight: 0,
+        background: kind === 'image' ? '#0b0b0f' : colors.surface,
       }}
     >
-      <div
-        onClick={e => e.stopPropagation()}
-        style={{
-          width: 'min(1000px, 94vw)', height: '88vh',
-          borderRadius: radius.lg, background: colors.surface,
-          border: `1px solid ${colors.border}`,
-          display: 'flex', flexDirection: 'column', overflow: 'hidden',
-        }}
-      >
-        {/* Header */}
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px',
-          borderBottom: `1px solid ${colors.border}`,
-        }}>
-          <span style={{
-            fontFamily: font.display, fontSize: textSize.body, fontWeight: 600, color: colors.text,
-            flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          }}>
-            {doc.filename}
-          </span>
-          <span style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, flexShrink: 0 }}>
-            {doc.mime_type} · {formatSize(doc.size_bytes)}
-          </span>
-          <IconButton title="Download" onClick={download} colors={colors}><FiDownload size={15} /></IconButton>
-          <IconButton title="Close" onClick={onClose} colors={colors}><FiX size={16} /></IconButton>
-        </div>
-
-        {/* Body — the renderer dispatch */}
-        <div style={{
-          flex: 1, overflow: 'auto', minHeight: 0,
-          background: kind === 'image' ? '#0b0b0f' : colors.surface,
-        }}>
-          {error
-            ? <Notice colors={colors}>Couldn’t load this document: {error}</Notice>
-            : renderContent(kind, { objectUrl, text, doc, colors, onDownload: download })}
-        </div>
-      </div>
-    </div>
+      {error
+        ? <Notice colors={colors}>Couldn’t load this document: {error}</Notice>
+        : renderContent(kind, { objectUrl, text, doc, colors, onDownload: download })}
+    </DetailModal>
   );
 }
 

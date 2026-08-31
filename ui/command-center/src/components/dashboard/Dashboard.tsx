@@ -12,10 +12,10 @@ import { AddCardPicker } from './AddCardPicker';
 import { DashboardOverflowMenu } from './DashboardOverflowMenu';
 import { CustomizeButton } from './CustomizeButton';
 import { MissingCard } from './MissingCard';
-import { ResetConfirmModal } from './ResetConfirmModal';
 import { Echo } from './Echo';
 import { LearnNext } from './LearnNext';
 import { ViewHeader } from '../common/ViewHeader';
+import { ConfirmDialog } from '../common/ConfirmDialog';
 import { Button } from '../common/Button';
 import { AsOf } from '../common/AsOf';
 import { useState, useCallback, useRef, useMemo, type CSSProperties } from 'react';
@@ -458,7 +458,14 @@ export function Dashboard() {
       )}
 
       {showResetConfirm && (
-        <ResetConfirmModal
+        /* Losing a hand-arranged dashboard has no undo, which is the tier that
+           earns a modal. It had its own chrome — and with it no focus trap, no
+           dialog role, and no focus returned to the button that opened it. */
+        <ConfirmDialog
+          title="Reset dashboard?"
+          consequence="This restores the default layout. The arrangement you built — which cards are on the board, and where — is lost."
+          confirmLabel="Reset"
+          failureLabel="Couldn't reset the dashboard"
           onConfirm={resetToDefault}
           onCancel={() => setShowResetConfirm(false)}
         />

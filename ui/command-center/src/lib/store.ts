@@ -1337,8 +1337,9 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     // api.deleteSession throws on a non-2xx (it used to resolve on a 500, and
     // the old unconditional clear below then blanked the OPEN conversation for
     // a session the daemon never deleted). State clears only after a confirmed
-    // delete; failures propagate so the caller can surface them (SessionsList
-    // toasts) without losing the user's open chat.
+    // delete; failures propagate so the caller can surface them (SessionsList's
+    // ConfirmDialog stays open with the reason on it) without losing the user's
+    // open chat.
     try {
       await api.deleteSession(sessionId);
     } catch (e) {
