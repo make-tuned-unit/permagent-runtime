@@ -767,11 +767,9 @@ impl Agent {
         }
 
         // Interactive surfaces are User/Terminal; everything else (SubAgent,
-        // Scheduled, Hidden, Gateway, Acp) is background/headless.
-        let is_headless = !matches!(
-            session.session_type,
-            SessionType::User | SessionType::Terminal
-        );
+        // Scheduled, Hidden, Gateway, Acp) is background/headless. One
+        // definition, on the type itself.
+        let is_headless = !session.session_type.is_interactive();
 
         let tok = |t: Option<i32>| t.unwrap_or(0).max(0) as i64;
         // `subagent_id`: a SubAgent session IS the subagent — its own id is the

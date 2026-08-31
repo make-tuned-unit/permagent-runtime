@@ -100,6 +100,7 @@ fn status_for_answer_error(err: &AnswerError) -> StatusCode {
         AnswerError::NotFound => StatusCode::NOT_FOUND,
         AnswerError::AlreadyResolved(_) => StatusCode::CONFLICT,
         AnswerError::Forbidden(_) => StatusCode::FORBIDDEN,
+        AnswerError::SelfReference(_) => StatusCode::FORBIDDEN,
         AnswerError::Invalid(_) => StatusCode::BAD_REQUEST,
         AnswerError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }

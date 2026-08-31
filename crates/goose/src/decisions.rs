@@ -1750,6 +1750,10 @@ pub enum AnswerError {
     AlreadyResolved(String),
     /// Actor is not authorized for this tier (403).
     Forbidden(String),
+    /// The answering session is the subject of the decision — it did, or is
+    /// doing, the very work this decision judges (403). Separation of duties
+    /// (D30): no session approves its own work, whatever tier it holds.
+    SelfReference(String),
     /// Request is invalid (400).
     Invalid(String),
     /// Database failure (500).
@@ -1786,6 +1790,7 @@ impl std::fmt::Display for AnswerError {
             Self::NotFound => write!(f, "Decision not found"),
             Self::AlreadyResolved(s) => write!(f, "Decision already resolved (status: {})", s),
             Self::Forbidden(s) => write!(f, "Forbidden: {}", s),
+            Self::SelfReference(s) => write!(f, "Forbidden (self-reference): {}", s),
             Self::Invalid(s) => write!(f, "Invalid: {}", s),
             Self::Db(s) => write!(f, "Database error: {}", s),
         }
@@ -1804,7 +1809,7 @@ pub async fn answer_decision(
     answer: &DecisionAnswer,
     acted_by: &str,
 ) -> Result<(Decision, DecisionProof), AnswerError> {
-    answer_decision_inner(pool, decision_id, answer, acted_by, None).await
+    answer_decision_inner(pool, decision_id, answer, acted_by, None, None).await
 }
 
 /// Answer a decision while durably recording the authenticated HTTP principal.
@@ -1818,7 +1823,124 @@ pub async fn answer_decision_with_principal(
     acted_by: &str,
     principal: &str,
 ) -> Result<(Decision, DecisionProof), AnswerError> {
-    answer_decision_inner(pool, decision_id, answer, acted_by, Some(principal)).await
+    answer_decision_inner(pool, decision_id, answer, acted_by, Some(principal), None).await
+}
+
+/// Answer a decision on behalf of a named in-process session.
+///
+/// Identical to [`answer_decision_with_principal`] except that the answering
+/// session is declared, which arms the separation-of-duties check: a session
+/// may not answer a decision that judges its own work (D30). Every in-process
+/// caller — the chat `answer_decisions` tool above all — should use this rather
+/// than the anonymous variants, so the block has something to compare against.
+pub async fn answer_decision_as_session(
+    pool: &Pool<Sqlite>,
+    decision_id: &str,
+    answer: &DecisionAnswer,
+    acted_by: &str,
+    principal: &str,
+    answering_session_id: &str,
+) -> Result<(Decision, DecisionProof), AnswerError> {
+    answer_decision_inner(
+        pool,
+        decision_id,
+        answer,
+        acted_by,
+        Some(principal),
+        Some(answering_session_id),
+    )
+    .await
+}
+
+/// Does `haystack` mention `needle` anywhere as a string, key, or substring of
+/// a string? Decision payloads are free-form JSON — a session id can appear as
+/// `worker_session_id`, inside a `run_id`, or embedded in a rendered evidence
+/// blob — so the scan is deliberately structural rather than key-specific.
+fn json_mentions(haystack: &serde_json::Value, needle: &str) -> bool {
+    match haystack {
+        serde_json::Value::String(s) => s.contains(needle),
+        serde_json::Value::Array(items) => items.iter().any(|v| json_mentions(v, needle)),
+        serde_json::Value::Object(map) => map
+            .iter()
+            .any(|(k, v)| k.contains(needle) || json_mentions(v, needle)),
+        _ => false,
+    }
+}
+
+/// Session ids that have done the work on a goal card — the current
+/// `worker_session_id` plus every past attempt in `worker_session_ids`.
+///
+/// Read from `cards.metadata_json`, the same linkage `recognition.rs` and
+/// `goal_transition::goal_spent_tokens` use.
+async fn goal_worker_session_ids(pool: &Pool<Sqlite>, goal_id: &str) -> Vec<String> {
+    let Ok(Some(meta_json)) =
+        sqlx::query_scalar::<_, String>("SELECT metadata_json FROM cards WHERE id = ?")
+            .bind(goal_id)
+            .fetch_optional(pool)
+            .await
+    else {
+        return Vec::new();
+    };
+    let Ok(meta) = serde_json::from_str::<serde_json::Value>(&meta_json) else {
+        return Vec::new();
+    };
+    let mut ids: Vec<String> = meta
+        .get("worker_session_ids")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(sid) = meta.get("worker_session_id").and_then(|v| v.as_str()) {
+        if !ids.iter().any(|i| i == sid) {
+            ids.push(sid.to_string());
+        }
+    }
+    ids
+}
+
+/// Separation of duties: may `answering_session_id` answer `decision`?
+///
+/// Returns the reason it may not, or `None` when the answer is clean. Two
+/// independent tests, either of which disqualifies:
+///
+/// 1. The decision hangs off a goal card whose worker session — now or on any
+///    past attempt — IS the answering session. This is the literal
+///    self-approval case: a goal worker approving the review of its own goal.
+/// 2. The decision's stored payload mentions the answering session id at all.
+///    Anything the payload names as the subject of the decision is work the
+///    answering session has a stake in.
+///
+/// The capability gate in `inbox_tools` should already have kept every worker
+/// session away from this function; this is the second, unconditional layer,
+/// and it applies to sessions that DO hold the capability.
+pub async fn self_reference_conflict(
+    pool: &Pool<Sqlite>,
+    decision: &Decision,
+    answering_session_id: &str,
+) -> Option<String> {
+    if answering_session_id.is_empty() {
+        return None;
+    }
+    if let Some(goal_id) = decision.goal_id.as_deref() {
+        let workers = goal_worker_session_ids(pool, goal_id).await;
+        if workers.iter().any(|w| w == answering_session_id) {
+            return Some(format!(
+                "session {answering_session_id} did the work on goal {goal_id}; \
+                 it cannot answer a decision that judges that work"
+            ));
+        }
+    }
+    if json_mentions(&decision.payload, answering_session_id) {
+        return Some(format!(
+            "decision {} names session {answering_session_id} as its subject; \
+             a session cannot answer a decision about itself",
+            decision.id
+        ));
+    }
+    None
 }
 
 async fn answer_decision_inner(
@@ -1827,6 +1949,7 @@ async fn answer_decision_inner(
     answer: &DecisionAnswer,
     acted_by: &str,
     principal: Option<&str>,
+    answering_session_id: Option<&str>,
 ) -> Result<(Decision, DecisionProof), AnswerError> {
     if !VALID_ACTORS.contains(&acted_by) {
         return Err(AnswerError::Invalid(format!(
@@ -1865,6 +1988,21 @@ async fn answer_decision_inner(
             )));
         }
         _ => {}
+    }
+
+    // Separation of duties (D30). Runs for every declared answering session,
+    // whatever its tier authority: the reviewer is never the reviewed.
+    if let Some(session_id) = answering_session_id {
+        if let Some(reason) = self_reference_conflict(pool, &decision, session_id).await {
+            tracing::warn!(
+                decision_id,
+                answering_session_id = session_id,
+                acted_by,
+                reason = %reason,
+                "refused a self-referential decision answer"
+            );
+            return Err(AnswerError::SelfReference(reason));
+        }
     }
 
     // Kind/answer compatibility. Keep this before opening the write
@@ -3752,5 +3890,181 @@ mod tests {
         let allow_odd: serde_json::Value =
             serde_json::from_str(&session_gate_relay_line(&odd, true)).unwrap();
         assert!(allow_odd["response"]["response"]["updatedInput"].is_object());
+    }
+
+    // ── D30: separation of duties — the reviewer is never the reviewed ──
+
+    /// A goal card in `review`, with `worker_session_id` naming the session
+    /// that did the work — the linkage `recognition.rs` reads.
+    async fn goal_worked_by(pool: &Pool<Sqlite>, worker_session_id: &str) -> crate::cards::Card {
+        crate::cards::seed_goal_columns(pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        let col = crate::cards::get_goal_column(pool, PERSONAL_PROJECT_ID, "review")
+            .await
+            .unwrap()
+            .unwrap();
+        crate::cards::create_card(
+            pool,
+            crate::cards::CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: "Self-approval test goal".to_string(),
+                description: Some("test".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(col.id.clone()),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "goal_state": "review",
+                    "attempt_count": 1,
+                    "worker_session_id": worker_session_id,
+                    "worker_session_ids": ["an-earlier-attempt", worker_session_id],
+                })),
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    async fn review_of(pool: &Pool<Sqlite>, goal_id: &str) -> Decision {
+        create_decision(
+            pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(goal_id.to_string()),
+                project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Goal finished — approve the work?".to_string()),
+                detail: Some("The worker reports done.".to_string()),
+                payload: serde_json::json!({"diff_paths": ["src/lib.rs"]}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    fn approve() -> DecisionAnswer {
+        DecisionAnswer {
+            answer: "approve".to_string(),
+            note: None,
+            choice_id: None,
+            input_text: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn goal_worker_cannot_approve_the_review_of_its_own_goal() {
+        let pool = test_pool().await;
+        let card = goal_worked_by(&pool, "sess-worker").await;
+        let d = review_of(&pool, &card.id).await;
+        assert_eq!(d.tier, 1, "goal_approve_standard seeds at tier 1");
+
+        let err = answer_decision_as_session(
+            &pool,
+            &d.id,
+            &approve(),
+            ACTOR_HENRY,
+            "henry-chat",
+            "sess-worker",
+        )
+        .await
+        .expect_err("a goal worker must not approve its own goal's review");
+        assert!(
+            matches!(err, AnswerError::SelfReference(_)),
+            "expected SelfReference, got {err:?}"
+        );
+
+        let still = get_decision(&pool, &d.id).await.unwrap().unwrap();
+        assert_eq!(still.status, "open", "a refused answer leaves it open");
+    }
+
+    #[tokio::test]
+    async fn a_past_attempts_worker_session_is_also_blocked() {
+        let pool = test_pool().await;
+        let card = goal_worked_by(&pool, "sess-worker").await;
+        let d = review_of(&pool, &card.id).await;
+
+        let err = answer_decision_as_session(
+            &pool,
+            &d.id,
+            &approve(),
+            ACTOR_HENRY,
+            "henry-chat",
+            "an-earlier-attempt",
+        )
+        .await
+        .expect_err("an earlier attempt's worker judged the same work");
+        assert!(matches!(err, AnswerError::SelfReference(_)));
+    }
+
+    #[tokio::test]
+    async fn a_session_that_did_not_do_the_work_may_answer() {
+        let pool = test_pool().await;
+        let card = goal_worked_by(&pool, "sess-worker").await;
+        let d = review_of(&pool, &card.id).await;
+
+        let (answered, _proof) = answer_decision_as_session(
+            &pool,
+            &d.id,
+            &approve(),
+            ACTOR_HENRY,
+            "henry-chat",
+            "sess-chat-with-jesse",
+        )
+        .await
+        .expect("an uninvolved session still holds its normal tier authority");
+        assert_eq!(answered.status, "answered");
+        assert_eq!(answered.acted_by.as_deref(), Some(ACTOR_HENRY));
+    }
+
+    #[tokio::test]
+    async fn a_payload_naming_the_answering_session_is_refused() {
+        let pool = test_pool().await;
+        // The goal card names a DIFFERENT worker, so only the payload scan can
+        // catch this one.
+        let card = goal_worked_by(&pool, "someone-else").await;
+        let d = create_decision(
+            &pool,
+            NewDecision {
+                kind: "approve_review".to_string(),
+                goal_id: Some(card.id.clone()),
+                project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Goal finished — approve the work?".to_string()),
+                detail: Some("The worker reports done.".to_string()),
+                payload: serde_json::json!({
+                    "completion_check": "proof of work from session sess-subject",
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(d.tier, 1, "sanity: still the tier the chat ceiling allows");
+
+        let err = answer_decision_as_session(
+            &pool,
+            &d.id,
+            &approve(),
+            ACTOR_HENRY,
+            "henry-chat",
+            "sess-subject",
+        )
+        .await
+        .expect_err("the payload names the answering session as the subject");
+        assert!(matches!(err, AnswerError::SelfReference(_)));
+    }
+
+    #[tokio::test]
+    async fn the_anonymous_answer_paths_are_untouched() {
+        // The HTTP/voice routes answer as jesse with no in-process session.
+        // The self-reference block must not change them: it arms only when a
+        // caller declares which session is answering.
+        let pool = test_pool().await;
+        let card = goal_worked_by(&pool, "sess-worker").await;
+        let d = review_of(&pool, &card.id).await;
+
+        let (answered, _proof) = answer_decision(&pool, &d.id, &approve(), ACTOR_JESSE)
+            .await
+            .expect("jesse's own hand is never self-referential");
+        assert_eq!(answered.status, "answered");
     }
 }

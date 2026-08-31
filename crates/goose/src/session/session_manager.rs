@@ -48,6 +48,25 @@ pub enum SessionType {
     Acp,
 }
 
+impl SessionType {
+    /// Is a human present, watching this turn as it happens?
+    ///
+    /// `User` (Chat / voice / the CLI's own session) and `Terminal` are the two
+    /// surfaces where a person is typing and reading the reply. Everything else
+    /// — `SubAgent` (goal workers and summoned children), `Scheduled` (cron
+    /// recipes), `Hidden` (`--no-session` and internal helper runs), `Gateway`
+    /// and `Acp` — runs with nobody watching.
+    ///
+    /// This is the single definition of "a human is in the loop" in the tree.
+    /// It gates the cost ledger's `is_headless` column and, since D30, which
+    /// sessions hold the decision-answering capability. Fail-safe by
+    /// construction: the list is an ALLOW list, so a new session type is
+    /// non-interactive until someone deliberately adds it here.
+    pub fn is_interactive(self) -> bool {
+        matches!(self, Self::User | Self::Terminal)
+    }
+}
+
 static SESSION_STORAGE: LazyLock<Arc<SessionStorage>> =
     LazyLock::new(|| Arc::new(SessionStorage::new_spectral()));
 
