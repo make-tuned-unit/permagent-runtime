@@ -1,6 +1,7 @@
-import { useEffect } from 'react';
+import { useEffect, type CSSProperties } from 'react';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 
 interface Props {
   onConfirm: () => void;
@@ -50,30 +51,46 @@ export function ResetConfirmModal({ onConfirm, onCancel }: Props) {
           This will restore the default layout. Your current arrangement will be lost.
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-          <button
+          <Button
+            colors={colors}
+            type="button"
             onClick={onCancel}
             style={{
-              padding: '7px 16px', borderRadius: radius.md,
-              border: `1px solid ${colors.border}`,
-              background: 'none',
-              fontFamily: font.body, fontSize: 13, color: colors.textMuted,
-              cursor: 'pointer',
-            }}
+              '--pa-btn-bg': 'transparent',
+              '--pa-btn-fg': colors.textMuted,
+              '--pa-btn-border': colors.border,
+              '--pa-btn-bg-hover': colors.surfaceHi,
+              '--pa-btn-fg-hover': colors.text,
+              '--pa-btn-border-hover': colors.borderHi,
+              '--pa-btn-bg-active': colors.surface,
+              '--pa-btn-pad': '7px 16px',
+              '--pa-btn-radius': `${radius.md}px`,
+              '--pa-btn-weight': 400,
+              fontFamily: font.body, fontSize: 13,
+            } as CSSProperties}
           >
             Cancel
-          </button>
-          <button
+          </Button>
+          <Button
+            colors={colors}
+            variant="primary"
+            type="button"
             onClick={() => { onConfirm(); }}
             style={{
-              padding: '7px 16px', borderRadius: radius.md,
-              border: 'none',
-              background: colors.ribbonGradient,
-              fontFamily: font.body, fontSize: 13, fontWeight: 500,
-              color: colors.textOnAccent, cursor: 'pointer',
-            }}
+              '--pa-btn-bg': colors.ribbonGradient,
+              '--pa-btn-fg': colors.textOnAccent,
+              '--pa-btn-border': 'transparent',
+              '--pa-btn-bg-hover': colors.ribbonGradient,
+              '--pa-btn-border-hover': 'transparent',
+              '--pa-btn-bg-active': colors.ribbonGradient,
+              '--pa-btn-pad': '7px 16px',
+              '--pa-btn-radius': `${radius.md}px`,
+              '--pa-btn-weight': 500,
+              fontFamily: font.body, fontSize: 13,
+            } as CSSProperties}
           >
             Reset
-          </button>
+          </Button>
         </div>
       </div>
     </div>

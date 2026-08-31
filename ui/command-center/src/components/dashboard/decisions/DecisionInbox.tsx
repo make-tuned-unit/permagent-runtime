@@ -7,11 +7,12 @@
  * Zero batch/multi-select affordances anywhere — answers are one at a time.
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useId, type CSSProperties } from 'react';
 import { useLiveGoals } from '../../../lib/useLiveGoals';
 import { FiX } from 'react-icons/fi';
 import { font, radius, ease } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
+import { Button } from '../../common/Button';
 import type { useDecisions } from './useDecisions';
 import type { HistoryItem } from './types';
 import { resolutionText } from './types';
@@ -33,6 +34,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
   const [view, setView] = useState<'list' | 'history'>('list');
   const [history, setHistory] = useState<HistoryItem[] | null>(null);
   const [tier1Open, setTier1Open] = useState(false);
+  const tier1Id = useId();
 
   const openHistory = useCallback(async () => {
     setView('history');
@@ -88,16 +90,23 @@ export function DecisionInbox({ inbox, onClose }: Props) {
           borderBottom: `1px solid ${colors.border}`,
         }}>
           {view === 'history' && (
-            <button
+            <Button
+              colors={colors}
+              variant="bare"
+              type="button"
               onClick={() => setView('list')}
               style={{
-                background: 'none', border: 'none', cursor: 'pointer',
-                color: colors.textMuted, fontFamily: font.body, fontSize: 12,
-                padding: '2px 4px',
-              }}
+                '--pa-btn-fg': colors.textMuted,
+                '--pa-btn-fg-hover': colors.text,
+                '--pa-btn-bg-hover': colors.border,
+                '--pa-btn-pad': '2px 4px',
+                '--pa-btn-radius': `${radius.xs}px`,
+                '--pa-btn-weight': 400,
+                fontFamily: font.body, fontSize: 12,
+              } as CSSProperties}
             >
               ← Back
-            </button>
+            </Button>
           )}
           <span style={{ fontFamily: font.display, fontSize: 14, fontWeight: 600, color: colors.text, flex: 1 }}>
             {view === 'history' ? 'History' : 'Decision inbox'}
@@ -110,16 +119,23 @@ export function DecisionInbox({ inbox, onClose }: Props) {
               {total} pending
             </span>
           )}
-          <button
+          <Button
+            colors={colors}
+            variant="bare"
+            type="button"
             onClick={onClose}
             title="Close"
+            aria-label="Close"
             style={{
-              background: 'none', border: 'none', color: colors.textMuted,
-              cursor: 'pointer', padding: 4, display: 'flex',
-            }}
+              '--pa-btn-fg': colors.textMuted,
+              '--pa-btn-fg-hover': colors.text,
+              '--pa-btn-bg-hover': colors.border,
+              '--pa-btn-pad': '4px',
+              '--pa-btn-radius': `${radius.xs}px`,
+            } as CSSProperties}
           >
             <FiX size={16} />
-          </button>
+          </Button>
         </div>
 
         {/* Body */}
@@ -141,16 +157,30 @@ export function DecisionInbox({ inbox, onClose }: Props) {
               <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 14 }}>
                 This is a connection problem, not an empty inbox.
               </div>
-              <button
+              {/* No success tick: `refresh` swallows its own failure, so a
+                  tick would claim a load that never landed. The list replacing
+                  this dead end is the only honest confirmation. */}
+              <Button
+                colors={colors}
+                type="button"
+                flashSuccess={false}
                 onClick={() => inbox.refresh()}
                 style={{
-                  fontFamily: font.body, fontSize: 12, fontWeight: 600, color: colors.cyan,
-                  background: 'none', border: `1px solid ${colors.borderHi}`, borderRadius: radius.md,
-                  padding: '5px 14px', cursor: 'pointer',
-                }}
+                  '--pa-btn-bg': 'transparent',
+                  '--pa-btn-fg': colors.cyan,
+                  '--pa-btn-border': colors.borderHi,
+                  '--pa-btn-bg-hover': colors.cyanSoft,
+                  '--pa-btn-fg-hover': colors.cyan,
+                  '--pa-btn-border-hover': colors.cyan,
+                  '--pa-btn-bg-active': colors.cyanGlow,
+                  '--pa-btn-pad': '5px 14px',
+                  '--pa-btn-radius': `${radius.md}px`,
+                  '--pa-btn-weight': 600,
+                  fontFamily: font.body, fontSize: 12,
+                } as CSSProperties}
               >
                 Retry
-              </button>
+              </Button>
             </div>
           ) : total === 0 && attentionGoals.length === 0 ? (
             <div style={{ padding: '48px 18px', textAlign: 'center' }}>
@@ -219,29 +249,59 @@ export function DecisionInbox({ inbox, onClose }: Props) {
               ))}
 
               {moreCount > 0 && (
-                <button
+                /* No success tick: `showAll` swallows its own failure, and the
+                   rest of the list appearing is the confirmation. */
+                <Button
+                  colors={colors}
+                  variant="bare"
+                  type="button"
+                  flashSuccess={false}
                   onClick={() => { inbox.showAll(); }}
                   style={{
-                    display: 'block', width: '100%', textAlign: 'center',
-                    padding: 10, background: 'none', border: 'none',
-                    color: colors.cyan, fontFamily: font.body, fontSize: 12,
-                    fontWeight: 500, cursor: 'pointer',
-                  }}
+                    '--pa-btn-fg': colors.cyan,
+                    '--pa-btn-fg-hover': colors.cyan,
+                    '--pa-btn-bg-hover': colors.cyanSoft,
+                    '--pa-btn-bg-active': colors.cyanSoft,
+                    '--pa-btn-pad': '10px',
+                    '--pa-btn-radius': '0',
+                    display: 'flex', width: '100%',
+                    fontFamily: font.body, fontSize: 12,
+                  } as CSSProperties}
                 >
                   +{moreCount} more decision{moreCount === 1 ? '' : 's'}
-                </button>
+                </Button>
               )}
 
               {handled > 0 && (
                 <>
+                  {/* Disclosure toggle for the routine-items group below, with
+                      its own three-part row (dot, label, chevron) laid out by
+                      the button itself. It keeps the element and takes the
+                      shared `.pa-btn` interaction rules instead of the Button
+                      primitive, whose single label span would collapse that
+                      row and whose pending/success machinery has nothing to
+                      say about opening a list. */}
                   <button
+                    type="button"
+                    className="pa-btn"
+                    aria-expanded={tier1Open}
+                    aria-controls={tier1Id}
                     onClick={toggleTier1}
                     style={{
-                      display: 'flex', alignItems: 'center', gap: 10, width: '100%',
-                      padding: '12px 18px', background: 'none', border: 'none',
+                      '--pa-btn-bg': 'transparent',
+                      '--pa-btn-fg': colors.text,
+                      '--pa-btn-border': 'transparent',
+                      '--pa-btn-bg-hover': colors.cyanSoft,
+                      '--pa-btn-fg-hover': colors.text,
+                      '--pa-btn-bg-active': colors.cyanSoft,
+                      '--pa-btn-pad': '12px 18px',
+                      '--pa-btn-radius': '0',
+                      gap: 10, width: '100%',
+                      justifyContent: 'flex-start',
                       borderTop: `1px solid ${colors.border}`,
-                      cursor: 'pointer', textAlign: 'left', fontFamily: font.body,
-                    }}
+                      textAlign: 'left', fontFamily: font.body,
+                      fontSize: 'inherit', lineHeight: 'inherit',
+                    } as CSSProperties}
                   >
                     <span style={{
                       width: 8, height: 8, borderRadius: '50%',
@@ -257,7 +317,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                     }}>▸</span>
                   </button>
                   {tier1Open && (
-                    <div>
+                    <div id={tier1Id}>
                       {history === null ? (
                         <div style={{ padding: '10px 18px 10px 36px', fontSize: 12, color: colors.textDim }}>
                           Loading…
@@ -282,16 +342,26 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                             <span style={{ fontFamily: font.mono, fontSize: 11, color: colors.textDim, flexShrink: 0 }}>
                               {formatAge(row.created_at)}
                             </span>
-                            <button
+                            <Button
+                              colors={colors}
+                              variant="bare"
+                              type="button"
+                              className="hover:underline"
                               onClick={openHistory}
                               style={{
-                                background: 'none', border: 'none', cursor: 'pointer',
-                                color: colors.cyan, fontSize: 11, fontFamily: font.body,
-                                padding: 0, flexShrink: 0,
-                              }}
+                                '--pa-btn-fg': colors.cyan,
+                                '--pa-btn-fg-hover': colors.cyan,
+                                '--pa-btn-bg-hover': 'transparent',
+                                '--pa-btn-bg-active': 'transparent',
+                                '--pa-btn-pad': '0',
+                                '--pa-btn-radius': '0',
+                                '--pa-btn-weight': 400,
+                                fontSize: 11, fontFamily: font.body,
+                                flexShrink: 0,
+                              } as CSSProperties}
                             >
                               audit →
-                            </button>
+                            </Button>
                           </div>
                         ))
                       )}
@@ -309,15 +379,25 @@ export function DecisionInbox({ inbox, onClose }: Props) {
             padding: '10px 18px', borderTop: `1px solid ${colors.border}`,
             display: 'flex', justifyContent: 'flex-end',
           }}>
-            <button
+            <Button
+              colors={colors}
+              variant="bare"
+              type="button"
+              className="hover:underline"
               onClick={openHistory}
               style={{
-                background: 'none', border: 'none', cursor: 'pointer',
-                color: colors.textDim, fontSize: 12, fontFamily: font.body, padding: 0,
-              }}
+                '--pa-btn-fg': colors.textDim,
+                '--pa-btn-fg-hover': colors.text,
+                '--pa-btn-bg-hover': 'transparent',
+                '--pa-btn-bg-active': 'transparent',
+                '--pa-btn-pad': '0',
+                '--pa-btn-radius': '0',
+                '--pa-btn-weight': 400,
+                fontSize: 12, fontFamily: font.body,
+              } as CSSProperties}
             >
               History →
-            </button>
+            </Button>
           </div>
         )}
       </div>

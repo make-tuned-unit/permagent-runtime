@@ -1,6 +1,7 @@
-import { memo, useState } from 'react';
+import { memo, useState, type CSSProperties } from 'react';
 import { radius } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
+import { Button } from '../../common/Button';
 import { SectionTitle, EmptyNote } from '../atoms';
 import { useCommandCenter } from '../../../lib/store';
 import {
@@ -58,14 +59,24 @@ export const TodosCard = memo(function TodosCard({ todos }: Props) {
             Couldn't load your to-dos
           </div>
           <div style={{ fontSize: 11, color: colors.textDim, marginBottom: 10 }}>{error}</div>
-          <button
+          <Button
+            colors={colors}
+            type="button"
             onClick={refresh}
             style={{
-              fontSize: 11, padding: '4px 10px', cursor: 'pointer',
-              borderRadius: radius.sm, border: `1px solid ${colors.border}`,
-              background: 'transparent', color: colors.textMuted,
-            }}
-          >Try again</button>
+              '--pa-btn-bg': 'transparent',
+              '--pa-btn-fg': colors.textMuted,
+              '--pa-btn-border': colors.border,
+              '--pa-btn-bg-hover': colors.surfaceHi,
+              '--pa-btn-fg-hover': colors.text,
+              '--pa-btn-border-hover': colors.borderHi,
+              '--pa-btn-bg-active': colors.surface,
+              '--pa-btn-pad': '4px 10px',
+              '--pa-btn-radius': `${radius.sm}px`,
+              '--pa-btn-weight': 400,
+              fontSize: 11,
+            } as CSSProperties}
+          >Try again</Button>
         </Centered>
       ) : loading && total === 0 ? (
         <EmptyNote>Loading…</EmptyNote>
@@ -143,7 +154,12 @@ function TodoRow({
         transition: 'background 120ms ease, opacity 120ms ease',
       }}
     >
-      {/* Title + provenance. Clicking opens the card on its own board. */}
+      {/* Title + provenance. Clicking opens the card on its own board.
+          Not on the Button primitive: this is a two-line block whose title and
+          provenance lines truncate against the width the button's own `flex: 1`
+          gives them. The primitive wraps its children in one span, which has no
+          such width to truncate against — the row would overflow instead of
+          ellipsing. Left as a raw button. */}
       <button
         onClick={open}
         title={`Open on the ${todo.projectName} board`}
@@ -182,33 +198,53 @@ function TodoRow({
           }}
         />
       ) : (
-        <button
+        <Button
+          colors={colors}
+          variant="bare"
+          type="button"
           onClick={() => setEditing(true)}
           title="Change the due date"
           style={{
-            fontSize: 10.5, whiteSpace: 'nowrap', cursor: 'pointer',
-            color: overdue ? colors.danger : colors.textMuted,
-            fontWeight: overdue ? 600 : 400,
-            background: 'transparent', border: 'none', padding: '2px 4px',
-            borderRadius: radius.sm,
+            '--pa-btn-bg': 'transparent',
+            '--pa-btn-fg': overdue ? colors.danger : colors.textMuted,
+            '--pa-btn-border': 'transparent',
+            '--pa-btn-bg-hover': colors.surfaceHi,
+            '--pa-btn-fg-hover': overdue ? colors.danger : colors.text,
+            '--pa-btn-bg-active': colors.surface,
+            '--pa-btn-pad': '2px 4px',
+            '--pa-btn-radius': `${radius.sm}px`,
+            '--pa-btn-weight': overdue ? 600 : 400,
+            fontSize: 10.5, whiteSpace: 'nowrap',
+            // Driven by the ROW's hover, not this button's — keep it inline.
             textDecoration: hovered ? 'underline' : 'none',
-          }}
-        >{relativeDueLabel(todo.dueDate, today)}</button>
+          } as CSSProperties}
+        >{relativeDueLabel(todo.dueDate, today)}</Button>
       )}
 
-      <button
-        onClick={() => void todos.dismiss(todo)}
+      <Button
+        colors={colors}
+        variant="bare"
+        type="button"
+        onClick={() => todos.dismiss(todo)}
         disabled={busy}
         aria-label={`Dismiss ${todo.title}`}
         title="Hide from this list — the card stays on its board"
         style={{
+          '--pa-btn-bg': 'transparent',
+          '--pa-btn-fg': colors.textDim,
+          '--pa-btn-border': 'transparent',
+          '--pa-btn-bg-hover': colors.surfaceHi,
+          '--pa-btn-fg-hover': colors.text,
+          '--pa-btn-bg-active': colors.surface,
+          '--pa-btn-pad': '0',
+          '--pa-btn-radius': `${radius.sm}px`,
+          '--pa-btn-weight': 400,
           width: 20, height: 20, flexShrink: 0, lineHeight: '18px',
-          fontSize: 13, cursor: 'pointer', borderRadius: radius.sm,
-          border: 'none', background: 'transparent',
-          color: colors.textDim,
+          fontSize: 13,
+          // Revealed by the ROW's hover, not this button's — keep it inline.
           visibility: hovered ? 'visible' : 'hidden',
-        }}
-      >×</button>
+        } as CSSProperties}
+      >×</Button>
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react';
 import { radius, font } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { Stat, SectionTitle, EmptyNote } from '../atoms';
@@ -6,6 +6,7 @@ import { apiFetch } from '../../../lib/api';
 import type { CardManifest } from './registry';
 import { CardIcon } from './cardIcons';
 import { AsOf } from '../../common/AsOf';
+import { Button } from '../../common/Button';
 
 /**
  * How long a fetch-once card's reading stays plain before its age becomes part
@@ -100,8 +101,11 @@ export function ManifestCard({ manifest }: Props) {
     };
   }, [fetchData, manifest.refreshSeconds]);
 
+  // Resolves `false` on failure so the Button contract never ticks on one: this
+  // handler swallows its own error (the input stays open for a retry), and a
+  // green tick over a location that was never saved would be a lie.
   const submitConfig = useCallback(async () => {
-    if (!manifest.configure || !configValue.trim()) return;
+    if (!manifest.configure || !configValue.trim()) return false;
     setConfigBusy(true);
     try {
       await apiFetch(manifest.configure.endpoint, {
@@ -113,8 +117,10 @@ export function ManifestCard({ manifest }: Props) {
       setConfigValue('');
       setPhase('loading');
       await fetchData();
+      return true;
     } catch {
       // Leave the input open so the user can retry.
+      return false;
     } finally {
       setConfigBusy(false);
     }
@@ -203,30 +209,42 @@ export function ManifestCard({ manifest }: Props) {
                   color: colors.text, fontFamily: font.body, fontSize: 12, outline: 'none',
                 }}
               />
-              <button
+              <Button
+                colors={colors}
+                variant="primary"
+                type="button"
                 onClick={submitConfig}
                 disabled={configBusy || !configValue.trim()}
                 style={{
-                  padding: '6px 12px', borderRadius: radius.sm, border: 'none',
-                  background: colors.cyan, color: colors.textOnCyan,
-                  fontFamily: font.body, fontSize: 12, fontWeight: 600,
-                  cursor: configBusy ? 'default' : 'pointer', opacity: configBusy ? 0.6 : 1,
-                }}
+                  '--pa-btn-pad': '6px 12px',
+                  '--pa-btn-radius': `${radius.sm}px`,
+                  fontFamily: font.body, fontSize: 12,
+                } as CSSProperties}
               >
                 {configBusy ? '…' : 'Set'}
-              </button>
+              </Button>
             </div>
           ) : (
-            <button
+            <Button
+              colors={colors}
+              type="button"
               onClick={() => setConfigOpen(true)}
               style={{
-                alignSelf: 'center', padding: '6px 14px', borderRadius: radius.md,
-                border: `1px solid ${colors.borderHi}`, background: colors.cyanSoft,
-                color: colors.cyan, fontFamily: font.body, fontSize: 12, fontWeight: 600, cursor: 'pointer',
-              }}
+                '--pa-btn-bg': colors.cyanSoft,
+                '--pa-btn-fg': colors.cyan,
+                '--pa-btn-border': colors.borderHi,
+                '--pa-btn-bg-hover': colors.cyanSoft,
+                '--pa-btn-fg-hover': colors.cyan,
+                '--pa-btn-border-hover': colors.cyan,
+                '--pa-btn-bg-active': colors.cyanGlow,
+                '--pa-btn-pad': '6px 14px',
+                '--pa-btn-radius': `${radius.md}px`,
+                '--pa-btn-weight': 600,
+                alignSelf: 'center', fontFamily: font.body, fontSize: 12,
+              } as CSSProperties}
             >
               {manifest.configure!.label}
-            </button>
+            </Button>
           )}
         </div>
       </>,

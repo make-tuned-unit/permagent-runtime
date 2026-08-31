@@ -18,7 +18,7 @@ import { LearnNext } from './LearnNext';
 import { ViewHeader } from '../common/ViewHeader';
 import { Button } from '../common/Button';
 import { AsOf } from '../common/AsOf';
-import { useState, useCallback, useRef, useMemo } from 'react';
+import { useState, useCallback, useRef, useMemo, type CSSProperties } from 'react';
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 
@@ -184,16 +184,26 @@ export function Dashboard() {
             <div style={{ fontSize: 11, color: colors.textDim, maxWidth: 320, lineHeight: 1.5 }}>
               The daemon didn't respond. Check that it's running, then try again.
             </div>
-            <button
+            <Button
+              colors={colors}
+              type="button"
               onClick={retry}
               style={{
-                marginTop: 6, padding: '5px 14px', borderRadius: radius.sm, cursor: 'pointer',
-                background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
-                color: colors.cyan, fontSize: 11, fontWeight: 600, fontFamily: font.body,
-              }}
+                '--pa-btn-bg': colors.cyanSoft,
+                '--pa-btn-fg': colors.cyan,
+                '--pa-btn-border': colors.borderHi,
+                '--pa-btn-bg-hover': colors.cyanSoft,
+                '--pa-btn-fg-hover': colors.cyan,
+                '--pa-btn-border-hover': colors.cyan,
+                '--pa-btn-bg-active': colors.cyanGlow,
+                '--pa-btn-pad': '5px 14px',
+                '--pa-btn-radius': `${radius.sm}px`,
+                '--pa-btn-weight': 600,
+                marginTop: 6, fontSize: 11, fontFamily: font.body,
+              } as CSSProperties}
             >
               Try again
-            </button>
+            </Button>
           </div>
         ) : (
           <Mobius size={120} state="thinking" />
@@ -460,32 +470,35 @@ export function Dashboard() {
 function RemoveButton({ disabled, onClick }: { disabled: boolean; onClick: () => void }) {
   const { colors } = useTheme();
   return (
-    <button
+    // `disabled` is deliberately NOT passed to the primitive: this control has
+    // always stayed enabled and explained itself through its title, and the
+    // guard lives in the click handler. What the pair of mouse handlers used to
+    // do by hand — redden on hover, and only when removable — is now the
+    // primitive's `--pa-btn-*-hover` pair, held at the resting values when the
+    // last card can't be removed.
+    <Button
+      colors={colors}
+      variant="bare"
+      type="button"
       onClick={e => { e.stopPropagation(); if (!disabled) onClick(); }}
       title={disabled ? 'Dashboard needs at least one card' : 'Remove this card'}
+      aria-label="Remove this card"
       style={{
+        '--pa-btn-bg': disabled ? colors.cyanSoft : colors.surface,
+        '--pa-btn-fg': disabled ? colors.textDim : colors.textMuted,
+        '--pa-btn-border': 'transparent',
+        '--pa-btn-bg-hover': disabled ? colors.cyanSoft : colors.danger + '26',
+        '--pa-btn-fg-hover': disabled ? colors.textDim : colors.danger,
+        '--pa-btn-bg-active': disabled ? colors.cyanSoft : colors.danger + '26',
+        '--pa-btn-pad': '0',
+        '--pa-btn-radius': '50%',
         position: 'absolute', top: 8, right: 8, zIndex: 5,
-        width: 24, height: 24, borderRadius: '50%',
-        border: 'none',
-        background: disabled ? colors.cyanSoft : colors.surface,
-        color: disabled ? colors.textDim : colors.textMuted,
+        width: 24, height: 24,
         cursor: disabled ? 'not-allowed' : 'pointer',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        transition: 'background 100ms ease, color 100ms ease',
-      }}
-      onMouseEnter={e => {
-        if (!disabled) {
-          e.currentTarget.style.background = colors.danger + '26';
-          e.currentTarget.style.color = colors.danger;
-        }
-      }}
-      onMouseLeave={e => {
-        e.currentTarget.style.background = disabled ? colors.cyanSoft : colors.surface;
-        e.currentTarget.style.color = disabled ? colors.textDim : colors.textMuted;
-      }}
+      } as CSSProperties}
     >
       <FiX size={14} />
-    </button>
+    </Button>
   );
 }
 

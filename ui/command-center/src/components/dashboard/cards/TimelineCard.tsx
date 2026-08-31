@@ -11,12 +11,13 @@
  * rows jump to the Memory tool, and news rows open the article.
  */
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, type CSSProperties } from 'react';
 import {
   FiFlag, FiHelpCircle, FiCheckCircle, FiBookOpen, FiBell, FiAlertTriangle, FiActivity,
 } from 'react-icons/fi';
 import { font, radius } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
+import { Button } from '../../common/Button';
 import { SectionTitle } from '../atoms';
 import { apiFetch } from '../../../lib/api';
 import { useCommandCenter, navigateToTool } from '../../../lib/store';
@@ -185,23 +186,28 @@ export function TimelineCard() {
           {KIND_CHIPS.map((chip, idx) => {
             const active = idx === chipIdx;
             return (
-              <button
+              <Button
                 key={chip.label}
+                colors={colors}
+                variant={active ? 'ghostOn' : 'ghost'}
+                type="button"
                 onClick={() => setChipIdx(idx)}
                 aria-pressed={active}
                 style={{
-                  padding: '3px 9px',
-                  borderRadius: radius.pill,
-                  border: `1px solid ${active ? colors.cyan : colors.border}`,
-                  background: active ? colors.cyanSoft : 'transparent',
-                  color: active ? colors.cyan : colors.textDim,
-                  fontFamily: font.body, fontSize: 11, fontWeight: 500,
-                  cursor: 'pointer',
-                  transition: 'color 120ms ease, border-color 120ms ease, background 120ms ease',
-                }}
+                  '--pa-btn-bg': active ? colors.cyanSoft : 'transparent',
+                  '--pa-btn-fg': active ? colors.cyan : colors.textDim,
+                  '--pa-btn-border': active ? colors.cyan : colors.border,
+                  '--pa-btn-bg-hover': active ? colors.cyanSoft : colors.surfaceHi,
+                  '--pa-btn-fg-hover': active ? colors.cyan : colors.text,
+                  '--pa-btn-border-hover': active ? colors.cyan : colors.borderHi,
+                  '--pa-btn-bg-active': active ? colors.cyanGlow : colors.surface,
+                  '--pa-btn-pad': '3px 9px',
+                  '--pa-btn-radius': `${radius.pill}px`,
+                  fontFamily: font.body, fontSize: 11,
+                } as CSSProperties}
               >
                 {chip.label}
-              </button>
+              </Button>
             );
           })}
           <div style={{ flex: 1 }} />
@@ -261,22 +267,31 @@ export function TimelineCard() {
               </div>
             ))}
             {hasMore && (
-              <button
+              // No success tick: another page of rows appearing above is the
+              // confirmation, and `loadMore` swallows its own failure — a tick
+              // would claim a page that never arrived.
+              <Button
+                colors={colors}
+                type="button"
+                flashSuccess={false}
                 onClick={loadMore}
                 disabled={loadingMore}
                 style={{
-                  width: '100%', margin: '10px 0 4px', padding: '7px 0',
-                  borderRadius: radius.md,
-                  border: `1px solid ${colors.border}`,
-                  background: colors.cyanSoft,
-                  color: colors.textMuted,
-                  fontFamily: font.body, fontSize: 12, fontWeight: 500,
-                  cursor: loadingMore ? 'default' : 'pointer',
-                  transition: 'border-color 150ms ease',
-                }}
+                  '--pa-btn-bg': colors.cyanSoft,
+                  '--pa-btn-fg': colors.textMuted,
+                  '--pa-btn-border': colors.border,
+                  '--pa-btn-bg-hover': colors.cyanSoft,
+                  '--pa-btn-fg-hover': colors.text,
+                  '--pa-btn-border-hover': colors.borderHi,
+                  '--pa-btn-bg-active': colors.cyanGlow,
+                  '--pa-btn-pad': '7px 0',
+                  '--pa-btn-radius': `${radius.md}px`,
+                  width: '100%', margin: '10px 0 4px',
+                  fontFamily: font.body, fontSize: 12,
+                } as CSSProperties}
               >
                 {loadingMore ? 'Loading…' : 'Show earlier'}
-              </button>
+              </Button>
             )}
           </div>
         )}

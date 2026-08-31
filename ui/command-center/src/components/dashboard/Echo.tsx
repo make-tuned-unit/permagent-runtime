@@ -10,11 +10,12 @@
 // in the copy. Small or all-active Brains simply never see it — no forced magic.
 // And it's *rare*: at most ~once a day, and Dismiss quiets it for three.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { apiFetch } from '../../lib/api';
 import type { BrainGraph, GraphEntity } from '../brain/useBrainData';
 import { useTheme } from '../../styles/useTheme';
 import { font, radius } from '../../styles/tokens';
+import { Button } from '../common/Button';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 
 const LS_KEY = 'permagent-echo-state';
@@ -233,20 +234,25 @@ export function Echo() {
         </div>
         <div style={{ fontFamily: font.body, fontSize: 14, color: colors.text, lineHeight: 1.4 }}>
           You wove{' '}
-          <button
+          <Button
+            colors={colors}
+            variant="bare"
+            type="button"
+            className="hover:underline"
             onClick={explore}
             style={{
-              background: 'none',
-              border: 'none',
-              padding: 0,
+              '--pa-btn-fg': colors.cyan,
+              '--pa-btn-fg-hover': colors.cyan,
+              '--pa-btn-bg-hover': 'transparent',
+              '--pa-btn-bg-active': 'transparent',
+              '--pa-btn-pad': '0',
+              '--pa-btn-radius': '0',
               font: 'inherit',
               fontWeight: 700,
-              color: colors.cyan,
-              cursor: 'pointer',
-            }}
+            } as CSSProperties}
           >
             {pick.entity.name}
-          </button>{' '}
+          </Button>{' '}
           through {pick.count} memories, then it went quiet — last touched {relTime(pick.lastMs)}.
           <span style={{ color: colors.textMuted }}> Threads like this are where the good ideas hide.</span>
         </div>
@@ -254,53 +260,79 @@ export function Echo() {
 
       {/* Actions */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-        <button onClick={ask} style={primaryBtn(colors)}>Pick it back up</button>
-        <button onClick={explore} style={ghostBtn(colors)}>Explore</button>
-        <button onClick={dismiss} aria-label="Dismiss this echo" title="Not now" style={dismissBtn(colors)}>✕</button>
+        <Button colors={colors} type="button" onClick={ask} style={primaryBtn(colors)}>
+          Pick it back up
+        </Button>
+        <Button colors={colors} type="button" onClick={explore} style={ghostBtn(colors)}>
+          Explore
+        </Button>
+        <Button
+          colors={colors}
+          variant="bare"
+          type="button"
+          onClick={dismiss}
+          aria-label="Dismiss this echo"
+          title="Not now"
+          style={dismissBtn(colors)}
+        >
+          ✕
+        </Button>
       </div>
     </div>
   );
 }
 
-function primaryBtn(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
+/* The three action buttons ride the Button primitive, so their look arrives as
+   `--pa-btn-*` custom properties rather than as inline `color`/`background`:
+   an inline declaration outranks the `:hover` rule and would silently cancel
+   the hover and press states the primitive exists to provide. Resting values
+   are unchanged. */
+function primaryBtn(colors: ReturnType<typeof useTheme>['colors']): CSSProperties {
   return {
-    padding: '7px 14px',
-    borderRadius: 9,
-    border: `1px solid ${colors.cyan}`,
-    background: colors.cyanSoft,
-    color: colors.cyan,
+    '--pa-btn-bg': colors.cyanSoft,
+    '--pa-btn-fg': colors.cyan,
+    '--pa-btn-border': colors.cyan,
+    '--pa-btn-bg-hover': colors.cyanSoft,
+    '--pa-btn-fg-hover': colors.cyan,
+    '--pa-btn-border-hover': colors.cyan,
+    '--pa-btn-bg-active': colors.cyanGlow,
+    '--pa-btn-pad': '7px 14px',
+    '--pa-btn-radius': '9px',
+    '--pa-btn-weight': 600,
     fontFamily: font.body,
     fontSize: 12,
-    fontWeight: 600,
-    cursor: 'pointer',
     whiteSpace: 'nowrap',
-  };
+  } as CSSProperties;
 }
-function ghostBtn(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
+function ghostBtn(colors: ReturnType<typeof useTheme>['colors']): CSSProperties {
   return {
-    padding: '7px 12px',
-    borderRadius: 9,
-    border: `1px solid ${colors.border}`,
-    background: 'transparent',
-    color: colors.textMuted,
+    '--pa-btn-bg': 'transparent',
+    '--pa-btn-fg': colors.textMuted,
+    '--pa-btn-border': colors.border,
+    '--pa-btn-bg-hover': colors.surfaceHi,
+    '--pa-btn-fg-hover': colors.text,
+    '--pa-btn-border-hover': colors.borderHi,
+    '--pa-btn-bg-active': colors.surface,
+    '--pa-btn-pad': '7px 12px',
+    '--pa-btn-radius': '9px',
     fontFamily: font.body,
     fontSize: 12,
-    fontWeight: 500,
-    cursor: 'pointer',
     whiteSpace: 'nowrap',
-  };
+  } as CSSProperties;
 }
-function dismissBtn(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
+function dismissBtn(colors: ReturnType<typeof useTheme>['colors']): CSSProperties {
   return {
+    '--pa-btn-bg': 'transparent',
+    '--pa-btn-fg': colors.textDim,
+    '--pa-btn-border': 'transparent',
+    '--pa-btn-bg-hover': colors.surfaceHi,
+    '--pa-btn-fg-hover': colors.text,
+    '--pa-btn-bg-active': colors.surface,
+    '--pa-btn-pad': '0',
+    '--pa-btn-radius': `${radius.md}px`,
+    '--pa-btn-weight': 400,
     width: 26,
     height: 26,
-    display: 'grid',
-    placeItems: 'center',
-    borderRadius: radius.md,
-    border: 'none',
-    background: 'transparent',
-    color: colors.textDim,
     fontSize: 12,
-    cursor: 'pointer',
-  };
+  } as CSSProperties;
 }

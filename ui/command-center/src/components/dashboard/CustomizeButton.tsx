@@ -12,9 +12,11 @@
  * finally saying what it is.
  */
 
+import { type CSSProperties } from 'react';
 import { FiCheck, FiEdit2 } from 'react-icons/fi';
 import { font, radius } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
+import { Button } from '../common/Button';
 
 export function CustomizeButton({
   editing,
@@ -26,7 +28,8 @@ export function CustomizeButton({
   colors: ThemeColors;
 }) {
   return (
-    <button
+    <Button
+      colors={colors}
       type="button"
       data-testid="dashboard-customize"
       onClick={onToggle}
@@ -34,17 +37,24 @@ export function CustomizeButton({
       // only thing that names the control.
       title={editing ? 'Finish arranging your cards' : 'Rearrange, resize, add or remove cards'}
       style={{
-        display: 'flex', alignItems: 'center', gap: 6,
-        padding: '5px 14px',
-        borderRadius: radius.md,
-        border: `1px solid ${editing ? colors.cyan : colors.border}`,
-        background: editing ? colors.cyanSoft : colors.surface,
-        color: editing ? colors.cyan : colors.textMuted,
-        fontFamily: font.body, fontSize: 12, fontWeight: 500,
-        cursor: 'pointer', transition: 'all 150ms ease',
-      }}
+        '--pa-btn-bg': editing ? colors.cyanSoft : colors.surface,
+        '--pa-btn-fg': editing ? colors.cyan : colors.textMuted,
+        '--pa-btn-border': editing ? colors.cyan : colors.border,
+        '--pa-btn-bg-hover': editing ? colors.cyanSoft : colors.surfaceHi,
+        '--pa-btn-fg-hover': editing ? colors.cyan : colors.text,
+        '--pa-btn-border-hover': editing ? colors.cyan : colors.borderHi,
+        '--pa-btn-bg-active': editing ? colors.cyanGlow : colors.surface,
+        '--pa-btn-pad': '5px 14px',
+        '--pa-btn-radius': `${radius.md}px`,
+        fontFamily: font.body,
+        fontSize: 12,
+      } as CSSProperties}
     >
-      {editing ? <><FiCheck size={14} /> Done</> : <><FiEdit2 size={14} /> Customize</>}
-    </button>
+      {/* The primitive wraps its children in one span, so the icon and the word
+          need their own row to keep the 6px they have always sat at. */}
+      <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        {editing ? <><FiCheck size={14} /> Done</> : <><FiEdit2 size={14} /> Customize</>}
+      </span>
+    </Button>
   );
 }

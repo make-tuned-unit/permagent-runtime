@@ -10,10 +10,11 @@
 // (the backend computes inventory − used), it shows real progress, and "Not now"
 // quiets it for a few days. When the user has tried everything, it disappears.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { apiFetch } from '../../lib/api';
 import { useTheme } from '../../styles/useTheme';
 import { font, radius } from '../../styles/tokens';
+import { Button } from '../common/Button';
 import { useCommandCenter } from '../../lib/store';
 import { setSpeakReplies } from '../../lib/speakReplies';
 
@@ -186,62 +187,82 @@ export function LearnNext() {
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+        {/* Every control here now rides the Button primitive. Its look arrives
+            as `--pa-btn-*` custom properties, never as an inline
+            `color`/`background`/`border`: an inline declaration outranks the
+            `:hover` rule and would cancel the very states being adopted. */}
         {items.length > 1 && (
-          <button
+          <Button
+            colors={colors}
+            type="button"
             onClick={nextTip}
             aria-label="Show a different capability"
             title="Next tip"
             style={{
-              padding: '7px 10px',
-              borderRadius: 9,
-              border: `1px solid ${colors.border}`,
-              background: 'transparent',
-              color: colors.textMuted,
+              '--pa-btn-bg': 'transparent',
+              '--pa-btn-fg': colors.textMuted,
+              '--pa-btn-border': colors.border,
+              '--pa-btn-bg-hover': colors.surfaceHi,
+              '--pa-btn-fg-hover': colors.text,
+              '--pa-btn-border-hover': colors.borderHi,
+              '--pa-btn-bg-active': colors.surface,
+              '--pa-btn-pad': '7px 10px',
+              '--pa-btn-radius': '9px',
+              '--pa-btn-weight': 400,
               fontFamily: font.body,
               fontSize: 12,
-              cursor: 'pointer',
               whiteSpace: 'nowrap',
-            }}
+            } as CSSProperties}
           >
             ›
-          </button>
+          </Button>
         )}
-        <button
+        <Button
+          colors={colors}
+          type="button"
           onClick={showMe}
           style={{
-            padding: '7px 14px',
-            borderRadius: 9,
-            border: `1px solid ${colors.cyan}`,
-            background: colors.cyanSoft,
-            color: colors.cyan,
+            '--pa-btn-bg': colors.cyanSoft,
+            '--pa-btn-fg': colors.cyan,
+            '--pa-btn-border': colors.cyan,
+            '--pa-btn-bg-hover': colors.cyanSoft,
+            '--pa-btn-fg-hover': colors.cyan,
+            '--pa-btn-border-hover': colors.cyan,
+            '--pa-btn-bg-active': colors.cyanGlow,
+            '--pa-btn-pad': '7px 14px',
+            '--pa-btn-radius': '9px',
+            '--pa-btn-weight': 600,
             fontFamily: font.body,
             fontSize: 12,
-            fontWeight: 600,
-            cursor: 'pointer',
             whiteSpace: 'nowrap',
-          }}
+          } as CSSProperties}
         >
           Show me
-        </button>
-        <button
+        </Button>
+        <Button
+          colors={colors}
+          variant="bare"
+          type="button"
           onClick={dismiss}
           aria-label="Dismiss this suggestion"
           title="Not now"
           style={{
+            '--pa-btn-bg': 'transparent',
+            '--pa-btn-fg': colors.textDim,
+            '--pa-btn-border': 'transparent',
+            '--pa-btn-bg-hover': colors.surfaceHi,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-bg-active': colors.surface,
+            '--pa-btn-pad': '0',
+            '--pa-btn-radius': `${radius.md}px`,
+            '--pa-btn-weight': 400,
             width: 26,
             height: 26,
-            display: 'grid',
-            placeItems: 'center',
-            borderRadius: radius.md,
-            border: 'none',
-            background: 'transparent',
-            color: colors.textDim,
             fontSize: 12,
-            cursor: 'pointer',
-          }}
+          } as CSSProperties}
         >
           ✕
-        </button>
+        </Button>
       </div>
     </div>
   );

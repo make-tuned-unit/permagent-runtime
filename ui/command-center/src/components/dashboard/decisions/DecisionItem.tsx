@@ -25,9 +25,10 @@
  * no auto-links, no dangerouslySetInnerHTML.
  */
 
-import { useEffect, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
-import { font, radius, ease } from '../../../styles/tokens';
+import { useEffect, useId, useRef, useState } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
+import { font, radius } from '../../../styles/tokens';
+import { Button } from '../../common/Button';
 import { useTheme } from '../../../styles/useTheme';
 import type { AnswerBody, Decision } from './types';
 import { checkApprovalOf, choiceOptions, recommendedChoiceId, draftText } from './types';
@@ -183,7 +184,7 @@ export function pushedRejectWarning(
 }
 
 export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCancelGoal }: Props) {
-  const { colors, reduceMotion } = useTheme();
+  const { colors } = useTheme();
   const { data: persona } = usePersona();
   const agentName = persona?.display_name ?? 'your agent';
   const discussDecision = useCommandCenter(s => s.discussDecision);
@@ -199,6 +200,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
   const [editText, setEditText] = useState('');
   const [evidenceOpen, setEvidenceOpen] = useState(false);
   const [argsOpen, setArgsOpen] = useState(false);
+  const argsId = useId();
   const [cancelErr, setCancelErr] = useState<string | null>(null);
   const [answerErr, setAnswerErr] = useState<string | null>(null);
   // Where the goal's work was pushed (dispatch_evidence.push_target), fetched
@@ -222,6 +224,8 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
     return () => { cancelled = true; };
   }, [isReviewWithGoal, d.project_id, d.goal_id]);
 
+  // Resolves `false` on anything that is not a clean commit — a conflict or a
+  // network failure — so the Button contract never ticks on one.
   const submit = async (p: PendingAnswer) => {
     setSubmitting(true);
     setAnswerErr(null);
@@ -232,6 +236,8 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
         setConflict(true);
         setPending(null);
         conflictTimer.current = setTimeout(onConflictSettled, 1600);
+        setSubmitting(false);
+        return false;
       } else if (result.effect_error) {
         // Partial failure: the answer committed but the gated effect didn't
         // apply. The item leaves the list on refresh, so surface via toast
@@ -244,9 +250,10 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
       // silent revert was indistinguishable from a dead button.
       setAnswerErr(e instanceof Error ? e.message : 'The answer didn\'t send — try again.');
       setSubmitting(false);
-      return;
+      return false;
     }
     setSubmitting(false);
+    return true;
   };
 
   const badge = badgeFor(d, colors);
@@ -315,17 +322,27 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
           shared goal-detail modal (#503) when the decision is goal-bound. */}
       {d.goal_title && (
         d.goal_id && d.project_id ? (
-          <button
+          <Button
+            colors={colors}
+            variant="bare"
+            type="button"
+            className="hover:underline"
             onClick={() => openGoalDetail(d.project_id!, d.goal_id!)}
             title="View goal detail"
             style={{
-              display: 'block', background: 'none', border: 'none', padding: 0,
-              marginTop: 4, textAlign: 'left', cursor: 'pointer',
-              fontSize: 11, color: colors.cyan, fontFamily: font.body,
-            }}
+              '--pa-btn-fg': colors.cyan,
+              '--pa-btn-fg-hover': colors.cyan,
+              '--pa-btn-bg-hover': 'transparent',
+              '--pa-btn-bg-active': 'transparent',
+              '--pa-btn-pad': '0',
+              '--pa-btn-radius': '0',
+              '--pa-btn-weight': 400,
+              display: 'flex', justifyContent: 'flex-start', marginTop: 4,
+              fontSize: 11, fontFamily: font.body,
+            } as CSSProperties}
           >
             Goal: {d.goal_title}
-          </button>
+          </Button>
         ) : (
           <div style={{ fontSize: 11, color: colors.textDim, marginTop: 4 }}>
             Goal: {d.goal_title}
@@ -403,19 +420,34 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
           S2: plain text in a <pre>; nothing is interpreted or linked. */}
       {toolArgs && (
         <div>
+          {/* Disclosure toggle for the <pre> right below: nothing to await, so
+              it keeps the element and takes the shared `.pa-btn` interaction
+              rules rather than the Button primitive's pending/success
+              machinery. */}
           <button
+            type="button"
+            className="pa-btn"
+            aria-expanded={argsOpen}
+            aria-controls={argsId}
             onClick={() => setArgsOpen(o => !o)}
             style={{
-              marginTop: 6, background: 'none', border: 'none', padding: 0,
-              color: argsOpen ? colors.cyan : colors.textDim,
-              fontSize: 11, fontFamily: font.body, cursor: 'pointer',
-              transition: reduceMotion ? 'none' : `color 150ms ${ease.out}`,
-            }}
+              '--pa-btn-bg': 'transparent',
+              '--pa-btn-fg': argsOpen ? colors.cyan : colors.textDim,
+              '--pa-btn-border': 'transparent',
+              '--pa-btn-bg-hover': 'transparent',
+              '--pa-btn-fg-hover': argsOpen ? colors.cyan : colors.textMuted,
+              '--pa-btn-bg-active': 'transparent',
+              '--pa-btn-pad': '0',
+              '--pa-btn-radius': '0',
+              '--pa-btn-weight': 400,
+              marginTop: 6,
+              fontSize: 11, fontFamily: font.body,
+            } as CSSProperties}
           >
             {argsOpen ? 'Hide full arguments ▾' : 'Show full arguments ▸'}
           </button>
           {argsOpen && (
-            <pre style={{
+            <pre id={argsId} style={{
               margin: '6px 0 0', borderRadius: radius.sm,
               background: colors.codeBg, padding: '10px 12px',
               fontFamily: font.mono, fontSize: 11, lineHeight: 1.6,
@@ -632,40 +664,64 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
           {/* Cancel the underlying goal (#490). User-initiated and immediate:
               kills the worker and supersedes this decision. */}
           {onCancelGoal && (
-            <button
+            <Button
+              colors={colors}
+              variant="bare"
+              type="button"
               onClick={async () => {
-                if (submitting) return;
+                if (submitting) return false;
                 setSubmitting(true);
                 setCancelErr(null);
                 try {
                   await onCancelGoal();
+                  return true;
                 } catch (e) {
+                  // Resolves `false` so a cancel that failed cannot tick; the
+                  // message below is what actually says what happened.
                   setCancelErr(e instanceof Error ? e.message : 'Cancel failed');
+                  return false;
                 } finally {
                   setSubmitting(false);
                 }
               }}
               disabled={submitting}
               style={{
-                background: 'none', border: 'none', color: colors.warning,
+                '--pa-btn-fg': colors.warning,
+                '--pa-btn-fg-hover': colors.warning,
+                '--pa-btn-bg-hover': colors.warning + '1F',
+                '--pa-btn-bg-active': colors.warning + '2E',
+                '--pa-btn-pad': '4px',
+                '--pa-btn-radius': `${radius.xs}px`,
+                '--pa-btn-weight': 400,
                 fontSize: 11, fontFamily: font.body,
-                cursor: submitting ? 'default' : 'pointer', padding: 4,
-                opacity: submitting ? 0.5 : 1,
-              }}
+              } as CSSProperties}
             >
               Cancel goal
-            </button>
+            </Button>
           )}
 
           {hasEvidence && (
+            /* Disclosure toggle for the digest below — same treatment as the
+               full-arguments toggle: the element stays, the interaction rules
+               are the shared ones. */
             <button
+              type="button"
+              className="pa-btn"
+              aria-expanded={evidenceOpen}
               onClick={() => setEvidenceOpen(o => !o)}
               style={{
-                marginLeft: 'auto', background: 'none', border: 'none',
-                color: evidenceOpen ? colors.cyan : colors.textDim,
-                fontSize: 11, fontFamily: font.body, cursor: 'pointer', padding: 4,
-                transition: reduceMotion ? 'none' : `color 150ms ${ease.out}`,
-              }}
+                '--pa-btn-bg': 'transparent',
+                '--pa-btn-fg': evidenceOpen ? colors.cyan : colors.textDim,
+                '--pa-btn-border': 'transparent',
+                '--pa-btn-bg-hover': 'transparent',
+                '--pa-btn-fg-hover': evidenceOpen ? colors.cyan : colors.textMuted,
+                '--pa-btn-bg-active': 'transparent',
+                '--pa-btn-pad': '4px',
+                '--pa-btn-radius': `${radius.xs}px`,
+                '--pa-btn-weight': 400,
+                marginLeft: 'auto',
+                fontSize: 11, fontFamily: font.body,
+              } as CSSProperties}
             >
               Evidence {evidenceOpen ? '▾' : '▸'}
             </button>
@@ -726,38 +782,56 @@ function badgeFor(d: Decision, colors: ReturnType<typeof useTheme>['colors']) {
   }
 }
 
-/** Inline-styled button per the post-#273 convention (no shared atom yet). */
+/**
+ * The decision row's button shape, now a thin adapter over the app's one Button
+ * primitive rather than a third button contract of its own.
+ *
+ * What it used to be: a local `hover` state driven by a pair of mouse handlers,
+ * which is the only way an inline `style` object can express a hover at all —
+ * and which still left pressing one indistinguishable from not pressing it.
+ * That machinery is gone. The look is unchanged, but it now arrives as
+ * `--pa-btn-*` custom properties so the shared `:hover`/`:active`/disabled
+ * rules can reach it, and an `onClick` that returns a promise gets the pending
+ * and success contract for free.
+ */
 function Btn({ variant = 'ghost', danger = false, disabled = false, onClick, children }: {
   variant?: 'primary' | 'ghost';
   danger?: boolean;
   disabled?: boolean;
-  onClick: () => void;
+  /** Returning a promise opts this button into pending + success; resolving
+   *  `false` means it failed, so a failure never ticks. */
+  onClick: () => unknown;
   children: ReactNode;
 }) {
-  const { colors, reduceMotion } = useTheme();
-  const [hover, setHover] = useState(false);
+  const { colors } = useTheme();
   const primary = variant === 'primary';
   return (
-    <button
+    <Button
+      colors={colors}
+      variant={primary ? 'primary' : 'ghost'}
+      type="button"
       onClick={onClick}
       disabled={disabled}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
       style={{
-        borderRadius: radius.md, fontFamily: font.body, fontSize: 12,
-        fontWeight: primary ? 600 : 500, padding: '5px 14px',
-        cursor: disabled ? 'default' : 'pointer',
-        opacity: disabled ? 0.6 : 1,
-        border: primary ? 'none' : `1px solid ${hover && !disabled ? colors.borderHi : colors.border}`,
-        background: primary ? colors.ribbonGradient : colors.surface,
-        color: primary
+        '--pa-btn-bg': primary ? colors.ribbonGradient : colors.surface,
+        '--pa-btn-fg': primary
           ? colors.textOnAccent
-          : danger ? colors.danger
-          : hover && !disabled ? colors.text : colors.textMuted,
-        transition: reduceMotion ? 'none' : `all 150ms ${ease.out}`,
-      }}
+          : danger ? colors.danger : colors.textMuted,
+        '--pa-btn-border': primary ? 'transparent' : colors.border,
+        '--pa-btn-bg-hover': primary ? colors.ribbonGradient : colors.surface,
+        // Danger keeps its colour through hover, exactly as it did before.
+        '--pa-btn-fg-hover': primary
+          ? colors.textOnAccent
+          : danger ? colors.danger : colors.text,
+        '--pa-btn-border-hover': primary ? 'transparent' : colors.borderHi,
+        '--pa-btn-bg-active': primary ? colors.ribbonGradient : colors.surface,
+        '--pa-btn-pad': '5px 14px',
+        '--pa-btn-radius': `${radius.md}px`,
+        '--pa-btn-weight': primary ? 600 : 500,
+        fontFamily: font.body, fontSize: 12,
+      } as CSSProperties}
     >
       {children}
-    </button>
+    </Button>
   );
 }

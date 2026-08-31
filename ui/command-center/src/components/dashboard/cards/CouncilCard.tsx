@@ -2,7 +2,7 @@
  * Home card for the latest Council of LLMs weekly report.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type CSSProperties } from 'react';
 import { font, radius } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { api, type CouncilLatest } from '../../../lib/api';
@@ -15,6 +15,7 @@ export function CouncilCard() {
   const [data, setData] = useState<CouncilLatest | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [openTakes, setOpenTakes] = useState(false);
+  const takesId = useId();
   const [inboxOpen, setInboxOpen] = useState(false);
   const inbox = useDecisions();
   const live = useRef(true);
@@ -108,27 +109,53 @@ export function CouncilCard() {
               fontSize: 11, color: colors.textDim, flexWrap: 'wrap',
             }}>
               <span>{session?.status} · {positions.length} take{positions.length === 1 ? '' : 's'}</span>
+              {/* Disclosure toggle: it opens the takes list right below and
+                  there is nothing to await, so it takes the shared `.pa-btn`
+                  interaction rules rather than the Button primitive's
+                  pending/success machinery. */}
               <button
+                type="button"
+                className="pa-btn hover:underline"
+                aria-expanded={openTakes}
+                aria-controls={takesId}
                 onClick={() => setOpenTakes(v => !v)}
                 style={{
-                  background: 'none', border: 'none', padding: 0, cursor: 'pointer',
-                  color: colors.cyan, fontFamily: font.body, fontSize: 11,
-                }}
+                  '--pa-btn-bg': 'transparent',
+                  '--pa-btn-fg': colors.cyan,
+                  '--pa-btn-border': 'transparent',
+                  '--pa-btn-bg-hover': 'transparent',
+                  '--pa-btn-fg-hover': colors.cyan,
+                  '--pa-btn-bg-active': 'transparent',
+                  '--pa-btn-pad': '0',
+                  '--pa-btn-radius': '0',
+                  '--pa-btn-weight': 400,
+                  fontFamily: font.body, fontSize: 11,
+                } as CSSProperties}
               >
                 {openTakes ? 'Hide takes' : 'Per-model takes'}
               </button>
-              <button
+              <Button
+                colors={colors}
+                variant="bare"
+                type="button"
+                className="hover:underline"
                 onClick={() => setInboxOpen(true)}
                 style={{
-                  background: 'none', border: 'none', padding: 0, cursor: 'pointer',
-                  color: colors.cyan, fontFamily: font.body, fontSize: 11,
-                }}
+                  '--pa-btn-fg': colors.cyan,
+                  '--pa-btn-fg-hover': colors.cyan,
+                  '--pa-btn-bg-hover': 'transparent',
+                  '--pa-btn-bg-active': 'transparent',
+                  '--pa-btn-pad': '0',
+                  '--pa-btn-radius': '0',
+                  '--pa-btn-weight': 400,
+                  fontFamily: font.body, fontSize: 11,
+                } as CSSProperties}
               >
                 {actions} open action{actions === 1 ? '' : 's'}
-              </button>
+              </Button>
             </div>
             {openTakes && (
-              <div style={{
+              <div id={takesId} style={{
                 marginTop: 8, overflow: 'auto', maxHeight: 180,
                 fontSize: 11, color: colors.textMuted, lineHeight: 1.45,
               }}>

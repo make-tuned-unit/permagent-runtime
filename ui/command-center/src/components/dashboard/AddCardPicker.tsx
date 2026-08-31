@@ -1,6 +1,8 @@
+import { type CSSProperties } from 'react';
 import { FiPlus, FiX } from 'react-icons/fi';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import type { CardRegistryEntry } from './cards/registry';
 
 interface Props {
@@ -46,15 +48,23 @@ export function AddCardPicker({ registry, currentCardTypes, onSelect, onClose }:
           <span style={{ fontFamily: font.display, fontSize: 14, fontWeight: 600, color: colors.text }}>
             Add card
           </span>
-          <button
+          <Button
+            colors={colors}
+            variant="bare"
+            type="button"
             onClick={onClose}
+            title="Close"
+            aria-label="Close"
             style={{
-              background: 'none', border: 'none', color: colors.textMuted,
-              cursor: 'pointer', padding: 4, display: 'flex',
-            }}
+              '--pa-btn-fg': colors.textMuted,
+              '--pa-btn-fg-hover': colors.text,
+              '--pa-btn-bg-hover': colors.border,
+              '--pa-btn-pad': '4px',
+              '--pa-btn-radius': `${radius.xs}px`,
+            } as CSSProperties}
           >
             <FiX size={16} />
-          </button>
+          </Button>
         </div>
 
         {/* List */}
@@ -68,6 +78,11 @@ export function AddCardPicker({ registry, currentCardTypes, onSelect, onClose }:
             </div>
           ) : (
             available.map(([type, entry]) => (
+              // Not on the Button primitive: this is the whole card the user
+              // clicks to add — an icon tile beside a two-line name/description
+              // block, laid out by the button itself. The primitive wraps its
+              // children in one span and centres them, which would collapse
+              // that layout. Left as a raw button on purpose.
               <button
                 key={type}
                 onClick={() => { onSelect(type); onClose(); }}
