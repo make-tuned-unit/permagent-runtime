@@ -21,7 +21,7 @@ pub async fn run_all() -> Vec<CheckResult> {
     results.push(check_ui_served().await);
     results.push(check_permagent_db());
     results.push(check_memory_db());
-    results.push(check_decision_audit_chain());
+    results.push(check_decision_audit_chain().await);
     results.push(check_ollama().await);
     results.push(check_disk());
     results.push(check_caches());
@@ -1103,11 +1103,14 @@ async fn http_get_body(url: &str, bearer: Option<&str>) -> Result<String, String
 
 // ── decision audit hash chain (Decision Inbox S3) ──
 
-/// Walk decision_audit verifying prev_hash linkage and recomputing each
-/// row_hash with the shared hash function. Reports the first break point.
-fn check_decision_audit_chain() -> CheckResult {
+/// Verify the append-only decision audit chain through the canonical walker,
+/// `permagent::decisions::verify_audit_chain`. Reports the first break point.
+async fn check_decision_audit_chain() -> CheckResult {
+    check_decision_audit_chain_at(&Paths::spectral_db()).await
+}
+
+async fn check_decision_audit_chain_at(db_path: &std::path::Path) -> CheckResult {
     let name = "decision-audit-chain";
-    let db_path = Paths::spectral_db();
 
     if !db_path.exists() {
         return CheckResult {
@@ -1118,8 +1121,21 @@ fn check_decision_audit_chain() -> CheckResult {
         };
     }
 
-    let conn = match open_readonly_sqlite(&db_path) {
-        Ok(c) => c,
+    // Read-only pool. The walk itself is `permagent::decisions::verify_audit_chain`
+    // — the same code the daemon's own tests verify the chain with. Doctor owned a
+    // second copy of the hash algorithm until 2026-08-31; that copy never selected
+    // `principal`, so it recomputed every attributed row with the 8-field hash and
+    // reported a false break at the first answered decision.
+    let opts = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(db_path)
+        .read_only(true)
+        .create_if_missing(false);
+    let pool = match sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(opts)
+        .await
+    {
+        Ok(pool) => pool,
         Err(e) => {
             return CheckResult {
                 name: name.into(),
@@ -1130,13 +1146,14 @@ fn check_decision_audit_chain() -> CheckResult {
         }
     };
 
-    let table_exists = sqlite_scalar_i32(
-        &conn,
+    let table_exists: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='decision_audit'",
     )
-    .unwrap_or(0)
-        > 0;
-    if !table_exists {
+    .fetch_one(&pool)
+    .await
+    .unwrap_or(0);
+    if table_exists == 0 {
+        pool.close().await;
         return CheckResult {
             name: name.into(),
             status: CheckStatus::Info,
@@ -1145,23 +1162,34 @@ fn check_decision_audit_chain() -> CheckResult {
         };
     }
 
-    match walk_audit_chain(&conn) {
+    let report = permagent::decisions::verify_audit_chain(&pool).await;
+    pool.close().await;
+
+    match report {
         Err(e) => CheckResult {
             name: name.into(),
             status: CheckStatus::Fail,
             detail: format!("could not read decision_audit: {e}"),
             remediation: None,
         },
-        Ok((total, None)) => CheckResult {
+        Ok(report) if report.intact => CheckResult {
             name: name.into(),
             status: CheckStatus::Pass,
-            detail: format!("{total} audit row(s), hash chain intact"),
+            detail: format!("{} audit row(s), hash chain intact", report.total_rows),
             remediation: None,
         },
-        Ok((total, Some((seq, why)))) => CheckResult {
+        Ok(report) => CheckResult {
             name: name.into(),
             status: CheckStatus::Fail,
-            detail: format!("chain BROKEN at seq {seq} of {total}: {why}"),
+            detail: format!(
+                "chain BROKEN at seq {} of {}: {}",
+                report
+                    .break_seq
+                    .map(|seq| seq.to_string())
+                    .unwrap_or_else(|| "?".into()),
+                report.total_rows,
+                report.detail
+            ),
             remediation: Some(
                 "The append-only decision audit log has been tampered with or corrupted. \
                  Inspect decision_audit around the break point and restore from backup."
@@ -1169,83 +1197,6 @@ fn check_decision_audit_chain() -> CheckResult {
             ),
         },
     }
-}
-
-/// Returns (total_rows, Some((break_seq, reason))) on a broken chain.
-#[allow(clippy::type_complexity)]
-fn walk_audit_chain(conn: &rusqlite::Connection) -> Result<(u64, Option<(i64, String)>), String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT seq, decision_id, goal_id, acted_by, tier, outcome, evidence_digest, \
-             prev_hash, row_hash, created_at FROM decision_audit ORDER BY seq ASC",
-        )
-        .map_err(|e| e.to_string())?;
-
-    let rows = stmt
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,            // seq
-                r.get::<_, String>(1)?,         // decision_id
-                r.get::<_, Option<String>>(2)?, // goal_id
-                r.get::<_, String>(3)?,         // acted_by
-                r.get::<_, i64>(4)?,            // tier
-                r.get::<_, String>(5)?,         // outcome
-                r.get::<_, Option<String>>(6)?, // evidence_digest
-                r.get::<_, Option<String>>(7)?, // prev_hash
-                r.get::<_, String>(8)?,         // row_hash
-                r.get::<_, String>(9)?,         // created_at
-            ))
-        })
-        .map_err(|e| e.to_string())?;
-
-    let mut total = 0u64;
-    let mut expected_prev = String::new();
-    for row in rows {
-        let (
-            seq,
-            decision_id,
-            goal_id,
-            acted_by,
-            tier,
-            outcome,
-            evidence,
-            prev_hash,
-            row_hash,
-            created_at,
-        ) = row.map_err(|e| e.to_string())?;
-        total += 1;
-
-        let stored_prev = prev_hash.unwrap_or_default();
-        if stored_prev != expected_prev {
-            return Ok((
-                total,
-                Some((
-                    seq,
-                    "prev_hash does not match the previous row's row_hash".into(),
-                )),
-            ));
-        }
-
-        let recomputed = permagent::decisions::compute_audit_row_hash(
-            &stored_prev,
-            &decision_id,
-            goal_id.as_deref().unwrap_or(""),
-            &acted_by,
-            tier,
-            &outcome,
-            evidence.as_deref().unwrap_or(""),
-            &created_at,
-        );
-        if recomputed != row_hash {
-            return Ok((
-                total,
-                Some((seq, "row contents do not match the stored row_hash".into())),
-            ));
-        }
-        expected_prev = row_hash;
-    }
-
-    Ok((total, None))
 }
 
 fn open_readonly_sqlite(path: &std::path::Path) -> Result<rusqlite::Connection, String> {
@@ -1472,61 +1423,149 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_walk_audit_chain_detects_break() {
-        let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("audit.db");
-        let conn = rusqlite::Connection::open(&db_path).unwrap();
+    /// Build a fixture `decision_audit` chain that mirrors the real v1 -> v2 hash
+    /// evolution: early rows carry no principal (8 hashed fields), later rows do
+    /// (9 fields, principal folded in after evidence_digest). Every hash comes
+    /// from the canonical `permagent::decisions::compute_audit_row_hash` — the
+    /// doctor check must never own a second copy of the algorithm.
+    fn write_fixture_chain(db_path: &std::path::Path) {
+        use permagent::decisions::compute_audit_row_hash;
+
+        let conn = rusqlite::Connection::open(db_path).unwrap();
         conn.execute_batch(
             "CREATE TABLE decision_audit (
                 seq INTEGER PRIMARY KEY AUTOINCREMENT,
                 decision_id TEXT NOT NULL, goal_id TEXT, acted_by TEXT NOT NULL,
                 tier INTEGER NOT NULL, outcome TEXT NOT NULL, evidence_digest TEXT,
-                prev_hash TEXT, row_hash TEXT NOT NULL, created_at TEXT NOT NULL
+                principal TEXT, prev_hash TEXT, row_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL
             );",
         )
         .unwrap();
 
-        // Empty chain verifies.
-        assert_eq!(walk_audit_chain(&conn).unwrap(), (0, None));
-
-        // Build two correctly chained rows with the shared hash function.
-        let h1 = permagent::decisions::compute_audit_row_hash(
-            "", "d1", "", "system", 1, "created", "", "t1",
-        );
+        // seq 1 — pre-attribution row: system creation, no principal.
+        let h1 = compute_audit_row_hash("", "d1", "", "system", 1, "created", "", None, "t1");
         conn.execute(
             "INSERT INTO decision_audit (decision_id, goal_id, acted_by, tier, outcome, \
-             evidence_digest, prev_hash, row_hash, created_at) \
-             VALUES ('d1', NULL, 'system', 1, 'created', NULL, NULL, ?1, 't1')",
+             evidence_digest, principal, prev_hash, row_hash, created_at) \
+             VALUES ('d1', NULL, 'system', 1, 'created', NULL, NULL, NULL, ?1, 't1')",
             [&h1],
         )
         .unwrap();
-        let h2 = permagent::decisions::compute_audit_row_hash(
-            &h1, "d1", "", "jesse", 1, "approve", "", "t2",
+
+        // seq 2 — the first principal-bearing row (an authenticated HTTP answer).
+        let h2 = compute_audit_row_hash(
+            &h1,
+            "d1",
+            "",
+            "jesse",
+            1,
+            "approve",
+            "",
+            Some("master"),
+            "t2",
         );
         conn.execute(
             "INSERT INTO decision_audit (decision_id, goal_id, acted_by, tier, outcome, \
-             evidence_digest, prev_hash, row_hash, created_at) \
-             VALUES ('d1', NULL, 'jesse', 1, 'approve', NULL, ?1, ?2, 't2')",
+             evidence_digest, principal, prev_hash, row_hash, created_at) \
+             VALUES ('d1', NULL, 'jesse', 1, 'approve', NULL, 'master', ?1, ?2, 't2')",
             rusqlite::params![&h1, &h2],
         )
         .unwrap();
 
-        let (total, broken) = walk_audit_chain(&conn).unwrap();
-        assert_eq!(total, 2);
-        assert!(broken.is_none(), "valid chain must verify: {:?}", broken);
-
-        // Forge a third row with a bogus hash → break detected at seq 3.
+        // seq 3 — a chat-relayed answer, attributed to the henry-chat principal.
+        let h3 = compute_audit_row_hash(
+            &h2,
+            "d2",
+            "g1",
+            "henry-policy",
+            1,
+            "reject",
+            "",
+            Some("henry-chat"),
+            "t3",
+        );
         conn.execute(
             "INSERT INTO decision_audit (decision_id, goal_id, acted_by, tier, outcome, \
-             evidence_digest, prev_hash, row_hash, created_at) \
-             VALUES ('d1', NULL, 'jesse', 2, 'approve', NULL, ?1, 'forged', 't3')",
-            [&h2],
+             evidence_digest, principal, prev_hash, row_hash, created_at) \
+             VALUES ('d2', 'g1', 'henry-policy', 1, 'reject', NULL, 'henry-chat', ?1, ?2, 't3')",
+            rusqlite::params![&h2, &h3],
         )
         .unwrap();
-        let (total, broken) = walk_audit_chain(&conn).unwrap();
-        assert_eq!(total, 3);
-        assert_eq!(broken.unwrap().0, 3);
+    }
+
+    #[tokio::test]
+    async fn doctor_passes_a_chain_that_carries_principals() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("audit.db");
+        write_fixture_chain(&db_path);
+
+        let result = check_decision_audit_chain_at(&db_path).await;
+        assert_eq!(
+            result.status,
+            CheckStatus::Pass,
+            "principal-bearing chain must verify: {}",
+            result.detail
+        );
+        assert!(result.detail.contains('3'), "detail: {}", result.detail);
+    }
+
+    #[tokio::test]
+    async fn doctor_reports_a_tampered_row_with_its_seq() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("audit.db");
+        write_fixture_chain(&db_path);
+
+        // Rewrite the outcome of the principal-bearing row, leaving every hash in
+        // place — the forgery an append-only log exists to catch.
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute(
+                "UPDATE decision_audit SET outcome = 'reject' WHERE seq = 2",
+                [],
+            )
+            .unwrap();
+        }
+
+        let result = check_decision_audit_chain_at(&db_path).await;
+        assert_eq!(
+            result.status,
+            CheckStatus::Fail,
+            "detail: {}",
+            result.detail
+        );
+        assert!(
+            result.detail.contains("seq 2"),
+            "break point must name the row: {}",
+            result.detail
+        );
+    }
+
+    #[tokio::test]
+    async fn doctor_passes_an_empty_chain() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("audit.db");
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE decision_audit (
+                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                    decision_id TEXT NOT NULL, goal_id TEXT, acted_by TEXT NOT NULL,
+                    tier INTEGER NOT NULL, outcome TEXT NOT NULL, evidence_digest TEXT,
+                    principal TEXT, prev_hash TEXT, row_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );",
+            )
+            .unwrap();
+        }
+
+        let result = check_decision_audit_chain_at(&db_path).await;
+        assert_eq!(
+            result.status,
+            CheckStatus::Pass,
+            "detail: {}",
+            result.detail
+        );
     }
 
     #[test]

@@ -1996,14 +1996,58 @@ async fn answer_decision_inner(
 
 // ── Audit hash chain (S3) ───────────────────────────────────────────────────
 
-/// Compute the hash of one audit row. Pure; shared with `permagent doctor`'s
-/// chain-integrity check. NULLs hash as empty strings; the genesis row's
+/// Compute the hash of one audit row. Pure, and the only public entry point to
+/// the chain hash: the writer (`append_audit_tx_with_principal`), the verifier
+/// (`verify_audit_chain`) and every fixture go through here so the algorithm
+/// cannot drift between them.
+///
+/// Two variants are live forever, because the log is append-only and rows
+/// written before principal attribution landed can never be rewritten: rows with
+/// no principal hash 8 fields, rows carrying one hash 9 (the principal folded in
+/// after `evidence_digest`). NULLs hash as empty strings; the genesis row's
 /// prev_hash is the empty string.
 ///
 /// One positional argument per hashed audit column, in chain order — a struct
 /// would obscure the field order the hash depends on.
 #[allow(clippy::too_many_arguments)]
 pub fn compute_audit_row_hash(
+    prev_hash: &str,
+    decision_id: &str,
+    goal_id: &str,
+    acted_by: &str,
+    tier: i64,
+    outcome: &str,
+    evidence_digest: &str,
+    principal: Option<&str>,
+    created_at: &str,
+) -> String {
+    match principal {
+        Some(principal) => compute_attributed_audit_row_hash(
+            prev_hash,
+            decision_id,
+            goal_id,
+            acted_by,
+            tier,
+            outcome,
+            evidence_digest,
+            principal,
+            created_at,
+        ),
+        None => compute_unattributed_audit_row_hash(
+            prev_hash,
+            decision_id,
+            goal_id,
+            acted_by,
+            tier,
+            outcome,
+            evidence_digest,
+            created_at,
+        ),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_unattributed_audit_row_hash(
     prev_hash: &str,
     decision_id: &str,
     goal_id: &str,
@@ -2115,29 +2159,17 @@ async fn append_audit_tx_with_principal(
             .map_err(|e| e.to_string())?;
 
     let created_at = now_timestamp();
-    let row_hash = match principal {
-        Some(principal) => compute_attributed_audit_row_hash(
-            prev_hash.as_deref().unwrap_or(""),
-            decision_id,
-            goal_id.unwrap_or(""),
-            acted_by,
-            tier,
-            outcome,
-            evidence_digest.unwrap_or(""),
-            principal,
-            &created_at,
-        ),
-        None => compute_audit_row_hash(
-            prev_hash.as_deref().unwrap_or(""),
-            decision_id,
-            goal_id.unwrap_or(""),
-            acted_by,
-            tier,
-            outcome,
-            evidence_digest.unwrap_or(""),
-            &created_at,
-        ),
-    };
+    let row_hash = compute_audit_row_hash(
+        prev_hash.as_deref().unwrap_or(""),
+        decision_id,
+        goal_id.unwrap_or(""),
+        acted_by,
+        tier,
+        outcome,
+        evidence_digest.unwrap_or(""),
+        principal,
+        &created_at,
+    );
 
     sqlx::query(
         "INSERT INTO decision_audit (decision_id, goal_id, acted_by, tier, outcome, \
@@ -2232,29 +2264,17 @@ pub async fn verify_audit_chain(pool: &Pool<Sqlite>) -> Result<AuditChainReport,
             });
         }
 
-        let recomputed = match principal {
-            Some(principal) => compute_attributed_audit_row_hash(
-                &stored_prev,
-                r.get::<String, _>("decision_id").as_str(),
-                goal_id.as_deref().unwrap_or(""),
-                r.get::<String, _>("acted_by").as_str(),
-                r.get::<i64, _>("tier"),
-                r.get::<String, _>("outcome").as_str(),
-                evidence.as_deref().unwrap_or(""),
-                &principal,
-                r.get::<String, _>("created_at").as_str(),
-            ),
-            None => compute_audit_row_hash(
-                &stored_prev,
-                r.get::<String, _>("decision_id").as_str(),
-                goal_id.as_deref().unwrap_or(""),
-                r.get::<String, _>("acted_by").as_str(),
-                r.get::<i64, _>("tier"),
-                r.get::<String, _>("outcome").as_str(),
-                evidence.as_deref().unwrap_or(""),
-                r.get::<String, _>("created_at").as_str(),
-            ),
-        };
+        let recomputed = compute_audit_row_hash(
+            &stored_prev,
+            r.get::<String, _>("decision_id").as_str(),
+            goal_id.as_deref().unwrap_or(""),
+            r.get::<String, _>("acted_by").as_str(),
+            r.get::<i64, _>("tier"),
+            r.get::<String, _>("outcome").as_str(),
+            evidence.as_deref().unwrap_or(""),
+            principal.as_deref(),
+            r.get::<String, _>("created_at").as_str(),
+        );
         if recomputed != row_hash {
             return Ok(AuditChainReport {
                 total_rows: rows.len() as u64,
