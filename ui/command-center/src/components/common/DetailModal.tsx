@@ -2,14 +2,17 @@
  * DetailModal — the reusable detail-view shell (#503).
  *
  * Scrim + centered panel + header (title, optional badge, close) + scrollable
- * body + optional footer. Click-scrim and Escape both close. Mirrors the
+ * body + optional footer. Click-scrim and Escape both close, focus moves into
+ * the panel on open and back to the opener on close, and Tab is contained —
+ * the keyboard floor lives HERE rather than in each consumer, so every modal
+ * built on this shell inherits it. Mirrors the
  * ResetConfirmModal / ConfigureProviderModal inline-modal convention (no shared
  * atom existed before this). Built generic on purpose: the GoalDetailModal is
  * its first consumer, and the CRM People modal (epic slice 2) reuses the same
  * shell for entity detail.
  */
 
-import { useEffect } from 'react';
+import { useEffect, useId, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { FiX } from 'react-icons/fi';
 import { font, radius } from '../../styles/tokens';
@@ -25,12 +28,51 @@ interface Props {
   children: ReactNode;
 }
 
+/** Everything inside the panel a keyboard can land on. Order is DOM order,
+ *  which is the tab order for everything this shell contains. */
+const FOCUSABLE = [
+  'a[href]', 'button:not([disabled])', 'textarea:not([disabled])',
+  'input:not([disabled])', 'select:not([disabled])', '[tabindex]:not([tabindex="-1"])',
+].join(',');
+
 export function DetailModal({ title, badge, onClose, footer, children }: Props) {
   const { colors } = useTheme();
+  const panelRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+
+  // Focus goes in on open and comes back out on close. Without the first, a
+  // keyboard user's focus is still on the page behind the scrim when the dialog
+  // appears; without the second, closing drops them at the top of the document
+  // rather than at the control they opened it from.
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    const panel = panelRef.current;
+    // A consumer that autofocuses its own field has already made the better
+    // choice — don't take it back.
+    if (panel && !panel.contains(document.activeElement)) panel.focus();
+    return () => { opener?.focus?.(); };
+  }, []);
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') { onClose(); return; }
+      if (e.key !== 'Tab') return;
+
+      // Tab containment. A modal that lets focus walk out to the page behind it
+      // is operating a screen the user cannot see.
+      const panel = panelRef.current;
+      if (!panel) return;
+      const items = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE));
+      const active = document.activeElement;
+      if (items.length === 0 || !panel.contains(active)) {
+        e.preventDefault();
+        (items[0] ?? panel).focus();
+        return;
+      }
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (e.shiftKey && active === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus(); }
     };
     document.addEventListener('keydown', handleKey);
     return () => document.removeEventListener('keydown', handleKey);
@@ -46,6 +88,11 @@ export function DetailModal({ title, badge, onClose, footer, children }: Props) 
       }}
     >
       <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
         onClick={e => e.stopPropagation()}
         style={{
           width: 'min(560px, 92vw)', maxHeight: '86vh',
@@ -63,7 +110,7 @@ export function DetailModal({ title, badge, onClose, footer, children }: Props) 
           padding: '14px 18px',
           borderBottom: `1px solid ${colors.border}`,
         }}>
-          <span style={{
+          <span id={titleId} style={{
             fontFamily: font.display, fontSize: 14, fontWeight: 600,
             color: colors.text, flex: 1, minWidth: 0,
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
