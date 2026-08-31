@@ -11,11 +11,13 @@
  */
 
 import { useEffect, useState } from 'react';
-import { font, radius } from '../../styles/tokens';
+import { font, radius, type } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useCommandCenter } from '../../lib/store';
 import { apiFetch } from '../../lib/api';
 import { ViewHeader } from '../common/ViewHeader';
+import { Button } from '../common/Button';
+import { calendarImportLine, type CalendarImportPhase } from './calendarImport';
 import { PersonDetailModal } from '../projects/PersonDetailModal';
 import type { Person } from '../projects/types';
 import { PeopleDirectory } from './PeopleDirectory';
@@ -46,16 +48,32 @@ export function PeopleView() {
   const setPendingPersonNavigation = useCommandCenter(s => s.setPendingPersonNavigation);
   const selected = personDetail && personDetail.projectId == null ? personDetail : null;
 
+  // Reading the user's calendar is not a background detail — it is personal
+  // data pulled without being asked, on every mount. It now says it happened,
+  // and a failure says so instead of being swallowed.
+  const [calendar, setCalendar] = useState<CalendarImportPhase>({ phase: 'importing' });
+  const [calendarRun, setCalendarRun] = useState(0);
+
   useEffect(() => {
     let cancelled = false;
+    setCalendar({ phase: 'importing' });
     (async () => {
       try {
         const res = await apiFetch<{ imported: number }>('/api/people/calendar/import', { method: 'POST' });
-        if (!cancelled && res.imported > 0) bumpPeople();
-      } catch { /* Calendar permission is optional */ }
+        if (cancelled) return;
+        const imported = Number(res?.imported) || 0;
+        setCalendar({ phase: 'done', imported, at: Date.now() });
+        if (imported > 0) bumpPeople();
+      } catch (e) {
+        if (cancelled) return;
+        setCalendar({
+          phase: 'failed',
+          message: e instanceof Error ? e.message : 'the daemon did not answer',
+        });
+      }
     })();
     return () => { cancelled = true; };
-  }, [bumpPeople]);
+  }, [bumpPeople, calendarRun]);
 
   useEffect(() => {
     if (!selected) return;
@@ -105,6 +123,7 @@ export function PeopleView() {
         title="People"
         subtitle="Quiet contacts fade. Follow-ups live on the person and on Home."
         afterTitle={<ModeToggle mode={mode} onChange={switchMode} />}
+        actions={<CalendarImportNote state={calendar} onRetry={() => setCalendarRun(n => n + 1)} />}
       />
       <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
         <div style={{ flex: 1, minWidth: 0, overflow: mode === 'list' ? 'auto' : 'hidden' }}>
@@ -121,6 +140,41 @@ export function PeopleView() {
           />
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * One quiet line for the import that runs behind this tab. It is a caption,
+ * not a banner: the acknowledgment belongs on screen, but it is not news.
+ */
+function CalendarImportNote({
+  state,
+  onRetry,
+}: {
+  state: CalendarImportPhase;
+  onRetry: () => void;
+}) {
+  const { colors } = useTheme();
+  const line = calendarImportLine(state);
+  return (
+    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+      <span
+        data-testid="people-calendar-note"
+        title={line.title}
+        style={{
+          ...type.micro,
+          color: line.tone === 'warning' ? colors.warning : colors.textMuted,
+          cursor: line.title ? 'help' : undefined,
+        }}
+      >
+        {line.text}
+      </span>
+      {line.retry && (
+        <Button colors={colors} type="button" flashSuccess={false} onClick={onRetry}>
+          Retry
+        </Button>
+      )}
     </div>
   );
 }
