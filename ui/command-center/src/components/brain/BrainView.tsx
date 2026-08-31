@@ -7,7 +7,7 @@ import { Mobius } from '../mobius/Mobius';
 import { BrainScene, type TypeFilters } from './BrainScene';
 import { useBrainData, type GraphMemory, type GraphEntity } from './useBrainData';
 import { BrainList } from './BrainList';
-import { resolveFocusedMemory, deriveMemoryTitle } from './brainMemoryFocus';
+import { resolveFocusedMemory, deriveMemoryTitle, formatMemoryAge } from './brainMemoryFocus';
 import {
   resolveSearchGraphNode,
   searchResultToGraphMemory,
@@ -224,9 +224,9 @@ export function BrainView() {
   const toggleFilter = (key: keyof TypeFilters) =>
     setFilters(f => ({ ...f, [key]: !f[key] }));
 
-  // Recency label
-  const recencyLabel = (age: number) =>
-    age < 0.2 ? 'this week' : age < 0.5 ? 'this month' : age < 0.8 ? '~3 months' : '~year';
+  // Recency reads from the memory's own timestamp, not from the scene's
+  // clamped 0..1 age — that scalar tops out at 90 days, so it rendered a
+  // three-year-old memory and a three-month-old one with the same four words.
 
   return (
     <div ref={wrapperRef} style={{ position: 'relative', width: '100%', height: '100%', background: gradient.workspace, overflow: 'hidden' }}>
@@ -680,7 +680,19 @@ export function BrainView() {
                       shows — the backend tracks no recall timestamp. */}
                   <div style={{ flexShrink: 0, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, borderTop: `1px solid ${colors.borderHi}`, paddingTop: 12 }}>
                     <Stat label="reinforcement" value={`${Math.round(mem.weight * 100)}%`} />
-                    <Stat label="recency" value={recencyLabel(mem.age)} />
+                    {(() => {
+                      const age = formatMemoryAge(mem.timestamp);
+                      return (
+                        <Stat
+                          label="recency"
+                          value={age.label}
+                          // Past the staleness threshold the age is the point:
+                          // it must not sit at the same quiet weight as "today".
+                          tone={age.stale ? 'stale' : undefined}
+                          title={mem.timestamp || undefined}
+                        />
+                      );
+                    })()}
                   </div>
                 </div>
               );
@@ -711,12 +723,21 @@ export function BrainView() {
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({ label, value, tone, title }: {
+  label: string; value: string;
+  /** `stale` colours the figure as a caution rather than a plain fact — for a
+   *  number whose age is the thing worth noticing. */
+  tone?: 'stale';
+  title?: string;
+}) {
   const { colors } = useTheme();
   return (
-    <div style={{ textAlign: 'center' }}>
+    <div style={{ textAlign: 'center' }} title={title}>
       <div style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, marginBottom: 2, textTransform: 'uppercase' }}>{label}</div>
-      <div style={{ fontFamily: font.body, fontSize: 13, fontWeight: 600, color: colors.text }}>{value}</div>
+      <div style={{
+        fontFamily: font.body, fontSize: 13, fontWeight: 600,
+        color: tone === 'stale' ? colors.warning : colors.text,
+      }}>{value}</div>
     </div>
   );
 }

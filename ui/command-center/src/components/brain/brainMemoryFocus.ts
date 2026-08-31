@@ -68,8 +68,13 @@ export function parseBrainTimestamp(ts: string): number | null {
 
 /**
  * Normalized 0..1 age over a 90-day window (mirrors the brain_graph handler) so
- * a synthesized memory buckets into the same recency labels as graph ones.
+ * a synthesized memory sits in the scene where a graph one would.
  * Missing/unparseable timestamps fall back to 0.5, matching the backend.
+ *
+ * This is a SCENE COORDINATE, not a date: it drives the fresh→stale colour lerp
+ * and the time-range slider, both of which need a bounded number. It is clamped,
+ * so every memory older than 90 days shares the value 1 — never render a label
+ * from it. `formatMemoryAge` below is what a human reads.
  */
 export function ageFromTimestamp(ts: string | null | undefined, now = Date.now()): number {
   if (!ts) return 0.5;
@@ -77,6 +82,53 @@ export function ageFromTimestamp(ts: string | null | undefined, now = Date.now()
   if (then == null) return 0.5;
   const secs = Math.max(0, (now - then) / 1000);
   return clamp01(secs / NINETY_DAYS_SECS);
+}
+
+/** Past this, a memory is old enough that its age has to be visible rather than
+ *  merely present — the same threshold the scene's colour ramp tops out at. */
+export const MEMORY_STALE_AFTER_DAYS = 90;
+
+/** How a memory's age reads to a person, plus whether it is old enough that the
+ *  reading itself must carry weight. */
+export interface MemoryAge { label: string; stale: boolean }
+
+/**
+ * A memory's real age, at whatever magnitude it happens to be.
+ *
+ * Recency used to be rendered from `ageFromTimestamp`'s clamped scalar, which
+ * meant 91 days and 3 years were the same number and therefore the same words
+ * ("~year"). Anything past the window looked equally recent — the exact class of
+ * claim the liveness rule exists to forbid, on the surface whose whole subject
+ * is when something was learned. Buckets stay coarse where coarse is honest
+ * (nobody needs "17 days ago"), but they never stop counting.
+ */
+export function formatMemoryAge(ts: string | null | undefined, now = Date.now()): MemoryAge {
+  const then = ts ? parseBrainTimestamp(ts) : null;
+  // No date is not "old" and is certainly not "today" — say which it is.
+  if (then == null) return { label: 'date unknown', stale: true };
+
+  // A future timestamp is a clock skew or an import dated forward; read it as
+  // now rather than inventing a countdown.
+  const days = Math.max(0, Math.floor((now - then) / 86_400_000));
+  const stale = days > MEMORY_STALE_AFTER_DAYS;
+
+  return { label: ageLabel(days), stale };
+}
+
+function ageLabel(days: number): string {
+  if (days === 0) return 'today';
+  if (days === 1) return 'yesterday';
+  if (days < 7) return `${days} days ago`;
+  if (days < 30) {
+    const weeks = Math.round(days / 7);
+    return weeks <= 1 ? 'last week' : `${weeks} weeks ago`;
+  }
+  if (days < 365) {
+    const months = Math.round(days / 30.44);
+    if (months < 12) return months <= 1 ? 'last month' : `${months} months ago`;
+  }
+  const years = Math.max(1, Math.round(days / 365.25));
+  return years === 1 ? 'last year' : `${years} years ago`;
 }
 
 /** ProjectMemory (the `/api/projects/:id/memories` wire shape) → focus preview. */
