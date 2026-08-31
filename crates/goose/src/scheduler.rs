@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use chrono::{DateTime, FixedOffset, Local, Utc};
+use chrono::{DateTime, Duration, FixedOffset, Local, Utc};
 use futures::future::FutureExt as _;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
@@ -248,6 +248,11 @@ pub struct ScheduledJob {
     /// unpause them — only the user's unpause (Automate UI) clears the flag.
     #[serde(default)]
     pub requires_approval: bool,
+    /// True when the most recent run was a startup catch-up for a window the
+    /// daemon slept through, rather than a fire at the job's own scheduled
+    /// instant. Recorded so a catch-up is never passed off as an on-time run.
+    #[serde(default)]
+    pub last_run_was_catch_up: bool,
 }
 
 /// Reliability + kind constants. Retry backoff is exponential and capped so a
@@ -440,6 +445,73 @@ fn schedule_floor_violation(job: &ScheduledJob) -> Option<String> {
         }
     }
     None
+}
+
+/// A cron job is only caught up when its period is LONGER than a day. This
+/// preserves the original no-catch-up ruling exactly where that ruling was
+/// right: a sub-daily cron gets many chances per day, so a missed tick is a
+/// blip and firing every missed job at boot is a wake-storm. It is wrong only
+/// at long periods — a weekly job needs the daemon alive at one specific
+/// 60-second instant per week, and on a dev machine that restarts several
+/// times a day the odds of hitting it are poor. `storage-insights` (Sunday
+/// 19:00) went five days stale that way and would have stayed stale until the
+/// next Sunday.
+const CATCH_UP_MIN_PERIOD: Duration = Duration::hours(24);
+/// How late a missed fire may be and still be worth running. Past this the run
+/// is stale noise rather than a recovery, and the job's own next natural tick
+/// is close enough.
+const CATCH_UP_MAX_LATENESS: Duration = Duration::days(3);
+/// Space catch-up runs so a boot with several of them due does not start them
+/// all at once — the wake-storm the original ruling was written to avoid.
+const CATCH_UP_STAGGER_SECS: u64 = 30;
+
+/// Should this missed job be run once, late, at startup?
+///
+/// Pure so the bound is testable without a scheduler: `period` is the job's
+/// natural cron interval and `lateness` is how long ago the fire it missed was
+/// due. One-shot (`at`) and interval jobs are excluded by the caller — `at`
+/// jobs already self-catch-up, and an interval job re-fires on its own within
+/// one interval.
+fn should_catch_up(period: Duration, lateness: Duration) -> bool {
+    period > CATCH_UP_MIN_PERIOD
+        && lateness >= Duration::zero()
+        && lateness <= CATCH_UP_MAX_LATENESS
+}
+
+/// The cron's natural period, measured empirically as the SMALLEST gap over
+/// the next several occurrences — the same way `schedule_floor_violation`
+/// measures cadence.
+///
+/// Smallest, not the next gap, because a cron's spacing is not uniform: a
+/// weekday job (`* * 1-5`) has a three-day gap across every weekend, and
+/// reading that one gap would make a job with a chance to run every weekday
+/// look like a job that only runs twice a week. The question this answers is
+/// "how often does this job get an opportunity, at its most frequent" — and if
+/// that is daily or better, a missed window is a blip, not a lost week.
+fn cron_period(cron: &str, from: DateTime<Utc>) -> Option<Duration> {
+    let schedule = parse_cron_schedule(cron)?;
+    let mut cursor = from;
+    let mut prev: Option<DateTime<Utc>> = None;
+    let mut min_gap: Option<Duration> = None;
+    for _ in 0..8 {
+        let next = schedule.find_next_occurrence(&cursor, false).ok()?;
+        if let Some(p) = prev {
+            let gap = next - p;
+            min_gap = Some(min_gap.map_or(gap, |m: Duration| m.min(gap)));
+        }
+        prev = Some(next);
+        cursor = next;
+    }
+    min_gap
+}
+
+/// The fire this job missed: the first scheduled occurrence strictly after
+/// `last_run`. `None` when the job has never run or the cron will not parse.
+fn missed_fire_at(job: &ScheduledJob) -> Option<DateTime<Utc>> {
+    let last_run = job.last_run?;
+    parse_cron_schedule(&job.cron)?
+        .find_next_occurrence(&last_run, false)
+        .ok()
 }
 
 /// Pure missed-run predicate: was a scheduled fire due in the window since
@@ -646,6 +718,10 @@ impl Scheduler {
                         Some((_, job)) if !job.currently_running => {
                             let prior = job.last_status;
                             job.last_run = Some(current_time);
+                            // A fire at the job's own scheduled instant clears
+                            // the catch-up mark: the record must never keep
+                            // calling an on-time run a recovery.
+                            job.last_run_was_catch_up = false;
                             job.currently_running = true;
                             job.process_start_time = Some(current_time);
                             Some(prior)
@@ -1086,6 +1162,9 @@ impl Scheduler {
         let mut crons_normalized = false;
         // Also persist once if we reconcile any stale run-flags below.
         let mut reconciled = false;
+        // Long-cadence jobs whose window was slept through, to be run once
+        // after the job map is populated (see `should_catch_up`).
+        let mut catch_up_ids: Vec<String> = Vec::new();
 
         for mut job_to_load in list {
             // Interval floor applies to persisted jobs too: add-time validation
@@ -1165,17 +1244,44 @@ impl Scheduler {
 
             // Missed-run detection (feature B): if a scheduled fire was due while
             // the daemon was down, flag it so the Automate tab shows `Missed`
-            // (amber). Detection only — we deliberately do NOT auto-execute a
-            // catch-up for cron/interval jobs here (that would risk a wake-storm
-            // and runs before brain/persona are wired); the job runs at its next
-            // natural tick. One-shot jobs self-catch-up: they re-arm below with a
-            // zero delay and fire once immediately, then delete themselves.
-            if is_run_missed(&job_to_load, Utc::now()) {
-                tracing::warn!(
-                    target: "durability",
-                    "Job '{}' missed a scheduled run during downtime; marking Missed",
-                    job_to_load.id
-                );
+            // (amber). Detection stays the default for cron/interval jobs — a
+            // catch-up for every missed sub-daily tick is a wake-storm, and it
+            // would run before brain/persona are wired. One-shot jobs
+            // self-catch-up: they re-arm below with a zero delay and fire once
+            // immediately, then delete themselves.
+            //
+            // The one exception (D20) is a cron whose period is longer than a
+            // day. Detection alone is the wrong tool there: applying a
+            // "late for 2× its period" rule to a weekly job means a 14-day
+            // time-to-notice, which is absurd, and marking it amber does not
+            // make the run happen. A weekly job's window is a single 60-second
+            // instant per week; if the daemon was not up for it, running the
+            // job late is still worth exactly as much as running it on time.
+            // Collapse the problem instead of monitoring it — bounded by
+            // `should_catch_up`, once, and marked as a catch-up in the record.
+            let now = Utc::now();
+            if is_run_missed(&job_to_load, now) {
+                let catch_up = job_to_load.at.is_none()
+                    && job_to_load.every_seconds.is_none()
+                    && missed_fire_at(&job_to_load)
+                        .zip(cron_period(&job_to_load.cron, now))
+                        .is_some_and(|(due, period)| should_catch_up(period, now - due));
+                if catch_up {
+                    tracing::warn!(
+                        target: "durability",
+                        "Job '{}' missed its window during downtime; running it once as a \
+                         catch-up (its cadence is longer than a day, so the next natural \
+                         tick is too far away to wait for)",
+                        job_to_load.id
+                    );
+                    catch_up_ids.push(job_to_load.id.clone());
+                } else {
+                    tracing::warn!(
+                        target: "durability",
+                        "Job '{}' missed a scheduled run during downtime; marking Missed",
+                        job_to_load.id
+                    );
+                }
                 job_to_load.last_status = Some(ScheduleRunStatus::Missed);
                 reconciled = true;
             }
@@ -1215,6 +1321,47 @@ impl Scheduler {
                 tracing::warn!("Failed to persist scheduler reconciliation: {}", e);
             }
         }
+
+        if !catch_up_ids.is_empty() {
+            self.clone().spawn_catch_up_runs(catch_up_ids);
+        }
+    }
+
+    /// Run each slept-through long-cadence job exactly once, staggered, off the
+    /// load path. Deliberately after the job map is populated and persisted:
+    /// `run_now` looks the job up there, and a catch-up must not race the load
+    /// it belongs to.
+    fn spawn_catch_up_runs(self: Arc<Self>, ids: Vec<String>) {
+        tokio::spawn(async move {
+            for id in ids {
+                tokio::time::sleep(std::time::Duration::from_secs(CATCH_UP_STAGGER_SECS)).await;
+                {
+                    let mut jobs = self.jobs.lock().await;
+                    match jobs.get_mut(&id) {
+                        // Re-check under the lock: the job may have been paused,
+                        // removed, or already fired naturally in the interim.
+                        Some((_, job)) if !job.paused && !job.currently_running => {
+                            job.last_run_was_catch_up = true;
+                        }
+                        _ => continue,
+                    }
+                }
+                match self.run_now(&id).await {
+                    Ok(session) => tracing::info!(
+                        target: "durability",
+                        "Catch-up run started for '{}' (session {})",
+                        id,
+                        session
+                    ),
+                    Err(e) => tracing::warn!(
+                        target: "durability",
+                        "Catch-up run for '{}' did not start: {}",
+                        id,
+                        e
+                    ),
+                }
+            }
+        });
     }
 
     async fn sync_from_storage(&self) {
@@ -3076,6 +3223,80 @@ prompt: 'collect {{ hours }}h from {{ log_dir }} with {{ recipe_dir }}/collector
             ..Default::default()
         };
         assert!(!is_run_missed(&paused, ts("2026-01-01T05:00:00Z")));
+    }
+
+    /// D20: a weekly starter that sleeps through its one instant per week must
+    /// run once, late — but the no-catch-up ruling for sub-daily crons stands.
+    #[test]
+    fn only_long_cadence_jobs_catch_up_and_only_while_the_run_is_still_worth_it() {
+        let weekly = chrono::Duration::days(7);
+        let daily = chrono::Duration::hours(24);
+        let hourly = chrono::Duration::hours(1);
+
+        // storage-insights: Sunday 19:00, one day late. Run it.
+        assert!(should_catch_up(weekly, chrono::Duration::days(1)));
+        assert!(should_catch_up(weekly, chrono::Duration::days(3)));
+
+        // Too stale to be a recovery — the next natural tick is nearer.
+        assert!(!should_catch_up(weekly, chrono::Duration::days(4)));
+
+        // The original ruling, preserved: a sub-daily cron gets many chances a
+        // day, and firing every missed one at boot is the wake-storm.
+        assert!(!should_catch_up(hourly, chrono::Duration::hours(2)));
+        assert!(
+            !should_catch_up(daily, chrono::Duration::hours(2)),
+            "a daily job lands in some live window on its own; catch-up is for longer cadences"
+        );
+
+        // Not yet due is never a catch-up.
+        assert!(!should_catch_up(weekly, chrono::Duration::hours(-1)));
+    }
+
+    #[test]
+    fn cron_period_and_missed_fire_read_the_real_schedule() {
+        // The live storage-insights schedule: Sunday 19:00 UTC.
+        let anchor = ts("2026-08-26T14:38:30Z");
+        assert_eq!(
+            cron_period("0 0 19 * * 0", anchor),
+            Some(chrono::Duration::days(7)),
+            "a Sunday cron's period is a week"
+        );
+        assert_eq!(
+            cron_period("0 0 8 * * 1-5", anchor),
+            Some(chrono::Duration::days(1)),
+            "a weekday-daily cron's period is a day, so it must not catch up"
+        );
+        // The reason the measurement is the SMALLEST gap: read from a Thursday,
+        // the very next gap for a weekday job is the three-day weekend, and
+        // that reading would wrongly make it look weekly enough to catch up.
+        assert_eq!(
+            cron_period("0 0 8 * * 1-5", ts("2026-09-03T09:00:00Z")),
+            Some(chrono::Duration::days(1)),
+            "the weekend gap must not be mistaken for the job's cadence"
+        );
+        // Twice a week (Mon + Thu): its smallest gap is three days, so a missed
+        // window IS worth catching up.
+        assert_eq!(
+            cron_period("0 0 10 * * 1,4", anchor),
+            Some(chrono::Duration::days(3))
+        );
+
+        let job = ScheduledJob {
+            cron: "0 0 19 * * 0".to_string(),
+            last_run: Some(anchor),
+            ..Default::default()
+        };
+        assert_eq!(
+            missed_fire_at(&job),
+            Some(ts("2026-08-30T19:00:00Z")),
+            "the missed fire is the first occurrence after the last run"
+        );
+
+        let never_run = ScheduledJob {
+            cron: "0 0 19 * * 0".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(missed_fire_at(&never_run), None);
     }
 
     /// Escalation gate: only when retries were configured AND this is the first
