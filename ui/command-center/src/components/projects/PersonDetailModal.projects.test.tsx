@@ -96,6 +96,44 @@ async function openDeleteConfirm() {
   await act(async () => { button('Delete').dispatchEvent(new MouseEvent('click', { bubbles: true })); });
 }
 
+describe('PersonDetailModal projects row', () => {
+  it('renders the projects the person is on', async () => {
+    mockApi({ projectsFail: false });
+    await render();
+    const chip = container.querySelector('[data-testid="person-project-p1"]');
+    expect(chip).not.toBeNull();
+    expect(chip!.textContent).toContain('Acme Deal');
+  });
+
+  it('navigates to the project and gets out of the way', async () => {
+    mockApi({ projectsFail: false });
+    const onClose = vi.fn();
+    await act(async () => root.render(
+      <PersonDetailModal projectId={null} person={person} onClose={onClose} />,
+    ));
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="person-project-p1"]')!;
+    await act(async () => { chip.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    expect(useCommandCenter.getState().pendingProjectNavigation).toBe('p1');
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('is a destination, not a toggle', async () => {
+    mockApi({ projectsFail: false });
+    await render();
+    const chip = container.querySelector('[data-testid="person-project-p1"]')!;
+    // A chip that goes somewhere has no on/off state to report.
+    expect(chip.getAttribute('aria-pressed')).toBeNull();
+  });
+
+  it('says a failed load failed instead of "no projects"', async () => {
+    mockApi({ projectsFail: true });
+    await render();
+    const section = container.querySelector('[data-testid="person-projects"]')!;
+    expect(section.textContent).toContain("Couldn't load");
+    expect(section.textContent).not.toContain('Not on any project');
+  });
+});
+
 describe('PersonDetailModal project loading', () => {
   it('counts the real project links when the list loaded', async () => {
     mockApi({ projectsFail: false });

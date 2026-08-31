@@ -13,7 +13,7 @@
  * animate, a state chip does carry one, and the two never render the same.
  */
 
-import { beforeEach, afterEach, describe, expect, it } from 'vitest';
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
 
@@ -85,7 +85,19 @@ describe('Chip — the liveness distinction', () => {
   });
 });
 
-describe('Chip — the other two kinds', () => {
+describe('Chip — the other kinds', () => {
+  it('makes a link a destination, never a toggle', () => {
+    const onClick = vi.fn();
+    const el = render(<Chip kind="link" onClick={onClick}>Acme Deal</Chip>);
+    expect(el.tagName).toBe('BUTTON');
+    // A chip that navigates has no on/off state, and claiming one is the same
+    // class of lie as a fixed label that pulses.
+    expect(el.getAttribute('aria-pressed')).toBeNull();
+    expect(dot(el)).toBeNull();
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(onClick).toHaveBeenCalledOnce();
+  });
+
   it('makes a filter a real toggle', () => {
     const el = render(<Chip kind="filter" pressed onClick={() => {}}>people</Chip>);
     expect(el.tagName).toBe('BUTTON');

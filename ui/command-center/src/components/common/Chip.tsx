@@ -18,6 +18,9 @@
  *            and not as a signal.
  *   filter — a toggle. Renders as a button and reports `aria-pressed`.
  *   count  — a figure. Tabular, so it doesn't reflow as it changes.
+ *   link   — goes somewhere. A button, but never `aria-pressed`: a chip that
+ *            navigates has no on/off state to report, and saying it does is
+ *            the same class of lie as a static label that pulses.
  *
  * The props are a discriminated union, so `pulse` on a static chip is a type
  * error rather than a code review note: the lie is unwriteable, not merely
@@ -32,7 +35,7 @@ import { font, radius, tabularNums } from '../../styles/tokens';
 import { useTheme, type ThemeColors } from '../../styles/useTheme';
 import { useFreshness } from '../../hooks/useFreshness';
 
-export type ChipKind = 'state' | 'static' | 'filter' | 'count';
+export type ChipKind = 'state' | 'static' | 'filter' | 'count' | 'link';
 export type ChipTone = 'neutral' | 'accent' | 'success' | 'warning' | 'danger' | 'stale';
 
 interface ChipBase {
@@ -65,6 +68,7 @@ export type ChipProps = ChipBase & (
   | { kind: 'static'; asOf?: never; pulse?: never; pressed?: never; onClick?: never }
   | { kind: 'filter'; pressed: boolean; onClick: () => void; asOf?: never; pulse?: never }
   | { kind: 'count'; asOf?: never; pulse?: never; pressed?: never; onClick?: never }
+  | { kind: 'link'; onClick: () => void; asOf?: never; pulse?: never; pressed?: never }
 );
 
 function toneColor(tone: ChipTone, colors: ThemeColors): string {
@@ -105,7 +109,7 @@ export function Chip(props: ChipProps) {
   const live = kind === 'state';
   const pulsing = live && props.pulse === true && !reduceMotion;
 
-  const hover = kind === 'filter' ? { cursor: 'pointer' } : null;
+  const hover = kind === 'filter' || kind === 'link' ? { cursor: 'pointer' } : null;
   const shell: CSSProperties = {
     ...SHELL,
     color: accent,
@@ -140,11 +144,13 @@ export function Chip(props: ChipProps) {
     </>
   );
 
-  if (kind === 'filter') {
+  if (kind === 'filter' || kind === 'link') {
     return (
       <button
         type="button"
-        aria-pressed={props.pressed}
+        // Only a filter has an on/off state to report. A link has a
+        // destination, which `aria-pressed` would misdescribe.
+        aria-pressed={props.kind === 'filter' ? props.pressed : undefined}
         onClick={props.onClick}
         title={explain}
         data-testid={props['data-testid']}

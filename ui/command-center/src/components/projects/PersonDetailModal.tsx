@@ -37,10 +37,11 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { FiBookOpen, FiCalendar, FiCheck, FiCheckSquare, FiExternalLink, FiFileText, FiPlus, FiTrash2, FiX } from 'react-icons/fi';
 import { apiFetch } from '../../lib/api';
 import { hapticSuccess } from '../../lib/haptic';
-import { useCommandCenter } from '../../lib/store';
+import { navigateToTool, useCommandCenter } from '../../lib/store';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
 import { ease, font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Chip } from '../common/Chip';
 import type { DeleteReport, MergeReport, Person, PersonActivity, PersonAssociation, PersonMeeting, PersonProject, PersonRelationship, UndoReport } from './types';
 import { PersonFace } from '../people/PersonFace';
 import { MergePersonPanel } from '../people/MergePersonPanel';
@@ -184,6 +185,7 @@ export function PersonDetailModal({
   const patchPersonDetail = useCommandCenter(s => s.patchPersonDetail);
   const sendMessage = useCommandCenter(s => s.sendMessage);
   const openChatDock = useCommandCenter(s => s.openChatDock);
+  const setPendingProjectNavigation = useCommandCenter(s => s.setPendingProjectNavigation);
   const [confirming, setConfirming] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -314,6 +316,19 @@ export function PersonDetailModal({
   }, [view.entity_uuid]);
 
   useEffect(() => { loadRelationships(); loadActivity(); loadMeetings(); loadProjects(); }, [loadRelationships, loadActivity, loadMeetings, loadProjects]);
+
+  /**
+   * Hop to a project from the person. Reuses `pendingProjectNavigation`, the
+   * seam ProjectsView already self-heals when the target is missing from its
+   * snapshot — the same path the agent's own deep-links take. The modal closes
+   * first, because leaving it open over the destination would be a drawer
+   * covering the thing it just navigated to.
+   */
+  const openProject = useCallback((id: string) => {
+    setPendingProjectNavigation(id);
+    navigateToTool('projects');
+    onClose();
+  }, [setPendingProjectNavigation, onClose]);
 
   const addRelationship = async () => {
     if (!targetId || !predicate.trim()) return;
@@ -649,6 +664,13 @@ export function PersonDetailModal({
                 {association.project_role ? `${association.project_role} · ` : ''}Associated {fmtTime(association.associated_at)}
               </div>
             )}
+            <PersonProjects
+              colors={colors}
+              rows={personProjects}
+              status={projectsStatus}
+              onRetry={loadProjects}
+              onOpen={openProject}
+            />
             <RelatedPeople colors={colors} rows={relationships} people={allPeople} status={relatedStatus}
               adding={addingRelationship} targetId={targetId} predicate={predicate}
               onStart={() => setAddingRelationship(true)} onCancel={() => setAddingRelationship(false)}
@@ -818,6 +840,62 @@ function DeletedCard({ colors, report, onClose }: {
         <button onClick={onClose} style={primaryBtn(colors)}>Close</button>
       </div>
     </div>
+  );
+}
+
+/**
+ * The projects this person is on, as somewhere to go.
+ *
+ * The list was already fetched and already on screen — as `<option>` values
+ * inside the "log a meeting" form, and nowhere else. So the People graph's own
+ * central premise, that people cluster by the projects they share, had no
+ * expression at the one surface where you act on a person: you could see that
+ * Jane exists, and not that she is on the deal you are looking at.
+ *
+ * Chips, because that is what a set of short labels is, and `kind="link"`
+ * because each one goes somewhere. An error says so and offers the way back
+ * rather than rendering as "no projects" — the same rule as the count in the
+ * delete confirmation, for the same list.
+ */
+function PersonProjects({ colors, rows, status, onRetry, onOpen }: {
+  colors: ReturnType<typeof useTheme>['colors'];
+  rows: PersonProject[];
+  status: 'loading' | 'ready' | 'error';
+  onRetry: () => void;
+  onOpen: (projectId: string) => void;
+}) {
+  return (
+    <section data-testid="person-projects">
+      <div style={{ display: 'flex', alignItems: 'center', marginBottom: 7 }}>
+        <SectionLabel colors={colors}>Projects</SectionLabel>
+      </div>
+      {status === 'loading' && rows.length === 0 && <Small colors={colors}>Loading projects…</Small>}
+      {status === 'error' && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Small colors={colors}>Couldn't load this person's projects.</Small>
+          <button onClick={onRetry} style={miniBtn(colors)}>Try again</button>
+        </div>
+      )}
+      {status === 'ready' && rows.length === 0 && (
+        <Small colors={colors}>Not on any project yet — add them from a project's People panel.</Small>
+      )}
+      {rows.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {rows.map(row => (
+            <Chip
+              key={row.project_id}
+              kind="link"
+              tone="accent"
+              data-testid={`person-project-${row.project_id}`}
+              title={`Open ${row.project_name}${row.role ? ` — ${row.role}` : ''}`}
+              onClick={() => onOpen(row.project_id)}
+            >
+              {row.project_name}
+            </Chip>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
