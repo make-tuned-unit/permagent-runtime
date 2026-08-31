@@ -145,7 +145,7 @@ export function DecisionInbox({ inbox, onClose }: Props) {
                 onClick={() => inbox.refresh()}
                 style={{
                   fontFamily: font.body, fontSize: 12, fontWeight: 600, color: colors.cyan,
-                  background: 'none', border: `1px solid ${colors.borderHi}`, borderRadius: 8,
+                  background: 'none', border: `1px solid ${colors.borderHi}`, borderRadius: radius.md,
                   padding: '5px 14px', cursor: 'pointer',
                 }}
               >
@@ -358,7 +358,7 @@ function HistoryList({ items }: { items: HistoryItem[] | null }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{
               fontFamily: font.mono, fontSize: 10, letterSpacing: '0.06em',
-              textTransform: 'uppercase', borderRadius: 4, padding: '2px 6px',
+              textTransform: 'uppercase', borderRadius: radius.xs, padding: '2px 6px',
               flexShrink: 0,
               color: item.tier === 1 ? colors.success : colors.cyan,
               background: item.tier === 1 ? colors.success + '26' : colors.cyanSoft,

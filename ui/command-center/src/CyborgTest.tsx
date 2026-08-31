@@ -4,6 +4,7 @@ import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { CyborgCharacterModel } from './components/world/agents/CyborgCharacter';
 import { AGENT_TRIM } from './components/world/shared/palette';
+import { radius } from './styles/tokens';
 
 // Trim colors come from the world palette SOT (Henry's old neon-cyan preset
 // was stale — his trim is warm white-gold since issue #87 resolved).
@@ -83,7 +84,7 @@ export default function CyborgTest() {
             onClick={() => setPreset(i)}
             style={{
               padding: '6px 14px',
-              borderRadius: 6,
+              borderRadius: radius.sm,
               border: `1px solid ${i === preset ? p.trimColor : '#444'}`,
               background: i === preset ? `${p.trimColor}22` : '#222',
               color: i === preset ? p.trimColor : '#888',

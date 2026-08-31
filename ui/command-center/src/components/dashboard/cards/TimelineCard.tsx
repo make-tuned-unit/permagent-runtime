@@ -191,7 +191,7 @@ export function TimelineCard() {
                 aria-pressed={active}
                 style={{
                   padding: '3px 9px',
-                  borderRadius: 999,
+                  borderRadius: radius.pill,
                   border: `1px solid ${active ? colors.cyan : colors.border}`,
                   background: active ? colors.cyanSoft : 'transparent',
                   color: active ? colors.cyan : colors.textDim,

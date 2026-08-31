@@ -4,6 +4,7 @@ import { Section, StatRow } from './HudShell';
 import { useIdentityStore } from '../../stores/identityStore';
 import { computePortalEligibility } from '../../utils/portalEligibility';
 import { SBT_CONTRACT } from '../../config/chain';
+import { radius } from '../../styles/tokens';
 
 // ── External link helper ─────────────────────────────────────────
 
@@ -98,7 +99,7 @@ export function HenryIdentityTab() {
         <img
           src={id.avatarUrl}
           alt={id.name}
-          style={{ width: 36, height: 36, borderRadius: 6, border: `1px solid ${IDENTITY_GREEN}40` }}
+          style={{ width: 36, height: 36, borderRadius: radius.sm, border: `1px solid ${IDENTITY_GREEN}40` }}
         />
         <div style={{ flex: 1 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>

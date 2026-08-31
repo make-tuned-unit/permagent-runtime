@@ -1604,7 +1604,7 @@ findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, l
             <div key={groupName} style={{ borderRadius: radius.lg, overflow: 'hidden', border: `1px solid ${allDone ? withAlpha(colors.success, 0.2) : colors.border}`, background: allDone ? withAlpha(colors.success, 0.03) : colors.surface }}>
               <div style={{ padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 14 }}>
                 <button onClick={() => setExpandedGroup(isExpanded ? null : groupName)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, opacity: allDone ? 0.5 : 1 }}>
-                  <div style={{ width: 36, height: 36, borderRadius: 8, background: colors.border, display: 'grid', placeItems: 'center' }}>
+                  <div style={{ width: 36, height: 36, borderRadius: radius.md, background: colors.border, display: 'grid', placeItems: 'center' }}>
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={colors.textMuted} strokeWidth={1.8}><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg>
                   </div>
                 </button>

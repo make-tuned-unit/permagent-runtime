@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 function timeAgo(dateStr: string): string {
@@ -74,7 +74,7 @@ export function SessionPicker() {
           position: 'absolute', top: '100%', left: 0, marginTop: 4,
           width: 260, maxHeight: 300, overflow: 'auto',
           background: gradient.dropdown, backdropFilter: 'blur(16px)',
-          border: `1px solid ${colors.borderHi}`, borderRadius: 8,
+          border: `1px solid ${colors.borderHi}`, borderRadius: radius.md,
           boxShadow: '0 12px 40px rgba(0,0,0,0.6)', zIndex: 100,
           padding: '4px 0',
         }}>

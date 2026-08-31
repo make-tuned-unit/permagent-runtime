@@ -1412,7 +1412,7 @@ function PickRow({
               letterSpacing: '0.04em',
               textTransform: 'uppercase',
               padding: '2px 7px',
-              borderRadius: 999,
+              borderRadius: radius.pill,
             }}
           >
             Agent approved

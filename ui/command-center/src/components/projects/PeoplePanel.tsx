@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Panel } from './Panel';
 import type { NamedPersonMeeting, Person, Project, ProjectPerson } from './types';
@@ -233,7 +233,7 @@ function AssociatePicker({ colors, excludeIds, onPick }: {
               onClick={() => onPick(p)}
               style={{
                 display: 'flex', alignItems: 'baseline', gap: 8, textAlign: 'left',
-                padding: '5px 8px', borderRadius: 6, width: '100%',
+                padding: '5px 8px', borderRadius: radius.sm, width: '100%',
                 background: 'none', border: 'none', color: colors.text,
                 fontFamily: font.body, cursor: 'pointer',
               }}

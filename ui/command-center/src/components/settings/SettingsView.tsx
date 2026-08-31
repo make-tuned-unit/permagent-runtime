@@ -3,7 +3,7 @@ import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { emitActivity } from '../../lib/emitActivity';
 import { api, apiFetch, type SovereigntyStatus, type EgressLogEntry, type DeviceInfo, type CrashExportResponse, type IncidentView } from '../../lib/api';
 import { relativeTimeAgo } from '../../lib/time-decay';
-import { font, ease, setTheme as setThemeFn, setMobiusGlow, setIdleAnim, setShowHeroMobius, setDensity as setDensityFn, setReduceMotion as setReduceMotionFn, type ThemePref, type IdleAnim, type UIDensity } from '../../styles/tokens';
+import { ease, font, radius, setDensity as setDensityFn, setIdleAnim, setMobiusGlow, setReduceMotion as setReduceMotionFn, setShowHeroMobius, setTheme as setThemeFn, type IdleAnim, type ThemePref, type UIDensity } from '../../styles/tokens';
 import { useTheme as useThemeHook } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 import {
@@ -44,14 +44,14 @@ import { RoleRoutingPrompt } from '../chat/RoleRoutingPrompt';
 type C = ReturnType<typeof useThemeHook>['colors'];
 
 const ghost = (colors: C): React.CSSProperties => ({
-  height: 32, padding: '0 14px', borderRadius: 8,
+  height: 32, padding: '0 14px', borderRadius: radius.md,
   background: 'transparent', border: `1px solid ${colors.border}`,
   color: colors.text, cursor: 'pointer',
   fontFamily: font.body, fontSize: 12, fontWeight: 500,
   display: 'inline-flex', alignItems: 'center', gap: 6,
 });
 const selectStyle = (colors: C): React.CSSProperties => ({
-  height: 34, padding: '0 12px', borderRadius: 8,
+  height: 34, padding: '0 12px', borderRadius: radius.md,
   background: colors.inputBg, border: `1px solid ${colors.border}`,
   color: colors.text, fontFamily: font.body, fontSize: 13,
   minWidth: 240, cursor: 'pointer',
@@ -194,7 +194,7 @@ function PersonaPanel() {
               style={{
                 width: '100%', fontFamily: font.body, fontSize: 13, color: colors.text,
                 background: colors.inputBg, border: `1px solid ${colors.border}`,
-                borderRadius: 8, padding: '8px 12px', outline: 'none',
+                borderRadius: radius.md, padding: '8px 12px', outline: 'none',
               }}
             />
           </div>
@@ -208,7 +208,7 @@ function PersonaPanel() {
           <button
             onClick={() => { void reload(); }}
             style={{
-              padding: '6px 14px', borderRadius: 8, cursor: 'pointer',
+              padding: '6px 14px', borderRadius: radius.md, cursor: 'pointer',
               background: 'transparent', border: `1px solid ${colors.border}`,
               color: colors.textMuted, fontSize: 12, fontFamily: font.body,
             }}
@@ -335,7 +335,7 @@ export function ApprovalsStrip() {
     <>
       <div style={{
         display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
-        padding: '9px 12px', marginBottom: 12, borderRadius: 8,
+        padding: '9px 12px', marginBottom: 12, borderRadius: radius.md,
         background: colors.bgDeeper, border: `1px solid ${colors.border}`,
       }}>
         <span style={{ fontSize: 12, color: pending > 0 ? colors.text : colors.textMuted }}>
@@ -435,7 +435,7 @@ export function AutonomyPanel({ goto }: { goto?: (key: string) => void }) {
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, marginBottom: 4 }}>
                     <span style={{ fontSize: 13, fontWeight: 600, color: current ? colors.cyan : colors.text }}>{opt.l}</span>
                     {locked && (
-                      <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase', color: colors.textMuted, border: `1px solid ${colors.border}`, borderRadius: 999, padding: '1px 6px' }}>Soon</span>
+                      <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase', color: colors.textMuted, border: `1px solid ${colors.border}`, borderRadius: radius.pill, padding: '1px 6px' }}>Soon</span>
                     )}
                   </div>
                   <div style={{ fontSize: 11, color: colors.textMuted }}>{opt.d}</div>
@@ -519,7 +519,7 @@ function ToolsPanel({ goto }: PanelProps) {
         // on this tab looking for their Brave key.
         <div style={{
           display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
-          padding: '9px 12px', marginBottom: 14, borderRadius: 8,
+          padding: '9px 12px', marginBottom: 14, borderRadius: radius.md,
           background: colors.bgDeeper, border: `1px solid ${colors.border}`,
         }}>
           <span style={{ fontSize: 12, color: colors.textMuted }}>
@@ -538,7 +538,7 @@ function ToolsPanel({ goto }: PanelProps) {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
           {extensions.map((ext, i) => (
             <div key={ext.name || `ext-${i}`} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: 14, borderRadius: 10, background: colors.bgDeeper, border: `1px solid ${colors.border}` }}>
-              <div style={{ width: 32, height: 32, borderRadius: 8, background: ext.enabled ? colors.cyanSoft : colors.surfaceHi, border: `1px solid ${ext.enabled ? colors.borderHi : colors.border}`, display: 'grid', placeItems: 'center', fontFamily: font.display, fontSize: 13, fontWeight: 700, color: ext.enabled ? colors.cyan : colors.textMuted, flexShrink: 0 }}>{extensionLabel(ext).charAt(0).toUpperCase() || '?'}</div>
+              <div style={{ width: 32, height: 32, borderRadius: radius.md, background: ext.enabled ? colors.cyanSoft : colors.surfaceHi, border: `1px solid ${ext.enabled ? colors.borderHi : colors.border}`, display: 'grid', placeItems: 'center', fontFamily: font.display, fontSize: 13, fontWeight: 700, color: ext.enabled ? colors.cyan : colors.textMuted, flexShrink: 0 }}>{extensionLabel(ext).charAt(0).toUpperCase() || '?'}</div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{extensionLabel(ext)}</div>
                 <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -591,7 +591,7 @@ function ModelStateBadge({ state }: { state: 'running' | 'installed' | 'missing'
   };
   const s = styles[state];
   return (
-    <span style={{ fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 999, background: s.bg, color: s.text }}>
+    <span style={{ fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: radius.pill, background: s.bg, color: s.text }}>
       {s.label}
     </span>
   );
@@ -1181,7 +1181,7 @@ export function ModelsPanel({ goto }: PanelProps) {
               onClick={handleRunNow}
               disabled={runningNow || modelState(schedule.model) === 'missing'}
               style={{
-                height: 30, padding: '0 14px', borderRadius: 6,
+                height: 30, padding: '0 14px', borderRadius: radius.sm,
                 background: colors.cyanSoft,
                 border: `1px solid ${colors.borderHi}`,
                 color: runningNow ? colors.textDim : colors.cyan,
@@ -1251,7 +1251,7 @@ export function ModelsPanel({ goto }: PanelProps) {
             onChange={e => saveStrixHours(Number(e.target.value))}
             style={{
               background: colors.inputBg, color: colors.text, fontSize: 12,
-              border: `1px solid ${colors.border}`, borderRadius: 6, padding: '4px 8px',
+              border: `1px solid ${colors.border}`, borderRadius: radius.sm, padding: '4px 8px',
             }}
           >
             <option value={12}>12 hours</option>
@@ -1290,7 +1290,7 @@ export function ModelsPanel({ goto }: PanelProps) {
             style={{
               width: 260, fontFamily: font.body, fontSize: 12, color: colors.text,
               background: colors.inputBg, border: `1px solid ${colors.border}`,
-              borderRadius: 6, padding: '6px 10px', outline: 'none',
+              borderRadius: radius.sm, padding: '6px 10px', outline: 'none',
             }}
           />
         </Row>
@@ -1304,7 +1304,7 @@ export function ModelsPanel({ goto }: PanelProps) {
             style={{
               width: 260, fontFamily: font.body, fontSize: 12, color: colors.text,
               background: colors.inputBg, border: `1px solid ${colors.border}`,
-              borderRadius: 6, padding: '6px 10px', outline: 'none',
+              borderRadius: radius.sm, padding: '6px 10px', outline: 'none',
             }}
           />
         </Row>
@@ -1372,14 +1372,14 @@ function AppearancePanel() {
                 onClick={() => setThemeFn(th.id)}
                 onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setThemeFn(th.id); } }}
                 style={{
-                  padding: 4, borderRadius: 12, cursor: 'pointer', outline: 'none',
+                  padding: 4, borderRadius: radius.lg, cursor: 'pointer', outline: 'none',
                   border: on ? `2px solid ${colors.cyan}` : '2px solid transparent',
                   boxShadow: on ? `0 0 14px ${colors.cyanGlow}` : 'none',
                 }}
                 onFocus={e => { if (!on) e.currentTarget.style.borderColor = colors.borderHi; }}
                 onBlur={e => { if (!on) e.currentTarget.style.borderColor = 'transparent'; }}
               >
-                <div style={{ height: 96, borderRadius: 8, background: th.g, border: `1px solid ${colors.border}` }} />
+                <div style={{ height: 96, borderRadius: radius.md, background: th.g, border: `1px solid ${colors.border}` }} />
                 <div style={{ fontSize: 12, padding: '8px 4px', textAlign: 'center', color: on ? colors.cyan : colors.text }}>{th.l}</div>
               </div>
             );
@@ -1543,7 +1543,7 @@ export function DataPanel({ goto }: { goto?: (key: string) => void } = {}) {
             onClick={runExport}
             disabled={exporting}
             style={{
-              fontSize: 12, padding: '6px 12px', borderRadius: 6,
+              fontSize: 12, padding: '6px 12px', borderRadius: radius.sm,
               cursor: exporting ? 'default' : 'pointer', opacity: exporting ? 0.6 : 1,
               background: colors.surfaceHi, color: colors.text, border: `1px solid ${colors.border}`,
             }}
@@ -1563,7 +1563,7 @@ export function DataPanel({ goto }: { goto?: (key: string) => void } = {}) {
             <div style={{ fontSize: 11, color: colors.textDim, paddingBottom: 4 }}>Preview (exactly what would be shared):</div>
             <pre style={{
               fontSize: 11, fontFamily: font.mono, color: colors.text, background: colors.surface,
-              border: `1px solid ${colors.border}`, borderRadius: 6, padding: 8, margin: 0,
+              border: `1px solid ${colors.border}`, borderRadius: radius.sm, padding: 8, margin: 0,
               maxHeight: 220, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
             }}>{exportResult.content}</pre>
           </div>
@@ -1632,7 +1632,7 @@ function SovereigntyPanel() {
             onClick={() => save({ enabled: !status?.enabled })}
             disabled={status === null}
             style={{
-              height: 32, padding: '0 18px', borderRadius: 8,
+              height: 32, padding: '0 18px', borderRadius: radius.md,
               background: status?.enabled ? 'transparent' : colors.cyan,
               border: status?.enabled ? `1px solid ${colors.borderHi}` : 'none',
               color: status?.enabled ? colors.cyan : colors.textOnCyan,
@@ -1658,7 +1658,7 @@ function SovereigntyPanel() {
           <button
             onClick={refreshLog}
             style={{
-              fontSize: 12, padding: '4px 10px', borderRadius: 6, cursor: 'pointer',
+              fontSize: 12, padding: '4px 10px', borderRadius: radius.sm, cursor: 'pointer',
               background: colors.surfaceHi, color: colors.text, border: `1px solid ${colors.border}`,
             }}
           >Refresh</button>
@@ -1677,7 +1677,7 @@ function SovereigntyPanel() {
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {log.map(e => (
-                  <div key={e.id} style={{ display: 'grid', gridTemplateColumns: EGRESS_COLS, gap: 12, alignItems: 'center', padding: '8px 10px', borderRadius: 8, background: colors.bgDeeper, border: `1px solid ${colors.border}` }}>
+                  <div key={e.id} style={{ display: 'grid', gridTemplateColumns: EGRESS_COLS, gap: 12, alignItems: 'center', padding: '8px 10px', borderRadius: radius.md, background: colors.bgDeeper, border: `1px solid ${colors.border}` }}>
                     <div style={{ fontSize: 12, color: colors.textMuted, fontFamily: font.mono }} title={`${new Date(e.ts).toLocaleString()}${e.sessionId ? ' · ' + e.sessionId : ''} · ${e.contentHash.slice(0, 12)}…`}>
                       {timeAgo(e.ts) || e.ts}
                     </div>
@@ -1688,7 +1688,7 @@ function SovereigntyPanel() {
                     <div>
                       <span style={{
                         fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase',
-                        padding: '2px 8px', borderRadius: 999, border: `1px solid ${colors.border}`,
+                        padding: '2px 8px', borderRadius: radius.pill, border: `1px solid ${colors.border}`,
                         color: e.blocked ? colors.warning : colors.success,
                       }}>
                         {e.blocked ? 'blocked' : 'allowed'}
@@ -1715,7 +1715,7 @@ function SessionsPane() {
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <H1 sub="Your past conversations — reopen one to pick up where you left off, or rename and delete old ones. Picking a session opens it in the chat.">Sessions</H1>
-      <div style={{ flex: 1, minHeight: 320, border: `1px solid ${colors.border}`, borderRadius: 12, overflow: 'hidden' }}>
+      <div style={{ flex: 1, minHeight: 320, border: `1px solid ${colors.border}`, borderRadius: radius.lg, overflow: 'hidden' }}>
         <SessionsList />
       </div>
     </div>
@@ -1727,7 +1727,7 @@ function InboxPane() {
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <H1 sub="Files you download in the in-app browser land here — send them to the Brain, a project, or the post scheduler. You choose; nothing is routed for you.">Inbox</H1>
-      <div style={{ flex: 1, minHeight: 320, border: `1px solid ${colors.border}`, borderRadius: 12, overflow: 'hidden' }}>
+      <div style={{ flex: 1, minHeight: 320, border: `1px solid ${colors.border}`, borderRadius: radius.lg, overflow: 'hidden' }}>
         <InboxPanel embedded />
       </div>
     </div>
@@ -1760,7 +1760,7 @@ function IncidentsStrip() {
 
   if (!incidents || incidents.length === 0) return null;
   return (
-    <div style={{ marginBottom: 12, border: `1px solid ${colors.border}`, borderRadius: 12, padding: '10px 14px' }}>
+    <div style={{ marginBottom: 12, border: `1px solid ${colors.border}`, borderRadius: radius.lg, padding: '10px 14px' }}>
       <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: '#e8a33d', marginBottom: 6 }}>
         Open incidents — feeding every worker plan until resolved
       </div>
@@ -1773,7 +1773,7 @@ function IncidentsStrip() {
           <button
             onClick={() => resolve(i.id)}
             disabled={busy === i.id}
-            style={{ fontSize: 11, color: colors.cyan, background: 'none', border: `1px solid ${colors.borderHi}`, borderRadius: 6, padding: '2px 10px', cursor: 'pointer' }}
+            style={{ fontSize: 11, color: colors.cyan, background: 'none', border: `1px solid ${colors.borderHi}`, borderRadius: radius.sm, padding: '2px 10px', cursor: 'pointer' }}
           >
             {busy === i.id ? '…' : 'Resolve'}
           </button>
@@ -1789,7 +1789,7 @@ function ActivityPane() {
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <H1 sub="The runtime's most recent events, live off the running system's event streams — tool calls, worker activity, navigations, and lifecycle signals as they happen.">Activity</H1>
       <IncidentsStrip />
-      <div style={{ flex: 1, minHeight: 320, border: `1px solid ${colors.border}`, borderRadius: 12, overflow: 'hidden' }}>
+      <div style={{ flex: 1, minHeight: 320, border: `1px solid ${colors.border}`, borderRadius: radius.lg, overflow: 'hidden' }}>
         <ExecutionTrace />
       </div>
     </div>
@@ -1846,7 +1846,7 @@ function PairingQrCode({ value, size = 112 }: { value: string; size?: number }) 
       viewBox={`0 0 ${extent} ${extent}`}
       width={size}
       height={size}
-      style={{ display: 'block', background: '#fff', borderRadius: 8 }}
+      style={{ display: 'block', background: '#fff', borderRadius: radius.md }}
       shapeRendering="crispEdges"
     >
       <rect width={extent} height={extent} fill="#fff" />
@@ -2142,7 +2142,7 @@ function DevicesPanel() {
                 </span>
                 <code style={{
                   fontFamily: font.mono, fontSize: 10, color: colors.cyan,
-                  background: colors.bgDeeper, padding: '6px 8px', borderRadius: 6,
+                  background: colors.bgDeeper, padding: '6px 8px', borderRadius: radius.sm,
                   overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 320,
                 }}>{pairingUrl}</code>
                 <button
@@ -2217,7 +2217,7 @@ export function SettingsView() {
               const on = section === it.key;
               return (
                 <button key={it.key} onClick={() => setSection(it.key)} style={{
-                  display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '8px 10px', borderRadius: 8,
+                  display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '8px 10px', borderRadius: radius.md,
                   background: on ? colors.cyanSoft : 'transparent',
                   border: on ? `1px solid ${colors.borderHi}` : '1px solid transparent',
                   color: on ? colors.cyan : colors.textMuted, cursor: 'pointer', textAlign: 'left',

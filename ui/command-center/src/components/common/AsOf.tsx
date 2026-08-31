@@ -15,6 +15,7 @@
 
 import { useTheme } from '../../styles/useTheme';
 import { useFreshness, type UseFreshnessOptions } from '../../hooks/useFreshness';
+import { radius } from '../../styles/tokens';
 
 export interface AsOfProps extends UseFreshnessOptions {
   /** When the thing was last true. Epoch millis, a Date, or a wire timestamp. */
@@ -49,7 +50,7 @@ export function AsOf({ asOf, prefix, suffix, dot, 'data-testid': testId, ...opti
           data-testid="as-of-dot"
           aria-hidden="true"
           style={{
-            width: 6, height: 6, borderRadius: 999, flexShrink: 0,
+            width: 6, height: 6, borderRadius: radius.pill, flexShrink: 0,
             background: freshness.tone === 'stale' ? colors.stale : colors.textMuted,
             display: 'inline-block',
           }}

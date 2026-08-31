@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, type PronunciationEntry, type UnresolvedPronunciation } from '../../lib/api';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Row, TextInput } from '../settings/atoms';
 
 type C = ReturnType<typeof useTheme>['colors'];
 
 const btn = (colors: C): React.CSSProperties => ({
-  height: 30, padding: '0 12px', borderRadius: 8,
+  height: 30, padding: '0 12px', borderRadius: radius.md,
   background: colors.inputBg, border: `1px solid ${colors.border}`,
   color: colors.text, fontFamily: font.body, fontSize: 12,
   cursor: 'pointer', whiteSpace: 'nowrap',

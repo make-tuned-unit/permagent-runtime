@@ -202,7 +202,7 @@ value, onChange, options, style = {} }: {
               // Escape closes (handled on the container). Focus mirrors hover.
               onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); choose(); } }}
               style={{
-                display: 'flex', alignItems: 'center', gap: 10, padding: '10px 10px', borderRadius: 6,
+                display: 'flex', alignItems: 'center', gap: 10, padding: '10px 10px', borderRadius: radius.sm,
                 fontFamily: font.body, fontSize: 13, color: colors.text,
                 background: selected ? colors.cyanSoft : 'transparent', cursor: 'pointer',
               }}
@@ -232,7 +232,7 @@ export function ProgressDots({ count = 4, current = 0, style = {} }: {
     <div style={{ display: 'flex', gap: 8, alignItems: 'center', ...style }}>
       {Array.from({ length: count }).map((_, i) => (
         <div key={i} style={{
-          width: i === current ? 18 : 6, height: 6, borderRadius: 999,
+          width: i === current ? 18 : 6, height: 6, borderRadius: radius.pill,
           background: i === current ? colors.cyan : colors.textDim,
           boxShadow: i === current ? `0 0 12px ${colors.cyanGlow}` : 'none',
           transition: `all ${duration.slow}ms ${ease.out}`,
@@ -255,7 +255,7 @@ onClick }: { onClick: () => void }) {
         color: hover ? colors.text : colors.textMuted,
         fontFamily: font.body, fontSize: 13, fontWeight: 500,
         cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
-        borderRadius: 8, transition: `color ${duration.fast}ms ${ease.out}`,
+        borderRadius: radius.md, transition: `color ${duration.fast}ms ${ease.out}`,
       }}>
       <svg width="14" height="10" viewBox="0 0 14 10" fill="none">
         <path d="M5 1L1 5l4 4M1 5h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />

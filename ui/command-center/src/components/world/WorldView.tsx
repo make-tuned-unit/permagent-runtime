@@ -24,7 +24,7 @@ import { AgentPicker } from './AgentPicker';
 import { PerfProbe, perfProbeEnabled, devDprOverride } from './shared/PerfProbe';
 import { useWorldVisibility } from './atmosphere/useWorldVisibility';
 import { installDevHarness } from './atmosphere/devHarness';
-import { getReduceMotion } from '../../styles/tokens';
+import { getReduceMotion, radius } from '../../styles/tokens';
 import { TourMode } from './camera/TourMode';
 
 // DEV-ONLY: window.__worldDev harness for ambience evidence (no-op in prod).
@@ -565,7 +565,7 @@ export function WorldView({ visible = true }: { visible?: boolean }) {
             padding: '9px 20px',
             background: 'rgba(10, 14, 26, 0.82)',
             border: `1px solid ${COLORS.neonCyan}66`,
-            borderRadius: 6,
+            borderRadius: radius.sm,
             color: COLORS.neonCyan,
             fontFamily: 'JetBrains Mono, monospace',
             fontSize: 11,

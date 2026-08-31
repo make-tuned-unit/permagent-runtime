@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useProjects, Project } from './useProjects';
 import { useTheme } from '../../styles/useTheme';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
@@ -69,7 +69,7 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
         onClick={() => setOpen(!open)}
         title={error ? "Couldn't load your projects" : undefined}
         style={{
-          height: 28, padding: '0 10px', borderRadius: 6,
+          height: 28, padding: '0 10px', borderRadius: radius.sm,
           background: colors.cyanSoft,
           border: `1px solid ${error ? colors.danger : colors.border}`,
           fontFamily: font.body, fontSize: 11, fontWeight: 500,
@@ -94,7 +94,7 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
           position: 'absolute', top: '100%', left: 0, marginTop: 4,
           minWidth: 280, maxHeight: 360, overflowY: 'auto',
           background: colors.surface, border: `1px solid ${colors.border}`,
-          borderRadius: 8, boxShadow: colors.cardShadow,
+          borderRadius: radius.md, boxShadow: colors.cardShadow,
           zIndex: 50, padding: '4px 0',
         }}>
           {loading && (
@@ -142,7 +142,7 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
                 onClick={() => setSortMode(mode)}
                 style={{
                   fontSize: 10, fontFamily: font.body, fontWeight: 500,
-                  padding: '2px 6px', borderRadius: 4, cursor: 'pointer',
+                  padding: '2px 6px', borderRadius: radius.xs, cursor: 'pointer',
                   background: sortMode === mode ? colors.cyanSoft : 'transparent',
                   color: sortMode === mode ? colors.text : colors.textDim,
                   border: 'none',
@@ -182,7 +182,7 @@ project, onLaunch, onVisit }: {
       <button
         onClick={() => setExpanded(!expanded)}
         style={{
-          width: '100%', padding: '7px 8px', borderRadius: 6,
+          width: '100%', padding: '7px 8px', borderRadius: radius.sm,
           background: expanded ? colors.cyanSoft : 'transparent',
           border: 'none', cursor: 'pointer', textAlign: 'left',
           display: 'flex', alignItems: 'center', gap: 8,

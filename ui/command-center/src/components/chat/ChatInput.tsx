@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback, useImperativeHandle, forwardR
 import { FiSend, FiLoader, FiPaperclip } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
 import { takeWizardIntent } from '../../lib/wizardIntent';
-import { font, ease } from '../../styles/tokens';
+import { ease, font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { AttachmentChip } from './AttachmentChip';
 import { VoiceButton } from '../voice/VoiceButton';
@@ -147,7 +147,7 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
           title="Attach files"
           className="transition disabled:opacity-30"
           style={{
-            width: 28, height: 28, borderRadius: 6, flexShrink: 0,
+            width: 28, height: 28, borderRadius: radius.sm, flexShrink: 0,
             display: 'grid', placeItems: 'center',
             border: `1px solid ${colors.border}`,
             backgroundColor: colors.inputBg,
@@ -210,7 +210,7 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
             aria-label="Stop generating"
             className="transition disabled:opacity-50"
             style={{
-              width: 28, height: 28, borderRadius: 6, flexShrink: 0,
+              width: 28, height: 28, borderRadius: radius.sm, flexShrink: 0,
               display: 'grid', placeItems: 'center',
               // The failed attempt stays visible on the control itself until
               // the next press, not just in the line above it.
@@ -231,7 +231,7 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
             aria-label="Send message"
             className="transition disabled:opacity-30"
             style={{
-              width: 28, height: 28, borderRadius: 6, flexShrink: 0,
+              width: 28, height: 28, borderRadius: radius.sm, flexShrink: 0,
               display: 'grid', placeItems: 'center',
               background: colors.ribbonGradient,
               color: colors.textOnAccent,

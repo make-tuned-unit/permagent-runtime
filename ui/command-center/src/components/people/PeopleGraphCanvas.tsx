@@ -12,7 +12,7 @@ import { Canvas } from '@react-three/fiber';
 import { Html, Line, OrbitControls } from '@react-three/drei';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { DirectoryPerson } from '../projects/types';
 import { isBridge, isYou, layoutPeopleGraph, type GraphNode } from './peopleGraph';
@@ -91,7 +91,7 @@ export function PeopleGraph() {
           fontSize: 12,
           fontFamily: font.body,
           padding: '6px 10px',
-          borderRadius: 6,
+          borderRadius: radius.sm,
           border: `1px solid ${colors.border}`,
           background: colors.inputBg,
           color: colors.text,
@@ -214,7 +214,8 @@ function PersonNode({
   const active = hovered || focused || selected;
   const color = you || bridge || active ? accent : muted;
   const pillVisible = shouldShowLabel({ isYou: you, hovered, focused, selected });
-  const radius = you ? 0.32 : bridge ? 0.22 : 0.16;
+  // Sphere size, in world units — named apart from the corner-radius token.
+  const nodeRadius = you ? 0.32 : bridge ? 0.22 : 0.16;
   if (you) {
     return (
       <group position={[node.x, node.y, node.z]}>
@@ -222,7 +223,7 @@ function PersonNode({
           onPointerOver={e => { e.stopPropagation(); onHover(node.id); }}
           onPointerOut={() => onHover(null)}
         >
-          <sphereGeometry args={[radius, 24, 24]} />
+          <sphereGeometry args={[nodeRadius, 24, 24]} />
           <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.55} />
         </mesh>
         <Html center sprite style={{ pointerEvents: 'none', transform: 'translateY(-18px)' }}>
@@ -232,7 +233,7 @@ function PersonNode({
             fontWeight: 600,
             color: '#fff',
             background: 'rgba(8,10,16,0.78)',
-            borderRadius: 4,
+            borderRadius: radius.xs,
             padding: '2px 6px',
             whiteSpace: 'nowrap',
           }}>
@@ -272,7 +273,7 @@ function PersonNode({
             fontWeight: 600,
             color: '#fff',
             background: 'rgba(8,10,16,0.78)',
-            borderRadius: 4,
+            borderRadius: radius.xs,
             padding: '2px 6px',
             whiteSpace: 'nowrap',
             pointerEvents: 'none',

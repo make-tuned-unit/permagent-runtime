@@ -18,7 +18,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { FiPlus, FiTrash2, FiX } from 'react-icons/fi';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { formatAge } from '../dashboard/decisions/format';
 import { Panel } from './Panel';
@@ -305,7 +305,7 @@ export function VerificationApprovalPanel({ project }: { project: Project }) {
               key={token}
               style={{
                 display: 'inline-flex', alignItems: 'center', gap: 6,
-                borderRadius: 999, padding: '3px 6px 3px 10px',
+                borderRadius: radius.pill, padding: '3px 6px 3px 10px',
                 background: rowVeil, border: `1px solid ${colors.border}`,
                 fontFamily: font.mono, fontSize: 11, color: colors.text,
               }}

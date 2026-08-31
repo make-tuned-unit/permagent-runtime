@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useTheme } from '../../styles/useTheme';
+import { radius } from '../../styles/tokens';
 
 const BAR_COUNT = 7;
 const MIN_SCALE = 0.16; // resting height so bars never fully collapse
@@ -85,7 +86,7 @@ export function VoiceVisualizer({
           style={{
             width: 2.5,
             height: 16,
-            borderRadius: 999,
+            borderRadius: radius.pill,
             transformOrigin: 'center',
             transform: `scaleY(${MIN_SCALE})`,
             background: `linear-gradient(to top, ${colors.cyan}, ${colors.purple})`,

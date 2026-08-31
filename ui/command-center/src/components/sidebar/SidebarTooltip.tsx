@@ -143,7 +143,7 @@ export function SidebarTooltip({ target }: { target: TooltipTarget | null }) {
           fontSize: 10, fontWeight: 600, letterSpacing: '0.04em',
           color: colors.textDim,
           border: `1px solid ${colors.border}`,
-          borderRadius: 4, padding: '1px 4px',
+          borderRadius: radius.xs, padding: '1px 4px',
         }}>{target.shortcut}</span>
       )}
     </div>,

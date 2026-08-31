@@ -10,7 +10,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { api, type SpendSnapshot } from '../../lib/api';
-import { font, tabularNums } from '../../styles/tokens';
+import { font, radius, tabularNums } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Card, SectionLabel, StatRow } from './atoms';
 import { bandColor, bandLabel, formatTokens, formatUsd, timeAgo } from './format';
@@ -101,7 +101,7 @@ export function SpendPanel() {
   const numInput = (v: string, on: (s: string) => void, label: string, scope = 'Session') => (
     <label style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 90 }}>
       <span style={{ fontSize: 10, letterSpacing: '0.06em', textTransform: 'uppercase', color: colors.textDim }}>{label}</span>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 4, height: 30, padding: '0 8px', borderRadius: 8, background: colors.inputBg, border: `1px solid ${colors.border}` }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 4, height: 30, padding: '0 8px', borderRadius: radius.md, background: colors.inputBg, border: `1px solid ${colors.border}` }}>
         <span style={{ color: colors.textDim, fontSize: 13 }}>$</span>
         <input
           type="number" min="0" step="0.5" value={v}
@@ -151,7 +151,7 @@ export function SpendPanel() {
             onClick={saveBudget}
             disabled={saving}
             style={{
-              height: 30, padding: '0 16px', borderRadius: 8,
+              height: 30, padding: '0 16px', borderRadius: radius.md,
               background: colors.cyan, border: 'none', color: colors.textOnCyan,
               cursor: saving ? 'default' : 'pointer', fontFamily: font.body, fontSize: 12, fontWeight: 600,
             }}

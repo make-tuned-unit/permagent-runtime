@@ -13,7 +13,7 @@ import {
   statusLabel,
   type RouteDestination,
 } from './inboxRouting';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useTheme as useThemeHook } from '../../styles/useTheme';
 
 function formatBytes(b: number | null): string {
@@ -150,7 +150,7 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
       style={{
         height: 24,
         padding: '0 10px',
-        borderRadius: 6,
+        borderRadius: radius.sm,
         background: active ? colors.surface : 'transparent',
         border: `1px solid ${colors.border}`,
         color: disabled ? colors.textDim : colors.text,
@@ -174,7 +174,7 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
           </div>
           <button
             onClick={dismiss}
-            style={{ height: 30, padding: '0 12px', borderRadius: 8, background: 'transparent', border: `1px solid ${colors.border}`, color: colors.textMuted, cursor: 'pointer', fontFamily: font.body, fontSize: 12 }}
+            style={{ height: 30, padding: '0 12px', borderRadius: radius.md, background: 'transparent', border: `1px solid ${colors.border}`, color: colors.textMuted, cursor: 'pointer', fontFamily: font.body, fontSize: 12 }}
           >Close</button>
         </div>
       )}
@@ -207,7 +207,7 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
                       title={projectLabel(f.project_id, projects) ?? 'Not filed to a project yet'}
                     >{projectLabel(f.project_id, projects) ?? '—'}</div>
                     <div>
-                      <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.04em', padding: '2px 8px', borderRadius: 999, border: `1px solid ${colors.border}`, color: f.status === 'received' ? colors.text : colors.textMuted }}>
+                      <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.04em', padding: '2px 8px', borderRadius: radius.pill, border: `1px solid ${colors.border}`, color: f.status === 'received' ? colors.text : colors.textMuted }}>
                         {statusLabel(f.status)}
                       </span>
                     </div>
@@ -228,7 +228,7 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
                       <select
                         value={rowPick.projectId}
                         onChange={e => setPick({ ...rowPick, projectId: e.target.value })}
-                        style={{ height: 26, borderRadius: 6, background: 'transparent', border: `1px solid ${colors.border}`, color: colors.text, fontFamily: font.body, fontSize: 12, maxWidth: 280 }}
+                        style={{ height: 26, borderRadius: radius.sm, background: 'transparent', border: `1px solid ${colors.border}`, color: colors.text, fontFamily: font.body, fontSize: 12, maxWidth: 280 }}
                       >
                         <option value="" disabled>
                           {projects === null ? 'Loading projects…' : projects.length === 0 ? 'No projects yet' : 'Choose a project'}

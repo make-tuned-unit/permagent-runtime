@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { ProjectKanban } from './ProjectsView';
 import { ProjectOverview } from './ProjectOverview';
@@ -126,7 +126,7 @@ function ProjectSwitcher({ project, projects, onSwitch }: {
         <div style={{
           position: 'absolute', top: '100%', left: 0, marginTop: 6, zIndex: 50,
           minWidth: 200, maxHeight: 320, overflow: 'auto',
-          background: gradient.dropdown, border: `1px solid ${colors.border}`, borderRadius: 8,
+          background: gradient.dropdown, border: `1px solid ${colors.border}`, borderRadius: radius.md,
           boxShadow: colors.elevationOverlay, padding: 4,
         }}>
           {sorted.map(p => (
@@ -163,7 +163,7 @@ function ViewToggle({ lens, onChange }: { lens: ProjectLens; onChange: (l: Proje
   ];
   return (
     <div style={{
-      display: 'flex', gap: 2, padding: 2, borderRadius: 8,
+      display: 'flex', gap: 2, padding: 2, borderRadius: radius.md,
       background: 'rgba(255,255,255,0.04)', border: `1px solid ${colors.border}`,
     }}>
       {tabs.map(t => {
@@ -173,7 +173,7 @@ function ViewToggle({ lens, onChange }: { lens: ProjectLens; onChange: (l: Proje
             key={t.key}
             onClick={() => onChange(t.key)}
             style={{
-              padding: '4px 12px', borderRadius: 6, cursor: 'pointer', border: 'none',
+              padding: '4px 12px', borderRadius: radius.sm, cursor: 'pointer', border: 'none',
               background: active ? colors.cyanSoft : 'transparent',
               color: active ? colors.cyan : colors.textMuted,
               fontFamily: font.body, fontSize: 12, fontWeight: active ? 600 : 500,
@@ -191,7 +191,7 @@ function ViewToggle({ lens, onChange }: { lens: ProjectLens; onChange: (l: Proje
 function backBtn(colors: ReturnType<typeof useTheme>['colors']): React.CSSProperties {
   return {
     background: 'none', border: 'none', color: colors.textMuted, cursor: 'pointer',
-    padding: '4px 8px', borderRadius: 6, fontSize: 12, fontFamily: font.body,
+    padding: '4px 8px', borderRadius: radius.sm, fontSize: 12, fontFamily: font.body,
     display: 'flex', alignItems: 'center', gap: 4,
   };
 }

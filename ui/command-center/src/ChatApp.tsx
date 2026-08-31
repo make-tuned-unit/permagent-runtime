@@ -4,7 +4,7 @@
  * All state flows through the daemon (HTTP/SSE), not the main window.
  */
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { font, ease } from './styles/tokens';
+import { ease, font, radius } from './styles/tokens';
 import { useTheme } from './styles/useTheme';
 import { Mobius } from './components/mobius/Mobius';
 import { useCommandCenter } from './lib/store';
@@ -160,7 +160,7 @@ export default function ChatApp() {
             style={{
               // Bare glyph (2026-07-27): the boxed version overflowed the
               // header bar. Open state reads through the icon color alone.
-              width: 22, height: 22, borderRadius: 6, padding: 0, flexShrink: 0,
+              width: 22, height: 22, borderRadius: radius.sm, padding: 0, flexShrink: 0,
               background: 'transparent', border: 'none',
               color: inspectionOpen ? colors.cyan : colors.textMuted, cursor: 'pointer',
               display: 'grid', placeItems: 'center',

@@ -50,7 +50,7 @@ function ToggleChip({
   const ring = focus ? `, 0 0 0 3px ${colors.cyanGlow}` : '';
 
   const style: React.CSSProperties = {
-    height: 30, padding: '0 12px', borderRadius: 8,
+    height: 30, padding: '0 12px', borderRadius: radius.md,
     background: active ? colors.cyanSoft : hover ? colors.surfaceHi : 'transparent',
     border: `1px solid ${borderColor}`,
     fontFamily: font.body, fontSize: 12, fontWeight: 500,
@@ -90,7 +90,7 @@ export function BuildView() {
   const { gradient, colors, reduceMotion } = useTheme();
 
   const primaryBtn: React.CSSProperties = {
-    height: 30, padding: '0 14px', borderRadius: 8,
+    height: 30, padding: '0 14px', borderRadius: radius.md,
     background: colors.cyan, color: colors.textOnCyan, border: 'none',
     fontFamily: font.body, fontSize: 12, fontWeight: 600,
     cursor: 'pointer', boxShadow: `0 0 14px ${colors.cyanGlow}`,

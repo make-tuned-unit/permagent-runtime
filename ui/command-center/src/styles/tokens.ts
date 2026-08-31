@@ -72,7 +72,24 @@ export const ease = {
  */
 export const duration = { fast: 160, base: 200, slow: 320 } as const;
 
-export const radius = { sm: 6, md: 10, lg: 14, xl: 20, pill: 999 } as const;
+/**
+ * Corner radii, rebased to what this codebase actually reaches for.
+ *
+ * The old scale was 6/10/14/20, and the app's single most-used radius — 8px,
+ * by a wide margin — was not in it. Two hundred and sixty-three hand-written
+ * values were not written by people ignoring the scale; they were written by
+ * people who needed a step it did not have. So the scale moved to meet them:
+ * 4/6/8/12/16 is what Linear and Raycast ship, and it is what the developers
+ * here converged on by hand.
+ *
+ * `sm` stays 6, so buttons are untouched. `md`, `lg` and `xl` each tighten by
+ * a couple of pixels at their existing call sites — a uniform, deliberate
+ * step toward the values the app already preferred, not a per-surface retune.
+ *
+ * `pill` is for chips. Not for buttons: a pill-shaped CTA is a different
+ * product's voice.
+ */
+export const radius = { xs: 4, sm: 6, md: 8, lg: 12, xl: 16, pill: 999 } as const;
 
 export const shadow = {
   glow: '0 0 40px rgba(0,213,255,0.25)',

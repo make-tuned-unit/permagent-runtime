@@ -3,6 +3,7 @@ import { COLORS } from './constants';
 import { api, eventsWsUrl } from '../../lib/api';
 import { wireEventType } from '../../lib/wireEvent';
 import { HudShell, Section, StatRow } from './HudShell';
+import { radius } from '../../styles/tokens';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -373,7 +374,7 @@ const actionBtnStyle: React.CSSProperties = {
   padding: '6px 0',
   background: `${COLORS.neonCyan}15`,
   border: `1px solid ${COLORS.neonCyan}40`,
-  borderRadius: 4,
+  borderRadius: radius.xs,
   color: COLORS.neonCyan,
   fontSize: 11,
   fontWeight: 600,

@@ -4,6 +4,7 @@ import { ROSTER } from './agents';
 import { useOrchestratorName } from './shared/useOrchestratorName';
 import { useCommandCenter } from '../../lib/store';
 import { agentIdForWorldAgent } from '../../lib/worldAgentIds';
+import { radius } from '../../styles/tokens';
 
 interface AgentPickerProps {
   selectedAgentId: string | null;
@@ -109,7 +110,7 @@ const triggerStyle: React.CSSProperties = {
   background: 'rgba(10, 14, 26, 0.88)',
   backdropFilter: 'blur(12px)',
   border: `1px solid ${COLORS.marbleVeining}25`,
-  borderRadius: 8,
+  borderRadius: radius.md,
   cursor: 'pointer',
   fontFamily: 'monospace',
 };
@@ -123,7 +124,7 @@ const dropdownStyle: React.CSSProperties = {
   background: 'rgba(10, 14, 26, 0.92)',
   backdropFilter: 'blur(16px)',
   border: `1px solid ${COLORS.marbleVeining}25`,
-  borderRadius: 8,
+  borderRadius: radius.md,
   overflow: 'hidden',
   fontFamily: 'monospace',
 };

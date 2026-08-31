@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { font, ease, type ThemeColors } from '../../styles/tokens';
+import { ease, font, radius, type ThemeColors } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { PrimaryButton, GhostLink, Glass, Particles, Select, type SelectOption } from './atoms';
 import { Mobius } from '../mobius/Mobius';
@@ -331,11 +331,11 @@ export function MomentHardware({ onAdvance }: Props) {
           <div style={{ width: 360, marginTop: 16 }}>
             {/* Progress bar */}
             <div style={{
-              width: '100%', height: 6, borderRadius: 999,
+              width: '100%', height: 6, borderRadius: radius.pill,
               background: trackVeil, overflow: 'hidden',
             }}>
               <div style={{
-                width: `${pullProgress}%`, height: '100%', borderRadius: 999,
+                width: `${pullProgress}%`, height: '100%', borderRadius: radius.pill,
                 background: `linear-gradient(90deg, ${colors.cyan}, ${colors.purple})`,
                 boxShadow: `0 0 12px ${colors.cyanGlow}`,
                 transition: `width 300ms ${ease.out}`,

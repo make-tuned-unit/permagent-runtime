@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useCommandCenter } from '../../lib/store';
-import { font, ease } from '../../styles/tokens';
+import { ease, font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
 import { markAllRead, toggleTray, useNotifications, useTrayOpen } from '../../lib/notifications';
@@ -43,7 +43,7 @@ function NotificationBellRow({ open, onHover, onLeave }: {
         <span style={{
           position: 'absolute', top: 7,
           left: open ? 24 : 'calc(50% + 5px)',
-          width: 8, height: 8, borderRadius: 4,
+          width: 8, height: 8, borderRadius: radius.xs,
           background: colors.cyan, pointerEvents: 'none',
         }} />
       )}
@@ -263,7 +263,7 @@ export function Sidebar() {
       {/* Collapse / Expand toggle */}
       {open ? (
         <button onClick={() => setOpen(false)} title="Collapse" style={{
-          width: 'calc(100% - 16px)', height: 32, borderRadius: 8,
+          width: 'calc(100% - 16px)', height: 32, borderRadius: radius.md,
           margin: '4px 8px 0', background: 'transparent',
           border: 'none', color: colors.textDim, cursor: 'pointer',
           display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
@@ -279,7 +279,7 @@ export function Sidebar() {
       ) : (
         <button onClick={() => setOpen(true)} title="Expand" style={{
           width: 40, height: 32, margin: '4px auto 0',
-          borderRadius: 8, background: 'transparent',
+          borderRadius: radius.md, background: 'transparent',
           border: 'none', color: colors.textDim, cursor: 'pointer',
           display: 'grid', placeItems: 'center',
         }}>

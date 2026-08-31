@@ -1,5 +1,5 @@
 import { useState, type CSSProperties } from 'react';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Panel } from './Panel';
 import { readPublishSequence, savePublishSequence, type PublishStep } from './publishSequence';
@@ -106,7 +106,7 @@ export function PublishSequencePanel({ project, onProjectUpdated }: {
   };
 
   const btn = (primary: boolean): CSSProperties => ({
-    padding: '4px 12px', borderRadius: 6, cursor: saving ? 'default' : 'pointer',
+    padding: '4px 12px', borderRadius: radius.sm, cursor: saving ? 'default' : 'pointer',
     background: primary ? colors.cyanSoft : 'rgba(255,255,255,0.03)',
     border: `1px solid ${primary ? colors.borderHi : colors.border}`,
     color: primary ? colors.cyan : colors.textMuted,
@@ -147,7 +147,7 @@ export function PublishSequencePanel({ project, onProjectUpdated }: {
                 disabled={saving}
                 aria-label={`Step ${i + 1} command`}
                 style={{
-                  flex: 1, minWidth: 0, padding: '6px 8px', borderRadius: 6,
+                  flex: 1, minWidth: 0, padding: '6px 8px', borderRadius: radius.sm,
                   background: 'rgba(255,255,255,0.03)', border: `1px solid ${colors.border}`,
                   color: colors.text, fontFamily: font.mono, fontSize: 11, outline: 'none',
                 }}
@@ -159,7 +159,7 @@ export function PublishSequencePanel({ project, onProjectUpdated }: {
                 disabled={saving}
                 aria-label={`Step ${i + 1} timeout in seconds`}
                 style={{
-                  width: 62, flexShrink: 0, padding: '6px 8px', borderRadius: 6,
+                  width: 62, flexShrink: 0, padding: '6px 8px', borderRadius: radius.sm,
                   background: 'rgba(255,255,255,0.03)', border: `1px solid ${colors.border}`,
                   color: colors.text, fontFamily: font.mono, fontSize: 11, outline: 'none',
                 }}
@@ -210,7 +210,7 @@ export function PublishSequencePanel({ project, onProjectUpdated }: {
               {s.timeoutSecs !== undefined && (
                 <span style={{
                   fontSize: 10, color: colors.textDim, flexShrink: 0,
-                  padding: '1px 6px', borderRadius: 4, background: 'rgba(255,255,255,0.06)',
+                  padding: '1px 6px', borderRadius: radius.xs, background: 'rgba(255,255,255,0.06)',
                 }}>
                   {s.timeoutSecs}s
                 </span>

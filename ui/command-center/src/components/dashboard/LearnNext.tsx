@@ -13,7 +13,7 @@
 import { useEffect, useState } from 'react';
 import { apiFetch } from '../../lib/api';
 import { useTheme } from '../../styles/useTheme';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useCommandCenter } from '../../lib/store';
 import { setSpeakReplies } from '../../lib/speakReplies';
 
@@ -232,7 +232,7 @@ export function LearnNext() {
             height: 26,
             display: 'grid',
             placeItems: 'center',
-            borderRadius: 8,
+            borderRadius: radius.md,
             border: 'none',
             background: 'transparent',
             color: colors.textDim,

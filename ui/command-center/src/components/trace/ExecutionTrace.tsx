@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { useCommandCenter } from '../../lib/store';
 import { summarizeTraceEvent } from '../../lib/traceEvents';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 /**
@@ -36,7 +36,7 @@ export function ExecutionTrace({ onClose }: { onClose?: () => void } = {}) {
         {onClose && (
           <button
             onClick={onClose}
-            style={{ height: 26, padding: '0 10px', borderRadius: 8, background: 'transparent', border: `1px solid ${colors.border}`, color: colors.textMuted, cursor: 'pointer', fontFamily: font.body, fontSize: 12 }}
+            style={{ height: 26, padding: '0 10px', borderRadius: radius.md, background: 'transparent', border: `1px solid ${colors.border}`, color: colors.textMuted, cursor: 'pointer', fontFamily: font.body, fontSize: 12 }}
           >Close</button>
         )}
       </div>

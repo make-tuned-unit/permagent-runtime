@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useCommandCenter } from '../../lib/store';
 import { apiFetch } from '../../lib/api';
@@ -133,7 +133,7 @@ function ModeToggle({ mode, onChange }: { mode: PeopleMode; onChange: (m: People
   ];
   return (
     <div style={{
-      display: 'inline-flex', gap: 2, padding: 2, borderRadius: 8,
+      display: 'inline-flex', gap: 2, padding: 2, borderRadius: radius.md,
       background: 'rgba(255,255,255,0.04)', border: `1px solid ${colors.border}`,
     }}>
       {tabs.map(t => {
@@ -143,7 +143,7 @@ function ModeToggle({ mode, onChange }: { mode: PeopleMode; onChange: (m: People
             key={t.key}
             onClick={() => onChange(t.key)}
             style={{
-              padding: '4px 12px', borderRadius: 6, cursor: 'pointer', border: 'none',
+              padding: '4px 12px', borderRadius: radius.sm, cursor: 'pointer', border: 'none',
               background: active ? colors.cyanSoft : 'transparent',
               color: active ? colors.cyan : colors.textMuted,
               fontFamily: font.body, fontSize: 12, fontWeight: active ? 600 : 500,

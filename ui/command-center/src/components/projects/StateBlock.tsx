@@ -8,7 +8,7 @@
  * renders as an empty list is the defect this exists to make unwriteable.
  */
 
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 export function StateBlock({ tone, title, detail, onRetry, compact }: {
@@ -37,7 +37,7 @@ export function StateBlock({ tone, title, detail, onRetry, compact }: {
         <button
           onClick={onRetry}
           style={{
-            marginTop: 6, padding: '5px 14px', borderRadius: 6, cursor: 'pointer',
+            marginTop: 6, padding: '5px 14px', borderRadius: radius.sm, cursor: 'pointer',
             background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
             color: colors.cyan, fontSize: 11, fontWeight: 600, fontFamily: font.body,
           }}

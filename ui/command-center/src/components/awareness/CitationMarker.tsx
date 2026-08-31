@@ -3,7 +3,7 @@ import type { ProbedMemoryRef, RecalledMemoryRef } from '../../lib/store';
 import { useCommandCenter } from '../../lib/store';
 import type { BrainMemoryTarget } from '../brain/brainMemoryFocus';
 import { probedFocusTarget, recalledFocusTarget } from './citationFocus';
-import { font, ease, type ThemeColors } from '../../styles/tokens';
+import { ease, font, radius, type ThemeColors } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
 interface Props {
@@ -54,7 +54,7 @@ export function CitationMarker({ probed, recalled }: Props) {
           marginBottom: 6, width: 320,
           background: colors.surface, backdropFilter: 'blur(16px)',
           border: `1px solid ${colors.borderHi}`,
-          borderRadius: 8, padding: '8px 0',
+          borderRadius: radius.md, padding: '8px 0',
           boxShadow: colors.cardShadow,
           ...(colors.cardHighlight ? { boxShadow: `${colors.cardShadow}, ${colors.cardHighlight}` } : {}),
           zIndex: 100,

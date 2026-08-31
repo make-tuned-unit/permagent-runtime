@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, type ReactNode } from 'react';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { apiFetch, api } from '../../lib/api';
 import { useGoalEvents } from '../../lib/useGoalEvents';
@@ -91,7 +91,7 @@ export function ProjectOverview({ project, onProjectUpdated }: {
             onClick={() => growProject(project.id)}
             style={{
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-              padding: '11px 14px', borderRadius: 12, cursor: 'pointer',
+              padding: '11px 14px', borderRadius: radius.lg, cursor: 'pointer',
               background: `linear-gradient(90deg, ${colors.cyan}22, ${colors.purple}22)`,
               border: `1px solid ${colors.borderHi}`, color: colors.text,
               fontFamily: font.body, fontSize: 13, fontWeight: 600,
@@ -274,7 +274,7 @@ export function WatcherInsightsPanel({ project }: { project: Project }) {
                       title={`Open "${c.title}" on the board`}
                       style={{
                         fontSize: 10, color: colors.cyan, background: colors.cyanSoft,
-                        border: 'none', borderRadius: 4, padding: '2px 7px',
+                        border: 'none', borderRadius: radius.xs, padding: '2px 7px',
                         cursor: 'pointer', fontFamily: font.body, maxWidth: 260,
                         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                       }}
@@ -437,7 +437,7 @@ function KeyFactsPanel({ project }: { project: Project }) {
             <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
               {project.tags.map((tag, ti) => (
                 <span key={`${tag}-${ti}`} style={{
-                  fontSize: 10, padding: '1px 6px', borderRadius: 4,
+                  fontSize: 10, padding: '1px 6px', borderRadius: radius.xs,
                   background: chipVeil, color: colors.textDim,
                 }}>
                   {tag}
@@ -496,7 +496,7 @@ function RootPathRow({ project }: { project: Project }) {
             onClick={openInBuild}
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 5,
-              padding: '3px 9px', borderRadius: 6, cursor: 'pointer',
+              padding: '3px 9px', borderRadius: radius.sm, cursor: 'pointer',
               background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
               color: colors.cyan, fontSize: 11, fontWeight: 600, fontFamily: font.body,
               transition: reduceMotion ? 'none' : 'all 150ms',
@@ -514,7 +514,7 @@ function RootPathRow({ project }: { project: Project }) {
             aria-label="Copy root path"
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 5,
-              padding: '3px 9px', borderRadius: 6, cursor: 'pointer',
+              padding: '3px 9px', borderRadius: radius.sm, cursor: 'pointer',
               background: 'rgba(255,255,255,0.03)', border: `1px solid ${colors.border}`,
               color: copied ? colors.success : colors.textMuted, fontSize: 11, fontFamily: font.body,
               transition: reduceMotion ? 'none' : 'all 150ms',
@@ -745,7 +745,7 @@ export function TasksPanel({ columns, cards, loading, error, onRetry, onOpenGoal
                         onClick={isGoal ? () => onOpenGoal(card.id) : undefined}
                         onKeyDown={isGoal ? e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenGoal(card.id); } } : undefined}
                         style={{
-                          fontSize: 12, padding: '4px 8px', borderRadius: 6,
+                          fontSize: 12, padding: '4px 8px', borderRadius: radius.sm,
                           background: rowVeil,
                           color: colors.text, cursor: isGoal ? 'pointer' : 'default',
                           display: 'flex', alignItems: 'center', gap: 6,
@@ -797,7 +797,7 @@ function fieldInput(colors: ThemeColors): React.CSSProperties {
   return {
     fontSize: 12, fontFamily: font.body, color: colors.text,
     background: 'rgba(255,255,255,0.04)', border: `1px solid ${colors.border}`,
-    borderRadius: 6, padding: '6px 8px', outline: 'none',
+    borderRadius: radius.sm, padding: '6px 8px', outline: 'none',
     textTransform: 'none', letterSpacing: 'normal', fontWeight: 400,
   };
 }
@@ -823,7 +823,7 @@ function EditControls({ saving, error, onSave, onCancel }: {
           onClick={onSave}
           disabled={saving}
           style={{
-            padding: '4px 12px', borderRadius: 6, cursor: saving ? 'default' : 'pointer',
+            padding: '4px 12px', borderRadius: radius.sm, cursor: saving ? 'default' : 'pointer',
             background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
             color: colors.cyan, fontSize: 11, fontWeight: 600, fontFamily: font.body,
             opacity: saving ? 0.6 : 1,
@@ -835,7 +835,7 @@ function EditControls({ saving, error, onSave, onCancel }: {
           onClick={onCancel}
           disabled={saving}
           style={{
-            padding: '4px 12px', borderRadius: 6, cursor: saving ? 'default' : 'pointer',
+            padding: '4px 12px', borderRadius: radius.sm, cursor: saving ? 'default' : 'pointer',
             background: 'none', border: `1px solid ${colors.border}`,
             color: colors.textMuted, fontSize: 11, fontFamily: font.body,
           }}

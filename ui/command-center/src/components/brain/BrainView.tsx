@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { font, ease } from '../../styles/tokens';
+import { ease, font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
@@ -266,7 +266,7 @@ export function BrainView() {
             The memory graph didn't load. It may be a brief hiccup — try again.
           </p>
           <button onClick={() => refresh()} style={{
-            marginTop: 4, padding: '8px 18px', borderRadius: 8,
+            marginTop: 4, padding: '8px 18px', borderRadius: radius.md,
             border: `1px solid ${colors.borderHi}`, background: colors.cyanSoft,
             color: colors.cyan, fontSize: 13, fontWeight: 600, cursor: 'pointer',
           }}>Try again</button>
@@ -313,7 +313,7 @@ export function BrainView() {
         <div style={{
           display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px',
           background: glass.bg, backdropFilter: 'blur(16px)',
-          border: `1px solid ${theme === 'silver' ? colors.cyan + '20' : 'rgba(0,213,255,0.12)'}`, borderRadius: 999,
+          border: `1px solid ${theme === 'silver' ? colors.cyan + '20' : 'rgba(0,213,255,0.12)'}`, borderRadius: radius.pill,
         }}>
           <Mobius size={28} state="idle" logoMode />
           <span style={{ fontFamily: font.display, fontSize: 13, fontWeight: 700, color: colors.text }}>
@@ -335,7 +335,7 @@ export function BrainView() {
             style={{
               width: '100%', fontFamily: font.body, fontSize: 13, color: colors.text,
               background: theme === 'silver' ? 'rgba(255,255,255,0.92)' : 'rgba(20,28,48,0.65)', backdropFilter: 'blur(12px)',
-              border: `1px solid ${glass.border}`, borderRadius: 999,
+              border: `1px solid ${glass.border}`, borderRadius: radius.pill,
               padding: '9px 16px', outline: 'none',
             }}
           />
@@ -353,7 +353,7 @@ export function BrainView() {
               fontFamily: font.body, fontSize: 11, fontWeight: 500,
               color: filters[f.key] ? colors.text : colors.textDim,
               background: filters[f.key] ? colors.cyanSoft : 'transparent',
-              border: 'none', borderRadius: 6, padding: '4px 8px', cursor: 'pointer',
+              border: 'none', borderRadius: radius.sm, padding: '4px 8px', cursor: 'pointer',
               transition: `all 160ms ${ease.out}`,
             }}>
               <span style={{ marginRight: 4 }}>{f.shape}</span>{f.label}
@@ -376,7 +376,7 @@ export function BrainView() {
               fontFamily: font.body, fontSize: 11, fontWeight: 500,
               color: TOPIC_KEYS.some(k => filters[k]) ? colors.text : colors.textDim,
               background: TOPIC_KEYS.every(k => filters[k]) ? colors.cyanSoft : TOPIC_KEYS.some(k => filters[k]) ? `${colors.cyanSoft}88` : 'transparent',
-              border: 'none', borderRadius: 6, padding: '4px 8px', cursor: 'pointer',
+              border: 'none', borderRadius: radius.sm, padding: '4px 8px', cursor: 'pointer',
               transition: `all 160ms ${ease.out}`,
             }}>
               <span style={{ marginRight: 4 }}>◆</span>topics
@@ -405,7 +405,7 @@ export function BrainView() {
               fontFamily: font.body, fontSize: 11, fontWeight: 500,
               color: filters.memory ? colors.text : colors.textDim,
               background: filters.memory ? colors.cyanSoft : 'transparent',
-              border: 'none', borderRadius: 6, padding: '4px 8px', cursor: 'pointer',
+              border: 'none', borderRadius: radius.sm, padding: '4px 8px', cursor: 'pointer',
               transition: `all 160ms ${ease.out}`,
             }}>
               <span style={{ marginRight: 4 }}>·</span>memories
@@ -417,14 +417,14 @@ export function BrainView() {
         <div style={{
           display: 'flex', alignItems: 'center', gap: 2, padding: '4px 6px',
           background: glass.bg, backdropFilter: 'blur(16px)',
-          border: `1px solid ${glass.border}`, borderRadius: 8,
+          border: `1px solid ${glass.border}`, borderRadius: radius.md,
         }}>
           {(['graph', 'list'] as const).map(mode => (
             <button key={mode} onClick={() => setViewMode(mode)} style={{
               fontFamily: font.mono, fontSize: 10, fontWeight: 600,
               color: viewMode === mode ? colors.text : colors.textDim,
               background: viewMode === mode ? colors.cyanSoft : 'transparent',
-              border: 'none', borderRadius: 6, padding: '4px 10px', cursor: 'pointer',
+              border: 'none', borderRadius: radius.sm, padding: '4px 10px', cursor: 'pointer',
               textTransform: 'uppercase', letterSpacing: '0.05em',
               transition: `all 160ms ${ease.out}`,
             }}>
@@ -440,7 +440,7 @@ export function BrainView() {
           position: 'fixed', left: hover.x + 14, top: hover.y + 14, zIndex: 20,
           maxWidth: 280, padding: '8px 12px',
           background: theme === 'silver' ? 'rgba(255,255,255,0.95)' : 'rgba(20,28,48,0.9)', backdropFilter: 'blur(12px)',
-          border: `1px solid ${colors.borderHi}`, borderRadius: 8,
+          border: `1px solid ${colors.borderHi}`, borderRadius: radius.md,
           boxShadow: theme === 'silver' ? '0 2px 12px rgba(30,37,48,0.10)' : 'none',
           fontFamily: font.body, fontSize: 12, color: colors.text,
           pointerEvents: 'none',
@@ -465,7 +465,7 @@ export function BrainView() {
           backdropFilter: 'blur(24px) saturate(140%)',
           WebkitBackdropFilter: 'blur(24px) saturate(140%)',
           border: `1px solid ${theme === 'silver' ? 'rgba(167,176,190,0.35)' : 'rgba(0,213,255,0.16)'}`,
-          borderRadius: 16, padding: 24,
+          borderRadius: radius.xl, padding: 24,
           boxShadow: theme === 'silver'
             ? '0 24px 60px rgba(30,37,48,0.12), inset 0 1px 0 rgba(255,255,255,0.8)'
             : '0 24px 60px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.06)',
@@ -492,7 +492,7 @@ export function BrainView() {
                   <span style={{
                     fontFamily: font.mono, fontSize: 10, fontWeight: 500,
                     color: colors.textMuted, letterSpacing: '0.06em',
-                    border: `1px solid ${colors.border}`, borderRadius: 999, padding: '1px 7px',
+                    border: `1px solid ${colors.border}`, borderRadius: radius.pill, padding: '1px 7px',
                     textTransform: 'uppercase',
                   }}>{(selected.data as GraphMemory).layer}</span>
                 )}
@@ -558,7 +558,7 @@ export function BrainView() {
                       alignSelf: 'flex-start', marginBottom: 16,
                       fontFamily: font.body, fontSize: 12, fontWeight: 600, color: colors.cyan,
                       background: colors.cyanSoft, cursor: 'pointer',
-                      border: `1px solid ${colors.borderHi}`, borderRadius: 8, padding: '6px 12px',
+                      border: `1px solid ${colors.borderHi}`, borderRadius: radius.md, padding: '6px 12px',
                       transition: chipTransition,
                     }}
                     onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = colors.cyanGlow; }}
@@ -592,7 +592,7 @@ export function BrainView() {
                         title={interactive ? `Show memories that mention ${selected.label}` : undefined}
                         style={{
                           textAlign: 'left', background: 'transparent', border: 'none', padding: 0,
-                          cursor: interactive ? 'pointer' : 'default', borderRadius: 6,
+                          cursor: interactive ? 'pointer' : 'default', borderRadius: radius.sm,
                           transition: chipTransition,
                         }}
                         onMouseEnter={e => { if (interactive) (e.currentTarget as HTMLButtonElement).style.opacity = '0.7'; }}
@@ -623,7 +623,7 @@ export function BrainView() {
                     )}
                     <p style={{
                       fontFamily: font.mono, fontSize: 11, color: colors.textMuted, lineHeight: 1.6, margin: 0,
-                      padding: '10px 12px', background: theme === 'silver' ? 'rgba(30,37,48,0.04)' : 'rgba(0,0,0,0.2)', borderRadius: 8,
+                      padding: '10px 12px', background: theme === 'silver' ? 'rgba(30,37,48,0.04)' : 'rgba(0,0,0,0.2)', borderRadius: radius.md,
                       whiteSpace: 'pre-wrap', wordBreak: 'break-word',
                     }}>
                       {mem.text}
@@ -671,7 +671,7 @@ export function BrainView() {
                               style={{
                                 fontFamily: font.body, fontSize: 11, fontWeight: 500, color: colors.cyan,
                                 background: colors.cyanSoft, cursor: 'pointer',
-                                border: `1px solid ${colors.borderHi}`, borderRadius: 999, padding: '4px 10px',
+                                border: `1px solid ${colors.borderHi}`, borderRadius: radius.pill, padding: '4px 10px',
                                 transition: chipTransition,
                               }}
                               onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = colors.cyanGlow; }}

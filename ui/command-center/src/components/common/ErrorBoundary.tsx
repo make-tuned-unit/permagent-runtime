@@ -5,6 +5,7 @@
 // shell down with it.
 
 import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { radius } from '../../styles/tokens';
 
 interface Props {
   /** Human label for what failed, e.g. "the World View". */
@@ -64,7 +65,7 @@ export class ErrorBoundary extends Component<Props, State> {
           style={{
             marginTop: 4,
             padding: '8px 18px',
-            borderRadius: 8,
+            borderRadius: radius.md,
             border: '1px solid rgba(0,213,255,0.4)',
             background: 'rgba(0,213,255,0.1)',
             color: '#00D5FF',

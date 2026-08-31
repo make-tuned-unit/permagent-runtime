@@ -16,7 +16,7 @@ import { FiFile, FiTrash2, FiUploadCloud } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { projectMemoryPreview } from '../brain/brainMemoryFocus';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Panel } from './Panel';
 import { DocumentViewer, formatSize } from './DocumentViewer';
@@ -144,7 +144,7 @@ export function DocumentsPanel({ project }: { project: Project }) {
           style={{
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
             padding: '10px 12px', marginBottom: docs.length ? 8 : 0, cursor: 'pointer',
-            borderRadius: 8, fontSize: 11,
+            borderRadius: radius.md, fontSize: 11,
             color: dragging ? colors.cyan : colors.textDim,
             border: `1px dashed ${dragging ? colors.cyan : colors.border}`,
             background: dragging ? colors.cyanSoft : 'transparent',

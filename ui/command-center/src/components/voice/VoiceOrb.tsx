@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { orbAmp, orbBands, orbMotionFor, orbSpin } from './orbDrive';
 import { useTheme } from '../../styles/useTheme';
-import { font, ease } from '../../styles/tokens';
+import { ease, font, radius } from '../../styles/tokens';
 
 /**
  * VoiceOrb — the full-window conversation-mode takeover.
@@ -358,7 +358,7 @@ export function VoiceOrb({
                 color: '#fff',
                 lineHeight: 1.15,
                 background: 'rgba(0,0,0,0.72)',
-                borderRadius: 16,
+                borderRadius: radius.xl,
                 padding: '12px 18px',
               }}
             >

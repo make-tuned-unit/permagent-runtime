@@ -23,6 +23,7 @@ import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/useTheme';
 import { VoiceVisualizer } from './VoiceVisualizer';
 import { handsFreeStatusLabel } from './voiceStatus';
+import { radius } from '../../styles/tokens';
 
 const STATE_LABELS: Record<VoiceState, string> = {
   idle: '',
@@ -198,7 +199,7 @@ export function VoiceButton() {
           : STATE_LABELS[state]
         }
         className={`transition ${isBusy ? 'cursor-pointer' : ''}`}
-        style={{ width: 28, height: 28, borderRadius: 6, flexShrink: 0, display: 'grid', placeItems: 'center', ...btnColors }}
+        style={{ width: 28, height: 28, borderRadius: radius.sm, flexShrink: 0, display: 'grid', placeItems: 'center', ...btnColors }}
         onMouseEnter={e => { if (!isActive) e.currentTarget.style.color = colors.text; }}
         onMouseLeave={e => { if (!isActive) e.currentTarget.style.color = colors.textMuted; }}
       >
@@ -235,7 +236,7 @@ export function VoiceButton() {
           style={{
             display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer',
             border: `1px solid ${colors.cyan}80`, backgroundColor: colors.cyanSoft,
-            borderRadius: 6, padding: '3px 8px',
+            borderRadius: radius.sm, padding: '3px 8px',
           }}
         >
           {state === 'playing' ? (

@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { font, ease } from '../../styles/tokens';
+import { ease, font, radius } from '../../styles/tokens';
 import { api } from '../../lib/api';
 import { wireEventType } from '../../lib/wireEvent';
 import { useCommandCenter } from '../../lib/store';
@@ -173,7 +173,7 @@ export function InspectionPanel({ onClose }: Props) {
           What your agent sees
         </span>
         <button onClick={togglePause} style={{
-          padding: '4px 10px', borderRadius: 4, fontSize: 11, fontWeight: 500,
+          padding: '4px 10px', borderRadius: radius.xs, fontSize: 11, fontWeight: 500,
           background: paused ? `${colors.warning}1f` : colors.cyanSoft,
           border: `1px solid ${paused ? `${colors.warning}4d` : colors.border}`,
           color: paused ? colors.warning : colors.cyan, cursor: 'pointer',
@@ -181,14 +181,14 @@ export function InspectionPanel({ onClose }: Props) {
           {paused ? 'Resume' : 'Pause'}
         </button>
         <button onClick={openBrain} style={{
-          padding: '4px 10px', borderRadius: 4, fontSize: 11, fontWeight: 500,
+          padding: '4px 10px', borderRadius: radius.xs, fontSize: 11, fontWeight: 500,
           background: colors.surfaceHi, border: `1px solid ${colors.border}`,
           color: colors.textMuted, cursor: 'pointer',
         }}>
           Open Brain
         </button>
         <button onClick={onClose} style={{
-          width: 24, height: 24, borderRadius: 4,
+          width: 24, height: 24, borderRadius: radius.xs,
           background: colors.surfaceHi, border: `1px solid ${colors.border}`,
           color: colors.textMuted, cursor: 'pointer',
           display: 'grid', placeItems: 'center',

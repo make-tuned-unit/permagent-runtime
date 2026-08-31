@@ -25,7 +25,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { contactLabel, isFollowUpDue, isQuiet } from './contactAge';
 import type { DirectoryPerson } from '../projects/types';
@@ -192,7 +192,7 @@ export function PeopleDirectory() {
             fontSize: 12,
             fontFamily: font.body,
             padding: '6px 10px',
-            borderRadius: 6,
+            borderRadius: radius.sm,
             border: `1px solid ${colors.border}`,
             background: 'transparent',
             color: colors.text,
@@ -233,7 +233,7 @@ export function PeopleDirectory() {
               fontSize: 12,
               fontFamily: font.body,
               padding: '6px 10px',
-              borderRadius: 6,
+              borderRadius: radius.sm,
               border: `1px solid ${colors.border}`,
               background: 'transparent',
               color: colors.text,
@@ -314,7 +314,7 @@ export function PeopleDirectory() {
                   fontSize: 11,
                   fontFamily: font.body,
                   padding: '2px 8px',
-                  borderRadius: 4,
+                  borderRadius: radius.xs,
                   cursor: 'pointer',
                   border: `1px solid ${cohort === key ? colors.cyan : colors.border}`,
                   background: cohort === key ? colors.cyanSoft : 'transparent',
@@ -337,7 +337,7 @@ export function PeopleDirectory() {
                   textAlign: 'left',
                   background: rowVeil,
                   border: `1px solid ${colors.border}`,
-                  borderRadius: 6,
+                  borderRadius: radius.sm,
                   padding: '8px 10px',
                   cursor: 'pointer',
                   fontFamily: font.body,
@@ -357,7 +357,7 @@ export function PeopleDirectory() {
                       fontSize: 10,
                       color: colors.textDim,
                       border: `1px solid ${colors.border}`,
-                      borderRadius: 4,
+                      borderRadius: radius.xs,
                       padding: '1px 5px',
                     }}
                   >
@@ -365,7 +365,7 @@ export function PeopleDirectory() {
                   </span>
                 )}
                 {isFollowUpDue(p.next_follow_up_at) && (
-                  <span style={{ fontSize: 10, color: colors.cyan, border: `1px solid ${colors.cyan}`, borderRadius: 4, padding: '1px 5px' }}>
+                  <span style={{ fontSize: 10, color: colors.cyan, border: `1px solid ${colors.cyan}`, borderRadius: radius.xs, padding: '1px 5px' }}>
                     follow up
                   </span>
                 )}
@@ -386,7 +386,7 @@ export function PeopleDirectory() {
                           fontSize: 10,
                           color: colors.cyan,
                           background: colors.cyanSoft,
-                          borderRadius: 4,
+                          borderRadius: radius.xs,
                           padding: '1px 6px',
                         }}
                       >

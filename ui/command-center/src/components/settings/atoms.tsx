@@ -47,7 +47,7 @@ export function TextInput({ value, onChange, placeholder, mono, multi, disabled 
       style={{
         width: '100%', padding: multi ? 12 : '8px 12px',
         background: colors.inputBg, border: `1px solid ${colors.border}`,
-        borderRadius: 8, color: colors.text,
+        borderRadius: radius.md, color: colors.text,
         fontFamily: mono ? font.mono : font.body,
         fontSize: mono ? 12 : 13, outline: 'none',
         minHeight: multi ? 80 : 'auto', resize: multi ? 'vertical' : 'none',
@@ -61,7 +61,7 @@ export function Chip({ on, onClick, children }: { on: boolean; onClick?: () => v
   const { colors } = useTheme();
   return (
     <button onClick={onClick} style={{
-      padding: '6px 12px', borderRadius: 999, cursor: 'pointer',
+      padding: '6px 12px', borderRadius: radius.pill, cursor: 'pointer',
       fontFamily: font.body, fontSize: 12, fontWeight: 500,
       background: on ? colors.cyanSoft : 'transparent',
       border: `1px solid ${on ? colors.borderHi : colors.border}`,
@@ -74,7 +74,7 @@ export function Toggle({ on, onChange, disabled = false }: { on: boolean; onChan
   const { colors } = useTheme();
   return (
     <button disabled={disabled} onClick={() => onChange?.(!on)} style={{
-      width: 36, height: 22, borderRadius: 999, padding: 2,
+      width: 36, height: 22, borderRadius: radius.pill, padding: 2,
       background: on ? colors.cyan : colors.surfaceHi,
       border: 'none', cursor: disabled ? 'not-allowed' : 'pointer', position: 'relative',
       opacity: disabled ? 0.55 : 1,

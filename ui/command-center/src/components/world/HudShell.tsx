@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { COLORS } from './constants';
+import { radius } from '../../styles/tokens';
 
 // ── Tab definition ────────────────────────────────────────────────
 
@@ -170,7 +171,7 @@ const panelStyle: React.CSSProperties = {
   background: 'rgba(10, 14, 26, 0.88)',
   backdropFilter: 'blur(12px)',
   border: `1px solid ${COLORS.marbleVeining}25`,
-  borderRadius: 8,
+  borderRadius: radius.md,
   fontFamily: 'monospace',
   color: COLORS.primaryMarble,
   zIndex: 20,

@@ -14,7 +14,7 @@ import { useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../../lib/api';
 import type { BrainGraph, GraphEntity } from '../brain/useBrainData';
 import { useTheme } from '../../styles/useTheme';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 
 const LS_KEY = 'permagent-echo-state';
@@ -296,7 +296,7 @@ function dismissBtn(colors: ReturnType<typeof useTheme>['colors']): React.CSSPro
     height: 26,
     display: 'grid',
     placeItems: 'center',
-    borderRadius: 8,
+    borderRadius: radius.md,
     border: 'none',
     background: 'transparent',
     color: colors.textDim,

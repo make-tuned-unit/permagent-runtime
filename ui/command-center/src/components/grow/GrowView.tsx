@@ -2108,7 +2108,7 @@ function ActionVerify({
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <span style={{
                     ...label, color: meta.color, border: `1px solid ${meta.color}`,
-                    borderRadius: 999, padding: '1px 7px',
+                    borderRadius: radius.pill, padding: '1px 7px',
                   }}>{meta.label}</span>
                   <span style={{ ...label }}>{o.windowDays}-day window</span>
                   {o.windowDays < FINAL_WINDOW_DAYS && (
@@ -2630,7 +2630,7 @@ function ActionCard({
             fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em',
             textTransform: 'uppercase', color: tint,
             border: `1px solid ${tint}`,
-            borderRadius: 999, padding: '1px 7px', flexShrink: 0,
+            borderRadius: radius.pill, padding: '1px 7px', flexShrink: 0,
           }}>{action.category}</span>
         )}
         <span style={{ fontFamily: font.display, fontSize: 14, fontWeight: 600, color: colors.text }}>

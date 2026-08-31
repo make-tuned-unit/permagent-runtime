@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { font, ease } from '../../styles/tokens';
+import { ease, font, radius } from '../../styles/tokens';
 import { api } from '../../lib/api';
 import type { GraphMemory, GraphEntity } from './useBrainData';
 import type { TypeFilters } from './BrainScene';
@@ -247,7 +247,7 @@ export function BrainList({
                 onClick={() => loadPage(true)}
                 style={{
                   fontSize: 12, fontFamily: font.body, fontWeight: 600, color: colors.cyan,
-                  background: 'none', border: `1px solid ${colors.borderHi}`, borderRadius: 8,
+                  background: 'none', border: `1px solid ${colors.borderHi}`, borderRadius: radius.md,
                   padding: '5px 14px', cursor: 'pointer',
                 }}
               >
@@ -316,7 +316,7 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
       style={{
         padding: '10px 14px', marginBottom: 2, cursor: 'pointer',
-        borderRadius: 8,
+        borderRadius: radius.md,
         background: rowBg,
         border: selected ? `1px solid ${colors.cyan}40` : '1px solid transparent',
         outline: 'none',
@@ -423,7 +423,7 @@ function EntityRow({ entity, selected, onClick }: {
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
       style={{
         padding: '8px 14px', marginBottom: 2, cursor: 'pointer',
-        borderRadius: 8, background: rowBg,
+        borderRadius: radius.md, background: rowBg,
         border: selected ? `1px solid ${colors.cyan}40` : '1px solid transparent',
         outline: 'none',
         transition: `all 160ms ${ease.out}`,
@@ -439,7 +439,7 @@ function EntityRow({ entity, selected, onClick }: {
         flexShrink: 0, width: 62, justifyContent: 'flex-end',
       }}>
         <span aria-hidden style={{
-          width: 6, height: 6, borderRadius: 999, background: typeColor, flexShrink: 0,
+          width: 6, height: 6, borderRadius: radius.pill, background: typeColor, flexShrink: 0,
         }} />
         <span style={{
           fontFamily: font.mono, fontSize: 10, fontWeight: 600,

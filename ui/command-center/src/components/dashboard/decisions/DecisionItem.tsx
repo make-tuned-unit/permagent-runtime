@@ -295,7 +295,7 @@ export function DecisionItem({ decision: d, onAnswer, onConflictSettled, onCance
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span style={{
           fontFamily: font.mono, fontSize: 10, letterSpacing: '0.06em',
-          textTransform: 'uppercase', borderRadius: 4, padding: '2px 6px',
+          textTransform: 'uppercase', borderRadius: radius.xs, padding: '2px 6px',
           flexShrink: 0, color: badge.color, background: badge.bg,
         }}>
           {badge.label}

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { apiFetch } from '../../lib/api';
 import { insertRoadmapGoal } from '../../lib/roadmapClient';
@@ -306,7 +306,7 @@ projects, onOpenProject, onStatusChange }: {
             display: 'grid',
             gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
             gap: 12,
-            borderRadius: 12,
+            borderRadius: radius.lg,
             padding: 4,
             border: dragOverCol === 'active' ? `1px solid ${colors.borderHi}` : '1px solid transparent',
             background: dragOverCol === 'active' ? colors.cyanSoft : 'transparent',
@@ -367,7 +367,7 @@ projects, onOpenProject, onStatusChange }: {
                 <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                   {col.label}
                 </span>
-                <span style={{ fontSize: 10, color: colors.textDim, background: chipVeil, padding: '1px 6px', borderRadius: 8 }}>
+                <span style={{ fontSize: 10, color: colors.textDim, background: chipVeil, padding: '1px 6px', borderRadius: radius.md }}>
                   {colProjects.length}
                 </span>
                 {!isOpen && colProjects.length > 0 && (
@@ -424,7 +424,7 @@ project, onOpen, onDragStart }: {
       onClick={onOpen}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); } }}
       style={{
-        padding: '10px 12px', borderRadius: 8,
+        padding: '10px 12px', borderRadius: radius.md,
         background: colors.surface,
         border: `1px solid ${colors.border}`,
         cursor: 'pointer',
@@ -437,7 +437,7 @@ project, onOpen, onDragStart }: {
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         {isPersonal && (
-          <span style={{ fontSize: 10, padding: '1px 5px', borderRadius: 4, background: colors.cyanSoft, color: colors.cyan, fontWeight: 600 }}>
+          <span style={{ fontSize: 10, padding: '1px 5px', borderRadius: radius.xs, background: colors.cyanSoft, color: colors.cyan, fontWeight: 600 }}>
             DEFAULT
           </span>
         )}
@@ -453,7 +453,7 @@ project, onOpen, onDragStart }: {
       {project.tags.length > 0 && (
         <div style={{ display: 'flex', gap: 4, marginTop: 6, flexWrap: 'wrap' }}>
           {project.tags.slice(0, 3).map((tag, ti) => (
-            <span key={`${tag}-${ti}`} style={{ fontSize: 10, padding: '1px 5px', borderRadius: 4, background: tagVeil, color: colors.textDim }}>
+            <span key={`${tag}-${ti}`} style={{ fontSize: 10, padding: '1px 5px', borderRadius: radius.xs, background: tagVeil, color: colors.textDim }}>
               {tag}
             </span>
           ))}
@@ -739,7 +739,7 @@ export function ProjectKanban({ project }: { project: Project }) {
                 <span style={{ fontSize: 12, fontWeight: 600, color: colors.textMuted, textTransform: 'uppercase', letterSpacing: '0.05em', flex: 1 }}>
                   {col.name}
                 </span>
-                <span style={{ fontSize: 10, color: colors.textDim, background: chipVeil, padding: '1px 6px', borderRadius: 8 }}>
+                <span style={{ fontSize: 10, color: colors.textDim, background: chipVeil, padding: '1px 6px', borderRadius: radius.md }}>
                   {colCards.length}
                 </span>
               </div>
@@ -789,7 +789,7 @@ export function ProjectKanban({ project }: { project: Project }) {
                     }}
                     placeholder="Card title..."
                     style={{
-                      padding: '6px 8px', borderRadius: 6,
+                      padding: '6px 8px', borderRadius: radius.sm,
                       background: colors.inputBg,
                       border: `1px solid ${colors.border}`,
                       color: colors.text, fontFamily: font.body, fontSize: 12,
@@ -823,7 +823,7 @@ export function ProjectKanban({ project }: { project: Project }) {
                 <button
                   onClick={() => setAddingCardCol(col.id)}
                   style={{
-                    marginTop: 8, padding: '6px 0', borderRadius: 6,
+                    marginTop: 8, padding: '6px 0', borderRadius: radius.sm,
                     background: 'transparent', border: `1px dashed ${colors.border}`,
                     color: colors.textDim, fontSize: 11, fontFamily: font.body,
                     cursor: 'pointer', transition: 'all 150ms',
@@ -854,7 +854,7 @@ export function ProjectKanban({ project }: { project: Project }) {
       {draggingCard && ghostPos && (
         <div style={{
           position: 'fixed', left: ghostPos.x + 8, top: ghostPos.y - 12,
-          padding: '6px 10px', borderRadius: 6,
+          padding: '6px 10px', borderRadius: radius.sm,
           background: colors.surface, border: `1px solid ${colors.cyan}`,
           boxShadow: colors.elevationRaised,
           fontSize: 12, fontWeight: 500, color: colors.text,
@@ -932,7 +932,7 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
           onClick={e => { e.stopPropagation(); setShowMenu(m => !m); }}
           style={{
             flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-            width: 18, height: 18, marginTop: -1, marginRight: -2, padding: 0, borderRadius: 4,
+            width: 18, height: 18, marginTop: -1, marginRight: -2, padding: 0, borderRadius: radius.xs,
             background: 'transparent', border: 'none', cursor: 'pointer',
             color: showMenu ? colors.text : colors.textDim, lineHeight: 1, fontSize: 14,
             transition: reduceMotion ? 'none' : 'color 150ms',
@@ -963,7 +963,7 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
           }}
           style={{
             marginTop: 5, fontSize: 10, padding: '2px 4px', width: '100%', boxSizing: 'border-box',
-            borderRadius: 4, border: `1px solid ${colors.border}`,
+            borderRadius: radius.xs, border: `1px solid ${colors.border}`,
             background: colors.surface, color: colors.text,
           }}
         />
@@ -973,7 +973,7 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
           onClick={e => { e.stopPropagation(); if (onSetDueDate) setEditingDue(true); }}
           title={onSetDueDate ? 'Change the due date' : undefined}
           style={{
-            fontSize: 10, padding: '1px 5px', borderRadius: 4, marginTop: 4,
+            fontSize: 10, padding: '1px 5px', borderRadius: radius.xs, marginTop: 4,
             display: 'inline-block', border: 'none',
             cursor: onSetDueDate ? 'pointer' : 'default',
             background: colors.cyanSoft, color: colors.cyan, fontFamily: font.body,
@@ -984,7 +984,7 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
       ) : null}
       {card.cardType !== 'standard' && (
         <span style={{
-          fontSize: 10, padding: '1px 5px', borderRadius: 4, marginTop: 4, display: 'inline-block',
+          fontSize: 10, padding: '1px 5px', borderRadius: radius.xs, marginTop: 4, display: 'inline-block',
           background: isGoal ? colors.purpleSoft : colors.cyanSoft,
           color: isGoal ? colors.purpleBright : colors.cyan,
         }}>
@@ -997,7 +997,7 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
           onPointerDown={e => e.stopPropagation()}
           style={{
             position: 'absolute', top: '100%', right: 0, marginTop: 2, zIndex: 10,
-            background: gradient.dropdown, border: `1px solid ${colors.border}`, borderRadius: 6,
+            background: gradient.dropdown, border: `1px solid ${colors.border}`, borderRadius: radius.sm,
             boxShadow: colors.elevationRaised, padding: 2, minWidth: 100,
           }}>
           {onCancel && (
@@ -1005,7 +1005,7 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
               role="menuitem"
               onClick={(e) => { e.stopPropagation(); setShowMenu(false); onCancel(); }}
               style={{
-                width: '100%', padding: '5px 8px', borderRadius: 4,
+                width: '100%', padding: '5px 8px', borderRadius: radius.xs,
                 background: 'transparent', border: 'none',
                 color: colors.warning, fontSize: 11, fontFamily: font.body,
                 cursor: 'pointer', textAlign: 'left',
@@ -1021,7 +1021,7 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
               role="menuitem"
               onClick={(e) => { e.stopPropagation(); setShowMenu(false); setEditingDue(true); }}
               style={{
-                width: '100%', padding: '5px 8px', borderRadius: 4,
+                width: '100%', padding: '5px 8px', borderRadius: radius.xs,
                 background: 'transparent', border: 'none',
                 color: colors.textMuted, fontSize: 11, fontFamily: font.body,
                 cursor: 'pointer', textAlign: 'left',
@@ -1037,7 +1037,7 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
               role="menuitem"
               onClick={(e) => { e.stopPropagation(); setShowMenu(false); onSetDueDate(null); }}
               style={{
-                width: '100%', padding: '5px 8px', borderRadius: 4,
+                width: '100%', padding: '5px 8px', borderRadius: radius.xs,
                 background: 'transparent', border: 'none',
                 color: colors.textMuted, fontSize: 11, fontFamily: font.body,
                 cursor: 'pointer', textAlign: 'left',
@@ -1052,7 +1052,7 @@ card, onPointerDown, onOpen, isDragging, onDelete, onCancel, onSetDueDate, highl
             role="menuitem"
             onClick={(e) => { e.stopPropagation(); setShowMenu(false); onDelete(); }}
             style={{
-              width: '100%', padding: '5px 8px', borderRadius: 4,
+              width: '100%', padding: '5px 8px', borderRadius: radius.xs,
               background: 'transparent', border: 'none',
               color: colors.danger, fontSize: 11, fontFamily: font.body,
               cursor: 'pointer', textAlign: 'left',

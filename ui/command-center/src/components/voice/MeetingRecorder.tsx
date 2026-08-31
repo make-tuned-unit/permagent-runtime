@@ -31,7 +31,7 @@ import { createPortal } from 'react-dom';
 import { useCommandCenter } from '../../lib/store';
 import { apiFetch } from '../../lib/api';
 import { toast } from '../../lib/notifications';
-import { font, ease } from '../../styles/tokens';
+import { ease, font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useMeetingDictation, formatElapsed } from '../../hooks/useMeetingDictation';
 import type { Project } from '../projects/types';
@@ -201,7 +201,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
   const cardStyle = (accent: string) => ({
     position: 'fixed' as const, right: 16, bottom: 16, zIndex: 999,
     background: gradient.dropdown, backdropFilter: 'blur(16px)',
-    border: `1px solid ${accent}`, borderRadius: 12,
+    border: `1px solid ${accent}`, borderRadius: radius.lg,
     boxShadow: '0 12px 40px rgba(0,0,0,0.6)',
     padding: '10px 14px', fontFamily: font.body,
     display: 'flex', flexDirection: 'column' as const, gap: 8,
@@ -284,7 +284,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
               width: 380, maxWidth: 'calc(100vw - 48px)', maxHeight: '70vh',
               display: 'flex', flexDirection: 'column',
               background: gradient.dropdown, backdropFilter: 'blur(16px)',
-              border: `1px solid ${colors.borderHi}`, borderRadius: 12,
+              border: `1px solid ${colors.borderHi}`, borderRadius: radius.lg,
               boxShadow: '0 12px 40px rgba(0,0,0,0.6)',
               padding: 16, fontFamily: font.body,
             }}
@@ -392,7 +392,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
                     onDoubleClick={() => { setSelectedId(p.id); void handleStart(); }}
                     aria-pressed={selectedId === p.id}
                     style={{
-                      textAlign: 'left', padding: '8px 10px', borderRadius: 8,
+                      textAlign: 'left', padding: '8px 10px', borderRadius: radius.md,
                       background: selectedId === p.id ? colors.cyanSoft : 'transparent',
                       border: `1px solid ${selectedId === p.id ? colors.borderHi : colors.border}`,
                       color: selectedId === p.id ? colors.cyan : colors.text,
@@ -561,7 +561,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
                   width: '100%', resize: 'vertical',
                   height: expanded ? 260 : 96,
                   background: colors.inputBg, color: colors.text,
-                  border: `1px solid ${colors.border}`, borderRadius: 8,
+                  border: `1px solid ${colors.border}`, borderRadius: radius.md,
                   padding: '8px 10px', fontFamily: font.body, fontSize: 12,
                   lineHeight: 1.6, outline: 'none',
                   transition: `height 220ms ${ease.out}`,

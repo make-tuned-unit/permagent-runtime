@@ -185,7 +185,7 @@ export function Dashboard() {
             <button
               onClick={retry}
               style={{
-                marginTop: 6, padding: '5px 14px', borderRadius: 6, cursor: 'pointer',
+                marginTop: 6, padding: '5px 14px', borderRadius: radius.sm, cursor: 'pointer',
                 background: colors.cyanSoft, border: `1px solid ${colors.borderHi}`,
                 color: colors.cyan, fontSize: 11, fontWeight: 600, fontFamily: font.body,
               }}
@@ -500,7 +500,7 @@ function ResizeHandle({ onPointerDown }: { onPointerDown: (e: React.PointerEvent
       title="Drag to resize — wider for a row, taller for a column"
       style={{
         position: 'absolute', bottom: 4, right: 4, width: 22, height: 22,
-        cursor: 'nwse-resize', zIndex: 5, borderRadius: 6,
+        cursor: 'nwse-resize', zIndex: 5, borderRadius: radius.sm,
         background: colors.cyanSoft, border: `1px solid ${colors.cyan}`,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}

@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
-import { font, ease } from '../../styles/tokens';
+import { ease, font, radius } from '../../styles/tokens';
 import { api } from '../../lib/api';
 import { useTheme } from '../../styles/useTheme';
 import { useCommandCenter } from '../../lib/store';
@@ -215,7 +215,7 @@ export function ChatLauncher() {
       style={{
       position: 'fixed', bottom: CHAT_LAUNCHER_MARGIN, right: CHAT_LAUNCHER_MARGIN, zIndex: 9999,
       display: 'flex', alignItems: 'center', gap: 10,
-      padding: '12px 20px', borderRadius: 999,
+      padding: '12px 20px', borderRadius: radius.pill,
       background: colors.surface, backdropFilter: 'blur(16px)',
       // Theme-safe elevation — a cool soft shadow on silver, deep on dark
       // (the hardcoded black glow was invisible on the light themes).

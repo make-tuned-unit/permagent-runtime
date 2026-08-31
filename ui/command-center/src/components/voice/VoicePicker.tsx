@@ -1,17 +1,17 @@
 import { useTheme } from '../../styles/useTheme';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useVoices, useVoicePreview } from '../../lib/useVoices';
 
 type C = ReturnType<typeof useTheme>['colors'];
 
 const selectStyle = (colors: C): React.CSSProperties => ({
-  height: 34, padding: '0 12px', borderRadius: 8,
+  height: 34, padding: '0 12px', borderRadius: radius.md,
   background: colors.inputBg, border: `1px solid ${colors.border}`,
   color: colors.text, fontFamily: font.body, fontSize: 13,
   flex: 1, cursor: 'pointer',
 });
 const btnStyle = (colors: C): React.CSSProperties => ({
-  height: 34, padding: '0 14px', borderRadius: 8,
+  height: 34, padding: '0 14px', borderRadius: radius.md,
   background: colors.inputBg, border: `1px solid ${colors.border}`,
   color: colors.text, fontFamily: font.body, fontSize: 13,
   cursor: 'pointer', whiteSpace: 'nowrap',

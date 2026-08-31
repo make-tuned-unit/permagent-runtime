@@ -178,7 +178,7 @@ function btn(colors: ReturnType<typeof useTheme>['colors'], primary: boolean) {
     fontSize: 11,
     fontWeight: 600,
     padding: '5px 10px',
-    borderRadius: 6,
+    borderRadius: radius.sm,
     cursor: 'pointer' as const,
     border: `1px solid ${primary ? colors.cyan : colors.border}`,
     background: primary ? colors.cyanSoft : 'transparent',

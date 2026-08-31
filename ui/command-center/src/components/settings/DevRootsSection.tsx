@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../../lib/api';
 import { useTheme } from '../../styles/useTheme';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 
 /**
  * The permanent home of the "where do you keep your code?" answer.
@@ -150,7 +150,7 @@ export function DevRootsSection() {
           onKeyDown={e => { if (e.key === 'Enter') void add(input); }}
           placeholder={home ? `e.g. ${home}/Documents/dev` : 'e.g. ~/Documents/dev'}
           style={{
-            flex: 1, height: 34, padding: '0 10px', borderRadius: 8,
+            flex: 1, height: 34, padding: '0 10px', borderRadius: radius.md,
             background: colors.bgDeeper, border: `1px solid ${colors.border}`,
             color: colors.text, fontFamily: font.mono, fontSize: 12, outline: 'none',
           }}
@@ -164,7 +164,7 @@ export function DevRootsSection() {
           // reason. This one is transient — type a path, or wait for the check.
           data-disabled-reason={busy ? 'checking-folder' : !input.trim() ? 'no-path-entered' : undefined}
           style={{
-            height: 34, padding: '0 14px', borderRadius: 8, flexShrink: 0,
+            height: 34, padding: '0 14px', borderRadius: radius.md, flexShrink: 0,
             background: 'transparent', border: `1px solid ${colors.cyan}66`,
             color: busy || !input.trim() ? colors.textDim : colors.cyan,
             fontFamily: font.body, fontSize: 12, fontWeight: 600,

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ease, duration } from '../../styles/tokens';
+import { duration, ease, radius } from '../../styles/tokens';
 import { ProgressDots, BackChevron } from './atoms';
 import { MomentWelcome } from './MomentWelcome';
 import { MomentHardware } from './MomentHardware';
@@ -176,7 +176,7 @@ export function WizardShell({ onComplete }: Props) {
             disabled={saving}
             style={{
               fontFamily: font.body, fontSize: 12, fontWeight: 600, color: colors.cyan,
-              background: 'none', border: `1px solid ${colors.borderHi}`, borderRadius: 8,
+              background: 'none', border: `1px solid ${colors.borderHi}`, borderRadius: radius.md,
               padding: '4px 12px', cursor: saving ? 'default' : 'pointer', flexShrink: 0,
             }}
           >{saving ? 'Retrying…' : 'Retry'}</button>

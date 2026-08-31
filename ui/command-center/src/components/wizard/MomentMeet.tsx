@@ -102,7 +102,7 @@ export function MomentMeet({ persona, setPersona, onAdvance }: Props) {
               <span key={trait} style={{
                 fontFamily: font.body, fontSize: 12, fontWeight: 500,
                 color: colors.cyan, background: colors.cyanSoft,
-                borderRadius: 999, padding: '5px 12px',
+                borderRadius: radius.pill, padding: '5px 12px',
                 display: 'inline-flex', alignItems: 'center', gap: 6,
               }}>
                 {trait}

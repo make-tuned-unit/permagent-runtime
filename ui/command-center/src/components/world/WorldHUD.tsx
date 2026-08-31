@@ -1,6 +1,7 @@
 import { useRef, useState, useEffect } from 'react';
 import type { CameraMode } from './types';
 import { COLORS } from './constants';
+import { radius } from '../../styles/tokens';
 
 interface WorldHUDProps {
   mode: CameraMode;
@@ -57,7 +58,7 @@ export function WorldHUD({
   const badgeStyle: React.CSSProperties = {
     background: 'rgba(10, 14, 26, 0.8)',
     padding: '4px 10px',
-    borderRadius: 4,
+    borderRadius: radius.xs,
     border: `1px solid ${COLORS.neonCyan}30`,
     backdropFilter: 'blur(4px)',
   };
@@ -90,7 +91,7 @@ export function WorldHUD({
             background: 'rgba(10, 14, 26, 0.9)',
             color: stationTooltip.includes('coming soon') ? COLORS.neonAmber : COLORS.neonCyan,
             padding: '8px 16px',
-            borderRadius: 8,
+            borderRadius: radius.md,
             fontFamily: 'monospace',
             fontSize: 14,
             border: `1px solid ${COLORS.neonCyan}40`,
