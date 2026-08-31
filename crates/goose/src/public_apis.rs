@@ -276,8 +276,10 @@ fn parse_link(cell: &str) -> Option<(String, String)> {
     if mid <= start || end <= mid + 2 {
         return None;
     }
-    let name = cell[start + 1..mid].trim().to_string();
-    let url = cell[mid + 2..end].trim().to_string();
+    // `.get` keeps clippy::string_slice happy and stays panic-free on
+    // non-boundary indexes (ASCII markdown cells from the catalog).
+    let name = cell.get(start + 1..mid)?.trim().to_string();
+    let url = cell.get(mid + 2..end)?.trim().to_string();
     if name.is_empty() || url.is_empty() {
         return None;
     }
@@ -417,9 +419,7 @@ pub fn instructions_from_entries(enabled: &[CatalogEntry], agent_key: Option<&st
         return if orchestrator {
             "No public data sources are enabled. The user turns them on under Settings → Data sources. Once enabled they flow to you immediately — call them with public_api_call. Do not invent a call.".into()
         } else {
-            format!(
-                "No public data sources in your domain are enabled yet. When the user turns one on under Settings → Data sources it flows to you on the next turn. Call it with public_api_call. Do not invent a call."
-            )
+            "No public data sources in your domain are enabled yet. When the user turns one on under Settings → Data sources it flows to you on the next turn. Call it with public_api_call. Do not invent a call.".into()
         };
     }
     let mut lines = if orchestrator {
