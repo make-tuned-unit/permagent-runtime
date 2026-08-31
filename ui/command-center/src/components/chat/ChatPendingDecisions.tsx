@@ -11,6 +11,7 @@ import { useState } from 'react';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useDecisions } from '../dashboard/decisions/useDecisions';
+import { DecisionInbox } from '../dashboard/decisions/DecisionInbox';
 import type { AnswerBody, Decision } from '../dashboard/decisions/types';
 import { choiceOptions } from '../dashboard/decisions/types';
 
@@ -25,8 +26,11 @@ function needsConfirm(d: Decision): boolean {
 export function ChatPendingDecisions({ overlay = false }: { overlay?: boolean }) {
   const { colors } = useTheme();
   const inbox = useDecisions();
+  const [inboxOpen, setInboxOpen] = useState(false);
   const decisions = inbox.data?.decisions ?? [];
   if (decisions.length === 0) return null;
+
+  const hidden = decisions.length - Math.min(decisions.length, 3);
 
   return (
     <div
@@ -43,6 +47,31 @@ export function ChatPendingDecisions({ overlay = false }: { overlay?: boolean })
         overflowY: 'auto',
       }}
     >
+      {/* These cards are global — they float above the composer in every
+          conversation, whether or not the chat you are having has anything to
+          do with them. Unlabeled, an approval card that appeared mid-sentence
+          read as a response to what you had just typed. One line says where
+          they came from, and offers the board they came from. */}
+      <div
+        data-testid="chat-decisions-source"
+        style={{
+          display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap',
+          fontFamily: font.body, fontSize: 10, color: colors.textDim,
+        }}
+      >
+        <span>From your Decision Inbox</span>
+        <button
+          type="button"
+          onClick={() => setInboxOpen(true)}
+          style={{
+            background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+            fontFamily: font.body, fontSize: 10, fontWeight: 600, color: colors.cyan,
+          }}
+        >
+          {hidden > 0 ? `Open the Inbox · ${hidden} more waiting` : 'Open the Inbox'}
+        </button>
+      </div>
+      {inboxOpen && <DecisionInbox inbox={inbox} onClose={() => setInboxOpen(false)} />}
       {decisions.slice(0, 3).map(d => (
         <ChatDecisionCard
           key={d.id}
