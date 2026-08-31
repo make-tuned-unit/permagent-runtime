@@ -270,6 +270,7 @@ export function AutomateView() {
   const [jobs, setJobs] = useState<ScheduledJob[]>([]);
   const [sessions, setSessions] = useState<Map<string, SessionInfo[]>>(new Map());
   const [extensions, setExtensions] = useState<ExtensionInfo[]>([]);
+  const [extensionsError, setExtensionsError] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [completionToast, setCompletionToast] = useState<{ name: string; jobId: string } | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
@@ -364,11 +365,22 @@ export function AutomateView() {
     }
   }, []);
 
+  /**
+   * The only bare `catch {}` left on this page — its two siblings above both
+   * track their failures and render `SectionState`. Swallowing here produced a
+   * specific false sentence: "{agent} has 0 capabilities", which is a claim
+   * about the agent when the truth was a claim about the connection. Zero is
+   * also the one count that reads as "this feature does nothing", so it is the
+   * worst possible thing to guess.
+   */
   const fetchExtensions = useCallback(async () => {
     try {
       const data = await apiFetch<{ extensions: ExtensionInfo[]; warnings: string[] }>('/config/extensions');
       setExtensions((data.extensions || []).filter(e => e.enabled));
-    } catch {}
+      setExtensionsError(null);
+    } catch (e) {
+      setExtensionsError(e instanceof Error ? e.message : 'the daemon did not answer');
+    }
   }, []);
 
   useEffect(() => {
@@ -811,7 +823,13 @@ export function AutomateView() {
 
         {/* ── INSTALLED ── */}
         <Section title="Installed" count={filteredExtensions.length} collapsed>
-          {!showInstalledExpanded ? (
+          {extensionsError ? (
+            <SectionState
+              kind="error"
+              message={`Couldn't read what ${agentName} can do. ${extensionsError}`}
+              onRetry={fetchExtensions}
+            />
+          ) : !showInstalledExpanded ? (
             <button onClick={() => toggleInstalledExpanded(true)} style={{
               background: 'none', border: 'none', color: colors.textMuted, cursor: 'pointer',
               fontSize: 12, fontFamily: font.body, padding: '4px 0', textAlign: 'left',
