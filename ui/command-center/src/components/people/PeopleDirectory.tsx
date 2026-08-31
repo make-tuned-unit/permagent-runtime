@@ -29,6 +29,7 @@ import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { contactLabel, isFollowUpDue, isQuiet } from './contactAge';
 import type { DirectoryPerson } from '../projects/types';
+import { Chip } from '../common/Chip';
 
 type Status = 'loading' | 'error' | 'ready';
 
@@ -308,27 +309,24 @@ export function PeopleDirectory() {
               {unassignedCount > 0 && ` · ${unassignedCount} in no project`}
             </div>
             <span style={{ flex: 1 }} />
+            {/* Filters, and now typed as filters: `kind="filter"` renders a
+                button that reports `aria-pressed`, which these carried no way
+                of announcing when they were hand-rolled. */}
             {([
               ['all', 'All'],
               ['quiet', `Quiet${quietCount ? ` ${quietCount}` : ''}`],
               ['followup', `Follow-up${followUpCount ? ` ${followUpCount}` : ''}`],
             ] as const).map(([key, label]) => (
-              <button
+              <Chip
                 key={key}
+                kind="filter"
+                tone="accent"
+                pressed={cohort === key}
                 onClick={() => setCohort(key)}
-                style={{
-                  fontSize: 11,
-                  fontFamily: font.body,
-                  padding: '2px 8px',
-                  borderRadius: radius.xs,
-                  cursor: 'pointer',
-                  border: `1px solid ${cohort === key ? colors.cyan : colors.border}`,
-                  background: cohort === key ? colors.cyanSoft : 'transparent',
-                  color: cohort === key ? colors.cyan : colors.textMuted,
-                }}
+                data-testid={`people-cohort-${key}`}
               >
                 {label}
-              </button>
+              </Chip>
             ))}
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -356,24 +354,22 @@ export function PeopleDirectory() {
                     {[p.role, p.company].filter(Boolean).join(' · ')}
                   </span>
                 )}
+                {/* A flag, not a status: nothing is watching for this to change
+                    and it will say the same thing tomorrow. `kind="static"`
+                    draws it as the outline it is, so it cannot be mistaken for
+                    something live sitting in the same row. */}
                 {duplicates.has(p.entity_uuid) && (
-                  <span
+                  <Chip
+                    kind="static"
                     title="Another person has a very similar name. Nothing has been merged."
-                    style={{
-                      fontSize: 10,
-                      color: colors.textDim,
-                      border: `1px solid ${colors.border}`,
-                      borderRadius: radius.xs,
-                      padding: '1px 5px',
-                    }}
                   >
                     possible duplicate
-                  </span>
+                  </Chip>
                 )}
                 {isFollowUpDue(p.next_follow_up_at) && (
-                  <span style={{ fontSize: 10, color: colors.cyan, border: `1px solid ${colors.cyan}`, borderRadius: radius.xs, padding: '1px 5px' }}>
+                  <Chip kind="static" tone="accent" title="A follow-up on this person is due">
                     follow up
-                  </span>
+                  </Chip>
                 )}
                 <span style={{ flex: 1 }} />
                 <span style={{ fontSize: 10, color: isQuiet(p.last_contact_at) ? colors.textDim : colors.textMuted, fontFamily: font.mono }}>
@@ -386,18 +382,11 @@ export function PeopleDirectory() {
                 ) : (
                   <span style={{ display: 'flex', gap: 4 }}>
                     {p.projects.map(pr => (
-                      <span
-                        key={pr.project_id}
-                        style={{
-                          fontSize: 10,
-                          color: colors.cyan,
-                          background: colors.cyanSoft,
-                          borderRadius: radius.xs,
-                          padding: '1px 6px',
-                        }}
-                      >
+                      // A label on a row that is itself the button — the chip
+                      // does not navigate, the row does.
+                      <Chip key={pr.project_id} kind="static" tone="accent">
                         {pr.project_name}
-                      </span>
+                      </Chip>
                     ))}
                   </span>
                 )}
