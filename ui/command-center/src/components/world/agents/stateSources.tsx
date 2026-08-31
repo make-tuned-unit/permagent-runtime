@@ -157,20 +157,28 @@ export function AgentStateSources() {
   // ── Sim agents — roster from /api/agents, activity from local sim ──
   useEffect(() => {
     let cancelled = false;
-    // Strix is excluded alongside Henry and the Librarian because it too has a
-    // real wire: its sweep loop emits agent_state_changed. Leaving it in the
-    // ambient toggler would have sim state fighting daemon truth.
-    // Strix, Steward, and Financier are excluded alongside Henry and the
-    // Librarian because they have a real wire: agent_state_changed. Leaving
-    // them in the ambient toggler would have sim state fighting daemon truth.
+    // Strix, Steward, Financier and the Forecaster are excluded alongside Henry
+    // and the Librarian because they have a real wire: agent_state_changed.
+    // Leaving one in the ambient toggler has sim state fighting daemon truth —
+    // and the sim wins, because it fires every 20–40s whatever is happening.
     // Steward events arrive as `git_steward` and are mapped to the world id.
+    //
+    // The Forecaster was the one that got missed. Its roster entry has always
+    // said its pose is a real wire, and that was true — the forecaster platform
+    // extension announces "working" and "available" on the `forecaster` id
+    // (crates/goose/src/agents/platform_extensions/forecaster.rs). But it was
+    // never taken out of this filter, so a fabricated timer flipped the same
+    // avatar between idle and available on its own schedule, overwriting the
+    // announcements within half a minute of each one. The comment was accurate
+    // about the wire and the screen was showing a coin flip.
     const simAgents = ROSTER.filter(
       (a) =>
         a.id !== 'henry' &&
         a.id !== 'librarian' &&
         a.id !== 'strix' &&
         a.id !== 'steward' &&
-        a.id !== 'financier',
+        a.id !== 'financier' &&
+        a.id !== 'forecaster',
     );
     const names = new Map(simAgents.map((a) => [a.id, a.name]));
 

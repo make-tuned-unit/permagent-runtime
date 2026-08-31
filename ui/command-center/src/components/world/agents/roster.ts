@@ -140,6 +140,12 @@ export const ROSTER: AgentIdentity[] = [
     // the working pose is a real wire and not sim-ambient, exactly as the
     // Financier's is. Home mirrors the Financier across +x: the two read the
     // same kind of number, one at read time and one over time.
+    //
+    // That was true of the daemon and false of the screen until 2026-08-31:
+    // this id was never added to the exclusion list in stateSources, so the
+    // ambient toggler kept flipping the avatar every 20–40 seconds and buried
+    // each real announcement. If you add an agent with a wire, exclude it
+    // there — a comment claiming a wire is not one.
     id: 'forecaster',
     name: 'The Forecaster',
     role: 'agent',
