@@ -42,6 +42,7 @@ const SRC = fileURLToPath(new URL('../..', import.meta.url));
 /** Directories whose controls are on the primitive. Grows one commit at a time. */
 const GATED = [
   'components/finance',
+  'components/grow',
   'components/sessions',
 ];
 
@@ -65,10 +66,20 @@ function sourceFiles(dir: string, out: string[] = []): string[] {
   return out;
 }
 
+/** Comments blanked, newlines kept so line numbers still mean something. The
+ *  exemptions are documented in prose next to the code they cover, and that
+ *  prose quotes the markup it is describing — a gate that reads its own
+ *  documentation as a violation teaches people to stop writing it. */
+function withoutComments(src: string): string {
+  const blank = (m: string) => m.replace(/[^\n]/g, ' ');
+  return src.replace(/\/\*[\s\S]*?\*\//g, blank).replace(/^[ \t]*\/\/.*$/gm, blank);
+}
+
 /** Every `<button …>` opening tag, whole, with the line it starts on. Braces
  *  and quotes are tracked so the `>` of an arrow function inside an attribute
  *  does not look like the end of the tag. */
-export function buttonOpeningTags(src: string): { line: number; tag: string }[] {
+export function buttonOpeningTags(source: string): { line: number; tag: string }[] {
+  const src = withoutComments(source);
   const found: { line: number; tag: string }[] = [];
   const re = /<button(?=[\s/>])/g;
   let m: RegExpExecArray | null;
@@ -130,7 +141,7 @@ describe('button primitive adoption', () => {
   it('keeps no standing exception that has stopped being true', () => {
     const stale = Object.keys(STANDING_EXCEPTIONS).filter(rel => {
       const src = readFileSync(join(SRC, rel), 'utf8');
-      return buttonOpeningTags(src).every(isPermittedRawButton);
+      return buttonOpeningTags(src).every(({ tag }) => isPermittedRawButton(tag));
     });
     expect(stale, 'this file no longer needs its exception — delete the entry').toEqual([]);
   });

@@ -8,9 +8,10 @@
  * projects. This lens is that summary, from `growth_action_outcomes`.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { font, radius } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
+import { Button } from '../common/Button';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import type { Project } from '../projects/types';
@@ -77,13 +78,21 @@ export function GrowResults({ project, colors }: { project: Project; colors: The
     return (
       <p style={{ fontSize: 13, color: colors.danger }}>
         Could not load growth results.{' '}
-        <button
+        <Button
+          colors={colors}
+          variant="bare"
           onClick={() => load(project.id)}
           style={{
-            background: 'none', border: 'none', color: colors.cyan,
-            cursor: 'pointer', font: 'inherit', padding: 0, textDecoration: 'underline',
-          }}
-        >Try again</button>
+            '--pa-btn-fg': colors.cyan,
+            '--pa-btn-fg-hover': colors.cyan,
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-pad': '0',
+            '--pa-btn-weight': 400,
+            fontSize: 'inherit',
+            lineHeight: 'inherit',
+            textDecoration: 'underline',
+          } as CSSProperties}
+        >Try again</Button>
       </p>
     );
   }
