@@ -1956,6 +1956,66 @@ fn new_scheduled_job_agent() -> Agent {
     agent
 }
 
+/// Resolve the complete, non-interactive parameter set for a scheduled run.
+///
+/// `recipe_dir` is a built-in template variable rather than a user-declared
+/// parameter. Interactive recipe execution injects it while parsing/building
+/// (`recipe::build_recipe::apply_values_to_parameters`); the scheduler used to
+/// omit it, which made strict rendering fail and sent the entire raw
+/// `{{ ... }}` prompt to the model.
+fn scheduled_recipe_params(
+    recipe: &Recipe,
+    recipe_path: &Path,
+    job_id: &str,
+) -> HashMap<String, String> {
+    let mut params = HashMap::new();
+    for p in recipe.parameters.as_deref().unwrap_or_default() {
+        let value = p.default.clone().unwrap_or_default();
+        if p.default.is_none() {
+            tracing::warn!(
+                "Scheduled job '{}': parameter '{}' has no default; rendering as empty",
+                job_id,
+                p.key
+            );
+        }
+        params.insert(p.key.clone(), value);
+    }
+    if let Some(recipe_dir) = recipe_path.parent() {
+        params.insert(
+            crate::recipe::BUILT_IN_RECIPE_DIR_PARAM.to_string(),
+            recipe_dir.to_string_lossy().into_owned(),
+        );
+    }
+    params
+}
+
+/// Render a scheduled recipe's prompt with `params`, or fail the run.
+///
+/// Rendering is strict, so one undefined variable fails the whole template.
+/// This used to fall back to the RAW prompt: the job then handed the model
+/// literal `{{ ... }}`, burned a model call on a confused reply, and still
+/// finished `completed` — a silent degradation nobody notices. Returning the
+/// error instead makes the caller record `Error`/`last_error` and escalate.
+fn render_scheduled_prompt(
+    raw_prompt: &str,
+    params: &HashMap<String, String>,
+    job_id: &str,
+) -> Result<String> {
+    if params.is_empty() {
+        return Ok(raw_prompt.to_string());
+    }
+    crate::recipe::template_recipe::render_recipe_content_with_params(raw_prompt, params).map_err(
+        |e| {
+            tracing::error!(
+                target: "permagentd::scheduler",
+                job = %job_id,
+                "parameter rendering failed ({e}); failing the run rather than sending the unrendered template"
+            );
+            anyhow!("scheduled job '{job_id}': recipe parameter rendering failed: {e}")
+        },
+    )
+}
+
 #[allow(clippy::too_many_lines)]
 async fn execute_job(
     job: ScheduledJob,
@@ -2158,38 +2218,8 @@ async fn execute_job_inner(
     // `{{ repo_path }}` reached the model verbatim and the git-steward spent
     // eight consecutive mornings asking an empty room which repository to
     // steward — every run "ok", ~22k tokens, zero output.
-    let prompt_text: String = {
-        let mut params: HashMap<String, String> = HashMap::new();
-        for p in recipe.parameters.as_deref().unwrap_or_default() {
-            let value = p.default.clone().unwrap_or_default();
-            if p.default.is_none() {
-                tracing::warn!(
-                    "Scheduled job '{}': parameter '{}' has no default; rendering as empty",
-                    job.id,
-                    p.key
-                );
-            }
-            params.insert(p.key.clone(), value);
-        }
-        if params.is_empty() {
-            raw_prompt.to_string()
-        } else {
-            match crate::recipe::template_recipe::render_recipe_content_with_params(
-                raw_prompt, &params,
-            ) {
-                Ok(rendered) => rendered,
-                Err(e) => {
-                    // A template the renderer cannot handle must not kill the
-                    // job — fall back to the raw prompt and say so.
-                    tracing::warn!(
-                        "Scheduled job '{}': parameter rendering failed ({e}); using raw prompt",
-                        job.id
-                    );
-                    raw_prompt.to_string()
-                }
-            }
-        }
-    };
+    let params = scheduled_recipe_params(&recipe, recipe_path, &job.id);
+    let prompt_text: String = render_scheduled_prompt(raw_prompt, &params, &job.id)?;
     let prompt_text = prompt_text.as_str();
 
     let user_message = Message::user().with_text(prompt_text);
@@ -2654,6 +2684,73 @@ mod tests {
     fn scheduled_job_agents_are_headless() {
         let agent = new_scheduled_job_agent();
         assert!(agent.is_headless(), "scheduled-job agents must be headless");
+    }
+
+    /// `recipe_dir` is a built-in template variable, not a declared parameter.
+    /// The interactive path injects it (`build_recipe::apply_values_to_parameters`);
+    /// the scheduler must too. It did not, and because rendering is strict, one
+    /// undefined variable failed the WHOLE render — so the nightly health-review
+    /// job mailed the model `{{ hours }}`/`{{ log_dir }}`/`{{ recipe_dir }}`
+    /// verbatim every night while still reporting `completed`.
+    #[test]
+    fn scheduled_recipe_params_include_recipe_dir_and_render_all_defaults() {
+        let dir = tempdir().unwrap();
+        let recipe_path = dir.path().join("health-review.yaml");
+        let recipe: Recipe = serde_yaml::from_str(
+            r#"
+version: "1"
+title: health
+description: scheduled diagnostic
+parameters:
+  - key: hours
+    input_type: string
+    requirement: optional
+    description: evidence window
+    default: "24"
+  - key: log_dir
+    input_type: string
+    requirement: optional
+    description: daemon log directory
+    default: "$HOME/.permagent/logs"
+prompt: 'collect {{ hours }}h from {{ log_dir }} with {{ recipe_dir }}/collector.py'
+"#,
+        )
+        .unwrap();
+        let params = scheduled_recipe_params(&recipe, &recipe_path, "health-review");
+        let rendered = crate::recipe::template_recipe::render_recipe_content_with_params(
+            recipe.prompt.as_deref().unwrap(),
+            &params,
+        )
+        .unwrap();
+
+        assert!(rendered.contains("collect 24h from $HOME/.permagent/logs"));
+        assert!(rendered.contains(&format!("{}/collector.py", dir.path().display())));
+        assert!(!rendered.contains("{{"), "{rendered}");
+    }
+
+    /// A render that cannot be completed must FAIL the job, never hand the raw
+    /// `{{ ... }}` template to the model. The old fallback did exactly that:
+    /// it logged a WARN and sent the unrendered prompt, so the run still ended
+    /// `completed` — a wasted model call producing a confused reply that is
+    /// easy to miss. Failing is loud: the caller records `Error`, `last_error`,
+    /// and a consecutive-failure escalation.
+    #[test]
+    fn render_failure_fails_the_job_instead_of_sending_the_raw_template() {
+        let raw_prompt = "audit {{ undeclared_and_not_built_in }} now";
+        let mut params = HashMap::new();
+        params.insert("hours".to_string(), "24".to_string());
+
+        let result = render_scheduled_prompt(raw_prompt, &params, "health-review");
+
+        let err = match result {
+            Ok(rendered) => panic!("render failure fell back to a prompt: {rendered}"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            !err.contains("{{"),
+            "the error must describe the failure, not carry the template: {err}"
+        );
+        assert!(err.contains("health-review"), "{err}");
     }
 
     /// The approval gate must hold on the run_now path: an agent could
