@@ -11,6 +11,7 @@ import { useCardRegistry } from './cards/useCardRegistry';
 import { AddCardPicker } from './AddCardPicker';
 import { DashboardOverflowMenu } from './DashboardOverflowMenu';
 import { CustomizeButton } from './CustomizeButton';
+import { MissingCard } from './MissingCard';
 import { ResetConfirmModal } from './ResetConfirmModal';
 import { Echo } from './Echo';
 import { LearnNext } from './LearnNext';
@@ -51,7 +52,7 @@ export function Dashboard() {
   const todosProps = useMemo(() => ({ todos: dueTodos }), [dueTodos]);
   const { layout, persistLayout } = useLayout();
   // Rendered registry = first-party code cards + daemon-served manifest cards.
-  const registry = useCardRegistry();
+  const { registry, status: registryStatus } = useCardRegistry();
   const [isEditMode, setIsEditMode] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [showPicker, setShowPicker] = useState(false);
@@ -318,11 +319,15 @@ export function Dashboard() {
       >
         {visibleCards.map(card => {
           const entry = registry[card.type];
-          if (!entry) return null;
-          const Component = entry.component;
+          // A card in the layout with no registry entry used to `return null`:
+          // it left a hole in the grid and no explanation. Two of the default
+          // layout's own cards (Calendar, Council) are manifest-served, so this
+          // fired every time the manifest fetch was slow or down — and Reset to
+          // default put both of them back, where they rendered as nothing.
+          const Component = entry?.component;
           // Manifest cards self-fetch and only need their manifest; first-party
           // code cards read pre-fetched data from cardDataMap.
-          const props = entry.manifest ? { manifest: entry.manifest } : (cardDataMap[card.type] || {});
+          const props = entry?.manifest ? { manifest: entry.manifest } : (cardDataMap[card.type] || {});
           const { x, y } = card.position;
           const isResizing = resizeId === card.id;
           const w = isResizing && resizePreview ? resizePreview.w : card.size.w;
@@ -353,7 +358,9 @@ export function Dashboard() {
                 userSelect: isEditMode ? 'none' : 'auto',
               }}
             >
-              <Component {...props} />
+              {Component
+                ? <Component {...props} />
+                : <MissingCard type={card.type} status={registryStatus} />}
               {isEditMode && (
                 <RemoveButton
                   disabled={!canRemove}
