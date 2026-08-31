@@ -20,6 +20,7 @@ import {
 import { usePersona } from '../settings/useSettings';
 import { RunRoster } from './RunRoster';
 import { ViewHeader } from '../common/ViewHeader';
+import { AsOf } from '../common/AsOf';
 import { getApiBaseUrl, loadDaemonToken } from '../../lib/api';
 import {
   bulkEligible,
@@ -1269,8 +1270,17 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
   return (
     <>
       <div style={{ fontSize: 18, fontWeight: 600, fontFamily: font.display, marginBottom: 4 }}>{displayName}</div>
-      <div style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono, marginBottom: 12, fontVariantNumeric: 'tabular-nums' }}>
-        {new Date(run.createdAt).toLocaleString()} &middot; {run.messageCount} msgs &middot; {run.totalTokens ?? 0} tokens
+      {/* Every other time on this page is relative — "2h ago" in Recent
+          Activity, "Last Run 2h ago" in the meta grid — and this one line was
+          an absolute `toLocaleString()`. On the detail panel you open FROM one
+          of those rows, so the same moment changed vocabulary between the click
+          and the panel. It reads the app's one way now, with the exact stamp
+          still a hover away. */}
+      <div
+        data-testid="run-detail-when"
+        style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono, marginBottom: 12, fontVariantNumeric: 'tabular-nums' }}
+      >
+        <AsOf asOf={run.createdAt} /> &middot; {run.messageCount} msgs &middot; {run.totalTokens ?? 0} tokens
       </div>
       <button
         onClick={openConversation}
@@ -1513,7 +1523,7 @@ function ReportToggle({ text, createdAt, tokens }: { text: string; createdAt: st
           style={{ transform: open ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 150ms' }}>
           <path d="M9 18l6-6-6-6" />
         </svg>
-        View full report &middot; {new Date(createdAt).toLocaleString()} &middot; {tokens ?? 0} tokens
+        View full report &middot; <AsOf asOf={createdAt} /> &middot; {tokens ?? 0} tokens
       </button>
       {open && <div style={{ maxHeight: 400, overflowY: 'auto', marginTop: 4 }}><RenderedReport text={text} /></div>}
     </div>
