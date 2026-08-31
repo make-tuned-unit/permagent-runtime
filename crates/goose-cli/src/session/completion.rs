@@ -135,6 +135,7 @@ impl GooseCompleter {
             "/prompts",
             "/prompt",
             "/mode",
+            "/model",
             "/recipe",
         ];
 
@@ -545,6 +546,18 @@ mod tests {
         // Test no match
         let (_pos, candidates) = completer.complete_slash_commands("/nonexistent").unwrap();
         assert_eq!(candidates.len(), 0);
+    }
+
+    /// `/model` switches this harness session's provider, so it has to be
+    /// discoverable at the prompt the same way `/mode` is — the two share a
+    /// prefix, and only tab-completion tells them apart before you commit.
+    #[test]
+    fn model_command_is_offered_alongside_mode() {
+        let completer = GooseCompleter::new(create_test_cache());
+        let (_pos, candidates) = completer.complete_slash_commands("/mod").unwrap();
+        let displayed: Vec<&str> = candidates.iter().map(|c| c.display.as_str()).collect();
+        assert!(displayed.contains(&"/model"), "got {displayed:?}");
+        assert!(displayed.contains(&"/mode"), "got {displayed:?}");
     }
 
     #[test]

@@ -18,6 +18,21 @@ use tokio::task::JoinSet;
 
 const EXTENSION_HINT_MAX_LEN: usize = 5;
 
+/// Create a CLI agent with the user's persisted primary identity installed.
+///
+/// `PromptManager` deliberately has a built-in fallback persona for first-run
+/// and recovery paths. A coding-harness session is not one of those paths: it
+/// must share the primary persona saved by Chat in `agent.yaml`. Keeping this
+/// in one constructor also prevents helper/debug sessions from quietly
+/// reverting to the fallback identity.
+async fn new_primary_agent() -> Agent {
+    let agent = Agent::new();
+    agent
+        .set_persona(permagent::config::agent_identity::load_shared_persona())
+        .await;
+    agent
+}
+
 fn truncate_with_ellipsis(s: &str, max_len: usize) -> String {
     let truncated: String = s.chars().take(max_len).collect();
     if s.chars().count() > max_len {
@@ -191,7 +206,7 @@ async fn offer_extension_debugging_help(
     );
 
     // Create a minimal agent for debugging
-    let debug_agent = Agent::new();
+    let debug_agent = new_primary_agent().await;
 
     let session = debug_agent
         .config
@@ -845,7 +860,7 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     permagent::posthog::set_session_context("cli", session_config.resume);
 
     let config = Config::global();
-    let agent: Agent = Agent::new();
+    let agent = new_primary_agent().await;
 
     if session_config.container.is_some() {
         agent.set_container(session_config.container.clone()).await;
@@ -999,6 +1014,40 @@ mod tests {
 
     fn s(v: &str) -> Option<String> {
         Some(v.to_string())
+    }
+
+    /// Every agent this module builds must come from `new_primary_agent`.
+    ///
+    /// A bare `Agent::new()` leaves `PromptManager`'s first-run fallback
+    /// persona installed, which is how the harness ended up introducing itself
+    /// as someone other than the persona Chat saved in `agent.yaml` — and the
+    /// helper/debug agents reverted the same way. `Agent`'s prompt manager is
+    /// `pub(super)` inside `permagent::agents`, so the CLI cannot read the
+    /// installed persona back to assert on it; guarding the construction site
+    /// is the coverage that is actually reachable from here.
+    #[test]
+    fn every_cli_agent_is_built_through_the_shared_persona_constructor() {
+        // Only the product half of this file; the test module below quotes the
+        // same call it is forbidding.
+        let product = include_str!("builder.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("builder.rs has a product half");
+        let bare: Vec<&str> = product
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.ends_with("Agent::new();"))
+            .collect();
+        assert_eq!(
+            bare.len(),
+            1,
+            "only new_primary_agent may construct an Agent; found {bare:?}"
+        );
+        assert!(
+            product
+                .contains("set_persona(permagent::config::agent_identity::load_shared_persona())"),
+            "new_primary_agent must install the persona Chat saved, not the fallback"
+        );
     }
 
     /// The five sources in `resolve_provider_and_model`'s order:

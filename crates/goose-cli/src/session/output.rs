@@ -1344,6 +1344,24 @@ fn shorten_path(path: &str, debug: bool) -> String {
     shortened.join("/")
 }
 
+/// The banner's identity line, built as a value so it can be asserted on.
+///
+/// `initial model:` is load-bearing rather than decoration: `/model` switches
+/// the live harness session afterwards, so this pair is only where the session
+/// started. Without the label the banner reads as the current model and goes
+/// quietly stale the first time someone switches.
+fn session_info_line(status: &str, provider: &str, model: &str) -> String {
+    format!(
+        "  {} {} {} {} {} {}",
+        style("●").green(),
+        style(status).dim(),
+        style("·").dim(),
+        style("initial model:").dim(),
+        style(provider).dim(),
+        style(model).cyan(),
+    )
+}
+
 pub fn display_session_info(
     resume: bool,
     provider: &str,
@@ -1371,14 +1389,7 @@ pub fn display_session_info(
     // glowing in the brand gradient, and the session info settles beneath it.
     println!();
     play_infinity_intro(provider);
-    println!(
-        "  {} {} {} {} {}",
-        style("●").green(),
-        style(status).dim(),
-        style("·").dim(),
-        style(provider).dim(),
-        style(&model_display).cyan(),
-    );
+    println!("{}", session_info_line(status, provider, &model_display));
     if let Some(id) = session_id {
         println!(
             "    {} {}",
@@ -1946,5 +1957,22 @@ mod tests {
             json!({"top_up_url": "https://router.tetrate.ai/billing"}),
         );
         assert_eq!(get_credits_top_up_url(&message), None);
+    }
+
+    /// The startup banner must say the model it prints is the *initial* one.
+    /// `/model` can move the session off it mid-run, and an unlabelled pair
+    /// silently becomes a lie the moment that happens.
+    #[test]
+    fn startup_banner_labels_its_model_as_the_initial_one() {
+        let line = console::strip_ansi_codes(&session_info_line(
+            "new session",
+            "anthropic",
+            "claude-sonnet-5",
+        ))
+        .into_owned();
+        assert_eq!(
+            line,
+            "  ● new session · initial model: anthropic claude-sonnet-5"
+        );
     }
 }

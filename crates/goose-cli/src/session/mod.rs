@@ -58,6 +58,22 @@ use tokio;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
+/// Split a `/model` argument into `(provider, model)`.
+///
+/// `None` means the request is unactionable — no separator, or a blank half —
+/// and the caller renders one error for every such shape rather than guessing
+/// at an intent. Both halves are trimmed, so `/model anthropic / opus` is the
+/// same request as `/model anthropic/opus`. Only the first separator splits:
+/// a model name can itself contain slashes (`openrouter/anthropic/claude-3`).
+fn parse_model_selection(selection: &str) -> Option<(&str, &str)> {
+    let (provider, model) = selection.split_once('/')?;
+    let (provider, model) = (provider.trim(), model.trim());
+    if provider.is_empty() || model.is_empty() {
+        return None;
+    }
+    Some((provider, model))
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 struct JsonOutput {
     messages: Vec<Message>,
@@ -810,7 +826,123 @@ impl CliSession {
                     }
                 }
             }
+            InputResult::Model(selection) => {
+                history.save(editor);
+                self.handle_model_command(selection).await?;
+            }
         }
+        Ok(())
+    }
+
+    async fn handle_model_command(&mut self, selection: Option<String>) -> Result<()> {
+        let current = self.agent.provider().await?;
+        if selection.is_none() {
+            println!(
+                "Current harness model: {}/{}",
+                current.get_name(),
+                current.get_model_config().model_name
+            );
+            drop(current);
+            println!("Connected provider models (use /model provider/model):");
+
+            let configured = permagent::providers::providers()
+                .await
+                .into_iter()
+                .filter(|(metadata, provider_type)| {
+                    permagent::providers::configured::is_provider_configured(
+                        metadata,
+                        *provider_type,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let inventories =
+                futures::future::join_all(configured.into_iter().map(|(metadata, _)| async move {
+                    let fallback = metadata
+                        .known_models
+                        .iter()
+                        .map(|model| model.name.clone())
+                        .collect::<Vec<_>>();
+                    let model_config = permagent::model::ModelConfig::new(&metadata.default_model)
+                        .map(|config| config.with_canonical_limits(&metadata.name));
+                    let models = match model_config {
+                        Ok(config) => {
+                            match permagent::providers::create(&metadata.name, config, Vec::new())
+                                .await
+                            {
+                                Ok(provider) => provider
+                                    .fetch_recommended_models()
+                                    .await
+                                    .ok()
+                                    .filter(|models| !models.is_empty())
+                                    .unwrap_or(fallback),
+                                Err(_) => fallback,
+                            }
+                        }
+                        Err(_) => fallback,
+                    };
+                    (metadata.name, metadata.display_name, models)
+                }))
+                .await;
+            for (provider, display, mut models) in inventories {
+                models.sort();
+                models.dedup();
+                if models.is_empty() {
+                    println!("  {display} ({provider}): model is selected by the provider");
+                } else {
+                    println!("  {display} ({provider}): {}", models.join(", "));
+                }
+            }
+            return Ok(());
+        }
+
+        let selection = selection.unwrap_or_default();
+        let Some((provider_name, model_name)) = parse_model_selection(&selection) else {
+            output::render_error(
+                "Expected /model provider/model. Run /model to list connected providers.",
+            );
+            return Ok(());
+        };
+        let configured = permagent::providers::providers().await.into_iter().find(
+            |(metadata, provider_type)| {
+                metadata.name == provider_name
+                    && permagent::providers::configured::is_provider_configured(
+                        metadata,
+                        *provider_type,
+                    )
+            },
+        );
+        if configured.is_none() {
+            output::render_error(&format!(
+                "Provider `{provider_name}` is not connected. Configure it in Settings, then run /model again."
+            ));
+            return Ok(());
+        }
+
+        let model_config = match permagent::model::ModelConfig::new(model_name) {
+            Ok(config) => config.with_canonical_limits(provider_name),
+            Err(error) => {
+                output::render_error(&format!("Invalid model `{model_name}`: {error}"));
+                return Ok(());
+            }
+        };
+        let extensions = self.agent.get_extension_configs().await;
+        let provider =
+            match permagent::providers::create(provider_name, model_config, extensions).await {
+                Ok(provider) => provider,
+                Err(error) => {
+                    output::render_error(&format!(
+                    "Could not switch this harness session to {provider_name}/{model_name}: {error}"
+                ));
+                    return Ok(());
+                }
+            };
+        self.agent
+            .update_provider(provider, &self.session_id)
+            .await?;
+        println!(
+            "Harness model switched for this session only: {provider_name}/{model_name}. Chat settings were not changed."
+        );
+        self.sync_composer_meta().await?;
         Ok(())
     }
 
@@ -2337,6 +2469,37 @@ mod tests {
     use permagent::config::ExtensionConfig;
     use std::time::Duration;
     use test_case::test_case;
+
+    // ── /model: only a provider/model pair reaches the switch ──────────────
+
+    #[test]
+    fn a_model_selection_splits_on_the_first_slash_only() {
+        assert_eq!(
+            parse_model_selection("anthropic/claude-sonnet-5"),
+            Some(("anthropic", "claude-sonnet-5"))
+        );
+        // Routed providers namespace the model with more slashes; the provider
+        // is still only the first segment.
+        assert_eq!(
+            parse_model_selection("openrouter/anthropic/claude-3.7-sonnet"),
+            Some(("openrouter", "anthropic/claude-3.7-sonnet"))
+        );
+        assert_eq!(
+            parse_model_selection("  anthropic / claude-opus-5 "),
+            Some(("anthropic", "claude-opus-5"))
+        );
+    }
+
+    #[test]
+    fn an_unactionable_model_selection_is_rejected_rather_than_guessed_at() {
+        // No separator: this is a provider name, not a switch request.
+        assert_eq!(parse_model_selection("anthropic"), None);
+        assert_eq!(parse_model_selection(""), None);
+        // A blank half would build a ModelConfig for nothing.
+        assert_eq!(parse_model_selection("/claude-sonnet-5"), None);
+        assert_eq!(parse_model_selection("anthropic/"), None);
+        assert_eq!(parse_model_selection("   /   "), None);
+    }
 
     // ── F4.4: the cost line defaults on for recipe runs; env is an off-switch ──
 

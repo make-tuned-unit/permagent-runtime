@@ -100,6 +100,9 @@ pub struct ComposerState {
     pub cursor: usize,
     pub busy: bool,
     pub busy_since: Option<Instant>,
+    /// Start of the currently displayed phase/tool, separate from the whole
+    /// agent turn so a six-minute build is never labelled as a 20-minute one.
+    pub phase_since: Option<Instant>,
     pub queued: Vec<String>,
     pub history: Vec<String>,
     pub history_idx: Option<usize>,
@@ -145,6 +148,7 @@ impl ComposerState {
         } else {
             self.busy_since = None;
         }
+        self.phase_since = None;
         // Either way the phase starts unknown: a previous turn's tool name
         // lingering into the next turn would be a lie, and claiming "Thinking"
         // before the model has said anything is a guess.
@@ -158,7 +162,11 @@ impl ComposerState {
     /// What the turn is doing now. Called by the session loop as tool calls
     /// start and finish.
     pub fn set_phase(&mut self, phase: TurnPhase) {
+        if self.phase == phase {
+            return;
+        }
         self.phase = phase;
+        self.phase_since = Some(Instant::now());
     }
 
     /// Note that something was printed, so the silence timer restarts.
@@ -180,6 +188,13 @@ impl ComposerState {
 
     pub fn elapsed_secs(&self) -> u64 {
         self.busy_since.map(|t| t.elapsed().as_secs()).unwrap_or(0)
+    }
+
+    pub fn phase_elapsed_secs(&self) -> u64 {
+        self.phase_since
+            .or(self.busy_since)
+            .map(|t| t.elapsed().as_secs())
+            .unwrap_or(0)
     }
 
     pub fn apply(&mut self, key: KeyEvent) -> ComposerAction {
@@ -594,7 +609,12 @@ fn busy_status_line(state: &ComposerState) -> String {
     }
 
     let mut line = format!("• {}", phase_text(&state.phase));
-    line.push_str(&format!(" ({}s", state.elapsed_secs()));
+    let phase_elapsed = state.phase_elapsed_secs();
+    let turn_elapsed = state.elapsed_secs();
+    line.push_str(&format!(" ({phase_elapsed}s"));
+    if state.phase_since.is_some() && turn_elapsed > phase_elapsed {
+        line.push_str(&format!(" · turn {turn_elapsed}s"));
+    }
     if let Some(tokens) = state.turn_tokens {
         line.push_str(&format!(" · {}", format_turn_tokens(tokens)));
     }
@@ -1165,7 +1185,7 @@ pub fn format_cost(session_total_usd: Option<f64>, total_tokens: i32) -> String 
 #[cfg(unix)]
 mod tty {
     use super::*;
-    use std::io::{self, Read, Write};
+    use std::io::{self, Write};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use tokio::sync::mpsc;
@@ -1266,7 +1286,6 @@ mod tty {
             std::thread::Builder::new()
                 .name("permagent-composer".into())
                 .spawn(move || {
-                    let mut stdin = io::stdin();
                     let mut buf = [0u8; 64];
                     loop {
                         if paused_t.load(Ordering::Relaxed) {
@@ -1276,14 +1295,25 @@ mod tty {
                         if !poll_stdin(50) {
                             continue;
                         }
-                        match stdin.read(&mut buf) {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                if tx.send(buf[..n].to_vec()).is_err() {
-                                    break;
-                                }
-                            }
-                            Err(_) => break,
+                        // Read fd 0 directly. `std::io::Stdin` is a global
+                        // buffered mutex; embedding the CLI in a PTY-owning
+                        // host (including the desktop app and this regression
+                        // test) can leave that global bound to an earlier
+                        // descriptor. The raw fd is the terminal we just
+                        // polled and avoids both stale buffering and a hidden
+                        // lock in the input hot path.
+                        let n = unsafe {
+                            libc::read(
+                                libc::STDIN_FILENO,
+                                buf.as_mut_ptr() as *mut libc::c_void,
+                                buf.len(),
+                            )
+                        };
+                        if n <= 0 {
+                            break;
+                        }
+                        if tx.send(buf[..n as usize].to_vec()).is_err() {
+                            break;
                         }
                     }
                 })
@@ -2010,6 +2040,35 @@ mod tests {
     }
 
     #[test]
+    fn tool_time_is_separate_from_total_turn_time() {
+        let mut state = busy_state();
+        state.busy_since = Some(Instant::now() - Duration::from_secs(1_266));
+        state.phase = TurnPhase::RunningTool {
+            name: "verify".to_string(),
+            target: Some("/repo".to_string()),
+        };
+        state.phase_since = Some(Instant::now() - Duration::from_secs(189));
+
+        let line = status_line(&state);
+        assert!(line.contains("verify /repo (189s · turn 1266s"), "{line}");
+    }
+
+    #[test]
+    fn changing_phase_resets_only_the_phase_clock() {
+        let mut state = busy_state();
+        state.busy_since = Some(Instant::now() - Duration::from_secs(600));
+        state.phase_since = Some(Instant::now() - Duration::from_secs(300));
+        state.phase = TurnPhase::Thinking;
+
+        state.set_phase(TurnPhase::RunningTool {
+            name: "verify".to_string(),
+            target: None,
+        });
+        assert!(state.phase_elapsed_secs() <= 1);
+        assert!(state.elapsed_secs() >= 600);
+    }
+
+    #[test]
     fn a_tool_with_no_target_still_renders() {
         let mut state = busy_state();
         state.phase = TurnPhase::RunningTool {
@@ -2299,12 +2358,17 @@ mod tests {
 mod pty_tests {
     use super::*;
     use std::os::unix::io::RawFd;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
     struct Pty {
         master: RawFd,
         slave: RawFd,
         saved_in: RawFd,
         saved_out: RawFd,
+        captured: Arc<std::sync::Mutex<Vec<u8>>>,
+        stop_collector: Arc<AtomicBool>,
+        collector: Option<std::thread::JoinHandle<()>>,
     }
 
     impl Pty {
@@ -2344,11 +2408,44 @@ mod pty_tests {
                 libc::dup2(slave, 0);
                 libc::dup2(slave, 1);
             }
+            // A macOS PTY has a small output queue. The composer's first full
+            // frame can fill it before `try_install` returns, deadlocking the
+            // test before it gets a chance to call `drain`. A real terminal is
+            // always consuming output, so mirror that with a collector thread.
+            let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let stop_collector = Arc::new(AtomicBool::new(false));
+            let captured_thread = captured.clone();
+            let stop_thread = stop_collector.clone();
+            let collector = std::thread::spawn(move || {
+                let mut buf = [0u8; 8192];
+                while !stop_thread.load(Ordering::Relaxed) {
+                    let mut ready = libc::pollfd {
+                        fd: master,
+                        events: libc::POLLIN,
+                        revents: 0,
+                    };
+                    if unsafe { libc::poll(&mut ready, 1, 10) } <= 0 {
+                        continue;
+                    }
+                    let n = unsafe {
+                        libc::read(master, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
+                    };
+                    if n > 0 {
+                        captured_thread
+                            .lock()
+                            .unwrap()
+                            .extend_from_slice(&buf[..n as usize]);
+                    }
+                }
+            });
             Self {
                 master,
                 slave,
                 saved_in,
                 saved_out,
+                captured,
+                stop_collector,
+                collector: Some(collector),
             }
         }
 
@@ -2365,6 +2462,7 @@ mod pty_tests {
 
         fn write(&self, bytes: &[u8]) {
             let mut sent = 0;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
             while sent < bytes.len() {
                 let n = unsafe {
                     libc::write(
@@ -2376,33 +2474,35 @@ mod pty_tests {
                 if n > 0 {
                     sent += n as usize;
                 } else {
+                    let error = std::io::Error::last_os_error();
+                    assert!(
+                        matches!(error.kind(), std::io::ErrorKind::WouldBlock),
+                        "pty write failed after {sent}/{} bytes: {error}",
+                        bytes.len()
+                    );
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "pty write remained blocked after {sent}/{} bytes",
+                        bytes.len()
+                    );
                     std::thread::sleep(std::time::Duration::from_millis(5));
                 }
             }
         }
 
         fn drain(&self) -> String {
-            let mut out = Vec::new();
-            let mut buf = [0u8; 8192];
-            loop {
-                let n = unsafe {
-                    libc::read(
-                        self.master,
-                        buf.as_mut_ptr() as *mut libc::c_void,
-                        buf.len(),
-                    )
-                };
-                if n <= 0 {
-                    break;
-                }
-                out.extend_from_slice(&buf[..n as usize]);
-            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            let out = std::mem::take(&mut *self.captured.lock().unwrap());
             String::from_utf8_lossy(&out).into_owned()
         }
     }
 
     impl Drop for Pty {
         fn drop(&mut self) {
+            self.stop_collector.store(true, Ordering::Relaxed);
+            if let Some(collector) = self.collector.take() {
+                let _ = collector.join();
+            }
             unsafe {
                 libc::dup2(self.saved_in, 0);
                 libc::dup2(self.saved_out, 1);

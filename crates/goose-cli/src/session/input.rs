@@ -27,6 +27,7 @@ pub enum InputResult {
     Compact,
     ToggleFullToolOutput,
     Edit(Option<String>),
+    Model(Option<String>),
 }
 
 #[derive(Debug)]
@@ -206,9 +207,18 @@ fn handle_slash_command(input: &str) -> Option<InputResult> {
     const CMD_SUMMARIZE_DEPRECATED: &str = "/summarize";
     const CMD_EDIT: &str = "/edit";
     const CMD_EDIT_WITH_SPACE: &str = "/edit ";
+    const CMD_MODEL: &str = "/model";
+    const CMD_MODEL_WITH_SPACE: &str = "/model ";
 
     match input {
         "/exit" | "/quit" => Some(InputResult::Exit),
+        CMD_MODEL => Some(InputResult::Model(None)),
+        s if s.starts_with(CMD_MODEL_WITH_SPACE) => Some(InputResult::Model(
+            s.strip_prefix(CMD_MODEL_WITH_SPACE)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+        )),
         "/?" | "/help" => {
             print_help();
             print_editor_help();
@@ -408,6 +418,8 @@ fn print_help() {
 /prompts [--extension <name>] - List all available prompts, optionally filtered by extension
 /prompt <n> [--info] [key=value...] - Get prompt info or execute a prompt
 /mode <name> - Set the goose mode to use ({modes})
+/model - List models from every connected provider
+/model <provider>/<model> - Switch only this harness session; Chat is unchanged
 /plan <message_text> -  Enters 'plan' mode with optional message. Create a plan based on the current messages and asks user if they want to act on it.
                         If user acts on the plan, goose mode is set to 'auto' and returns to 'normal' goose mode.
                         To warm up goose before using '/plan', we recommend setting '/mode approve' & putting appropriate context into goose.
@@ -753,5 +765,20 @@ mod tests {
 
         // Test /editfoo is not a valid command
         assert!(handle_slash_command("/editfoo").is_none());
+    }
+
+    #[test]
+    fn test_model_command() {
+        assert!(matches!(
+            handle_slash_command("/model"),
+            Some(InputResult::Model(None))
+        ));
+        match handle_slash_command("/model anthropic/claude-sonnet-5") {
+            Some(InputResult::Model(Some(route))) => {
+                assert_eq!(route, "anthropic/claude-sonnet-5")
+            }
+            _ => panic!("expected a model route"),
+        }
+        assert!(handle_slash_command("/models").is_none());
     }
 }
