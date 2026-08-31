@@ -51,6 +51,7 @@ import {
 import { worldAgentIdForAgent } from '../../../lib/worldAgentIds';
 import { ROSTER } from '../../world/agents/roster';
 import { AgentPortrait } from './AgentPortrait';
+import { SkillsSection } from './SkillsSection';
 
 type PanelProps = { goto: (key: string) => void };
 
@@ -856,6 +857,12 @@ export function AgentsPanel({ goto }: PanelProps) {
           )}
         </div>
       </Section>
+
+      {/* Skills sit with the agents because they are what the agents learned —
+          the ruled placement (J4). Before this the Library had no front door at
+          all: you could only arrive by accepting a proposal or by clicking a
+          skill inside another tab's condensed list. */}
+      <SkillsSection />
 
       <Section
         title="Capabilities"
