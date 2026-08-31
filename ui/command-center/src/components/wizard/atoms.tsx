@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useMemo, type CSSProperties, type ReactNode, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { FiArrowLeft, FiChevronDown } from 'react-icons/fi';
 import { font, ease, duration, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
@@ -214,9 +215,7 @@ value, onChange, options, style = {} }: {
           {current.dot && <span style={{ width: 8, height: 8, borderRadius: '50%', background: current.dot }} />}
           {current.label}
         </span>
-        <svg width="10" height="6" viewBox="0 0 10 6" fill="none" style={{ opacity: 0.55, transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 180ms' }}>
-          <path d="M1 1l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-        </svg>
+        <FiChevronDown size={10} style={{ opacity: 0.55, transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 180ms' }} />
       </button>
       {open && (
         <div role="listbox" style={{
@@ -303,9 +302,7 @@ onClick }: { onClick: () => void }) {
           word need their own row to keep the 6px that used to come from the
           button's own `display:flex`. */}
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-        <svg width="14" height="10" viewBox="0 0 14 10" fill="none">
-          <path d="M5 1L1 5l4 4M1 5h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
+        <FiArrowLeft size={14} />
         Back
       </span>
     </Button>

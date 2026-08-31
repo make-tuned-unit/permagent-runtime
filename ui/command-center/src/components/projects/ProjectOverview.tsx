@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, type CSSProperties, type ReactNode } from 'react';
+import { FiLink, FiTerminal, FiTrendingUp } from 'react-icons/fi';
 import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
@@ -7,7 +8,7 @@ import { useGoalEvents } from '../../lib/useGoalEvents';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { Panel } from './Panel';
-import { StateBlock } from './StateBlock';
+import { StateBlock } from '../common/StateBlock';
 import { ActivityPanel } from './ActivityPanel';
 import { readBrief, readLinks, normalizeUrl, saveProjectSummary, type WorkspaceLink } from './workspaceMeta';
 import { PublishSequencePanel } from './PublishSequencePanel';
@@ -104,9 +105,7 @@ export function ProjectOverview({ project, onProjectUpdated }: {
               gap: 8,
             } as CSSProperties}
           >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={colors.cyan} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-              <path d="M3 17l6-6 4 4 8-8M17 7h4v4" />
-            </svg>
+            <FiTrendingUp size={15} color={colors.cyan} />
             Grow this project
           </Button>
           <TasksPanel
@@ -522,9 +521,7 @@ function RootPathRow({ project }: { project: Project }) {
               transition: reduceMotion ? 'none' : undefined,
             } as CSSProperties}
           >
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-              <path d="M4 17l6-6-6-6M12 19h8" />
-            </svg>
+            <FiTerminal size={11} style={{ flexShrink: 0 }} />
             Open in Build
           </Button>
           {/* This one confirms itself — the label flips to "Copied" for 1.5s —
@@ -690,10 +687,7 @@ export function LinksPanel({ project, onProjectUpdated, title = 'Links' }: {
                 fontFamily: font.body, fontSize: textSize.caption, width: '100%',
               } as CSSProperties}
             >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={colors.cyan} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-              </svg>
+              <FiLink size={12} color={colors.cyan} style={{ flexShrink: 0 }} />
               <span style={{ flexShrink: 0, color: colors.textMuted }}>{link.label}</span>
               <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: colors.textDim, fontSize: textSize.micro }}>
                 {link.url}

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { FiChevronDown } from 'react-icons/fi';
 import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { font, radius, textSize } from '../../styles/tokens';
@@ -82,7 +83,7 @@ export function SessionPicker() {
         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
           {agentName}
         </span>
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} style={{ flexShrink: 0 }}><path d="M6 9l6 6 6-6" /></svg>
+        <FiChevronDown size={10} style={{ flexShrink: 0 }} />
       </button>
 
       {open && (

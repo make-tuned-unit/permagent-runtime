@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
+import { FiMessageSquare } from 'react-icons/fi';
 import { ease, font, radius, textSize } from '../../styles/tokens';
 import { api } from '../../lib/api';
 import { useTheme } from '../../styles/useTheme';
@@ -227,9 +228,7 @@ export function ChatLauncher() {
       transform: pressed ? 'scale(0.97)' : hovered ? 'translateY(-2px)' : 'translateY(0)',
       transition: `all 200ms ${ease.out}`,
     }}>
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
-        <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2v10z" />
-      </svg>
+      <FiMessageSquare size={16} />
       Chat with {agentName}
     </button>
   );

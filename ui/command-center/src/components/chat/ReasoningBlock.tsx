@@ -1,4 +1,5 @@
 import { useEffect, useState, type CSSProperties } from 'react';
+import { FiChevronRight } from 'react-icons/fi';
 import { font, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 
@@ -50,14 +51,10 @@ export function ReasoningBlock({ thinking, hasAnswer }: { thinking: string; hasA
       >
         <span style={{ color: colors.cyan, opacity: hasAnswer ? 0.65 : 1 }}>✦</span>
         <span>{label}</span>
-        <svg
-          width="9"
-          height="9"
-          viewBox="0 0 10 10"
+        <FiChevronRight
+          size={9}
           style={{ transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 160ms ease', opacity: 0.55 }}
-        >
-          <path d="M3 2l4 3-4 3" stroke="currentColor" strokeWidth="1.4" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
+        />
       </button>
 
       {open && (

@@ -2,16 +2,15 @@ import { useState, useEffect, useCallback, type CSSProperties } from 'react';
 import { useCommandCenter } from '../../lib/store';
 import { ease, font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { FiBell, FiChevronLeft, FiChevronRight, FiSettings } from 'react-icons/fi';
+import type { IconType } from 'react-icons';
 import { Button } from '../common/Button';
 import { Mobius } from '../mobius/Mobius';
 import { markAllRead, toggleTray, useNotifications, useTrayOpen } from '../../lib/notifications';
-import { resolveIconPath } from './icons';
+import { resolveIconPath } from '../common/icons';
 import { SidebarTooltip, useSidebarTooltip } from './SidebarTooltip';
 import { MeetingRecorder } from '../voice/MeetingRecorder';
 
-const SETTINGS_ICON = 'M12 9a3 3 0 100 6 3 3 0 000-6zM19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 008 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 004.6 15a1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06A1.65 1.65 0 009 4.6a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06A1.65 1.65 0 0019.4 9c.16.55.62.96 1.18 1H21a2 2 0 110 4h-.09c-.6.04-1.06.45-1.51 1z';
-
-const BELL_ICON = 'M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 01-3.4 0';
 
 /** Notifications row — a standard sidebar row (above Settings) that toggles
  *  the tray rendered by NotificationHost; open state is shared through the
@@ -28,7 +27,7 @@ function NotificationBellRow({ open, onHover, onLeave }: {
   return (
     <div data-notifications-ui style={{ position: 'relative' }}>
       <SidebarRow
-        icon={BELL_ICON}
+        icon={FiBell}
         label={unread > 0 ? `Notifications (${unread > 9 ? '9+' : unread})` : 'Notifications'}
         active={trayOpen}
         open={open}
@@ -52,8 +51,29 @@ function NotificationBellRow({ open, onHover, onLeave }: {
   );
 }
 
+/** A rail glyph: a Feather component for every row except the workspaces,
+ *  whose glyphs come from the ratified local set as path data. Both wear the
+ *  same 18px box, the same 1.6 stroke and the same hover nudge. */
+function RowGlyph({ icon, style }: { icon: string | IconType; style: CSSProperties }) {
+  if (typeof icon !== 'string') {
+    const Glyph = icon;
+    return <Glyph size={18} style={style} />;
+  }
+  return (
+    <svg
+      width="18" height="18" viewBox="0 0 24 24" fill="none"
+      style={style}
+      stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round"
+    >
+      <path d={icon} />
+    </svg>
+  );
+}
+
 interface SidebarRowProps {
-  icon: string;
+  /** A `Fi*` component, or a path string from the ratified set in
+   *  `components/common/icons` (workspace rows resolve to one of those). */
+  icon: string | IconType;
   label: string;
   active: boolean;
   open: boolean;
@@ -74,6 +94,11 @@ function SidebarRow({
   // express them. The tooltip anchors on the event's own element, which is
   // the same node the ref used to hold.
   const [hovered, setHovered] = useState(false);
+  const iconStyle: CSSProperties = {
+    flexShrink: 0,
+    transform: hovered && !reduceMotion ? 'scale(1.09)' : 'scale(1)',
+    transition: reduceMotion ? 'none' : `transform 160ms ${ease.out}`,
+  };
 
   return (
     <Button
@@ -126,17 +151,7 @@ function SidebarRow({
           transition: reduceMotion ? 'none' : `height 180ms ${ease.out}, opacity 180ms ${ease.out}, margin-top 180ms ${ease.out}`,
         }}
       />
-      <svg
-        width="18" height="18" viewBox="0 0 24 24" fill="none"
-        style={{
-          flexShrink: 0,
-          transform: hovered && !reduceMotion ? 'scale(1.09)' : 'scale(1)',
-          transition: reduceMotion ? 'none' : `transform 160ms ${ease.out}`,
-        }}
-        stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round"
-      >
-        <path d={icon} />
-      </svg>
+      <RowGlyph icon={icon} style={iconStyle} />
       {open && <span style={{
         opacity: 1, transition: 'opacity 160ms', whiteSpace: 'nowrap',
       }}>{label}</span>}
@@ -256,7 +271,7 @@ export function Sidebar() {
 
       {/* Settings */}
       <SidebarRow
-        icon={SETTINGS_ICON}
+        icon={FiSettings}
         label="Settings"
         active={isSettingsOpen}
         open={open}
@@ -284,10 +299,7 @@ export function Sidebar() {
             fontFamily: font.body, fontSize: textSize.micro,
           } as CSSProperties}
         >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
-            <path d="M15 6l-6 6 6 6" />
-            <path d="M21 4v16" opacity={0.4} />
-          </svg>
+          <FiChevronLeft size={12} />
           Collapse
         </Button>
       ) : (
@@ -306,10 +318,7 @@ export function Sidebar() {
             width: 40, height: 32, margin: '4px auto 0',
           } as CSSProperties}
         >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
-            <path d="M9 6l6 6-6 6" />
-            <path d="M3 4v16" opacity={0.4} />
-          </svg>
+          <FiChevronRight size={12} />
         </Button>
       )}
 

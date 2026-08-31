@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, type CSSProperties } from 'react';
+import { FiArrowLeft, FiChevronDown } from 'react-icons/fi';
 import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
@@ -71,9 +72,7 @@ export function ProjectWorkspace({ project, projects, onSwitchProject, onBack, o
             gap: 4,
           } as CSSProperties}
         >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
-            <path d="M19 12H5M12 19l-7-7 7-7" />
-          </svg>
+          <FiArrowLeft size={12} />
           All Projects
         </Button>
         <div style={{ width: 1, height: 16, background: colors.border }} />
@@ -133,10 +132,8 @@ function ProjectSwitcher({ project, projects, onSwitch }: {
         } as CSSProperties}
       >
         {project.name}
-        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={colors.textMuted} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"
-          style={{ marginLeft: 8, verticalAlign: 'middle', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 150ms' }}>
-          <path d="M6 9l6 6 6-6" />
-        </svg>
+        <FiChevronDown size={11} color={colors.textMuted}
+          style={{ marginLeft: 8, verticalAlign: 'middle', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 150ms' }} />
       </Button>
       <div style={{ fontSize: 10, color: colors.textMuted, marginTop: -2 }}>{project.slug}</div>
 

@@ -18,7 +18,8 @@ import { ViewHeader } from '../common/ViewHeader';
 import { Button } from '../common/Button';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 import type { Project } from '../projects/types';
-import { FiLoader } from 'react-icons/fi';
+import { FiCalendar, FiEdit3, FiLoader, FiShare2, FiTarget, FiUsers, FiZap } from 'react-icons/fi';
+import type { IconType } from 'react-icons';
 import { FunnelPanel } from './FunnelPanel';
 import { drainFreshness } from './analyticsFormat';
 import {
@@ -821,13 +822,16 @@ export function GrowView() {
 // keyboard-operable (Enter/Space), with hover + focus affordances. The "Ask
 // Henry" chip is a visual cue, not a nested control.
 // Feather-style icon per pillar — the card's identity at a glance.
-const PILLAR_ICONS: Record<string, string> = {
-  audience: 'M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8zM23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75',
-  value: 'M13 2L3 14h9l-1 8 10-12h-9l1-8z',
-  positioning: 'M12 22a10 10 0 100-20 10 10 0 000 20zM12 18a6 6 0 100-12 6 6 0 000 12zM12 14a2 2 0 100-4 2 2 0 000 4z',
-  channels: 'M18 8a3 3 0 100-6 3 3 0 000 6zM6 15a3 3 0 100-6 3 3 0 000 6zM18 22a3 3 0 100-6 3 3 0 000 6zM8.6 13.5l6.8 3.5M15.4 6.5l-6.8 3.5',
-  content: 'M12 20h9M16.5 3.5a2.12 2.12 0 013 3L7 19l-4 1 1-4L16.5 3.5z',
-  workback: 'M8 2v4M16 2v4M3 10h18M5 4h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V6a2 2 0 012-2z',
+/** Feather components, not path data: these six were hand-drawn copies of
+ *  glyphs the library already ships (design-system ruling U2 §3.4 — one icon
+ *  library, one ratified local set, nothing else). */
+const PILLAR_ICONS: Record<string, IconType> = {
+  audience: FiUsers,
+  value: FiZap,
+  positioning: FiTarget,
+  channels: FiShare2,
+  content: FiEdit3,
+  workback: FiCalendar,
 };
 
 /** Strategy pillar card — display + edit only (#22). Generation is the single
@@ -903,13 +907,12 @@ function PillarCard({
     );
   }
 
+  const PillarIcon = PILLAR_ICONS[pillarKey] ?? PILLAR_ICONS.value;
+
   return (
     <div style={shell}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0 }}
-          stroke={saved ? colors.cyan : colors.textMuted} strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
-          <path d={PILLAR_ICONS[pillarKey] ?? PILLAR_ICONS.value} />
-        </svg>
+        <PillarIcon size={15} style={{ flexShrink: 0 }} color={saved ? colors.cyan : colors.textMuted} />
         <span style={{ fontFamily: font.body, fontSize: textSize.body, fontWeight: 600, color: colors.text, flex: 1 }}>{label}</span>
         {saved && (
           <Button

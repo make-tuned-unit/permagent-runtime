@@ -34,13 +34,9 @@ import { toast } from '../../lib/notifications';
 import { ease, font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useMeetingDictation, formatElapsed } from '../../hooks/useMeetingDictation';
+import { FiChevronDown, FiMic } from 'react-icons/fi';
 import { Button } from '../common/Button';
 import type { Project } from '../projects/types';
-
-/** Mic glyph (same stroke style as the sidebar's other icons). */
-const MIC_ICON = 'M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3zM19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8';
-/** Chevron for the panel's expand/collapse affordance. */
-const CHEVRON = 'M6 9l6 6 6-6';
 
 /** Above this many projects the picker gets a filter field — scrolling a long
  *  list to start a recording is friction at exactly the wrong moment. */
@@ -275,10 +271,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
           textAlign: 'left',
         } as CSSProperties}
       >
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0 }}
-          stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round">
-          <path d={MIC_ICON} />
-        </svg>
+        <FiMic size={18} style={{ flexShrink: 0 }} />
         {open && (
           <span style={{ whiteSpace: 'nowrap' }}>
             {state === 'recording' ? `Recording ${formatElapsed(elapsedSeconds)}`
@@ -601,11 +594,8 @@ export function MeetingRecorder({ open }: { open: boolean }) {
                   marginLeft: 'auto',
                 } as CSSProperties}
               >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                  strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"
-                  style={{ transform: expanded ? 'rotate(180deg)' : 'none', transition: `transform 200ms ${ease.out}` }}>
-                  <path d={CHEVRON} />
-                </svg>
+                <FiChevronDown size={14}
+                  style={{ transform: expanded ? 'rotate(180deg)' : 'none', transition: `transform 200ms ${ease.out}` }} />
               </Button>
             )}
           </div>

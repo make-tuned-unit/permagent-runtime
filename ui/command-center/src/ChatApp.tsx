@@ -4,6 +4,7 @@
  * All state flows through the daemon (HTTP/SSE), not the main window.
  */
 import { useEffect, useRef, useState, useCallback, type CSSProperties } from 'react';
+import { FiEye } from 'react-icons/fi';
 import { font, radius } from './styles/tokens';
 import { useTheme } from './styles/useTheme';
 import { Button } from './components/common/Button';
@@ -173,10 +174,7 @@ export default function ChatApp() {
               width: 22, height: 22, flexShrink: 0,
             } as CSSProperties}
           >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
-              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-              <circle cx="12" cy="12" r="3" />
-            </svg>
+            <FiEye size={12} />
           </Button>
         </div>
       </div>

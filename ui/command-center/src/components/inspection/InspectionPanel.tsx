@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, type CSSProperties } from 'react';
+import { FiChevronRight, FiX } from 'react-icons/fi';
 import { ease, font, radius, textSize } from '../../styles/tokens';
 import { Button } from '../common/Button';
 import { api } from '../../lib/api';
@@ -225,9 +226,7 @@ export function InspectionPanel({ onClose }: Props) {
             width: 24, height: 24,
           } as CSSProperties}
         >
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round">
-            <path d="M18 6L6 18M6 6l12 12" />
-          </svg>
+          <FiX size={10} />
         </Button>
       </div>
 
@@ -335,10 +334,8 @@ export function InspectionPanel({ onClose }: Props) {
             borderWidth: 0, fontSize: textSize.micro,
           } as CSSProperties}
         >
-          <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3}
-            style={{ transform: memoriesOpen ? 'rotate(90deg)' : 'rotate(0deg)', transition: `transform 150ms ${ease.out}` }}>
-            <path d="M9 18l6-6-6-6" />
-          </svg>
+          <FiChevronRight size={8}
+            style={{ transform: memoriesOpen ? 'rotate(90deg)' : 'rotate(0deg)', transition: `transform 150ms ${ease.out}` }} />
           Recent Ambient Memories ({memories.length})
         </button>
         {memoriesOpen && (
@@ -389,10 +386,8 @@ export function InspectionPanel({ onClose }: Props) {
             borderWidth: 0, fontSize: textSize.micro,
           } as CSSProperties}
         >
-          <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3}
-            style={{ transform: digestOpen ? 'rotate(90deg)' : 'rotate(0deg)', transition: `transform 150ms ${ease.out}` }}>
-            <path d="M9 18l6-6-6-6" />
-          </svg>
+          <FiChevronRight size={8}
+            style={{ transform: digestOpen ? 'rotate(90deg)' : 'rotate(0deg)', transition: `transform 150ms ${ease.out}` }} />
           Current Digest
         </button>
         {digestOpen && digest && (

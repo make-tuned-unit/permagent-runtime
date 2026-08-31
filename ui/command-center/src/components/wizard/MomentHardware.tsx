@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { FiCheckCircle } from 'react-icons/fi';
 import { ease, font, radius, type ThemeColors, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { PrimaryButton, GhostLink, Glass, Particles, Select, type SelectOption } from './atoms';
@@ -372,10 +373,7 @@ export function MomentHardware({ onAdvance }: Props) {
         <>
           <Mobius size={120} state="idle" />
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
-            <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
-              <circle cx="11" cy="11" r="10" stroke={colors.cyan} strokeWidth="1.5" />
-              <path d="M7 11l3 3 5-5" stroke={colors.cyan} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
+            <FiCheckCircle size={22} color={colors.cyan} />
             <h1 style={{ ...h1Style(colors), margin: 0 }}>Ready to go</h1>
           </div>
           <p style={{ ...subtitleStyle(colors), maxWidth: 380, marginTop: 10 }}>

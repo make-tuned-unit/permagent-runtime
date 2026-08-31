@@ -1,4 +1,5 @@
 import { useId, useState, type CSSProperties } from 'react';
+import { FiArrowUpRight, FiInfo } from 'react-icons/fi';
 import type { ProbedMemoryRef, RecalledMemoryRef } from '../../lib/store';
 import { useCommandCenter } from '../../lib/store';
 import type { BrainMemoryTarget } from '../brain/brainMemoryFocus';
@@ -55,10 +56,7 @@ export function CitationMarker({ probed, recalled }: Props) {
           fontSize: 10, fontFamily: font.body,
         } as CSSProperties}
       >
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
-          <circle cx="12" cy="12" r="10" />
-          <path d="M12 16v-4M12 8h.01" />
-        </svg>
+        <FiInfo size={10} />
         based on {total} {total === 1 ? 'memory' : 'memories'}
       </button>
 
@@ -156,13 +154,9 @@ function memoryRowStyle(colors: ThemeColors): React.CSSProperties {
 /** "Open ↗" affordance — signals the row deep-links into the Brain. */
 function OpenArrow({ color }: { color: string }) {
   return (
-    <svg
-      width="11" height="11" viewBox="0 0 24 24" fill="none"
-      stroke={color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"
+    <FiArrowUpRight
+      size={11} color={color}
       aria-hidden style={{ flexShrink: 0, opacity: 0.75 }}
-    >
-      <line x1="7" y1="17" x2="17" y2="7" />
-      <polyline points="7 7 17 7 17 17" />
-    </svg>
+    />
   );
 }

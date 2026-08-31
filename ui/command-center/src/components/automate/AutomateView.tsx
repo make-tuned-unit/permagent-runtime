@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import type { CSSProperties } from 'react';
+import { FiChevronRight, FiFolder, FiMessageSquare, FiSearch } from 'react-icons/fi';
 import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/useTheme';
@@ -670,9 +671,7 @@ export function AutomateView() {
                 '--pa-btn-radius': `${radius.xs}px`,
               } as CSSProperties}
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-                <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
-              </svg>
+              <FiSearch size={16} />
             </button>
             <Button
               colors={colors}
@@ -1577,9 +1576,7 @@ function RunDetail({ run, displayName }: { run: SessionInfo & { jobId: string };
           marginBottom: 20,
         } as CSSProperties}
       >
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" style={{ verticalAlign: -2 }}>
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-        </svg>
+        <FiMessageSquare size={13} style={{ verticalAlign: -2 }} />
         {' '}Open conversation
       </Button>
       {loading ? (
@@ -1800,10 +1797,8 @@ function ReportToggle({ text, createdAt, tokens }: { text: string; createdAt: st
           fontFamily: font.body,
         } as CSSProperties}
       >
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}
-          style={{ transform: open ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 150ms' }}>
-          <path d="M9 18l6-6-6-6" />
-        </svg>
+        <FiChevronRight size={10}
+          style={{ transform: open ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 150ms' }} />
         View full report &middot; <AsOf asOf={createdAt} /> &middot; {tokens ?? 0} tokens
       </button>
       {open && <div style={{ maxHeight: 400, overflowY: 'auto', marginTop: 4 }}><RenderedReport text={text} /></div>}
@@ -1992,7 +1987,7 @@ findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActioned, l
                   } as CSSProperties}
                 >
                   <div style={{ width: 36, height: 36, borderRadius: radius.md, background: colors.border, display: 'grid', placeItems: 'center' }}>
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={colors.textMuted} strokeWidth={1.8}><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg>
+                    <FiFolder size={18} color={colors.textMuted} />
                   </div>
                 </button>
                 <div style={{ flex: 1 }}>

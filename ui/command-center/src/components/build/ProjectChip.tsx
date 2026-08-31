@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, type CSSProperties } from 'react';
+import { FiChevronDown, FiFolder } from 'react-icons/fi';
 import { font, radius, textSize } from '../../styles/tokens';
 import { useProjects, Project } from './useProjects';
 import { useTheme } from '../../styles/useTheme';
@@ -83,13 +84,9 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
           fontFamily: font.body,
         } as CSSProperties}
       >
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-          <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" />
-        </svg>
+        <FiFolder size={10} />
         Projects
-        <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>
-          <polyline points="6 9 12 15 18 9" />
-        </svg>
+        <FiChevronDown size={8} />
       </Button>
 
       {/* Dropdown */}
@@ -217,13 +214,10 @@ project, onLaunch, onVisit }: {
         <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {project.name}
         </span>
-        <svg
-          width="8" height="8" viewBox="0 0 24 24" fill="none"
-          stroke={colors.textDim} strokeWidth={2.5}
+        <FiChevronDown
+          size={8} color={colors.textDim}
           style={{ transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }}
-        >
-          <polyline points="6 9 12 15 18 9" />
-        </svg>
+        />
       </button>
 
       {expanded && (

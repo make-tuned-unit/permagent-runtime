@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, type CSSProperties } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
+import { FiGlobe, FiTerminal } from 'react-icons/fi';
 import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/tokens';
@@ -246,8 +247,7 @@ export function BuildView() {
           colors={colors}
           onToggle={toggleBuildTerminal}
         >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden="true">
-            <polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" /></svg>
+          <FiTerminal size={12} aria-hidden="true" />
           Terminal
         </ToggleChip>
         <ToggleChip
@@ -257,8 +257,7 @@ export function BuildView() {
           colors={colors}
           onToggle={toggleBuildBrowser}
         >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden="true">
-            <circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18" /></svg>
+          <FiGlobe size={12} aria-hidden="true" />
           Browser
         </ToggleChip>
 

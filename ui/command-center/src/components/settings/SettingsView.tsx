@@ -1,4 +1,9 @@
 import { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react';
+import {
+  FiActivity, FiClock, FiCommand, FiCpu, FiDatabase, FiDollarSign, FiEdit3,
+  FiEyeOff, FiInbox, FiKey, FiList, FiLock, FiSearch, FiServer, FiShield,
+  FiSliders, FiSmartphone, FiSun, FiUser, FiUsers,
+} from 'react-icons/fi';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { emitActivity } from '../../lib/emitActivity';
 import { api, apiFetch, type SovereigntyStatus, type EgressLogEntry, type DeviceInfo, type CrashExportResponse, type IncidentView } from '../../lib/api';
@@ -99,40 +104,53 @@ function describeVoiceRoute(provider: string | null, model: string | null): stri
 }
 
 // ── Nav rail categories ──────────────────────────────────────────────
+//
+// Feather components, not path data. This table used to hold twenty hand-drawn
+// `d` strings — a third icon strategy alongside `react-icons/fi` and the
+// sidebar's ratified set, with no reason on record for being hand-drawn. The
+// design-system ruling (U2 §3.4) allows one library and one named local set,
+// and this was neither. Four glyphs have no honest Feather twin and changed
+// what they depict rather than what they mean: Memory was a brain (Feather has
+// none) and is now a store; Models was a second pulse line, which would have
+// been the SAME glyph as Activity; Appearance was a contrast disc; Data &
+// privacy was a shield-with-tick, and the plain shield belongs to Autonomy.
+// `Tools & MCPs` keeps its pencil (Feather `edit-3`) — the drawing has always
+// disagreed with the label, and correcting that is a design call, not a
+// migration's.
 
 const CATEGORIES = [
   { group: 'You', items: [
-    { key: 'preferences', label: 'Preferences',      icon: 'M3 6h18M6 12h12M10 18h4' },
+    { key: 'preferences', label: 'Preferences',      icon: FiSliders },
   ]},
   { group: 'Agent', items: [
-    { key: 'agent',       label: 'Persona',          icon: 'M12 2a4 4 0 014 4v3a4 4 0 11-8 0V6a4 4 0 014-4zM4 21v-2a6 6 0 016-6h4a6 6 0 016 6v2' },
-    { key: 'agents',      label: 'Agents',           icon: 'M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8zM23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75' },
-    { key: 'memory',      label: 'Memory',           icon: 'M9 4a4 4 0 00-4 4 3 3 0 00-1 5.5A3 3 0 005 18a4 4 0 004 3M15 4a4 4 0 014 4 3 3 0 011 5.5A3 3 0 0119 18a4 4 0 01-4 3' },
-    { key: 'autonomy',    label: 'Autonomy & guardrails', icon: 'M12 2l9 4v6c0 5-4 9-9 10-5-1-9-5-9-10V6l9-4z' },
+    { key: 'agent',       label: 'Persona',          icon: FiUser },
+    { key: 'agents',      label: 'Agents',           icon: FiUsers },
+    { key: 'memory',      label: 'Memory',           icon: FiDatabase },
+    { key: 'autonomy',    label: 'Autonomy & guardrails', icon: FiShield },
   ]},
   // The former Console overlay (Sessions / Inbox / Trace / Governance) folded
   // into Settings — 2026-08 ruling. Governance's panels merged into Spend,
   // Sovereignty, Models, and Autonomy.
   { group: 'Console', items: [
-    { key: 'sessions',    label: 'Sessions',         icon: 'M3 12a9 9 0 109-9 9.75 9.75 0 00-6.74 2.74L3 8M3 3v5h5M12 7v5l4 2' },
-    { key: 'inbox',       label: 'Inbox',            icon: 'M22 12h-6l-2 3h-4l-2-3H2M5.45 5.11L2 12v6a2 2 0 002 2h16a2 2 0 002-2v-6l-3.45-6.89A2 2 0 0016.76 4H7.24a2 2 0 00-1.79 1.11z' },
-    { key: 'activity',    label: 'Activity',         icon: 'M22 12h-4l-3 9L9 3l-3 9H2' },
-    { key: 'spend',       label: 'Spend',            icon: 'M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6' },
+    { key: 'sessions',    label: 'Sessions',         icon: FiClock },
+    { key: 'inbox',       label: 'Inbox',            icon: FiInbox },
+    { key: 'activity',    label: 'Activity',         icon: FiActivity },
+    { key: 'spend',       label: 'Spend',            icon: FiDollarSign },
   ]},
   { group: 'Connections', items: [
-    { key: 'tools',       label: 'Tools & MCPs',     icon: 'M14.7 6.3a1 1 0 011.4 0l1.6 1.6a1 1 0 010 1.4l-9 9-3 .6.6-3 9-9.6zM3 21h18' },
-    { key: 'models',      label: 'Models',           icon: 'M3 12h4l3-9 4 18 3-9h4' },
-    { key: 'keys',        label: 'API keys',         icon: 'M14 8a4 4 0 100 8 4 4 0 000-8zm0 4l-9 9m4-4l3 3' },
-    { key: 'devices',    label: 'Devices',          icon: 'M17 2H7a2 2 0 00-2 2v16a2 2 0 002 2h10a2 2 0 002-2V4a2 2 0 00-2-2zM12 18h.01' },
-    { key: 'search',      label: 'Search & tools',   icon: 'M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z' },
-    { key: 'sources',     label: 'Data sources',     icon: 'M4 6h16M4 12h16M4 18h10' },
+    { key: 'tools',       label: 'Tools & MCPs',     icon: FiEdit3 },
+    { key: 'models',      label: 'Models',           icon: FiCpu },
+    { key: 'keys',        label: 'API keys',         icon: FiKey },
+    { key: 'devices',    label: 'Devices',          icon: FiSmartphone },
+    { key: 'search',      label: 'Search & tools',   icon: FiSearch },
+    { key: 'sources',     label: 'Data sources',     icon: FiServer },
   ]},
   { group: 'System', items: [
-    { key: 'appearance',  label: 'Appearance',       icon: 'M12 3a9 9 0 100 18 9 9 0 000-18zM12 3v18M3 12h18' },
-    { key: 'shortcuts',   label: 'Shortcuts',        icon: 'M4 6h16v12H4zM8 10h.01M12 10h.01M16 10h.01M7 14h10' },
-    { key: 'data',        label: 'Data & privacy',   icon: 'M12 2l9 4v6c0 5-4 9-9 10-5-1-9-5-9-10V6l9-4zM9 12l2 2 4-4' },
-    { key: 'sovereignty', label: 'Sovereignty',      icon: 'M7 11V7a5 5 0 0110 0v4M5 11h14v9H5zM12 15v2' },
-    { key: 'features',    label: 'Features',         icon: 'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01' },
+    { key: 'appearance',  label: 'Appearance',       icon: FiSun },
+    { key: 'shortcuts',   label: 'Shortcuts',        icon: FiCommand },
+    { key: 'data',        label: 'Data & privacy',   icon: FiEyeOff },
+    { key: 'sovereignty', label: 'Sovereignty',      icon: FiLock },
+    { key: 'features',    label: 'Features',         icon: FiList },
   ]},
 ];
 
@@ -2371,7 +2389,7 @@ export function SettingsView() {
                   } as CSSProperties}
                 >
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round"><path d={it.icon} /></svg>
+                    <it.icon size={14} />
                     {it.label}
                   </span>
                 </Button>
