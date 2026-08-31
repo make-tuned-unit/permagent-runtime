@@ -1,8 +1,9 @@
-import { useEffect } from 'react';
+import { useEffect, type CSSProperties } from 'react';
 import { useCommandCenter } from '../../lib/store';
 import { summarizeTraceEvent } from '../../lib/traceEvents';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 
 /**
  * Execution trace — the last 50 events in the `useCommandCenter.events` buffer,
@@ -34,10 +35,19 @@ export function ExecutionTrace({ onClose }: { onClose?: () => void } = {}) {
       <div className="px-4 py-2 flex items-center justify-between" style={{ borderBottom: `1px solid ${colors.border}` }}>
         <h2 className="text-xs tracking-wider" style={{ fontFamily: font.display, fontWeight: 600, color: colors.text }}>TRACE</h2>
         {onClose && (
-          <button
+          <Button
+            colors={colors}
             onClick={onClose}
-            style={{ height: 26, padding: '0 10px', borderRadius: radius.md, background: 'transparent', border: `1px solid ${colors.border}`, color: colors.textMuted, cursor: 'pointer', fontFamily: font.body, fontSize: 12 }}
-          >Close</button>
+            style={{
+              '--pa-btn-fg': colors.textMuted,
+              '--pa-btn-fg-hover': colors.text,
+              '--pa-btn-pad': '0 10px',
+              '--pa-btn-radius': `${radius.md}px`,
+              height: 26,
+              fontFamily: font.body,
+              fontSize: 12,
+            } as CSSProperties}
+          >Close</Button>
         )}
       </div>
       <div className="flex-1 overflow-y-auto px-3 py-2 space-y-1">

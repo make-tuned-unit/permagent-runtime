@@ -1,5 +1,7 @@
-import { useState } from 'react';
+import { useState, type CSSProperties } from 'react';
 import { versionBannerState, type VersionSkew } from '../../lib/version';
+import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 
 /**
  * Non-blocking banner surfaced when the desktop app and daemon versions drift.
@@ -8,6 +10,10 @@ import { versionBannerState, type VersionSkew } from '../../lib/version';
  * The show/severity/message decision lives in versionBannerState (pure, tested).
  */
 export function VersionSkewBanner({ skew }: { skew: VersionSkew | null }) {
+  // The banner's own severity palette is fixed (it must read the same in every
+  // theme); `colors` is here only to satisfy the button primitive's contract,
+  // and every visible colour below still comes from `fg`.
+  const { colors } = useTheme();
   const [dismissed, setDismissed] = useState(false);
 
   const state = versionBannerState(skew);
@@ -25,15 +31,22 @@ export function VersionSkewBanner({ skew }: { skew: VersionSkew | null }) {
       style={{ flexShrink: 0, background: bg, color: fg, borderBottom: `1px solid ${border}` }}
     >
       <span className="truncate">{state.message}</span>
-      <button
+      <Button
+        colors={colors}
+        variant="bare"
         type="button"
         onClick={() => setDismissed(true)}
         className="shrink-0 opacity-70 hover:opacity-100"
-        style={{ color: fg }}
         aria-label="Dismiss version notice"
+        style={{
+          '--pa-btn-fg': fg,
+          '--pa-btn-bg-hover': 'transparent',
+          '--pa-btn-pad': '0',
+          fontSize: 12,
+        } as CSSProperties}
       >
         ✕
-      </button>
+      </Button>
     </div>
   );
 }

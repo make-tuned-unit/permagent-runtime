@@ -3,9 +3,10 @@
  * Loaded when the URL contains ?view=chat.
  * All state flows through the daemon (HTTP/SSE), not the main window.
  */
-import { useEffect, useRef, useState, useCallback } from 'react';
-import { ease, font, radius } from './styles/tokens';
+import { useEffect, useRef, useState, useCallback, type CSSProperties } from 'react';
+import { font, radius } from './styles/tokens';
 import { useTheme } from './styles/useTheme';
+import { Button } from './components/common/Button';
 import { Mobius } from './components/mobius/Mobius';
 import { useCommandCenter } from './lib/store';
 import { api } from './lib/api';
@@ -154,24 +155,29 @@ export default function ChatApp() {
 
           <ModelPicker />
 
-          <button
+          <Button
+            colors={colors}
+            variant="bare"
             onClick={() => setInspectionOpen(!inspectionOpen)}
             title="What your agent sees"
+            aria-label="What your agent sees"
             style={{
               // Bare glyph (2026-07-27): the boxed version overflowed the
-              // header bar. Open state reads through the icon color alone.
-              width: 22, height: 22, borderRadius: radius.sm, padding: 0, flexShrink: 0,
-              background: 'transparent', border: 'none',
-              color: inspectionOpen ? colors.cyan : colors.textMuted, cursor: 'pointer',
-              display: 'grid', placeItems: 'center',
-              transition: `color 150ms ${ease.out}`,
-            }}
+              // header bar. Open state reads through the icon color alone, and
+              // so does hover — no fill, or the box comes back.
+              '--pa-btn-fg': inspectionOpen ? colors.cyan : colors.textMuted,
+              '--pa-btn-fg-hover': colors.cyan,
+              '--pa-btn-bg-hover': 'transparent',
+              '--pa-btn-pad': '0',
+              '--pa-btn-radius': `${radius.sm}px`,
+              width: 22, height: 22, flexShrink: 0,
+            } as CSSProperties}
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
               <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
               <circle cx="12" cy="12" r="3" />
             </svg>
-          </button>
+          </Button>
         </div>
       </div>
 

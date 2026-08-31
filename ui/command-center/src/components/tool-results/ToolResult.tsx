@@ -1,8 +1,9 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useId, type CSSProperties } from 'react';
 import { FiChevronRight, FiChevronDown, FiCheck, FiX, FiCopy } from 'react-icons/fi';
 import type { ToolCall } from '../../lib/store';
-import { font } from '../../styles/tokens';
+import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { GmailSearchResult } from './GmailSearchResult';
 import { GmailReadResult } from './GmailReadResult';
 import { FileReadResult } from './FileReadResult';
@@ -64,6 +65,7 @@ function TypedResultBody({ name, data }: { name: string; data: unknown }) {
 
 export function ToolResult({ call }: { call: ToolCall }) {
   const { colors } = useTheme();
+  const bodyId = useId();
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const hasResult = call.result !== undefined;
@@ -83,10 +85,29 @@ export function ToolResult({ call }: { call: ToolCall }) {
       className="mt-1.5 rounded-lg"
       style={{ backgroundColor: colors.surface, border: `1px solid ${colors.border}` }}
     >
+      {/* A disclosure toggle, not an action: it opens the result body below and
+          there is nothing to await, so the pending floor and the success tick
+          are both the wrong signal. It takes the shared `.pa-btn` interaction
+          rules directly and keeps the aria pairing that describes it. The
+          hover fill follows the card's own rounding so it cannot poke out of
+          the corners. */}
       <button
+        type="button"
+        className="pa-btn"
+        aria-expanded={expanded}
+        aria-controls={bodyId}
         onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] transition"
-        style={{ fontFamily: font.mono }}
+        style={{
+          '--pa-btn-bg': 'transparent',
+          '--pa-btn-bg-hover': colors.surfaceHi,
+          '--pa-btn-pad': '6px 12px',
+          '--pa-btn-radius': expanded
+            ? `${radius.md}px ${radius.md}px 0 0`
+            : `${radius.md}px`,
+          display: 'flex', width: '100%', justifyContent: 'flex-start',
+          textAlign: 'left', gap: 8, borderWidth: 0,
+          fontFamily: font.mono, fontSize: 11,
+        } as CSSProperties}
       >
         {expanded
           ? <FiChevronDown size={12} style={{ color: colors.textMuted, flexShrink: 0 }} />
@@ -106,16 +127,25 @@ export function ToolResult({ call }: { call: ToolCall }) {
       </button>
 
       {expanded && (
-        <div className="px-3 py-2 space-y-2" style={{ borderTop: `1px solid ${colors.border}` }}>
+        <div id={bodyId} className="px-3 py-2 space-y-2" style={{ borderTop: `1px solid ${colors.border}` }}>
           <div className="flex items-center justify-between">
             <div className="text-[9px] uppercase" style={{ fontFamily: font.mono, color: colors.textMuted }}>Result</div>
-            <button
+            <Button
+              colors={colors}
+              variant="bare"
               onClick={handleCopyRaw}
-              className="text-[9px] transition flex items-center gap-1"
-              style={{ fontFamily: font.mono, color: colors.textMuted }}
+              style={{
+                '--pa-btn-fg': colors.textMuted,
+                '--pa-btn-fg-hover': colors.text,
+                '--pa-btn-bg-hover': 'transparent',
+                '--pa-btn-pad': '0',
+                fontFamily: font.mono,
+                fontSize: 9,
+                gap: 4,
+              } as CSSProperties}
             >
               {copied ? <><FiCheck size={9} style={{ color: colors.success }} /> Copied</> : <><FiCopy size={9} /> Raw JSON</>}
-            </button>
+            </Button>
           </div>
 
           {hasResult ? (

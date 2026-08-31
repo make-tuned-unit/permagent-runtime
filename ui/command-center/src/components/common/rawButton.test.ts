@@ -48,20 +48,31 @@ const SRC = fileURLToPath(new URL('../..', import.meta.url));
 /** Directories whose controls are on the primitive. Grows one commit at a time. */
 const GATED = [
   'components/automate',
+  'components/awareness',
   'components/brain',
   'components/browser',
+  'components/build',
   'components/chat',
   'components/dashboard',
   'components/finance',
   'components/goals',
   'components/grow',
+  'components/inbox',
+  'components/inspection',
+  'components/notifications',
   'components/people',
   'components/projects',
   'components/sessions',
   'components/settings',
+  'components/sidebar',
   'components/skills',
+  'components/terminal',
+  'components/tool-results',
+  'components/trace',
+  'components/version',
   'components/voice',
   'components/wizard',
+  'components/workspaces',
   'components/world',
 ];
 
@@ -73,34 +84,14 @@ const GATED = [
  * true fails, and so does a new raw button hiding behind an existing one.
  */
 const STANDING_EXCEPTIONS: Record<string, { count: number; why: string }> = {
+  'components/awareness/CitationMarker.tsx': {
+    count: 2,
+    why: 'the whole citation row is the control: a meta line stacked above a summary',
+  },
   'components/brain/BrainView.tsx': {
     count: 1,
     why: "the selection panel's stat blocks are two-line and half of them are "
       + 'permanently disabled by design, which the primitive would grey out',
-  },
-  'components/skills/SkillCard.tsx': {
-    count: 1,
-    why: 'the whole skill card is the control, four nested rows of its own layout',
-  },
-  'components/wizard/MomentCalibration.tsx': {
-    count: 1,
-    why: 'the persona preset is a two-line card in a two-column grid',
-  },
-  'components/people/PersonFace.tsx': {
-    count: 1,
-    why: 'the graph-node avatar draws a 2px ring and computes opacity, shadow and '
-      + 'transform inline, so an inline transform would beat the press give — and '
-      + 'the same style object is reused by its non-interactive twin',
-  },
-  'components/settings/SettingsView.tsx': {
-    count: 1,
-    why: 'the trust-level options are two-line cards: a title row with a badge '
-      + 'above a description',
-  },
-  'components/settings/agents/AgentsPanel.tsx': {
-    count: 2,
-    why: 'the worker and persona rows are whole cards — a portrait, a status row '
-      + 'and a description — that open a detail page',
   },
   'components/chat/ChatLauncher.tsx': {
     count: 1,
@@ -121,10 +112,39 @@ const STANDING_EXCEPTIONS: Record<string, { count: number; why: string }> = {
     count: 1,
     why: 'the whole todo row is the control: a two-line title and provenance block',
   },
+  'components/notifications/NotificationHost.tsx': {
+    count: 2,
+    why: 'the tray row and the toast are both the control: title, body and '
+      + 'timestamp stacked by the button itself',
+  },
+  'components/people/PersonFace.tsx': {
+    count: 1,
+    why: 'the graph-node avatar draws a 2px ring and computes opacity, shadow and '
+      + 'transform inline, so an inline transform would beat the press give — and '
+      + 'the same style object is reused by its non-interactive twin',
+  },
   'components/projects/MemoriesPanel.tsx': {
     count: 1,
     why: 'the whole memory row is the control: a clamped two-line description above '
       + 'a meta row, top-aligned',
+  },
+  'components/settings/SettingsView.tsx': {
+    count: 1,
+    why: 'the trust-level options are two-line cards: a title row with a badge '
+      + 'above a description',
+  },
+  'components/settings/agents/AgentsPanel.tsx': {
+    count: 2,
+    why: 'the worker and persona rows are whole cards — a portrait, a status row '
+      + 'and a description — that open a detail page',
+  },
+  'components/skills/SkillCard.tsx': {
+    count: 1,
+    why: 'the whole skill card is the control, four nested rows of its own layout',
+  },
+  'components/wizard/MomentCalibration.tsx': {
+    count: 1,
+    why: 'the persona preset is a two-line card in a two-column grid',
   },
 };
 

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState, type CSSProperties } from 'react';
 import type { ProbedMemoryRef, RecalledMemoryRef } from '../../lib/store';
 import { useCommandCenter } from '../../lib/store';
 import type { BrainMemoryTarget } from '../brain/brainMemoryFocus';
@@ -14,6 +14,7 @@ interface Props {
 export function CitationMarker({ probed, recalled }: Props) {
   const { colors } = useTheme();
   const focusBrainMemory = useCommandCenter(s => s.focusBrainMemory);
+  const listId = useId();
   const [expanded, setExpanded] = useState(false);
   const total = probed.length + recalled.length;
   if (total === 0) return null;
@@ -29,17 +30,30 @@ export function CitationMarker({ probed, recalled }: Props) {
 
   return (
     <div style={{ position: 'relative', display: 'inline-block' }}>
+      {/* A disclosure toggle, not an action: it opens the citation list below
+          and there is nothing to await, so the pending floor and the success
+          tick would both be the wrong signal. It takes the shared `.pa-btn`
+          interaction rules directly and keeps the aria pairing that describes
+          what pressing it does. */}
       <button
+        type="button"
+        className="pa-btn"
+        aria-expanded={expanded}
+        aria-controls={listId}
         onClick={() => setExpanded(!expanded)}
         style={{
-          display: 'inline-flex', alignItems: 'center', gap: 4,
-          padding: '2px 8px', borderRadius: 10,
-          background: expanded ? colors.purpleSoft : `${colors.purple}18`,
-          border: `1px solid ${expanded ? colors.purpleGlow : `${colors.purple}30`}`,
-          color: expanded ? colors.purple : colors.textDim,
-          fontSize: 10, fontFamily: font.body, fontWeight: 500, cursor: 'pointer',
-          transition: `all 150ms ${ease.out}`,
-        }}
+          '--pa-btn-bg': expanded ? colors.purpleSoft : `${colors.purple}18`,
+          '--pa-btn-fg': expanded ? colors.purple : colors.textDim,
+          '--pa-btn-border': expanded ? colors.purpleGlow : `${colors.purple}30`,
+          '--pa-btn-bg-hover': colors.purpleSoft,
+          '--pa-btn-fg-hover': colors.purple,
+          '--pa-btn-border-hover': colors.purpleGlow,
+          '--pa-btn-bg-active': colors.purpleSoft,
+          '--pa-btn-pad': '2px 8px',
+          '--pa-btn-radius': '10px',
+          gap: 4,
+          fontSize: 10, fontFamily: font.body,
+        } as CSSProperties}
       >
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
           <circle cx="12" cy="12" r="10" />
@@ -49,7 +63,7 @@ export function CitationMarker({ probed, recalled }: Props) {
       </button>
 
       {expanded && (
-        <div style={{
+        <div id={listId} style={{
           position: 'absolute', bottom: '100%', right: 0,
           marginBottom: 6, width: 320,
           background: colors.surface, backdropFilter: 'blur(16px)',
@@ -125,7 +139,11 @@ export function CitationMarker({ probed, recalled }: Props) {
   );
 }
 
-/** Shared style for a clickable citation row (each opens its memory in Brain). */
+/** Shared style for a clickable citation row (each opens its memory in Brain).
+ *  These rows stay raw `<button>`s: the row IS the button, a stacked block of
+ *  a meta line and a summary line laid out by the button itself, and
+ *  `.pa-btn`'s inline-flex + centring would collapse that into one centred
+ *  row. */
 function memoryRowStyle(colors: ThemeColors): React.CSSProperties {
   return {
     display: 'block', width: '100%', textAlign: 'left',

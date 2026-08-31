@@ -1,5 +1,6 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, type CSSProperties } from 'react';
 import { ease, font, radius } from '../../styles/tokens';
+import { Button } from '../common/Button';
 import { api } from '../../lib/api';
 import { wireEventType } from '../../lib/wireEvent';
 import { useCommandCenter } from '../../lib/store';
@@ -131,12 +132,15 @@ export function InspectionPanel({ onClose }: Props) {
     onClose();
   };
 
+  // Resolves `false` when the call fails so the button cannot confirm a pause
+  // that never happened — the catch here swallows its own error.
   const togglePause = async () => {
     try {
       const endpoint = paused ? '/activity/resume' : '/activity/pause';
       await api.fetchAuthed(endpoint, { method: 'POST' });
       setPaused(!paused);
-    } catch { /* ignore */ }
+      return true;
+    } catch { /* ignore */ return false; }
   };
 
   const toggleFilter = (key: string) => {
@@ -172,31 +176,59 @@ export function InspectionPanel({ onClose }: Props) {
         <span style={{ flex: 1, fontWeight: 600, fontSize: 13, color: colors.text }}>
           What your agent sees
         </span>
-        <button onClick={togglePause} style={{
-          padding: '4px 10px', borderRadius: radius.xs, fontSize: 11, fontWeight: 500,
-          background: paused ? `${colors.warning}1f` : colors.cyanSoft,
-          border: `1px solid ${paused ? `${colors.warning}4d` : colors.border}`,
-          color: paused ? colors.warning : colors.cyan, cursor: 'pointer',
-        }}>
+        <Button
+          colors={colors}
+          onClick={togglePause}
+          // The label flips Pause↔Resume; that IS the confirmation, so a tick
+          // on top of it would be saying the same thing twice.
+          flashSuccess={false}
+          style={{
+            '--pa-btn-bg': paused ? `${colors.warning}1f` : colors.cyanSoft,
+            '--pa-btn-fg': paused ? colors.warning : colors.cyan,
+            '--pa-btn-border': paused ? `${colors.warning}4d` : colors.border,
+            '--pa-btn-bg-hover': paused ? `${colors.warning}33` : colors.cyanGlow,
+            '--pa-btn-border-hover': paused ? colors.warning : colors.borderHi,
+            '--pa-btn-bg-active': paused ? `${colors.warning}1f` : colors.cyanSoft,
+            '--pa-btn-pad': '4px 10px',
+            '--pa-btn-radius': `${radius.xs}px`,
+          } as CSSProperties}
+        >
           {paused ? 'Resume' : 'Pause'}
-        </button>
-        <button onClick={openBrain} style={{
-          padding: '4px 10px', borderRadius: radius.xs, fontSize: 11, fontWeight: 500,
-          background: colors.surfaceHi, border: `1px solid ${colors.border}`,
-          color: colors.textMuted, cursor: 'pointer',
-        }}>
+        </Button>
+        <Button
+          colors={colors}
+          onClick={openBrain}
+          style={{
+            '--pa-btn-bg': colors.surfaceHi,
+            '--pa-btn-fg': colors.textMuted,
+            '--pa-btn-border': colors.border,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-border-hover': colors.borderHi,
+            '--pa-btn-pad': '4px 10px',
+            '--pa-btn-radius': `${radius.xs}px`,
+          } as CSSProperties}
+        >
           Open Brain
-        </button>
-        <button onClick={onClose} style={{
-          width: 24, height: 24, borderRadius: radius.xs,
-          background: colors.surfaceHi, border: `1px solid ${colors.border}`,
-          color: colors.textMuted, cursor: 'pointer',
-          display: 'grid', placeItems: 'center',
-        }}>
+        </Button>
+        <Button
+          colors={colors}
+          onClick={onClose}
+          aria-label="Close"
+          style={{
+            '--pa-btn-bg': colors.surfaceHi,
+            '--pa-btn-fg': colors.textMuted,
+            '--pa-btn-border': colors.border,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-border-hover': colors.borderHi,
+            '--pa-btn-pad': '0',
+            '--pa-btn-radius': `${radius.xs}px`,
+            width: 24, height: 24,
+          } as CSSProperties}
+        >
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round">
             <path d="M18 6L6 18M6 6l12 12" />
           </svg>
-        </button>
+        </Button>
       </div>
 
       {/* Active project */}
@@ -220,14 +252,25 @@ export function InspectionPanel({ onClose }: Props) {
       {/* Source filter pills */}
       <div style={{ padding: '8px 16px', display: 'flex', gap: 4, flexWrap: 'wrap', flexShrink: 0 }}>
         {Object.entries(sourceFilters).map(([key, active]) => (
-          <button key={key} onClick={() => toggleFilter(key)} style={{
-            padding: '2px 8px', borderRadius: 3, fontSize: 10, fontWeight: 500,
-            background: active ? colors.cyanSoft : 'transparent',
-            border: `1px solid ${active ? colors.borderHi : colors.border}`,
-            color: active ? colors.cyan : colors.textDim, cursor: 'pointer',
-          }}>
+          <Button
+            key={key}
+            colors={colors}
+            onClick={() => toggleFilter(key)}
+            style={{
+              '--pa-btn-bg': active ? colors.cyanSoft : 'transparent',
+              '--pa-btn-fg': active ? colors.cyan : colors.textDim,
+              '--pa-btn-border': active ? colors.borderHi : colors.border,
+              '--pa-btn-bg-hover': active ? colors.cyanGlow : colors.surfaceHi,
+              '--pa-btn-fg-hover': active ? colors.cyan : colors.textMuted,
+              '--pa-btn-border-hover': colors.borderHi,
+              '--pa-btn-bg-active': active ? colors.cyanSoft : colors.surface,
+              '--pa-btn-pad': '2px 8px',
+              '--pa-btn-radius': '3px',
+              fontSize: 10,
+            } as CSSProperties}
+          >
             {key}
-          </button>
+          </Button>
         ))}
         <span style={{ marginLeft: 'auto', color: colors.textDim, fontSize: 10 }}>
           {filteredEvents.length} events
@@ -270,10 +313,28 @@ export function InspectionPanel({ onClose }: Props) {
 
       {/* Recent memories (collapsible) */}
       <div style={{ borderTop: `1px solid ${colors.border}`, flexShrink: 0 }}>
-        <button onClick={() => setMemoriesOpen(!memoriesOpen)} style={{
-          width: '100%', padding: '8px 16px', display: 'flex', alignItems: 'center', gap: 6,
-          background: 'transparent', border: 'none', cursor: 'pointer', color: colors.textMuted, fontSize: 11, fontWeight: 600,
-        }}>
+        {/* A disclosure toggle, not an action: nothing is awaited, so the
+            pending floor and the success tick would both be wrong signals, and
+            the aria-expanded/aria-controls pairing is what actually describes
+            it. It takes the shared `.pa-btn` interaction rules directly. */}
+        <button
+          type="button"
+          className="pa-btn"
+          aria-expanded={memoriesOpen}
+          aria-controls="inspection-memories"
+          onClick={() => setMemoriesOpen(!memoriesOpen)}
+          style={{
+            '--pa-btn-bg': 'transparent',
+            '--pa-btn-fg': colors.textMuted,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-bg-hover': colors.surfaceHi,
+            '--pa-btn-pad': '8px 16px',
+            '--pa-btn-radius': '0',
+            '--pa-btn-weight': 600,
+            display: 'flex', width: '100%', justifyContent: 'flex-start', gap: 6,
+            borderWidth: 0, fontSize: 11,
+          } as CSSProperties}
+        >
           <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3}
             style={{ transform: memoriesOpen ? 'rotate(90deg)' : 'rotate(0deg)', transition: `transform 150ms ${ease.out}` }}>
             <path d="M9 18l6-6-6-6" />
@@ -281,7 +342,7 @@ export function InspectionPanel({ onClose }: Props) {
           Recent Ambient Memories ({memories.length})
         </button>
         {memoriesOpen && (
-          <div style={{ maxHeight: 200, overflow: 'auto', padding: '0 16px 8px' }}>
+          <div id="inspection-memories" style={{ maxHeight: 200, overflow: 'auto', padding: '0 16px 8px' }}>
             {memories.map(m => (
               <div key={m.id} onClick={() => setExpandedMemory(expandedMemory === m.id ? null : m.id)} style={{
                 padding: '4px 0', borderBottom: `1px solid ${colors.border}`, cursor: 'pointer',
@@ -309,10 +370,25 @@ export function InspectionPanel({ onClose }: Props) {
 
       {/* Current digest (collapsible) */}
       <div style={{ borderTop: `1px solid ${colors.border}`, flexShrink: 0 }}>
-        <button onClick={() => setDigestOpen(!digestOpen)} style={{
-          width: '100%', padding: '8px 16px', display: 'flex', alignItems: 'center', gap: 6,
-          background: 'transparent', border: 'none', cursor: 'pointer', color: colors.textMuted, fontSize: 11, fontWeight: 600,
-        }}>
+        {/* Disclosure toggle — same reasoning as the memories header above. */}
+        <button
+          type="button"
+          className="pa-btn"
+          aria-expanded={digestOpen}
+          aria-controls="inspection-digest"
+          onClick={() => setDigestOpen(!digestOpen)}
+          style={{
+            '--pa-btn-bg': 'transparent',
+            '--pa-btn-fg': colors.textMuted,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-bg-hover': colors.surfaceHi,
+            '--pa-btn-pad': '8px 16px',
+            '--pa-btn-radius': '0',
+            '--pa-btn-weight': 600,
+            display: 'flex', width: '100%', justifyContent: 'flex-start', gap: 6,
+            borderWidth: 0, fontSize: 11,
+          } as CSSProperties}
+        >
           <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3}
             style={{ transform: digestOpen ? 'rotate(90deg)' : 'rotate(0deg)', transition: `transform 150ms ${ease.out}` }}>
             <path d="M9 18l6-6-6-6" />
@@ -320,7 +396,7 @@ export function InspectionPanel({ onClose }: Props) {
           Current Digest
         </button>
         {digestOpen && digest && (
-          <div style={{ maxHeight: 200, overflow: 'auto', padding: '0 16px 8px', fontSize: 10, color: colors.textDim }}>
+          <div id="inspection-digest" style={{ maxHeight: 200, overflow: 'auto', padding: '0 16px 8px', fontSize: 10, color: colors.textDim }}>
             <div style={{ marginBottom: 4 }}>
               <strong style={{ color: colors.textMuted }}>Live State:</strong>
               <pre style={{ fontFamily: font.mono, whiteSpace: 'pre-wrap', margin: '2px 0' }}>

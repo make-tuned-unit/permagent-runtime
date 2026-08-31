@@ -1,10 +1,11 @@
-import { useState, useCallback, useRef, useEffect, useImperativeHandle, forwardRef } from 'react';
+import { useState, useCallback, useRef, useEffect, useImperativeHandle, forwardRef, type CSSProperties } from 'react';
 import { FiPlus, FiX, FiTerminal, FiFilePlus, FiExternalLink } from 'react-icons/fi';
 import { Terminal } from './Terminal';
 import { useTheme } from '../../styles/useTheme';
 import { registerDropZone } from '../../lib/native-drag-drop';
 import { resolvePtyInjection } from './terminalDrop';
 import { font } from '../../styles/tokens';
+import { Button } from '../common/Button';
 import { CycleTabsButton } from '../build/CycleTabsButton';
 import { nextPaneTabId, usePaneTabCycling } from '../build/paneTabCycling';
 import {
@@ -433,9 +434,13 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
     killTab: async (sessionId: string) => { await killPtyRef.current?.(sessionId); },
   }), [createProjectTab]);
 
+  // Returns whether the pop-out actually happened: this is a `Button` onClick,
+  // and the primitive ticks on a resolved promise unless it resolves `false`.
+  // The catch below swallows its own error, so without this a failed pop-out
+  // would confirm itself.
   const popOutActive = useCallback(async () => {
     const tab = tabsRef.current.find(t => t.id === activeTabIdRef.current);
-    if (!tab || detached) return;
+    if (!tab || detached) return false;
     try {
       const { createPaneWindow } = await import('../../lib/paneWindows');
       await createPaneWindow('terminal', tab);
@@ -451,7 +456,8 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
         setActiveTabId(replacement.id);
         return [replacement];
       });
-    } catch (err) { console.error('[terminal] pop-out failed:', err); }
+      return true;
+    } catch (err) { console.error('[terminal] pop-out failed:', err); return false; }
   }, [detached]);
 
   useEffect(() => {
@@ -488,15 +494,31 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
       <div className="flex items-center border-b border-dark-border" style={{ backgroundColor: colors.surface }}>
         <div className="flex flex-1 items-center overflow-x-auto">
           {tabs.map(tab => (
-            <button
+            <Button
               key={tab.id}
+              colors={colors}
+              variant="bare"
               onClick={() => setActiveTabId(tab.id)}
-              className={`group flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-mono border-r border-dark-border transition-colors shrink-0 ${
-                tab.id === activeTabId
-                  ? 'text-accent'
-                  : 'text-dark-muted hover:text-dark-text hover:bg-white/5'
-              }`}
-              style={tab.id === activeTabId ? { backgroundColor: colors.bg } : undefined}
+              // `group` stays: the close affordance reveals on group-hover.
+              className="group shrink-0"
+              style={{
+                '--pa-btn-bg': tab.id === activeTabId ? colors.bg : 'transparent',
+                '--pa-btn-fg': tab.id === activeTabId ? colors.cyan : colors.textMuted,
+                '--pa-btn-border': colors.border,
+                '--pa-btn-bg-hover': tab.id === activeTabId ? colors.bg : 'rgba(255,255,255,0.05)',
+                '--pa-btn-fg-hover': tab.id === activeTabId ? colors.cyan : colors.text,
+                '--pa-btn-bg-active': tab.id === activeTabId ? colors.bg : 'rgba(255,255,255,0.05)',
+                '--pa-btn-border-hover': colors.border,
+                '--pa-btn-pad': '6px 12px',
+                '--pa-btn-radius': '0',
+                // `.pa-btn` carries a border on all four edges; a tab has one
+                // only on its right. Widths here, colour still from the vars
+                // above, so the hover rule keeps working.
+                borderWidth: '0 1px 0 0',
+                fontFamily: font.mono,
+                fontSize: 11,
+                gap: 6,
+              } as CSSProperties}
             >
               <FiTerminal size={11} />
               <span className="truncate max-w-[140px]">{tab.label}</span>
@@ -510,18 +532,40 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
               >
                 <FiX size={10} />
               </span>
-            </button>
+            </Button>
           ))}
         </div>
         <CycleTabsButton pane="terminal" onCycle={() => cycleTabs()} />
-        {!detached && <button onClick={popOutActive} className="px-2 py-1.5 text-dark-muted hover:text-accent transition-colors" title="Pop out active terminal"><FiExternalLink size={13} /></button>}
-        <button
+        {!detached && (
+          <Button
+            colors={colors}
+            variant="bare"
+            onClick={popOutActive}
+            title="Pop out active terminal"
+            aria-label="Pop out active terminal"
+            style={{
+              '--pa-btn-fg': colors.textMuted,
+              '--pa-btn-fg-hover': colors.cyan,
+              '--pa-btn-pad': '6px 8px',
+            } as CSSProperties}
+          >
+            <FiExternalLink size={13} />
+          </Button>
+        )}
+        <Button
+          colors={colors}
+          variant="bare"
           onClick={handleNewTab}
-          className="px-2.5 py-1.5 text-dark-muted hover:text-accent transition-colors"
           title="New terminal (Cmd+T)"
+          aria-label="New terminal"
+          style={{
+            '--pa-btn-fg': colors.textMuted,
+            '--pa-btn-fg-hover': colors.cyan,
+            '--pa-btn-pad': '6px 10px',
+          } as CSSProperties}
         >
           <FiPlus size={13} />
-        </button>
+        </Button>
       </div>
 
       <div className="flex-1 min-h-0 relative">

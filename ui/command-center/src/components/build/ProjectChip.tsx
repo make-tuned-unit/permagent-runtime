@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, type CSSProperties } from 'react';
 import { font, radius } from '../../styles/tokens';
 import { useProjects, Project } from './useProjects';
 import { useTheme } from '../../styles/useTheme';
@@ -64,18 +64,24 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
   return (
     <div ref={ref} style={{ position: 'relative' }}>
       {/* Chip button */}
-      <button
+      <Button
+        colors={colors}
         data-testid="project-chip"
         onClick={() => setOpen(!open)}
         title={error ? "Couldn't load your projects" : undefined}
         style={{
-          height: 28, padding: '0 10px', borderRadius: radius.sm,
-          background: colors.cyanSoft,
-          border: `1px solid ${error ? colors.danger : colors.border}`,
-          fontFamily: font.body, fontSize: 11, fontWeight: 500,
-          color: colors.textMuted, cursor: 'pointer',
-          display: 'inline-flex', alignItems: 'center', gap: 5,
-        }}
+          '--pa-btn-bg': colors.cyanSoft,
+          '--pa-btn-fg': colors.textMuted,
+          '--pa-btn-border': error ? colors.danger : colors.border,
+          '--pa-btn-bg-hover': colors.cyanGlow,
+          '--pa-btn-fg-hover': colors.text,
+          '--pa-btn-border-hover': error ? colors.danger : colors.borderHi,
+          '--pa-btn-bg-active': colors.cyanSoft,
+          '--pa-btn-pad': '0 10px',
+          '--pa-btn-radius': `${radius.sm}px`,
+          height: 28,
+          fontFamily: font.body,
+        } as CSSProperties}
       >
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
           <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" />
@@ -84,7 +90,7 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
         <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>
           <polyline points="6 9 12 15 18 9" />
         </svg>
-      </button>
+      </Button>
 
       {/* Dropdown */}
       {open && (
@@ -137,19 +143,25 @@ export function ProjectChip({ onLaunch, onVisitSite }: Props) {
             borderBottom: `1px solid ${colors.border}`, marginBottom: 2,
           }}>
             {(['recent', 'az'] as const).map(mode => (
-              <button
+              <Button
                 key={mode}
+                colors={colors}
+                variant="bare"
                 onClick={() => setSortMode(mode)}
                 style={{
-                  fontSize: 10, fontFamily: font.body, fontWeight: 500,
-                  padding: '2px 6px', borderRadius: radius.xs, cursor: 'pointer',
-                  background: sortMode === mode ? colors.cyanSoft : 'transparent',
-                  color: sortMode === mode ? colors.text : colors.textDim,
-                  border: 'none',
-                }}
+                  '--pa-btn-bg': sortMode === mode ? colors.cyanSoft : 'transparent',
+                  '--pa-btn-fg': sortMode === mode ? colors.text : colors.textDim,
+                  '--pa-btn-bg-hover': sortMode === mode ? colors.cyanSoft : colors.surfaceHi,
+                  '--pa-btn-fg-hover': colors.text,
+                  '--pa-btn-bg-active': sortMode === mode ? colors.cyanSoft : colors.surfaceHi,
+                  '--pa-btn-pad': '2px 6px',
+                  '--pa-btn-radius': `${radius.xs}px`,
+                  fontFamily: font.body,
+                  fontSize: 10,
+                } as CSSProperties}
               >
                 {mode === 'recent' ? 'Recent' : 'A-Z'}
-              </button>
+              </Button>
             ))}
           </div>
           )}
@@ -179,15 +191,28 @@ project, onLaunch, onVisit }: {
 
   return (
     <div style={{ padding: '0 4px' }}>
+      {/* A disclosure toggle, not an action: it opens the agent row below it and
+          there is nothing to await, so the pending floor and the success tick
+          would both be wrong for it. It takes the shared `.pa-btn` interaction
+          rules directly instead — same treatment as FinanceView's PickRow — so
+          its name and chevron stay its own flex children. */}
       <button
+        type="button"
+        className="pa-btn"
+        aria-expanded={expanded}
+        aria-controls={`project-agents-${project.id}`}
         onClick={() => setExpanded(!expanded)}
         style={{
-          width: '100%', padding: '7px 8px', borderRadius: radius.sm,
-          background: expanded ? colors.cyanSoft : 'transparent',
-          border: 'none', cursor: 'pointer', textAlign: 'left',
-          display: 'flex', alignItems: 'center', gap: 8,
-          fontFamily: font.body, fontSize: 12, color: colors.text,
-        }}
+          '--pa-btn-bg': expanded ? colors.cyanSoft : 'transparent',
+          '--pa-btn-fg': colors.text,
+          '--pa-btn-bg-hover': expanded ? colors.cyanSoft : colors.surfaceHi,
+          '--pa-btn-bg-active': expanded ? colors.cyanSoft : colors.surface,
+          '--pa-btn-pad': '7px 8px',
+          '--pa-btn-radius': `${radius.sm}px`,
+          display: 'flex', width: '100%', textAlign: 'left',
+          justifyContent: 'flex-start', gap: 8,
+          fontFamily: font.body, fontSize: 12,
+        } as CSSProperties}
       >
         <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {project.name}
@@ -202,7 +227,7 @@ project, onLaunch, onVisit }: {
       </button>
 
       {expanded && (
-        <div style={{ padding: '4px 8px 8px 8px', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        <div id={`project-agents-${project.id}`} style={{ padding: '4px 8px 8px 8px', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           <div
             data-testid="subscription-first-hint"
             style={{
@@ -263,21 +288,32 @@ label, disabled, tooltip, onClick }: {
   label: string; disabled?: boolean; tooltip?: string; onClick: () => void;
 }) {
   const { colors } = useTheme();
+  // `disabled` here has always been a look plus a dropped handler, never the
+  // DOM attribute — the `title` explaining WHY it can't be pressed only shows
+  // on a pointer-eventful element. Left exactly as it was; the button now
+  // simply holds its resting look on hover when it is in that state.
   return (
-    <button
+    <Button
+      colors={colors}
       onClick={disabled ? undefined : onClick}
       title={tooltip}
       style={{
-        height: 24, padding: '0 8px', borderRadius: 5,
-        background: disabled ? colors.border : colors.cyanSoft,
-        border: `1px solid ${disabled ? colors.border : colors.borderHi}`,
-        fontFamily: font.body, fontSize: 10, fontWeight: 500,
-        color: disabled ? colors.textDim : colors.cyan,
+        '--pa-btn-bg': disabled ? colors.border : colors.cyanSoft,
+        '--pa-btn-fg': disabled ? colors.textDim : colors.cyan,
+        '--pa-btn-border': disabled ? colors.border : colors.borderHi,
+        '--pa-btn-bg-hover': disabled ? colors.border : colors.cyanGlow,
+        '--pa-btn-border-hover': disabled ? colors.border : colors.cyan,
+        '--pa-btn-bg-active': disabled ? colors.border : colors.cyanSoft,
+        '--pa-btn-pad': '0 8px',
+        '--pa-btn-radius': '5px',
+        height: 24,
+        fontFamily: font.body,
+        fontSize: 10,
         cursor: disabled ? 'not-allowed' : 'pointer',
         opacity: disabled ? 0.5 : 1,
-      }}
+      } as CSSProperties}
     >
       {label}
-    </button>
+    </Button>
   );
 }

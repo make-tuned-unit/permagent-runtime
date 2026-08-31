@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, type CSSProperties } from 'react';
 import { useCommandCenter } from '../../lib/store';
 import { emitActivity } from '../../lib/emitActivity';
 import { api, type InboxFile } from '../../lib/api';
@@ -15,6 +15,7 @@ import {
 } from './inboxRouting';
 import { font, radius } from '../../styles/tokens';
 import { useTheme as useThemeHook } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 
 function formatBytes(b: number | null): string {
   if (b == null) return '—';
@@ -109,8 +110,11 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
       .catch(() => setProjects([]));
   }, [projects]);
 
+  // Resolves whether the route actually landed. The catch below turns a failure
+  // into a row message rather than rethrowing, so without this the button that
+  // triggered it would tick "done" over the top of "Could not route …".
   const sendTo = useCallback(async (file: InboxFile, destination: RouteDestination, projectId?: string) => {
-    if (needsProject(destination) && !projectId) return; // picker enforces this; belt-and-braces
+    if (needsProject(destination) && !projectId) return false; // picker enforces this; belt-and-braces
     setBusyId(file.id);
     setResults(r => { const { [file.id]: _drop, ...rest } = r; return rest; });
     try {
@@ -125,9 +129,11 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
           preview: resp.summary ? { text: resp.summary, description: file.filename } : null,
         });
       }
+      return true;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setResults(r => ({ ...r, [file.id]: { ok: false, text: `Could not route ${file.filename}: ${msg}` } }));
+      return false;
     } finally {
       setBusyId(null);
     }
@@ -142,24 +148,30 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
     );
   }, [ensureProjects]);
 
-  const actionBtn = (label: string, title: string, onClick: () => void, disabled: boolean, active = false) => (
-    <button
+  // `onClick` is `unknown`-returning on purpose: the routing handlers are
+  // async, and handing their promise to the primitive is what makes the round
+  // trip visible.
+  const actionBtn = (label: string, title: string, onClick: () => unknown, disabled: boolean, active = false) => (
+    <Button
+      colors={colors}
       onClick={onClick}
       disabled={disabled}
       title={title}
       style={{
+        '--pa-btn-bg': active ? colors.surface : 'transparent',
+        '--pa-btn-fg': disabled ? colors.textDim : colors.text,
+        '--pa-btn-border': colors.border,
+        '--pa-btn-bg-hover': active ? colors.surface : colors.surfaceHi,
+        '--pa-btn-border-hover': colors.borderHi,
+        '--pa-btn-bg-active': colors.surface,
+        '--pa-btn-pad': '0 10px',
+        '--pa-btn-radius': `${radius.sm}px`,
         height: 24,
-        padding: '0 10px',
-        borderRadius: radius.sm,
-        background: active ? colors.surface : 'transparent',
-        border: `1px solid ${colors.border}`,
-        color: disabled ? colors.textDim : colors.text,
-        cursor: disabled ? 'default' : 'pointer',
         fontFamily: font.body,
         fontSize: 11,
         whiteSpace: 'nowrap',
-      }}
-    >{label}</button>
+      } as CSSProperties}
+    >{label}</Button>
   );
 
   return (
@@ -172,10 +184,19 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
               Files you download in the in-app browser land here — send them to the Brain, a project, or the post scheduler. You choose; nothing is routed for you.
             </div>
           </div>
-          <button
+          <Button
+            colors={colors}
             onClick={dismiss}
-            style={{ height: 30, padding: '0 12px', borderRadius: radius.md, background: 'transparent', border: `1px solid ${colors.border}`, color: colors.textMuted, cursor: 'pointer', fontFamily: font.body, fontSize: 12 }}
-          >Close</button>
+            style={{
+              '--pa-btn-fg': colors.textMuted,
+              '--pa-btn-fg-hover': colors.text,
+              '--pa-btn-pad': '0 12px',
+              '--pa-btn-radius': `${radius.md}px`,
+              height: 30,
+              fontFamily: font.body,
+              fontSize: 12,
+            } as CSSProperties}
+          >Close</Button>
         </div>
       )}
       <div style={{ flex: 1, overflow: 'auto', padding: embedded ? '16px 20px' : '20px 32px' }}>

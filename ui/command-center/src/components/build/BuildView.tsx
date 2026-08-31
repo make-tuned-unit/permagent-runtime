@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, type CSSProperties } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
@@ -15,6 +15,7 @@ import { CostStatusline } from './CostStatusline';
 import { progressRailStep } from '../../lib/buildProgress';
 import type { Project } from './useProjects';
 import { ViewHeader } from '../common/ViewHeader';
+import { Button } from '../common/Button';
 
 // Ensure a project site_url has a scheme so the in-app browser navigates
 // instead of treating it as a search query (e.g. www.reckonize.org → https://…).
@@ -28,73 +29,52 @@ function ensureScheme(url: string): string {
 /**
  * Pane-visibility toggle in the Build toolbar. It is a true toggle button:
  * `active` = the pane is currently shown, surfaced to assistive tech via
- * `aria-pressed`. Hover / focus / press states are driven from local state
- * because the toolbar is styled inline (no stylesheet pseudo-classes here).
+ * `aria-pressed`. Hover / focus / press used to be three pieces of local React
+ * state re-deriving an inline `style` on every pointer event; they are now the
+ * shared `.pa-btn` rules, fed the same colors through `--pa-btn-*`. Toggling a
+ * pane is synchronous, so this never spins or ticks.
  */
 function ToggleChip({
-  active, label, title, colors, reduceMotion, onToggle, children,
+  active, label, title, colors, onToggle, children,
 }: {
   active: boolean;
   label: string;
   title: string;
   colors: ThemeColors;
-  reduceMotion: boolean;
   onToggle: () => void;
   children: React.ReactNode;
 }) {
-  const [hover, setHover] = useState(false);
-  const [focus, setFocus] = useState(false);
-  const [pressed, setPressed] = useState(false);
-
-  const borderColor = active || hover || focus ? colors.borderHi : colors.border;
-  const ring = focus ? `, 0 0 0 3px ${colors.cyanGlow}` : '';
-
-  const style: React.CSSProperties = {
-    height: 30, padding: '0 12px', borderRadius: radius.md,
-    background: active ? colors.cyanSoft : hover ? colors.surfaceHi : 'transparent',
-    border: `1px solid ${borderColor}`,
-    fontFamily: font.body, fontSize: 12, fontWeight: 500,
-    color: active ? colors.text : colors.textMuted,
-    opacity: active ? 1 : 0.7,
-    cursor: 'pointer',
-    display: 'inline-flex', alignItems: 'center', gap: 6,
-    outline: 'none',
-    boxShadow: `none${ring}`,
-    transform: pressed ? 'translateY(0.5px)' : 'none',
-    transition: reduceMotion
-      ? 'none'
-      : 'background 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease, opacity 140ms ease',
-  };
-
   return (
-    <button
+    <Button
+      colors={colors}
       type="button"
-      style={style}
       aria-pressed={active}
       aria-label={label}
       title={title}
       onClick={onToggle}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => { setHover(false); setPressed(false); }}
-      onMouseDown={() => setPressed(true)}
-      onMouseUp={() => setPressed(false)}
-      onFocus={() => setFocus(true)}
-      onBlur={() => { setFocus(false); setPressed(false); }}
+      style={{
+        '--pa-btn-bg': active ? colors.cyanSoft : 'transparent',
+        '--pa-btn-fg': active ? colors.text : colors.textMuted,
+        '--pa-btn-border': active ? colors.borderHi : colors.border,
+        '--pa-btn-bg-hover': active ? colors.cyanSoft : colors.surfaceHi,
+        '--pa-btn-border-hover': colors.borderHi,
+        '--pa-btn-bg-active': active ? colors.cyanSoft : colors.surfaceHi,
+        '--pa-btn-pad': '0 12px',
+        '--pa-btn-radius': `${radius.md}px`,
+        height: 30,
+        fontSize: 12,
+        gap: 6,
+        opacity: active ? 1 : 0.7,
+      } as CSSProperties}
     >
       {children}
-    </button>
+    </Button>
   );
 }
 
 export function BuildView() {
-  const { gradient, colors, reduceMotion } = useTheme();
+  const { gradient, colors } = useTheme();
 
-  const primaryBtn: React.CSSProperties = {
-    height: 30, padding: '0 14px', borderRadius: radius.md,
-    background: colors.cyan, color: colors.textOnCyan, border: 'none',
-    fontFamily: font.body, fontSize: 12, fontWeight: 600,
-    cursor: 'pointer', boxShadow: `0 0 14px ${colors.cyanGlow}`,
-  };
   const { data } = useDashboard();
   const terminalRef = useRef<TerminalManagerHandle>(null);
 
@@ -264,7 +244,6 @@ export function BuildView() {
           label={buildTerminalHidden ? 'Show terminal panel' : 'Hide terminal panel'}
           title={buildTerminalHidden ? 'Show terminal' : 'Hide terminal — full-screen browser'}
           colors={colors}
-          reduceMotion={reduceMotion}
           onToggle={toggleBuildTerminal}
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden="true">
@@ -276,7 +255,6 @@ export function BuildView() {
           label={buildBrowserHidden ? 'Show browser panel' : 'Hide browser panel'}
           title={buildBrowserHidden ? 'Show browser' : 'Hide browser — full-screen terminal'}
           colors={colors}
-          reduceMotion={reduceMotion}
           onToggle={toggleBuildBrowser}
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden="true">
@@ -289,11 +267,19 @@ export function BuildView() {
             button that does nothing is worse than no button. Take over is
             real: it opens the running session in the chat dock. */}
         {hasActive && (
-          <button
-            style={primaryBtn}
+          <Button
+            colors={colors}
+            variant="primary"
             onClick={handleTakeOver}
             title="Open this run's session in the chat dock to steer or stop it"
-          >Take over</button>
+            style={{
+              '--pa-btn-pad': '0 14px',
+              '--pa-btn-radius': `${radius.md}px`,
+              height: 30,
+              fontSize: 12,
+              boxShadow: `0 0 14px ${colors.cyanGlow}`,
+            } as CSSProperties}
+          >Take over</Button>
         )}
         </>}
       />

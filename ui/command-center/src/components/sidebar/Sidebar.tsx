@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, type CSSProperties } from 'react';
 import { useCommandCenter } from '../../lib/store';
 import { ease, font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { Mobius } from '../mobius/Mobius';
 import { markAllRead, toggleTray, useNotifications, useTrayOpen } from '../../lib/notifications';
 import { resolveIconPath } from './icons';
@@ -67,24 +68,21 @@ function SidebarRow({
   icon, label, active, open, onClick, shortcut, onHover, onLeave,
 }: SidebarRowProps) {
   const { colors, reduceMotion } = useTheme();
+  // Still local state, but only for what CSS cannot do from here: the icon's
+  // hover nudge and the portalled tooltip. The row's own hover colours moved
+  // to `--pa-btn-bg-hover` / `--pa-btn-fg-hover`, where a stylesheet can
+  // express them. The tooltip anchors on the event's own element, which is
+  // the same node the ref used to hold.
   const [hovered, setHovered] = useState(false);
-  const ref = useRef<HTMLButtonElement>(null);
-
-  // Hover reads as a lift toward the active state rather than a separate
-  // colour: the row you are pointing at should look like a preview of what
-  // selecting it gives you.
-  const background = active
-    ? colors.cyanSoft
-    : hovered ? colors.borderHi : 'transparent';
-  const color = active || hovered ? colors.cyan : colors.textMuted;
 
   return (
-    <button
-      ref={ref}
+    <Button
+      colors={colors}
+      variant="bare"
       onClick={onClick}
-      onMouseEnter={() => { setHovered(true); onHover?.(ref.current, label, shortcut); }}
+      onMouseEnter={e => { setHovered(true); onHover?.(e.currentTarget, label, shortcut); }}
       onMouseLeave={() => { setHovered(false); onLeave?.(); }}
-      onFocus={() => { setHovered(true); onHover?.(ref.current, label, shortcut); }}
+      onFocus={e => { setHovered(true); onHover?.(e.currentTarget, label, shortcut); }}
       onBlur={() => { setHovered(false); onLeave?.(); }}
       // The accessible name must survive the collapsed rail, where the text
       // label is not rendered at all. The visual tooltip is decoration; this
@@ -92,21 +90,28 @@ function SidebarRow({
       aria-label={shortcut ? `${label} (${shortcut})` : label}
       aria-current={active ? 'page' : undefined}
       style={{
+        // Hover reads as a lift toward the active state rather than a separate
+        // colour: the row you are pointing at should look like a preview of
+        // what selecting it gives you.
+        '--pa-btn-bg': active ? colors.cyanSoft : 'transparent',
+        '--pa-btn-fg': active ? colors.cyan : colors.textMuted,
+        '--pa-btn-border': active ? colors.borderHi : 'transparent',
+        '--pa-btn-bg-hover': active ? colors.cyanSoft : colors.borderHi,
+        '--pa-btn-fg-hover': colors.cyan,
+        '--pa-btn-border-hover': active ? colors.borderHi : 'transparent',
+        '--pa-btn-bg-active': active ? colors.cyanSoft : colors.borderHi,
+        '--pa-btn-pad': open ? '0 12px' : '0',
+        '--pa-btn-radius': '10px',
+        '--pa-btn-weight': active ? 600 : 500,
         position: 'relative',
         width: open ? 'calc(100% - 16px)' : 40,
-        height: 40, borderRadius: 10,
-        display: 'flex', alignItems: 'center', gap: 12,
-        padding: open ? '0 12px' : 0,
+        height: 40,
+        display: 'flex', gap: 12,
         justifyContent: open ? 'flex-start' : 'center',
         margin: open ? '0 8px' : '0 auto',
-        background,
-        border: `1px solid ${active ? colors.borderHi : 'transparent'}`,
-        color,
-        cursor: 'pointer',
-        transition: reduceMotion ? 'none' : `background 160ms ${ease.out}, color 160ms ${ease.out}, border-color 160ms ${ease.out}`,
-        fontFamily: font.body, fontSize: 13, fontWeight: active ? 600 : 500,
+        fontFamily: font.body, fontSize: 13,
         textAlign: 'left',
-      }}
+      } as CSSProperties}
     >
       {/* Active rail marker. In the collapsed rail the background tint alone is
           easy to miss at a glance, so selection also gets an edge indicator. */}
@@ -135,7 +140,7 @@ function SidebarRow({
       {open && <span style={{
         opacity: 1, transition: 'opacity 160ms', whiteSpace: 'nowrap',
       }}>{label}</span>}
-    </button>
+    </Button>
   );
 }
 
@@ -262,32 +267,50 @@ export function Sidebar() {
 
       {/* Collapse / Expand toggle */}
       {open ? (
-        <button onClick={() => setOpen(false)} title="Collapse" style={{
-          width: 'calc(100% - 16px)', height: 32, borderRadius: radius.md,
-          margin: '4px 8px 0', background: 'transparent',
-          border: 'none', color: colors.textDim, cursor: 'pointer',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-          fontFamily: font.body, fontSize: 11, fontWeight: 500,
-          transition: `all 200ms ${ease.out}`,
-        }}>
+        <Button
+          colors={colors}
+          variant="bare"
+          onClick={() => setOpen(false)}
+          title="Collapse"
+                    style={{
+            '--pa-btn-fg': colors.textDim,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-bg-hover': colors.surfaceHi,
+            '--pa-btn-pad': '0',
+            '--pa-btn-radius': `${radius.md}px`,
+            width: 'calc(100% - 16px)', height: 32,
+            margin: '4px 8px 0',
+            gap: 8,
+            fontFamily: font.body, fontSize: 11,
+          } as CSSProperties}
+        >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
             <path d="M15 6l-6 6 6 6" />
             <path d="M21 4v16" opacity={0.4} />
           </svg>
           Collapse
-        </button>
+        </Button>
       ) : (
-        <button onClick={() => setOpen(true)} title="Expand" style={{
-          width: 40, height: 32, margin: '4px auto 0',
-          borderRadius: radius.md, background: 'transparent',
-          border: 'none', color: colors.textDim, cursor: 'pointer',
-          display: 'grid', placeItems: 'center',
-        }}>
+        <Button
+          colors={colors}
+          variant="bare"
+          onClick={() => setOpen(true)}
+          title="Expand"
+          aria-label="Expand"
+          style={{
+            '--pa-btn-fg': colors.textDim,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-bg-hover': colors.surfaceHi,
+            '--pa-btn-pad': '0',
+            '--pa-btn-radius': `${radius.md}px`,
+            width: 40, height: 32, margin: '4px auto 0',
+          } as CSSProperties}
+        >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
             <path d="M9 6l6 6-6 6" />
             <path d="M3 4v16" opacity={0.4} />
           </svg>
-        </button>
+        </Button>
       )}
 
       {/* Portalled to document.body — the rail sets overflow:hidden to animate

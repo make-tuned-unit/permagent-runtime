@@ -1,6 +1,8 @@
+import { type CSSProperties } from 'react';
 import { useCommandCenter } from '../../lib/store';
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 
 /**
  * Non-blocking chip for a failed workspace persistence (layout resize or
@@ -34,27 +36,43 @@ export function WorkspaceSaveErrorChip() {
       title={failure.message}
     >
       <span style={{ color: colors.danger, fontWeight: 500 }}>{label}</span>
-      <button
-        onClick={() => { void retry(); }}
+      {/* The retry promise is handed to the button so the round trip is
+          visible. No tick: `retryWorkspaceSave` swallows its own failure and
+          resolves either way, so a tick could confirm a save that did not
+          happen — and a save that DID happen clears the failure, which
+          unmounts this chip. */}
+      <Button
+        colors={colors}
+        variant="bare"
+        onClick={() => retry()}
+        flashSuccess={false}
         style={{
-          border: 'none', background: 'transparent', cursor: 'pointer',
-          padding: 0, color: colors.cyan, fontFamily: font.body,
-          fontSize: 11, fontWeight: 600,
-        }}
+          '--pa-btn-fg': colors.cyan,
+          '--pa-btn-bg-hover': 'transparent',
+          '--pa-btn-pad': '0',
+          '--pa-btn-weight': 600,
+          fontFamily: font.body,
+          fontSize: 11,
+        } as CSSProperties}
       >
         Retry
-      </button>
-      <button
+      </Button>
+      <Button
+        colors={colors}
+        variant="bare"
         onClick={dismiss}
         title="Dismiss"
         style={{
-          border: 'none', background: 'transparent', cursor: 'pointer',
-          padding: 0, color: colors.textMuted, fontFamily: font.body,
+          '--pa-btn-fg': colors.textMuted,
+          '--pa-btn-fg-hover': colors.text,
+          '--pa-btn-bg-hover': 'transparent',
+          '--pa-btn-pad': '0',
+          fontFamily: font.body,
           fontSize: 11,
-        }}
+        } as CSSProperties}
       >
         Dismiss
-      </button>
+      </Button>
     </div>
   );
 }
