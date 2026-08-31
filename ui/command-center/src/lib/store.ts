@@ -380,13 +380,16 @@ interface CommandCenterStore {
   selectedSkillId: string | null;
   setSelectedSkillId: (id: string | null) => void;
   loadSkills: () => Promise<void>;
-  deleteSkill: (id: string) => Promise<void>;
+  /** Resolves `false` when the delete did not land, so the control that asked
+   *  for it can say so instead of ticking. */
+  deleteSkill: (id: string) => Promise<boolean>;
   updateSkill: (id: string, updates: Partial<SkillState>) => Promise<boolean>;
 
   // --- Skill proposals ---
   pendingSkillProposal: SkillProposal | null;
   proposals: SkillProposal[];
-  saveSkillProposal: () => Promise<void>;
+  /** Resolves `false` when the skill was not created — see `deleteSkill`. */
+  saveSkillProposal: () => Promise<boolean>;
   dismissSkillProposal: () => void;
   loadProposals: () => Promise<void>;
   saveProposal: (proposal: SkillProposal) => Promise<void>;
@@ -1336,8 +1339,12 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         skills: s.skills.filter(sk => sk.id !== id),
         selectedSkillId: s.selectedSkillId === id ? null : s.selectedSkillId,
       }));
+      return true;
     } catch (e) {
+      // A swallowed error here used to leave the skill in the list with no
+      // explanation anywhere on screen. The caller renders the failure.
       console.error('Failed to delete skill:', e);
+      return false;
     }
   },
 
@@ -1359,7 +1366,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   proposals: [],
   saveSkillProposal: async () => {
     const proposal = get().pendingSkillProposal;
-    if (!proposal) return;
+    if (!proposal) return false;
     try {
       const saved = await api.createSkill({
         name: proposal.description.slice(0, 64).replace(/\s+/g, '-').toLowerCase(),
@@ -1372,8 +1379,12 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       set({ pendingSkillProposal: null, selectedSkillId: saved.id, activePanel: 'skills' });
       get().loadSkills();
       get().loadProposals();
+      return true;
     } catch (e) {
+      // Save-as-Skill is one of only two creation paths into the whole
+      // feature; a silent failure here reads exactly like a dead button.
       console.error('Failed to save skill:', e);
+      return false;
     }
   },
   dismissSkillProposal: () => {

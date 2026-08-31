@@ -2,10 +2,11 @@
  * Home card for the latest Council of LLMs weekly report.
  */
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { font, radius } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { api, type CouncilLatest } from '../../../lib/api';
+import { Button } from '../../common/Button';
 import { useDecisions } from '../decisions/useDecisions';
 import { DecisionInbox } from '../decisions/DecisionInbox';
 
@@ -16,14 +17,28 @@ export function CouncilCard() {
   const [openTakes, setOpenTakes] = useState(false);
   const [inboxOpen, setInboxOpen] = useState(false);
   const inbox = useDecisions();
+  const live = useRef(true);
 
-  useEffect(() => {
-    let active = true;
-    api.getCouncilLatest()
-      .then(d => { if (active) setData(d); })
-      .catch(e => { if (active) setError(e instanceof Error ? e.message : String(e)); });
-    return () => { active = false; };
+  useEffect(() => () => { live.current = false; }, []);
+
+  // A daemon that can't be reached is not a Council with nothing to say, so
+  // the failure names itself and hands back a way to try again rather than
+  // printing a raw exception and stopping there.
+  const load = useCallback(async () => {
+    try {
+      const d = await api.getCouncilLatest();
+      if (!live.current) return true;
+      setData(d);
+      setError(null);
+      return true;
+    } catch (e) {
+      if (!live.current) return false;
+      setError(e instanceof Error ? e.message : String(e));
+      return false;
+    }
   }, []);
+
+  useEffect(() => { void load(); }, [load]);
 
   const report = data?.report;
   const session = data?.session;
@@ -54,7 +69,13 @@ export function CouncilCard() {
         </div>
 
         {error && (
-          <div style={{ fontSize: 12, color: colors.danger }}>{error}</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-start' }}>
+            <div style={{ fontSize: 13, color: colors.text, lineHeight: 1.5 }}>
+              Couldn't load the Council report — the daemon didn't answer.
+            </div>
+            <div style={{ fontSize: 11, color: colors.textDim, fontFamily: font.mono }}>{error}</div>
+            <Button colors={colors} type="button" onClick={() => load()}>Retry</Button>
+          </div>
         )}
 
         {!error && !data && (

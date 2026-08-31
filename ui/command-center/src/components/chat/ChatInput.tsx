@@ -25,6 +25,10 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
   // actually settles (isStreaming → false via the Finish event). Kept out of the
   // global store — it's pure per-input affordance state.
   const [stopping, setStopping] = useState(false);
+  // A cancel POST that itself failed used to be a console line and a silently
+  // re-armed button — indistinguishable from never having pressed Stop, on the
+  // highest-traffic control in the app.
+  const [stopFailed, setStopFailed] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const disabled = isStreaming;
@@ -48,7 +52,10 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
   // Once the turn settles (Finish/Error flips isStreaming off), drop the
   // transient "stopping" state so the composer returns to its idle Send button.
   useEffect(() => {
-    if (!isStreaming) setStopping(false);
+    if (!isStreaming) {
+      setStopping(false);
+      setStopFailed(false);
+    }
   }, [isStreaming]);
 
   const addFiles = useCallback((files: File[]) => {
@@ -75,6 +82,7 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
   const handleStop = async () => {
     if (stopping) return;
     setStopping(true);
+    setStopFailed(false);
     try {
       // Server emits a terminal Finish on cancel, which settles the UI and frees
       // the request slot — so we wait for it rather than optimistically resetting.
@@ -84,9 +92,11 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
       if (!issued) setStopping(false);
     } catch (err) {
       // Cancel POST failed (e.g. turn already ended, or network): the agent may
-      // still be alive, so re-enable Stop instead of pretending it stopped.
+      // still be alive, so re-enable Stop instead of pretending it stopped —
+      // and say so, because a re-armed button is not feedback.
       console.error('[chat] stop failed:', err);
       setStopping(false);
+      setStopFailed(true);
     }
   };
 
@@ -119,6 +129,15 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
           {pendingFiles.map((f, i) => (
             <AttachmentChip key={`${f.name}-${i}`} filename={f.name} onRemove={() => removeFile(i)} />
           ))}
+        </div>
+      )}
+      {stopFailed && (
+        <div
+          role="alert"
+          className="mb-2 text-[11px]"
+          style={{ fontFamily: font.body, color: colors.danger }}
+        >
+          Couldn't stop the reply — the agent may still be running. Try again.
         </div>
       )}
       <div className="flex items-end" style={{ gap: 8 }}>
@@ -187,14 +206,16 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
           <button
             onClick={handleStop}
             disabled={stopping}
-            title="Stop generating"
+            title={stopFailed ? "Couldn't stop the reply — try again" : 'Stop generating'}
             aria-label="Stop generating"
             className="transition disabled:opacity-50"
             style={{
               width: 28, height: 28, borderRadius: 6, flexShrink: 0,
               display: 'grid', placeItems: 'center',
+              // The failed attempt stays visible on the control itself until
+              // the next press, not just in the line above it.
               border: `1px solid ${colors.danger}`,
-              backgroundColor: colors.inputBg,
+              backgroundColor: stopFailed ? `${colors.danger}26` : colors.inputBg,
               color: colors.danger,
             }}
           >

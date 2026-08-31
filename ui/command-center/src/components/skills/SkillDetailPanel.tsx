@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useState, type CSSProperties } from 'react';
 import { FiTrash2, FiEdit2, FiX, FiChevronDown, FiChevronRight } from 'react-icons/fi';
 import { useCommandCenter, type SkillState } from '../../lib/store';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 import { SkillEditor } from './SkillEditor';
 import { SkillExecutionHistory } from './SkillExecutionHistory';
 
@@ -17,11 +18,30 @@ export function SkillDetailPanel({ skill }: SkillDetailPanelProps) {
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [showDefinition, setShowDefinition] = useState(false);
+  const [deleteFailed, setDeleteFailed] = useState(false);
 
+  // The skill staying put used to be the only sign a delete had failed, and
+  // it looks exactly like a delete that was never attempted.
   const handleDelete = async () => {
-    await deleteSkill(skill.id);
+    setDeleteFailed(false);
+    const ok = await deleteSkill(skill.id);
+    if (!ok) {
+      setDeleteFailed(true);
+      return false;
+    }
     setSelectedSkillId(null);
+    return true;
   };
+
+  const dangerVars = {
+    '--pa-btn-bg': `${colors.danger}33`,
+    '--pa-btn-fg': colors.danger,
+    '--pa-btn-border': 'transparent',
+    '--pa-btn-bg-hover': `${colors.danger}4D`,
+    '--pa-btn-border-hover': 'transparent',
+    '--pa-btn-bg-active': `${colors.danger}33`,
+    fontFamily: font.mono,
+  } as CSSProperties;
 
   return (
     <div className="flex flex-col h-full">
@@ -80,23 +100,24 @@ export function SkillDetailPanel({ skill }: SkillDetailPanelProps) {
         <div className="mx-4 mt-3 rounded-lg border border-red-400/30 bg-red-400/5 p-3">
           <p className="text-xs text-red-300 mb-2" style={{ fontFamily: font.mono }}>Delete this skill permanently?</p>
           <div className="flex gap-2">
-            <button
-              onClick={handleDelete}
-              className="rounded-md bg-red-500/20 px-3 py-1 text-[11px] text-red-400 hover:bg-red-500/30 transition"
-              style={{ fontFamily: font.mono }}
-            >
+            <Button colors={colors} type="button" onClick={handleDelete} style={dangerVars}>
               Delete
-            </button>
-            <button
-              onClick={() => setConfirmDelete(false)}
-              className="rounded-md px-3 py-1 text-[11px] hover:bg-white/5 transition"
+            </Button>
+            <Button
+              colors={colors}
+              variant="bare"
+              type="button"
+              onClick={() => { setDeleteFailed(false); setConfirmDelete(false); }}
               style={{ fontFamily: font.mono, color: colors.textMuted }}
-              onMouseEnter={e => { e.currentTarget.style.color = colors.text; }}
-              onMouseLeave={e => { e.currentTarget.style.color = colors.textMuted; }}
             >
               Cancel
-            </button>
+            </Button>
           </div>
+          {deleteFailed && (
+            <p role="alert" className="text-[11px] mt-2" style={{ fontFamily: font.body, color: colors.danger }}>
+              Couldn't delete this skill — it's still here. Try again.
+            </p>
+          )}
         </div>
       )}
 

@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../../lib/api';
 import { font, radius, type } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
-import type { ThemeColors } from '../../styles/tokens';
+import { Button, MIN_PENDING_MS, SUCCESS_FLASH_MS } from '../common/Button';
 import { requiredKeysSet } from './financeLabs';
 
 export const POLYBOT_SECRET_FIELDS: Array<{
@@ -19,9 +19,9 @@ export const POLYBOT_SECRET_FIELDS: Array<{
   { key: 'ANTHROPIC_API_KEY', label: 'Anthropic', required: false, hint: 'Optional — research strategies' },
 ];
 
-type Row = { masked: string; input: string; busy: boolean; error: string };
+type Row = { masked: string; input: string; error: string; checked: boolean };
 
-const blank = (): Row => ({ masked: '', input: '', busy: false, error: '' });
+const blank = (): Row => ({ masked: '', input: '', error: '', checked: false });
 
 export function PolybotKeys({
   compact = false,
@@ -35,6 +35,9 @@ export function PolybotKeys({
     Object.fromEntries(POLYBOT_SECRET_FIELDS.map((f) => [f.key, blank()])),
   );
   const [editing, setEditing] = useState<string | null>(null);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => { if (closeTimer.current) clearTimeout(closeTimer.current); }, []);
 
   const patch = (key: string, next: Partial<Row>) =>
     setRows((prev) => ({ ...prev, [key]: { ...prev[key], ...next } }));
@@ -43,9 +46,9 @@ export function PolybotKeys({
     await Promise.all(POLYBOT_SECRET_FIELDS.map(async (f) => {
       try {
         const r = await api.readSecretConfig(f.key);
-        patch(f.key, { masked: r?.maskedValue ?? '' });
+        patch(f.key, { masked: r?.maskedValue ?? '', checked: true });
       } catch {
-        patch(f.key, { masked: '' });
+        patch(f.key, { masked: '', checked: true });
       }
     }));
   }, []);
@@ -54,32 +57,39 @@ export function PolybotKeys({
 
   const save = async (key: string) => {
     const value = rows[key].input.trim();
-    if (!value) return;
-    patch(key, { busy: true, error: '' });
+    if (!value) return false;
+    patch(key, { error: '' });
     try {
       await api.upsertConfig(key, value, true);
-      patch(key, { input: '', masked: '' });
-      setEditing(null);
+      patch(key, { input: '' });
       await refresh();
       onChanged?.();
+      // Hold the editor open long enough for the button's own success tick to
+      // land under the pointer; closing on resolve would swallow it.
+      if (closeTimer.current) clearTimeout(closeTimer.current);
+      closeTimer.current = setTimeout(() => {
+        setEditing((cur) => (cur === key ? null : cur));
+      }, MIN_PENDING_MS + SUCCESS_FLASH_MS);
+      return true;
     } catch (e) {
-      patch(key, { error: e instanceof Error ? e.message : String(e) });
-    } finally {
-      patch(key, { busy: false });
+      patch(key, { error: `Couldn't save this key — ${detail(e)}` });
+      return false;
     }
   };
 
   const remove = async (key: string) => {
-    patch(key, { busy: true, error: '' });
+    patch(key, { error: '' });
     try {
       await api.removeConfig(key, true);
       setEditing(null);
       await refresh();
       onChanged?.();
+      // The row flipping to "not set" — and Remove itself going away — is this
+      // action's acknowledgment; there is no control left to tick.
+      return true;
     } catch (e) {
-      patch(key, { error: e instanceof Error ? e.message : String(e) });
-    } finally {
-      patch(key, { busy: false });
+      patch(key, { error: `Couldn't remove this key — ${detail(e)}` });
+      return false;
     }
   };
 
@@ -117,24 +127,25 @@ export function PolybotKeys({
                   whiteSpace: 'nowrap',
                 }}
               >
-                {saved ? r.masked : 'not set'}
+                {saved ? r.masked : r.checked ? 'not set' : 'Checking…'}
               </span>
-              <button
+              <Button
+                colors={colors}
                 type="button"
                 onClick={() => setEditing(open ? null : f.key)}
-                style={keyBtn(colors, false)}
+                style={{ flexShrink: 0 }}
               >
                 {open ? 'Cancel' : saved ? 'Replace' : 'Add'}
-              </button>
+              </Button>
               {saved && !open && (
-                <button
+                <Button
+                  colors={colors}
                   type="button"
-                  disabled={r.busy}
-                  onClick={() => void remove(f.key)}
-                  style={keyBtn(colors, false)}
+                  onClick={() => remove(f.key)}
+                  style={{ flexShrink: 0 }}
                 >
                   Remove
-                </button>
+                </Button>
               )}
             </div>
             {open && (
@@ -152,18 +163,21 @@ export function PolybotKeys({
                     borderRadius: radius.sm, padding: '6px 8px', outline: 'none',
                   }}
                 />
-                <button
+                <Button
+                  colors={colors}
+                  variant="ghostOn"
                   type="button"
-                  disabled={r.busy || !r.input.trim()}
-                  onClick={() => void save(f.key)}
-                  style={keyBtn(colors, true)}
+                  disabled={!r.input.trim()}
+                  title={!r.input.trim() ? 'Enter a value first' : undefined}
+                  onClick={() => save(f.key)}
+                  style={{ flexShrink: 0 }}
                 >
-                  {r.busy ? '…' : 'Save'}
-                </button>
+                  Save
+                </Button>
               </div>
             )}
             {r.error && (
-              <div style={{ ...type.caption, color: colors.danger }}>{r.error}</div>
+              <div role="alert" style={{ ...type.caption, color: colors.danger }}>{r.error}</div>
             )}
           </div>
         );
@@ -172,16 +186,7 @@ export function PolybotKeys({
   );
 }
 
-function keyBtn(colors: ThemeColors, primary: boolean): CSSProperties {
-  return {
-    fontFamily: font.body,
-    fontSize: 11,
-    padding: '4px 8px',
-    borderRadius: radius.sm,
-    border: `1px solid ${primary ? colors.cyan : colors.border}`,
-    color: primary ? colors.cyan : colors.textMuted,
-    background: 'transparent',
-    cursor: 'pointer',
-    flexShrink: 0,
-  };
+/** The daemon's own words, kept after the sentence that says what failed. */
+function detail(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }
