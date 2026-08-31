@@ -12,7 +12,9 @@
  *  - hover / :active pressed — CSS, no JS.
  *  - pending — when `onClick` returns a promise the button spins for the round
  *    trip on its own; a form submit (where the work is on `onSubmit`) passes
- *    `pending` in instead.
+ *    `pending` in instead. Either way the pending phase is held visible for at
+ *    least `minPendingMs` (700ms), so a round trip that lands in 20ms still
+ *    reads as an action rather than as a click that did nothing.
  *  - success — a brief tick, but ONLY when the promise resolves to something
  *    other than `false`. Callers whose helper swallows its own errors (finance's
  *    `mutate`) resolve `false` on failure so a failed action never ticks.
@@ -35,6 +37,13 @@ export type ButtonVariant = 'ghost' | 'ghostOn' | 'primary' | 'bare';
  *  to be mistaken for a new resting state. */
 export const SUCCESS_FLASH_MS = 900;
 
+/** How long a pending phase stays visible at minimum, even when the work
+ *  finishes sooner. Ported from Automate's local `Btn`, which is where this
+ *  floor was first written and proved: below roughly this, a spinner that
+ *  appears and vanishes inside a frame or two is indistinguishable from
+ *  nothing having happened, so a fast success reads as a dead button. */
+export const MIN_PENDING_MS = 700;
+
 export interface ButtonProps
   extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'onClick' | 'style'> {
   colors: ThemeColors;
@@ -49,6 +58,9 @@ export interface ButtonProps
   onClick?: (e: MouseEvent<HTMLButtonElement>) => unknown;
   /** Opt out of the tick for actions where confirmation is noise. */
   flashSuccess?: boolean;
+  /** Minimum time the pending phase stays visible. `0` opts out — only for
+   *  controls where a held spinner would itself be the wrong signal. */
+  minPendingMs?: number;
   style?: CSSProperties;
   children?: ReactNode;
 }
@@ -121,6 +133,7 @@ export function Button({
   success,
   onClick,
   flashSuccess = true,
+  minPendingMs = MIN_PENDING_MS,
   style,
   children,
   className,
@@ -129,36 +142,71 @@ export function Button({
 }: ButtonProps) {
   const [selfPending, setSelfPending] = useState(false);
   const [selfSuccess, setSelfSuccess] = useState(false);
+  /** The tail of the floor after a caller-driven `pending` has already gone. */
+  const [floorHeld, setFloorHeld] = useState(false);
   const live = useRef(true);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const floorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const propPendingSince = useRef<number | null>(null);
 
   useEffect(() => () => {
     live.current = false;
     if (timer.current) clearTimeout(timer.current);
+    if (floorTimer.current) clearTimeout(floorTimer.current);
   }, []);
+
+  const propPending = Boolean(pending ?? false);
+
+  // Caller-driven pending gets the same floor as the self-driven one: a form
+  // whose submit resolves in 30ms must not flash its button and look inert.
+  useEffect(() => {
+    if (minPendingMs <= 0) return;
+    if (propPending) {
+      if (floorTimer.current) clearTimeout(floorTimer.current);
+      setFloorHeld(false);
+      if (propPendingSince.current === null) propPendingSince.current = Date.now();
+      return;
+    }
+    if (propPendingSince.current === null) return;
+    const remaining = minPendingMs - (Date.now() - propPendingSince.current);
+    propPendingSince.current = null;
+    if (remaining <= 0) return;
+    setFloorHeld(true);
+    if (floorTimer.current) clearTimeout(floorTimer.current);
+    floorTimer.current = setTimeout(() => {
+      if (live.current) setFloorHeld(false);
+    }, remaining);
+  }, [propPending, minPendingMs]);
 
   const handle = useCallback((e: MouseEvent<HTMLButtonElement>) => {
     if (!onClick) return;
     const result = onClick(e);
     if (!isThenable(result)) return;
     setSelfPending(true);
-    void result.then(
-      (value) => {
-        if (!live.current) return;
-        setSelfPending(false);
-        // `false` is the caller's "it failed" signal — never tick on a failure.
-        if (!flashSuccess || value === false) return;
-        setSelfSuccess(true);
-        if (timer.current) clearTimeout(timer.current);
-        timer.current = setTimeout(() => {
-          if (live.current) setSelfSuccess(false);
-        }, SUCCESS_FLASH_MS);
-      },
-      () => { if (live.current) setSelfPending(false); },
+    // Settle first so a rejection is held for the floor too — a failure that
+    // flickers past is as unreadable as a success that does.
+    const settled = result.then(
+      (value) => ({ ok: true, value } as const),
+      () => ({ ok: false, value: undefined } as const),
     );
-  }, [onClick, flashSuccess]);
+    const floor = minPendingMs > 0
+      ? new Promise<void>((r) => { setTimeout(r, minPendingMs); })
+      : Promise.resolve();
+    void Promise.all([settled, floor]).then(([outcome]) => {
+      if (!live.current) return;
+      setSelfPending(false);
+      if (!outcome.ok) return;
+      // `false` is the caller's "it failed" signal — never tick on a failure.
+      if (!flashSuccess || outcome.value === false) return;
+      setSelfSuccess(true);
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => {
+        if (live.current) setSelfSuccess(false);
+      }, SUCCESS_FLASH_MS);
+    });
+  }, [onClick, flashSuccess, minPendingMs]);
 
-  const isPending = Boolean(pending ?? false) || selfPending;
+  const isPending = propPending || selfPending || floorHeld;
   const isSuccess = !isPending && (Boolean(success ?? false) || selfSuccess);
 
   return (
